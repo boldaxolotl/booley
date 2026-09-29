@@ -231,8 +231,11 @@ def read_history_record(path: Path) -> ClosedTicket:
 def closed_outcomes(tickets_dir: Path) -> dict[str, TicketState]:
     """Return the outcome of every Closed Ticket, keyed by slug.
 
-    A record with a malformed closed block raises: dependency decisions must
-    never treat a Ticket of unknown outcome as absent.
+    An unreadable history document or a record with a malformed closed block
+    raises: dependency decisions must never treat a Ticket of unknown outcome
+    as absent. A history document with no ``closed:`` block records no outcome,
+    so a dependency on its slug stays unsatisfied (the Ticket keeps waiting)
+    while Ticket Board listings show that document as an error row.
     """
     return {
         path.stem: read_history_record(path).block.outcome

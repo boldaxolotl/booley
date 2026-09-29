@@ -318,3 +318,14 @@ class TestBoardDocuments:
         (tmp_path / "escape.md").write_text("x")
         assert locate_document(tmp_path, "../../escape") is None
         assert locate_document(tmp_path, "T1") is None
+
+
+def test_project_gitignore_ignores_board_and_state_but_not_history():
+    """runtime cannot import ticket_board, so its ignore literals are pinned here."""
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
+    from booley.ticket_board.board_layout import HISTORY_DIR_NAME, STATE_DIR_NAME
+    from booley.ticket_board.lifecycle import BOARD_DIR_NAME
+
+    assert f"tickets/{BOARD_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
+    assert f"tickets/{STATE_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
+    assert not any(HISTORY_DIR_NAME in pattern for pattern in PROJECT_GITIGNORE_PATTERNS)

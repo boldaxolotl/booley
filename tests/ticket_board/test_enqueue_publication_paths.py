@@ -58,7 +58,7 @@ def test_path_on_another_board_is_invalid(tickets: Path, tmp_path: Path) -> None
         _canonicalize(ticket_document_path(other, "t1"))
 
 
-def test_unreadable_board_is_reported_as_unavailable(
+def test_unreadable_ticket_board_is_reported_as_unavailable(
     tickets: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = ticket_document_path(tmp_path / "other", "t1")
@@ -68,5 +68,5 @@ def test_unreadable_board_is_reported_as_unavailable(
         raise PermissionError(13, "Permission denied", str(other))
 
     monkeypatch.setattr(Path, "samefile", samefile)
-    with pytest.raises(EnqueuePublicationError, match="board is unavailable"):
+    with pytest.raises(EnqueuePublicationError, match="Ticket Board is unavailable"):
         _canonicalize(path)

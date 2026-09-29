@@ -17,7 +17,10 @@ invalid fields raises :class:`StateRecordError`, so every command on that Ticket
 fails without changing anything.
 
 No other module joins board, state, or history paths; callers go through the functions
-here, or through :class:`booley.ticket_board.io.TicketIO` for locked writes.
+here, or through :class:`booley.ticket_board.io.TicketIO` for locked writes. The one
+exception is :mod:`booley.runtime.project_gitignore`, which spells ``tickets/board/``
+and ``tickets/state/`` as literal ignore patterns: runtime sits below this package
+and must not import it, so a test pins those literals to the constants here.
 """
 
 from __future__ import annotations
@@ -29,6 +32,16 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from booley.core.boundary import (
+    BoundaryError,
+    as_str,
+    is_str_list,
+    require_dict,
+    require_finite_number_value,
+    require_int,
+    require_str_value,
+)
 
 from .lifecycle import BOARD_DIR_NAME, STATE_BY_STATUS, ConversionStage, TicketState
 from .persistence import atomic_replace_bytes, durable_unlink
@@ -120,33 +133,46 @@ def _validate_runtime(runtime: dict[str, Any]) -> None:
     if set(runtime) != set(RUNTIME_DEFAULTS):
         unexpected = sorted(set(runtime) ^ set(RUNTIME_DEFAULTS))
         raise StateRecordError(f"state record has invalid fields: {', '.join(unexpected)}")
+    try:
+        _validate_runtime_types(runtime)
+    except BoundaryError as exc:
+        raise StateRecordError(f"state record field {exc}") from exc
+
+
+def _validate_runtime_types(runtime: dict[str, Any]) -> None:
+    """Check each runtime field's type, raising :class:`BoundaryError`."""
     for key in _REQUIRED_STRINGS:
-        if not isinstance(runtime[key], str):
-            raise StateRecordError(f"state record field {key!r} must be a string")
+        require_str_value(runtime[key], field=repr(key), allow_empty=True)
     for key in _OPTIONAL_STRINGS:
-        if runtime[key] is not None and not isinstance(runtime[key], str):
-            raise StateRecordError(f"state record field {key!r} must be a string or null")
-    steps = runtime["steps_completed"]
-    if not isinstance(steps, list) or not all(isinstance(step, str) for step in steps):
-        raise StateRecordError("state record field 'steps_completed' must be a list of strings")
+        if runtime[key] is not None:
+            require_str_value(runtime[key], field=repr(key), allow_empty=True)
+    if not is_str_list(runtime["steps_completed"]):
+        raise BoundaryError("'steps_completed' must be a list of strings")
     owner = runtime["execution_owner_pid"]
-    # bool is an int subclass; a PID is never true/false.
-    if owner is not None and (isinstance(owner, bool) or not isinstance(owner, int)):
-        raise StateRecordError("state record field 'execution_owner_pid' must be an integer")
+    if owner is not None:
+        # require_int rejects bool: a PID is never true/false.
+        require_int(owner, field="'execution_owner_pid'")
 
 
 def parse_state_record(value: Any) -> StateRecord:
     """Validate decoded JSON as a state record, raising :class:`StateRecordError`."""
-    if not isinstance(value, dict):
-        raise StateRecordError("state record is not a JSON object")
-    schema = value.get("schema")
-    if isinstance(schema, bool) or schema != STATE_RECORD_SCHEMA:
+    try:
+        document = require_dict(value, field="state record")
+    except BoundaryError as exc:
+        raise StateRecordError("state record is not a JSON object") from exc
+    schema = document.get("schema")
+    try:
+        # Rejects bool (True == 1) and non-numbers before the schema comparison.
+        supported = require_finite_number_value(schema, field="schema") == STATE_RECORD_SCHEMA
+    except BoundaryError:
+        supported = False
+    if not supported:
         raise StateRecordError(f"state record schema {schema!r} is unsupported")
-    status = value.get("state")
-    state = STATE_BY_STATUS.get(status) if isinstance(status, str) else None
+    status = as_str(document.get("state"))
+    state = STATE_BY_STATUS.get(status) if status is not None else None
     if state is None or state in {TicketState.DRAFT, TicketState.ARCHIVED}:
-        raise StateRecordError(f"state record state {status!r} is invalid")
-    runtime = {key: item for key, item in value.items() if key not in {"schema", "state"}}
+        raise StateRecordError(f"state record state {document.get('state')!r} is invalid")
+    runtime = {key: item for key, item in document.items() if key not in {"schema", "state"}}
     return StateRecord(state, runtime)
 
 
@@ -199,6 +225,22 @@ def history_slug(tickets_dir: Path, path: Path) -> str | None:
 def required_board_directories(tickets_dir: Path) -> list[Path]:
     """Return the directories ``booley init`` creates and doctor requires."""
     return [board_root(tickets_dir), state_root(tickets_dir)]
+
+
+def live_state_directory_names() -> tuple[str, ...]:
+    """Return the tickets-relative directories holding live, untracked Ticket state."""
+    return (BOARD_DIR_NAME, STATE_DIR_NAME)
+
+
+def tickets_relative_label(directory: str, *parts: str) -> str:
+    """Return a POSIX path under one layout *directory*, relative to the tickets dir.
+
+    For messages, which may name placeholders like ``<slug>.md`` that are no
+    valid slug; a trailing ``""`` part renders a directory's trailing slash.
+    """
+    if directory not in (BOARD_DIR_NAME, STATE_DIR_NAME, HISTORY_DIR_NAME):
+        raise ValueError(f"{directory!r} is no Ticket Board layout directory")
+    return "/".join((directory, *parts))
 
 
 def legacy_state_directories(tickets_dir: Path) -> list[Path]:

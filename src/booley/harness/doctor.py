@@ -1915,6 +1915,18 @@ def _run_container_checks(
     _check_custom_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_image_bakes_current_booley(project, docker_exe, image, _pass, _warn)
     _check_container_uid(project, docker_exe, image, _pass, _warn, _fail)
+    container_check = _container_command_check(docker_exe, image, verbose, _pass, _fail)
+    _run_container_tool_checks(project, container_check)
+    _check_riscv_toolchain(docker_exe, image, _pass, _skip, _fail)
+
+
+ContainerCheck = Callable[..., None]
+
+
+def _container_command_check(
+    docker_exe: str, image: str, verbose: bool, _pass: Check, _fail: Fail
+) -> ContainerCheck:
+    """Return a check that passes when *cmd* exits zero in a fresh *image* container."""
 
     def _container_check(description: str, cmd: list[str], fix: str = "") -> None:
         try:
@@ -1934,6 +1946,13 @@ def _run_container_checks(
         except (subprocess.SubprocessError, FileNotFoundError):
             _fail(f"{description} (timeout/error)", fix)
 
+    return _container_check
+
+
+def _run_container_tool_checks(
+    project: ProjectAudit | None, _container_check: ContainerCheck
+) -> None:
+    """Check the EDA tools and Booley runtime payload baked into the sandbox image."""
     _container_check("verilator", ["verilator", "--version"], "rebuild sandbox image")
     _container_check("yosys", ["yosys", "-V"], "rebuild sandbox image")
     _container_check("iverilog", ["iverilog", "-V"], "rebuild sandbox image")
@@ -1966,8 +1985,6 @@ def _run_container_checks(
             ["cocotb-config", "--version"],
             "sandbox image predates cocotb support — rebuild the sandbox image",
         )
-
-    _check_riscv_toolchain(docker_exe, image, _pass, _skip, _fail)
 
 
 # RISC-V variant checks fire only when the image bakes this flavour marker
@@ -2815,6 +2832,9 @@ def _check_ticket_board_layout(project_dir: Path, _pass: Check, _fail: Fail) -> 
     """Fail while the board keeps pre-ADR-0065 leftovers board commands refuse to run on."""
     problems = legacy_layout_problems(project_dir / "tickets")
     for problem in problems:
+        if not problem.migration:
+            _fail(f"Ticket Board cannot be checked: {problem.summary}", problem.fix)
+            continue
         _fail(
             f"Ticket Board needs a manual migration: {problem.summary}",
             f"{problem.fix}; {migration_pointer()}",
@@ -2861,13 +2881,22 @@ def _check_ticket_history_committed(project_dir: Path, _pass: Check, _warn: Chec
     """
     from booley.ticket_board.history_publication import (
         HistoryCommitError,
+        history_ignored,
         pending_history_commits,
     )
+    from booley.ticket_board.ticket_history import TicketHistoryError
 
     _warn = _warning_sink(_warn, "tickets.history-uncommitted")
+    tickets_dir = project_dir / "tickets"
     try:
-        pending = pending_history_commits(project_dir / "tickets")
-    except HistoryCommitError as exc:
+        if history_ignored(tickets_dir):
+            _warn(
+                "tickets/history/ is gitignored; Closed Tickets' history records won't be committed",
+                "un-ignore tickets/history in the repository's .gitignore",
+            )
+            return
+        pending = pending_history_commits(tickets_dir)
+    except (HistoryCommitError, TicketHistoryError) as exc:
         _warn(
             f"cannot inspect Ticket History commits: {exc}",
             "fix the repository state, then run any `booley board` command",

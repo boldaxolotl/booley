@@ -185,33 +185,49 @@ def classify_tickets(
     """
     if logs_dir is None:
         logs_dir = detect_tickets_dir() / "logs"
-    executable, active, blocked, waiting, review, orphaned = [], [], [], [], [], []
+    groups: dict[str, list[dict[str, Any]]] = {name: [] for name in _CLASSIFICATION_GROUPS}
     now = datetime.now(UTC)
-
     for t in tickets:
-        status = t.get("status", "")
-        if status == "blocked":
-            blocked.append(t)
-        elif status == "review":
-            review.append(t)
-        elif status == "waiting":
-            waiting.append(t)
-        elif status == "queued":
-            deps = t.get("dependencies", [])
-            if deps and not all(d in done_slugs for d in deps):
-                waiting.append(t)  # deps unsatisfied — treat as waiting
-            else:
-                executable.append(t)
-        elif status == "running":
-            if _check_orphan(t, now, orphan_threshold_min, logs_dir):
-                orphaned.append(t)
-            else:
-                active.append(t)
-    # Sort executable: by priority (high > medium > low), then in-progress
-    # first, then oldest-created first. The creation tiebreak makes the order
-    # total and stable, so the runner claims the highest-priority ticket rather
-    # than whichever one the scanner happened to yield first (F-51). Tickets
-    # with no `created` stamp sort last rather than first.
+        group = _classification_group(t, now, orphan_threshold_min, logs_dir, done_slugs)
+        if group is not None:
+            groups[group].append(t)
+    _sort_executable(groups["executable"])
+    return groups
+
+
+_CLASSIFICATION_GROUPS = ("executable", "active", "blocked", "waiting", "review", "orphaned")
+
+
+def _classification_group(
+    t: dict[str, Any],
+    now: datetime,
+    orphan_threshold_min: int,
+    logs_dir: Any,
+    done_slugs: Collection[str],
+) -> str | None:
+    """Return the :func:`classify_tickets` group of one ticket, or ``None`` to omit it."""
+    status = t.get("status", "")
+    if status in {"blocked", "review", "waiting"}:
+        return status
+    if status == "queued":
+        deps = t.get("dependencies", [])
+        if deps and not all(d in done_slugs for d in deps):
+            return "waiting"  # deps unsatisfied — treat as waiting
+        return "executable"
+    if status == "running":
+        return "orphaned" if _check_orphan(t, now, orphan_threshold_min, logs_dir) else "active"
+    return None
+
+
+def _sort_executable(executable: list[dict[str, Any]]) -> None:
+    """Sort executable tickets in place into claim order.
+
+    By priority (high > medium > low), then in-progress first, then
+    oldest-created first. The creation tiebreak makes the order total and
+    stable, so the runner claims the highest-priority ticket rather than
+    whichever one the scanner happened to yield first (F-51). Tickets with no
+    `created` stamp sort last rather than first.
+    """
     executable.sort(
         key=lambda t: (
             PRIORITY_ORDER.get(t.get("priority", "medium"), 1),
@@ -219,14 +235,6 @@ def classify_tickets(
             t.get("created") or _UNDATED_SORTS_LAST,
         )
     )
-    return {
-        "executable": executable,
-        "active": active,
-        "blocked": blocked,
-        "waiting": waiting,
-        "review": review,
-        "orphaned": orphaned,
-    }
 
 
 def _resolve_ticket_type(entry):

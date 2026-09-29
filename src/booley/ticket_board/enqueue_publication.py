@@ -194,7 +194,7 @@ def _canonicalize_document_path(project_root: Path, slug: str, path: Path) -> Pa
     try:
         on_board = is_board_document(tickets, path)
     except OSError as exc:
-        raise EnqueuePublicationError("enqueue journal board is unavailable") from exc
+        raise EnqueuePublicationError("enqueue journal Ticket Board is unavailable") from exc
     if not on_board or path.name != f"{slug}.md":
         raise EnqueuePublicationError("enqueue journal document path is invalid")
     return ticket_document_path(tickets, slug)

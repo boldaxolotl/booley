@@ -12,7 +12,6 @@ from .cli_handlers import (
     _cmd_approve,
     _cmd_archive,
     _cmd_block,
-    _cmd_board,
     _cmd_classify,
     _cmd_collect_evidence,
     _cmd_complete,
@@ -44,6 +43,7 @@ from .cli_handlers import (
     _cmd_usage,
     _cmd_validate_logs,
     _cmd_validate_ticket,
+    show_board_view,
 )
 from .helpers import (
     detect_tickets_dir,
@@ -52,7 +52,7 @@ from .helpers import (
 from .io import TicketIO
 from .legacy_layout import LegacyBoardLayoutError
 from .lifecycle import board_target_choices
-from .operations import open_board
+from .operations import READ_ONLY_BOARD_COMMANDS, open_board
 from .ticket_history import TicketHistoryError
 
 
@@ -233,7 +233,9 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
 def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register ticket creation, queueing, and approval subcommands."""
     # create-file
-    p = sub.add_parser("create-file", help="Create a new draft ticket .md file on the board")
+    p = sub.add_parser(
+        "create-file", help="Create a new draft ticket .md file on the Ticket Board"
+    )
     _add_create_file_args(p)
 
     p = sub.add_parser("return-to-draft", help="Start fresh Ticket authoring")
@@ -402,31 +404,9 @@ def build_parser() -> argparse.ArgumentParser:
 # Dispatch table: command name -> handler function
 # ---------------------------------------------------------------------------
 
-# Commands that only read the board; they never trigger Ticket History recovery,
-# which can commit to the Project repository.
-READ_ONLY_COMMANDS = frozenset(
-    {
-        "board",
-        "show",
-        "slug",
-        "read-board",
-        "parse-ticket",
-        "validate-ticket",
-        "next-step",
-        "steps",
-        "classify",
-        "detect-orphans",
-        "mutation-config",
-        "resume",
-        "validate-logs",
-        "timing",
-        "usage",
-    }
-)
-
 HANDLERS = {
     # Pure output commands
-    "board": _cmd_board,
+    "board": show_board_view,
     "show": _cmd_show,
     "slug": _cmd_slug,
     "read-board": _cmd_read_board,
@@ -491,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = HANDLERS.get(command)
     if handler is not None:
         try:
-            open_board(tio, recover=command not in READ_ONLY_COMMANDS)
+            open_board(tio, recover=command not in READ_ONLY_BOARD_COMMANDS)
             return handler(tio, args)
         except (LegacyBoardLayoutError, StateRecordError, TicketHistoryError) as exc:
             # A broken state record fails closed: say which one instead of a traceback.

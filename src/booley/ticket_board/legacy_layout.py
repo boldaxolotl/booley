@@ -11,7 +11,9 @@ merely untidy, and there is no automatic migration (Projects migrate by hand):
   changes in the checkout that block the next Ticket's completion.
 
 Doctor reports each problem as a FAIL; board commands and ``booley run``
-raise :class:`LegacyBoardLayoutError` before touching anything.
+raise :class:`LegacyBoardLayoutError` before touching anything. When Git cannot
+say what it tracks (other than for a tickets directory outside any repository
+or a missing ``git`` executable), the check fails closed the same way.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ from .board_layout import (
     STATE_DIR_NAME,
     board_root,
     legacy_state_directories,
+    live_state_directory_names,
+    tickets_relative_label,
 )
 from .lifecycle import BOARD_DIR_NAME
 
@@ -46,12 +50,21 @@ class LegacyBoardLayoutError(RuntimeError):
     """The Ticket Board needs a manual migration before any board command runs."""
 
 
+class TrackedStateCheckError(LegacyBoardLayoutError):
+    """Git could not report which live Ticket state files it tracks."""
+
+
 @dataclass(frozen=True)
 class LayoutProblem:
-    """One reason the board is not in the current layout, with its fix."""
+    """One reason the board is not in the current layout, with its fix.
+
+    *migration* is false for a problem that blocks the board without being a
+    leftover of the old layout (Git could not be asked).
+    """
 
     summary: str
     fix: str
+    migration: bool = True
 
 
 def legacy_state_files(tickets_dir: Path) -> list[Path]:
@@ -70,33 +83,34 @@ def tracked_live_state_files(tickets_dir: Path) -> list[str]:
 
     Reads the index, so a tracked file already deleted from disk still counts:
     the next commit would keep it. Returns an empty list when *tickets_dir* is
-    not in a Git repository or Git cannot run; the guard cannot see the index
-    then (a failure other than "not a repository" is logged), and the
-    legacy-directory check still applies.
+    not in a Git repository or the ``git`` executable is missing (logged): no
+    index can track anything then, and the legacy-directory check still
+    applies. Any other Git failure raises :class:`TrackedStateCheckError`, so
+    the guard fails closed instead of passing a board it could not inspect.
     """
     if not tickets_dir.is_dir():
         return []
     try:
         result = subprocess.run(
-            ["git", "ls-files", "-z", "--", BOARD_DIR_NAME, STATE_DIR_NAME],
+            ["git", "ls-files", "-z", "--", *live_state_directory_names()],
             cwd=tickets_dir,
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except FileNotFoundError as exc:
         logger.warning("Cannot check tracked Ticket state in %s: %s", tickets_dir, exc)
         return []
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TrackedStateCheckError(f"git ls-files failed in {tickets_dir}: {exc}") from exc
     if result.returncode != 0:
-        if "not a git repository" not in result.stderr:
-            logger.warning(
-                "Cannot check tracked Ticket state in %s: git ls-files exited %d: %s",
-                tickets_dir,
-                result.returncode,
-                result.stderr.strip(),
-            )
-        return []
+        if "not a git repository" in result.stderr:
+            return []
+        detail = result.stderr.strip() or "no diagnostic"
+        raise TrackedStateCheckError(
+            f"git ls-files exited {result.returncode} in {tickets_dir}: {detail}"
+        )
     return sorted(name for name in result.stdout.split("\0") if name)
 
 
@@ -108,7 +122,7 @@ def legacy_layout_problems(tickets_dir: Path) -> list[LayoutProblem]:
     if stranded:
         board = board_root(tickets_dir)
         holders = sorted({path.relative_to(board).parts[0] for path in stranded})
-        names = ", ".join(f"{BOARD_DIR_NAME}/{name}/" for name in holders)
+        names = ", ".join(tickets_relative_label(BOARD_DIR_NAME, name, "") for name in holders)
         verb = "holds" if len(holders) == 1 else "hold"
         problems.append(
             LayoutProblem(
@@ -117,25 +131,44 @@ def legacy_layout_problems(tickets_dir: Path) -> list[LayoutProblem]:
                     "Booley cannot see these Tickets"
                 ),
                 fix=(
-                    f"move each document to {BOARD_DIR_NAME}/<slug>.md with a "
-                    f"{STATE_DIR_NAME}/<slug>.json record (done and archived Tickets go "
-                    f"to {HISTORY_DIR_NAME}/), then delete the old directories"
+                    f"move each document to {tickets_relative_label(BOARD_DIR_NAME, '<slug>.md')} "
+                    f"with a {tickets_relative_label(STATE_DIR_NAME, '<slug>.json')} record "
+                    f"(done and archived Tickets go to "
+                    f"{tickets_relative_label(HISTORY_DIR_NAME, '')}), then delete the old "
+                    "directories"
                 ),
             )
         )
 
-    tracked = tracked_live_state_files(tickets_dir)
-    if tracked:
-        problems.append(
-            LayoutProblem(
-                summary=(
-                    f"Git tracks {len(tracked)} file(s) under {BOARD_DIR_NAME}/ or "
-                    f"{STATE_DIR_NAME}/; live Ticket state must stay untracked"
-                ),
-                fix=f"{_untrack_command(tickets_dir)} && commit the removal",
-            )
-        )
+    problems.extend(_tracked_state_problems(tickets_dir))
     return problems
+
+
+def _tracked_state_problems(tickets_dir: Path) -> list[LayoutProblem]:
+    """Report tracked live state, or that Git could not be asked about it."""
+    try:
+        tracked = tracked_live_state_files(tickets_dir)
+    except TrackedStateCheckError as exc:
+        return [
+            LayoutProblem(
+                summary=f"cannot check whether Git tracks live Ticket state: {exc}",
+                fix=f"repair the repository until `git -C {shlex.quote(str(tickets_dir))} "
+                "ls-files` succeeds, then retry",
+                migration=False,
+            )
+        ]
+    if not tracked:
+        return []
+    board, state = (tickets_relative_label(name, "") for name in live_state_directory_names())
+    return [
+        LayoutProblem(
+            summary=(
+                f"Git tracks {len(tracked)} file(s) under {board} or {state}; "
+                "live Ticket state must stay untracked"
+            ),
+            fix=f"{_untrack_command(tickets_dir)} && commit the removal",
+        )
+    ]
 
 
 def _untrack_command(tickets_dir: Path) -> str:
@@ -149,7 +182,7 @@ def _untrack_command(tickets_dir: Path) -> str:
     """
     return (
         f"git -C {shlex.quote(str(tickets_dir))} rm -r --cached --ignore-unmatch"
-        f" -- {BOARD_DIR_NAME} {STATE_DIR_NAME}"
+        f" -- {' '.join(live_state_directory_names())}"
     )
 
 
@@ -163,7 +196,11 @@ def require_current_layout(tickets_dir: Path) -> None:
     problems = legacy_layout_problems(tickets_dir)
     if not problems:
         return
-    lines = [f"Ticket Board at {tickets_dir} needs a manual migration to state records:"]
+    if any(problem.migration for problem in problems):
+        lines = [f"Ticket Board at {tickets_dir} needs a manual migration to state records:"]
+    else:
+        lines = [f"Ticket Board at {tickets_dir} cannot be checked:"]
     lines.extend(f"  - {problem.summary}\n    fix: {problem.fix}" for problem in problems)
-    lines.append(f"Migration steps: {migration_pointer()}")
+    if any(problem.migration for problem in problems):
+        lines.append(f"Migration steps: {migration_pointer()}")
     raise LegacyBoardLayoutError("\n".join(lines))

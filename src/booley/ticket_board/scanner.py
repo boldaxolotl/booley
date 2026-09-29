@@ -16,6 +16,7 @@ from typing import Any
 from .acceptance_journal import AcceptanceJournalError, acceptance_state
 from .board_layout import (
     StateRecord,
+    history_documents,
     iter_board_documents,
     iter_board_records,
     locate_document,
@@ -24,7 +25,7 @@ from .execution import next_from_planned
 from .lifecycle import TicketState
 from .paths import existing_runtime_file
 from .ticket_document import convert_ticket_document, ticket_conversion_context
-from .ticket_history import TicketHistoryError, closed_ticket_documents, read_history_record
+from .ticket_history import TicketHistoryError, read_history_record
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +230,10 @@ def scan_all_tickets(
     """Scan Tickets through the document converter, retaining invalid entries.
 
     Live Tickets only, unless *include_closed* also asks for Ticket History.
-    A malformed history record is retained too, with status ``closed`` and a
-    ``ticket_error``; dependency checks read history separately and fail closed.
+    A malformed history document, including an unreadable one or one without a
+    ``closed:`` block, is retained too, with status ``closed`` and a
+    ``ticket_error``, so it never fails the whole listing. Dependency checks
+    read history separately and fail closed.
     """
     tickets_dir = Path(tickets_dir)
     roots = _ScanRoots(project_root or tickets_dir.parent.parent, tickets_dir)
@@ -241,7 +244,7 @@ def scan_all_tickets(
         if entry is not None:
             result.append(entry)
     if include_closed:
-        result.extend(_scan_closed(path, roots) for path in closed_ticket_documents(tickets_dir))
+        result.extend(_scan_closed(path, roots) for path in history_documents(tickets_dir))
 
     return result
 

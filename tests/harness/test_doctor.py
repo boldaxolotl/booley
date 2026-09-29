@@ -857,6 +857,27 @@ def test_ticket_history_probe_has_nothing_to_warn_outside_a_repository(tmp_path,
     ]
 
 
+def test_ticket_history_probe_warns_when_history_is_gitignored(tmp_path, monkeypatch):
+    """An ignored history/ is never committed, so Doctor must not report it committed."""
+    from booley.ticket_board.history_publication import publish_history_record
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    (project_dir / ".gitignore").write_text("tickets/history/\n", encoding="utf-8")
+    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
+
+    reporter = _history_probe(project_dir)
+
+    assert [(f.severity, f.check_id) for f in reporter.findings or []] == [
+        ("warn", "tickets.history-uncommitted")
+    ]
+    warning = (reporter.findings or [])[0]
+    assert "gitignored" in warning.message
+    assert "un-ignore tickets/history" in warning.fix
+    # Publication itself stays non-failing: nothing tracks the record.
+    assert publish_history_record(project_dir / "tickets", "alpha", policy_root=tmp_path)
+
+
 def test_doctor_reports_ticket_board_import_failure(tmp_path, monkeypatch, capsys):
     project_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, project_dir)
@@ -7196,3 +7217,20 @@ def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
 
     assert not c.warned
     assert any("is committed" in m for m in c.passed)
+def test_ticket_board_layout_probe_fails_when_git_cannot_be_asked(tmp_path, monkeypatch):
+    """Doctor FAILs a board whose tracked-state check Git could not answer."""
+    from booley.ticket_board import legacy_layout
+
+    tickets = tmp_path / "tickets"
+    for name in ("board", "state", "history"):
+        (tickets / name).mkdir(parents=True)
+    failed = subprocess.CompletedProcess([], 129, stdout="", stderr="fatal: bad index")
+    monkeypatch.setattr(legacy_layout.subprocess, "run", lambda *_a, **_k: failed)
+    reporter = doctor._Reporter.create()
+
+    doctor._check_ticket_board_layout(tmp_path, reporter.pass_, reporter.fail_)
+
+    findings = reporter.findings or []
+    assert [f.severity for f in findings] == ["fail"]
+    assert "Ticket Board cannot be checked" in findings[0].message
+    assert "fatal: bad index" in findings[0].message

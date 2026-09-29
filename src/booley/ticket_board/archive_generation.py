@@ -54,7 +54,13 @@ def _require_git(repository: Path, *args: str) -> str:
 
 
 def _ref_sha(repository: Path, ref: str) -> str | None:
-    result = _git(repository, "show-ref", "--verify", "--hash", ref)
+    """Return *ref*'s commit, or None when the ref is absent.
+
+    ``rev-parse --verify --quiet`` exits 1 for a missing ref; ``show-ref
+    --verify`` exits 128 for it on current Git, indistinguishable from real
+    failures, which made re-releasing an already released generation fail.
+    """
+    result = _git(repository, "rev-parse", "--verify", "--quiet", "--end-of-options", ref)
     if result.returncode == 1:
         return None
     if result.returncode:

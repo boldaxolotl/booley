@@ -108,6 +108,30 @@ def test_malformed_history_record_is_noted_not_fatal(board, monkeypatch, capsys)
     assert "shipped" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "content,message",
+    [
+        (b"---\nsummary: x\n---\n", "no closed block"),
+        (b"---\nsummary: \xff\n---\n", "unreadable"),
+    ],
+)
+def test_history_document_without_a_record_is_an_error_row(
+    board, monkeypatch, capsys, content, message
+):
+    """Unreadable or blockless history lists as an error row, not a failed listing."""
+    bad = history_document_path(board.tickets_dir, "bad")
+    bad.write_bytes(content)
+
+    entries = {e["file"]: e for e in scan_all_tickets(board.tickets_dir, include_closed=True)}
+    assert entries["history/shipped.md"]["status"] == "done"
+    assert entries["history/bad.md"]["status"] == "closed"
+    assert message in entries["history/bad.md"]["ticket_error"]
+
+    monkeypatch.setattr(cli, "detect_tickets_dir", lambda: board.tickets_dir)
+    assert cli.main(["board", "--all"]) == 0
+    assert "shipped" in capsys.readouterr().out
+
+
 def _booley_board(board, monkeypatch, argv: list[str]) -> int:
     from booley.harness import booley as tlr
 

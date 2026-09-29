@@ -834,6 +834,36 @@ def reconcile_board(tio: Any) -> None:
     recover_ticket_history(tio)
 
 
+# Commands that only read the Ticket Board, across both board CLIs: ``booley
+# board <command>`` (``None`` is its bare listing) and ``python -m
+# booley.ticket_board.cli <command>``. No name is read-only in one CLI and
+# mutating in the other. They never trigger Ticket History recovery, which can
+# commit to the Project repository.
+READ_ONLY_BOARD_COMMANDS: frozenset[str | None] = frozenset(
+    {
+        None,
+        "board",
+        "show",
+        "check-ready",
+        "review-briefing",
+        "blocked-briefing",
+        "slug",
+        "read-board",
+        "parse-ticket",
+        "validate-ticket",
+        "next-step",
+        "steps",
+        "classify",
+        "detect-orphans",
+        "mutation-config",
+        "resume",
+        "validate-logs",
+        "timing",
+        "usage",
+    }
+)
+
+
 def open_board(tio: Any, *, recover: bool) -> None:
     """Check what every board command needs before it touches the board.
 

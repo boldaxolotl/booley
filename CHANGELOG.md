@@ -55,6 +55,22 @@ Packaged release history starts at 0.2.7. For older changes, see
   `python -m booley.ticket_board board|show|read-board`) to include done and
   archived Tickets, dated by when they closed. `booley board show <slug>`
   also finds a Closed Ticket.
+- `booley board archive <slug>` now abandons one live Ticket: it releases the
+  Ticket's worktrees and refs, keeps its logs, and closes it into
+  `tickets/history/` with outcome archived. Bare `booley board archive` no
+  longer sweeps done Tickets (they close by themselves); it only resumes an
+  archive a crash interrupted. `--force` and `--keep-logs` have no effect and
+  will be removed. Moving a Ticket to `archived` directly is refused; use
+  `archive` instead. Closed Tickets cannot be reopened, and their slugs cannot
+  be reused.
+- Booley commits each history record to the repository that tracks
+  `tickets/history/` (`chore(<slug>): close Ticket (<outcome>)`). When the
+  commit cannot be made (for example a detached HEAD, or the Ticket's
+  `project_destination_ref` is not checked out), the Ticket still closes, and
+  the commit is retried on the next Ticket Board command. Doctor WARNs about
+  uncommitted records.
+- Doctor no longer crashes when no container runtime is installed; it skips
+  its container checks instead.
 - Doctor's `interactive.logs-gitignore` warning is now `project.gitignore`
   and checks every ignore pattern `booley init` writes. Waivers on the old id
   no longer match; re-waive under the new one.

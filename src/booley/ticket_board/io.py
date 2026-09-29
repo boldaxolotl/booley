@@ -517,7 +517,7 @@ class TicketIO:
         if slug_is_closed(self.tickets_dir, slug):
             print(
                 f"Error: ticket '{slug}' is closed in Ticket History; "
-                "any board command finishes removing its leftovers",
+                "any `booley board` command finishes removing its leftovers",
                 file=sys.stderr,
             )
             return True

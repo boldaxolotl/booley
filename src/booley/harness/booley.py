@@ -78,7 +78,7 @@ from booley.runtime.project_repositories import (
 from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
 from booley.ticket_board.board_layout import documents_in_state, locate_document
 from booley.ticket_board.cli import add_all_tickets_flag
-from booley.ticket_board.cli_handlers import ALL_TICKETS_ONLY_LISTS
+from booley.ticket_board.cli_handlers import reject_all_outside_listing, show_board_view
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.legacy_layout import LegacyBoardLayoutError, require_current_layout
@@ -513,6 +513,12 @@ def _add_board_subparsers(sub) -> None:
     move_p.add_argument("target", choices=["queue", "done"], help="Target state")
     move_p.add_argument("--feedback", default="", help="Feedback when moving blocked->queue")
 
+    _add_board_reset_subparser(board_sub, root_opt)
+    _add_board_archive_subparser(board_sub, root_opt)
+
+
+def _add_board_reset_subparser(board_sub, root_opt) -> None:
+    """Register ``booley board reset``."""
     reset_p = board_sub.add_parser(
         "reset", help="Full reset (wipe logs, worktree, branch)", parents=[root_opt]
     )
@@ -528,6 +534,9 @@ def _add_board_subparsers(sub) -> None:
         help="Why a clean run is required (recorded in transition history)",
     )
 
+
+def _add_board_archive_subparser(board_sub, root_opt) -> None:
+    """Register ``booley board archive``."""
     archive_p = board_sub.add_parser(
         "archive", help="Abandon a live ticket, closing it as archived", parents=[root_opt]
     )
@@ -1237,13 +1246,6 @@ def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
     return tio.create_ticket_document(slug, stub) is not None
 
 
-# Board commands that only read; they never trigger Ticket History recovery,
-# which can commit to the Project repository.
-_READ_ONLY_BOARD_COMMANDS = frozenset(
-    {None, "show", "check-ready", "review-briefing", "blocked-briefing"}
-)
-
-
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.board_layout import StateRecordError
     from booley.ticket_board.ticket_history import TicketHistoryError
@@ -1257,33 +1259,19 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
-    if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    from booley.ticket_board.operations import READ_ONLY_BOARD_COMMANDS, open_board
 
+    _ensure_utf8_stdout()
     board_cmd = getattr(args, "board_command", None)
     listing = board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None))
-    if getattr(args, "all", False) and not listing:
-        print(f"Error: {ALL_TICKETS_ONLY_LISTS}", file=sys.stderr)
-        return 2
+    rejected = reject_all_outside_listing(args, listing=listing)
+    if rejected is not None:
+        return rejected
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    from booley.ticket_board.operations import open_board
-
-    open_board(tio, recover=board_cmd not in _READ_ONLY_BOARD_COMMANDS)
+    open_board(tio, recover=board_cmd not in READ_ONLY_BOARD_COMMANDS)
 
     if listing:
-        from booley.ticket_board.io import scan_all_tickets
-        from booley.ticket_board.reporting import display_board
-
-        display_board(
-            scan_all_tickets(
-                tio.tickets_dir,
-                project_root=project_root,
-                include_closed=getattr(args, "all", False),
-            ),
-            tickets_dir=tio.tickets_dir,
-        )
-        return 0
-
+        return show_board_view(tio, args)
     if board_cmd == "check-ready":
         from booley.ticket_board.readiness import check_ticket_ready
 
@@ -1292,6 +1280,17 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
     edit = _board_edit_command(args, tio, project_root)
     if edit is not None:
         return edit
+    return _run_board_review_command(args, tio, project_root)
+
+
+def _ensure_utf8_stdout() -> None:
+    """Switch stdout to UTF-8 so board tables with non-ASCII text never crash."""
+    if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+
+
+def _run_board_review_command(args: argparse.Namespace, tio: TicketIO, project_root: Path) -> int:
+    """Run a show/review/archive-family board command; 1 for an unknown command."""
     special = {
         "show": lambda: _cmd_board_show(args, project_root),
         "review": lambda: _cmd_board_review(args, project_root),
@@ -1305,11 +1304,8 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
         "prepare-review": lambda: _cmd_board_prepare_review(args, project_root),
         "review-briefing": lambda: _cmd_board_review_briefing(args, project_root),
         "blocked-briefing": lambda: _cmd_board_blocked_briefing(args, project_root),
-    }.get(board_cmd)
-    if special is not None:
-        return special()
-
-    return 1
+    }.get(getattr(args, "board_command", None))
+    return special() if special is not None else 1
 
 
 def _board_edit_command(args: argparse.Namespace, tio: TicketIO, project_root: Path) -> int | None:
@@ -2620,7 +2616,7 @@ def _host_install_authority_error(command: str | None) -> str | None:
     return host_install_error(skills_dir())
 
 
-def _dispatch_main() -> int:  # noqa: PLR0911 -- preserves command exit codes
+def _dispatch_main() -> int:
     """Parse CLI, handle early exits, set up runtime, and run the ticket loop."""
     args = _parse_cli()
     command = _effective_command(args)
@@ -2655,9 +2651,14 @@ def _dispatch_main() -> int:  # noqa: PLR0911 -- preserves command exit codes
     early = _handle_early_exits(args, project_root)
     if early is not None:
         return early
+    # Only 'run' subcommand reaches here.
+    return _run_ticket_command(args, project_root)
 
-    # Only 'run' subcommand reaches here. An old-layout board looks empty, so
-    # the runner would idle on it instead of saying why.
+
+def _run_ticket_command(args: argparse.Namespace, project_root: Path) -> int:
+    """Run ``booley run``: layout gate, then readiness check, preview, or ticket loop."""
+    # An old-layout board looks empty, so the runner would idle on it instead
+    # of saying why.
     try:
         require_current_layout(tickets_dir_from_project_root(project_root))
     except LegacyBoardLayoutError as exc:

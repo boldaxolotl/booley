@@ -11,6 +11,7 @@ from booley.ticket_board import legacy_layout
 from booley.ticket_board.legacy_layout import (
     MIGRATION_GUIDE,
     LegacyBoardLayoutError,
+    TrackedStateCheckError,
     legacy_layout_problems,
     legacy_state_files,
     require_current_layout,
@@ -206,10 +207,10 @@ def test_tickets_dir_outside_any_repository_passes(tmp_path: Path) -> None:
     assert tracked_live_state_files(tickets_dir) == []
 
 
-def test_git_unavailable_does_not_block(
+def test_missing_git_executable_does_not_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Without Git the guard cannot see the index; legacy directories still block."""
+    """Without a git executable no index can track anything; legacy directories still block."""
     tickets_dir = _current_tree(tmp_path / "tickets")
 
     def missing_git(*_args: object, **_kwargs: object) -> None:
@@ -221,19 +222,39 @@ def test_git_unavailable_does_not_block(
     assert "Cannot check tracked Ticket state" in caplog.text
 
 
-def test_git_failure_is_logged_but_not_a_repository_is_quiet(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_not_a_repository_is_quiet(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     tickets_dir = _current_tree(tmp_path / "tickets")
 
     assert tracked_live_state_files(tickets_dir) == []
     assert caplog.text == ""
 
-    failed = subprocess.CompletedProcess([], 129, stdout="", stderr="fatal: bad index")
-    monkeypatch.setattr(legacy_layout.subprocess, "run", lambda *_a, **_k: failed)
 
-    assert tracked_live_state_files(tickets_dir) == []
-    assert "fatal: bad index" in caplog.text
+@pytest.mark.parametrize(
+    "failure",
+    [None, PermissionError("permission denied"), subprocess.TimeoutExpired("git", 10)],
+    ids=["exit-status", "os-error", "timeout"],
+)
+def test_git_failure_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception | None
+) -> None:
+    """A board Git cannot inspect is refused, never passed as untracked."""
+    tickets_dir = _current_tree(tmp_path / "tickets")
+
+    def run_git(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if failure is not None:
+            raise failure
+        return subprocess.CompletedProcess([], 129, stdout="", stderr="fatal: bad index")
+
+    monkeypatch.setattr(legacy_layout.subprocess, "run", run_git)
+
+    with pytest.raises(TrackedStateCheckError):
+        tracked_live_state_files(tickets_dir)
+    (problem,) = legacy_layout_problems(tickets_dir)
+    assert problem.summary.startswith("cannot check whether Git tracks live Ticket state")
+    assert problem.migration is False
+    with pytest.raises(LegacyBoardLayoutError, match="cannot be checked") as caught:
+        require_current_layout(tickets_dir)
+    assert "manual migration" not in str(caught.value)
 
 
 def test_both_problems_are_reported_together(tmp_path: Path) -> None:

@@ -142,6 +142,24 @@ class TestClosedBlock:
         with pytest.raises(TicketHistoryError):
             done_slugs(tio.tickets_dir)
 
+    def test_unreadable_history_fails_dependency_checks_closed(self, tio):
+        path = history_document_path(tio.tickets_dir, "bad")
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"---\nsummary: \xff\n---\n")
+
+        with pytest.raises(TicketHistoryError, match="unreadable"):
+            closed_outcomes(tio.tickets_dir)
+        with pytest.raises(TicketHistoryError, match="unreadable"):
+            done_slugs(tio.tickets_dir)
+
+    def test_blockless_history_never_satisfies_a_dependency(self, tio):
+        path = history_document_path(tio.tickets_dir, "stray")
+        path.parent.mkdir(parents=True)
+        path.write_text("---\nsummary: x\n---\n", encoding="utf-8")
+
+        assert "stray" not in done_slugs(tio.tickets_dir)
+        assert "stray" not in closed_outcomes(tio.tickets_dir)
+
 
 # Closing and its crash windows ----------------------------------------------------
 
@@ -487,6 +505,58 @@ class TestHistoryCommit:
             _commit(tio, "feat")
         assert _git(root, "rev-parse", "HEAD") == head
         assert _commit(tio, "feat") is True
+
+    @staticmethod
+    def _paired(tmp_path: Path, monkeypatch, destination: str | None) -> tuple[Path, TicketIO]:
+        """A Project whose ``.booley_project`` is its own repository holding the tickets."""
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        _git(outer, "init", "-q", "-b", "main")
+        project = outer / ".booley_project"
+        project.mkdir()
+        _git(project, "init", "-q", "-b", "main")
+        _git(project, "config", "user.name", "Test")
+        _git(project, "config", "user.email", "test@example.invalid")
+        (project / "README").write_text("project data\n", encoding="utf-8")
+        _git(project, "add", "README")
+        _git(project, "commit", "-qm", "baseline")
+        _git(project, "branch", "release")
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        reset_cache()
+        tio = TicketIO(_make_tio(project).tickets_dir, project_root=outer)
+        extra = {} if destination is None else {"project_destination_ref": destination}
+        make_ticket_file(tio, "review", "feat", extra)
+        close_ticket(tio.tickets_dir, "feat", _block())
+        return project, tio
+
+    def test_paired_destination_other_than_checkout_refuses_the_commit(
+        self, tmp_path, monkeypatch
+    ):
+        project, tio = self._paired(tmp_path, monkeypatch, "refs/heads/release")
+        head = _git(project, "rev-parse", "HEAD")
+
+        with pytest.raises(HistoryCommitError, match="closes into refs/heads/release"):
+            _commit(tio, "feat")
+        assert _git(project, "rev-parse", "HEAD") == head
+        assert pending_history_commits(tio.tickets_dir) == ["feat"]
+
+        _git(project, "checkout", "-q", "release")
+        assert _commit(tio, "feat") is True
+        assert _git(project, "log", "-1", "--format=%s", "release") == (
+            "chore(feat): close Ticket (done)"
+        )
+        assert _git(project, "rev-parse", "main") == head
+
+    @pytest.mark.parametrize("destination", ["refs/heads/main", None])
+    def test_paired_destination_checked_out_or_absent_commits(
+        self, tmp_path, monkeypatch, destination
+    ):
+        project, tio = self._paired(tmp_path, monkeypatch, destination)
+
+        assert _commit(tio, "feat") is True
+        assert _git(project, "log", "-1", "--format=%s", "main") == (
+            "chore(feat): close Ticket (done)"
+        )
 
     def test_no_repository_needs_no_commit(self, tio):
         _close(tio, "feat")

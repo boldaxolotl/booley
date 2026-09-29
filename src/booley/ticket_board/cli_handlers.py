@@ -72,15 +72,27 @@ from .validation import (
     validate_logs,
 )
 
-ALL_TICKETS_ONLY_LISTS = "--all only applies when listing the board, not to one Ticket"
+ALL_TICKETS_ONLY_LISTS = "--all only applies when listing the Ticket Board, not to one Ticket"
 
 # ---------------------------------------------------------------------------
 # Pure output commands (no side effects)
 # ---------------------------------------------------------------------------
 
 
+def reject_all_outside_listing(args, *, listing: bool) -> int | None:
+    """Report ``--all`` given to a one-Ticket command: exit code 2, else ``None``.
+
+    ``--all`` adds Closed Tickets to a Ticket Board listing; both board CLIs
+    share this guard so the rule and its message live in one place.
+    """
+    if listing or not getattr(args, "all", False):
+        return None
+    print(f"Error: {ALL_TICKETS_ONLY_LISTS}", file=sys.stderr)
+    return 2
+
+
 def _scan_for_view(tio, args):
-    """Scan the board, adding Closed Tickets when the view was asked ``--all``."""
+    """Scan the Ticket Board, adding Closed Tickets when the view was asked ``--all``."""
     return scan_all_tickets(
         tio.tickets_dir,
         project_root=tio._project_root,
@@ -88,7 +100,8 @@ def _scan_for_view(tio, args):
     )
 
 
-def _cmd_board(tio, args):
+def show_board_view(tio, args) -> int:
+    """Print the Ticket Board listing (with Closed Tickets under ``--all``)."""
     tickets = _scan_for_view(tio, args)
     display_board(tickets, tickets_dir=Path(tio.tickets_dir))
     return 0
@@ -155,10 +168,10 @@ def _cmd_show(tio, args):
     """
     slug = getattr(args, "slug", None)
     if not slug:
-        return _cmd_board(tio, args)
-    if getattr(args, "all", False):
-        print(f"Error: {ALL_TICKETS_ONLY_LISTS}", file=sys.stderr)
-        return 2
+        return show_board_view(tio, args)
+    rejected = reject_all_outside_listing(args, listing=False)
+    if rejected is not None:
+        return rejected
 
     try:
         entry = tio.inspect_ticket(slug)

@@ -13,6 +13,8 @@ from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
+    as_dict,
+    as_str,
     require_dict,
     require_int,
     require_list,
@@ -161,8 +163,8 @@ def _json_field(path: Path, key: str) -> str | None:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    field = value.get(key) if isinstance(value, dict) else None
-    return field if isinstance(field, str) else None
+    document = as_dict(value) or {}
+    return as_str(document.get(key))
 
 
 def _parse_files(value: Any) -> tuple[ExecutionLeaseFile, ...]:

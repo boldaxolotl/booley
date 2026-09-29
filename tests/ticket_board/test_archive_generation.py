@@ -16,6 +16,7 @@ from booley.ticket_board import archive as archive_module
 from booley.ticket_board import archive_generation
 from booley.ticket_board.archive import op_archive
 from booley.ticket_board.board_layout import (
+    StateRecord,
     read_state_record,
     state_record_path,
     ticket_document_path,
@@ -508,8 +509,7 @@ def test_bare_archive_resumes_crash_at_each_checkpoint(
     assert _marker(tio, "ticket").exists()
     assert document.exists() is not closed
     assert (read_closed_ticket(tio.tickets_dir, "ticket") is not None) is closed
-    # The generation is released before the marker is written, so a crash
-    # after it never leaves the Ticket's refs behind.
+    # Every checkpoint follows the release, so none leaves the Ticket's refs behind.
     assert _git(outer, "branch", "--list", branch) == ""
 
     resumed = op_archive(tio)
@@ -523,6 +523,83 @@ def test_bare_archive_resumes_crash_at_each_checkpoint(
     assert transitions.read_text(encoding="utf-8").count("user archived") == 1
     assert _git(outer, "log", "-1", "--format=%s") == "chore(ticket): close Ticket (archived)"
     assert _git(outer, "status", "--porcelain", "--", ".booley_project/tickets/history") == ""
+
+
+@pytest.mark.parametrize("released", [False, True])
+def test_archive_resumes_crash_around_workspace_release(
+    tmp_path: Path, monkeypatch, released: bool
+) -> None:
+    """A crash before or after the release leaves a marker that resumes it."""
+    tio, outer, _project, branch = _draft(tmp_path, monkeypatch, paired=False)
+    original = archive_module._release_workspaces
+
+    def crash(*args: object) -> None:
+        if released:
+            original(*args)
+        raise OSError("injected release crash")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(archive_module, "_release_workspaces", crash)
+        failed = op_archive(tio, slug="ticket")
+
+    assert "injected release crash" in failed.failures["ticket"]
+    _assert_live(tio, "ticket")
+    marker = json.loads(_marker(tio, "ticket").read_text(encoding="utf-8"))
+    assert marker["released"] is False
+    assert bool(_git(outer, "branch", "--list", branch)) is not released
+
+    resumed = op_archive(tio)
+
+    assert resumed.failures == {}
+    assert resumed.archived == ["Ticket"]
+    _assert_archived(tio, "ticket", DRAFT_GENERATION)
+    assert _git(outer, "branch", "--list", branch) == ""
+    assert not (outer / ".booley_project" / "worktrees" / "ticket").exists()
+
+
+def test_archive_resumes_marker_without_released_key(tmp_path: Path, monkeypatch) -> None:
+    """A marker without ``released`` resumes by releasing, which is idempotent."""
+    tio, outer, _project, branch = _draft(tmp_path, monkeypatch, paired=False)
+    with monkeypatch.context() as crash:
+        _crash_at(crash, tio, "transition")
+        assert "ticket" in op_archive(tio, slug="ticket").failures
+    marker_path = _marker(tio, "ticket")
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    del marker["released"]
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    resumed = op_archive(tio)
+
+    assert resumed.failures == {}
+    _assert_archived(tio, "ticket", DRAFT_GENERATION)
+    assert _git(outer, "branch", "--list", branch) == ""
+
+
+def test_archive_refuses_owner_that_claims_after_unlocked_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A runner claiming between the unlocked check and the lock still wins."""
+    tio, outer, _project, branch = _draft(tmp_path, monkeypatch, paired=False)
+    owner = subprocess.Popen(["sleep", "30"])
+    original = archive_module._refuse_live_owner
+
+    def claim_after_check(tio_arg: TicketIO, slug: str) -> None:
+        original(tio_arg, slug)
+        record = StateRecord.fresh(TicketState.RUNNING, execution_owner_pid=owner.pid)
+        write_state_record(tio_arg.tickets_dir, slug, record)
+
+    try:
+        monkeypatch.setattr(archive_module, "_refuse_live_owner", claim_after_check)
+        outcome = op_archive(tio, slug="ticket")
+    finally:
+        owner.kill()
+        owner.wait(timeout=10)
+
+    assert f"live process {owner.pid}" in outcome.failures["ticket"]
+    _assert_live(tio, "ticket")
+    assert not _marker(tio, "ticket").exists()
+    assert _git(outer, "branch", "--list", branch)
+    assert (outer / ".booley_project" / "worktrees" / "ticket").exists()
 
 
 def test_archive_refuses_done_ticket(tmp_path: Path, monkeypatch) -> None:

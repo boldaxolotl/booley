@@ -8,7 +8,9 @@ reopened. Waiting dependents of an archived Ticket are blocked lazily by
 waiting promotion, not here.
 
 A marker under ``.runtime/acceptance/archive/`` makes each archive resumable
-after a crash; it is removed once the Ticket is closed.
+after a crash; it is removed once the Ticket is closed. The marker is saved
+before anything is released, so a crash never leaves a live Ticket with
+released worktrees and refs but no marker to resume from.
 """
 
 from __future__ import annotations
@@ -80,13 +82,17 @@ def _load_marker(path: Path, slug: str) -> dict | None:
         "closed",
         "descriptor_retired",
     }
-    if set(marker) != expected:
+    # "released" is optional: a marker without it is resumed as unreleased,
+    # which is safe because releasing an already released generation is a no-op.
+    if set(marker) - {"released"} != expected:
         raise ValueError(f"archive marker is invalid: {path}")
     ticket = Path(require_str(marker, "file"))
     for key in ("digest", "summary", "status"):
         require_str(marker, key)
     for key in ("transitioned", "closed", "descriptor_retired"):
         require_bool(marker, key)
+    marker.setdefault("released", False)
+    require_bool(marker, "released")
     require_str_value(marker["generation"], field="archive marker generation", allow_empty=True)
     # A blank step is valid for an untouched draft Ticket.
     if marker["step"] != "":
@@ -131,8 +137,29 @@ def _pending_operations(tio: Any, slug: str) -> None:
         raise RuntimeError(f"active endpoint jobs remain for {slug}; wait or cancel them")
 
 
+def _release_once(tio: Any, slug: str, marker_path: Path, marker: dict) -> None:
+    """Release the Ticket's generation, then record that in the marker.
+
+    Closing always follows releasing, so a closed marker has nothing left to
+    release. Otherwise the release is retried from the recorded live Ticket;
+    it tolerates worktrees and refs an interrupted attempt already removed.
+    """
+    from .io import find_ticket_file
+
+    if marker["released"] or marker["closed"]:
+        return
+    file_path, _ = find_ticket_file(tio.tickets_dir, slug)
+    fields = tio.inspect_ticket(slug)
+    if file_path is None or fields is None:
+        raise RuntimeError(f"Ticket {slug} disappeared before its workspaces were released")
+    _release_workspaces(tio, slug, marker["status"], fields, file_path)
+    marker["released"] = True
+    _save_marker(marker_path, marker)
+
+
 def _finish_archive(tio: Any, slug: str, marker_path: Path, marker: dict) -> None:
     """Close the Ticket as archived, persisting each checkpoint in the marker."""
+    _release_once(tio, slug, marker_path, marker)
     if not marker["transitioned"]:
         from .paths import human_log_file
 
@@ -179,7 +206,11 @@ def _refuse_closed_or_done(tio: Any, slug: str, status: str | None) -> None:
 
 
 def _prepare_marker(tio: Any, slug: str, path: Path) -> dict:
-    """Read the live Ticket under lock, then release its generation once."""
+    """Read the live Ticket under lock and persist its archive marker.
+
+    Releasing the generation is left to :func:`_release_once`, after the
+    marker is durable.
+    """
     from .io import find_ticket_file
 
     file_path, status = find_ticket_file(tio.tickets_dir, slug)
@@ -193,6 +224,9 @@ def _prepare_marker(tio: Any, slug: str, path: Path) -> dict:
         return marker
     _refuse_closed_or_done(tio, slug, status if file_path is not None else None)
     assert file_path is not None and status is not None
+    # A runner may have claimed the Ticket between the unlocked owner check
+    # and taking the lock; its claim is visible in the State Record now.
+    _refuse_record_owner(tio, slug)
     fields = tio.inspect_ticket(slug)
     if fields is None:
         raise RuntimeError("Ticket disappeared during archive")
@@ -200,7 +234,6 @@ def _prepare_marker(tio: Any, slug: str, path: Path) -> dict:
     _pending_operations(tio, slug)
     root = Path(tio._project_root)
     generation = ticket_generation(root, slug, fields)
-    _release_workspaces(tio, slug, status, fields, file_path)
     marker = {
         "digest": digest,
         "file": str(file_path.relative_to(tio.tickets_dir)),
@@ -211,6 +244,7 @@ def _prepare_marker(tio: Any, slug: str, path: Path) -> dict:
         "transitioned": False,
         "closed": False,
         "descriptor_retired": False,
+        "released": False,
     }
     _save_marker(path, marker)
     return marker
@@ -232,26 +266,44 @@ def _release_workspaces(tio: Any, slug: str, status: str, fields: dict, file_pat
         raise RuntimeError(f"feature branch cleanup failed: {feature_branch}")
 
 
-def _refuse_live_owner(tio: Any, slug: str) -> None:
-    """Refuse to abandon a Ticket a live developer process still owns.
-
-    Checked before taking the Ticket lock, which stamps this process's PID.
-    """
+def _record_owner_pid(tio: Any, slug: str) -> int | None:
+    """Live execution owner recorded in the Ticket State Record, if another process."""
     from booley.runtime.pid import is_pid_alive
 
     from .board_layout import read_state_record
+
+    record = read_state_record(tio.tickets_dir, slug)
+    if record is None:
+        return None
+    pid = record.runtime["execution_owner_pid"]
+    if pid is not None and pid != os.getpid() and is_pid_alive(pid):
+        return pid
+    return None
+
+
+def _refuse_owner(pid: int) -> None:
+    raise RuntimeError(f"Ticket is owned by live process {pid}; stop it (kill {pid}) first")
+
+
+def _refuse_record_owner(tio: Any, slug: str) -> None:
+    """Refuse under the Ticket lock when the State Record names a live owner."""
+    pid = _record_owner_pid(tio, slug)
+    if pid is not None:
+        _refuse_owner(pid)
+
+
+def _refuse_live_owner(tio: Any, slug: str) -> None:
+    """Refuse to abandon a Ticket a live developer process still owns.
+
+    Checked before taking the Ticket lock, which stamps this process's PID;
+    :func:`_refuse_record_owner` repeats the State Record check under the lock.
+    """
     from .operations import _live_owner_pid
 
-    owners = {_live_owner_pid(tio, slug)}
-    record = read_state_record(tio.tickets_dir, slug)
-    if record is not None:
-        pid = record.runtime["execution_owner_pid"]
-        if pid is not None and pid != os.getpid() and is_pid_alive(pid):
-            owners.add(pid)
+    owners = {_live_owner_pid(tio, slug), _record_owner_pid(tio, slug)}
     owners.discard(None)
     if owners:
-        pid = min(owners)
-        raise RuntimeError(f"Ticket is owned by live process {pid}; stop it (kill {pid}) first")
+        _refuse_owner(min(owners))
 
 
 def _archive_single(tio: Any, slug: str) -> ArchiveOutcome:

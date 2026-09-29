@@ -42,6 +42,7 @@ _PROBE_NAME_RE = re.compile(
 # root; the _run_* entries are the phase groupings it delegates to.
 ORCHESTRATORS = (
     "_run_container_checks",
+    "_run_container_tool_checks",
     "_run_mcp_checks",
     "_run_ticket_preflight_parity_checks",
     "_run_deep_checks",
@@ -63,7 +64,6 @@ ORCHESTRATORS = (
 EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     "_run_container_checks": frozenset(
         {
-            "_check_container_runtime_payload",
             "_check_container_uid",
             "_check_custom_image_freshness",
             "_check_current_runtime_web_isolation",
@@ -71,8 +71,10 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_image_bakes_current_booley",
             "_check_image_freshness",
             "_check_riscv_toolchain",
+            "_run_container_tool_checks",
         }
     ),
+    "_run_container_tool_checks": frozenset({"_check_container_runtime_payload"}),
     "_run_mcp_checks": frozenset(
         {
             "inspect_runtime",
