@@ -135,6 +135,70 @@ def test_adapter_result_rejects_old_format_in_current_schema(tmp_path) -> None:
         read_adapter_result(identity)
 
 
+def _mutate_valid_result(tmp_path, mutate) -> AdapterTransportIdentity:
+    identity = _identity(tmp_path)
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=False,
+            inconclusive=False,
+            sva_errors=0,
+            tests=("reset",),
+            failure_kind="design",
+            test_results=(AdapterTestResult("reset", "fail", failure_kind="design"),),
+        ),
+    )
+    payload = json.loads(identity.result_path.read_text(encoding="utf-8"))
+    mutate(payload)
+    identity.result_path.write_text(json.dumps(payload), encoding="utf-8")
+    return identity
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda payload: payload.update(schema="1"), "schema"),
+        (
+            lambda payload: payload.update(
+                termination="timeout",
+                failure_kind="timeout",
+                detail="deadline",
+                missing_input_path="memory.hex",
+            ),
+            "only fatal_init",
+        ),
+        (lambda payload: payload.update(missing_input_path="memory.hex"), "completed"),
+        (lambda payload: payload.update(termination="unknown"), "termination is invalid"),
+        (
+            lambda payload: payload["test_results"][0].update(failure_kind="infrastructure"),
+            "failure kind contradicts",
+        ),
+        (
+            lambda payload: payload["test_results"][0].update(
+                termination="timeout", failure_kind="timeout"
+            ),
+            "test result contradicts",
+        ),
+        (
+            lambda payload: payload["test_results"][0].update(
+                verdict="timeout",
+                termination="timeout",
+                failure_kind="timeout",
+                detail="deadline",
+            ),
+            "completed adapter result",
+        ),
+    ],
+)
+def test_adapter_result_rejects_contradictory_termination_fields(
+    tmp_path, mutate, message
+) -> None:
+    identity = _mutate_valid_result(tmp_path, mutate)
+
+    with pytest.raises(AdapterTransportError, match=message):
+        read_adapter_result(identity)
+
+
 def test_adapter_result_rejects_unselected_test(tmp_path) -> None:
     identity = _identity(tmp_path)
     write_adapter_result(

@@ -389,7 +389,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
                 return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
             if timed_out["hit"]:
                 reason = _timeout_reason()
-                return lines, proc, _record_timeout(lines, reason)
+                return lines, proc, _record_timeout(proc, lines, reason)
             if time.monotonic() > deadline and proc.poll() is None:
                 reason = _timeout_reason()
                 if _kill_with_reason(proc, trace, bwave_proc, lines, reason):
@@ -416,7 +416,7 @@ def _finish_stream(proc, trace, bwave_proc, guard, timed_out, deadline, timeout_
         return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
     if timed_out:
         reason = timeout_reason()
-        return lines, proc, _record_timeout(lines, reason)
+        return lines, proc, _record_timeout(proc, lines, reason)
     try:
         proc.wait(timeout=max(1, deadline - time.monotonic()))
     except subprocess.TimeoutExpired as exc:
@@ -427,8 +427,9 @@ def _finish_stream(proc, trace, bwave_proc, guard, timed_out, deadline, timeout_
     return lines, proc, RunTermination()
 
 
-def _record_timeout(lines: deque[str], reason: str) -> RunTermination:
+def _record_timeout(proc: subprocess.Popen, lines: deque[str], reason: str) -> RunTermination:
     """Record the timer-owned kill after its process-tree teardown completes."""
+    proc.wait()
     message = f"ERROR: {reason}"
     print(message)
     lines.append(message + "\n")
