@@ -620,3 +620,43 @@ def test_windows_junction_retarget_requires_explicit_authority(tmp_path: Path) -
     assert _outcomes(approved) == {"booley-setup": "retargeted"}
     assert (target / "booley-setup").resolve(strict=True) == new_skill.resolve()
     assert old_skill.is_dir()
+
+
+def test_independent_manifest_and_allowlist_do_not_prune_product_links(tmp_path: Path) -> None:
+    require_symlinks(tmp_path)
+    product = tmp_path / "product"
+    qa = tmp_path / "qa"
+    _skill(product, "booley-setup")
+    _skill(qa, "booley-qa-run")
+    _skill(qa, "future-qa-skill")
+    target = tmp_path / "skills"
+
+    reconcile_skill_links(target, product)
+    qa_report = reconcile_skill_links(
+        target,
+        qa,
+        manifest_name=".booley-qa-skill-links.json",
+        desired_names=frozenset({"booley-qa-run"}),
+    )
+
+    assert qa_report.count("created") == 1
+    assert (target / "booley-setup").is_dir()
+    assert (target / "booley-qa-run").is_dir()
+    assert not (target / "future-qa-skill").exists()
+    assert (target / MANIFEST_FILENAME).is_file()
+    assert (target / ".booley-qa-skill-links.json").is_file()
+
+
+def test_exact_unmanaged_link_can_require_explicit_adoption(tmp_path: Path) -> None:
+    require_symlinks(tmp_path)
+    source = tmp_path / "qa"
+    skill = _skill(source, "booley-qa-run")
+    target = tmp_path / "skills"
+    target.mkdir()
+    (target / "booley-qa-run").symlink_to(skill)
+
+    refused = reconcile_skill_links(target, source, allow_exact_adoption=False)
+    adopted = reconcile_skill_links(target, source, allow_exact_adoption=True)
+
+    assert refused.count("conflict") == 1
+    assert adopted.count("adopted") == 1

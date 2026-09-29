@@ -221,6 +221,86 @@ def test_check_only_pending_is_exit_one_but_mutating_pending_is_failure() -> Non
     assert bootstrap.BootstrapResult(Intent.ENSURE, (pending,)).exit_status == 2
 
 
+def test_warning_is_ready_and_non_blocking() -> None:
+    warning = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.WARNING, "restore source"
+    )
+    result = bootstrap.BootstrapResult(Intent.CHECK, (warning,))
+
+    assert result.ready is True
+    assert result.exit_status == 0
+
+
+def test_explicit_qa_enable_persists_before_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    identity = SimpleNamespace(version="1.2.3", payload_fingerprint="f" * 64, revision="a" * 12)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_args, **_kwargs: events.append("register") or identity,
+    )
+    monkeypatch.setattr(bootstrap_cli, "selection_path", lambda: tmp_path / "missing")
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path / "Booley")
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "enable_qa_skills",
+        lambda _root, _revision: events.append("enable"),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **kwargs: (
+            events.append(f"reconcile:{kwargs['qa_first_enable']}")
+            or bootstrap.BootstrapResult(intent, ())
+        ),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=True,
+            without_qa_skills=False,
+        )
+    )
+
+    assert status == 0
+    assert events == ["register", "enable", "reconcile:True"]
+
+
+def test_explicit_qa_warning_overrides_nonblocking_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    warning = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.WARNING, "link conflict"
+    )
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(bootstrap_cli, "selection_path", lambda: tmp_path / "missing")
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap_cli, "enable_qa_skills", lambda *_args: None)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (warning,)),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=True,
+            without_qa_skills=False,
+        )
+    )
+
+    assert status == 2
+
+
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Intent] = []
     monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: None)
@@ -1093,7 +1173,12 @@ def test_base_image_reports_removed_and_container_retained_release_tags(
 
 @pytest.mark.parametrize(
     ("sidecar_state", "bootstrap_state"),
-    tuple(zip(bootstrap.host_sidecars.SidecarState, bootstrap.BootstrapState, strict=True)),
+    [
+        (bootstrap.host_sidecars.SidecarState.CURRENT, bootstrap.BootstrapState.CURRENT),
+        (bootstrap.host_sidecars.SidecarState.PENDING, bootstrap.BootstrapState.PENDING),
+        (bootstrap.host_sidecars.SidecarState.CHANGED, bootstrap.BootstrapState.CHANGED),
+        (bootstrap.host_sidecars.SidecarState.ERROR, bootstrap.BootstrapState.ERROR),
+    ],
 )
 def test_sidecar_state_mapping(sidecar_state, bootstrap_state) -> None:
     finding = bootstrap._sidecar_finding(
@@ -1107,6 +1192,7 @@ def test_sidecar_state_mapping(sidecar_state, bootstrap_state) -> None:
     [
         (bootstrap.BootstrapState.CURRENT, "is current"),
         (bootstrap.BootstrapState.PENDING, "pending work"),
+        (bootstrap.BootstrapState.WARNING, "is current"),
         (bootstrap.BootstrapState.ERROR, "is incomplete"),
     ],
 )

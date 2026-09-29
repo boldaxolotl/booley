@@ -24,10 +24,15 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
-from booley.harness.setup.skills import reconcile_host_skills
+from booley.harness.setup.skills import reconcile_host_qa_skills, reconcile_host_skills
 from booley.runtime.docker_capacity import DockerBuildPlan, ensure_docker_build_capacity
-from booley.runtime.host_install import host_install_error
+from booley.runtime.host_install import current_host_installation, host_install_error
 from booley.runtime.paths import skills_dir
+from booley.runtime.qa_skill_selection import (
+    QA_SKILL_NAMES,
+    QaSkillSelectionError,
+    active_qa_source_root,
+)
 from booley.runtime.skill_links import SkillLinkReport
 
 MIN_GIT_VERSION = (2, 37, 2)
@@ -46,6 +51,7 @@ class BootstrapState(StrEnum):
     CURRENT = "current"
     PENDING = "pending"
     CHANGED = "changed"
+    WARNING = "warning"
     ERROR = "error"
 
 
@@ -70,7 +76,8 @@ class BootstrapResult:
     @property
     def ready(self) -> bool:
         return all(
-            finding.state in {BootstrapState.CURRENT, BootstrapState.CHANGED}
+            finding.state
+            in {BootstrapState.CURRENT, BootstrapState.CHANGED, BootstrapState.WARNING}
             for finding in self.findings
         )
 
@@ -83,8 +90,14 @@ class BootstrapResult:
         return 0
 
 
-def reconcile_bootstrap(
-    intent: Intent, *, verbose: bool = False, include_images: bool = True
+def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent mutations.
+    intent: Intent,
+    *,
+    verbose: bool = False,
+    include_images: bool = True,
+    qa_opt_out: bool = False,
+    qa_first_enable: bool = False,
+    allow_qa_adoption: bool = False,
 ) -> BootstrapResult:
     """Inspect or converge Host Bootstrap resources in their fixed order."""
     findings: list[BootstrapFinding] = []
@@ -108,14 +121,23 @@ def reconcile_bootstrap(
     if any(finding.state is BootstrapState.ERROR for finding in prerequisites):
         return BootstrapResult(intent, tuple(findings), policy)
 
-    for reconcile in (
-        _reconcile_vscode_dev_containers,
-        _reconcile_skills,
-        _reconcile_nangate,
-    ):
+    for reconcile in (_reconcile_vscode_dev_containers, _reconcile_skills):
         findings.append(reconcile(intent))
         if findings[-1].state is BootstrapState.ERROR:
             return BootstrapResult(intent, tuple(findings), policy)
+
+    qa_finding = _reconcile_qa_skills(
+        intent,
+        opt_out=qa_opt_out,
+        first_enable=qa_first_enable,
+        allow_adoption=allow_qa_adoption,
+    )
+    if qa_finding is not None:
+        findings.append(qa_finding)
+
+    findings.append(_reconcile_nangate(intent))
+    if findings[-1].state is BootstrapState.ERROR:
+        return BootstrapResult(intent, tuple(findings), policy)
 
     if not include_images:
         return BootstrapResult(intent, tuple(findings), policy)
@@ -422,6 +444,93 @@ def _skill_report_error(report: SkillLinkReport) -> str:
     if report.fatal:
         details.append(report.fatal)
     return "; ".join(details)
+
+
+def _skill_names(source: Path) -> frozenset[str]:
+    try:
+        return frozenset(
+            child.name
+            for child in source.iterdir()
+            if child.is_dir() and (child / "SKILL.md").is_file()
+        )
+    except OSError:
+        return frozenset()
+
+
+def _qa_warning(detail: str) -> BootstrapFinding:
+    recovery = (
+        "Restore the recorded clean primary main checkout, re-enable with "
+        "`booley bootstrap --with-qa-skills`, or recover with "
+        "`booley bootstrap --without-qa-skills`."
+    )
+    return BootstrapFinding("qa-skills", BootstrapState.WARNING, f"{detail} {recovery}")
+
+
+def _reconcile_qa_skills(
+    intent: Intent,
+    *,
+    opt_out: bool,
+    first_enable: bool,
+    allow_adoption: bool,
+) -> BootstrapFinding | None:
+    """Reconcile optional QA skills without blocking product Host Bootstrap."""
+    if opt_out:
+        source = skills_dir()
+        names = frozenset()
+    else:
+        try:
+            revision = current_host_installation(skills_dir()).revision
+            source = active_qa_source_root(revision)
+        except (QaSkillSelectionError, OSError, ValueError) as exc:
+            return _qa_warning(str(exc))
+        if source is None:
+            return None
+        names = QA_SKILL_NAMES
+        collisions = _skill_names(skills_dir()) & names
+        if collisions:
+            return _qa_warning(
+                "QA skill names collide with packaged product skills: "
+                + ", ".join(sorted(collisions))
+            )
+
+    reconciliations = reconcile_host_qa_skills(
+        source,
+        names=names,
+        dry_run=intent is Intent.CHECK,
+        allow_retarget=allow_adoption,
+        allow_exact_adoption=allow_adoption or not first_enable,
+    )
+    errors = tuple(
+        f"{item.target}: {error}"
+        for item in reconciliations
+        if (error := _skill_report_error(item.report))
+    )
+    if errors:
+        return _qa_warning("; ".join(errors))
+    changes = tuple(
+        (item.target, sum(event.changed for event in item.report.events))
+        for item in reconciliations
+    )
+    changed = sum(count for _target, count in changes)
+    if intent is Intent.CHECK and changed:
+        detail = "; ".join(
+            f"{target}: {count} QA skill link change(s) pending"
+            for target, count in changes
+            if count
+        )
+        return BootstrapFinding(
+            "qa-skills",
+            BootstrapState.WARNING,
+            f"{detail}; run `booley bootstrap`",
+        )
+    state = BootstrapState.CHANGED if changed else BootstrapState.CURRENT
+    targets = ", ".join(str(item.target) for item in reconciliations)
+    action = f"applied {changed} QA skill link change(s) across" if changed else "checked"
+    return BootstrapFinding(
+        "qa-skills",
+        state,
+        f"{action} {len(reconciliations)} skill target(s): {targets}",
+    )
 
 
 def _reconcile_nangate(intent: Intent) -> BootstrapFinding:

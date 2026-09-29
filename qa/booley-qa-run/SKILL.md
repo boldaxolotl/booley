@@ -1,9 +1,20 @@
 ---
 name: booley-qa-run
-description: Run a Booley QA mission — a timeboxed bug hunt on a pinned IP against a candidate Booley build — and write findings for later triage.
+description: Only when the user explicitly asks, run a Booley QA mission — a timeboxed bug hunt on a pinned IP against a candidate Booley build — and write findings for later triage.
 ---
 
 # Run a Booley QA mission
+
+Use this skill only when the user explicitly invokes it. This is behavioral
+guidance for clients without enforceable invocation metadata.
+
+Before acting, resolve the real path of this loaded `SKILL.md` (following the
+installed link). Its parent is the skill directory, its grandparent is
+`qa/`, and the parent of `qa/` is the source checkout. Stop with guidance to
+restore or re-enable QA skills when that source is not a clean primary checkout
+on `main`, when `.git` is not a directory, or when its HEAD does not match the
+canonical host `booley --version` revision. Resolve every input below from that
+source checkout; never search from the process working directory.
 
 You are the **operator**. Your job is to find as many real Booley bugs, doc
 errors, and friction points as the mission's timebox allows. The mission tells
@@ -83,7 +94,7 @@ Write each finding the moment you observe it, before any workaround or retry.
 
 ## Procedure
 
-1. **Disk.** Follow [DISK.md](../DISK.md). Low space after it is a warning in
+1. **Disk.** Follow `qa/DISK.md` from the derived source root. Low space after it is a warning in
    `log.md`, and the run continues.
 2. **Confirm the canonical host install.** Run `git fetch origin main`, resolve
    `git rev-parse origin/main`, and compare that commit with the source commit
@@ -94,7 +105,7 @@ Write each finding the moment you observe it, before any workaround or retry.
    - install `origin/main` as the canonical host install and run
      `booley bootstrap`.
    Record the choice in `log.md` before continuing.
-3. **Smoke** (when requested). Walk [SMOKE.md](../SMOKE.md) and put its table in
+3. **Smoke** (when requested). Walk `qa/SMOKE.md` from the derived source root and put its table in
    `log.md`.
 4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and work its areas in
    order under the principles above. Keep `log.md` current after each area:

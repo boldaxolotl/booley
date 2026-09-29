@@ -2,63 +2,136 @@
 
 from __future__ import annotations
 
-from booley.harness.bootstrap import BootstrapState, reconcile_bootstrap
+from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
 from booley.runtime.host_install import HostInstallationError, register_host_installation
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.paths import skills_dir
+from booley.runtime.qa_skill_selection import (
+    QaSkillSelectionError,
+    checkout_enclosing_cwd,
+    selection_path,
+)
+from booley.runtime.qa_skill_selection import (
+    disable as disable_qa_skills,
+)
+from booley.runtime.qa_skill_selection import (
+    enable as enable_qa_skills,
+)
 
 
 def run_bootstrap(args: object) -> int:
     """Run Host Bootstrap and render its typed findings."""
     update = getattr(args, "update", False)
-    if update and getattr(args, "check_only", False):
+    with_qa = getattr(args, "with_qa_skills", False)
+    without_qa = getattr(args, "without_qa_skills", False)
+    check_only = getattr(args, "check_only", False)
+    if update and check_only:
         print(red("--update cannot be combined with --check-only"))
+        return 2
+    if check_only and (with_qa or without_qa):
+        print(red("QA skill selection flags cannot be combined with --check-only"))
         return 2
     intent = (
         Intent.CHECK
-        if getattr(args, "check_only", False)
+        if check_only
         else Intent.REFRESH
         if getattr(args, "force", False)
         else Intent.ENSURE
     )
-    if intent is Intent.CHECK:
-        from booley.runtime.session_refresh import shared_recovery_blocks_command
+    result = (
+        _check_bootstrap(args)
+        if intent is Intent.CHECK
+        else _mutate_bootstrap(args, intent, update, with_qa, without_qa)
+    )
+    if result is None:
+        return 2
+    status = _render_result(result)
+    if with_qa and _qa_warning(result):
+        return 2
+    return status
 
-        if shared_recovery_blocks_command(read_only=True):
-            print(yellow("Interrupted Sandbox host state requires recovery."))
-            return 2
-        result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
-    else:
-        from booley.runtime.session_refresh import shared_recovery_blocks_command
 
-        with host_lifecycle_lock("host bootstrap"):
-            if shared_recovery_blocks_command(read_only=False):
-                print(
-                    yellow(
-                        "Recovered interrupted Sandbox host state; run `booley bootstrap` again."
-                    )
+def _check_bootstrap(args: object) -> BootstrapResult | None:
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    if shared_recovery_blocks_command(read_only=True):
+        print(yellow("Interrupted Sandbox host state requires recovery."))
+        return None
+    return reconcile_bootstrap(Intent.CHECK, verbose=getattr(args, "verbose", False))
+
+
+def _mutate_bootstrap(
+    args: object,
+    intent: Intent,
+    update: bool,
+    with_qa: bool,
+    without_qa: bool,
+) -> BootstrapResult | None:
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    with host_lifecycle_lock("host bootstrap"):
+        if shared_recovery_blocks_command(read_only=False):
+            print(
+                yellow("Recovered interrupted Sandbox host state; run `booley bootstrap` again.")
+            )
+            return None
+        try:
+            identity = register_host_installation(skills_dir(), update=update)
+        except HostInstallationError as exc:
+            print(red(f"Cannot register host installation: {exc}"))
+            return None
+        if update:
+            print(
+                green(
+                    "Updated canonical Booley host installation "
+                    f"{identity.version} ({identity.payload_fingerprint[:12]})."
                 )
-                return 2
-            try:
-                identity = register_host_installation(skills_dir(), update=update)
-            except HostInstallationError as exc:
-                print(red(f"Cannot register host installation: {exc}"))
-                return 2
-            if update:
-                print(
-                    green(
-                        "Updated canonical Booley host installation "
-                        f"{identity.version} ({identity.payload_fingerprint[:12]})."
-                    )
-                )
-            result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
+            )
+        first_enable = with_qa and not selection_path().exists()
+        revision = identity.revision if with_qa else ""
+        if not _apply_qa_selection(with_qa, without_qa, revision):
+            return None
+        return reconcile_bootstrap(
+            intent,
+            verbose=getattr(args, "verbose", False),
+            qa_opt_out=without_qa,
+            qa_first_enable=first_enable,
+            allow_qa_adoption=getattr(args, "force", False),
+        )
+
+
+def _apply_qa_selection(with_qa: bool, without_qa: bool, revision: str) -> bool:
+    if without_qa:
+        disable_qa_skills()
+        return True
+    if not with_qa:
+        return True
+    source = checkout_enclosing_cwd()
+    if source is None:
+        print(
+            red(
+                "--with-qa-skills must be run inside the complete primary "
+                "Booley source checkout on main"
+            )
+        )
+        return False
+    try:
+        enable_qa_skills(source, revision)
+    except QaSkillSelectionError as exc:
+        print(red(f"Cannot enable QA skills: {exc}"))
+        return False
+    return True
+
+
+def _render_result(result: BootstrapResult) -> int:
     print(bold_chrome("Host Bootstrap"))
     glyphs = {
         BootstrapState.CURRENT: (accent, "[--]"),
         BootstrapState.PENDING: (yellow, "[!!]"),
         BootstrapState.CHANGED: (green, "[OK]"),
+        BootstrapState.WARNING: (yellow, "[!!]"),
         BootstrapState.ERROR: (red, "[XX]"),
     }
     for finding in result.findings:
@@ -71,3 +144,10 @@ def run_bootstrap(args: object) -> int:
     else:
         print(red("Host Bootstrap is incomplete; fix the errors above and retry."))
     return result.exit_status
+
+
+def _qa_warning(result: BootstrapResult) -> bool:
+    return any(
+        finding.resource == "qa-skills" and finding.state is BootstrapState.WARNING
+        for finding in result.findings
+    )
