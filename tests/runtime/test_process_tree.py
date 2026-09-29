@@ -87,6 +87,21 @@ class TestHasAncestor:
         )
 
     @pytest.mark.parametrize(
+        ("pid", "ancestor", "max_hops"),
+        [(0, 10, 1), (10, 0, 1), (10, 20, 0)],
+    )
+    def test_invalid_inputs_fail_closed(self, pid, ancestor, max_hops):
+        assert not process_tree.has_ancestor(
+            pid,
+            ancestor,
+            read_ppid=self.reader({}),
+            max_hops=max_hops,
+        )
+
+    def test_pid_one_cannot_have_an_ancestor(self):
+        assert not process_tree.has_ancestor(1, 2, read_ppid=self.reader({}))
+
+    @pytest.mark.parametrize(
         "tree",
         [
             {30: 1},

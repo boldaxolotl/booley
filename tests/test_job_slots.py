@@ -639,6 +639,25 @@ class TestGhostReaping:
         assert holder.execution_id is None
         assert holder.owner_kind == "process"
 
+    def test_project_resolution_failure_does_not_inherit_execution_owner(
+        self, root, world, monkeypatch
+    ):
+        def fail_project_resolution():
+            raise RuntimeError("project unavailable")
+
+        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "8" * 32)
+        monkeypatch.setattr(
+            runtime_project_dir,
+            "resolve_project_dir",
+            fail_project_resolution,
+        )
+        spawn(world, 100)
+
+        token = make_store(root, world).submit(CLASS_HEAVY, pid=100)
+
+        assert token.execution_id is None
+        assert token.owner_kind == "process"
+
     def test_noncanonical_slot_root_does_not_inherit_execution_owner(
         self, tmp_path, world, monkeypatch
     ):

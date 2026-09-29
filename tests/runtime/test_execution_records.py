@@ -144,6 +144,17 @@ def test_verified_inherited_execution_rejects_non_ancestor(tmp_path: Path) -> No
     )
 
 
+def test_verified_inherited_execution_rejects_invalid_id(tmp_path: Path) -> None:
+    assert (
+        verify_inherited_execution_id(
+            "not-an-execution",
+            project_dir=tmp_path,
+            owner_pid=20,
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize("record_kind", ["missing", "malformed", "terminal", "future"])
 def test_verified_inherited_execution_rejects_unusable_records(
     tmp_path: Path, record_kind: str
