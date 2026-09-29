@@ -351,7 +351,11 @@ def test_pre_sim_spawn_error_aborts_later_tests(tmp_path: Path) -> None:
         "elab_error",
         "inconclusive",
     ]
-    assert result.runs[1].attributes["execution"] == "not_completed"
+    assert result.runs[1].attributes == {
+        "execution": "not_run",
+        "failure_kind": "infrastructure",
+        "error_tail": "not run after an earlier infrastructure abort",
+    }
     assert "missing-generator" in result.findings[-1].message
 
 

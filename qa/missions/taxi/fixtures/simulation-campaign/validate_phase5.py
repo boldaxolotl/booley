@@ -169,7 +169,15 @@ def _validate_mcp_observation(value: object) -> None:
     )
     _need(
         value["execution"]
-        in {"completed", "timeout", "crash", "setup_error", "blocked_by_build", "aborted"},
+        in {
+            "completed",
+            "timeout",
+            "crash",
+            "setup_error",
+            "blocked_by_build",
+            "aborted",
+            "not_run",
+        },
         "MCP execution observation is invalid",
     )
     _need(

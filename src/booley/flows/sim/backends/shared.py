@@ -26,6 +26,29 @@ RunTerminationKind = Literal[
     "trace_stall",
 ]
 RunFailureKind = Literal["", "timeout", "infrastructure", "missing_input"]
+SimulationFailureKind = Literal[
+    "",
+    "design",
+    "infrastructure",
+    "timeout",
+    "inconclusive",
+    "artifact",
+    "missing_input",
+]
+
+_TERMINATION_FAILURE_KINDS: dict[RunTerminationKind, frozenset[SimulationFailureKind]] = {
+    "completed": frozenset({"", "design", "inconclusive", "artifact"}),
+    "timeout": frozenset({"timeout"}),
+    "disk_budget": frozenset({"infrastructure"}),
+    "fatal_init": frozenset({"infrastructure", "missing_input"}),
+    "sim_time_stall": frozenset({"infrastructure"}),
+    "trace_stall": frozenset({"infrastructure"}),
+}
+
+
+def allowed_failure_kinds(kind: RunTerminationKind) -> frozenset[SimulationFailureKind]:
+    """Return the single shared failure policy for a run termination."""
+    return _TERMINATION_FAILURE_KINDS[kind]
 
 
 @dataclass(frozen=True)
@@ -46,13 +69,7 @@ class RunTermination:
             if self.detail or self.failure_kind or self.missing_input_path:
                 raise ValueError("completed termination cannot carry abort evidence")
             return
-        expected = {
-            "timeout": {"timeout"},
-            "disk_budget": {"infrastructure"},
-            "fatal_init": {"infrastructure", "missing_input"},
-            "sim_time_stall": {"infrastructure"},
-            "trace_stall": {"infrastructure"},
-        }[self.kind]
+        expected = allowed_failure_kinds(self.kind)
         if not self.detail or self.failure_kind not in expected:
             raise ValueError(f"invalid {self.kind} termination evidence")
 

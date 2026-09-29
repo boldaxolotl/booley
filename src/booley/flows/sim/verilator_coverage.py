@@ -14,6 +14,7 @@ from typing import Literal, Protocol
 
 from booley.core.boundary import as_positive_int
 
+from .backends.shared import RunTerminationKind, SimulationFailureKind
 from .coverage_campaign import (
     CoverageArtifact,
     CoverageCapability,
@@ -202,8 +203,9 @@ class SimulationRunResult:
     output: str = ""
     pre_sim: PreSimEvidence | None = None
     infrastructure_error: bool = False
-    termination: str = "completed"
-    failure_kind: str = ""
+    termination: RunTerminationKind = "completed"
+    failure_kind: SimulationFailureKind = ""
+    simulator_returncode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -502,6 +504,11 @@ def _collected_infrastructure_failure(
                 "termination": result.termination,
                 "failure_kind": result.failure_kind or "infrastructure",
                 "error_tail": result.output,
+                **(
+                    {"simulator_returncode": result.simulator_returncode}
+                    if result.simulator_returncode is not None
+                    else {}
+                ),
             }
         ),
     )
@@ -531,6 +538,11 @@ def _collected_simulation_abort(
                 "termination": result.termination,
                 "failure_kind": result.failure_kind,
                 "error_tail": result.output,
+                **(
+                    {"simulator_returncode": result.simulator_returncode}
+                    if result.simulator_returncode is not None
+                    else {}
+                ),
             }
         ),
     )
@@ -1402,13 +1414,6 @@ def _infrastructure_failure(
     request, build, completed, message, *, code="COV_INFRASTRUCTURE_ERROR"
 ) -> CoverageCollectionResult:
     collected = list(completed)
-    abort_attributes = {
-        key: value
-        for key in ("termination", "failure_kind", "error_tail")
-        if completed
-        and isinstance((value := completed[-1].run.attributes.get(key)), str)
-        and value
-    }
     for index, selected in enumerate(request.selected_tests[len(completed) :], len(completed) + 1):
         collected.append(
             _CollectedRun(
@@ -1419,7 +1424,11 @@ def _infrastructure_failure(
                     collection="collector_error",
                     raw_artifact=None,
                     attributes=MappingProxyType(
-                        {"execution": "not_completed", **abort_attributes}
+                        {
+                            "execution": "not_run",
+                            "failure_kind": "infrastructure",
+                            "error_tail": "not run after an earlier infrastructure abort",
+                        }
                     ),
                 ),
                 None,

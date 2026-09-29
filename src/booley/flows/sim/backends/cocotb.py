@@ -147,64 +147,106 @@ def _publish_adapter_result(
     detail: str = "",
     trace: AdapterTraceResult | None = None,
     termination: RunTermination | None = None,
+    simulator_returncode: int = 0,
 ) -> None:
     if identity is None:
         return
     termination = termination or RunTermination()
+    write_adapter_result(
+        identity,
+        _cocotb_adapter_result(
+            identity,
+            output,
+            passed,
+            failure_kind,
+            detail,
+            trace,
+            termination,
+            simulator_returncode,
+        ),
+    )
+
+
+def _cocotb_adapter_result(
+    identity: AdapterTransportIdentity,
+    output: str,
+    passed: bool,
+    failure_kind: str,
+    detail: str,
+    trace: AdapterTraceResult | None,
+    termination: RunTermination,
+    simulator_returncode: int,
+) -> AdapterResult:
     results = parse_results_line(output)
     discovered = tuple(test.name for test in results.tests if test.name) if results else ()
     names = identity.selected_tests or discovered
     extras = tuple(name for name in discovered if name not in names)
     sva_errors = count_sva_errors(output)
-    test_results = _adapter_test_results(results, names)
-    if termination.aborted:
-        test_results = tuple(
-            test
-            if test.verdict in {"pass", "fail"}
-            else replace(
-                test,
-                verdict="timeout" if termination.kind == "timeout" else "fail",
-                detail=termination.detail,
-                termination=termination.kind,
-                failure_kind=termination.failure_kind,
-            )
-            for test in test_results
-        )
+    test_results = _apply_batch_termination(_adapter_test_results(results, names), termination)
     test_results = _apply_design_evidence(test_results, sva_errors, failure_kind, detail)
-    functional_failed = any(test.verdict == "fail" for test in test_results)
-    preserve_failure = functional_failed or failure_kind in {"design", "timeout"}
-    test_results, detail, trace_failed = _apply_trace_evidence(
-        test_results, trace, detail, preserve_failure=preserve_failure
+    test_results, detail, trace_failed, functional_failed = _cocotb_evidence(
+        test_results, trace, detail, failure_kind
     )
-    inconclusive = not termination.aborted and (
-        any(test.verdict == "inconclusive" for test in test_results)
-        or (not passed and (results is None or results.state != STATE_OK))
-    )
+    inconclusive = _cocotb_inconclusive(test_results, termination, passed, results)
     timed_out = any(test.verdict == "timeout" for test in test_results)
     normalized_passed = (
         passed
+        and not termination.aborted
         and sva_errors == 0
         and not trace_failed
         and bool(test_results)
         and all(test.verdict == "pass" for test in test_results)
     )
-    write_adapter_result(
-        identity,
-        AdapterResult(
-            passed=normalized_passed,
-            inconclusive=inconclusive,
-            sva_errors=sva_errors,
-            tests=tuple(names),
+    return AdapterResult(
+        passed=normalized_passed,
+        inconclusive=inconclusive,
+        sva_errors=sva_errors,
+        tests=tuple(names),
+        simulator_returncode=simulator_returncode,
+        termination=termination.kind,
+        missing_input_path=termination.missing_input_path,
+        failure_kind=termination.failure_kind
+        or failure_kind
+        or _cocotb_failure_kind(timed_out, functional_failed, trace_failed, inconclusive),
+        detail=termination.detail or detail,
+        test_results=test_results,
+        diagnostics=_extra_test_diagnostics(extras),
+        trace=trace,
+    )
+
+
+def _cocotb_evidence(test_results, trace, detail, failure_kind):
+    functional_failed = any(test.verdict == "fail" for test in test_results)
+    preserve_failure = functional_failed or failure_kind in {"design", "timeout"}
+    test_results, detail, trace_failed = _apply_trace_evidence(
+        test_results, trace, detail, preserve_failure=preserve_failure
+    )
+    return test_results, detail, trace_failed, functional_failed
+
+
+def _cocotb_inconclusive(test_results, termination, passed, results) -> bool:
+    return not termination.aborted and (
+        any(test.verdict == "inconclusive" for test in test_results)
+        or (not passed and (results is None or results.state != STATE_OK))
+    )
+
+
+def _apply_batch_termination(
+    results: tuple[AdapterTestResult, ...], termination: RunTermination
+) -> tuple[AdapterTestResult, ...]:
+    if not termination.aborted:
+        return results
+    return tuple(
+        test
+        if test.verdict in {"pass", "fail"}
+        else replace(
+            test,
+            verdict="timeout" if termination.kind == "timeout" else "fail",
+            detail=termination.detail,
             termination=termination.kind,
-            missing_input_path=termination.missing_input_path,
-            failure_kind=termination.failure_kind
-            or failure_kind
-            or _cocotb_failure_kind(timed_out, functional_failed, trace_failed, inconclusive),
-            detail=termination.detail or detail,
-            test_results=test_results,
-            diagnostics=_extra_test_diagnostics(extras),
-            trace=trace,
-        ),
+            failure_kind=termination.failure_kind,
+        )
+        for test in results
     )
 
 
@@ -337,7 +379,7 @@ def _partial_result_publisher(
             partial,
             AdapterResult(
                 passed=False,
-                inconclusive=any(test.verdict == "inconclusive" for test in tests),
+                inconclusive=False,
                 sva_errors=count_sva_errors(output),
                 tests=names,
                 termination="timeout",
@@ -504,7 +546,7 @@ def _build_run_cmd(
     return cmd
 
 
-def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeline
+def _stream_output(
     cmd: list[str],
     run_cwd: Path,
     env: dict[str, str],
@@ -537,8 +579,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
 
     lines: deque[str] = deque(maxlen=5_000)
     cpu_started = child_cpu_snapshot()
-    # BEFORE the spawn: the baseline walk takes seconds on the multi-GB trees
-    # this budget exists for, and anything the sim dumps during that walk would
+    # The pre-spawn baseline prevents simulator output from escaping the budget while walking.
     # otherwise land in the baseline free of charge (fpu F-23).
     disk_baseline = snapshot_dir_baseline(run_cwd, max_rundir_bytes)
     proc = subprocess.Popen(
@@ -590,12 +631,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
                 break
         proc.wait()
     finally:
-        if stdout is not None:
-            stdout.close()
-        timer.cancel()
-        guard.stop()
-        stall_guard.stop()
-        append_child_cpu_marker(lines, cpu_started)
+        _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started)
 
     termination = _append_abort_reason(
         lines,
@@ -606,6 +642,15 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
         timeout=timeout,
     )
     return lines, proc, termination
+
+
+def _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started) -> None:
+    if stdout is not None:
+        stdout.close()
+    timer.cancel()
+    guard.stop()
+    stall_guard.stop()
+    append_child_cpu_marker(lines, cpu_started)
 
 
 def _append_abort_reason(
@@ -832,28 +877,50 @@ def _evaluate_verdict(
         focused,
         result_verbosity,
     )
-    summary = format_summary(
-        assessment.passed,
-        assessment.sva_errors,
-        inconclusive=assessment.inconclusive and not assessment.passed,
+    output = _persist_cocotb_verdict(
+        output,
+        work_dir,
+        returncode,
+        results_line,
+        skipped_unselected,
+        results,
+        assessment,
+        termination,
+        infrastructure_error,
     )
+    return output, assessment.passed
+
+
+def _persist_cocotb_verdict(
+    output: str,
+    work_dir: Path,
+    returncode: int,
+    results_line: str,
+    skipped_unselected: int,
+    results: CocotbResults,
+    assessment: _VerdictAssessment,
+    termination: RunTermination,
+    infrastructure_error: str,
+) -> str:
+    inconclusive = assessment.inconclusive and not assessment.passed
+    summary = format_summary(assessment.passed, assessment.sva_errors, inconclusive=inconclusive)
     print(results_line)
     print(summary)
     _print_verdict(assessment, results, termination, skipped_unselected)
-    effective_returncode = (
-        1 if (infrastructure_error or termination.aborted) and returncode == 0 else returncode
-    )
+    effective_returncode = returncode
+    if (infrastructure_error or termination.aborted) and returncode == 0:
+        effective_returncode = 1
     write_result_json(
         work_dir,
         assessment.passed,
         assessment.sva_errors,
         _first_failure(assessment),
         effective_returncode,
-        inconclusive=assessment.inconclusive and not assessment.passed,
+        inconclusive=inconclusive,
     )
     output = f"{output}\n{results_line}\n{summary}"
     write_run_log(work_dir, output)
-    return output, assessment.passed
+    return output
 
 
 def _prepare_invocation(
@@ -1061,6 +1128,7 @@ def _complete_cocotb_run(
         failure_kind=failure_kind,
         trace=trace_result.evidence,
         termination=termination,
+        simulator_returncode=proc.returncode,
     )
     return 0 if passed else 1
 
@@ -1227,13 +1295,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="compact",
         help="Cocotb result transport detail (full results always remain in artifacts)",
     )
-    p.add_argument(
+    _add_expected_trace_scope_argument(p)
+    add_transport_arguments(p)
+    return p.parse_args(argv)
+
+
+def _add_expected_trace_scope_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--expected-trace-scope",
         default="",
         help="resolved DUT toplevel required to validate a requested trace",
     )
-    add_transport_arguments(p)
-    return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:

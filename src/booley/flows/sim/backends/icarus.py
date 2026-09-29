@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -56,6 +55,9 @@ from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
+    assess_native_verdict,
+    first_native_failure,
+    native_verdict_message,
     publish_native_adapter_result,
     transport_identity_from_args,
     work_transport_arguments,
@@ -70,7 +72,6 @@ from booley.flows.sim.backends.shared import (
     format_idle_note,
 )
 from booley.flows.sim.result import (
-    count_sva_errors,
     extract_vrfc_warnings,
     format_summary,
     parse_sim_verdict,
@@ -280,7 +281,7 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     return lines, proc, termination
 
 
-def _evaluate_verdict(  # noqa: PLR0912 — ordered human diagnostics mirror verdict precedence
+def _evaluate_verdict(
     output: str,
     returncode: int,
     work_dir: Path,
@@ -290,51 +291,32 @@ def _evaluate_verdict(  # noqa: PLR0912 — ordered human diagnostics mirror ver
     termination: RunTermination | None = None,
 ) -> None:
     """Print the ``[SIM_SUMMARY]`` verdict + write result JSON (legacy parity)."""
-    verdict = parse_sim_verdict(
+    termination = termination or RunTermination()
+    assessment = assess_native_verdict(
         output,
+        returncode,
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
+        termination=termination,
     )
-    sva_errors = count_sva_errors(output)
     vrfc = extract_vrfc_warnings(output)
-
-    termination = termination or RunTermination()
-    inconclusive = False
-    if termination.aborted:
-        passed = False
-    elif verdict is True:
-        passed = sva_errors == 0
-    elif verdict is False or returncode != 0 or sva_errors > 0:
-        passed = False
-    else:
-        passed, inconclusive = False, True
-
-    print(format_summary(passed, sva_errors, vrfc, inconclusive=inconclusive))
-    if termination.aborted:
-        print(f"\niverilog sim ABORTED ({termination.detail}; rc={returncode})")
-    elif inconclusive:
-        print("\niverilog sim INCONCLUSIVE (rc=0, no sentinel)")
-    elif passed:
-        print(f"\niverilog sim PASSED (rc={returncode})")
-    elif verdict is False:
-        # A FAIL sentinel matched. vvp can still exit 0 (e.g. an SVA/$error
-        # that reports but doesn't $fatal), so cite rc only when it is
-        # actually nonzero — never print the maximally-confusing "(rc=0)".
-        reason = f"rc={returncode}" if returncode else "fail sentinel matched"
-        print(f"\niverilog sim FAILED ({reason})")
-    elif sva_errors > 0:
-        print(f"\niverilog sim FAILED ({sva_errors} SVA assertion errors)")
-    else:
-        print(f"\niverilog sim FAILED (rc={returncode})")
-
-    first_err = termination.detail
-    if not passed:
-        for ln in output.splitlines():
-            if re.search(r"(?:failed|fatal|error|mismatch)", ln, re.IGNORECASE):
-                first_err = ln.strip()
-                break
+    print(
+        format_summary(
+            assessment.passed,
+            assessment.sva_errors,
+            vrfc,
+            inconclusive=assessment.inconclusive,
+        )
+    )
+    print(native_verdict_message("iverilog", assessment, returncode, termination))
+    first_err = first_native_failure(output, termination.detail) if not assessment.passed else ""
     write_result_json(
-        work_dir, passed, sva_errors, first_err, returncode, inconclusive=inconclusive
+        work_dir,
+        assessment.passed,
+        assessment.sva_errors,
+        first_err,
+        returncode,
+        inconclusive=assessment.inconclusive,
     )
     # Persist the raw output next to result.json on pass AND fail:
     # result.json only carries a 500-char first_error, so run.log is what

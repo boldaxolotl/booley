@@ -22,7 +22,7 @@ def simulation_status_from_observations(
     """Reduce Campaign observations to the endpoint simulation vocabulary."""
     executions = {item["execution"] for item in observations}
     functional = {item["functional"] for item in observations}
-    for status in ("crash", "timeout", "aborted"):
+    for status in ("aborted", "crash", "timeout"):
         if status in executions:
             return status
     for status in ("fail", "inconclusive", "pass"):

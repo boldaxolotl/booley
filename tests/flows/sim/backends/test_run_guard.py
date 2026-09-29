@@ -487,6 +487,31 @@ def test_find_sim_time_stall_extracts_the_diagnosis():
     assert rg.find_sim_time_stall("nothing to see") == ""
 
 
+@pytest.mark.parametrize(
+    ("line", "call", "filename"),
+    [
+        ("$readmemh: Cannot open memory.hex", "$readmemh", "memory.hex"),
+        ("ERROR: $readmemb: unable to open image.bin", "$readmemb", "image.bin"),
+        ("$readmemh: can't open vectors.hex", "$readmemh", "vectors.hex"),
+        ("$readmemb: could not open boot.bin", "$readmemb", "boot.bin"),
+    ],
+)
+def test_parse_readmem_fatal_retains_supported_filename_and_call(line, call, filename):
+    parsed = rg.parse_readmemh_fatal(line)
+
+    assert parsed is not None
+    assert parsed.call == call
+    assert parsed.filename == filename
+
+
+def test_parse_readmem_fatal_without_filename_still_requests_abort():
+    parsed = rg.parse_readmemh_fatal("$readmemh: unable to open")
+
+    assert parsed is not None
+    assert parsed.call == "$readmemh"
+    assert parsed.filename == ""
+
+
 # ---------------------------------------------------------------------------
 # Orphan containment (fpu F-13)
 # ---------------------------------------------------------------------------

@@ -38,6 +38,9 @@ from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
+    assess_native_verdict,
+    first_native_failure,
+    native_verdict_message,
     publish_native_adapter_result,
     transport_identity_from_args,
     work_transport_arguments,
@@ -54,7 +57,6 @@ from booley.flows.sim.backends.shared import (
     trace_file_stamp,
 )
 from booley.flows.sim.result import (
-    count_sva_errors,
     extract_vrfc_warnings,
     format_infra_error,
     format_summary,
@@ -238,7 +240,7 @@ def _kill_with_reason(
     bwave_proc: StreamingConversion | None,
     lines: deque[str],
     reason: str,
-) -> None:
+) -> bool:
     """Kill the run, record *reason* (+ a trace incident when tracing), append it.
 
     Shared by the mid-run abort paths (timeout, missing-$readmemh, disk budget)
@@ -247,6 +249,8 @@ def _kill_with_reason(
     """
     from booley.runtime.platform_paths import kill_process_tree
 
+    if proc.poll() is not None:
+        return False
     incident: Path | None = None
     if trace:
         incident = trace.write_incident(
@@ -254,6 +258,8 @@ def _kill_with_reason(
             sim_proc=proc,
             bwave_proc=bwave_proc,
         )
+    if proc.poll() is not None:
+        return False
     kill_process_tree(proc)
     proc.wait()
     msg = f"ERROR: {reason}"
@@ -261,6 +267,7 @@ def _kill_with_reason(
     lines.append(msg + "\n")
     if incident is not None:
         lines.append(f"TRACE_INCIDENT: {incident}\n")
+    return True
 
 
 def _supervise(proc: subprocess.Popen) -> None:
@@ -365,13 +372,14 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
             missing = parse_readmemh_fatal(line)
             if missing and proc.poll() is None:
                 termination = classify_readmemh_termination(missing, run_cwd, runtime_inputs)
-                _kill_with_reason(
+                if not _kill_with_reason(
                     proc,
                     trace,
                     bwave_proc,
                     lines,
                     termination.detail,
-                )
+                ):
+                    continue
                 return lines, proc, termination
             # SETUP-25: the disk-budget watchdog kills the proc on a runaway;
             # report it here (the for-loop sees EOF once the proc is gone).
@@ -379,32 +387,16 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
                 print(guard.message)
                 lines.append(guard.message + "\n")
                 return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
-            if timed_out["hit"] or (time.monotonic() > deadline and proc.poll() is None):
+            if timed_out["hit"]:
                 reason = _timeout_reason()
-                _kill_with_reason(proc, trace, bwave_proc, lines, reason)
-                return lines, proc, RunTermination("timeout", reason, "timeout")
-        # stdout closed. A silent disk runaway or a watchdog kill (no line ticked
-        # the in-loop checks) still surfaces here once the proc is gone.
-        if guard.tripped:
-            print(guard.message)
-            lines.append(guard.message + "\n")
-            return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
-        if timed_out["hit"]:
-            reason = _timeout_reason()
-            _kill_with_reason(proc, trace, bwave_proc, lines, reason)
-            return lines, proc, RunTermination("timeout", reason, "timeout")
-        try:
-            proc.wait(timeout=max(1, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired as exc:
-            # The binary closed stdout but didn't exit in budget. Kill it here —
-            # this scope owns the Popen (the caller's `proc` is never assigned
-            # when we raise) — and hand the streamed output to the caller via the
-            # exception so its timeout message can still include it.
-            kill_process_tree(proc)
-            proc.wait()
-            exc.output = "".join(lines)
-            raise
-        return lines, proc, RunTermination()
+                return lines, proc, _record_timeout(lines, reason)
+            if time.monotonic() > deadline and proc.poll() is None:
+                reason = _timeout_reason()
+                if _kill_with_reason(proc, trace, bwave_proc, lines, reason):
+                    return lines, proc, RunTermination("timeout", reason, "timeout")
+        return _finish_stream(
+            proc, trace, bwave_proc, guard, timed_out["hit"], deadline, _timeout_reason, lines
+        )
     finally:
         if stdout is not None:
             stdout.close()
@@ -414,7 +406,36 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
         append_child_cpu_marker(lines, cpu_started)
 
 
-def _evaluate_verdict(  # noqa: PLR0912 — ordered human diagnostics mirror verdict precedence
+def _finish_stream(proc, trace, bwave_proc, guard, timed_out, deadline, timeout_reason, lines):
+    """Resolve watchdog ownership after stdout closes, then reap the child."""
+    from booley.runtime.platform_paths import kill_process_tree
+
+    if guard.tripped:
+        print(guard.message)
+        lines.append(guard.message + "\n")
+        return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
+    if timed_out:
+        reason = timeout_reason()
+        return lines, proc, _record_timeout(lines, reason)
+    try:
+        proc.wait(timeout=max(1, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as exc:
+        kill_process_tree(proc)
+        proc.wait()
+        exc.output = "".join(lines)
+        raise
+    return lines, proc, RunTermination()
+
+
+def _record_timeout(lines: deque[str], reason: str) -> RunTermination:
+    """Record the timer-owned kill after its process-tree teardown completes."""
+    message = f"ERROR: {reason}"
+    print(message)
+    lines.append(message + "\n")
+    return RunTermination("timeout", reason, "timeout")
+
+
+def _evaluate_verdict(
     output: str,
     returncode: int,
     work_dir: Path,
@@ -424,51 +445,32 @@ def _evaluate_verdict(  # noqa: PLR0912 — ordered human diagnostics mirror ver
     termination: RunTermination | None = None,
 ) -> None:
     """Print the ``[SIM_SUMMARY]`` verdict + write result JSON (legacy parity)."""
-    verdict = parse_sim_verdict(
+    termination = termination or RunTermination()
+    assessment = assess_native_verdict(
         output,
+        returncode,
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
+        termination=termination,
     )
-    sva_errors = count_sva_errors(output)
     vrfc = extract_vrfc_warnings(output)
-
-    termination = termination or RunTermination()
-    inconclusive = False
-    if termination.aborted:
-        passed = False
-    elif verdict is True:
-        passed = sva_errors == 0
-    elif verdict is False or returncode != 0 or sva_errors > 0:
-        passed = False
-    else:
-        passed, inconclusive = False, True
-
-    print(format_summary(passed, sva_errors, vrfc, inconclusive=inconclusive))
-    if termination.aborted:
-        print(f"\nVerilator sim ABORTED ({termination.detail}; rc={returncode})")
-    elif inconclusive:
-        print("\nVerilator sim INCONCLUSIVE (rc=0, no sentinel)")
-    elif passed:
-        print(f"\nVerilator sim PASSED (rc={returncode})")
-    elif verdict is False:
-        # A FAIL sentinel matched. The sim can still exit 0 (e.g. an SVA/$error
-        # that reports but doesn't $fatal), so cite rc only when it is
-        # actually nonzero — never print the maximally-confusing "(rc=0)".
-        reason = f"rc={returncode}" if returncode else "fail sentinel matched"
-        print(f"\nVerilator sim FAILED ({reason})")
-    elif sva_errors > 0:
-        print(f"\nVerilator sim FAILED ({sva_errors} SVA assertion errors)")
-    else:
-        print(f"\nVerilator sim FAILED (rc={returncode})")
-
-    first_err = termination.detail
-    if not passed:
-        for ln in output.splitlines():
-            if any(s in ln for s in ("FAILED", "Fatal:", "Error!", "ERROR!", "Mismatch")):
-                first_err = ln.strip()
-                break
+    print(
+        format_summary(
+            assessment.passed,
+            assessment.sva_errors,
+            vrfc,
+            inconclusive=assessment.inconclusive,
+        )
+    )
+    print(native_verdict_message("Verilator", assessment, returncode, termination))
+    first_err = first_native_failure(output, termination.detail) if not assessment.passed else ""
     write_result_json(
-        work_dir, passed, sva_errors, first_err, returncode, inconclusive=inconclusive
+        work_dir,
+        assessment.passed,
+        assessment.sva_errors,
+        first_err,
+        returncode,
+        inconclusive=assessment.inconclusive,
     )
     # Persist the raw output next to result.json on pass AND fail:
     # result.json only carries a 500-char first_error, so run.log is what
@@ -819,11 +821,45 @@ def run_verilated_binary(
     scope = _resolve_single_scope(trace_scope)
     cmd, env = _build_run_cmd(exe, paths.bin_dir, plusargs)
     trace = _prepare_trace_runtime(paths, vcd, scope, trace_files, cmd, trace_args, trace_mode)
+    _print_verilator_banner(top_module, paths.run_cwd, cmd)
+    return _execute_verilated_and_publish(
+        cmd,
+        paths,
+        env,
+        timeout,
+        trace,
+        max_rundir_bytes,
+        runtime_inputs,
+        trace_files,
+        pass_sentinels,
+        fail_sentinels,
+        vcd,
+        transport,
+    )
+
+
+def _print_verilator_banner(top_module: str, run_cwd: Path, cmd: list[str]) -> None:
     print(f"\n{'=' * 60}")
     print(f"[Verilator simulation: {top_module}]")
     print(f"{'=' * 60}")
-    print(f"CWD: {paths.run_cwd}")
+    print(f"CWD: {run_cwd}")
     print(f"CMD: {' '.join(cmd)}\n")
+
+
+def _execute_verilated_and_publish(
+    cmd,
+    paths,
+    env,
+    timeout,
+    trace,
+    max_rundir_bytes,
+    runtime_inputs,
+    trace_files,
+    pass_sentinels,
+    fail_sentinels,
+    vcd,
+    transport,
+) -> str:
     try:
         lines, proc, termination = _execute_with_heartbeat(
             cmd, paths, env, timeout, trace, max_rundir_bytes, runtime_inputs

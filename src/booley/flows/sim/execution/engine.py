@@ -1653,33 +1653,14 @@ def _group_outcome(
         and adapter_passed is not False
     )
     elapsed_s = time.monotonic() - started
-    infrastructure_abort = next(
-        (test for test in tests if test.failure_kind == "infrastructure"), None
-    )
-    failure = (
-        SimulationInfrastructureFailure(
-            infrastructure_abort.termination,
-            infrastructure_abort.reason,
-            detail=infrastructure_abort.reason,
-        )
-        if infrastructure_abort is not None
-        else None
-    )
+    failure = _group_infrastructure_failure(tests)
     return SimulationTargetOutcome(
         target=handle.selector,
         target_identity=handle.identity,
         toplevel=attempt.prepared.toplevel,
         eda_tool=attempt.prepared.eda_tool,
         passed=passed,
-        verdict=(
-            "error"
-            if failure
-            else "pass"
-            if passed
-            else "inconclusive"
-            if inconclusive
-            else "fail"
-        ),
+        verdict=_group_verdict(failure, passed, inconclusive),
         elapsed_s=elapsed_s,
         tests=tests,
         builds=(build,) if build is not None else (),
@@ -1689,6 +1670,27 @@ def _group_outcome(
         infrastructure_failure=failure,
         phase_timings_s=_target_phase_timings(tests, elapsed_s),
     )
+
+
+def _group_infrastructure_failure(
+    tests: tuple[SimulationTestOutcome, ...],
+) -> SimulationInfrastructureFailure | None:
+    aborted = next((test for test in tests if test.failure_kind == "infrastructure"), None)
+    if aborted is None:
+        return None
+    return SimulationInfrastructureFailure(
+        aborted.termination,
+        aborted.reason,
+        detail=aborted.reason,
+    )
+
+
+def _group_verdict(failure, passed: bool, inconclusive: bool):
+    if failure:
+        return "error"
+    if passed:
+        return "pass"
+    return "inconclusive" if inconclusive else "fail"
 
 
 def _aggregate(
@@ -1829,18 +1831,12 @@ def _test_outcome(
 ) -> SimulationTestOutcome:
     inconclusive = verdict == "inconclusive"
     passed = verdict == "pass" and adapter is not None and sva_errors == 0
-    detail = item.detail if item else adapter.detail if adapter else ""
-    termination = item.termination if item else adapter.termination if adapter else "completed"
-    failure_kind = item.failure_kind if item else adapter.failure_kind if adapter else ""
-    reason = detail
-    if termination != "completed" and reason:
-        reason = f"{reason} (rc={process.returncode})"
-    if verdict == "timeout" and not reason:
-        reason = f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
-    if verdict == "crash" and not reason:
-        reason = f"simulator process terminated by signal {-process.returncode}"
-    if inconclusive and termination == "completed" and not reason:
-        reason = _NO_WAVEFORM if attempt.trace_requested and trace is None else _NO_SENTINEL
+    detail, termination, failure_kind, simulator_returncode = _test_termination_evidence(
+        item, adapter
+    )
+    reason = _test_reason(
+        detail, termination, simulator_returncode, verdict, process, inconclusive, attempt, trace
+    )
     return SimulationTestOutcome(
         name=name,
         verdict=verdict,
@@ -1851,6 +1847,7 @@ def _test_outcome(
         inconclusive=inconclusive,
         termination=termination,
         failure_kind=failure_kind,
+        simulator_returncode=simulator_returncode,
         reason=reason,
         sva_errors=sva_errors,
         error_tail="" if passed else reason or _output_tail(process, build.design_failed),
@@ -1861,6 +1858,34 @@ def _test_outcome(
         run_log_path=log.path if log is not None else "",
         workload_snapshot=_workload_snapshot(handle, attempt, name),
     )
+
+
+def _test_termination_evidence(item, adapter):
+    detail = item.detail if item else adapter.detail if adapter else ""
+    termination = item.termination if item else adapter.termination if adapter else "completed"
+    failure_kind = (
+        item.failure_kind
+        if item and item.failure_kind
+        else adapter.failure_kind
+        if adapter
+        else ""
+    )
+    simulator_returncode = adapter.simulator_returncode if adapter else None
+    return detail, termination, failure_kind, simulator_returncode
+
+
+def _test_reason(
+    detail, termination, simulator_returncode, verdict, process, inconclusive, attempt, trace
+) -> str:
+    if termination != "completed" and detail:
+        return f"{detail} (rc={simulator_returncode})"
+    if verdict == "timeout" and not detail:
+        return f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+    if verdict == "crash" and not detail:
+        return f"simulator process terminated by signal {-process.returncode}"
+    if inconclusive and termination == "completed" and not detail:
+        return _NO_WAVEFORM if attempt.trace_requested and trace is None else _NO_SENTINEL
+    return detail
 
 
 def _timeout_ms(process: SubprocessResult) -> int:

@@ -22,8 +22,6 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.backends import icarus as ir
 from booley.flows.sim.backends.shared import find_icarus_image
-from booley.flows.sim.campaign.serial_execution import _observation
-from booley.flows.sim.execution.contract import SimulationTestOutcome
 from booley.flows.sim.trace_session import TraceInspection
 
 
@@ -412,6 +410,16 @@ def test_stream_output_kills_on_disk_runaway(tmp_path: Path, monkeypatch):
 )
 def test_disk_kill_is_published_as_aborted_infrastructure(tmp_path: Path, monkeypatch) -> None:
     """A guard-owned kill remains abort evidence even when the child exits zero."""
+    result = _run_disk_kill_adapter(tmp_path, monkeypatch)
+
+    assert result.failure_kind == "infrastructure"
+    assert result.inconclusive is False
+    assert result.termination == "disk_budget"
+    assert result.simulator_returncode == 0
+    assert "run directory" in result.detail
+
+
+def _run_disk_kill_adapter(tmp_path: Path, monkeypatch):
     import functools
 
     import booley.flows.sim.run_guard as rg
@@ -454,24 +462,7 @@ def test_disk_kill_is_published_as_aborted_infrastructure(tmp_path: Path, monkey
         transport=identity,
     )
 
-    result = read_adapter_result(identity)
-    assert result.failure_kind == "infrastructure"
-    assert result.inconclusive is False
-    assert "run directory" in result.detail
-    observation = _observation(
-        SimulationTestOutcome(
-            name="guard",
-            verdict="fail",
-            passed=False,
-            reason=result.detail,
-            sva_errors=result.sva_errors,
-            termination=result.termination,
-            failure_kind=result.failure_kind,
-        )
-    )
-    assert observation["execution"] == "aborted"
-    assert observation["failure_class"] == "infrastructure"
-    assert observation["assertions"] == "not_observed"
+    return read_adapter_result(identity)
 
 
 def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):

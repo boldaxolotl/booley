@@ -242,11 +242,7 @@ def _publish(
     if not embedded:
         write_campaign_json(simulation_path, detail)
     status = campaign.evaluation["status"]
-    exit_code = (
-        2
-        if result.status != "complete" or status == "blocked"
-        else (1 if not passed or status == "fail" else 0)
-    )
+    exit_code = _coverage_exit_code(result, status, passed)
     outcome = CoverageTargetOutcome(
         plan.handle.selector,
         exit_code,
@@ -323,15 +319,32 @@ def _transaction_error(
 
 
 def _has_completed_run(result: CoverageCollectionResult) -> bool:
-    return any(run.attributes.get("execution") != "not_completed" for run in result.runs)
+    return any(
+        run.attributes.get("execution") not in {"not_completed", "not_run"} for run in result.runs
+    )
+
+
+def _has_design_abort(result: CoverageCollectionResult) -> bool:
+    return any(run.attributes.get("failure_kind") == "missing_input" for run in result.runs)
+
+
+def _coverage_exit_code(
+    result: CoverageCollectionResult, evaluation: object, passed: bool | None
+) -> int:
+    if _has_design_abort(result):
+        return 1
+    if result.status != "complete" or evaluation == "blocked":
+        return 2
+    return 1 if not passed or evaluation == "fail" else 0
 
 
 def _collection_metadata(result: CoverageCollectionResult) -> Mapping[str, FrozenJson]:
+    status = "incomplete" if _has_design_abort(result) else result.status
     return freeze_coverage_mapping(
         {
             "status": "incompatible"
             if result.native_format.compatibility == "incompatible"
-            else result.status,
+            else status,
             "merge": {"status": result.merge.status, "artifact": result.merge.artifact},
             "diagnostics": [
                 {"code": f.code, "pointer": f.pointer, "message": f.message}
@@ -375,11 +388,7 @@ def _simulation_projection(
         "simulation": _simulation_status(result) if passed is not None else "not_run",
         "abort_remaining": result.infrastructure_error,
         "tests": tests,
-        "collection": (
-            "infrastructure_error"
-            if result.infrastructure_error
-            else campaign.collection["status"]
-        ),
+        "collection": _public_collection_status(campaign, result),
         "evaluation": campaign.evaluation["status"],
         "coverage_campaign": "coverage.json",
     }
@@ -389,6 +398,14 @@ def _simulation_projection(
     return document
 
 
+def _public_collection_status(
+    campaign: CoverageCampaign, result: CoverageCollectionResult
+) -> object:
+    if result.infrastructure_error:
+        return "infrastructure_error"
+    return campaign.collection["status"]
+
+
 def _coverage_test_projection(run) -> dict[str, object]:
     entry: dict[str, object] = {
         "name": run.test,
@@ -396,9 +413,17 @@ def _coverage_test_projection(run) -> dict[str, object]:
         "passed": run.simulation_verdict == "pass",
         "collection": run.collection,
     }
-    for field in ("termination", "failure_kind", "error_tail"):
+    for field in (
+        "execution",
+        "termination",
+        "failure_kind",
+        "error_tail",
+        "simulator_returncode",
+    ):
         value = run.attributes.get(field)
-        if isinstance(value, str) and value:
+        if (isinstance(value, str) and value) or (
+            field == "simulator_returncode" and isinstance(value, int)
+        ):
             entry[field] = value
     pre_sim = run.attributes.get("pre_sim")
     if isinstance(pre_sim, Mapping):

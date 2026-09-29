@@ -61,6 +61,11 @@ _READMEMH_FATAL_RE = re.compile(
     re.IGNORECASE,
 )
 _READMEMH_FILENAME_RES = (
+    re.compile(
+        r"\$readmem[hb]\b\s*:?[^\n]*?(?:cannot|can't|unable to|could not|failed to)"
+        r"\s+open(?:\s+file)?\s+[\"']?(?P<path>[^\"'\s]+)",
+        re.IGNORECASE,
+    ),
     re.compile(r"cannot\s+open\s+file\s+[\"'](?P<path>[^\"']+)[\"']", re.IGNORECASE),
     re.compile(
         r"(?:cannot|can't|unable to|could not|failed to)\s+open\s+"
@@ -256,8 +261,6 @@ def parse_readmemh_fatal(line: str) -> MissingMemoryInput | None:
         if match:
             filename = match.group("path").strip().rstrip(".")
             break
-    if not filename:
-        return None
     call_match = re.search(r"\$(readmem[hb])\b", diagnostic, re.IGNORECASE)
     call = f"${call_match.group(1).lower()}" if call_match else "$readmemh"
     return MissingMemoryInput(diagnostic=diagnostic, call=call, filename=filename)

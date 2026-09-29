@@ -575,15 +575,18 @@ class TraceSession:
         log = logging.getLogger(__name__)
         if sim_proc.poll() is not None:
             return
-        self._stall_killed = True
-        self._stall_message = (
+        stall_message = (
             f"bwave trace pipeline stalled (no growth for {stalled_for:.0f}s at {sz} bytes)"
         )
         self.write_incident(
-            self._stall_message,
+            stall_message,
             sim_proc=sim_proc,
             bwave_proc=bwave_proc,
         )
+        if sim_proc.poll() is not None:
+            return
+        self._stall_killed = True
+        self._stall_message = stall_message
         kill_msg = f"[bwave monitor] killing sim+bwave: {self._stall_message}"
         log.error(kill_msg)
         # Print to stdout so it lands in the simulator's captured

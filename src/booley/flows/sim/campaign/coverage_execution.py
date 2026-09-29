@@ -477,12 +477,12 @@ def _publish_coverage_build_failure(
 
 def _coverage_result_state(observations: list[dict[str, object]]) -> str:
     executions = {str(item["execution"]) for item in observations}
+    if "aborted" in executions:
+        return "aborted"
     if "crash" in executions:
         return "crash"
     if "timeout" in executions:
         return "timeout"
-    if "aborted" in executions:
-        return "aborted"
     return "completed"
 
 
@@ -496,7 +496,11 @@ def _coverage_tests(outcome: CoverageTargetOutcome) -> tuple[Mapping[str, object
 
 
 def _coverage_observation(item: Mapping[str, object]) -> dict[str, object]:
-    return _observation(_coverage_test_outcome(item))
+    execution = item.get("execution")
+    return _observation(
+        _coverage_test_outcome(item),
+        execution="not_run" if execution == "not_run" else None,
+    )
 
 
 def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:

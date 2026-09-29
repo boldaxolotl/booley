@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
 
+from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
 from booley.flows.sim.backends import shared as backend_shared
 from booley.flows.sim.backends import verilator as vr
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
@@ -253,6 +254,75 @@ def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
     # No binary present → returns early after the mkdir, before any run.
     vr.run_verilated_binary(top_module="tb_top", bin_dir=bin_dir, work_dir=work_dir)
     assert work_dir.is_dir()
+
+
+def test_kill_reason_does_not_claim_a_process_that_exits_during_incident_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Proc:
+        exited = False
+
+        def poll(self):
+            return 0 if self.exited else None
+
+    proc = Proc()
+
+    class Trace:
+        def write_incident(self, *_args, **_kwargs):
+            proc.exited = True
+            return tmp_path / "incident.json"
+
+    killed = []
+    monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", killed.append)
+    lines = deque[str]()
+
+    owned = vr._kill_with_reason(proc, Trace(), None, lines, "timeout")  # type: ignore[arg-type]
+
+    assert owned is False
+    assert killed == []
+    assert lines == deque()
+
+
+@pytest.mark.parametrize(
+    ("kind", "failure_kind", "missing_path"),
+    [
+        ("trace_stall", "infrastructure", ""),
+        ("disk_budget", "infrastructure", ""),
+        ("fatal_init", "missing_input", "memory.hex"),
+    ],
+)
+def test_guard_termination_is_published_to_adapter_transport(
+    tmp_path: Path, monkeypatch, kind: str, failure_kind: str, missing_path: str
+) -> None:
+    termination = vr.RunTermination(
+        kind, f"{kind} stopped the simulator", failure_kind, missing_path
+    )
+    process = type("Process", (), {"returncode": 9})()
+    monkeypatch.setattr(
+        vr,
+        "_execute_with_heartbeat",
+        lambda *_args: (deque(["guard fired\n"]), process, termination),
+    )
+    monkeypatch.setattr(
+        vr,
+        "_finalize_verilated_run",
+        lambda *_args: ("guard fired\n", None, termination),
+    )
+    identity = AdapterTransportIdentity(
+        "verilator", "attempt", "acme:lib:dut:1#sim", ("smoke",), tmp_path / "adapter.json"
+    )
+    paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
+    trace = vr._TraceRuntime(None, [], {}, vr.TraceMode.VCD_FIFO, None)
+
+    vr._execute_verilated_and_publish(
+        [], paths, {}, 30, trace, 0, (), None, None, None, False, identity
+    )
+
+    result = read_adapter_result(identity)
+    assert result.simulator_returncode == 9
+    assert result.termination == kind
+    assert result.failure_kind == failure_kind
+    assert result.missing_input_path == missing_path
 
 
 def test_execute_with_heartbeat_cleans_fifo_conversion(tmp_path: Path, monkeypatch):

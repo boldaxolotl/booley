@@ -1398,7 +1398,7 @@ def _observation(
         if test.termination != "completed"
         else "completed"
     )
-    blocked = observed_execution in {"blocked_by_build", "setup_error"}
+    blocked = observed_execution in {"blocked_by_build", "setup_error", "not_run"}
     functional = (
         "not_observed"
         if blocked
@@ -1436,12 +1436,12 @@ def _observation(
 
 
 def _result_state(tests: tuple[SimulationTestOutcome, ...]) -> str:
+    if any(test.termination != "completed" for test in tests):
+        return "aborted"
     if any(test.crashed for test in tests):
         return "crash"
     if any(test.timed_out for test in tests):
         return "timeout"
-    if any(test.termination != "completed" for test in tests):
-        return "aborted"
     return "completed"
 
 

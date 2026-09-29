@@ -539,6 +539,7 @@ def _validate_simulation_result(value: Mapping[str, object]) -> None:
         "aborted",
         "setup_error",
         "blocked_by_build",
+        "not_run",
     }:
         raise SimulationCampaignIntegrityError("invalid simulation result state")
     if value["grade"] not in {grade.value for grade in StrictGrade}:
@@ -825,13 +826,17 @@ def _validate_observations(value: object, state: str) -> list[Mapping[str, objec
             raise SimulationCampaignIntegrityError("blocked result requires blocked observations")
         if state == "setup_error" and observation["execution"] != "setup_error":
             raise SimulationCampaignIntegrityError("setup result requires setup observations")
-        if state == "aborted" and observation["execution"] not in {"completed", "aborted"}:
+        if state == "aborted" and observation["execution"] not in {
+            "completed",
+            "aborted",
+            "not_run",
+        }:
             raise SimulationCampaignIntegrityError("aborted result has invalid observations")
     named = [test for test in tests if test is not None]
     if len(set(named)) != len(named):
         raise SimulationCampaignIntegrityError("observation test names must be unique")
     if state in {"completed", "timeout", "crash", "aborted"}:
-        strength = {"completed": 0, "timeout": 1, "crash": 2, "aborted": 3}
+        strength = {"completed": 0, "not_run": 0, "timeout": 1, "crash": 2, "aborted": 3}
         expected = max(
             (cast(str, item["execution"]) for item in decoded),
             key=lambda execution: strength.get(execution, 3),
@@ -884,6 +889,7 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
         "aborted",
         "setup_error",
         "blocked_by_build",
+        "not_run",
     }:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if observation["failure_class"] not in {None, "design", "infrastructure"}:
@@ -911,7 +917,7 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
 
 
 def _validate_observation_matrix(observation: Mapping[str, object]) -> None:
-    if observation["execution"] in {"setup_error", "blocked_by_build"} and (
+    if observation["execution"] in {"setup_error", "blocked_by_build", "not_run"} and (
         observation["failure_class"] not in {"design", "infrastructure"}
         or observation["functional"] != "not_observed"
         or observation["assertions"] != "not_observed"

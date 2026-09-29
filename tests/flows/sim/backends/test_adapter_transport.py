@@ -24,6 +24,7 @@ from booley.flows.sim.backends.cocotb_results import (
     CocotbTest,
     format_results_line,
 )
+from booley.flows.sim.backends.shared import RunTermination
 
 
 def _identity(tmp_path) -> AdapterTransportIdentity:
@@ -56,6 +57,24 @@ def test_adapter_result_round_trips_with_expected_identity(tmp_path) -> None:
     write_adapter_result(identity, result)
 
     assert read_adapter_result(identity) == result
+
+
+@pytest.mark.parametrize("returncode", [-15, 0, 7])
+def test_adapter_result_round_trips_actual_simulator_returncode(tmp_path, returncode) -> None:
+    identity = _identity(tmp_path)
+    result = AdapterResult(
+        passed=False,
+        inconclusive=False,
+        sva_errors=0,
+        tests=("reset",),
+        simulator_returncode=returncode,
+        failure_kind="design",
+        test_results=(AdapterTestResult("reset", "fail", failure_kind="design"),),
+    )
+
+    write_adapter_result(identity, result)
+
+    assert read_adapter_result(identity).simulator_returncode == returncode
 
 
 def test_adapter_result_rejects_identity_mismatch(tmp_path) -> None:
@@ -129,6 +148,67 @@ def test_adapter_pass_cannot_contradict_per_test_failure(tmp_path) -> None:
 
     with pytest.raises(AdapterTransportError, match="contradicts a per-test"):
         read_adapter_result(identity)
+
+
+@pytest.mark.parametrize("failure_kind", ["infrastructure", "timeout", "missing_input"])
+def test_completed_result_rejects_abort_only_failure_kinds(tmp_path, failure_kind) -> None:
+    identity = _identity(tmp_path)
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=False,
+            inconclusive=False,
+            sva_errors=0,
+            tests=("reset",),
+            failure_kind=failure_kind,
+            test_results=(AdapterTestResult("reset", "fail", failure_kind=failure_kind),),
+        ),
+    )
+
+    with pytest.raises(AdapterTransportError, match="failure kind contradicts"):
+        read_adapter_result(identity)
+
+
+def test_aborted_result_rejects_inconclusive_aggregate(tmp_path) -> None:
+    identity = _identity(tmp_path)
+    termination = RunTermination("disk_budget", "disk full", "infrastructure")
+    icarus._publish_adapter_result(identity, "", 0, termination=termination)
+    payload = json.loads(identity.result_path.read_text(encoding="utf-8"))
+    payload["inconclusive"] = True
+    identity.result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AdapterTransportError, match="contradicts its termination"):
+        read_adapter_result(identity)
+
+
+def test_aborted_result_rejects_mismatched_per_test_termination(tmp_path) -> None:
+    identity = _identity(tmp_path)
+    termination = RunTermination("disk_budget", "disk full", "infrastructure")
+    icarus._publish_adapter_result(identity, "", 0, termination=termination)
+    payload = json.loads(identity.result_path.read_text(encoding="utf-8"))
+    payload["test_results"][0].update(termination="fatal_init", failure_kind="missing_input")
+    identity.result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(AdapterTransportError, match="aggregate termination"):
+        read_adapter_result(identity)
+
+
+def test_native_timeout_without_selected_tests_is_timeout_not_design(tmp_path) -> None:
+    identity = replace(_identity(tmp_path), selected_tests=())
+
+    icarus._publish_adapter_result(
+        identity,
+        "",
+        -15,
+        termination=RunTermination("timeout", "deadline expired", "timeout"),
+    )
+
+    result = read_adapter_result(identity)
+    assert result.tests == ()
+    assert result.termination == "timeout"
+    assert result.failure_kind == "timeout"
+    assert result.inconclusive is False
+    assert result.simulator_returncode == -15
 
 
 @pytest.mark.parametrize(
@@ -246,6 +326,34 @@ def test_cocotb_trace_incident_preserves_functional_verdicts(
     result = read_adapter_result(identity)
     assert result.test_results[0].verdict == expected_verdict
     assert result.failure_kind == expected_kind
+
+
+def test_cocotb_abort_after_all_tests_completed_cannot_pass_batch(tmp_path) -> None:
+    identity = replace(_identity(tmp_path), adapter="cocotb", selected_tests=("first", "second"))
+    output = format_results_line(
+        CocotbResults(
+            state=STATE_OK,
+            tests=(
+                CocotbTest("first", "test_demo", "pass"),
+                CocotbTest("second", "test_demo", "pass"),
+            ),
+        )
+    )
+
+    cocotb._publish_adapter_result(
+        identity,
+        output,
+        True,
+        termination=RunTermination("disk_budget", "disk full", "infrastructure"),
+        simulator_returncode=0,
+    )
+
+    result = read_adapter_result(identity)
+    assert result.passed is False
+    assert result.inconclusive is False
+    assert result.termination == "disk_budget"
+    assert result.failure_kind == "infrastructure"
+    assert [test.verdict for test in result.test_results] == ["pass", "pass"]
 
 
 def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path) -> None:

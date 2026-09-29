@@ -143,7 +143,7 @@ _HARNESS_INFRA_MARKER_RE = re.compile(
     # trace-session watchdog abort
     r"|ERROR: bwave trace pipeline stalled"
     # Supported simulator-native missing-memory diagnostics with ERROR wrappers.
-    r"|ERROR: .*\$readmem[hb].*(?:cannot|unable to|failed to) open"
+    r"|ERROR: .*\$readmem[hb].*(?i:cannot|can't|unable to|could not|failed to) open"
     r")"
 )
 

@@ -647,6 +647,7 @@ def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> Si
         infrastructure_error=test.failure_kind == "infrastructure",
         termination=test.termination,
         failure_kind=test.failure_kind,
+        simulator_returncode=attempt.result.simulator_returncode,
     )
 
 
