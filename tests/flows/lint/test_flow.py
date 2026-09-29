@@ -1161,11 +1161,10 @@ class TestErrorVsFailTaxonomy:
         assert result.exit_code == EXIT_ERROR
         assert "lint_clean_lite" not in flow.state.criteria
 
-    def test_hard_fail_error_carries_run_log_pointer(self, tmp_path: Path, state_file: Path):
-        """The classified hard-fail error cites only the FIRST error line; the
-        full linter output is already persisted as run.log right before the
-        classification, so the error must point at it (benchmark finding:
-        agents shelled out to recover the rest of the diagnostics)."""
+    def test_hard_fail_without_report_dir_omits_live_log_pointer(
+        self, tmp_path: Path, state_file: Path
+    ):
+        """A shared live-tail file is not durable evidence without a report root."""
         with (
             patch.object(LintFlow, "_execute") as mock_exec,
             patch.object(
@@ -1191,10 +1190,47 @@ class TestErrorVsFailTaxonomy:
 
         pointer = ".booley_project/.runtime/edalize/lint/lite/run.log"
         assert cr.error.startswith("%Error: rtl/x.v:1:1")
-        assert cr.error.endswith(f"(full log: {pointer})")
-        # The pointer is honest: THIS invocation wrote that log, in full.
+        assert "(full log:" not in cr.error
         log_text = (tmp_path / pointer).read_text(encoding="utf-8")
         assert "second diagnostic" in log_text
+
+    def test_hard_fail_criterion_cites_numbered_log(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        with (
+            patch.object(
+                LintFlow,
+                "_execute",
+                return_value=MagicMock(
+                    returncode=2,
+                    stdout="",
+                    stderr="%Error: rtl/x.v:1:1: rejected\n",
+                    timed_out=False,
+                    duration_s=0.5,
+                ),
+            ),
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
+            ),
+        ):
+            flow = LintFlow()
+            flow.parse_args(
+                [
+                    "--target",
+                    "lite",
+                    "--work-dir",
+                    str(tmp_path),
+                    "--report-dir",
+                    str(tmp_path / "reports"),
+                ]
+            )
+            flow.read_state()
+            flow._run()
+
+        detail = DevelopmentState.load(state_file).criteria["lint_clean_lite"].detail
+        assert "reports/lint/1/artifacts/lite/run.log" in detail["error"]
 
     def test_previous_runs_log_is_erased_before_the_run(self, tmp_path: Path, state_file: Path):
         """F-26: lint's run.log is only written at the END of a run, so it is
@@ -1457,6 +1493,64 @@ class TestFullRun:
 
 
 class TestStructuredReport:
+    @patch.object(LintFlow, "_execute")
+    @patch.object(
+        LintFlow,
+        "_prepare_lint_command",
+        return_value=(["verilator", "--lint-only"], _stub_resolved()),
+    )
+    def test_consecutive_runs_preserve_first_cited_evidence(
+        self, mock_cmd, mock_exec, state_file: Path, tmp_path: Path
+    ) -> None:
+        report_dir = tmp_path / "reports"
+        mock_exec.side_effect = [
+            MagicMock(
+                returncode=0,
+                stdout="%Warning-WIDTH: first.sv:1:1: first run\n",
+                stderr="",
+                timed_out=False,
+                duration_s=1.0,
+            ),
+            MagicMock(
+                returncode=0,
+                stdout="%Warning-WIDTH: second.sv:2:2: second run\n",
+                stderr="",
+                timed_out=False,
+                duration_s=1.0,
+            ),
+        ]
+
+        def run() -> object:
+            flow = LintFlow()
+            flow.parse_args(["--target", "lite", "--report-dir", str(report_dir)])
+            flow.read_state()
+            return flow._run()
+
+        first = run()
+        first_report = tmp_path / first.detail["artifacts"]["report"]
+        first_log = tmp_path / first.detail["artifacts"]["log_lite"]
+        first_report_bytes = first_report.read_bytes()
+        first_log_bytes = first_log.read_bytes()
+        first_payload = json.loads(first_report_bytes)
+
+        assert first_report.relative_to(report_dir).parts[:2] == ("lint", "1")
+        assert first_log.relative_to(report_dir).parts[:2] == ("lint", "1")
+        assert str(first_report) in first.report_text
+        assert first_payload["artifacts"]["report"] == first.detail["artifacts"]["report"]
+        assert first_payload["target_results"][0]["log"] == first.detail["artifacts"]["log_lite"]
+
+        second = run()
+        second_report = tmp_path / second.detail["artifacts"]["report"]
+        second_log = tmp_path / second.detail["artifacts"]["log_lite"]
+
+        assert second_report.relative_to(report_dir).parts[:2] == ("lint", "2")
+        assert second_log.relative_to(report_dir).parts[:2] == ("lint", "2")
+        assert first_report.read_bytes() == first_report_bytes
+        assert first_log.read_bytes() == first_log_bytes
+        assert json.loads((report_dir / "lint_report.json").read_bytes()) == json.loads(
+            second_report.read_bytes()
+        )
+
     @patch.object(LintFlow, "_execute")
     @patch.object(
         LintFlow,

@@ -527,15 +527,19 @@ Findings are parsed with the shared regexes in the private parser module
 (`booley.flows._eda_parsers`, one source of truth for the Verilator and
 Verible dialects), then deduplicated across Targets on `(rule, file, line)`
 and scope-filtered.
-The console echoes the first five; the full list always goes to the report:
+The console echoes the first five; the full list always goes to the numbered
+report:
 
 ```text
-<runtime>/flow-reports/lint_report.json           # stable "latest run" path
-<runtime>/flow-reports/lint/<N>/lint_report.json  # per-invocation copy
+<runtime>/flow-reports/lint/<N>/lint_report.json  # authoritative evidence
+<runtime>/flow-reports/lint_report.json           # latest-run compatibility alias
 ```
 
-The numbered copy exists because consecutive runs would otherwise clobber each
-other: a Verilator pass followed by a Verible pass is two runs of one Flow.
+Lint reserves `<N>` before execution and publishes captured Target output under
+that directory before Criteria or report construction. The numbered report is
+published first; only then is the flat alias refreshed with the same numbered
+links. Console, report, MCP, and Criteria evidence never cite the flat alias or
+the shared Edalize live-tail log.
 The report carries `passed`, `total_warnings`, per-finding rule/file:line/
 message, any `errors`, and a `target_results` entry per Target: the EDA tool
 that actually linted, finding count, `files_linted`, `toplevel`,
@@ -720,8 +724,12 @@ For each Target, the Flow writes:
 <runtime>/flow-reports/synth.json             # flat compatibility copy of the latest report
 ```
 
-The full synthesis output is persisted as `run.log` in the per-target Edalize
-work dir, on pass and fail alike.
+The full synthesis output is persisted as a live-tail `run.log` in the
+per-target Edalize work dir and published directly from the captured process
+output into the numbered invocation, on pass and fail alike. Reports, MCP
+detail, and Criteria cite the numbered copy. Bounded physical timing reports
+are authenticated while copied into that same Target evidence directory;
+mutable work directories are exposed only as `live_dirs`.
 
 Each current and baseline result also carries a bounded `warning_summary`:
 `total_warnings` counts warning-record occurrences, `unique_warnings` counts
@@ -965,6 +973,12 @@ The Criteria detail includes:
   semantic differences summarized in the Review package
 - `_metric_map` and `_min_allowed` for threshold/acceptance display
 
+Fresh FPGA execution publishes the locally captured combined output directly
+under the numbered invocation before report, MCP, or Criteria projection.
+Mutable Vivado directories appear only as `live_dirs`. Cache hits omit the Flow
+log because the current cache manifest does not authenticate the shared
+work-root `run.log`.
+
 
 ### Coverage Campaign orchestration
 
@@ -1022,6 +1036,12 @@ resolved from an explicitly supplied origin Target directory. Resume reports do
 not publish a duplicate Target projection. No flat per-Target compatibility report is
 written in any Simulation mode. The separate report-driven Analyst consumes the
 exact completed Target Campaign without publishing policy evidence.
+
+Authorized legacy/direct Simulation execution archives report-projected logs,
+results, and traces beneath its already-reserved numbered invocation. Candidate
+and cycle-count baseline evidence use separate namespaces, and one Cocotb batch
+publishes one shared log. Retention accepts only files in this exact layout that
+are referenced by progress or Target reports; unknown files still fail closed.
 
 #### Persistence and recovery
 

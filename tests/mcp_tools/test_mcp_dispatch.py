@@ -616,11 +616,11 @@ class TestStructuredContent:
         big = {
             "flow": "lint",
             "exit_code": 1,
-            "detail": {"artifacts": {"report": "reports/lint_report.json"}},
+            "detail": {"artifacts": {"report": "reports/lint/1/lint_report.json"}},
             "report_text": "x" * (70 * 1024),
         }
         payload = mcp_server._structured_from_report(big)
-        assert payload["artifacts"] == {"report": "reports/lint_report.json"}
+        assert payload["artifacts"] == {"report": "reports/lint/1/lint_report.json"}
 
     def test_oversized_report_finds_artifacts_nested_one_level_in_detail(self):
         """A multi-target endpoint keys its detail by target and hangs the block

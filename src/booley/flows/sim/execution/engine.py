@@ -17,6 +17,7 @@ from typing import Any
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.build_paths import work_root_for
+from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
@@ -1043,6 +1044,14 @@ class SimulationExecution:
         logs = _persist_run_logs(handle, attempt, output, self._artifact_root)
         trace = _trace_artifact(attempt, adapter, trace_policy)
         compatibility = _compatibility_artifacts(attempt, compatibility_policy)
+        archived = _archive_file_evidence(
+            handle,
+            attempt,
+            (*compatibility, *((trace,) if trace is not None else ())),
+            self._artifact_root,
+        )
+        trace = next((item for item in archived if item.kind == "trace"), trace)
+        compatibility = tuple(item for item in archived if item.kind != "trace")
         if attempt.trace_requested and trace is None and adapter is not None and adapter.passed:
             adapter = _missing_trace_result(adapter)
         tests = _test_outcomes(
@@ -1944,6 +1953,12 @@ def _run_log_for(
     )
     if archive is not None:
         return archive
+    archive = next(
+        (item for item in artifacts if item.kind == "run_log" and name in item.test_names),
+        None,
+    )
+    if archive is not None:
+        return archive
     return next(
         (item for item in artifacts if item.kind == "live_run_log" and name in item.test_names),
         None,
@@ -1975,21 +1990,61 @@ def _archive_run_logs(
     output: str,
     artifact_root: Path | None,
 ) -> tuple[SimulationArtifactEvidence, ...]:
-    if artifact_root is None or not output or attempt.adapter == "cocotb":
+    if artifact_root is None or not output:
         return ()
     names = attempt.test_names or (handle.selector,)
     target = artifact_path_component(f"sim_{handle.selector}")
+    if attempt.adapter == "cocotb":
+        relative = flow_artifacts.publish_bytes(
+            artifact_root,
+            (target, "batch", "run.log"),
+            output.encode(),
+            work_dir=artifact_root,
+        )
+        path = artifact_root / relative
+        return (SimulationArtifactEvidence("run_log", str(path), path.stat().st_size, names),)
     evidence: list[SimulationArtifactEvidence] = []
     for name in names:
         test = artifact_path_component(name)
-        directory = artifact_root / "artifacts" / target / "tests" / test
-        directory.mkdir(parents=True, exist_ok=True)
-        path = write_run_log(directory, output, max_bytes=None)
-        validated = validate_fresh_artifact(path, roots=(artifact_root,), before=None)
+        relative = flow_artifacts.publish_bytes(
+            artifact_root,
+            (target, "tests", test, "run.log"),
+            output.encode(),
+            work_dir=artifact_root,
+        )
+        path = artifact_root / relative
         evidence.append(
-            SimulationArtifactEvidence("run_log", str(validated.path), validated.size, (name,))
+            SimulationArtifactEvidence("run_log", str(path), path.stat().st_size, (name,))
         )
     return tuple(evidence)
+
+
+def _archive_file_evidence(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    evidence: tuple[SimulationArtifactEvidence, ...],
+    artifact_root: Path | None,
+) -> tuple[SimulationArtifactEvidence, ...]:
+    """Snapshot report-projected adapter files into the invocation namespace."""
+    if artifact_root is None:
+        return evidence
+    target = artifact_path_component(f"sim_{handle.selector}")
+    group = (
+        "batch"
+        if attempt.adapter == "cocotb"
+        else artifact_path_component((attempt.test_names or (handle.selector,))[0])
+    )
+    archived: list[SimulationArtifactEvidence] = []
+    for item in evidence:
+        source = Path(item.path)
+        relative = flow_artifacts.publish_file(
+            artifact_root,
+            (target, "tests", group, item.kind, source.name),
+            source,
+            work_dir=artifact_root,
+        )
+        archived.append(replace(item, path=str(artifact_root / relative)))
+    return tuple(archived)
 
 
 def _trace_artifact(

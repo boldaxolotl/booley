@@ -681,8 +681,9 @@ def _assert_authoritative_cocotb_outcome(outcome: SimulationTargetOutcome) -> No
     assert outcome.tests[1].workload_snapshot is not None
     assert outcome.builds[0].passed is True
     assert sum(a.kind == "live_run_log" for a in outcome.artifacts) == 1
+    assert sum(a.kind == "run_log" for a in outcome.artifacts) == 1
     assert outcome.tests[0].run_log_path == outcome.tests[1].run_log_path
-    assert Path(outcome.tests[0].run_log_path).parts[-3:] == ("build", "sim", "run.log")
+    assert Path(outcome.tests[0].run_log_path).parts[-3:] == ("sim_sim", "batch", "run.log")
 
 
 def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -> None:

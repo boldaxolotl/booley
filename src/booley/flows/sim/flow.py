@@ -3274,6 +3274,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _prepare_legacy_run(self, targets, test_names_map, results):
         lines: list[str] = []
         self._test_names_map = test_names_map
+        self._evidence_work_dir = Path(self.args.work_dir)
         self.reserve_invocation_dir()
         self._write_progress_report(targets, results, phase="starting")
         baseline = self._run_cycle_count_baselines(targets, test_names_map)
@@ -5003,9 +5004,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Project execution-validated artifact evidence into report paths."""
         report_keys = {"live_run_log": "log", "run_log": "log", "trace": "trace"}
         block: dict[str, object] = {}
+        evidence_work_dir = getattr(self, "_evidence_work_dir", self.args.work_dir)
         for item in result.artifacts:
             key = report_keys.get(item.kind, item.kind)
-            block.setdefault(key, posix_relpath(item.path, self.args.work_dir))
+            if item.kind == "live_run_log":
+                continue
+            if key in block:
+                names = "_".join(item.test_names) or "batch"
+                key = f"{key}_{_artifact_path_component(names)}"
+            block[key] = posix_relpath(item.path, evidence_work_dir)
         return block
 
     def _headline_lines(self, all_results: list[TargetResult]) -> list[str]:
@@ -5042,7 +5049,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             failing = not r.passed or any(not t.passed for t in r.tests)
             if not failing:
                 continue
-            pointer = self._run_log_pointer(r.target)  # fresh-log-guarded
+            pointer = next(
+                (test.run_log_path for test in r.tests if test.run_log_path),
+                None,
+            )
             if pointer:
                 lines.append(f"  log: {pointer}")
             lines.extend(f"  {ln}" for ln in self._build_context_lines(r.target))
@@ -5196,7 +5206,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if skipped:
             output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
         selection = self._execution_selection(tests_to_run)
-        execution = self._simulation_execution()
+        artifact_root = self._simulation_artifact_root(plan_role)
+        execution = self._simulation_execution(artifact_root=artifact_root)
         planned_groups = self._planned_simulation_groups(target, plan_role)
         outcome = execution.run(
             self._target_handle(target),
@@ -5213,6 +5224,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             passed = sum(1 for test in result.tests if test.passed)
             output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
         return result
+
+    def _simulation_artifact_root(self, role: WorkUnitRole | None) -> Path | None:
+        """Return the authorized direct-run evidence namespace without reserving."""
+        invocation_dir = self.context._reserved_invocation_dir
+        if invocation_dir is None:
+            return None
+        if role != "baseline":
+            return invocation_dir / "artifacts" / "candidate"
+        revision, _, _ = self._planned_cycle_baseline_selection()
+        assert revision is not None
+        return invocation_dir / "artifacts" / "baseline" / _artifact_path_component(revision)
 
     def _planned_simulation_groups(
         self,
@@ -5231,14 +5253,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             raise RuntimeError(f"Simulation plan has no {label} work for {target!r}")
         return groups
 
-    def _simulation_execution(self) -> SimulationExecution:
+    def _simulation_execution(self, *, artifact_root: Path | None = None) -> SimulationExecution:
         """Compose the execution boundary with the Flow's process transport."""
         override = getattr(self, "_simulation_execution_override", None)
         if override is not None:
+            override._artifact_root = artifact_root
             return cast(SimulationExecution, override)
         return SimulationExecution(
             invoke=self._execute_boundary,
-            artifact_root=self.args.report_dir,
+            artifact_root=artifact_root,
             options=SimulationOptions(
                 trace=self.args.trace,
                 timeout_ms=self.args.timeout_ms,
@@ -5305,7 +5328,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             elab_failed=outcome.elab_failed,
             test_validated=outcome.test_validated,
             trace_path=(
-                artifacts.relative(Path(trace.path), self.args.work_dir) or ""
+                artifacts.relative(
+                    Path(trace.path), getattr(self, "_evidence_work_dir", self.args.work_dir)
+                )
+                or ""
                 if trace is not None
                 else ""
             ),
@@ -5314,7 +5340,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             trace_signal_count=trace.signal_count if trace is not None else 0,
             trace_total_ticks=trace.total_ticks if trace is not None else 0,
             run_log_path=(
-                artifacts.relative(Path(outcome.run_log_path), self.args.work_dir) or ""
+                artifacts.relative(
+                    Path(outcome.run_log_path),
+                    getattr(self, "_evidence_work_dir", self.args.work_dir),
+                )
+                or ""
                 if outcome.run_log_path
                 else ""
             ),

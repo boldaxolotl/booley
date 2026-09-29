@@ -987,6 +987,10 @@ def _validate_invocation_inventory(root: Path) -> None:
         assert isinstance(selector, str)
         target = target_report_directory(root, selector)
         expected.update(_target_owned_files(root, target, selector))
+        simulation = target / "simulation.json"
+        if simulation.exists():
+            expected.update(_referenced_invocation_artifacts(root, _read_object(simulation)))
+    expected.update(_referenced_invocation_artifacts(root, progress))
     unexpected = sorted(
         path.absolute()
         for path in root.rglob("*")
@@ -994,6 +998,72 @@ def _validate_invocation_inventory(root: Path) -> None:
     )
     if unexpected:
         raise CampaignRetentionError(f"Unrecognized invocation content: {unexpected[0]}")
+
+
+def _referenced_invocation_artifacts(root: Path, document: Mapping[str, object]) -> set[Path]:
+    """Resolve only exact invocation-owned files cited by artifact blocks."""
+    references: list[str] = []
+
+    def visit(value: object, *, in_artifacts: bool = False) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                visit(item, in_artifacts=in_artifacts or key == "artifacts")
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, in_artifacts=in_artifacts)
+        elif in_artifacts and isinstance(value, str):
+            references.append(value)
+
+    visit(document)
+    owned: set[Path] = set()
+    for reference in references:
+        parts = Path(reference).parts
+        try:
+            marker = parts.index("artifacts")
+        except ValueError:
+            continue
+        relative = Path(*parts[marker:])
+        candidate = root / relative
+        _validate_invocation_artifact_layout(relative)
+        if candidate.is_symlink() or not candidate.is_file():
+            raise CampaignRetentionError(
+                f"Invocation artifact reference is missing or unsafe: {reference}"
+            )
+        owned.add(candidate.absolute())
+    return owned
+
+
+def _validate_invocation_artifact_layout(relative: Path) -> None:
+    parts = relative.parts
+    role_offset = 2 if len(parts) > 1 and parts[1] == "candidate" else 3
+    if len(parts) < role_offset + 4 or parts[0] != "artifacts":
+        raise CampaignRetentionError(f"Invalid invocation artifact layout: {relative}")
+    if parts[1] == "baseline" and len(parts) < 7:
+        raise CampaignRetentionError(f"Invalid baseline artifact layout: {relative}")
+    if parts[1] not in {"candidate", "baseline"}:
+        raise CampaignRetentionError(f"Invalid invocation artifact role: {relative}")
+    tail = parts[role_offset:]
+    if len(tail) not in {4, 5} or tail[1] != "tests":
+        raise CampaignRetentionError(f"Invalid invocation artifact layout: {relative}")
+    if len(tail) == 4 and tail[-1] != "run.log":
+        raise CampaignRetentionError(f"Invalid invocation artifact file: {relative}")
+    if len(tail) == 5:
+        expected_names = {
+            "result": "result.json",
+            "results_xml": "results.xml",
+            "cocotb_results_json": "cocotb_results.json",
+            "trace_status": "trace_status.json",
+            "trace_incident": "trace_incident.txt",
+        }
+        kind, filename = tail[-2:]
+        if kind == "trace":
+            valid = Path(filename).suffix.lower() in {".fst", ".vcd"}
+        else:
+            valid = expected_names.get(kind) == filename
+        if not valid:
+            raise CampaignRetentionError(f"Invalid invocation artifact file: {relative}")
+    if any(part in {"", ".", ".."} or "/" in part or "\\" in part for part in parts):
+        raise CampaignRetentionError(f"Unsafe invocation artifact path: {relative}")
 
 
 def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:

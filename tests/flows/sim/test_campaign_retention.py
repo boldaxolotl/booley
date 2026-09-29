@@ -135,6 +135,41 @@ def test_full_pruning_accepts_abandoned_nonterminal_progress(tmp_path):
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
 
 
+def test_full_pruning_accepts_report_referenced_invocation_artifacts(tmp_path):
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    progress = CoverageProgress(invocation, ("sim_0",))
+    progress.checkpoint(complete=True)
+    target = invocation / "targets/sim_0"
+    target.mkdir(parents=True)
+    artifact = invocation / "artifacts/candidate/sim_sim_0/tests/smoke/run.log"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("immutable evidence", encoding="utf-8")
+    (target / "simulation.json").write_text(
+        json.dumps(
+            {
+                "flow": "sim",
+                "target": "sim_0",
+                "tests": [
+                    {
+                        "name": "smoke",
+                        "artifacts": {
+                            "run_log": "reports/sim/1/artifacts/candidate/"
+                            "sim_sim_0/tests/smoke/run.log"
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert not invocation.exists()
+
+
 def test_full_pruning_resumes_from_live_root_prune_journal(tmp_path):
     from booley.flows.sim.campaign_reports import write_campaign_json
     from booley.flows.sim.campaign_retention import prune_invocation

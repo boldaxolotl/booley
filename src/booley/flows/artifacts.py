@@ -50,12 +50,85 @@ A multi-target Flow nests one block per target: ``artifacts[target][key]``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import re
 from pathlib import Path
 
+from booley.flows.sim.campaign_durability import durable_copy, durable_create
 from booley.runtime.platform_paths import posix_relpath
 
 logger = logging.getLogger(__name__)
+
+_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+
+
+def path_component(value: str) -> str:
+    """Return one traversal-safe, collision-resistant artifact component."""
+    if _SAFE_COMPONENT_RE.fullmatch(value):
+        return value
+    return f"~sha256-{hashlib.sha256(value.encode()).hexdigest()}"
+
+
+def _destination(root: Path, components: tuple[str, ...]) -> Path:
+    if not components:
+        raise ValueError("artifact destination requires at least one component")
+    encoded = tuple(path_component(component) for component in components)
+    destination = root.joinpath(*encoded)
+    if os.path.commonpath((root.resolve(), destination.resolve(strict=False))) != str(
+        root.resolve()
+    ):
+        raise ValueError("artifact destination escapes its invocation root")
+    return destination
+
+
+def publish_bytes(
+    invocation_dir: Path,
+    components: tuple[str, ...],
+    raw: bytes,
+    *,
+    work_dir: Path,
+) -> str:
+    """Create immutable captured-output evidence and return its public path."""
+    destination = _destination(invocation_dir, components)
+    durable_create(destination, raw)
+    return posix_relpath(destination, work_dir)
+
+
+def publish_file(
+    invocation_dir: Path,
+    components: tuple[str, ...],
+    source: Path,
+    *,
+    work_dir: Path,
+) -> str:
+    """Publish an authenticated regular-file snapshot beneath an invocation."""
+    before = source.stat()
+    if not source.is_file() or source.is_symlink():
+        raise ValueError(f"artifact source is not a regular file: {source}")
+    before_digest = _file_digest(source)
+    destination = _destination(invocation_dir, components)
+    durable_copy(source, destination)
+    after = source.stat()
+    destination_digest = _file_digest(destination)
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ) or before_digest != destination_digest:
+        destination.unlink(missing_ok=True)
+        raise OSError(f"artifact source changed during publication: {source}")
+    return posix_relpath(destination, work_dir)
+
+
+def _file_digest(path: Path) -> bytes:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(64 * 1024), b""):
+            digest.update(chunk)
+    return digest.digest()
 
 
 def relative(path: Path | str | None, work_dir: Path | str) -> str | None:
