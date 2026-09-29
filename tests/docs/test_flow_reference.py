@@ -199,6 +199,7 @@ def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:
 
 def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
     lint, _report_dir = _configured_flow(LintFlow, tmp_path, "lint_demo")
+    lint._lint_invocation_dir = lint.reserve_invocation_dir()  # type: ignore[attr-defined]
     warning = LintWarning("RULE", "rtl.sv", 1, 2, "message", "lint_demo")
     lint_result = LintConfigResult(
         target="lint_demo",

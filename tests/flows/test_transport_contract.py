@@ -359,6 +359,19 @@ def test_acceptance_failures_keep_their_distinct_persistence_semantics(
         assert len(persisted) == 1  # Only the successful in-run update; no final save.
 
 
+def _assert_distinct_artifact_invocations(
+    runtime: Path,
+    cli_artifacts: dict[str, str],
+    mcp_artifacts: dict[str, str],
+) -> None:
+    assert mcp_artifacts.keys() == cli_artifacts.keys()
+    for name, cli_path in cli_artifacts.items():
+        mcp_path = mcp_artifacts[name]
+        assert mcp_path != cli_path
+        assert (runtime / cli_path).is_file()
+        assert (runtime / mcp_path).is_file()
+
+
 def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     import asyncio
     import os
@@ -409,7 +422,11 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     assert report["exit_code"] == 0
     for key in ("flow", "target", "criterion_key", "criterion_met", "passed", "eda_tool"):
         assert report[key] == cli_report[key]
-    assert report["detail"]["artifacts"] == cli_report["detail"]["artifacts"]
+    _assert_distinct_artifact_invocations(
+        runtime,
+        cli_report["detail"]["artifacts"],
+        report["detail"]["artifacts"],
+    )
 
 
 @pytest.mark.parametrize("base", ("BooleyFlow", "McpTool"))
