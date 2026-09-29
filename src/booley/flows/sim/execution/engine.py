@@ -48,6 +48,7 @@ from booley.flows.sim.build_session import (
     verify_existing_build_inputs,
 )
 from booley.flows.sim.config import (
+    DEFAULT_SIM_BUILD_TIMEOUT_MS,
     resolve_cycle_sentinels,
     resolve_max_rundir_bytes,
     resolve_pre_sim_commands,
@@ -335,8 +336,13 @@ class PreparedOrdinaryGroup:
             attempt.identity.attempt_token,
             environment=dict(attempt.simulator_environment),
         )
-        process = self._execution._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
-        build = classify_build_outcome(process, attempt.identity.attempt_token)
+        timeout_s = self._execution._build_timeout_s()
+        process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
+        build = classify_build_outcome(
+            process,
+            attempt.identity.attempt_token,
+            timeout_s=timeout_s,
+        )
         self._attempt = attempt
         self._build_process = process
         self._build = build
@@ -816,7 +822,11 @@ class SimulationExecution:
             )
             if attempt.reused
             else replace(
-                classify_build_outcome(process, attempt.identity.attempt_token),
+                classify_build_outcome(
+                    process,
+                    attempt.identity.attempt_token,
+                    timeout_s=self._build_timeout_s(),
+                ),
                 cache_decision=attempt.cache_decision,
             )
         )
@@ -906,8 +916,13 @@ class SimulationExecution:
                 attempt.identity.attempt_token,
                 environment=dict(attempt.simulator_environment),
             )
-            build_process = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
-            build = classify_build_outcome(build_process, attempt.identity.attempt_token)
+            timeout_s = self._build_timeout_s()
+            build_process = self._invoke(["sh", "-c", script], timeout=timeout_s)
+            build = classify_build_outcome(
+                build_process,
+                attempt.identity.attempt_token,
+                timeout_s=timeout_s,
+            )
             if not build.passed or build_process.returncode != 0 or build_process.timed_out:
                 return AdapterAttemptOutcome(build_process, None, None)
             session.authorize_fresh_image(attempt.prepared, inputs, attempt.cache_key)
@@ -1106,6 +1121,10 @@ class SimulationExecution:
 
     def _effective_timeout_ms(self, handle: TargetHandle) -> int:
         return self._options.timeout_ms or resolve_sim_timeout_ms(handle.project_root)
+
+    def _build_timeout_s(self) -> int:
+        timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
+        return max(1, timeout_ms // 1000)
 
     def _reset_build_root(self, build_root: Path, policy: _BuildPolicy) -> None:
         if policy.fresh_root_label is None:

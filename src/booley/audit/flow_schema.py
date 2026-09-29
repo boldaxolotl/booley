@@ -29,6 +29,7 @@ from booley.targets.flow_names import (
 
 SELECTIVE_FLOW_KNOBS = {
     "timeout_ms": frozenset({"sim", "lint", "synth", "fpga"}),
+    "build_timeout_ms": frozenset({"sim"}),
     "pre_run_commands": frozenset({"sim"}),
     "sim_time_grace_s": frozenset({"sim"}),
     "standalone_frontend": frozenset({"sim"}),
@@ -236,19 +237,21 @@ def _flow_shape_findings(
     section: Mapping[str, Any],
 ) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
-    if "timeout_ms" in section:
+    for timeout_field in ("timeout_ms", "build_timeout_ms"):
+        if timeout_field not in section:
+            continue
         try:
             timeout_ms = require_int(
-                section["timeout_ms"],
-                field=f"[flows.{flow_name}].timeout_ms",
+                section[timeout_field],
+                field=f"[flows.{flow_name}].{timeout_field}",
             )
             if timeout_ms <= 0:
                 raise BoundaryError
         except BoundaryError:
             findings.append(
                 fail_finding(
-                    f"booley.toml [flows.{flow_name}].timeout_ms must be a positive integer",
-                    f"fix [flows.{flow_name}].timeout_ms",
+                    f"booley.toml [flows.{flow_name}].{timeout_field} must be a positive integer",
+                    f"fix [flows.{flow_name}].{timeout_field}",
                 )
             )
     if "enabled" in section:

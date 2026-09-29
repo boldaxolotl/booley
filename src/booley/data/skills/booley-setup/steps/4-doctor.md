@@ -110,7 +110,10 @@ Sandbox if the container limit changed and repeat the heaviest synthesis.
   corroborating cgroup OOM counter. Inspect host/container events before calling
   it OOM; do not blindly retry unchanged inputs.
 - `termination = "timeout"`: inspect the last completed stage and live progress.
-  Raise `timeout_ms` only when the flow is still making credible progress. A
+  For Simulation, raise `[flows.sim].build_timeout_ms` for credible compiler
+  progress and `timeout_ms` for credible simulator or standalone-sweep
+  progress. For other Flows, raise `timeout_ms` only when the Flow is still
+  making credible progress. A
   frontend/optimization explosion is an RTL/recipe scalability defect, not a
   memory-limit calibration.
 - Partial area, cell, or latch counts are diagnostic only. They never satisfy
