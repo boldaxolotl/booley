@@ -26,7 +26,7 @@ from booley.flows.sim.backends.shared import (
 )
 from booley.flows.sim.result import count_sva_errors, parse_sim_verdict
 
-ADAPTER_RESULT_SCHEMA = 2
+ADAPTER_RESULT_SCHEMA = 1
 AdapterVerdict = Literal["pass", "fail", "timeout", "inconclusive"]
 AdapterFailureKind = SimulationFailureKind
 AdapterTraceStatus = Literal["ok", "incident"]

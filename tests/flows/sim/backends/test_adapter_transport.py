@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from booley.flows.sim.adapter_transport import (
+    ADAPTER_RESULT_SCHEMA,
     AdapterResult,
     AdapterTestResult,
     AdapterTraceResult,
@@ -108,6 +109,29 @@ def test_adapter_result_rejects_unknown_schema(tmp_path) -> None:
     )
 
     with pytest.raises(AdapterTransportError, match="schema"):
+        read_adapter_result(identity)
+
+
+def test_adapter_result_rejects_old_format_in_current_schema(tmp_path) -> None:
+    identity = _identity(tmp_path)
+    identity.result_path.write_text(
+        json.dumps(
+            {
+                "schema": ADAPTER_RESULT_SCHEMA,
+                "adapter": identity.adapter,
+                "attempt_token": identity.attempt_token,
+                "target_identity": identity.target_identity,
+                "selected_tests": list(identity.selected_tests),
+                "passed": True,
+                "inconclusive": False,
+                "sva_errors": 0,
+                "tests": ["reset"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AdapterTransportError, match="simulator_returncode"):
         read_adapter_result(identity)
 
 
