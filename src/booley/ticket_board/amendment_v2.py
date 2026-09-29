@@ -218,11 +218,13 @@ def _move_review_optional(
     key: str,
     leaf: Any,
 ) -> None:
-    destination = optional.setdefault("REVIEW", {}).setdefault(row.target, {})
+    optional_review = optional.get("REVIEW", {})
+    destination = optional_review.get(row.target, {})
     if key in destination:
         raise AmendmentProposalError(f"REVIEW {row.target}.{key} already has an optional outcome")
     if leaf != row.parameter:
         raise AmendmentProposalError(f"{row.identity!r} has an invalid REVIEW outcome")
+    destination = optional.setdefault("REVIEW", {}).setdefault(row.target, {})
     destination[key] = parent.pop(key)
     if not parent:
         del mandatory["REVIEW"][row.target]

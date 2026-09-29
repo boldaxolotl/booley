@@ -78,7 +78,7 @@ def test_draft_journal_parser_rejects_unreadable_state(
             "ticket",
             status="blocked",
             logs_dir=tmp_path / "logs",
-            append_transition=lambda _message: None,
+            append_transition=lambda _source, _message: None,
         )
 
 
@@ -122,7 +122,7 @@ def test_draft_journal_validation_rejects_noncanonical_state(
                 "ticket",
                 status="blocked",
                 logs_dir=tmp_path / "logs",
-                append_transition=lambda _message: None,
+                append_transition=lambda _source, _message: None,
             )
 
 
@@ -168,11 +168,13 @@ def test_draft_transition_requires_queued_or_blocked_basis_and_exact_files(
             "ticket",
             status="queue",
             logs_dir=tmp_path,
-            append_transition=lambda _message: None,
+            append_transition=lambda _source, _message: None,
         )
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
-    monkeypatch.setattr(draft_transition, "_draft_content", lambda *_args: (object(), b"draft"))
+    monkeypatch.setattr(
+        draft_transition, "_draft_content", lambda *_args: (object(), b"draft", False)
+    )
     monkeypatch.setattr(
         draft_transition,
         "load_ticket_baseline_from_document",
@@ -185,7 +187,7 @@ def test_draft_transition_requires_queued_or_blocked_basis_and_exact_files(
             "ticket",
             status="blocked",
             logs_dir=tmp_path,
-            append_transition=lambda _message: None,
+            append_transition=lambda _source, _message: None,
         )
     with pytest.raises(draft_transition.DraftTransitionError, match="unavailable"):
         draft_transition._require_file(tmp_path / "missing", "0" * 64, "draft")

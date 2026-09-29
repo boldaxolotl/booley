@@ -50,6 +50,7 @@ from .ticket_baseline import (
 from .ticket_document import (
     TicketDocument,
     convert_ticket_document,
+    legacy_review_outcomes_present,
     serialize_ticket_document,
     ticket_conversion_context,
 )
@@ -225,6 +226,8 @@ def _converted_document(
 
 def _normalized_review_fields(fields: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(fields)
+    if not legacy_review_outcomes_present(normalized):
+        return normalized
     mandatory = normalized["CRITERIA_MANDATORY"]
     optional = normalized.get("CRITERIA_OPTIONAL", {})
     leaves: dict[tuple[str, str], list[tuple[dict[str, Any], Any, bool]]] = {}
@@ -266,7 +269,7 @@ def _prune_review_sections(*sections: dict[str, Any]) -> None:
             section.pop("REVIEW")
 
 
-def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument, bytes]:
+def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument, bytes, bool]:
     document = _converted_document(
         root,
         ticket,
@@ -274,6 +277,7 @@ def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument,
         "executable",
         allow_legacy_review_outcomes=True,
     )
+    legacy_review_outcomes = legacy_review_outcomes_present(document.spec.fields)
     fields = _normalized_review_fields(dict(document.spec.fields))
     source = "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n" + document.spec.body
     with ticket_conversion_context(root, slug, "draft") as context:
@@ -282,7 +286,7 @@ def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument,
             details = "; ".join(item.message for item in converted.diagnostics)
             raise DraftTransitionError(f"Normalized draft is invalid: {details}")
         content = serialize_ticket_document(converted.document, context).encode()
-    return document, content
+    return document, content, legacy_review_outcomes
 
 
 def _new_journal(
@@ -296,7 +300,12 @@ def _new_journal(
         raise DraftTransitionError(
             f"return-to-draft requires a queued or blocked ticket, got {status!r}"
         )
-    document, draft_content = _draft_content(root, ticket, slug)
+    document, draft_content, legacy_review_outcomes = _draft_content(root, ticket, slug)
+    if status == "queued" and not legacy_review_outcomes:
+        raise DraftTransitionError(
+            "return-to-draft requires a blocked Ticket or a queued Ticket with legacy "
+            "REVIEW outcomes"
+        )
     try:
         basis = load_ticket_baseline_from_document(root, slug, document)
     except TicketBaselineError as exc:
@@ -619,7 +628,7 @@ def return_to_draft(
     *,
     status: str,
     logs_dir: Path | str,
-    append_transition: Callable[[str], None],
+    append_transition: Callable[[str, str], None],
 ) -> AuthoringWorkspace:
     """Prepare and recoverably publish a fresh Ticket draft."""
     root = Path(project_root).resolve()
@@ -641,11 +650,11 @@ def return_to_draft(
         _publish_generation(root, journal)
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
         _publish_board(root, journal)
+        source_status = _source_status(journal)
         append_transition(
-            f"source state {_source_status(journal)}; "
+            source_status,
             f"old Ticket generation {journal.machine['generation']}; "
-            f"new draft identity {journal.generation}; "
-            f"{journal.operation_id}"
+            f"new draft identity {journal.generation}; {journal.operation_id}",
         )
         journal = journal.with_state("published")
         _write_journal(root, journal)

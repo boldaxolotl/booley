@@ -118,6 +118,8 @@ def test_review_optional_move_rejects_destination_collision() -> None:
             "bugs",
             "done",
         )
+    assert mandatory == {"REVIEW": {"rtl": {"bugs": "done"}}}
+    assert optional == {"REVIEW": {"rtl": {"bugs": "clean"}}}
 
 
 def test_v2_amendment_moves_scalar_synth_pass_to_optional(tmp_path: Path) -> None:

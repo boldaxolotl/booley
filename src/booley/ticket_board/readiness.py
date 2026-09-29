@@ -6,13 +6,17 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
+from .frontmatter import parse_frontmatter
 from .scanner import find_ticket_file
 from .ticket_document import (
     convert_ticket_document,
+    legacy_review_outcomes_present,
     ticket_conversion_context,
 )
 from .ticket_validation import is_operational_ticket_status, validate_executable_ticket
@@ -106,7 +110,14 @@ def check_ticket_ready(project_root: Path | str, slug: str) -> ReadinessResult:
         )
     warnings = tuple(item for item in results if item.startswith("[warning] "))
     errors = [item for item in results if not item.startswith("[warning] ")]
-    if any("clean already implies done" in item for item in errors):
+    legacy_recovery_available = False
+    if _status in {"queued", "queue", "blocked"}:
+        try:
+            fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError):
+            fields = {}
+        legacy_recovery_available = legacy_review_outcomes_present(fields)
+    if legacy_recovery_available:
         errors.append(
             "recover the published Ticket with "
             f"python -m booley.ticket_board return-to-draft {slug}, then confirm "
