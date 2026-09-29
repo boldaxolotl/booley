@@ -405,6 +405,22 @@ def test_preview_rejects_unblocked_ticket(tmp_path: Path) -> None:
         preview_amendment(tio, "blocked-again", _optional_request())
 
 
+def test_preview_directs_authored_drift_to_return_to_draft(tmp_path: Path) -> None:
+    _root, blocked, tio = _blocked_ticket(tmp_path)
+    blocked.write_text(
+        blocked.read_text(encoding="utf-8").replace(
+            "summary: Recover publication", "summary: Edited while blocked"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        AmendmentError,
+        match="acceptance-input-change-required: authored Ticket changed; use return-to-draft",
+    ):
+        preview_amendment(tio, "blocked-again", _optional_request())
+
+
 def test_preview_reports_preparation_failure_as_amendment_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
