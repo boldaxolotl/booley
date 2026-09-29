@@ -119,5 +119,11 @@ def _add_bootstrap(result: bootstrap.BootstrapResult, report: Findings) -> None:
                 check_id="host.bootstrap-pending",
                 subject=finding.resource,
             )
+        elif finding.state is bootstrap.BootstrapState.WARNING:
+            report.warn(
+                message,
+                check_id="host.bootstrap-warning",
+                subject=finding.resource,
+            )
         else:
             report.pass_(message)

@@ -26,6 +26,22 @@ host or client.
 
 Invoke these explicitly; agents do not start them on their own.
 
+From a complete, clean primary Booley checkout on `main` whose HEAD matches the
+canonical host-installed Booley revision, a maintainer can persistently install
+all three into Codex and an existing distinct Claude skill target:
+
+```bash
+booley bootstrap --with-qa-skills
+```
+
+Plain Bootstrap and Project Initialization then keep them reconciled from this
+live checkout. Remove only Booley-owned QA links with
+`booley bootstrap --without-qa-skills`. A moved, deleted, dirty, off-main, or
+revision-skewed checkout produces a non-blocking warning with recovery guidance.
+They are host-only maintainer tools and are excluded from Sandbox host-skill
+mounts. Codex metadata disables implicit invocation; other clients receive the
+same explicit-only instruction as behavioral guidance, not a security boundary.
+
 | Skill | Use |
 |---|---|
 | [`booley-qa-run`](booley-qa-run/SKILL.md) | Run one mission against a Booley build; writes `findings.md`, `log.md`, `resources.md`, `evidence/` |
