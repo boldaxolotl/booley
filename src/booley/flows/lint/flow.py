@@ -876,7 +876,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
             payload,
             work_dir=self.args.work_dir,
         )
-        atomic_write_json(report_dir / "lint_report.json", report)
+        stable_report = report_dir / "lint_report.json"
+        atomic_write_json(stable_report, report)
+        stable_report.chmod(0o644)
         return report_path
 
     # --- Main execution ---

@@ -92,7 +92,7 @@ def publish_bytes(
 ) -> str:
     """Create immutable captured-output evidence and return its public path."""
     destination = _destination(invocation_dir, components)
-    durable_create(destination, raw)
+    durable_create(destination, raw, mode=0o644)
     return posix_relpath(destination, work_dir)
 
 
@@ -109,7 +109,7 @@ def publish_file(
         raise ValueError(f"artifact source is not a regular file: {source}")
     before_digest = _file_digest(source)
     destination = _destination(invocation_dir, components)
-    durable_copy(source, destination)
+    durable_copy(source, destination, mode=0o644)
     after = source.stat()
     destination_digest = _file_digest(destination)
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (

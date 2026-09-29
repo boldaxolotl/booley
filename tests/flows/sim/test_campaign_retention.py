@@ -3,6 +3,7 @@
 import json
 import re
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,45 @@ def campaign(tmp_path):
     progress.checkpoint(complete=True)
     assert outcome.exit_code == 0
     return outcome
+
+
+@pytest.mark.parametrize(
+    ("relative", "message"),
+    [
+        (Path("artifact"), "layout"),
+        (Path("artifacts/other/revision/target/tests/test/run.log"), "role"),
+        (Path("artifacts/candidate/target/not-tests/test/run.log"), "layout"),
+        (Path("artifacts/candidate/target/tests/test/result.txt"), "file"),
+        (Path("artifacts/candidate/target/tests/test/result/wrong.json"), "file"),
+        (Path("artifacts/candidate/target/tests/test/trace/wave.txt"), "file"),
+        (Path("artifacts/candidate/../tests/test/run.log"), "Unsafe"),
+    ],
+)
+def test_invocation_artifact_layout_rejects_unowned_paths(
+    relative: Path,
+    message: str,
+) -> None:
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _validate_invocation_artifact_layout,
+    )
+
+    with pytest.raises(CampaignRetentionError, match=message):
+        _validate_invocation_artifact_layout(relative)
+
+
+def test_referenced_invocation_artifact_must_exist(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _referenced_invocation_artifacts,
+    )
+
+    document = {
+        "artifacts": {"log": "reports/sim/1/artifacts/candidate/target/tests/test/run.log"}
+    }
+
+    with pytest.raises(CampaignRetentionError, match="missing or unsafe"):
+        _referenced_invocation_artifacts(tmp_path, document)
 
 
 def test_coverage_progress_stamps_run_identity_and_timestamp(tmp_path, monkeypatch):

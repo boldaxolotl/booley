@@ -1652,6 +1652,7 @@ class TestStructuredReport:
         assert json.loads((report_dir / "lint_report.json").read_bytes()) == json.loads(
             second_report.read_bytes()
         )
+        assert (report_dir / "lint_report.json").stat().st_mode & 0o004
 
     @patch.object(LintFlow, "_execute")
     @patch.object(

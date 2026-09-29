@@ -7,6 +7,7 @@ project-relative, and it is absent rather than wrong.
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
@@ -28,8 +29,24 @@ class TestDurablePublication:
 
         published = tmp_path / relative
         assert published.read_bytes() == b"evidence"
+        assert stat.S_IMODE(published.stat().st_mode) == 0o644
         assert published.is_relative_to(invocation)
         assert ".." not in published.relative_to(invocation).parts
+
+    def test_file_snapshot_is_readable_outside_the_publisher_identity(self, tmp_path: Path):
+        invocation = tmp_path / "reports/sim/1"
+        source = tmp_path / "source"
+        source.write_bytes(b"evidence")
+        source.chmod(0o600)
+
+        relative = artifacts.publish_file(
+            invocation,
+            ("copy",),
+            source,
+            work_dir=tmp_path,
+        )
+
+        assert stat.S_IMODE((tmp_path / relative).stat().st_mode) == 0o644
 
     def test_destination_is_create_only(self, tmp_path: Path):
         invocation = tmp_path / "reports/lint/1"
