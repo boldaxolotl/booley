@@ -28,6 +28,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- REVIEW category/focus declarations now require exactly one scalar `done` or
+  `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
+  already-published Tickets. `booley board check-ready <slug>` is equivalent to
+  `booley run --ticket <slug> --check-ready` for detecting the invalid grammar.
 - Projects that placed formal proof artifacts at `<anchor>/proofs/...` as a
   workaround must move them beneath
   `<anchor>/<approval-directory>/proofs/...`. Keep the authored proof reference
