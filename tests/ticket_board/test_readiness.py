@@ -13,6 +13,7 @@ from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import readiness as readiness_module
 from booley.ticket_board import ticket_baseline as ticket_baseline_module
 from booley.ticket_board import ticket_validation as ticket_validation_module
+from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.ticket_baseline import TicketBaselineError
@@ -201,6 +202,49 @@ def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path
 
     assert result.ready is False
     assert any("protected path" in error for error in result.errors)
+
+
+def test_operational_legacy_review_pair_reports_hard_cutoff_without_mutation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    project = root / ".booley_project"
+    (project / "tickets/board/drafts").mkdir(parents=True)
+    (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "initial")
+    tio = TicketIO(project / "tickets", project_root=root)
+    draft = tio.create_ticket_document(
+        "legacy-pair",
+        "---\nsummary: Legacy pair\ntype: bugfix\nbranch: main\n"
+        "scope: [README.md]\non_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
+        "---\n\n## Description\n\nExercise readiness.\n",
+    )
+    assert draft is not None
+    assert tio.enqueue_ticket("legacy-pair")
+    ticket = project / "tickets/board/queue/legacy-pair.md"
+    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] = ["done", "clean"]
+    ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
+    content = ticket.read_bytes()
+    status_before = _git(root, "status", "--porcelain", "--untracked-files=all")
+
+    result = check_ticket_ready(root, "legacy-pair")
+
+    assert result.ready is False
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("12:7: ")
+    assert "clean already implies done" in result.errors[0]
+    assert ticket.read_bytes() == content
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == status_before
 
 
 def test_worktree_discovery_failure_is_loud(

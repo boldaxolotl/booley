@@ -760,6 +760,7 @@ def _normalize_criteria(
     """Expand authored capability blocks into stable atomic requirements."""
     rows: list[TicketCriterion] = []
     seen: set[str] = set()
+    review_seen: set[tuple[str | None, str | None]] = set()
     annotations: dict[str, tuple[str | None, str | None]] = {}
     for section_name, section, required in (
         (_MANDATORY, mandatory, True),
@@ -770,11 +771,26 @@ def _normalize_criteria(
             raise ValueError(f"Unknown Ticket capabilities: {', '.join(sorted(unknown))}")
         for capability, declaration in section.items():
             parsed = _capability_rows(
-                capability, declaration, section_name, required, view, locations, annotations
+                capability,
+                declaration,
+                section_name,
+                required,
+                view,
+                locations,
+                annotations,
             )
             if not parsed:
                 raise ValueError(f"{section_name}.{capability} must not be empty")
             for row in parsed:
+                if row.capability == "REVIEW":
+                    review_identity = (row.target, row.test)
+                    if review_identity in review_seen:
+                        raise ValueError(
+                            "REVIEW category/focus must choose one scalar done or clean outcome; "
+                            "clean already implies done; amend REVIEW outcome to "
+                            f"clean at {row.line}:{row.column}"
+                        )
+                    review_seen.add(review_identity)
                 if row.identity in seen:
                     raise ValueError(f"Duplicate atomic Criterion {row.identity}")
                 seen.add(row.identity)
@@ -1116,21 +1132,18 @@ def _review_rows(
     for category, focuses in categories.items():
         if category not in _REVIEW_FOCUS:
             raise ValueError(f"REVIEW category {category!r} is unknown")
-        for focus, outcomes in _nonempty_mapping(focuses, "REVIEW category").items():
+        for focus, outcome in _nonempty_mapping(focuses, "REVIEW category").items():
             if focus not in _REVIEW_FOCUS[category]:
                 raise ValueError(f"REVIEW {category} focus {focus!r} is unknown")
-            values = outcomes if isinstance(outcomes, list) else [outcomes]
-            if (
-                not values
-                or any(not isinstance(value, str) for value in values)
-                or len(values) != len(set(values))
-                or set(values) - {"done", "clean"}
-            ):
-                raise ValueError("REVIEW outcome must be done, clean, or [done, clean]")
             line, column = locations.get((section_name, "REVIEW", category, focus), (1, 1))
-            rows.extend(
+            if not isinstance(outcome, str) or outcome not in {"done", "clean"}:
+                raise ValueError(
+                    "REVIEW outcome must be scalar done or clean; lists are not allowed. "
+                    "clean already implies done; amend REVIEW outcome to "
+                    f"clean at {line}:{column}"
+                )
+            rows.append(
                 _criterion("REVIEW", required, category, focus, outcome, outcome, line, column)
-                for outcome in values
             )
     return tuple(rows)
 

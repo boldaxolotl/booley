@@ -77,7 +77,7 @@ def test_board_help_hides_deprecated_review_commands(capsys):
         parser.parse_args(["board", "--help"])
     assert exc.value.code == 0
     output = capsys.readouterr().out
-    assert "{show,review,approve,validate,create,move,reset,archive}" in output
+    assert "{show,review,approve,validate,check-ready,create,move,reset,archive}" in output
     assert "request-review" not in output
     assert "[may invoke agent]" in output
 
@@ -3028,6 +3028,11 @@ class TestCheckReady:
         assert args.check_ready is True
         assert args.ticket == "demo"
 
+    def test_parser_exposes_board_readiness_alias(self):
+        args = self._parse(["board", "check-ready", "demo"])
+        assert args.board_command == "check-ready"
+        assert args.slug == "demo"
+
     def test_readiness_reports_validation_errors(self, tmp_path, monkeypatch, capsys):
         result = MagicMock(errors=("bad criterion",), warnings=())
         check = MagicMock(return_value=result)
@@ -3036,6 +3041,18 @@ class TestCheckReady:
 
         assert tlr._check_ticket_readiness(args, tmp_path) == 2
         assert "bad criterion" in capsys.readouterr().err
+        check.assert_called_once_with(tmp_path, "demo")
+
+    def test_board_alias_renders_the_same_readiness_result(self, tmp_path, monkeypatch, capsys):
+        result = MagicMock(errors=("bad criterion",), warnings=("warning",))
+        check = MagicMock(return_value=result)
+        monkeypatch.setattr("booley.ticket_board.readiness.check_ticket_ready", check)
+        args = self._parse(["board", "check-ready", "demo"])
+
+        assert tlr._cmd_board(args, tmp_path) == 2
+        captured = capsys.readouterr()
+        assert "warning" in captured.err
+        assert "bad criterion" in captured.err
         check.assert_called_once_with(tmp_path, "demo")
 
 

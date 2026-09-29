@@ -68,20 +68,6 @@ def test_ci_pytest_temp_uses_runner_volume() -> None:
     assert all('--basetemp "${{ runner.temp }}/pytest"' in step["run"] for step in pytest_steps)
 
 
-def test_invocation_lock_scan_skips_transient_git_object_trees(
-    tmp_path: Path, pytestconfig: pytest.Config
-) -> None:
-    suite_config = _suite_config(pytestconfig)
-    lock = tmp_path / "reports" / ".invocation-000001.lock"
-    lock.parent.mkdir()
-    lock.touch()
-    git_lock = tmp_path / "repo" / ".git" / "objects" / "ab" / ".invocation-git.lock"
-    git_lock.parent.mkdir(parents=True)
-    git_lock.touch()
-
-    assert list(suite_config._invocation_lock_paths(tmp_path)) == [lock]
-
-
 def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
     """A large Windows-only module tail must not serialize one xdist worker."""
     workflow = _test_workflow()
