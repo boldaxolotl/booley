@@ -360,8 +360,9 @@ deliberately outside every repo and bind mount so it cannot be committed) and
 re-seeds the devcontainer spec; Booley then injects it on every container start.
 **Rebuild an existing container once** so the read-only mount exists.
 `booley auth --status` reports which credential each agent would use, and
-`booley doctor` warns when a run is about to rely on a refreshing one. Full
-billing and precedence detail is in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing).
+`booley doctor` warns when a run is about to rely on a refreshing one. Billing
+options are in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing);
+choosing between several credentials is in [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#pinning-what-bills-agent-auth).
 
 ## Two interactive agents keep clobbering each other's edits
 
