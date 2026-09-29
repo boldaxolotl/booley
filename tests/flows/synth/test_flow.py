@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -2662,7 +2663,7 @@ class TestBuildSynthCmd:
         assert left_snapshot["constraints"] == [
             {
                 "core": "::syn_demo:0",
-                "sha256": "73a5340b905b954009cbc694b2601eab304e7313db1fa3854c8d2743ee187899",
+                "sha256": hashlib.sha256((left_root / constraint).read_bytes()).hexdigest(),
             }
         ]
 

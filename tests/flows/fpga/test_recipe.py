@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
     assert snapshots[0]["constraints"] == [
         {
             "core": "::core:0",
-            "sha256": "cc00a72f0680fa148368967fb866c8b999e195faa804e6256c8bdf1e708c18a8",
+            "sha256": hashlib.sha256((roots[0] / "timing.xdc").read_bytes()).hexdigest(),
         }
     ]
 
