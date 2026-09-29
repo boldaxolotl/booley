@@ -35,7 +35,11 @@ from booley.flows.sim.build_session import (
     snapshot_build_inputs,
     verify_existing_build_inputs,
 )
-from booley.flows.sim.config import resolve_pre_sim_build_access, resolve_pre_sim_commands
+from booley.flows.sim.config import (
+    DEFAULT_SIM_BUILD_TIMEOUT_MS,
+    resolve_pre_sim_build_access,
+    resolve_pre_sim_commands,
+)
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
@@ -224,7 +228,8 @@ class VerilatorCoverageExecution:
             environment=simulation_target_environment(self._handle),
         )
         script = _in_directory_script(self._handle.project_root, script)
-        process = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
+        timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
+        process = self._invoke(["sh", "-c", script], timeout=max(1, timeout_ms // 1000))
         outcome = classify_build_outcome(process, token)
         if not outcome.passed:
             return SimulationBuildResult(False, outcome.output or outcome.reason, identity)

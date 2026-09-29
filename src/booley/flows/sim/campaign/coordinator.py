@@ -44,6 +44,7 @@ from .store import CampaignRecovery, CampaignStore, WorkItemRecovery
 @dataclass(frozen=True, slots=True)
 class CampaignPolicy:
     timeout_seconds: float | None = None
+    build_timeout_seconds: float | None = None
     no_kill: bool = False
     diagnostic: bool = False
     result_verbosity: str = "compact"
@@ -51,6 +52,8 @@ class CampaignPolicy:
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("campaign timeout must be positive")
+        if self.build_timeout_seconds is not None and self.build_timeout_seconds <= 0:
+            raise ValueError("campaign build timeout must be positive")
         if self.result_verbosity not in {"compact", "full"}:
             raise ValueError("result verbosity must be compact or full")
 

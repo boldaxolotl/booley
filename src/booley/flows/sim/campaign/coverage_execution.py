@@ -318,6 +318,9 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             timeout_ms=round(request.policy.timeout_seconds * 1000)
             if request.policy.timeout_seconds is not None
             else None,
+            build_timeout_ms=round(request.policy.build_timeout_seconds * 1000)
+            if request.policy.build_timeout_seconds is not None
+            else None,
             result_verbosity=request.policy.result_verbosity,
         )
         workload = cast(Mapping[str, object], request.manifest.document["workload"])

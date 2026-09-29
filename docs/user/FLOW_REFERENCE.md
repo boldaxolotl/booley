@@ -48,8 +48,12 @@ Common controls:
   Pre-Sim Commands and does not update Booley-managed durable state.
 - `--timeout-ms <positive-integer>` sets the active-time budget for each Flow
   work unit. It overrides `[flows.<name>].timeout_ms`, which overrides the
-  workload-specific default. Queue time is not charged. The old `--timeout`
-  spelling remains a deprecated CLI-only alias for one compatibility window.
+  workload-specific default. Simulation is the exception: simulator-image
+  builds use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use their
+  independent fixed budget. See [Simulation build, Pre-Sim, and run
+  timeouts](CONFIG.md#simulation-build-pre-sim-and-run-timeouts). Queue time is
+  not charged. The old `--timeout` spelling remains a deprecated CLI-only
+  alias for one compatibility window.
 - `booley flow <name> --help` is the authoritative argument list.
 
 ## Shared result contract
@@ -116,6 +120,12 @@ and `planning_disclosures`. Each work unit identifies its Target and revision
 role, timeout, sources and constraints, resolved parameters and recipe, ordered
 command argv, and expected artifacts. Paths are relative to `work_dir` where
 possible; ambient environment values and secrets are excluded.
+
+For Simulation, ordinary candidate and baseline units expose the simulator
+budget as `timeout_ms` and the invocation-carried build budget as recipe
+`build_timeout_ms`. Elaboration Check units expose their build budget in both
+fields because the Target build is their only subprocess. Standalone units
+retain the standalone-sweep `timeout_ms` and have no build field.
 
 Dry-run exits `0` only when the aggregate plan is valid. It exits `2` when any
 selected Target or baseline cannot be planned, while retaining successfully

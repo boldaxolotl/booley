@@ -146,6 +146,17 @@ def test_sim_configured_skip_control_stays_documented() -> None:
     assert "all-skip target fails preflight" in config
 
 
+def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
+    shared = " ".join(_shared_section().split())
+    config = " ".join((REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+
+    assert "[flows.sim].build_timeout_ms" in shared
+    assert "recipe `build_timeout_ms`" in shared
+    assert "Standalone units" in shared and "have no build field" in shared
+    assert "defaults to `3600000` (one hour)" in config
+    assert "independent fixed 600-second budget" in config
+
+
 def test_sim_test_fields_stay_documented() -> None:
     entry = _test_report_entry(
         SimTestResult(

@@ -450,7 +450,7 @@ class TestMcpToolTimeoutSeconds:
             {"timeout_ms": 10_000, "trace": True},
             {"default_timeout": 600},
         )
-        assert timeout == 690
+        assert timeout == 4330
 
     def test_simulate_non_trace_timeout_gets_small_margin(self):
         timeout = self._mcp_tool_timeout_seconds(
@@ -458,7 +458,7 @@ class TestMcpToolTimeoutSeconds:
             {"timeout_ms": 10_000, "trace": False},
             {"default_timeout": 600},
         )
-        assert timeout == 630
+        assert timeout == 4240
 
     def test_simulate_configured_default_gets_small_margin(self, tmp_path):
         with patch(
@@ -470,7 +470,7 @@ class TestMcpToolTimeoutSeconds:
                 {"work_dir": str(tmp_path), "trace": False},
                 {"default_timeout": 600},
             )
-        assert timeout == 630
+        assert timeout == 4830
 
     def test_simulate_campaign_budget_scales_by_work_units(self):
         with patch(
@@ -482,7 +482,7 @@ class TestMcpToolTimeoutSeconds:
                 {"target": "a,b", "timeout_ms": 600_000, "trace": False},
                 {"default_timeout": 1290},
             )
-        assert timeout == 4 * 600 + 30
+        assert timeout == 4 * (3600 + 600 + 600) + 30
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
@@ -494,7 +494,7 @@ class TestMcpToolTimeoutSeconds:
                 {"target": "a,b,c", "timeout_ms": 600_000, "trace": True},
                 {"default_timeout": 1290},
             )
-        assert timeout == 3 * 600 + 3 * 90
+        assert timeout == 3 * (3600 + 600 + 600) + 3 * 90 + 30
 
     def test_elab_only_standalone_budget_counts_targets_and_one_sweep(self):
         from booley.flows.sim.mode import SimulationMode
@@ -512,8 +512,42 @@ class TestMcpToolTimeoutSeconds:
                 },
                 {"default_timeout": 1},
             )
-        assert timeout == 3 * 10 + 30
+        assert timeout == 2 * 3600 + 10
         assert resolve_units.call_args.args[-1] is SimulationMode.ELAB_ONLY_STANDALONE
+
+    def test_elab_only_budget_counts_only_target_builds(self):
+        timeout = self._mcp_tool_timeout_seconds(
+            "sim",
+            {"target": "a,b", "mode": "elab_only", "timeout_ms": 10_000},
+            {"default_timeout": 1},
+        )
+
+        assert timeout == 2 * 3600
+
+    def test_cycle_count_baseline_uses_same_budget_for_both_revisions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        state = tmp_path / "state.json"
+        state.write_text(
+            json.dumps(
+                {"criteria": {"cycle_count_core": {"params": {"_baseline_ref": "a" * 40}}}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
+        with patch(
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            return_value=1,
+        ):
+            timeout = self._mcp_tool_timeout_seconds(
+                "sim",
+                {"target": "core", "timeout_ms": 10_000},
+                {"default_timeout": 1},
+            )
+
+        assert timeout == 2 * (3600 + 600 + 10) + 30
 
     def test_lint_short_timeout_uses_outer_floor(self):
         timeout = self._mcp_tool_timeout_seconds(
@@ -641,8 +675,7 @@ class TestMcpToolTimeoutSeconds:
             {"work_dir": str(tmp_path), "trace": False},
             {"default_timeout": 600},
         )
-        # max(default 600, 1800000ms -> 1800s) + report-persistence margin.
-        assert timeout == 1830
+        assert timeout == 3600 + 600 + 1800 + 30
 
     def test_lint_no_work_dir_honors_current_workspace_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -678,7 +711,71 @@ class TestMcpToolTimeoutSeconds:
             {"work_dir": str(tmp_path), "trace": False},
             {"default_timeout": 600},
         )
-        assert timeout == 630
+        assert timeout == 4830
+
+    def test_simulate_custom_build_timeout_is_included_exactly(self, tmp_path: Path):
+        from booley.runtime.project_dir import reset_cache
+
+        reset_cache()
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        (project / "booley.toml").write_text(
+            "[flows.sim]\nbuild_timeout_ms = 7000\n",
+            encoding="utf-8",
+        )
+
+        timeout = self._mcp_tool_timeout_seconds(
+            "sim",
+            {"work_dir": str(tmp_path), "timeout_ms": 10_000},
+            {"default_timeout": 1},
+        )
+
+        assert timeout == 7 + 600 + 10 + 30
+
+    def test_coverage_budget_counts_run_and_target_work_exactly(self, tmp_path: Path):
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        (project / "booley.toml").write_text(
+            "[flows.sim]\nbuild_timeout_ms = 7000\n",
+            encoding="utf-8",
+        )
+        with patch(
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            return_value=3,
+        ):
+            timeout = self._mcp_tool_timeout_seconds(
+                "sim",
+                {
+                    "work_dir": str(tmp_path),
+                    "target": "a,b",
+                    "timeout_ms": 10_000,
+                    "coverage": True,
+                },
+                {"default_timeout": 1},
+            )
+
+        assert timeout == 3 * (10 + 600 + 90) + 2 * (7 + 30 + 600) + 30
+
+    @pytest.mark.parametrize("value", [True, 0, -1, 1.5, "7000"])
+    def test_invalid_build_timeout_fails_before_spawn_budgeting(
+        self,
+        tmp_path: Path,
+        value: object,
+    ):
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        rendered = "true" if value is True else repr(value)
+        (project / "booley.toml").write_text(
+            f"[flows.sim]\nbuild_timeout_ms = {rendered}\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="build_timeout_ms"):
+            self._mcp_tool_timeout_seconds(
+                "sim",
+                {"work_dir": str(tmp_path)},
+                {"default_timeout": 1},
+            )
 
 
 # ---------------------------------------------------------------------------

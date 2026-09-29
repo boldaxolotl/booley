@@ -56,7 +56,11 @@ from booley.flows.progress_lifecycle import (
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
-from booley.flows.sim.config import resolve_pre_sim_build_access, resolve_run_cwd
+from booley.flows.sim.config import (
+    resolve_pre_sim_build_access,
+    resolve_run_cwd,
+    resolve_sim_build_timeout_ms,
+)
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     FrozenJson,
@@ -1900,6 +1904,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         from booley.flows.endpoint_admission import authorize_simulation_targets
 
         try:
+            self._effective_build_timeout_ms()
             prepared = self._prepare_campaign_targets()
             if isinstance(prepared, EndpointOutcome):
                 return prepared
@@ -2025,8 +2030,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         "elab_pass": "--mode elab-only",
         "elaborate_standalone": "--mode elab-only-standalone",
     }
-    # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
-    # long enough for the child sim timeout plus one non-FIFO trace retry.
+    # The MCP server computes mode-aware build, hook, execution, and finalization
+    # headroom. This class default is only its defensive floor.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
 
     @property
@@ -2078,6 +2083,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         sim budget instead of passing ``--timeout-ms`` on every call.
         """
         return self._timeout_ms()
+
+    def _effective_build_timeout_ms(self) -> int:
+        """Resolve and freeze the invocation-wide simulator-image build budget."""
+        cached = getattr(self, "_resolved_build_timeout_ms", None)
+        if cached is None:
+            cached = resolve_sim_build_timeout_ms(self.args.work_dir)
+            self._resolved_build_timeout_ms = cached
+        return cast(int, cached)
 
     def _get_timeout(self) -> int:
         """Wrapper timeout in seconds, derived from the effective timeout (ms).
@@ -2295,6 +2308,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         environment = self._target_sim_env(target)
         redacted = self._redact_plan_environment(target, command)
         recipe = {
+            "build_timeout_ms": self._effective_build_timeout_ms(),
             "environment_fingerprint": plan_value_fingerprint(environment),
             "flow_options": preview.flow_options,
             "mode": self._mode.value,
@@ -3147,6 +3161,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         options = SimulationOptions(
             trace=self.args.trace,
             timeout_ms=self._effective_timeout_ms(),
+            build_timeout_ms=self._effective_build_timeout_ms(),
             result_verbosity=self.args.result_verbosity,
         )
         execution = self._coverage_campaign_execution(
@@ -3899,6 +3914,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _campaign_policy(self) -> CampaignPolicy:
         return CampaignPolicy(
             timeout_seconds=self._effective_timeout_ms() / 1000,
+            build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
             diagnostic=self.args.diagnostic,
             result_verbosity=self.args.result_verbosity,
@@ -4105,6 +4121,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         sources, constraints = normalize_plan_inputs(inspection.inputs, self.args.work_dir)
         build_root = preview_generation_root(handle)
         recipe = {
+            "build_timeout_ms": self._effective_build_timeout_ms(),
             "environment_fingerprint": plan_value_fingerprint(self._target_sim_env(target)),
             "flow_options": inspection.flow_options,
             "mode": self._mode.value,
@@ -4118,7 +4135,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target_identity=handle.identity,
             test_or_module_scope=("elaboration",),
             eda_tool=inspection.eda_tool,
-            timeout_ms=self._effective_timeout_ms(),
+            timeout_ms=self._effective_build_timeout_ms(),
             sources=sources,
             constraints=constraints,
             parameters=inspection.parameters,
@@ -4369,7 +4386,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ]
         proc = self._execute_boundary(
             command,
-            timeout=max(1, self._effective_timeout_ms() // 1000),
+            timeout=max(1, self._effective_build_timeout_ms() // 1000),
         )
         outcome = classify_build_outcome(proc, token)
         result = ElabOnlyTargetResult(
@@ -5242,6 +5259,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             options=SimulationOptions(
                 trace=self.args.trace,
                 timeout_ms=self.args.timeout_ms,
+                build_timeout_ms=self._effective_build_timeout_ms(),
                 result_verbosity=self.args.result_verbosity,
             ),
         )

@@ -691,7 +691,7 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
 
     def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         assert command[:2] == ["sh", "-c"]
-        assert timeout == 600
+        assert timeout == 5
         _write_transport(
             handle,
             prepared,
@@ -725,6 +725,7 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
         invoke,
         ("reset", "count"),
         cocotb=True,
+        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
         artifact_root=tmp_path / "reports",
     )
 
@@ -2640,8 +2641,17 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     run_cwd = tmp_path / "run"
     run_cwd.mkdir()
     commands: list[list[str]] = []
-    invoke = _snapshot_invoke(commands, eda_tool, handle, snapshot)
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    timeouts: list[int] = []
+    snapshot_invoke = _snapshot_invoke(commands, eda_tool, handle, snapshot)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        timeouts.append(timeout)
+        return snapshot_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(
+        invoke=invoke,
+        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
+    )
     with (
         patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
@@ -2656,6 +2666,7 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
         outcome = group.launch_snapshot(snapshot, run_cwd)
 
     assert outcome.passed
+    assert timeouts == [7, 5]
     assert len(commands) == 2
     launch = commands[1][-1]
     assert adapter_flag in launch

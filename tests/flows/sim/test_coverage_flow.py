@@ -17,7 +17,7 @@ from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
     resolve_coverage_campaign_reference,
 )
-from booley.flows.sim.execution.contract import PreSimEvidence
+from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
@@ -415,6 +415,8 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     (data / "booley.toml").write_text(
         "[flows.sim]\n"
+        "build_timeout_ms = 7000\n"
+        "timeout_ms = 5000\n"
         'pre_run_commands = ["python3 scripts/stage.py"]\n'
         'pre_sim_build_access = "legacy-per-test"\n'
     )
@@ -431,8 +433,8 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
             )
             return SimulationRunResult(result.verdict, result.output, evidence)
 
-    def execution_factory(_handle, _options, commands, access):
-        received.append((commands, access))
+    def execution_factory(_handle, options, commands, access):
+        received.append((options, commands, access))
         return PreSimPassingExecution()
 
     result = SimulateFlow(coverage_execution=execution_factory).execute(
@@ -445,7 +447,13 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
     )
 
     assert result.exit_code == 0
-    assert received == [(("python3 scripts/stage.py",), "legacy-per-test")]
+    assert received == [
+        (
+            SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
+            ("python3 scripts/stage.py",),
+            "legacy-per-test",
+        )
+    ]
     assert "sim_0: pre-sim=passed test=reset duration=0.250s" in result.outcome.report_text
 
 
