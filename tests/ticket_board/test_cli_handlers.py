@@ -490,7 +490,7 @@ class TestCmdNextStage:
 
 
 class TestCmdValidateLogs:
-    def test_validate_logs_executable_runtime_ticket(self, tmp_path, monkeypatch, capsys):
+    def test_validate_logs_executable_runtime_ticket(self, tmp_path, monkeypatch, capsys, request):
         root, project_dir, tio = _paired_basis_project(tmp_path)
         slug = "validate-runtime-ticket"
         ticket = _create_v2_ticket(
@@ -517,6 +517,7 @@ class TestCmdValidateLogs:
         monkeypatch.setenv("PROJECT_ROOT", str(root))
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
         reset_cache()
+        request.addfinalizer(reset_cache)
 
         assert main(["validate-logs", slug]) == 1
         captured = capsys.readouterr()
