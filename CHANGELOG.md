@@ -60,8 +60,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   Booley-owned isolated attempt directories.
 - Existing Simulation Campaign schema versions are immutable. Unsupported or
   corrupt manifests fail closed and must be rerun or restored byte-for-byte;
-  upgrades never rewrite retained authority in place. See
-  [Simulation Campaign migration](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SIMULATION_CAMPAIGN_MIGRATION.md).
+  upgrades never rewrite retained authority in place.
 
 ### Bug fixes
 
