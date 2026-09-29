@@ -82,6 +82,27 @@ def test_affinity_below_host_cpu_count_is_authoritative(
     assert build_parallelism._affinity_cpu_count() == 3
 
 
+def test_affinity_falls_back_when_platform_has_no_affinity_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(build_parallelism.os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(build_parallelism.os, "cpu_count", lambda: 7)
+
+    assert build_parallelism._affinity_cpu_count() == 7
+
+
+def test_affinity_falls_back_when_platform_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(_pid: int) -> set[int]:
+        raise OSError("affinity unavailable")
+
+    monkeypatch.setattr(build_parallelism.os, "sched_getaffinity", unavailable, raising=False)
+    monkeypatch.setattr(build_parallelism.os, "cpu_count", lambda: None)
+
+    assert build_parallelism._affinity_cpu_count() == 1
+
+
 @pytest.mark.parametrize(
     ("values", "expected"),
     (
