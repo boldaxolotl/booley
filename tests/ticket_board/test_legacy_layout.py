@@ -160,10 +160,7 @@ def test_tracked_files_raise_with_git_rm_cached_fix(tmp_path: Path) -> None:
 
     message = str(caught.value)
     assert "Git tracks 1 file(s)" in message
-    assert (
-        f"git rm -r --cached --ignore-unmatch -- {tickets_dir / 'board'} {tickets_dir / 'state'}"
-        in message
-    )
+    assert f"git -C {tickets_dir} rm -r --cached --ignore-unmatch -- board state" in message
     assert MIGRATION_GUIDE in message
 
 
@@ -173,6 +170,26 @@ def test_printed_fix_untracks_an_old_board_that_never_tracked_state(tmp_path: Pa
     tickets_dir = _current_tree(root / "tickets")
     (tickets_dir / "board" / "a.md").write_text("# a\n", encoding="utf-8")
     _git(root, "add", "-A")
+    (problem,) = legacy_layout_problems(tickets_dir)
+    command = problem.fix.removesuffix(" && commit the removal")
+
+    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
+
+    assert tracked_live_state_files(tickets_dir) == []
+    assert (tickets_dir / "board" / "a.md").is_file()
+
+
+def test_printed_fix_untracks_in_a_stealth_project_data_repository(tmp_path: Path) -> None:
+    """A stealth .booley_project is its own repository nested in the Project's.
+
+    The fix is run from the Project root, where plain ``git`` means the outer
+    repository; it must still untrack the files the inner one tracks.
+    """
+    root = _repo(tmp_path / "project")
+    project_data = _repo(root / ".booley_project")
+    tickets_dir = _current_tree(project_data / "tickets")
+    (tickets_dir / "board" / "a.md").write_text("# a\n", encoding="utf-8")
+    _git(project_data, "add", "-A")
     (problem,) = legacy_layout_problems(tickets_dir)
     command = problem.fix.removesuffix(" && commit the removal")
 
@@ -335,7 +352,7 @@ def test_doctor_fails_once_per_problem(tmp_path: Path) -> None:
 
     assert [kind for kind, _, _ in events] == ["fail", "fail"]
     assert "board/queue/ holds 1 file(s)" in events[0][1]
-    assert "git rm -r --cached" in events[1][2]
+    assert "rm -r --cached --ignore-unmatch -- board state" in events[1][2]
     assert all(MIGRATION_GUIDE in fix for _, _, fix in events)
     assert tickets_dir.is_dir()
 

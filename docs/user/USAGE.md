@@ -479,10 +479,11 @@ is left over. There is no migration command; the steps take a few minutes.
 1. Make sure no Ticket is being worked on: stop every `booley run` first.
    A Ticket left in `board/active/` was interrupted; it migrates as `blocked`
    (step 2), and triage sends it back to the queue with its work kept.
-2. For each document in `tickets/board/<folder>/`, except `done/` and
-   `archived/`, move it to `tickets/board/<slug>.md`. If the folder is not
-   `drafts/`, also write `tickets/state/<slug>.json`. A draft has no state
-   record.
+2. Create `tickets/state/` if it does not exist; Doctor requires it even
+   when no Ticket has a record. For each document in
+   `tickets/board/<folder>/`, except `done/` and `archived/`, move it to
+   `tickets/board/<slug>.md`. If the folder is not `drafts/`, also write
+   `tickets/state/<slug>.json`. A draft has no state record.
 
    | Old folder | `state` in the record |
    | --- | --- |
@@ -518,8 +519,11 @@ is left over. There is no migration command; the steps take a few minutes.
 3. Move each document in `board/done/` and `board/archived/` to
    `tickets/history/<slug>.md`. Add a `closed:` block as the **last** key of
    its frontmatter, with the outcome `done` or `archived` and the close date
-   in UTC. For `generation`, copy the document's `machine.generation` value if
-   it has one; otherwise leave it empty:
+   in UTC. The close date is the timestamp of the last `-> done` (or
+   `-> archived`) line in `tickets/logs/<slug>/human-logs/transitions.log`;
+   without that log, use the document's modification time. For `generation`,
+   copy the document's `machine.generation` value if it has one; otherwise
+   leave it empty:
 
    ```yaml
    closed:
@@ -531,13 +535,18 @@ is left over. There is no migration command; the steps take a few minutes.
 4. Delete the emptied `board/<folder>/` directories.
 5. Make sure `.booley_project/.gitignore` ignores `tickets/board/` and
    `tickets/state/` (`booley doctor` names any missing pattern), then stop
-   tracking the old files and commit the removal and the new history files:
+   tracking the old files and commit the removal and the new history files.
+   `git -C .booley_project` picks the right repository whether
+   `.booley_project` is part of your Project repository or its own one (as
+   in a stealth setup):
 
    ```bash
-   git rm -r --cached --ignore-unmatch -- .booley_project/tickets/board .booley_project/tickets/state
-   git add .booley_project/.gitignore .booley_project/tickets/history
-   git commit -m "Migrate the Ticket Board to state records"
+   git -C .booley_project rm -r --cached --ignore-unmatch -- tickets/board tickets/state
+   git -C .booley_project add .gitignore tickets/history
+   git -C .booley_project commit -m "Migrate the Ticket Board to state records"
    ```
+
+   Skip `tickets/history` in the `add` when no Ticket ever closed.
 
 6. Run `booley doctor` (the Ticket Board checks should pass) and `booley board`
    (it should list the same open Tickets as before).

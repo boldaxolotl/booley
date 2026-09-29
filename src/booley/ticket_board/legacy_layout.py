@@ -29,7 +29,6 @@ from .board_layout import (
     STATE_DIR_NAME,
     board_root,
     legacy_state_directories,
-    state_root,
 )
 from .lifecycle import BOARD_DIR_NAME
 
@@ -142,12 +141,16 @@ def legacy_layout_problems(tickets_dir: Path) -> list[LayoutProblem]:
 def _untrack_command(tickets_dir: Path) -> str:
     """Return the shell command that stops Git tracking live Ticket state.
 
-    ``--ignore-unmatch``: an old board never tracked ``state/``, and ``git rm``
-    otherwise refuses the whole command over the unmatched path.
+    ``-C <tickets>`` runs it in the repository that tracks the files, as the
+    check does, even when a stealth ``.booley_project`` is its own repository
+    nested in the Project's. ``--ignore-unmatch``: an old board never tracked
+    ``state/``, and ``git rm`` otherwise refuses the whole command over the
+    unmatched path.
     """
-    paths = (board_root(tickets_dir), state_root(tickets_dir))
-    quoted = " ".join(shlex.quote(str(path)) for path in paths)
-    return f"git rm -r --cached --ignore-unmatch -- {quoted}"
+    return (
+        f"git -C {shlex.quote(str(tickets_dir))} rm -r --cached --ignore-unmatch"
+        f" -- {BOARD_DIR_NAME} {STATE_DIR_NAME}"
+    )
 
 
 def migration_pointer() -> str:
