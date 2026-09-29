@@ -800,11 +800,6 @@ a Basis Refresh verifies the surface, rebases the still-untouched consumer onto 
 destinations, records a new Ticket generation, and promotes it atomically. Drift blocks and requires
 `return-to-draft`.
 
-Tickets damaged by affected releases need their exact original body whitespace restored from a
-known copy, followed by a readiness check, before promotion is retried. `return-to-draft` cannot
-validate an already mismatched Ticket generation. Do not restamp `machine.authored_sha256`; if the
-original bytes are unavailable, recreate the Ticket.
-
 Every review-bound run persists a versioned, machine-readable JSON package at
 `logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views
 are rendered from that same package, so a command-line client can inspect the

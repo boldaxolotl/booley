@@ -71,7 +71,7 @@ def _add_query_subcommands(sub: argparse._SubParsersAction) -> None:
 
 
 def _add_ticket_edit_subcommands(sub: argparse._SubParsersAction) -> None:
-    """Register subcommands that mutate a single ticket's frontmatter/logs."""
+    """Register commands that mutate runtime or generated Ticket Board fields."""
     # update-board
     p = sub.add_parser(
         "update-board",

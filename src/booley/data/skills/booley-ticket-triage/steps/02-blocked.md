@@ -148,6 +148,18 @@ approval of those exact edits authorizes applying them; do not ask again.
   validate the draft, and enqueue it to record a new immutable Ticket baseline.
   `unblock` and `reset` retain the original baseline and are rejected for
   this block reason.
+  A legacy v2-writer defect needs narrower recovery when diagnosis proves that
+  only authored body whitespace was stripped by a metadata rewrite:
+  - If the Ticket is still queued, restore only the known original body
+    whitespace, preserving its current `machine`, `created`, and
+    `feature_branch`. Never restore an older generated section or restamp
+    `machine.authored_sha256`. Run `booley board check-ready <slug>`; only when
+    it passes may normal Ticket execution continue.
+  - If the Ticket is already blocked with `acceptance-input-change-required`,
+    recreate it as a new Ticket. `unblock` is rejected for this sentinel, and
+    `return-to-draft` cannot validate the mismatched old generation.
+  - If body-only repair does not make readiness pass, stop repairing the old
+    generation and recreate the Ticket.
 - **Archive**: give up on this ticket.
 - **Skip**: leave as-is.
 
