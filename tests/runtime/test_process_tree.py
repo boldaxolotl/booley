@@ -63,3 +63,37 @@ class TestDescendantPids:
 
     def test_no_descendants_is_empty(self):
         assert process_tree.descendant_pids(999_999) == []
+
+
+class TestHasAncestor:
+    @staticmethod
+    def reader(tree: dict[int, int | None]):
+        return tree.get
+
+    @pytest.mark.parametrize(
+        ("tree", "pid", "ancestor"),
+        [
+            ({20: 10}, 20, 10),
+            ({30: 20, 20: 10}, 30, 10),
+            ({10: 5}, 10, 10),
+        ],
+    )
+    def test_proves_direct_multigeneration_and_self_ancestry(self, tree, pid, ancestor):
+        assert process_tree.has_ancestor(pid, ancestor, read_ppid=self.reader(tree))
+
+    def test_returns_false_for_non_ancestor(self):
+        assert not process_tree.has_ancestor(
+            30, 99, read_ppid=self.reader({30: 20, 20: 10, 10: 1})
+        )
+
+    @pytest.mark.parametrize(
+        "tree",
+        [
+            {30: 1},
+            {30: None},
+            {30: 20, 20: 30},
+            {30: 20, 20: 10, 10: 5},
+        ],
+    )
+    def test_pid_one_unreadable_cycle_and_hop_limit_fail_closed(self, tree):
+        assert not process_tree.has_ancestor(30, 5, read_ppid=self.reader(tree), max_hops=2)
