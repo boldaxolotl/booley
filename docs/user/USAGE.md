@@ -637,14 +637,7 @@ Deterministic end-to-end orchestration; no LLM:
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
 
-Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. MCP keeps one comma-separated `target` string. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
-
-Key Flow-specific controls:
-
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <name>` for an exact ordered suite or use `--tests-file <path>`; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. MCP passes the same suite as a `test` array. Resume one exact durable Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch and coverage retries the whole aggregate into a distinct nested Coverage Campaign. `--coverage` / `--cov` collects a native Coverage Campaign, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
-- `lint`: `--scope <file,...>` filters reported findings to selected files
-- `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
-- `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
+Every Flow's options, results, and reports are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md); `booley flow <name> --help` prints them too.
 
 **Specialists**
 

@@ -112,6 +112,16 @@ def test_every_builtin_flow_has_key_controls() -> None:
         assert controls in rendered
 
 
+def test_docs_render_links_flow_reference_instead_of_controls() -> None:
+    """User docs point at FLOW_REFERENCE.md; only `booley cheat` repeats controls."""
+    rendered = render_flow_specialist_reference()
+    assert "[FLOW_REFERENCE.md](FLOW_REFERENCE.md)" in rendered
+    assert "Key Flow-specific controls" not in rendered
+    assert "Common controls" not in rendered
+    for controls in _FLOW_KEY_CONTROLS.values():
+        assert controls not in rendered
+
+
 @pytest.mark.parametrize("execution_column", [True, False])
 def test_purpose_cells_are_summarized_not_the_agent_description(
     execution_column: bool,
