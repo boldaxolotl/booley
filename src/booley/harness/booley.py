@@ -973,7 +973,9 @@ def _add_targets_subparser(sub) -> None:
         help="Target to detail (bare name or vlnv#name), or a glob like "
         "'soc*' to filter the listing",
     )
+    # --for is the advertised spelling; --for-flow stays as a long-form alias.
     targets_p.add_argument(
+        "--for",
         "--for-flow",
         dest="for_flow",
         metavar="FLOW",
@@ -1885,11 +1887,11 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     as_json: bool = getattr(args, "json", False)
 
     if selector and not target_surface.is_glob(selector):
-        # Detail view. --for-flow is a listing filter — combining it with a single
+        # Detail view. --for is a listing filter — combining it with a single
         # Target would silently answer a different question, so refuse.
         if for_flow:
             print(
-                "ERROR: --for-flow filters the listing; it cannot combine with a "
+                "ERROR: --for filters the listing; it cannot combine with a "
                 "single-Target detail view.",
                 file=sys.stderr,
             )
@@ -1909,7 +1911,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     except fusesoc_registry.FuseSocError as exc:  # e.g. cross-root VLNV collision
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    except ValueError as exc:  # --for-flow names a non-Target-aware endpoint
+    except ValueError as exc:  # --for names a non-Target-aware endpoint
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

@@ -13,7 +13,8 @@ The documentation is split at the public-interface seam:
 | Document | Owns |
 |---|---|
 | **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, and `fpga` Booley Flows |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | Public invocation, verdict, Criteria, report, and artifact behavior for those built-in Flows |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How to run those built-in Flows and interpret their verdicts and Criteria |
+| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of those built-in Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
 | [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
@@ -1009,7 +1010,7 @@ The canonical Target directory holds the V4 `coverage.json` manifest, required
 and hook sidecars. The manifest is the canonical entry point and contains
 provenance, overall rollups, deterministic source-file rollups, percentages,
 collection, evaluation, and scoring state without inline Coverage Points. The
-[Flow reference](../user/FLOW_REFERENCE.md#native-coverage-campaigns) defines
+[Flow reports reference](FLOW_REPORTS.md#coverage-campaign-files) defines
 scoring and retained diagnostic evidence. Source rollups cover line, branch,
 expression, and toggle with overall eligibility and waiver policy;
 they never aggregate by instance hierarchy. It integrity-binds the compressed JSON
