@@ -375,6 +375,11 @@ Each Ticket lists what should happen once its criteria pass:
 on_success: [triage_report, review, merge, cleanup]
 ```
 
+**This full list is the default**, and most Tickets keep it:
+`/booley-ticket-create` fills in all four, and you only remove the ones you
+don't want. (Every Ticket must have the field, so a hand-written Ticket has to
+list it too.)
+
 The actions always run in this order, whatever order you write them in, and
 each step waits for the one before it. Leave an action out and it's skipped:
 
