@@ -577,17 +577,10 @@ Both work everywhere, in Ticket Mode and in Interactive Mode.
   Booley waits and retries the Ticket instead of failing it.
 - **API key:** you pay per token.
 
-**Which login wins.** If several are available, the agent picks in this order:
-
-- **Claude:** `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN` (the one
-  `booley auth` saves, below), then your subscription login.
-- **Codex:** `OPENAI_API_KEY`, then your `auth.json` login.
-
-So an exported API key always wins. `booley auth --status` and `booley doctor`
-show which one is in use. To pin the choice, set `[agent] auth =
-"subscription"` (Booley hides the API key from agents) or `"api_key"` (Booley
-fails if the key is missing); see
-[CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
+If an API key is exported, it is used even when you also have a subscription.
+To choose explicitly, set `[agent] auth = "subscription"` or `"api_key"`; see
+[CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth). `booley auth --status`
+shows which login is in use.
 
 **For long runs, run `booley auth`.** The normal login renews itself
 periodically, and a renewal can sign out every running agent in the middle of
@@ -604,9 +597,7 @@ token instead of using your subscription.
 
 The saved login lives in `~/.config/booley/`, outside every project, so it can't
 be committed by accident. Booley passes it to every container on its own,
-including VS Code's; rebuild an existing container once to pick it up. A
-`CLAUDE_CODE_OAUTH_TOKEN` or `OPENAI_API_KEY` you export yourself still takes
-priority.
+including VS Code's; rebuild an existing container once to pick it up.
 
 `booley init --skip-credentials` skips the login check, for CI machines that
 have no login on purpose. Don't use it for normal setup.
