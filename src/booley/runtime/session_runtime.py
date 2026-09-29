@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1051,16 +1051,35 @@ def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> Non
     from booley.eda.provisioning.licensing.flexnet_docker import (
         cleanup_project_resources_for_identity,
     )
-    from booley.runtime import issuance_invalidation
     from booley.runtime.session_refresh import RecoveryOutcome, recover_project_locked
 
-    invalidated = issuance_invalidation.recover_all_locked(
+    invalidated = _recover_invalidations_locked(
         cleanup_resources=cleanup_project_resources_for_identity,
     )
     recovered = recover_project_locked(workspace)
     if invalidated or recovered.outcome is not RecoveryOutcome.NONE:
         retry = f"run `{retry_command}` again" if retry_command else "retry the command"
         raise SessionError(f"recovered interrupted Sandbox host state; {retry}")
+
+
+def _recover_invalidations_locked(
+    *, cleanup_resources: Callable[[str], tuple[str, ...]]
+) -> tuple[str, ...]:
+    from booley.runtime import issuance_invalidation
+
+    try:
+        return issuance_invalidation.recover_all_locked(cleanup_resources=cleanup_resources)
+    except issuance_invalidation.InvalidationError as exc:
+        raise SessionError(str(exc)) from exc
+
+
+def _has_pending_invalidation(workspace: Path) -> bool:
+    from booley.runtime import issuance_invalidation
+
+    try:
+        return issuance_invalidation.has_pending(workspace)
+    except issuance_invalidation.InvalidationError as exc:
+        raise SessionError(str(exc)) from exc
 
 
 def up(
@@ -1087,11 +1106,10 @@ def up(
 
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
-    from booley.runtime import issuance_invalidation
     from booley.runtime import session_issuance as runtime_spec
     from booley.runtime.session_refresh import has_pending_refresh
 
-    if has_pending_refresh(workspace) or issuance_invalidation.has_pending(workspace):
+    if has_pending_refresh(workspace) or _has_pending_invalidation(workspace):
         raise SessionError("Sandbox recovery is pending; run a lifecycle command")
 
     spec = _load_spec(workspace)
@@ -2393,10 +2411,9 @@ def down(workspace: Path, *, remove: bool = True) -> DownResult:
 
 def status(workspace: Path) -> str:
     """Return the Sandbox state, including pending host recovery."""
-    from booley.runtime import issuance_invalidation
     from booley.runtime.session_refresh import has_pending_refresh
 
-    if has_pending_refresh(workspace) or issuance_invalidation.has_pending(workspace):
+    if has_pending_refresh(workspace) or _has_pending_invalidation(workspace):
         return "recovery-pending"
     from booley.runtime import session_admission
 

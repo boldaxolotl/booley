@@ -10,6 +10,7 @@ import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
+from booley.runtime import issuance_invalidation
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildRequest,
@@ -32,6 +33,16 @@ def _current_sidecars() -> bootstrap.host_sidecars.SidecarResult:
         for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper")
     )
     return bootstrap.host_sidecars.SidecarResult(findings)
+
+
+def _prepare_empty_invalidation_store(config_root: Path, project: Path) -> Path:
+    project.mkdir()
+    pending = issuance_invalidation.prepare(
+        str(project.resolve()),
+        cleanup_resources=False,
+    )
+    issuance_invalidation.cancel(pending)
+    return config_root / "booley"
 
 
 def _wire_current(
@@ -663,6 +674,99 @@ def test_public_adapter_check_only_does_not_register(monkeypatch):
     )
 
     assert status == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_check_only_reports_unsafe_private_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    booley_config.chmod(0o755)
+    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
+    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(force=False, check_only=True, verbose=False)
+    )
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert "[XX]" in captured.out
+    assert str(booley_config) in captured.out
+    assert "0755" in captured.out
+    assert f"chmod 700 {booley_config}" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_check_only_accepts_repaired_private_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    booley_config.chmod(0o700)
+    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
+    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+
+    assert (
+        bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
+        == 0
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_check_only_accepts_shared_xdg_root_at_0755(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    config_root.chmod(0o755)
+    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
+    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+
+    assert (
+        bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
+        == 0
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_mutation_reports_unsafe_private_store_before_registration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    booley_config.chmod(0o755)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_a, **_kw: pytest.fail("unsafe recovery must precede registration"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(force=False, check_only=False, verbose=False)
+    )
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert "[XX]" in captured.out
+    assert str(booley_config) in captured.out
+    assert "0755" in captured.out
+    assert f"chmod 700 {booley_config}" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
 
 
 def test_public_adapter_reports_registration_failure(monkeypatch, capsys):

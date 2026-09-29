@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,7 +12,7 @@ import pytest
 
 from booley.config.host_config import host_config_path
 from booley.harness import bootstrap, bootstrap_cli, init_cmd
-from booley.runtime import session_refresh
+from booley.runtime import issuance_invalidation, session_refresh
 from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
@@ -101,6 +102,41 @@ def test_host_setup_waits_for_lifecycle_lock(
 
     assert invoked == [operation]
     assert "host Docker lifecycle is busy" in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+@pytest.mark.parametrize("check_only", [True, False])
+def test_init_reports_unsafe_private_store_before_project_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    check_only: bool,
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    project = tmp_path / "project"
+    project.mkdir()
+    pending = issuance_invalidation.prepare(
+        str(project.resolve()),
+        cleanup_resources=False,
+    )
+    issuance_invalidation.cancel(pending)
+    booley_config = config_root / "booley"
+    booley_config.chmod(0o755)
+    monkeypatch.setattr(
+        init_cmd,
+        "_run_init_unlocked",
+        lambda *_a, **_kw: pytest.fail("unsafe recovery must precede Project work"),
+    )
+
+    assert init_cmd.run_init(_args(check_only=check_only), project) == 2
+
+    captured = capsys.readouterr()
+    assert str(booley_config) in captured.out
+    assert "0755" in captured.out
+    assert f"chmod 700 {booley_config}" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
 
 
 def test_bootstrap_failure_precedes_every_project_write(

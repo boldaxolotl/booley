@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import stat
 import tempfile
 import time
@@ -116,21 +117,36 @@ class PrivateStore:
         if path.is_symlink():
             self._raise(f"{self.subject} ancestor must not be a symlink: {path}")
         info = path.stat()
-        unsafe = os.name != "nt" and (
-            info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022
-        )
-        if not stat.S_ISDIR(info.st_mode) or unsafe:
+        if not stat.S_ISDIR(info.st_mode):
             self._raise(f"unsafe {self.subject} ancestor: {path}")
+        if os.name == "nt":
+            return
+        if info.st_uid != os.getuid():
+            self._raise(f"unsafe {self.subject} ancestor not owned by current user: {path}")
+        mode = stat.S_IMODE(info.st_mode)
+        if mode & 0o022:
+            self._raise_unsafe_mode("ancestor", path, mode)
 
     def _validate_private_directory(self, path: Path) -> None:
         if path.is_symlink():
             self._raise(f"{self.subject} directory must not be a symlink: {path}")
         info = path.stat()
-        unsafe = os.name != "nt" and (
-            info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700
+        if not stat.S_ISDIR(info.st_mode):
+            self._raise(f"{self.subject} directory must be an owned directory: {path}")
+        if os.name == "nt":
+            return
+        if info.st_uid != os.getuid():
+            self._raise(f"{self.subject} directory must be owned by current user: {path}")
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != 0o700:
+            self._raise_unsafe_mode("directory", path, mode)
+
+    def _raise_unsafe_mode(self, kind: str, path: Path, mode: int) -> None:
+        command_path = shlex.quote(str(path))
+        self._raise(
+            f"unsafe {self.subject} {kind}: {path} has mode {mode:04o}; "
+            f"run `chmod 700 {command_path}`"
         )
-        if not stat.S_ISDIR(info.st_mode) or unsafe:
-            self._raise(f"{self.subject} directory must be owned with mode 700: {path}")
 
     def _validate_private_file(self, path: Path, info: os.stat_result) -> None:
         unsafe = os.name != "nt" and (

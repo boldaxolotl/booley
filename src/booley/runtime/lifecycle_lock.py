@@ -45,8 +45,18 @@ def host_lifecycle_lock(
     wait_timeout_s: float | None = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> Iterator[None]:
     """Hold the host-wide lock, waiting by default for bounded contention."""
-    directory = config_dir() / _LOCK_DIR
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    booley_config = config_dir()
+    shared_config = booley_config.parent
+    if not shared_config.exists():
+        shared_config.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            shared_config.chmod(0o700)
+    if not booley_config.exists():
+        booley_config.mkdir(exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            booley_config.chmod(0o700)
+    directory = booley_config / _LOCK_DIR
+    directory.mkdir(exist_ok=True, mode=0o700)
     path = directory / _LOCK_NAME
     with path.open("a+", encoding="utf-8") as handle:
         if os.name != "nt":

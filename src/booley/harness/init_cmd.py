@@ -2366,18 +2366,28 @@ def _run_init_unlocked(
 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
     """Run Project initialization without racing host Docker mutations."""
-    if getattr(args, "check_only", False):
-        from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime import issuance_invalidation, session_runtime
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
 
-        if shared_recovery_blocks_command(read_only=True):
+    if getattr(args, "check_only", False):
+        try:
+            recovery_pending = shared_recovery_blocks_command(read_only=True)
+        except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
+            err(str(exc))
+            return 2
+        if recovery_pending:
             err("interrupted Sandbox host state requires recovery")
             return 2
         return _run_init_unlocked(args, project_root)
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
 
     with host_lifecycle_lock("project init"):
-        if shared_recovery_blocks_command(read_only=False):
+        try:
+            recovery_performed = shared_recovery_blocks_command(read_only=False)
+        except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
+            err(str(exc))
+            return 2
+        if recovery_performed:
             err("recovered interrupted Sandbox host state; run `booley init` again")
             return 2
         return _run_init_unlocked(args, project_root)

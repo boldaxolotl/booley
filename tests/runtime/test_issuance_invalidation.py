@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
@@ -153,6 +154,44 @@ def test_read_only_runtime_validation_blocks_pending_invalidation(tmp_path: Path
     assert session_runtime.status(project) == "recovery-pending"
     with pytest.raises(session_runtime.SessionError, match="recovery is pending"):
         session_runtime.validate(project)
+
+
+def _make_invalidation_store_unsafe(tmp_path: Path) -> tuple[Path, Path]:
+    project = tmp_path / "unsafe-project"
+    project.mkdir()
+    pending = issuance_invalidation.prepare(
+        str(project.resolve()),
+        cleanup_resources=False,
+    )
+    issuance_invalidation.cancel(pending)
+    booley_config = tmp_path / "config" / "booley"
+    booley_config.chmod(0o755)
+    return project, booley_config
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+@pytest.mark.parametrize("operation", ["up", "status", "validate"])
+def test_public_session_runtime_translates_unsafe_invalidation_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    project, booley_config = _make_invalidation_store_unsafe(tmp_path)
+    monkeypatch.setattr(session_refresh, "has_pending_refresh", lambda _root: False)
+    monkeypatch.setattr(
+        session_runtime,
+        "_up_unlocked",
+        lambda *_a, **_kw: pytest.fail("unsafe recovery must precede Sandbox mutation"),
+    )
+
+    with pytest.raises(session_runtime.SessionError) as raised:
+        getattr(session_runtime, operation)(project)
+
+    message = str(raised.value)
+    assert isinstance(raised.value.__cause__, issuance_invalidation.InvalidationError)
+    assert str(booley_config) in message
+    assert "0755" in message
+    assert f"chmod 700 {booley_config}" in message
 
 
 def test_shared_recovery_completes_invalidation_and_refresh_journals(

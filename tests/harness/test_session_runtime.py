@@ -8,6 +8,7 @@ rather than a hand-written dict.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -20,9 +21,9 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.runtime import devcontainer as dc
+from booley.runtime import issuance_invalidation, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
-from booley.runtime import session_spec
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
@@ -3610,6 +3611,50 @@ class TestSessionRefresh:
         args = _build_parser().parse_args(["session", "refresh"])
         assert args.command == "session"
         assert args.session_command == "refresh"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+    @pytest.mark.parametrize(
+        "command",
+        ["up", "enter", "down", "status", "validate", "prepare", "refresh"],
+    )
+    def test_public_session_commands_report_unsafe_private_store(
+        self,
+        command: str,
+        workspace: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from booley.harness import auto_doctor, booley
+        from booley.harness.booley import _build_parser
+        from booley.runtime import session_refresh
+
+        pending = issuance_invalidation.prepare(
+            str(workspace.resolve()),
+            cleanup_resources=False,
+        )
+        issuance_invalidation.cancel(pending)
+        booley_config = tmp_path / "xdg" / "booley"
+        booley_config.chmod(0o755)
+        monkeypatch.setattr(booley, "_report_upgrade_before_session", lambda _root: None)
+        monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
+        monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+        monkeypatch.setattr(session_refresh, "has_pending_refresh", lambda _root: False)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda *_a, **_kw: pytest.fail("unsafe recovery must precede Docker mutation"),
+        )
+        args = _build_parser().parse_args(["session", command])
+
+        assert booley._cmd_session(args, workspace) == 2
+
+        captured = capsys.readouterr()
+        assert str(booley_config) in captured.err
+        assert "0755" in captured.err
+        assert f"chmod 700 {booley_config}" in captured.err
+        assert "Traceback" not in captured.out
+        assert "Traceback" not in captured.err
 
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import auto_doctor, booley, session_refresh

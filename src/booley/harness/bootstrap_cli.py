@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
+from booley.harness.bootstrap import (
+    BootstrapFinding,
+    BootstrapResult,
+    BootstrapState,
+    reconcile_bootstrap,
+)
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
 from booley.runtime.host_install import HostInstallationError, register_host_installation
 from booley.runtime.image_lifecycle import Intent
@@ -53,9 +58,14 @@ def run_bootstrap(args: object) -> int:
 
 
 def _check_bootstrap(args: object) -> BootstrapResult | None:
+    from booley.runtime import issuance_invalidation, session_runtime
     from booley.runtime.session_refresh import shared_recovery_blocks_command
 
-    if shared_recovery_blocks_command(read_only=True):
+    try:
+        recovery_pending = shared_recovery_blocks_command(read_only=True)
+    except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
+        return _recovery_error(Intent.CHECK, exc)
+    if recovery_pending:
         print(yellow("Interrupted Sandbox host state requires recovery."))
         return None
     return reconcile_bootstrap(Intent.CHECK, verbose=getattr(args, "verbose", False))
@@ -68,10 +78,15 @@ def _mutate_bootstrap(
     with_qa: bool,
     without_qa: bool,
 ) -> BootstrapResult | None:
+    from booley.runtime import issuance_invalidation, session_runtime
     from booley.runtime.session_refresh import shared_recovery_blocks_command
 
     with host_lifecycle_lock("host bootstrap"):
-        if shared_recovery_blocks_command(read_only=False):
+        try:
+            recovery_performed = shared_recovery_blocks_command(read_only=False)
+        except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
+            return _recovery_error(intent, exc)
+        if recovery_performed:
             print(
                 yellow("Recovered interrupted Sandbox host state; run `booley bootstrap` again.")
             )
@@ -104,6 +119,13 @@ def _mutate_bootstrap(
                 print(red(f"Cannot disable QA skills: {exc}"))
                 return None
         return result
+
+
+def _recovery_error(intent: Intent, error: RuntimeError) -> BootstrapResult:
+    return BootstrapResult(
+        intent,
+        (BootstrapFinding("runtime-recovery", BootstrapState.ERROR, str(error)),),
+    )
 
 
 def _apply_qa_enable(with_qa: bool, revision: str) -> bool:
