@@ -7,6 +7,7 @@ project-relative, and it is absent rather than wrong.
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 
@@ -14,6 +15,14 @@ import pytest
 
 from booley.flows import artifacts
 from booley.flows.artifact_durability import durable_copy
+
+
+def _assert_host_readable(path: Path) -> None:
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if os.name == "nt":
+        assert mode & stat.S_IREAD
+    else:
+        assert mode == 0o644
 
 
 class TestDurablePublication:
@@ -29,7 +38,7 @@ class TestDurablePublication:
 
         published = tmp_path / relative
         assert published.read_bytes() == b"evidence"
-        assert stat.S_IMODE(published.stat().st_mode) == 0o644
+        _assert_host_readable(published)
         assert published.is_relative_to(invocation)
         assert ".." not in published.relative_to(invocation).parts
 
@@ -46,7 +55,7 @@ class TestDurablePublication:
             work_dir=tmp_path,
         )
 
-        assert stat.S_IMODE((tmp_path / relative).stat().st_mode) == 0o644
+        _assert_host_readable(tmp_path / relative)
 
     def test_destination_is_create_only(self, tmp_path: Path):
         invocation = tmp_path / "reports/lint/1"
