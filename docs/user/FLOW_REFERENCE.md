@@ -514,10 +514,9 @@ both, declare and invoke two Targets.
 configuration decides whether warnings make the direct Flow exit nonzero, but
 the report and `lint_clean_<target>` evidence retain the actual finding counts.
 
-The normalized report records findings by file, line, rule, and message,
-deduplicates repeated diagnostics, preserves the sorted contributing Targets,
-and points to the complete run log. A finding shared across different EDA tool
-families also maps each contributing Target to its EDA tool.
+Each deduplicated finding lists its sorted contributing Targets. When multiple
+EDA tool families contribute, it also maps each Target to its EDA tool. The
+report points to the complete run log.
 
 Structured output (`lint_report.json`):
 
@@ -525,7 +524,7 @@ Structured output (`lint_report.json`):
 |---|---|
 | `targets`, `eda_tools` | Requested Targets and the linter resolved for each. |
 | `passed`, `elapsed_s`, `total_warnings` | Lint-clean status, duration, and deduplicated in-scope finding count. `passed` is false when warnings exist even if `warnings_as_errors = false` lets the direct CLI exit `0`. |
-| `warnings[]` | Deduplicated in-scope `rule`, `file`, `line`, and `message` record for each finding, with sorted contributing `targets` and a Target-to-EDA-tool `eda_tools` map when multiple EDA tool families contributed. |
+| `warnings[]` | In-scope `rule`, `file`, `line`, `message`, and sorted `targets`; `eda_tools` is included when EDA tool families differ. |
 | `errors[]` | `target` and `message` for each Target that could not produce a lint verdict. |
 | `target_results[]` | Per-Target `target`, `eda_tool`, raw `warnings` count before cross-Target deduplication and `--scope`, `files_linted`, `toplevel`, `toplevel_linted`, `duration_s`, `error`, and `log`. |
 | `artifacts` | The durable report and per-Target run logs. |
