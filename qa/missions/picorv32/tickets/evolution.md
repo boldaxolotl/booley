@@ -63,7 +63,7 @@ CRITERIA_MANDATORY:
 {{ configured_fpga_criterion }}
   REVIEW:
     rtl:
-      bugs: [done, clean]
+      bugs: clean
       protocol: done
       spec: done
       code_style: done

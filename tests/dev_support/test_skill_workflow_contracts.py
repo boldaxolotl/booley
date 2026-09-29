@@ -217,7 +217,11 @@ def test_ticket_create_defaults_every_review_to_corrective_mode():
     assert "TB quality REVIEW" in skill
     assert "rtl: {bugs: clean}" in template
     assert "tb: {quality: clean}" in template
-    assert "`REVIEW.done` and `REVIEW.clean` are separate outcomes" in contract
+    assert "Choose exactly one `REVIEW` outcome" in contract
+    assert (
+        "`clean` when completion plus no open findings is required because it implies `done`"
+        in contract
+    )
 
 
 def test_ticket_create_hands_human_off_to_booley_run():

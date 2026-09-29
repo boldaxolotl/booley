@@ -34,6 +34,29 @@ def test_collects_done_findings_and_clean_dispositions() -> None:
     assert review_report_required(criteria) is True
 
 
+def test_clean_completion_does_not_inherit_done_report_policy() -> None:
+    clean = {"review_rtl_bugs_clean": {"detail": {"pending": [], "resolved": []}}}
+    done = {"review_rtl_bugs_done": {"detail": {"issue_list": []}}}
+    waived = {
+        "review_rtl_bugs_clean": {
+            "detail": {
+                "resolved": [
+                    {
+                        "severity": "MINOR",
+                        "summary": "accepted finding",
+                        "status": "waived",
+                        "justification": "accepted by the user",
+                    }
+                ]
+            }
+        }
+    }
+
+    assert review_report_required(clean) is False
+    assert review_report_required(done) is True
+    assert review_report_required(waived) is True
+
+
 def test_legacy_impasse_is_visible_as_waiver() -> None:
     criteria = {
         "review_rtl_bugs_clean": {

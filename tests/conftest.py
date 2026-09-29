@@ -166,9 +166,9 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
     if sys.platform == "win32" or not isinstance(tmp_path, Path):
         return result
-    from tests.file_lock_probe import lock_is_held
+    from tests.file_lock_probe import invocation_lock_paths, lock_is_held
 
-    held = [path for path in tmp_path.rglob(".invocation-*.lock") if lock_is_held(path)]
+    held = sorted(path for path in invocation_lock_paths(tmp_path) if lock_is_held(path))
     if held:
         pytest.fail(f"Simulation invocation locks leaked past the test: {held}")
     return result

@@ -1038,9 +1038,10 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     _set_runtime_execution_id(monkeypatch, runtime_execution_id)
     monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
     fault_enabled, original_retire = [True], ChildExecutionRegistry.retire
+    work_items = invocation / "targets/sim/campaign/work-items"
 
     def interrupted_retire(registry, prepared, **kwargs) -> None:
-        _wait_until(lambda: len(state.completion_order) == 3, timeout=10.0)
+        _wait_until(lambda: len(tuple(work_items.glob("*/result.json"))) == 3, timeout=10.0)
         if fault_enabled[0]:
             raise RuntimeError("injected retirement interruption")
         original_retire(registry, prepared, **kwargs)

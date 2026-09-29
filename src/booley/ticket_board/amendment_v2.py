@@ -218,21 +218,18 @@ def _move_review_optional(
     key: str,
     leaf: Any,
 ) -> None:
-    values = [leaf] if isinstance(leaf, str) else list(leaf)
-    values.remove(row.parameter)
-    if values:
-        parent[key] = values[0] if len(values) == 1 else values
-    else:
-        del parent[key]
-        if not parent:
-            del mandatory["REVIEW"][row.target]
-        if not mandatory["REVIEW"]:
-            del mandatory["REVIEW"]
+    optional_review = optional.get("REVIEW", {})
+    destination = optional_review.get(row.target, {})
+    if key in destination:
+        raise AmendmentProposalError(f"REVIEW {row.target}.{key} already has an optional outcome")
+    if leaf != row.parameter:
+        raise AmendmentProposalError(f"{row.identity!r} has an invalid REVIEW outcome")
     destination = optional.setdefault("REVIEW", {}).setdefault(row.target, {})
-    prior = destination.get(key)
-    outcomes = [] if prior is None else [prior] if isinstance(prior, str) else list(prior)
-    outcomes.append(row.parameter)
-    destination[key] = outcomes[0] if len(outcomes) == 1 else outcomes
+    destination[key] = parent.pop(key)
+    if not parent:
+        del mandatory["REVIEW"][row.target]
+    if not mandatory["REVIEW"]:
+        del mandatory["REVIEW"]
 
 
 def _move_flow_optional(
