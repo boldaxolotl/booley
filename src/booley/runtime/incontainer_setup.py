@@ -39,6 +39,7 @@ import sys
 import time
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from booley.runtime import auth_token
 from booley.runtime.mcp_config import HTTP_ENDPOINT_PATH, http_port
@@ -77,6 +78,7 @@ def _port_is_serving(port: int, *, timeout: float = 0.5) -> bool:
 
 def ensure_http_server(
     *,
+    mode: Literal["interactive"],
     timeout_seconds: float = _SERVER_START_TIMEOUT_SECONDS,
     log_path: str = _SERVER_LOG_PATH,
 ) -> str:
@@ -91,10 +93,19 @@ def ensure_http_server(
     port = http_port()
     if _port_is_serving(port):
         return "running"
+    child_env = os.environ.copy()
+    child_env["BOOLEY_MCP_MODE"] = mode
+    for variable in (
+        "BOOLEY_NESTED_AGENT",
+        "BOOLEY_NESTED_MCP_TOOLS",
+        "BOOLEY_MCP_TOOLS",
+    ):
+        child_env.pop(variable, None)
     try:
         with Path(log_path).open("ab") as log:
             proc = subprocess.Popen(
                 _SERVER_CMD,
+                env=child_env,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,
