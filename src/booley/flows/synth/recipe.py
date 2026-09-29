@@ -170,7 +170,9 @@ def synthesis_recipe_snapshot(
             # still produces a deterministic fingerprint; the real synth path
             # will report the missing constraint as an infrastructure error.
             digest = None
-        constraints.append(constraint_recipe_entry(sdc_file, digest, fallback_vlnv=resolved.vlnv))
+        constraints.append(
+            constraint_recipe_entry(sdc_file.core, digest, fallback_vlnv=resolved.vlnv)
+        )
 
     synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
     liberty, _found = resolve_liberty_lenient(None)

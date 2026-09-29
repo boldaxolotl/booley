@@ -9,6 +9,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_list,
+    require_str_value,
+)
+
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 _COMPATIBLE_SCHEMA_PAIRS = {("synth", 3, 4), ("fpga", 2, 3)}
 
@@ -18,13 +25,13 @@ class InvalidRecipeSnapshotError(ValueError):
 
 
 def constraint_recipe_entry(
-    resolved_file: Any,
+    core: str | None,
     digest: str | None,
     *,
     fallback_vlnv: str,
 ) -> dict[str, Any]:
     """Build path-free provenance for one ordered implementation constraint."""
-    return {"core": resolved_file.core or fallback_vlnv, "sha256": digest}
+    return {"core": core or fallback_vlnv, "sha256": digest}
 
 
 def recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
@@ -84,22 +91,21 @@ def validated_recipe_compatibility(
     rerun_fingerprint: Any,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Validate persisted evidence and adapt one known schema transition."""
-    snapshots_present = isinstance(frozen_snapshot, Mapping) and isinstance(
-        rerun_snapshot, Mapping
-    )
-    fingerprints_present = isinstance(frozen_fingerprint, str) and isinstance(
-        rerun_fingerprint, str
-    )
-    if not snapshots_present or not fingerprints_present:
+    try:
+        frozen = require_dict(frozen_snapshot, field="frozen recipe snapshot")
+        rerun = require_dict(rerun_snapshot, field="rerun recipe snapshot")
+        frozen_digest = require_str_value(frozen_fingerprint, field="frozen recipe fingerprint")
+        rerun_digest = require_str_value(rerun_fingerprint, field="rerun recipe fingerprint")
+    except BoundaryError:
         return None
     fingerprints_match = (
-        recipe_snapshot_fingerprint(frozen_snapshot) == frozen_fingerprint
-        and recipe_snapshot_fingerprint(rerun_snapshot) == rerun_fingerprint
+        recipe_snapshot_fingerprint(frozen) == frozen_digest
+        and recipe_snapshot_fingerprint(rerun) == rerun_digest
     )
     if not fingerprints_match:
         return None
     try:
-        normalized = compatible_recipe_snapshots(frozen_snapshot, rerun_snapshot)
+        normalized = compatible_recipe_snapshots(frozen, rerun)
     except InvalidRecipeSnapshotError:
         return None
     if normalized is None or normalized[0] != normalized[1]:
@@ -117,18 +123,38 @@ def _recipe_flow(snapshot: Mapping[str, Any]) -> str | None:
 
 
 def _constraint_digests(snapshot: Mapping[str, Any]) -> list[str]:
-    constraints = snapshot.get("constraints")
-    if not isinstance(constraints, list):
-        raise InvalidRecipeSnapshotError("recipe constraints must be a list")
+    try:
+        constraints = require_list(snapshot.get("constraints"), field="recipe constraints")
+    except BoundaryError as exc:
+        raise InvalidRecipeSnapshotError(str(exc)) from exc
     digests: list[str] = []
-    for index, constraint in enumerate(constraints):
-        digest = constraint.get("sha256") if isinstance(constraint, Mapping) else None
-        if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
+    for index, raw_constraint in enumerate(constraints):
+        try:
+            constraint = require_dict(raw_constraint, field=f"recipe constraint {index}")
+            digest = require_str_value(
+                constraint.get("sha256"),
+                field=f"recipe constraint {index} SHA-256 digest",
+            )
+        except BoundaryError as exc:
+            raise InvalidRecipeSnapshotError(
+                f"recipe constraint {index} has no valid SHA-256 digest"
+            ) from exc
+        if _SHA256_RE.fullmatch(digest) is None:
             raise InvalidRecipeSnapshotError(
                 f"recipe constraint {index} has no valid SHA-256 digest"
             )
         digests.append(digest.lower())
     return digests
+
+
+def recipe_constraints_valid(snapshot: Any) -> bool:
+    """Return whether persisted recipe evidence identifies every constraint."""
+    try:
+        parsed = require_dict(snapshot, field="recipe snapshot")
+        _constraint_digests(parsed)
+    except (BoundaryError, InvalidRecipeSnapshotError):
+        return False
+    return True
 
 
 def recipe_changes(

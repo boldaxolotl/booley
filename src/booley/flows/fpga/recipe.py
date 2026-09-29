@@ -37,7 +37,9 @@ def fpga_recipe_snapshot(
             digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
         except OSError:
             digest = None
-        constraints.append(constraint_recipe_entry(xdc_file, digest, fallback_vlnv=resolved.vlnv))
+        constraints.append(
+            constraint_recipe_entry(xdc_file.core, digest, fallback_vlnv=resolved.vlnv)
+        )
 
     selected_profile = profile or resolve_fpga_profile(resolved.flow_options, target=target)
     # Store the effective profile exactly once so omitted-default and explicit
