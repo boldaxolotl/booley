@@ -137,9 +137,11 @@ def test_flow_reference_uses_the_executable_target_filter() -> None:
 
 def test_sim_campaign_resume_granularity_stays_documented() -> None:
     section = _flow_section("sim")
-    assert "Cocotb interruption retries its whole batch" in section
-    assert "coverage interruption" in section
+    assert "One resume continues one Target" in section
+    assert "| HDL | one test |" in section
+    assert "| cocotb | the whole batch |" in section
     assert "distinct nested Coverage Campaign" in section
+    assert "Resume never\n  re-runs failures" in section
     mcp = _reference_text(MCP_TOOLS)
     assert "maximum-32 `observations` preview" in mcp
     assert "`observation_total`" in mcp

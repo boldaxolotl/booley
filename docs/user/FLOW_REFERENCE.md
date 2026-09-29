@@ -132,11 +132,12 @@ only reports its verdict and exit code; it records no Criteria.
 
 Within a Ticket, a `sim` run can satisfy these Criteria:
 
-- `elab_pass_<target>`: recorded as soon as the build succeeds, so a later test
-  failure does not erase it.
 - `sim_pass_<target>`: requires every test in the Target's Required Simulation
   Suite to pass. Passing a hand-picked subset does not count.
-- Per-test Cycle Count Criteria, when configured.
+- `cycle_count_<target>_<test>`: checks one named test. It passes when that test
+  passes and its reported Cycle Count meets every threshold the Ticket declares
+  (see [Threshold parameters](USAGE.md#threshold-parameters)).
+- `elab_pass_<target>`: see [Elaboration checks](#elaboration-checks).
 
 ### Elaboration checks
 
@@ -144,6 +145,11 @@ Within a Ticket, a `sim` run can satisfy these Criteria:
 tests. It is a fast "does it build?" check, and a later full run reuses the
 build. `--mode elab-only-standalone` adds a sweep that elaborates each reusable
 RTL module on its own and can satisfy `elaborate_standalone`.
+
+Within a Ticket, a successful build satisfies `elab_pass_<target>`, whether it
+comes from `--mode elab-only` or from the build step of a normal run. It is
+recorded as soon as the build succeeds, so a later test failure does not erase
+it.
 
 Both modes skip Pre-Sim Commands and reject run-only options (`--test`,
 `--tests-file`, `--trace`, `--result-verbosity full`, `--no-kill`). A compiler
@@ -153,9 +159,14 @@ checked and exit `2` takes precedence over `1`.
 
 ### Resuming an interrupted run
 
+Resume is for long, heavy runs, such as a multi-hour regression or a large
+coverage collection, where re-running tests that already finished is expensive.
+For a short run, just start it again.
+
 Every simulation run records its plan and results in a durable Simulation
-Campaign. The CLI prints the Campaign's `manifest.json` path before starting,
-and the verdict card repeats it. If a run is interrupted, resume it:
+Campaign, one per Target. The CLI prints each Campaign's `manifest.json` path
+before starting, and the verdict card repeats it. If a run is interrupted,
+resume it:
 
 ```bash
 booley flow sim --resume-from \
@@ -165,9 +176,18 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
 
 - Target, tests, mode, coverage, and trace come from the manifest and cannot be
   given again. Timeout and output options may change.
-- Completed tests are not re-run. Cocotb interruption retries its whole batch;
-  a coverage interruption retries the whole collection into a
-  distinct nested Coverage Campaign.
+- One resume continues one Target. For a multi-Target run, resume each
+  unfinished Target's manifest separately.
+- Within a Target, the retry unit is a work item:
+
+  | Testbench | Work item | On resume |
+  |---|---|---|
+  | HDL | one test | Only tests without a recorded result run again. |
+  | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
+  | `--coverage` | the whole collection | Re-runs every test into a distinct nested Coverage Campaign. |
+
+- A test with a recorded result is finished, even if it failed. Resume never
+  re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources or suite changed since the original
   run.
 - Never edit, copy, or repair Campaign files by hand. They are bound together by
