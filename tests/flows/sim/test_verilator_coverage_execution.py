@@ -693,7 +693,7 @@ def _run_request(target: CoverageTarget, raw_path: Path) -> SimulationRunRequest
     )
 
 
-@pytest.mark.parametrize("verdict", ["pass", "fail", "timeout", "inconclusive"])
+@pytest.mark.parametrize("verdict", ["pass", "fail", "timeout"])
 def test_batch_timeout_preserves_authoritative_per_test_verdict(
     tmp_path: Path, monkeypatch, verdict: str
 ) -> None:
@@ -701,11 +701,21 @@ def test_batch_timeout_preserves_authoritative_per_test_verdict(
     assert _build_coverage(execution, target).success
     captured["result"] = AdapterResult(
         passed=False,
-        inconclusive=True,
+        inconclusive=False,
         sva_errors=0,
         tests=("wrap",),
+        termination="timeout",
         failure_kind="timeout",
-        test_results=(AdapterTestResult("wrap", verdict),),
+        detail="coverage batch timed out",
+        test_results=(
+            AdapterTestResult(
+                "wrap",
+                verdict,
+                detail="coverage batch timed out" if verdict == "timeout" else "",
+                termination="timeout" if verdict == "timeout" else "completed",
+                failure_kind="timeout" if verdict == "timeout" else "",
+            ),
+        ),
     )
 
     result = execution.run(_run_request(target, raw_path))
@@ -724,7 +734,7 @@ def test_missing_per_test_evidence_is_rejected_without_losing_process_timeout(
         inconclusive=True,
         sva_errors=0,
         tests=("wrap",),
-        failure_kind="" if process_timeout else "timeout",
+        failure_kind="inconclusive",
     )
     captured["process"] = SubprocessResult(returncode=1, timed_out=process_timeout)
 

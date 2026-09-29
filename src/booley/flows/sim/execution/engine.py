@@ -19,6 +19,7 @@ from booley.config.project_config import load_test_configuration_field, lookup_t
 from booley.core.build_paths import work_root_for
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
+from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.run_log import begin_run_log, write_run_log
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim import trace_overlay
@@ -33,7 +34,6 @@ from booley.flows.sim.build import (
     SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
-    new_attempt_token,
     prepare_simulation_build,
 )
 from booley.flows.sim.build_session import (
@@ -91,7 +91,6 @@ from .contract import (
     SimulationTestOutcome,
     pre_sim_failure_message,
 )
-from .failures import find_missing_executable
 from .freshness import (
     ArtifactValidationError,
     validate_fresh_artifact,
@@ -371,23 +370,6 @@ class PreparedOrdinaryGroup:
             self._started,
         )
 
-    def reuse_compilation_from(self, source: PreparedOrdinaryGroup) -> None:
-        """Bind this test-specific launch to an authenticated successful build.
-
-        The caller still prepares this group's adapter command under the Target
-        lease, but no compiler is run.  The executable bytes are supplied later
-        from the campaign-owned authenticated Simulator Bundle snapshot.
-        """
-        if not self._lease_active:
-            raise SimulationBuildSlotError("ordinary Simulation build lease has ended")
-        if self._build is not None:
-            raise SimulationBuildSlotError("ordinary Simulation group already has a build")
-        process, build = source._compiled()
-        if not build.passed or process.returncode != 0 or process.timed_out:
-            raise SimulationBuildSlotError("shared Simulation build is not reusable")
-        self._build_process = process
-        self._build = build
-
     def build_recovery_document(self) -> dict[str, object]:
         """Return the exact compiler process and normalized build for durability."""
         process, build = self._compiled()
@@ -422,8 +404,7 @@ class PreparedOrdinaryGroup:
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None:
         """Mark preparation ready to launch a campaign-authenticated bundle.
 
-        This is the process-recovery counterpart of ``reuse_compilation_from``:
-        the durable Build Result has already authenticated the compiler outcome,
+        The durable Build Result has already authenticated the compiler outcome,
         so only the test-specific adapter preparation is reconstructed.
         """
         if not self._lease_active:
@@ -433,10 +414,16 @@ class PreparedOrdinaryGroup:
         process = evidence["process"]
         build = evidence["build"]
         assert isinstance(process, Mapping) and isinstance(build, Mapping)
-        self._build_process = SubprocessResult(**process)  # type: ignore[arg-type]
-        self._build = BuildOutcome(**build)  # type: ignore[arg-type]
-        if not self._build.passed or self._build_process.returncode != 0:
+        recovered_process = SubprocessResult(**process)  # type: ignore[arg-type]
+        recovered_build = BuildOutcome(**build)  # type: ignore[arg-type]
+        if (
+            not recovered_build.passed
+            or recovered_process.returncode != 0
+            or recovered_process.timed_out
+        ):
             raise SimulationBuildSlotError("recovered bundle evidence is not successful")
+        self._build_process = recovered_process
+        self._build = recovered_build
 
     def launch_snapshot(
         self,
@@ -1150,7 +1137,7 @@ def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) 
         )
     if result.passed and (attempt.process.returncode != 0 or not build.passed):
         return "adapter pass contradicts process or build evidence"
-    if result.failure_kind == "infrastructure":
+    if result.failure_kind == "infrastructure" and result.termination == "completed":
         return result.detail or "adapter infrastructure failure"
     return None
 
@@ -1653,21 +1640,44 @@ def _group_outcome(
         and adapter_passed is not False
     )
     elapsed_s = time.monotonic() - started
+    failure = _group_infrastructure_failure(tests)
     return SimulationTargetOutcome(
         target=handle.selector,
         target_identity=handle.identity,
         toplevel=attempt.prepared.toplevel,
         eda_tool=attempt.prepared.eda_tool,
         passed=passed,
-        verdict="pass" if passed else "inconclusive" if inconclusive else "fail",
+        verdict=_group_verdict(failure, passed, inconclusive),
         elapsed_s=elapsed_s,
         tests=tests,
         builds=(build,) if build is not None else (),
         pre_sim_runs=(pre_sim,) if pre_sim is not None else (),
         artifacts=artifacts,
         diagnostics=diagnostics,
+        infrastructure_failure=failure,
         phase_timings_s=_target_phase_timings(tests, elapsed_s),
     )
+
+
+def _group_infrastructure_failure(
+    tests: tuple[SimulationTestOutcome, ...],
+) -> SimulationInfrastructureFailure | None:
+    aborted = next((test for test in tests if test.failure_kind == "infrastructure"), None)
+    if aborted is None:
+        return None
+    return SimulationInfrastructureFailure(
+        aborted.termination,
+        aborted.reason,
+        detail=aborted.reason,
+    )
+
+
+def _group_verdict(failure, passed: bool, inconclusive: bool):
+    if failure:
+        return "error"
+    if passed:
+        return "pass"
+    return "inconclusive" if inconclusive else "fail"
 
 
 def _aggregate(
@@ -1808,14 +1818,12 @@ def _test_outcome(
 ) -> SimulationTestOutcome:
     inconclusive = verdict == "inconclusive"
     passed = verdict == "pass" and adapter is not None and sva_errors == 0
-    detail = item.detail if item else adapter.detail if adapter else ""
-    reason = detail
-    if verdict == "timeout" and not reason:
-        reason = f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
-    if verdict == "crash" and not reason:
-        reason = f"simulator process terminated by signal {-process.returncode}"
-    if inconclusive and not reason:
-        reason = _NO_WAVEFORM if attempt.trace_requested and trace is None else _NO_SENTINEL
+    detail, termination, failure_kind, simulator_returncode = _test_termination_evidence(
+        item, adapter
+    )
+    reason = _test_reason(
+        detail, termination, simulator_returncode, verdict, process, inconclusive, attempt, trace
+    )
     return SimulationTestOutcome(
         name=name,
         verdict=verdict,
@@ -1824,6 +1832,9 @@ def _test_outcome(
         cycles=cycles,
         cycle_status=cycle_status,
         inconclusive=inconclusive,
+        termination=termination,
+        failure_kind=failure_kind,
+        simulator_returncode=simulator_returncode,
         reason=reason,
         sva_errors=sva_errors,
         error_tail="" if passed else reason or _output_tail(process, build.design_failed),
@@ -1834,6 +1845,34 @@ def _test_outcome(
         run_log_path=log.path if log is not None else "",
         workload_snapshot=_workload_snapshot(handle, attempt, name),
     )
+
+
+def _test_termination_evidence(item, adapter):
+    detail = item.detail if item else adapter.detail if adapter else ""
+    termination = item.termination if item else adapter.termination if adapter else "completed"
+    failure_kind = (
+        item.failure_kind
+        if item and item.failure_kind
+        else adapter.failure_kind
+        if adapter
+        else ""
+    )
+    simulator_returncode = adapter.simulator_returncode if adapter else None
+    return detail, termination, failure_kind, simulator_returncode
+
+
+def _test_reason(
+    detail, termination, simulator_returncode, verdict, process, inconclusive, attempt, trace
+) -> str:
+    if termination != "completed" and detail:
+        return f"{detail} (rc={simulator_returncode})"
+    if verdict == "timeout" and not detail:
+        return f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+    if verdict == "crash" and not detail:
+        return f"simulator process terminated by signal {-process.returncode}"
+    if inconclusive and termination == "completed" and not detail:
+        return _NO_WAVEFORM if attempt.trace_requested and trace is None else _NO_SENTINEL
+    return detail
 
 
 def _timeout_ms(process: SubprocessResult) -> int:

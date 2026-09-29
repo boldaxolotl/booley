@@ -16,7 +16,7 @@ import pytest
 
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
-from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
@@ -27,11 +27,17 @@ from booley.flows.sim.campaign.codec import (
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
+    ResumeCampaignRunRequest,
     SimulationCampaign,
     SimulationCampaignCancellationError,
 )
 from booley.flows.sim.campaign.model import SimulationAttempt, create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
+from booley.flows.sim.campaign.resume import (
+    ValidatedManifestNode,
+    ValidatedResumeManifest,
+    ValidatedTargetBinding,
+)
 from booley.flows.sim.campaign.scheduler import (
     BoundedCampaignScheduler,
     CampaignSchedulingError,
@@ -86,9 +92,10 @@ def test_cancelled_campaign_stops_before_publication() -> None:
         SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
 
 
-def _three_item_manifest():
+def _three_item_manifest(execution_id: str = ""):
     document = json.loads(canonical_json_bytes(_two_item_manifest().document))
     document.pop("fingerprints")
+    document["origin"]["execution_id"] = execution_id
     document["required_suite"]["names"] = ["alpha", "beta", "gamma"]
     identity = {
         key: value
@@ -281,7 +288,8 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child() -> None:
         _unmanaged(), terminal_proof=lambda _execution_id: True, recover_child=lambda _id: True
     )
     with capacity.outer_permit() as permit:
-        assert permit.execution_id == ""
+        assert permit.execution_id is None
+        assert isinstance(capacity.parent_execution_id, ExecutionId)
         assert capacity.max_lanes == 1
         assert capacity.managed is False
     with pytest.raises(HeavyCapacityError, match="exactly once"), capacity.outer_permit():
@@ -904,9 +912,6 @@ class _ParallelGroup:
         self.state.compile_count += 1
         return SimpleNamespace(passed=True)
 
-    def reuse_compilation_from(self, _source) -> None:
-        return None
-
     def build_recovery_document(self):
         return _build_execution()
 
@@ -955,6 +960,147 @@ class _ParallelExecution:
     @contextmanager
     def ordinary_group(self, _handle, names):
         yield _ParallelGroup(self.state, names)
+
+
+class _CampaignAdmissionEndpoint:
+    _invocation_id = "sim-20260925T153819Z-1"
+
+    def __init__(self, slots: SlotStore, runtime_execution_id: str | None) -> None:
+        self._slots = slots
+        self._runtime_execution_id = runtime_execution_id
+
+    def _acquire_job_slot(self):
+        execution_id = (
+            ExecutionId(self._runtime_execution_id) if self._runtime_execution_id else None
+        )
+        return self._slots, self._slots.acquire(
+            CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id
+        )
+
+
+def _validated_campaign(store, manifest, project, handle) -> ValidatedResumeManifest:
+    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
+    return ValidatedResumeManifest(
+        node,
+        (),
+        (handle,),
+        (ValidatedTargetBinding(node, project.resolve(), handle),),
+    )
+
+
+def _child_parent_ids(store: CampaignStore) -> set[str]:
+    entries = (store.root / "child-executions/entries").glob("*.json")
+    return {json.loads(path.read_text())["parent_execution_id"] for path in entries}
+
+
+@pytest.mark.parametrize("runtime_execution_id", ["b" * 32, None])
+def test_interrupted_managed_campaign_exact_resume_preserves_parent_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_execution_id: str | None,
+) -> None:
+    case = _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id)
+    assert not case.store.summary_path.exists()
+    assert len(case.state.completion_order) == 3
+    assert not tuple((case.store.root / "child-executions/retired").glob("*.json"))
+    parent_ids = _child_parent_ids(case.store)
+    if runtime_execution_id is not None:
+        assert parent_ids == {runtime_execution_id}
+    assert len(parent_ids) == 1 and _CampaignAdmissionEndpoint._invocation_id not in parent_ids
+    ExecutionId(next(iter(parent_ids)))
+
+    case.fault_enabled[0] = False
+    summaries, outcomes = _resume_campaign_twice(case, runtime_execution_id)
+    assert summaries[0] == summaries[1]
+    assert all(outcome.complete for outcome in outcomes)
+    assert len(case.state.completion_order) == 3
+    assert case.store.load_manifest().document["origin"]["execution_id"] == (
+        runtime_execution_id or ""
+    )
+    assert case.slots.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
+    manifest = _three_item_manifest(runtime_execution_id or "")
+    plan = create_simulation_campaign_plan(manifest)
+    project, state = _parallel_environment(tmp_path, "alpha", 0)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
+    )
+    invocation = tmp_path / "reports/000001"
+    invocation.mkdir(parents=True)
+    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=3))
+    _set_runtime_execution_id(monkeypatch, runtime_execution_id)
+    monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
+    fault_enabled, original_retire = [True], ChildExecutionRegistry.retire
+
+    def interrupted_retire(registry, prepared, **kwargs) -> None:
+        _wait_until(lambda: len(state.completion_order) == 3, timeout=10.0)
+        if fault_enabled[0]:
+            raise RuntimeError("injected retirement interruption")
+        original_retire(registry, prepared, **kwargs)
+
+    monkeypatch.setattr(ChildExecutionRegistry, "retire", interrupted_retire)
+    campaign = SimulationCampaign(executor)
+    with (
+        pytest.raises(RuntimeError, match="injected retirement interruption"),
+        AdmissionGate(
+            _CampaignAdmissionEndpoint(slots, runtime_execution_id)  # type: ignore[arg-type]
+        ).enter() as admission,
+    ):
+        campaign.run(
+            NewCampaignRunRequest(
+                plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+            )
+        )
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    validated = _validated_campaign(store, manifest, project, state.handle)
+    return SimpleNamespace(
+        campaign=campaign,
+        fault_enabled=fault_enabled,
+        invocation=invocation,
+        manifest=manifest,
+        plan=plan,
+        project=project,
+        slots=slots,
+        state=state,
+        store=store,
+        validated=validated,
+    )
+
+
+def _resume_campaign_twice(case, runtime_execution_id):
+    request_args = (
+        case.validated,
+        case.plan,
+        case.project,
+        case.invocation.parent,
+        CampaignPolicy(),
+        case.invocation,
+    )
+    summaries = []
+    outcomes = []
+    for _ in range(2):
+        with AdmissionGate(
+            _CampaignAdmissionEndpoint(case.slots, runtime_execution_id)  # type: ignore[arg-type]
+        ).enter() as admission:
+            outcomes.append(case.campaign.run(ResumeCampaignRunRequest(*request_args, admission)))
+        summaries.append(case.store.summary_path.read_bytes())
+    return summaries, outcomes
+
+
+def _set_runtime_execution_id(
+    monkeypatch: pytest.MonkeyPatch, runtime_execution_id: str | None
+) -> None:
+    if runtime_execution_id is None:
+        monkeypatch.delenv("BOOLEY_RUNTIME_EXECUTION_ID", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", runtime_execution_id)
 
 
 @pytest.mark.parametrize("first_finisher", ["alpha", "beta"])

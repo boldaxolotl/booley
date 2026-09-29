@@ -57,8 +57,9 @@ Containers extension; deploys packaged skills; verifies the shared Nangate45
 cache; reconciles the base Sandbox Image; and converges the
 single global egress network, proxy, and reaper. It neither discovers a Project
 nor selects an agent provider. `booley bootstrap --check-only` performs no
-writes and returns 1 when work is pending; `--force` refreshes Booley-managed
-host resources while preserving caches and user-owned files.
+writes and returns 1 when required work is pending; warnings from optional
+extensions remain non-blocking. `--force` refreshes Booley-managed host
+resources while preserving caches and user-owned files.
 
 Bootstrap treats stable release tags in the official
 `ghcr.io/boldaxolotl/booley-sandbox` repository as temporary acquisition names.

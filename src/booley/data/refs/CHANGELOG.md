@@ -11,6 +11,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### New features
 
+- Maintainers can persistently opt the three repository-owned QA skills into
+  Host Bootstrap with `booley bootstrap --with-qa-skills` and safely remove
+  only managed QA links with `--without-qa-skills`. Optional-source failures
+  warn without blocking product Bootstrap or Project Initialization, and QA
+  skills remain outside release wheels and Sandbox host-skill mounts.
+
 - `booley board show` and generated review packages now compare recorded
   Criterion and Reviewer-receipt evidence with the live Ticket worktree. They
   show changed source categories, hold on stale mandatory evidence, and leave

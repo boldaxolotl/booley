@@ -10,8 +10,15 @@ all: yosys
 
 sv2v:
 	@echo 'BOOLEY_STAGE: sv2v'
+	@command -v sv2v >/dev/null 2>&1 || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_eda_tool stage=sv2v subject=sv2v'; exit 127; }
 	sv2v -I../syn_demo_0/syn/src/syn_demo_0/rtl/include -DSYNTHESIS ../syn_demo_0/syn/src/syn_demo_0/rtl/pkg.sv ../syn_demo_0/syn/src/syn_demo_0/rtl/dut.sv -w sv2v_converted.v > sv2v.log 2>&1 || { rc=$$?; tail -n 40 sv2v.log; exit $$rc; }
+	@test -s sv2v_converted.v || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=sv2v subject=sv2v_converted.v'; exit 2; }
 
 yosys: sv2v
 	@echo 'BOOLEY_STAGE: yosys'
+	@command -v yosys >/dev/null 2>&1 || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_eda_tool stage=yosys subject=yosys'; exit 127; }
+	@test -r /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_required_file stage=yosys subject=NangateOpenCellLibrary_typical_ccs.lib'; exit 2; }
 	yosys -s synth.ys > yosys.log 2>&1 || { rc=$$?; tail -n 40 yosys.log; exit $$rc; }
+	@test -s stat_dut.txt || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=yosys subject=stat_dut.txt'; exit 2; }
+	@test -s check_dut.txt || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=yosys subject=check_dut.txt'; exit 2; }
+	@test -s synth_dut.v || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=yosys subject=synth_dut.v'; exit 2; }

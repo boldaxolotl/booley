@@ -217,6 +217,7 @@ class TestConfigureSynthesis:
         assert "Nangate45_tech.lef" in text
         assert "falling back" not in text
         assert "run_opensta.tcl" not in text
+        assert "test -f reports/timing/overall.csv.rpt" in text
 
     @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires a POSIX shell")
     def test_physical_mode_fails_when_openroad_is_missing(self, tmp_path: Path):
@@ -235,7 +236,9 @@ class TestConfigureSynthesis:
         )
 
         assert result.returncode != 0
-        assert "requires OpenROAD" in result.stdout
+        assert "kind=missing_eda_tool" in result.stdout
+        assert "stage=openroad" in result.stdout
+        assert "subject=openroad" in result.stdout
 
     def test_slang_frontend_skips_sv2v_stage(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(
@@ -255,6 +258,33 @@ class TestConfigureSynthesis:
         assert "read_verilog sv2v_converted.v" in script
         # ABC recipe token survives the one-command-per-line split intact.
         assert "+strash;ifraig" in script
+
+
+class TestGeneratedMakefile:
+    @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
+    def test_sv2v_success_without_output_stops_before_yosys(self, tmp_path: Path) -> None:
+        plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "sv2v").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (fake_bin / "yosys").write_text(
+            f"#!/bin/sh\ntouch {tmp_path / 'yosys-ran'}\nexit 0\n", encoding="utf-8"
+        )
+        (fake_bin / "sv2v").chmod(0o755)
+        (fake_bin / "yosys").chmod(0o755)
+
+        result = subprocess.run(
+            ["make", "-C", str(plan.build_dir)],
+            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert "kind=missing_output" in result.stdout
+        assert "stage=sv2v" in result.stdout
+        assert not (tmp_path / "yosys-ran").exists()
 
     def test_missing_liberty_is_a_warning_not_an_error(self, tmp_path: Path):
         import dataclasses
@@ -403,6 +433,8 @@ class TestBoundaryOutput:
         )
         outcome = syn_make.boundary_output(plan, 0, is_stale=lambda p: True)
         assert "Chip area" not in outcome.text
+        assert "kind=missing_output" in outcome.text
+        assert "subject=sv2v_converted.v" in outcome.text
 
     def test_rederives_sta_markers_from_log(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))

@@ -1,14 +1,23 @@
 ---
 name: booley-add-to-qa
-description: Add a Booley behavior, fault idea, or known trap to the QA missions so future runs exercise it.
+description: Only when the user explicitly asks, add a Booley behavior, fault idea, or known trap to the QA missions so future runs exercise it.
 ---
 
 # Add to Booley QA
 
+Use this skill only when the user explicitly invokes it. This is behavioral
+guidance for clients without enforceable invocation metadata. Resolve the real
+path of this loaded `SKILL.md`; derive `qa/` and the source checkout from its
+parent directories. Before acting, require that source to be a clean primary
+checkout on `main`, with `.git` as a directory and HEAD matching the canonical
+host `booley --version` revision. Stop with restore/re-enable guidance if that
+check fails. Resolve all repository inputs from this derived root, never from
+the process working directory.
+
 Input: prose describing a Booley behavior, a bug class, or a trap from a past
 run.
 
-1. **Place it.** Read [AREAS.md](../AREAS.md) and the candidate missions under
+1. **Place it.** Read `qa/AREAS.md` and the candidate missions under
    `qa/missions/`. Decide whether the behavior is already exercised, belongs in
    an existing area, needs a new area in one mission, or is a trap for
    **Known traps**. Prefer extending an existing area; a new mission is rare and

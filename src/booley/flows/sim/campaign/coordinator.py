@@ -27,7 +27,6 @@ from .child_protocol import ChildExecutionRegistry
 from .codec import (
     SimulationCampaignIntegrityError,
     encode_simulation_campaign_manifest,
-    encode_simulation_result,
 )
 from .facts import AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
@@ -922,9 +921,9 @@ def _collected_result_facts(
         if recovered.result is None:
             continue
         item = by_id[recovered.work_item_id]
-        raw = encode_simulation_result(recovered.result)
-        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
+        raw = result_path.read_bytes()
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         invocation = store.root.parents[2]
         relative = result_path.relative_to(invocation).as_posix()
         document = recovered.result.document
@@ -975,9 +974,9 @@ def _prerequisite_facts(
             store, entry, manifest_reference
         )
         selected = _selected_prerequisite_result(store, entry)
-        raw = encode_simulation_result(selected.result)
-        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         result_path = store.work_item_directory(selected.work_item_id) / "result.json"
+        raw = result_path.read_bytes()
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         result_reference = {
             "path_base": "origin_invocation",
             "path": result_path.relative_to(invocation).as_posix(),

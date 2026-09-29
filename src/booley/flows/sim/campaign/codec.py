@@ -532,7 +532,15 @@ def _validate_simulation_result(value: Mapping[str, object]) -> None:
     _require_work_item_id(value["work_item_id"])
     build_result = _validate_simulation_build_ref(value["build_result"])
     state = value["state"]
-    if state not in {"completed", "timeout", "crash", "setup_error", "blocked_by_build"}:
+    if state not in {
+        "completed",
+        "timeout",
+        "crash",
+        "aborted",
+        "setup_error",
+        "blocked_by_build",
+        "not_run",
+    }:
         raise SimulationCampaignIntegrityError("invalid simulation result state")
     if value["grade"] not in {grade.value for grade in StrictGrade}:
         raise SimulationCampaignIntegrityError("invalid strict grade")
@@ -727,7 +735,10 @@ def _validate_result_state(
     if build_result["state"] != "ready":
         raise SimulationCampaignIntegrityError("non-blocked result requires ready build")
     _require_uuid(value["bundle_id"], "bundle_id")
-    if state in {"completed", "timeout", "crash"} and value["executable_snapshot"] is None:
+    if (
+        state in {"completed", "timeout", "crash", "aborted"}
+        and value["executable_snapshot"] is None
+    ):
         raise SimulationCampaignIntegrityError("post-launch result requires executable snapshot")
     _validate_executable_snapshot(value["executable_snapshot"], value["attempt_id"])
 
@@ -815,11 +826,17 @@ def _validate_observations(value: object, state: str) -> list[Mapping[str, objec
             raise SimulationCampaignIntegrityError("blocked result requires blocked observations")
         if state == "setup_error" and observation["execution"] != "setup_error":
             raise SimulationCampaignIntegrityError("setup result requires setup observations")
+        if state == "aborted" and observation["execution"] not in {
+            "completed",
+            "aborted",
+            "not_run",
+        }:
+            raise SimulationCampaignIntegrityError("aborted result has invalid observations")
     named = [test for test in tests if test is not None]
     if len(set(named)) != len(named):
         raise SimulationCampaignIntegrityError("observation test names must be unique")
-    if state in {"completed", "timeout", "crash"}:
-        strength = {"completed": 0, "timeout": 1, "crash": 2}
+    if state in {"completed", "timeout", "crash", "aborted"}:
+        strength = {"completed": 0, "not_run": 0, "timeout": 1, "crash": 2, "aborted": 3}
         expected = max(
             (cast(str, item["execution"]) for item in decoded),
             key=lambda execution: strength.get(execution, 3),
@@ -869,8 +886,10 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
         "completed",
         "timeout",
         "crash",
+        "aborted",
         "setup_error",
         "blocked_by_build",
+        "not_run",
     }:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if observation["failure_class"] not in {None, "design", "infrastructure"}:
@@ -898,13 +917,27 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
 
 
 def _validate_observation_matrix(observation: Mapping[str, object]) -> None:
-    if observation["execution"] in {"setup_error", "blocked_by_build"} and (
+    if observation["execution"] in {"setup_error", "blocked_by_build", "not_run"} and (
         observation["failure_class"] not in {"design", "infrastructure"}
         or observation["functional"] != "not_observed"
         or observation["assertions"] != "not_observed"
         or observation["cycle_count"] is not None
     ):
         raise SimulationCampaignIntegrityError("setup/build-block observation matrix is invalid")
+    if observation["execution"] == "aborted":
+        infrastructure = observation["failure_class"] == "infrastructure"
+        valid_functional = (
+            observation["functional"] == "not_observed"
+            if infrastructure
+            else observation["functional"] == "fail"
+        )
+        if (
+            observation["failure_class"] not in {"design", "infrastructure"}
+            or not valid_functional
+            or observation["assertions"] != "not_observed"
+            or observation["cycle_count"] is not None
+        ):
+            raise SimulationCampaignIntegrityError("aborted observation matrix is invalid")
 
 
 def _validate_diagnostics(value: object) -> None:
@@ -1534,7 +1567,7 @@ _DOCUMENT_SPECS: dict[
         _validate_build_result,
     ),
     SimulationResult: (
-        "booley.simulation-result/v1",
+        "booley.simulation-result/v2",
         _RESULT_FIELDS,
         RECORD_MAX_BYTES,
         _validate_simulation_result,
@@ -1580,6 +1613,13 @@ decode_build_result = decode_bundle_build_result
 
 
 def decode_simulation_result(raw: bytes) -> SimulationResult:
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        document = None
+    if isinstance(document, dict) and document.get("$schema") == "booley.simulation-result/v1":
+        document["$schema"] = "booley.simulation-result/v2"
+        raw = canonical_json_bytes(document)
     return _decode_registered(raw, SimulationResult)
 
 

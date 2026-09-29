@@ -59,6 +59,7 @@ from booley.runtime.execution_records import (
     execution_paths,
     read_json,
     request_cancellation,
+    verify_inherited_execution_id,
 )
 from booley.runtime.execution_recovery import recover_execution, recover_process_owner
 from booley.runtime.job_records import (
@@ -269,6 +270,23 @@ def _default_recover_process_owner(identity: ProcessIdentity | None) -> bool:
     return identity is not None and recover_process_owner(identity)
 
 
+def _default_inherited_execution_verifier(
+    candidate: object, root: Path, owner_pid: int
+) -> ExecutionId | None:
+    try:
+        from booley.runtime.project_dir import resolve_project_dir
+
+        project_dir = resolve_project_dir()
+        canonical_root = project_dir / "runtime" / "jobs" / "slots"
+        if root.resolve() != canonical_root.resolve():
+            return None
+        return verify_inherited_execution_id(
+            candidate, project_dir=project_dir, owner_pid=owner_pid
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class SlotRecovery:
     """Injected recovery boundary for durable execution and process owners."""
@@ -355,6 +373,9 @@ class SlotStore:
         capture_identity: Callable[[int], ProcessIdentity | None] = capture_process_identity,
         observe_identity: Callable[[ProcessIdentity], ProcessObservation] = observe_process,
         recovery: SlotRecovery | None = None,
+        inherited_execution_verifier: Callable[
+            [object, Path, int], ExecutionId | None
+        ] = _default_inherited_execution_verifier,
     ) -> None:
         self.root = root
         self.caps = caps or SlotCaps()
@@ -365,6 +386,7 @@ class SlotStore:
         self._capture_identity = capture_identity
         self._observe_identity = observe_identity
         self._recovery = recovery or SlotRecovery()
+        self._inherited_execution_verifier = inherited_execution_verifier
         self._n = 0  # per-store counter: distinct entries from one process
         self._auto_renew = now is time.time and sleep is time.sleep
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
@@ -399,8 +421,15 @@ class SlotStore:
 
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_TICKET])
         created = self._now()
-        raw_execution = execution_id or os.environ.get(RUNTIME_EXECUTION_ENV) or None
-        linked_execution = ExecutionId(raw_execution) if raw_execution is not None else None
+        if execution_id is not None:
+            linked_execution = ExecutionId(execution_id)
+        else:
+            inherited = os.environ.get(RUNTIME_EXECUTION_ENV) or None
+            linked_execution = (
+                self._inherited_execution_verifier(inherited, self.root, pid)
+                if inherited is not None
+                else None
+            )
         token = self._create_entry(
             _WaiterRequest(
                 cls_dir=cls_dir,

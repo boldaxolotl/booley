@@ -18,7 +18,9 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
 from booley.flows.sim.backends import cocotb as crun
+from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
 
 # ---------------------------------------------------------------------------
@@ -564,6 +566,39 @@ def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path: Path,
     assert "run-loop version mismatch" in combined
     # The verdict line quotes the promoted detail, not "results.xml not found".
     assert "results.xml not found" not in capsys.readouterr().out.split("INCONCLUSIVE")[-1]
+
+
+def test_partial_cocotb_abort_preserves_completed_test_and_publishes_termination(
+    tmp_path: Path,
+) -> None:
+    identity = AdapterTransportIdentity(
+        "cocotb", "attempt", "acme:lib:dut:1#sim", ("done", "later"), tmp_path / "adapter.json"
+    )
+    output = (
+        '[COCOTB_RESULTS] {"state":"ok","detail":"","tests":['
+        '{"name":"done","module":"test_demo","status":"pass",'
+        '"failure":"","elapsed_s":0.1}],"skipped_unselected":0}\n'
+    )
+    termination = RunTermination(
+        "sim_time_stall", "simulator time did not advance", "infrastructure"
+    )
+
+    crun._publish_adapter_result(
+        identity,
+        output,
+        False,
+        termination=termination,
+        simulator_returncode=-15,
+    )
+
+    result = read_adapter_result(identity)
+    assert result.termination == "sim_time_stall"
+    assert result.inconclusive is False
+    assert result.simulator_returncode == -15
+    assert [(test.name, test.verdict, test.termination) for test in result.test_results] == [
+        ("done", "pass", "completed"),
+        ("later", "fail", "sim_time_stall"),
+    ]
 
 
 def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):

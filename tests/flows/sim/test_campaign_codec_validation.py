@@ -144,6 +144,13 @@ def test_simulation_result_rejects_diagnostic_and_matrix_errors() -> None:
     with pytest.raises(SimulationCampaignIntegrityError, match="matrix"):
         codec.decode_simulation_result(codec.canonical_json_bytes(document))
 
+    document = json.loads(_simulation_result("aborted"))
+    document["observations"][0].update(
+        failure_class="design", functional="inconclusive", assertions="not_observed"
+    )
+    with pytest.raises(SimulationCampaignIntegrityError, match="aborted observation matrix"):
+        codec.decode_simulation_result(codec.canonical_json_bytes(document))
+
 
 @pytest.mark.parametrize(
     "value",

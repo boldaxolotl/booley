@@ -452,11 +452,11 @@ class TestCocotbVerdictMatrix:
         )
         by_name = {t["name"]: t for t in report["tests"]}
         # Finished-and-passed stays pass, the active test reads timeout, and a
-        # later selected test is explicitly distinguished as never run.
+        # later selected test is also normalized as batch-timeout evidence.
         assert by_name["test_reset"]["verdict"] == "pass"
         assert by_name["test_count"]["verdict"] == "timeout"
-        assert by_name["test_fail_assert"]["verdict"] == "inconclusive"
-        assert cr.TIMEOUT_NOT_RUN_DETAIL in by_name["test_fail_assert"]["error_tail"]
+        assert by_name["test_fail_assert"]["verdict"] == "timeout"
+        assert "cocotb simulation timed out" in by_name["test_fail_assert"]["error_tail"]
 
     def test_missing_results_line_is_inconclusive_never_pass(self, tmp_path: Path):
         # The run died before the run-half's post-processing (e.g. an outer
