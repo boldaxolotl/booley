@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -1199,6 +1200,37 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
         # The raced number's producer lock was released, not leaked.
         with campaign_invocation_lock(reports / "sim/2"):
             pass
+
+
+def test_simulation_reservation_releases_its_lock_when_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-race mkdir failure (EACCES, ENOSPC) must not leave the number busy."""
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+
+    reports = tmp_path / "reports"
+    (reports / "sim").mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimRequest(report_dir=reports)
+    mkdir = type(reports).mkdir
+
+    def disk_full_for_one(path: Path, *args: object, **kwargs: object) -> None:
+        if path == reports / "sim/1":
+            raise OSError(errno.ENOSPC, "No space left on device", str(path))
+        mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(reports), "mkdir", disk_full_for_one)
+    with (
+        flow.context.publication_resources,
+        pytest.raises(OSError, match="No space left") as raised,
+    ):
+        flow.reserve_invocation_dir()
+
+    # The retained traceback keeps the reservation frame alive, so only an
+    # explicit release (not refcount or GC finalization) frees the number.
+    assert raised.tb is not None
+    with campaign_invocation_lock(reports / "sim/1"):
+        pass
 
 
 def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) -> None:
