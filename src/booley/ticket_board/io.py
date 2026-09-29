@@ -43,7 +43,11 @@ class TicketFileSpec:
 
 from .acceptance_journal import acceptance_state
 from .constants import RUNTIME_FIELDS, normalize_dir
-from .frontmatter import parse_frontmatter, update_frontmatter
+from .frontmatter import (
+    is_v2_ticket_document,
+    parse_frontmatter,
+    prepare_frontmatter_update,
+)
 from .helpers import (
     compute_done_slugs,
     lock_fd,
@@ -74,7 +78,7 @@ from .paths import (
     migrate_runtime_file,
     ticket_log_dir,
 )
-from .persistence import WriteOnceConflictError, atomic_write_once
+from .persistence import WriteOnceConflictError, atomic_replace_bytes, atomic_write_once
 
 # Extracted to scanner.py — re-export for backward compatibility
 from .scanner import find_ticket_file, scan_all_tickets
@@ -362,11 +366,52 @@ class TicketIO:
         progress["last_update"] = now_iso()
         return spec_updates
 
-    def _write_spec_fields(self, file_path, spec_updates):
-        """Write spec field updates to frontmatter (atomic via temp+rename)."""
+    def _prepare_spec_fields(self, file_path: Path, spec_updates: dict[str, Any]) -> bytes | None:
+        """Validate a Ticket update and return complete replacement bytes."""
         if not spec_updates:
+            return None
+        source = file_path.read_text(encoding="utf-8")
+        if not is_v2_ticket_document(source):
+            _fields, content = prepare_frontmatter_update(source, spec_updates)
+            return content.encode()
+
+        unsupported = set(spec_updates) - {"machine", "created", "feature_branch"}
+        if unsupported:
+            names = ", ".join(sorted(unsupported))
+            raise ValueError(f"v2 Ticket authored fields cannot be updated: {names}")
+        drafts = self.tickets_dir / "board" / "drafts"
+        stage = "draft" if file_path.parent.resolve() == drafts.resolve() else "executable"
+        from .ticket_document import (
+            TicketDocument,
+            convert_ticket_document,
+            serialize_ticket_document,
+            ticket_conversion_context,
+        )
+
+        with ticket_conversion_context(self._project_root, file_path.stem, stage) as context:
+            converted = convert_ticket_document(source, context)
+        if converted.document is None:
+            detail = "; ".join(item.message for item in converted.diagnostics)
+            raise ValueError(f"Ticket document is invalid: {detail}")
+        generated = dict(converted.document.generated)
+        for key, value in spec_updates.items():
+            if value is None or value == "":
+                generated.pop(key, None)
+            else:
+                generated[key] = value
+        candidate = TicketDocument(converted.document.spec, generated)
+        with ticket_conversion_context(self._project_root, file_path.stem, stage) as context:
+            return serialize_ticket_document(candidate, context).encode()
+
+    @staticmethod
+    def _publish_spec_fields(file_path: Path, content: bytes | None) -> None:
+        if content is None:
             return
-        update_frontmatter(file_path, spec_updates)
+        atomic_replace_bytes(file_path, content, mode=file_path.stat().st_mode & 0o777)
+
+    def _write_spec_fields(self, file_path: Path, spec_updates: dict[str, Any]) -> None:
+        """Prepare and atomically publish Ticket field updates."""
+        self._publish_spec_fields(file_path, self._prepare_spec_fields(file_path, spec_updates))
 
     def move_ticket_file(self, slug: str, to_dir: str) -> bool:
         """Move a ticket .md file to a different directory (queue, active, etc.)."""
@@ -567,9 +612,11 @@ class TicketIO:
             if not self._move_prerequisite(slug, new_path, before_move):
                 return False
 
-            spec_updates = self._apply_updates(progress, updates, append_step)
-            save_progress(self.logs_dir, slug, progress)
-            self._write_spec_fields(file_path, spec_updates)
+            updated_progress = copy.deepcopy(progress)
+            spec_updates = self._apply_updates(updated_progress, updates, append_step)
+            prepared_ticket = self._prepare_spec_fields(file_path, spec_updates)
+            save_progress(self.logs_dir, slug, updated_progress)
+            self._publish_spec_fields(file_path, prepared_ticket)
 
             # Move file (.runtime/progress.json stays in logs/<slug>/.runtime/)
             new_dir = new_path.parent
@@ -596,6 +643,9 @@ class TicketIO:
         with ticket_path.open(encoding="utf-8") as f:
             text = f.read()
         fields, _body = parse_frontmatter(text)
+        prepared_created = None
+        if not fields.get("created"):
+            prepared_created = self._prepare_spec_fields(ticket_path, {"created": now_iso()})
 
         # Move file to board/active/. Guard on identity, not just string
         # inequality: the source may already BE the destination reached via a
@@ -615,8 +665,7 @@ class TicketIO:
         shutil.copy2(str(active_path), str(log_dir / "ticket.md"))
 
         # Stamp 'created' in frontmatter (immutable, set once)
-        if not fields.get("created"):
-            update_frontmatter(active_path, {"created": now_iso()})
+        self._publish_spec_fields(active_path, prepared_created)
 
         # Create .runtime/progress.json with initial runtime state
         initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)

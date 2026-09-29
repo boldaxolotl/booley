@@ -874,19 +874,27 @@ def _promote_waiting_ticket(tio: Any, ticket: dict[str, Any]) -> dict[str, str] 
     def refresh_basis() -> bool:
         return _refresh_waiting_basis(tio, ticket, slug, updates, state)
 
-    ok = _op_move_and_log(
-        tio,
-        slug,
-        "queue",
-        updates,
-        (
-            "waiting:init",
-            "queued:init",
-            "ticket-board",
-            "dependencies satisfied — promoted to queue",
-        ),
-        before_move=refresh_basis,
-    )
+    try:
+        ok = _op_move_and_log(
+            tio,
+            slug,
+            "queue",
+            updates,
+            (
+                "waiting:init",
+                "queued:init",
+                "ticket-board",
+                "dependencies satisfied — promoted to queue",
+            ),
+            before_move=refresh_basis,
+        )
+    except ValueError as exc:
+        state["failed"] = True
+        print(
+            f"Error: cannot promote '{slug}': acceptance-input-change-required: {exc}",
+            file=sys.stderr,
+        )
+        ok = False
     if ok:
         if state["operation"]:
             from .basis_refresh import finish_basis_refresh
@@ -912,6 +920,12 @@ def _refresh_waiting_basis(tio, ticket, slug, updates, state) -> bool:
         path = Path(tio.tickets_dir) / path
     try:
         basis, operation = prepare_waiting_basis_refresh(Path(tio._project_root), path, slug)
+        if basis is not None:
+            journal = load_basis_refresh(Path(tio._project_root), slug)
+            if journal is None or journal.state != "prepared":
+                raise BasisRefreshError("prepared waiting Ticket metadata is unavailable")
+            updates["machine"] = journal.machine
+            state["operation"] = operation
     except BasisRefreshError as exc:
         state["failed"] = True
         print(
@@ -919,12 +933,6 @@ def _refresh_waiting_basis(tio, ticket, slug, updates, state) -> bool:
             file=sys.stderr,
         )
         return False
-    if basis is not None:
-        journal = load_basis_refresh(Path(tio._project_root), slug)
-        if journal is None or journal.state != "prepared":
-            raise BasisRefreshError("prepared waiting Ticket metadata is unavailable")
-        updates["machine"] = journal.machine
-        state["operation"] = operation
     return True
 
 
