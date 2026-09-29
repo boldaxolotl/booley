@@ -1,671 +1,450 @@
 # Booley Flow reference
 
-This reference describes the public behavior of Booley's built-in deterministic
-Flows: `sim`, `lint`, `synth`, and `fpga`. It explains what to invoke,
-what each result means, and which reports and artifacts to inspect. For exact
-project configuration, see [CONFIG.md](CONFIG.md); for compatible EDA programs
-and versions, see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
+Booley ships four built-in Flows: `sim`, `lint`, `synth`, and `fpga`. This page
+explains how to run each one, what its result means, and where to look next.
 
-## Using a Flow
+Related references:
 
-In normal work, ask the Interactive or Developer Agent to run the appropriate
-Flow and always name the Target. For `sim`, also name the test or explicitly ask
-for the Target's full registered test suite. To reproduce or diagnose a run
-yourself inside the Sandbox, use the direct CLI:
+- [CONFIG.md](CONFIG.md): Targets, tests, constraints, Criteria, and Flow policy.
+- [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools and versions
+  each Flow supports.
+- [USAGE.md](USAGE.md#booley-flows--specialists): the day-to-day agent workflow.
+- [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md): JSON report schemas and file
+  layouts, for scripts that consume Flow output.
+
+## Running a Flow
+
+Normally you ask the Interactive or Developer Agent to run a Flow. Name the
+Target, and for `sim` name the test (or ask for the Target's full suite). To
+reproduce or debug a run yourself, use the CLI inside the Sandbox:
 
 ```bash
-booley flow lint --target lint_soc
-booley flow sim --target sim_core --target sim_peripheral,sim_soc --test reset
+booley flow lint  --target lint_soc
+booley flow sim   --target sim_soc --test reset
 booley flow synth --target synth_soc
-booley flow <name> --help
+booley flow fpga  --target fpga_soc
+booley flow <name> --help          # the authoritative option list
 ```
 
-Every new Target-aware call requires `--target`; Booley has no project-wide default.
-The one exception is `sim --resume-from`, which reconstructs its Target and
-workload from the named immutable Simulation Campaign manifest and rejects a
-simultaneous Target.
-Use `booley targets` to list available Targets and
-`booley targets --for-flow <flow>` to narrow the list. If two cores expose the
-same Target name, use the qualified selector printed by `booley targets`, such as
-`lowrisc:ibex:ibex_top#lint`.
+### Choosing Targets
 
-Common controls:
+Every run needs `--target`; there is no project-wide default. (The one exception
+is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 
-- `--target <name,...>` selects one or more configured Targets. Repeat the flag,
-  use comma-separated values, or mix both forms; for example,
-  `--target a --target b,c` selects `a`, then `b`, then `c`. Caller order is
-  preserved. Selecting the same resolved Target twice, including through two
-  different selector spellings, is an error. MCP keeps one comma-separated
-  `target` string rather than an array.
-- `--work-dir <path>` selects the project/worktree root; it defaults to the
-  current directory.
-- `--report-dir <path>` persists the invocation report and Flow-specific reports
-  under that directory.
-- `--diagnostic` runs without satisfying Ticket Criteria. A strict Ticket
-  requires it when the Flow/Target pair is outside the Ticket baseline.
-- `--dry-run` resolves and validates the requested work and prints the same
-  normalized plan shape for every built-in Flow. It does not run EDA or
-  Pre-Sim Commands and does not update Booley-managed durable state.
-- `--timeout-ms <positive-integer>` sets the active-time budget for each Flow
-  work unit. It overrides `[flows.<name>].timeout_ms`, which overrides the
-  workload-specific default. Queue time is not charged. The old `--timeout`
-  spelling remains a deprecated CLI-only alias for one compatibility window.
-- `booley flow <name> --help` is the authoritative argument list.
+- `booley targets` lists all Targets; `booley targets --for <flow>` lists
+  the ones a Flow can drive.
+- Select several Targets by repeating the flag, using commas, or both:
+  `--target a --target b,c` runs `a`, `b`, `c` in that order. Naming the same
+  Target twice is an error.
+- If two cores expose the same Target name, use the qualified selector printed
+  by `booley targets`, such as `lowrisc:ibex:ibex_top#lint`.
 
-## Shared result contract
+### Common options
 
-All built-in Flows use the same exit-code grades:
-
-| Exit | Meaning |
-|---:|---|
-| `0` | The Flow ran and its requested condition passed. |
-| `1` | The Flow reached a design verdict and the requested check failed. |
-| `2` | The Flow could not reach a design verdict because configuration, infrastructure, or execution failed. |
-
-Exit `1` is evidence about the RTL or testbench. Advisory findings can still
-exit `0`, for example lint warnings with `warnings_as_errors = false` or synthesis
-timing violations when timing is not configured to gate the result. Exit `2`
-means the Flow did not produce a trustworthy complete design result.
-Agent-facing MCP calls carry the same grade in `EXIT_CODE:` and structured
-output; MCP `isError` is not the design verdict.
-
-The direct CLI always publishes the final human-readable Flow verdict,
-independently of whether Development State is configured. Successful verdicts
-use stdout; failed and rejected diagnoses use stderr. If a Flow already printed the same complete verdict block during its
-run, Booley does not print a second copy.
-
-An agent-facing MCP call attaches its per-invocation report as
-`structuredContent.reports[0]`. The report contains:
-
-| Field | Contents |
+| Option | Effect |
 |---|---|
-| `flow`, `target`, `argv` | Flow identity, the requested Target selector, and parsed invocation arguments. |
-| `exit_code`, `passed` | Overall graded result. |
-| `criterion_key`, `criterion_met` | Criterion result when one invocation maps to one Criterion; these can be empty/false for aggregate runs. |
-| `timestamp`, `elapsed_s`, `slug` | Run time, duration, and Ticket slug (empty outside a Ticket). |
-| `detail` | Flow-specific aggregate data and artifact pointers. |
-| `eda_tool`, `run_id`, `report_text` | Present when the run resolved an EDA tool, has a dispatched-job identity, or emitted a report card. |
-| `usage` | Present for token-using endpoints, with `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
+| `--target <name,...>` | Targets to run (see above). |
+| `--work-dir <path>` | Project or worktree root. Defaults to the current directory. |
+| `--report-dir <path>` | Write reports here instead of the default report root. |
+| `--diagnostic` | Run without recording Ticket Criteria. A strict Ticket requires it for Flow/Target pairs outside its baseline. |
+| `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
+| `--timeout-ms <ms>` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. |
 
-`structuredContent.passed` repeats the overall boolean verdict. If the report is
-too large for the MCP result, `reports` is empty, `truncated` is `true`, and the
-result retains the Flow, Target, exit code, and artifact pointers needed to open
-the durable report.
+## Reading results
 
-Long-running Simulation, ASIC Synthesis, and FPGA Implementation invocations also
-write a run-scoped `progress.json`. `complete: true` means the producer is
-terminal, not necessarily successful. `phase: complete` means every planned
-Target was processed; `phase: aborted` means the invocation stopped with the
-listed `pending_targets`; and coverage resume can mark the authenticated origin
-`phase: superseded` with a bounded `superseded_by` identity. A superseded
-origin's Target lists are historical and are deliberately not rewritten from the
-recovered Campaign. Every new checkpoint includes `run_id` and `timestamp`.
+Every built-in Flow uses the same exit codes:
 
-For MCP fallback evidence, `partial` is true whenever the phase is not `complete`
-or pending Targets remain. Thus `aborted` and `superseded` are terminal but
-partial, and neither appears as a running checkpoint. After timeout or
-cancellation, the MCP supervisor attempts an idempotent `aborted` repair only
-after it has reaped the child process; a missing or unwritable checkpoint does
-not override the Job's exit or cancellation result.
+| Exit | Meaning | What to do |
+|---:|---|---|
+| `0` | The Flow ran and the check passed. | Nothing. Advisory findings (such as lint warnings with `warnings_as_errors = false`) may still be reported. |
+| `1` | The Flow reached a design verdict and it failed. | Fix the RTL or testbench. |
+| `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, timeout. | Fix the setup; the result says nothing about the design. |
 
-### Dry-run plan
+The CLI prints a final verdict card: stdout on success, stderr on failure.
 
-Every built-in dry-run returns a JSON `FlowPlan` with `schema_version`, `flow`,
-`mode`, `semantic_plan_fingerprint`, ordered `work_units`, `aggregate_errors`,
-and `planning_disclosures`. Each work unit identifies its Target and revision
-role, timeout, sources and constraints, resolved parameters and recipe, ordered
-command argv, and expected artifacts. Paths are relative to `work_dir` where
-possible; ambient environment values and secrets are excluded.
+**Reports.** Each run writes a structured JSON report and complete logs. By
+default they go under `flow-reports/` in the project-data directory (Ticket and
+agent runs use their runtime directory). `--report-dir` overrides this. Booley
+never writes reports into the RTL checkout. The verdict card and the report both
+point at the exact log and artifact paths, so you rarely need to go looking.
 
-Dry-run exits `0` only when the aggregate plan is valid. It exits `2` when any
-selected Target or baseline cannot be planned, while retaining successfully
-planned work units for diagnosis. It never acquires a heavy execution slot,
-runs an EDA tool or Pre-Sim Commands, changes timeline or Criteria state, records
-Criterion evidence, populates implementation caches, or writes a normal
-verdict report. FuseSoC setup and declared generators may run when authoritative
-resolution requires them, using disposable scratch; this possibility is named
-in `planning_disclosures` and the scratch is removed afterward.
-
-The JSON plan is printed first on stdout. A successful dry run follows it with
-its concise verdict summary on stdout. A failing dry run instead prints its
-concise planning-failure reason on stderr, while still writing no normal
-verdict report.
-
-Dry-run atomically writes only the distinct
-`<selected-report-root>/<flow>/flow_plan.json` artifact. It uses the same report
-root precedence as a real invocation and never reserves a numbered directory. The
-`semantic_plan_fingerprint` excludes scratch and invocation-local paths so the
-same prepared dry and real execution have the same semantic identity.
-
-An explicit `--report-dir` is authoritative. Ticket and agent-driven runs use
-their configured `<runtime>/flow-reports` root. Otherwise, every direct built-in
-or Custom Flow writes beneath `<resolved-project-data>/flow-reports`. The selected
-checkout determines Project data, including configured external and stealth
-locations; Booley never falls back to writing `flow-reports/` in the RTL checkout.
-The per-Flow fields below describe the Flow-specific durable reports. Each includes
-`flow` and `timestamp` in addition to the fields listed below.
-
-The `synth` and `fpga` per-Target reports and Criteria detail additionally carry
-the shared versioned `implementation` envelope. It contains the policy-resolved
-grade, identity, QoR metrics, recipe and provenance evidence, baseline
-comparison, cache state, and immutable artifact pointers described in the
-implementation reference.
+**Dry runs.** `--dry-run` prints a JSON plan listing each work unit: Target,
+sources, constraints, resolved parameters, and the exact commands it would run.
+It exits `0` when everything can be planned and `2` otherwise, keeping the valid
+parts of the plan for diagnosis. FuseSoC generators may run in a throwaway
+scratch directory when resolution needs them; the plan says so.
 
 ## `sim`
 
 `sim` builds and runs the tests registered for a simulation Target. The Target
-selects Verilator or Icarus and whether the testbench is HDL or cocotb.
+chooses the simulator (Verilator or Icarus) and the testbench style (HDL or
+cocotb).
 
-Useful controls:
-
-- `--mode simulate` builds and runs selected tests (the default).
-- `--mode elab-only` compiles, elaborates, and links the ordinary untraced
-  simulator image without running tests.
-- `--mode elab-only-standalone` performs ordinary Target elaboration first,
-  then adds the stronger reusable-module sweep.
-- `--elab-only`, `--build-only`, and their combination with `--standalone`
-  remain deprecated CLI-only aliases for one compatibility window.
-- `--test <name>` selects one registered test by exact name and may be repeated.
-- `--tests-file <path>` selects exact names from a UTF-8 file, one per line;
-  blanks and `#` comments are ignored. It cannot be combined with `--test`.
-- Duplicate, unknown, empty, or catalog-less named selections fail before
-  simulation. Every explicit name must exist in every selected Target.
-- A plain unfiltered run applies configured `skip` entries. Repeatable `--test`
-  or `--tests-file` is an exact explicit suite and therefore overrides those
-  entries. A plain Target whose complete registered suite is configured skipped
-  fails preflight instead of passing vacuously.
-- There is no CLI `--skip` option. Put long-lived exclusions in `tests.toml`,
-  or name the exact suite to run with repeated `--test` options or
-  `--tests-file`.
-- `--trace` captures a waveform artifact.
-- `--coverage` (permanent alias `--cov`) explicitly collects a native Verilator
-  Coverage Campaign. MCP uses boolean `coverage: true`; the default is false.
-- `--result-verbosity <compact|full>` selects cocotb console detail and defaults
-  to `compact`; `full` prints every XML testcase entry. Complete XML and JSON
-  artifacts are retained in either mode.
-- `--no-kill` skips the pre-run zombie-process cleanup; this is a diagnostic
-  escape hatch, not a normal simulation control.
-- `--resume-from <manifest.json>` validates and resumes that exact durable
-  Simulation Campaign. It cannot be combined with Target, test, mode, coverage,
-  or trace selection: those values are reconstructed from the immutable
-  manifest. Timeout and presentation controls may change. `--dry-run` reports
-  completed, interrupted, and pending work without admission or mutation.
-
-Ordinary HDL, Cocotb-batch, and native-coverage-aggregate executions publish
-their resume authority at
-`<report-root>/sim/<N>/targets/<encoded-target>/campaign/manifest.json`, with
-append-only attempts/results beneath it and an atomically regenerated
-`summary.json`. Direct Simulation, native coverage, and resume all use
-`<resolved-project-data>/flow-reports` by default and reserve numbers from the
-same `sim/` sequence. A resume creates a new compatibility invocation but
-keeps authoritative Simulation Campaign writes beside the original manifest.
-Cocotb interruption retries its whole batch as one new Simulation Attempt while
-retaining independent XML-derived observations. Native coverage interruption
-retries its whole serial collection/merge aggregate as one new Simulation
-Attempt and creates a distinct nested Coverage Campaign; it never continues or
-overwrites an interrupted native database.
-
-The CLI prints each exact manifest path before admitting simulator work. Its
-final card gives the strict grade and keeps the manifest path needed to resume:
+### Running tests
 
 ```bash
-booley flow sim --target sim_soc --test reset --test interrupts
+booley flow sim --target sim_soc                          # full registered suite
+booley flow sim --target sim_soc --test reset --test irq  # exact tests, in order
+booley flow sim --target sim_soc --tests-file smoke.txt   # names from a file
+booley flow sim --target sim_soc --test irq --trace       # capture a waveform
+booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Verilator only)
+```
+
+| Option | Effect |
+|---|---|
+| `--test <name>` | Run one registered test by exact name. Repeat for more. |
+| `--tests-file <path>` | Read exact test names from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
+| `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
+| `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
+| `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |
+| `--resume-from <manifest.json>` | Resume an interrupted run (see [Resuming](#resuming-an-interrupted-run)). |
+| `--result-verbosity <compact\|full>` | cocotb console detail. `full` prints every testcase; the complete XML/JSON is always kept. |
+| `--no-kill` | Skip the pre-run cleanup of stale simulator processes. Diagnostic use only. |
+
+Test selection rules:
+
+- Every named test must exist in every selected Target; unknown, duplicate, or
+  empty selections fail before anything runs.
+- A plain run (no `--test`/`--tests-file`) honors the `skip` entries in
+  `tests.toml`. Naming tests gives an exact explicit suite, which overrides those
+  entries. A Target whose whole suite is skipped fails preflight instead of
+  passing vacuously.
+
+Multiple simulator processes can run in parallel up to `[jobs].max_heavy`
+(default `1`, i.e. serial). Tests sharing a literal `run_cwd` always run one at a
+time.
+
+### Verdicts and Criteria
+
+Each test gets one verdict:
+
+- **HDL testbenches** pass or fail through the configured pass/fail sentinels;
+  a fail sentinel always wins.
+- **cocotb testbenches** use cocotb's result file; assertion output can still
+  fail the test.
+- A test that exits cleanly without a valid verdict is **inconclusive**, never a
+  pass. So is a `--trace` run that produced no fresh waveform.
+- A test stopped by a Booley guard stays **aborted** even if the simulator
+  exits `0`. An infrastructure abort is exit `2`. A `$readmemh` input file that
+  is missing and not declared in the Target is a design failure
+  (`missing_input`, exit `1`). Either way the cause is kept, and assertions are
+  reported as not observed.
+
+Criteria are Ticket Mode acceptance conditions: a Ticket declares them, and
+Flow runs made for that Ticket record whether they were met (see
+[Acceptance Criteria](USAGE.md#acceptance-criteria)). An Interactive Mode run
+only reports its verdict and exit code; it records no Criteria.
+
+Within a Ticket, a `sim` run can satisfy these Criteria:
+
+- `sim_pass_<target>`: requires every test in the Target's Required Simulation
+  Suite to pass. Passing a hand-picked subset does not count.
+- `cycle_count_<target>_<test>`: checks one named test. It passes when that test
+  passes and its reported Cycle Count meets every threshold the Ticket declares
+  (see [Threshold parameters](USAGE.md#threshold-parameters)).
+- `elab_pass_<target>`: see [Elaboration checks](#elaboration-checks).
+
+### Elaboration checks
+
+`--mode elab-only` compiles, elaborates, and links the simulator without running
+tests. It is a fast "does it build?" check, and a later full run reuses the
+build. `--mode elab-only-standalone` adds a sweep that elaborates each reusable
+RTL module on its own and can satisfy `elaborate_standalone`.
+
+Within a Ticket, a successful build satisfies `elab_pass_<target>`, whether it
+comes from `--mode elab-only` or from the build step of a normal run. It is
+recorded as soon as the build succeeds, so a later test failure does not erase
+it.
+
+Both modes skip Pre-Sim Commands and reject run-only options (`--test`,
+`--tests-file`, `--trace`, `--result-verbosity full`, `--no-kill`). A compiler
+error in the RTL is exit `1`; a tool, setup, timeout, or out-of-memory problem is
+exit `2` and leaves Criteria unchanged. With several Targets, every Target is
+checked and exit `2` takes precedence over `1`.
+
+### Resuming an interrupted run
+
+Resume is for long, heavy runs, such as a multi-hour regression or a large
+coverage collection, where re-running tests that already finished is expensive.
+For a short run, just start it again.
+
+Every simulation run records its plan and results in a durable Simulation
+Campaign, one per Target. The CLI prints each Campaign's `manifest.json` path
+before starting, and the verdict card repeats it. If a run is interrupted,
+resume it:
+
+```bash
 booley flow sim --resume-from \
   "$PROJECT_DATA/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json"
+booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
 ```
 
-The MCP `sim` input deliberately uses an array, not the former scalar shape:
+- Target, tests, mode, coverage, and trace come from the manifest and cannot be
+  given again. Timeout and output options may change.
+- One resume continues one Target. For a multi-Target run, resume each
+  unfinished Target's manifest separately.
+- Within a Target, the retry unit is a work item:
 
-```json
-{"target":"sim_soc","test":["reset","interrupts"]}
-```
+  | Testbench | Work item | On resume |
+  |---|---|---|
+  | HDL | one test | Only tests without a recorded result run again. |
+  | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
+  | `--coverage` | the whole collection | Rebuilds and re-runs every test into a distinct nested Coverage Campaign. |
 
-MCP has no `tests_file` or `skip` property. It accepts the same exact ordered
-test names directly in `test`; `resume_from` names one manifest and conflicts
-with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
+- Resuming a coverage run saves time only when the collection already finished
+  and the interruption hit while results were being published. Otherwise it
+  costs the same as a new run.
+- A test with a recorded result is finished, even if it failed. Resume never
+  re-runs failures; start a new run for that.
+- Resume refuses when the Target's sources or suite changed since the original
+  run.
+- Never edit, copy, or repair Campaign files by hand. They are bound together by
+  digests, and resume validates the whole chain.
 
-The authoritative files remain beside the original manifest when resume creates
-a later report-only invocation:
+### Coverage
 
-```text
-targets/<encoded-target>/
-  campaign/
-    manifest.json
-    summary.json
-    build-variants/<digest>/attempts/<attempt>/
-      build-attempt.json
-      build-result.json
-      evidence/bundle.json            authenticated shared Simulator Bundle
-    work-items/.../attempts/...       append-only attempts and results
-  simulation.json                    versioned Target-local projection
-  coverage.json                      optional authenticated coverage reference
-```
+`sim` can collect Verilator coverage (line, branch, expression, toggle,
+and cover properties) into a **Coverage Campaign**, check it against Coverage
+Criteria, and hand it to the Coverage Analyst for waiver candidates and
+testbench improvements.
 
-Do not edit, copy into place, or repair Campaign JSON manually. Manifests,
-bundles, attempts, results, summaries, and nested coverage references bind one
-another by exact identity, byte count, and digest. Resume validates that chain
-and the current Target revision/workload before launching an EDA tool.
+#### How coverage is measured
 
-New `simulation.json` files use `booley.simulation-projection/v2`. Their manifest
-and optional Coverage pointers are typed `origin_target` references with a
-normalized relative path, byte count, digest, artifact kind, and Simulation
-Campaign owner.
-Legacy absolute manifest and summary strings remain readable only as hints after
-the supplied local Simulation Campaign has authenticated; readers never follow
-them back to the producer path.
+Coverage is measured per Target, per run:
 
-Versioned `report.json` files use `booley.simulation-report/v2`. Each Target has
-one `artifacts` map whose references use `report_invocation` for local artifacts
-or `reports_root` for an origin Simulation Campaign under the same reports root.
-A cross-root resume uses `external_origin_target`; its caller supplies the origin
-Target directory when resolving that external dependency. A resume report declares
-`dependency: external_origin_campaign` and publishes no local `simulation.json`.
-Copying a complete invocation preserves local references; copying a reports root
-preserves same-root resume references. Copying only a resume invocation leaves its
-immutable Simulation Campaign identity, digest, and external relative path, but
-not the external artifact bytes.
+1. Each selected test runs in its own simulator process and writes its own
+   Verilator coverage database.
+2. Booley merges those databases into one result for the Target: a point is
+   covered if any test hit it. Per-test hit counts are kept, so you can see
+   which test covered what.
+3. Each metric's percentage is covered RTL points divided by eligible RTL
+   points. Testbench and generated code are reported but not scored. When
+   approved waivers apply (see [Collecting vs. gating](#collecting-vs-gating)),
+   waived points are left out of the count.
 
-If completion reporting fails, the Flow returns exit code 2 with a structured
-`detail.completion_error` while preserving existing Target, Campaign, and
-Criterion results.
+What counts as RTL:
 
-Structured campaign output reports `grade`, `complete`,
-aggregate `observation_counts`, and a maximum-32 `observations` preview. Every
-preview entry retains `test`, `execution`, `functional`, `assertions`,
-`assertion_count`, and bounded `detail`; `observation_total` and
-`observations_truncated` disclose whether the preview is complete.
-The independent observation axes mean:
+- Every file in the Target's resolved fileset **without** the `tb` tag. Tag
+  every testbench file `tb`; an untagged one is scored as RTL.
+- Only code elaborated under the testbench top gets coverage points. An RTL
+  module that is never instantiated produces no points, so it neither lowers
+  the percentages nor shows up as a gap.
+- Points are per instance: a module instantiated four times contributes four
+  sets of points, and each instance must be exercised.
 
-- `execution`: whether the simulator completed, timed out, was guard-aborted,
-  or failed before producing trustworthy test evidence;
-- `functional`: the pass/fail/inconclusive test verdict;
-- `assertions`: assertion evidence independently observed for that test.
+Each Target gets its own Coverage Campaign. Nothing is merged across Targets or
+across runs.
 
-Resolve the `manifest` artifact reference, then inspect its authenticated terminal
-results for the complete durable record; the MCP preview is intentionally not a
-replacement for those files.
-
-Simulation Campaign scheduling uses the admitted Simulation Job as one heavy
-lane. With `[jobs].max_heavy = 1` execution is serial. Higher caps allow at most
-`max_heavy` simulator processes across that Project, including the borrowed
-outer lane; work sharing a literal `run_cwd` still serializes to prevent
-cross-talk. Templated attempt directories can overlap safely.
-
-Each Simulation Campaign freezes the Target's Required Simulation Suite in its immutable
-manifest. A target-level `sim_pass_<target>` Criterion is eligible to pass only
-when every member of that frozen suite has a durable passing result; selecting
-and passing a subset does not satisfy the target-level Criterion. A registered
-Target with no named suite instead requires its one default-selection work item
-to pass. Changing the suite or its source fingerprint makes an old manifest
-ineligible for resume rather than applying historical results to the new suite.
-
-HDL testbenches report their outcome through configured pass/fail sentinels;
-cocotb Targets use cocotb's result file, with assertion output still able to
-fail the run. Fail sentinels take priority. A clean process that produces no
-valid verdict is `inconclusive`, never a pass. A traced run is likewise
-inconclusive when it cannot confirm a fresh trace artifact.
-Guard aborts remain aborts even when the simulator exits zero. Infrastructure
-aborts grade ERROR/exit 2; an undeclared missing `$readmemh` input is a
-`missing_input` design FAIL/exit 1. Both retain the cause and mark assertions
-`not_observed`.
-
-The Flow records per-test verdicts and can satisfy `sim_pass_<target>` and
-configured per-test Cycle Count Criteria. It also records
-`elab_pass_<target>` from an authenticated successful build before simulation
-starts, so a later runtime failure cannot erase successful elaboration evidence.
-Infrastructure failure before or during the build leaves that Criterion
-unchanged.
-
-Elaboration Check mode skips Pre-Sim Commands, test selection, Cocotb Python,
-run guards, sentinels, and tracing. Run-only arguments such as `--test`,
-`--tests-file`, `--trace`, `--result-verbosity full`, and `--no-kill` are rejected in
-this mode. Only Simulation Targets are eligible. A compiler diagnostic that
-proves the RTL was rejected is exit `1`; setup, missing-tool, timeout, OOM,
-signal/crash, filesystem, and ambiguous nonzero failures are exit `2` and do
-not change Criteria. Multi-Target checks continue through every Target, with
-an infrastructure error taking precedence over a design failure.
-
-
-Simulation report migration: flat `sim_<target>.json` files and the earlier
-`targets/sim_<target>.json` copies are no longer written. Use the exact
-`artifacts[target].report` path in the numbered invocation's `report.json`.
-Qualified Target selectors are percent-encoded into one directory component.
-Old scripts should consume that pointer instead of guessing a filename.
-
-Structured output (`sim/<N>/targets/<encoded-target>/simulation.json`):
-
-| Field | Contents |
-|---|---|
-| `target`, `target_identity`, `tb_top`, `eda_tool` | Callable Target selector, durable Target identity, and resolved simulation context. |
-| `passed`, `complete`, `elapsed_s` | Target-level verdict, whether terminal publication completed, and execution duration. An interrupted publication leaves `complete: false` as an explicitly recoverable checkpoint. |
-| `phase_timings_s` | Target aggregation of `setup` (including Target metadata resolution), `pre_sim`, `build`, `run`, and `result_processing`, plus `unattributed` overhead and `execution_total`. Persisted results also include `publication` and the resulting end-to-end `total`. Run-level structured detail separately exposes `resolution_s` for campaign selection and test-map resolution. |
-| `tests[]` | Per-test `name`, `passed`, `verdict`, `termination`, `failure_kind`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, `test_validated`, `phase_timings_s`, and `resources`. `resources` contains `command_peak_rss_mb` and `command_oom_kill_delta`; supported platforms also add `simulation_user_cpu_s` and `simulation_system_cpu_s`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
-| `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
-| `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
-
-Elaboration Check structured output uses the same canonical `simulation.json` name and
-sets `mode` to `elab_only` (or `elab_only_standalone` for the cumulative mode):
-
-| Field | Contents |
-|---|---|
-| `target`, `target_identity`, `eda_tool`, `toplevel` | Resolved Simulation Target identity. |
-| `passed`, `verdict`, `failure_class`, `reason`, `elapsed_s` | Target-level graded outcome and duration. |
-| `compile_command`, `fileset` | Generated build command and resolved `rtl`/`tb` source lists when setup succeeded. |
-| `log` | Complete archived build log. |
-
-When `mode=elab_only_standalone` is requested, the invocation report also carries
-`detail.standalone` with `modules_checked`, `shared_files`, `frontend`,
-`failures`, optional `unparsed` modules, and the standalone log pointer.
-The sweep can satisfy `elaborate_standalone`; an unavailable or untrustworthy
-probe is exit `2` and leaves its prior Criterion state unchanged.
-
-### Native Coverage Campaigns
+#### Quick start
 
 ```bash
+# 1. Collect coverage for the full suite
 booley flow sim --target sim_soc --coverage
-booley flow sim --target sim_soc --cov --trace
-booley flow coverage_analyst --campaign <reports>/sim/12/targets/sim_soc/coverage.json
+
+# 2. Ask the Coverage Analyst for waiver candidates and for how to improve the
+#    testbench to raise coverage (advisory only)
+booley flow coverage_analyst \
+  --campaign <reports>/sim/12/targets/sim_soc/coverage.json
 ```
 
-Collection requires simulation mode and Verilator for every selected Target.
-Selecting Icarus, even alongside a Verilator Target, rejects the whole invocation
-before build or report paths are created. Targets and tests run sequentially in
-stable order, with one simulator process per test, including Cocotb. Normal,
-trace, coverage, and trace+coverage builds have separate cache identities.
+The verdict card prints the exact `coverage.json` path to use in step 2.
 
-A Criterion never activates collection. Without one, the full runnable selected
-suite produces the same durable Campaign with evaluation `not_requested`, without
-loading waivers or updating Coverage Criteria. Explicit invocation test selection
-wins over the Criterion's exact suite, which wins over the full registered suite.
-A different explicit suite still collects evidence but blocks gated evaluation.
+#### Requirements
 
-Gated evaluation matches Approved Waivers transactionally per Target. For each
-collected Target, only approvals naming that Target are checked against its
-Campaign; one invalid point approval blocks that Target's evaluation and prevents
-all approvals for that Target from applying. Approvals naming a known Target that
-is not in the invocation are not checked against points by that run. Unknown
-Target identities are still rejected when the Approved Waiver Set is loaded.
+- Every selected Target must use Verilator. Selecting any Icarus Target rejects
+  the whole run before anything is built.
+- Only `--mode simulate` (the default). `--trace` can be combined with
+  `--coverage`.
+- Tests run one at a time, one simulator process per test (including cocotb).
+- Coverage builds are cached separately from normal and trace builds.
+- Testbench properties such as excluding reset from coverage, or hooks for a
+  custom C++ main, live in the Target's `.core`. See
+  [Coverage configuration](CONFIG.md#native-coverage-configuration).
 
-Only a durably persisted `pass` satisfies `coverage_<target>`. Simulation failure,
-collection completeness, and policy evaluation remain independent: a failing
-simulation can produce valid passing coverage, and passing simulation can miss a
-threshold. Exit precedence is `2` for Coverage Preflight, collection, infrastructure,
-persistence, incompatible-format, or blocked-evaluation errors; then `1` for a
-simulation failure or valid threshold miss; otherwise `0`, including ungated
-collection. Structured `detail.targets[selector]` retains each Target's
-`simulation`, `collection`, and `evaluation` truth even when a later publication
-failure or another Target dominates the exit code. The canonical
-`coverage_campaign` reference appears only after its public reference was
-successfully published and authenticated; failures before that publication omit
-it, while a failure at the subsequent `after:coverage_reference` checkpoint
-retains it.
+#### Collecting vs. gating
 
-The default report root is `flow-reports` under the resolved project-data
-directory; `--report-dir` selects an explicit root. Each invocation owns:
+- **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
+  with evaluation `not_requested`. Use it to explore.
+- **Gated** (Ticket with a `coverage_<target>` Criterion): Booley also applies
+  approved waivers and checks the thresholds. Only a persisted `pass` satisfies
+  the Criterion.
+
+Which tests run: tests named on the command line win, then the Criterion's test
+list, then the full registered suite. If the tests you name differ from the
+Criterion's list, coverage is still collected but gated evaluation is blocked.
+
+#### Coverage Criteria and waivers
+
+A Ticket declares thresholds per Target:
+
+```yaml
+CRITERIA_MANDATORY:
+  COVERAGE:
+    sim_counter:
+      tests: all
+      metrics: {line: {min_pct: 90}, branch: {min_pct: 80}}
+```
+
+Only points in the RTL count toward the percentages; testbench and generated
+code are reported but not scored. Points that are legitimately unreachable or
+out of scope can be waived by a human in a project-wide approval directory.
+Waivers are checked per Target: one invalid approval blocks that Target's
+evaluation. See [Coverage configuration](CONFIG.md#native-coverage-configuration)
+and [Approved coverage waivers](CONFIG.md#approved-coverage-waivers) for the
+full syntax.
+
+#### Results
+
+Simulation, collection, and threshold evaluation are reported independently: a
+failing test can still yield valid, passing coverage, and a fully passing suite
+can miss a threshold. The exit code combines them:
+
+| Exit | When |
+|---:|---|
+| `2` | Coverage could not be trusted: preflight rejection, collection or infrastructure failure, incompatible data, or blocked evaluation (e.g. an invalid waiver or a suite mismatch). |
+| `1` | A test failed, or valid coverage missed a threshold. |
+| `0` | Everything passed, including ungated collection. |
+
+With several Targets, each keeps its own simulation, collection, and evaluation
+results in the report even when another Target decides the exit code.
+
+#### Where the evidence lives
+
+Each Target gets its own Campaign under the run's numbered report directory:
 
 ```text
-<reports>/sim/<number>/
-  report.json
-  progress.json
-  targets/<encoded-target>/
-    coverage.json
-    coverage-points.jsonl.gz
-    simulation.json
-    native/raw/
-    native/merged/
-    ... hook and queryability evidence
+<reports>/sim/<N>/targets/<target>/
+  coverage.json              the Campaign: rollups, per-file rollups, verdicts
+  coverage-points.jsonl.gz   every coverage point (read through coverage.json)
+  simulation.json            the matching simulation results
+  native/                    raw and merged Verilator databases
 ```
 
-Coverage progress uses the same terminal lifecycle. It carries `coverage: true`,
-the invocation `run_id`, its latest `timestamp`, the exact Target partition, and
-per-Target detail. An interrupted or failed invocation preserves already durable
-Targets and leaves the failed or unstarted Targets pending.
+Always pass the exact `coverage.json` path to consumers; never edit or pass the
+point store directly. There is no "latest Campaign" and no merging across Targets
+or runs.
 
-New `coverage.json` manifests use `booley.coverage-campaign/v4`. They retain V3's
-fingerprints, verdicts, capabilities, evaluation, and valid rollups, and add required
-`scoring`: complete, compatible collection uses `valid` with a null reason; every
-other collection status uses `invalid` with that status as its reason and empty
-overall/source rollups. Compatible points and available native/hook evidence remain
-diagnostic; incompatible native evidence has no normalized points. Source rollups
-cover line, branch, expression, and toggle
-metrics, use the same eligibility and waiver rules as overall rollups, and group by
-source path rather than hierarchy. They are persisted only in `coverage.json`; the
-Simulation response remains compact and points to that file.
-Required `coverage-points.jsonl.gz` stores lossless point identities and sparse
-positive hit incidence; the manifest binds it by schema, exact relative path,
-compressed and uncompressed byte counts, point count, and SHA-256. Valid V3 remains
-readable; score-bearing invalid V3 and all V1/V2 Campaigns require recollection.
-Pass consumers the exact `coverage.json` path; never pass or edit the point store
-directly.
-Native artifact paths are relative to the Target directory. New Simulation
-report references are relative to their containing report invocation or reports
-root, never to the producing work directory. There is no project-wide latest
-Campaign and no cross-Target merge. Missing legacy flat reports require consumers
-to follow the canonical report pointers instead.
+#### Analyzing a Campaign
 
-### Exact coverage retention
-
-Use the report root and exact invocation number from the produced report:
+`coverage_analyst` explains one Campaign: what is uncovered, likely reasons,
+which tests to add, and possible waiver candidates for human review.
 
 ```bash
-python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_soc
-python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
+booley flow coverage_analyst --campaign <exact coverage.json>
 ```
 
-Full pruning also retires the Campaign's Project-local child-execution records.
-For abandoned Campaigns with surviving external resources it first performs
-bounded recovery/cancellation of authenticated orphan child processes and
-marker-checked cleanup of owned templated run directories. It does not require
-Project data when no external resource survives. Literal user-supplied run
-directories are never removed.
-When `REPORTS_ROOT` has either standard shape,
-`<project-data>/.runtime/flow-reports` for runtime-scoped execution or
-`<project-data>/flow-reports` for direct execution, Booley infers that project-data
-root. The direct layout is accepted only when its parent is the currently resolved
-Project data directory. If reports live elsewhere and the invocation contains Campaign child
-records, add `--project-data "$PROJECT_DATA"` to `--full`, where the value is
-the exact resolved project-data root. Native-only pruning never requires
-`--project-data`.
+It never runs simulation, changes Criteria, or approves waivers. See
+[USAGE.md](USAGE.md#coverage_analyst).
 
-Native pruning removes that Target's raw and merged databases while retaining
-the immutable Campaign manifest and point store, Simulation, and hook evidence. Target-local
-`availability.json` records `pruning` or `pruned`; normalized evidence remains
-analyzable. Full pruning removes the exact invocation's reports and native
-payloads; re-analysis is impossible. An empty `.pruned-N` tombstone reserves its
-number. Selection is validated before deletion. Native-only pruning exits `2`
-for ambiguous, unsafe, changed, missing, or unrecognized payloads. Full pruning
-does not require recorded native payloads to remain unchanged or present, but it
-exits `2` and names any file the invocation did not produce; the invocation is
-left untouched. Active selections also exit `2`. Retry an interrupted cleanup
-with the same exact selection. No age, size, or latest heuristic deletes evidence
-automatically.
+#### Cleaning up old Campaigns
 
-Full pruning refuses before mutation when later resume invocations depend on the
-selected origin. To remove those authenticated dependents and the origin in one
-retryable operation, add `--include-dependents`:
+Raw Verilator coverage databases are large. Booley never deletes evidence
+automatically; prune an exact run explicitly:
 
 ```bash
-python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full --include-dependents
+# Drop one Target's raw/merged databases; the Campaign stays analyzable
+python -m booley.flows.sim.campaign_retention \
+  --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_soc
+
+# Remove the whole run (no re-analysis afterwards)
+python -m booley.flows.sim.campaign_retention \
+  --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
 
-If pruning cannot authenticate a dependent, prune that dependent directly and
-retry the origin. Native-only pruning is unchanged.
-
-Retention distinguishes active, abandoned, and invalid evidence. If the invocation
-producer still owns its lock, wait for it to finish. If an exact resume owns a
-Campaign mutation lock, wait for the resume to finish. An authenticated pending or
-interrupted Campaign, an unpublished summary, or an absent Simulation projection is
-abandoned and may be discarded with `--full`; native-only pruning instead points to
-`--full` or the exact `booley flow sim --resume-from <manifest>` command. Malformed,
-contradictory, linked, foreign, or unrecognized content remains undeletable.
-An empty producer reservation abandoned before `progress.json` is likewise
-discardable with `--full` when its external invocation lock remains intact.
+- `--full` refuses when later resumed runs depend on this one; add
+  `--include-dependents` to remove them together.
+- If reports live outside the standard project-data locations, `--full` may ask
+  for `--project-data "$PROJECT_DATA"`.
+- Pruning refuses runs that are still active, and files it did not produce.
+  An interrupted cleanup is safe to retry with the same arguments.
 
 ## `lint`
 
-`lint` runs the linter selected by each Target. Verilator provides structural
-and semantic diagnostics; Verible provides style and naming diagnostics. To run
-both, declare and invoke two Targets.
+`lint` runs the linter chosen by each Target: Verilator for structural and
+semantic checks, Verible for style and naming. To run both, declare two Targets
+and select both.
 
-`--scope <file,...>` filters the reported findings to selected files. Project
-configuration decides whether warnings make the direct Flow exit nonzero, but
-the report and `lint_clean_<target>` evidence retain the actual finding counts.
+```bash
+booley flow lint --target lint_soc,style_soc --scope rtl/fifo.sv
+```
 
-Each deduplicated finding lists its sorted contributing Targets. When multiple
-EDA tool families contribute, it also maps each Target to its EDA tool. The
-report points to the complete run log.
+- `--scope <file,...>` limits reported findings to the listed files.
+- `[flows.lint].warnings_as_errors` decides whether warnings fail the exit code.
+  Either way the report keeps the real counts, and `lint_clean_<target>` is only
+  satisfied with zero findings.
 
-Structured output (`lint_report.json`):
-
-| Field | Contents |
-|---|---|
-| `targets`, `eda_tools` | Requested Targets and the linter resolved for each. |
-| `passed`, `elapsed_s`, `total_warnings` | Lint-clean status, duration, and deduplicated in-scope finding count. `passed` is false when warnings exist even if `warnings_as_errors = false` lets the direct CLI exit `0`. |
-| `warnings[]` | In-scope `rule`, `file`, `line`, `message`, and sorted `targets`; `eda_tools` is included when EDA tool families differ. |
-| `errors[]` | `target` and `message` for each Target that could not produce a lint verdict. |
-| `target_results[]` | Per-Target `target`, `eda_tool`, raw `warnings` count before cross-Target deduplication and `--scope`, `files_linted`, `toplevel`, `toplevel_linted`, `duration_s`, `error`, and `log`. |
-| `artifacts` | The durable report and per-Target run logs. |
+The report lists deduplicated findings by file, line, rule, and message, and
+points to the full log.
 
 ## `synth`
 
-`synth` produces a fast ASIC quality-of-results estimate for RTL iteration. It
-is not tape-out synthesis or sign-off. The Target supplies the top, frontend,
-recipe, and SDC constraints for physical mode; the built-in backend supplies its
-Nangate45 technology inputs.
+`synth` gives a fast ASIC quality-of-results estimate (area, timing/Fmax,
+structural problems) to iterate RTL against. It is not tape-out synthesis or
+sign-off. It uses Yosys and OpenROAD on the built-in Nangate45 technology.
 
-Useful controls:
+```bash
+booley flow synth --target synth_soc
+booley flow synth --target synth_soc --baseline main   # compare with another revision
+```
 
-- `--baseline <git-ref>` compares the candidate with its recorded baseline Target
-  at another revision. Distinct baseline and candidate Targets are supported.
-- `--frontend <sv2v|slang>` overrides the Target's RTL frontend for diagnosis.
-- `--ppa-profile <compact|balanced|max_frequency>` selects a clean built-in PPA
-  profile for this invocation.
-- `--flatten` / `--no-flatten` overrides the Target's hierarchy-flattening
-  choice. Synthesis mode (`physical` or `logical`) remains Target-owned; there
-  is no per-call `--synth-mode` option.
+**Constraints.** Physical synthesis (the Target's `synth_mode`) needs a
+`file_type: SDC` fileset in the Target that creates at least one clock; Booley
+adds no timing constraints of its own. Logical synthesis skips STA and needs no
+SDC. Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
 
-Physical synthesis requires the selected Target to carry a `file_type: SDC`
-fileset that creates at least one clock. Booley loads those files in Target
-order and adds no generated timing constraints. Logical synthesis does not run
-STA and therefore does not require SDC.
+Everyday options:
 
-Expert Yosys controls:
-
-- `--abc-recipe <default|balanced|fast>` or `--abc-script <script>` overrides
-  ABC mapping.
-- `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping` toggles the
-  generic pre-mapping ABC pass.
-- `--abc-delay-ps <picoseconds>` overrides the ABC delay target.
-
-Expert OpenROAD controls:
-
-- `--utilization-pct <percent>` and `--placement-density <fraction>` override
-  floorplan/global-placement density.
-- `--repair-setup` / `--no-repair-setup`, `--repair-hold` /
-  `--no-repair-hold`, and `--gate-cloning` / `--no-gate-cloning` toggle repair
-  behavior.
-- `--setup-margin-ns <nanoseconds>` and `--repair-tns-percent <percent>` tune
-  setup repair.
-
-An explicit per-call PPA profile starts from that clean built-in profile rather
-than inheriting the Target's backend-specific advanced settings. Expert
-per-call flags then apply on top.
-
-The Flow reports area, timing/Fmax, inferred latches, final-netlist structural
-conditions, EDA warning counts, and the measurement basis. It satisfies
-`synthesis_ok_<target>` only when synthesis completes, the dedicated final
-Yosys structural check is present, and every configured threshold and
-structural policy passes.
-
-Structured output (`synth_<target>.json`; qualified selectors use a sanitized,
-hash-suffixed filename):
-
-| Field | Contents |
+| Option | Effect |
 |---|---|
-| `target`, `eda_tool`, `synth_mode` | Resolved synthesis identity and logical/physical methodology. |
-| `passed`, `elapsed_s`, `returncode`, `timed_out`, `termination`, `infra_error`, `has_metrics` | Verdict, duration, and terminal classification. |
-| `yosys_complete`, `timing_complete`, `structural_checks_complete`, `ppa_complete`, `peak_rss_mb` | Completion and resource evidence. |
-| `area_um2`, `area_source`, `area_kge`, `cells` | Canonical area and cell metrics. |
-| `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry contains `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`; logical mode instead adds `estimated_fmax_mhz`. |
-| `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical` verdict. |
-| `total_warnings`, `warning_summary` | Total warning-record occurrences plus unique and grouped counts by EDA tool, category, and disposition, with bounded representative diagnostics. Repeated warnings remain visible in the total; `unique_warnings` groups identical records. |
-| `baseline`, `delta_pct`, `timing_delta_pct` | Optional baseline metrics and deltas; `baseline.ref` identifies the compared revision. |
-| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the baseline and candidate Targets. |
-| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the baseline and candidate Targets. |
-| `run_evidence`, `baseline_run_evidence` | Current and optional baseline source/recipe provenance. |
-| `failure_output`, `io_bound_critical` | Optional failure excerpt and I/O-bound timing indicator. |
-| `artifacts` | The durable report, complete run log, build directory, and physical-mode timing directory. |
+| `--baseline <git-ref>` | Compare with the baseline Target at another revision (the two Targets may differ). |
+| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings; expert flags below still apply on top. |
+| `--flatten` / `--no-flatten` | Override the Target's hierarchy flattening. |
+| `--frontend <sv2v\|slang>` | Override the Target's RTL frontend, mainly for diagnosis. |
 
-Final combinational loops and multiple drivers are separate fatal structural
-conditions. Other actionable warnings produce `grade: "warn"` while keeping
-`passed: true` and exit zero. Explicitly benign warnings remain counted with a
-rationale and do not downgrade the grade. Open `artifacts.log` for every raw
-diagnostic when the bounded representatives are insufficient.
+Expert options, for tuning experiments:
+
+- Yosys/ABC: `--abc-recipe <default|balanced|fast>` or `--abc-script <script>`,
+  `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping`,
+  `--abc-delay-ps <ps>`.
+- OpenROAD: `--utilization-pct <percent>`, `--placement-density <fraction>`,
+  `--repair-setup` / `--no-repair-setup`, `--repair-hold` / `--no-repair-hold`,
+  `--gate-cloning` / `--no-gate-cloning`, `--setup-margin-ns <ns>`,
+  `--repair-tns-percent <percent>`.
+
+**Verdict.** The report gives area, cells, per-clock timing and Fmax, latches,
+and warning counts. Combinational loops and multiple drivers in the final netlist
+fail the run. Other actionable warnings give a `warn` grade but still exit `0`;
+known-benign warnings are counted with a rationale. `synthesis_ok_<target>` is
+satisfied only when synthesis completes, the final structural check ran, and
+every configured threshold passes.
 
 ## `fpga`
 
-`fpga` runs FPGA implementation for a Target, currently through host-provisioned
-AMD Vivado. The Target owns the FPGA part, toplevel, compile-time parameters,
-and XDC constraints.
+`fpga` runs FPGA implementation through host-provisioned AMD Vivado. The Target
+owns the FPGA part, top module, parameters, and XDC constraints.
 
-Useful controls:
+```bash
+booley flow fpga --target fpga_soc
+booley flow fpga --target fpga_soc --ppa-profile max_frequency --baseline main
+```
 
-- `--baseline <git-ref>` compares implementation metrics with another revision.
-- `--ppa-profile <compact|balanced|max_frequency>` overrides the Target's
-  portable optimization intent for this invocation. Resolution is call,
-  Target `flow_options.ppa_profile`, then `balanced`.
-- `--no-cache` forces fresh implementation instead of reusing a matching result.
-- `--dry-run` performs the shared aggregate planning contract described above.
-  Its FPGA work units include resolved part, top, XDC, source inputs, recipe,
-  and the explicitly marked Vivado Make command template. A later Target error
-  blocks execution but does not hide valid earlier work units from the plan.
-
-| Profile | Vivado synthesis | Vivado implementation | Intent |
-|---|---|---|---|
-| `compact` | `Flow_AreaOptimized_high` | `Area_Explore` | Prefer resource/area reduction. |
-| `balanced` | unchanged Vivado default | unchanged Vivado default | Preserve the existing default trade-off. |
-| `max_frequency` | `Flow_PerfOptimized_high` | `Performance_ExplorePostRoutePhysOpt` | Prefer timing/Fmax. |
-
-These mappings are internal adapter evidence, not raw public knobs. A per-call
-profile applies to both baseline and candidate. Baseline and candidate Targets may carry
-different persistent profiles, but basis-bound comparisons reject differing
-measurement recipes. Target `synth` and `pnr` values are Edalize engine-selector
-fields; the built-in FPGA Flow neither forwards them nor treats them as Vivado
-strategy overrides.
-
-The Flow normalizes utilization, routed timing/Fmax, fixed critical-condition
-counts (latches, combinational loops, and multi-driven nets), constraint/recipe
-identity, and cache identity. It satisfies `fpga_impl_ok_<target>` only when
-implementation evidence and primary metrics are complete, timing and configured
-thresholds pass, and no critical condition is present.
-
-Structured output (`fpga_<target>.json`):
-
-| Field | Contents |
+| Option | Effect |
 |---|---|
-| `target`, `eda_tool` | Resolved implementation identity; the EDA tool is Vivado. |
-| `passed`, `returncode`, `timed_out`, `infra_error` | Verdict and terminal classification. |
-| `cached`, `cache_fingerprint` | Whether implementation evidence was reused and the cache identity. |
-| `metrics` | Current-run `lut_count`, `ff_count`, `bram_count`, `dsp_count`, `wns_ns`, `whs_ns`, `per_clock`, `latches`, `comb_loops`, `multi_driven`, `elapsed_s`, `cached`, `cache_fingerprint`, `failure_output`, `log_path`, and nested `artifacts`. Each clock contains `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. |
-| `baseline_ref`, `baseline_metrics` | Optional baseline revision and the same metrics from `--baseline`, without baseline artifact pointers. |
-| `recipe_fingerprint`, `recipe_snapshot`, `run_evidence` | Normalized recipe and provenance for the current run. |
-| `baseline_recipe_fingerprint`, `baseline_recipe_snapshot`, `baseline_run_evidence` | Optional baseline recipe and provenance. |
-| `cache_consumer_run_id` | Present when this run consumes cached evidence produced by another run. |
-| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the baseline and candidate Targets. |
-| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the baseline and candidate Targets. |
-| `artifacts` | The durable report, complete run log, and build, synthesis, and implementation directories. |
+| `--baseline <git-ref>` | Compare implementation metrics with another revision. |
+| `--ppa-profile <compact\|balanced\|max_frequency>` | Override the Target's optimization intent for this call (default: Target `flow_options.ppa_profile`, then `balanced`). Applies to baseline and candidate alike. |
+| `--no-cache` | Force a fresh implementation instead of reusing a matching cached result. |
 
-The profile name describes optimization intent, not a promised QoR result.
-FPGA area is represented by LUT/FF/BRAM/DSP utilization. Power is not currently
-normalized, so this Flow does not claim a measured power result.
+| Profile | Vivado strategies | Intent |
+|---|---|---|
+| `compact` | `Flow_AreaOptimized_high` / `Area_Explore` | Smaller resource use. |
+| `balanced` | Vivado defaults | Default trade-off. |
+| `max_frequency` | `Flow_PerfOptimized_high` / `Performance_ExplorePostRoutePhysOpt` | Higher Fmax. |
 
-## Related references
+A profile states intent, not a guaranteed result. Target `synth` and `pnr`
+fields select Edalize engines; they are not Vivado strategy overrides.
 
-- [USAGE.md](USAGE.md#booley-flows--specialists) explains the day-to-day agent
-  workflow and direct CLI.
-- [CONFIG.md](CONFIG.md) defines Flow, Target, test, constraint, and policy
-  configuration.
-- [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) defines supported EDA tools,
-  provisioning, trace capability, and versions.
-- [FLOW_IMPLEMENTATION.md](../internals/FLOW_IMPLEMENTATION.md) documents the
-  built-in Flow implementation for Booley contributors.
+**Verdict.** The report gives LUT/FF/BRAM/DSP utilization, routed per-clock
+timing and Fmax, and critical conditions (latches, combinational loops,
+multi-driven nets). `fpga_impl_ok_<target>` is satisfied only when metrics are
+complete, timing and configured thresholds pass, and no critical condition is
+present. Power is not measured.

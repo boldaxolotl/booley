@@ -152,7 +152,7 @@ class TargetCatalog:
         declarations = self._visible_declarations()
         ref = resolve(declarations, token)
         if for_flow is not None and not flow_can_drive(for_flow, ref):
-            guidance = f"Choose a compatible Target with `booley targets --for-flow {for_flow}`."
+            guidance = f"Choose a compatible Target with `booley targets --for {for_flow}`."
             if for_flow == "sim":
                 guidance = (
                     "Declare either `flow: sim` with `flow_options.tool`, or legacy "

@@ -78,11 +78,21 @@ class TestTargetsListing:
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
         assert sorted(names) == ["sim", "synth"]
 
-    def test_for_filter(self, project: Path, capsys):
-        assert _run(project, "--for", "synth", "--json") == 0
+    # --for is a declared option string, not an argparse prefix abbreviation;
+    # --for-flow remains an accepted long-form alias.
+    @pytest.mark.parametrize("flag", ["--for", "--for-flow"])
+    def test_for_filter(self, project: Path, capsys, flag: str):
+        assert _run(project, flag, "synth", "--json") == 0
         payload = json.loads(capsys.readouterr().out)
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
         assert names == ["synth"]
+
+    def test_for_is_declared_not_abbreviated(self):
+        parser = tlr._build_parser()
+        subparsers = next(a for a in parser._actions if a.dest == "command")
+        targets_parser = subparsers.choices["targets"]
+        for_action = next(a for a in targets_parser._actions if a.dest == "for_flow")
+        assert for_action.option_strings == ["--for", "--for-flow"]
 
     def test_for_rejects_specialist(self, project: Path, capsys):
         assert _run(project, "--for", "reviewer") == 2
