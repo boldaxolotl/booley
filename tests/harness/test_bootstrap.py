@@ -231,6 +231,34 @@ def test_warning_is_ready_and_non_blocking() -> None:
     assert result.exit_status == 0
 
 
+def test_opt_out_prunes_qa_before_failing_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
+    monkeypatch.setattr(
+        bootstrap,
+        "_reconcile_qa_skills",
+        lambda *_args, **_kwargs: calls.append("qa-prune") or _current("qa-skills"),
+    )
+    prerequisite = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(
+        bootstrap,
+        "_prerequisite_findings",
+        lambda: (calls.append("prerequisites") or prerequisite,),
+    )
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE, qa_opt_out=True)
+
+    assert calls == ["qa-prune", "prerequisites"]
+    assert [finding.resource for finding in result.findings] == [
+        "host-config",
+        "qa-skills",
+        "docker",
+    ]
+
+
 def test_explicit_qa_enable_persists_before_reconciliation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -241,7 +269,6 @@ def test_explicit_qa_enable_persists_before_reconciliation(
         "register_host_installation",
         lambda *_args, **_kwargs: events.append("register") or identity,
     )
-    monkeypatch.setattr(bootstrap_cli, "selection_path", lambda: tmp_path / "missing")
     monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path / "Booley")
     monkeypatch.setattr(
         bootstrap_cli,
@@ -251,9 +278,8 @@ def test_explicit_qa_enable_persists_before_reconciliation(
     monkeypatch.setattr(
         bootstrap_cli,
         "reconcile_bootstrap",
-        lambda intent, **kwargs: (
-            events.append(f"reconcile:{kwargs['qa_first_enable']}")
-            or bootstrap.BootstrapResult(intent, ())
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
         ),
     )
 
@@ -268,7 +294,7 @@ def test_explicit_qa_enable_persists_before_reconciliation(
     )
 
     assert status == 0
-    assert events == ["register", "enable", "reconcile:True"]
+    assert events == ["register", "enable", "reconcile"]
 
 
 def test_explicit_qa_warning_overrides_nonblocking_status(
@@ -279,7 +305,6 @@ def test_explicit_qa_warning_overrides_nonblocking_status(
         "qa-skills", bootstrap.BootstrapState.WARNING, "link conflict"
     )
     monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
-    monkeypatch.setattr(bootstrap_cli, "selection_path", lambda: tmp_path / "missing")
     monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path)
     monkeypatch.setattr(bootstrap_cli, "enable_qa_skills", lambda *_args: None)
     monkeypatch.setattr(
@@ -299,6 +324,119 @@ def test_explicit_qa_warning_overrides_nonblocking_status(
     )
 
     assert status == 2
+
+
+def test_qa_adoption_always_requires_force(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[bool] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "_qa_source",
+        lambda _opt_out: (Path("/qa"), bootstrap.QA_SKILL_NAMES),
+    )
+
+    def reconcile(*_args, **kwargs):
+        observed.append(kwargs["allow_exact_adoption"])
+        return ()
+
+    monkeypatch.setattr(bootstrap, "reconcile_host_qa_skills", reconcile)
+
+    refused = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
+    approved = bootstrap._reconcile_qa_skills(Intent.REFRESH, opt_out=False, allow_adoption=True)
+
+    assert refused is not None and refused.state is bootstrap.BootstrapState.CURRENT
+    assert approved is not None and approved.state is bootstrap.BootstrapState.CURRENT
+    assert observed == [False, True]
+
+
+def test_qa_source_inspection_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "current_host_installation",
+        lambda _source: SimpleNamespace(revision="abc1234"),
+    )
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
+    monkeypatch.setattr(
+        bootstrap,
+        "_skill_names",
+        lambda _source: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+
+    finding = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
+
+    assert finding is not None
+    assert finding.state is bootstrap.BootstrapState.WARNING
+    assert "permission denied" in finding.detail
+
+
+def test_opt_out_keeps_selection_when_prune_did_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    events: list[str] = []
+    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, (error,))
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: events.append("disable"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert events == ["reconcile"]
+
+
+def test_opt_out_removes_selection_after_prune_even_if_later_resource_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    events: list[str] = []
+    pruned = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
+    )
+    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, (pruned, error))
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: events.append("disable"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert events == ["reconcile", "disable"]
 
 
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:

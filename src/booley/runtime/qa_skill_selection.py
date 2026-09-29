@@ -120,13 +120,8 @@ def validate_checkout(root: Path, installed_revision: str) -> QaSkillSelection:
         head = ""
     if error := _ephemeral_error(checkout):
         problems.append(error)
-    if not installed_revision or installed_revision.endswith("+dirty"):
-        problems.append("canonical installed Booley has no clean source revision")
-    elif head and not head.startswith(installed_revision):
-        problems.append(
-            f"checkout revision {head[:12]} does not match canonical installed revision "
-            f"{installed_revision}"
-        )
+    if revision_error := _revision_error(checkout, head, installed_revision):
+        problems.append(revision_error)
     qa_root = checkout / "qa"
     for name in sorted(QA_SKILL_NAMES):
         skill = qa_root / name
@@ -135,6 +130,26 @@ def validate_checkout(root: Path, installed_revision: str) -> QaSkillSelection:
     if problems:
         raise QaSkillSelectionError("; ".join(problems))
     return QaSkillSelection(_SCHEMA_VERSION, str(checkout), head)
+
+
+def _revision_error(checkout: Path, head: str, installed_revision: str) -> str | None:
+    if not installed_revision or installed_revision.endswith("+dirty"):
+        return "canonical installed Booley has no clean source revision"
+    try:
+        installed_commit = _git(
+            checkout,
+            "rev-parse",
+            "--verify",
+            f"{installed_revision}^{{commit}}",
+        )
+    except QaSkillSelectionError as exc:
+        return f"canonical installed Booley revision is not available: {exc}"
+    if head and head != installed_commit:
+        return (
+            f"checkout revision {head[:12]} does not match canonical installed revision "
+            f"{installed_revision}"
+        )
+    return None
 
 
 def validate_selection(

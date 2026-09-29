@@ -107,3 +107,13 @@ def test_validation_rejects_linked_worktree(
 
     with pytest.raises(selection.QaSkillSelectionError, match="linked worktree"):
         selection.validate_checkout(linked, revision[:12])
+
+
+def test_validation_rejects_unresolvable_installed_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _revision = _checkout(tmp_path)
+    monkeypatch.setattr(selection.tempfile, "gettempdir", lambda: "/not-this-test-root")
+
+    with pytest.raises(selection.QaSkillSelectionError, match="revision is not available"):
+        selection.validate_checkout(root, "deadbeef")

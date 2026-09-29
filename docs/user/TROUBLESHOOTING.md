@@ -76,16 +76,6 @@ Booley-managed links carry ownership metadata for later upgrades. A corrupt
 file for diagnosis, repair or remove only the malformed metadata, and rerun
 `booley bootstrap`.
 
-QA skills use a separate `.booley-qa-skill-links.json` ownership manifest and
-the durable `~/.agents/booley-qa-skills.json` selection. A warning that the QA
-source moved, disappeared, left `main`, became dirty or incomplete, or no longer
-matches the canonical installed revision does not block product Bootstrap or
-Project Initialization. Restore that primary checkout and rerun Bootstrap,
-re-enable it from its new location with `--with-qa-skills`, or recover even from
-a corrupt selection with `booley bootstrap --without-qa-skills`. Initial
-hand-installed QA links stay unmanaged unless `--force` explicitly transfers
-ownership; different content is never replaced.
-
 ## An MCP tool is missing from `/mcp`
 
 Every valid built-in and custom MCP tool is discovered by default. The old

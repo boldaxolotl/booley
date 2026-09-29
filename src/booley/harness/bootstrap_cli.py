@@ -11,7 +11,6 @@ from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import (
     QaSkillSelectionError,
     checkout_enclosing_cwd,
-    selection_path,
 )
 from booley.runtime.qa_skill_selection import (
     disable as disable_qa_skills,
@@ -48,7 +47,7 @@ def run_bootstrap(args: object) -> int:
     if result is None:
         return 2
     status = _render_result(result)
-    if with_qa and _qa_warning(result):
+    if (with_qa or without_qa) and _qa_warning(result):
         return 2
     return status
 
@@ -89,23 +88,25 @@ def _mutate_bootstrap(
                     f"{identity.version} ({identity.payload_fingerprint[:12]})."
                 )
             )
-        first_enable = with_qa and not selection_path().exists()
         revision = identity.revision if with_qa else ""
-        if not _apply_qa_selection(with_qa, without_qa, revision):
+        if not _apply_qa_enable(with_qa, revision):
             return None
-        return reconcile_bootstrap(
+        result = reconcile_bootstrap(
             intent,
             verbose=getattr(args, "verbose", False),
             qa_opt_out=without_qa,
-            qa_first_enable=first_enable,
             allow_qa_adoption=getattr(args, "force", False),
         )
+        if without_qa and _qa_prune_succeeded(result):
+            try:
+                disable_qa_skills()
+            except OSError as exc:
+                print(red(f"Cannot disable QA skills: {exc}"))
+                return None
+        return result
 
 
-def _apply_qa_selection(with_qa: bool, without_qa: bool, revision: str) -> bool:
-    if without_qa:
-        disable_qa_skills()
-        return True
+def _apply_qa_enable(with_qa: bool, revision: str) -> bool:
     if not with_qa:
         return True
     source = checkout_enclosing_cwd()
@@ -123,6 +124,14 @@ def _apply_qa_selection(with_qa: bool, without_qa: bool, revision: str) -> bool:
         print(red(f"Cannot enable QA skills: {exc}"))
         return False
     return True
+
+
+def _qa_prune_succeeded(result: BootstrapResult) -> bool:
+    return any(
+        finding.resource == "qa-skills"
+        and finding.state in {BootstrapState.CURRENT, BootstrapState.CHANGED}
+        for finding in result.findings
+    )
 
 
 def _render_result(result: BootstrapResult) -> int:

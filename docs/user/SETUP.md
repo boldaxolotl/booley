@@ -57,31 +57,9 @@ Containers extension; deploys packaged skills; verifies the shared Nangate45
 cache; reconciles the base Sandbox Image; and converges the
 single global egress network, proxy, and reaper. It neither discovers a Project
 nor selects an agent provider. `booley bootstrap --check-only` performs no
-writes and returns 1 when work is pending; `--force` refreshes Booley-managed
-host resources while preserving caches and user-owned files.
-
-Maintainers working from a complete, clean primary Booley checkout on `main`
-may also opt the three repository-owned QA skills into Host Bootstrap:
-
-```bash
-cd /path/to/Booley
-booley bootstrap --with-qa-skills
-```
-
-Run this through the canonical host-installed `booley`; release-wheel users,
-virtual environments, linked worktrees, QA-run artifacts, and incomplete
-copies of `qa/` cannot enable it. The choice persists in
-`~/.agents/booley-qa-skills.json`, and later plain Bootstrap, check-only, and
-Project Initialization runs reconcile the live checkout. The checkout must
-remain clean, on `main`, and at the canonical installed revision. After moving
-or deleting it, either restore/re-enable it or run
-`booley bootstrap --without-qa-skills`. Opt-out removes only links recorded in
-the independent QA ownership manifest, so foreign or replaced entries remain.
-Older candidate Bootstrap runs ignore that namespace and do not remove the QA
-skills. These skills are maintainer host tooling, are never included in the
-wheel or mounted into a Sandbox, and still require explicit invocation. When
-`mount_host_skills` is enabled, rerun `booley init --seed` after enabling or
-removing QA skills so the generated devcontainer mounts are refreshed.
+writes and returns 1 when required work is pending; warnings from optional
+extensions remain non-blocking. `--force` refreshes Booley-managed host
+resources while preserving caches and user-owned files.
 
 Bootstrap treats stable release tags in the official
 `ghcr.io/boldaxolotl/booley-sandbox` repository as temporary acquisition names.
