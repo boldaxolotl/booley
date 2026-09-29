@@ -9,7 +9,6 @@ command and turn one completed process into typed build evidence.
 from __future__ import annotations
 
 import re
-import secrets
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -95,11 +94,6 @@ class BuildOutcome:
     def design_failed(self) -> bool:
         """Whether a compiler diagnostic established a design rejection."""
         return self.verdict == "fail" and self.failure_kind == "design"
-
-
-def new_attempt_token() -> str:
-    """Return an unpredictable token for one build execution attempt."""
-    return secrets.token_hex(16)
 
 
 def prepare_simulation_build(

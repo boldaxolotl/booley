@@ -87,6 +87,11 @@ def _lint_eda_tool_family(eda_tool: str | None) -> str:
     return "verilator"
 
 
+def _lint_eda_executable(family: str) -> str:
+    """Return the executable owned by one normalized lint family."""
+    return "verible-verilog-lint" if family == "verible" else "verilator"
+
+
 @dataclass
 class LintWarning:
     """Single parsed Verilator warning."""
@@ -147,6 +152,15 @@ class _PreparedLintTarget:
     resolved: fusesoc_registry.ResolvedTarget
     result: LintConfigResult
     attempt_token: str = ""
+
+
+@dataclass(frozen=True)
+class _PreparedLintCommand:
+    """A lint command plus the authentication data used to interpret it."""
+
+    command: list[str]
+    resolved: fusesoc_registry.ResolvedTarget
+    attempt_token: str
 
 
 def parse_warnings(output: str, target: str) -> list[LintWarning]:
@@ -227,7 +241,7 @@ def _classify_lint_failure(
     missing binary or spawn/timeout failure means no verdict was reached at
     all, which stays an ERROR and names the image-rebuild fix.
     """
-    executable = "verible-verilog-lint" if family == "verible" else "verilator"
+    executable = _lint_eda_executable(family)
     failure = classify_eda_failure(
         SubprocessResult(returncode=result.returncode, stdout=combined),
         expected_token=attempt_token,
@@ -438,8 +452,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
     def _prepare_lint_command(
         self,
         target: TargetHandle,
-    ) -> tuple[list[str], fusesoc_registry.ResolvedTarget]:
-        """Resolve the lint Target through FuseSoC; return (make command, resolved).
+    ) -> _PreparedLintCommand:
+        """Resolve a lint Target and retain its authenticated command evidence.
 
         The :class:`ResolvedTarget` rides along so the caller can report what
         the resolution already knows — the actual EDA tool, the linted file
@@ -470,14 +484,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
         command = edam_layer.make_command(rel)
         family = _lint_eda_tool_family(resolved.eda_tool)
-        executable = "verible-verilog-lint" if family == "verible" else "verilator"
+        executable = _lint_eda_executable(family)
         token = new_attempt_token()
-        marker = render_failure_marker(token, "missing_tool", "lint", executable)
+        marker = render_failure_marker(token, "missing_eda_tool", "lint", executable)
         script = (
             f"command -v {shlex.quote(executable)} >/dev/null 2>&1 || "
             f"{{ echo {shlex.quote(marker)}; exit 127; }}; exec {shlex.join(command)}"
         )
-        return ["sh", "-c", script], resolved
+        return _PreparedLintCommand(["sh", "-c", script], resolved, token)
 
     def _dry_run_command(self, target: TargetHandle) -> list[str]:
         """Build a side-effect-free ``--dry-run`` preview for one Target.
@@ -503,8 +517,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return [f"ERROR: lint dry-run: {exc}"]
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
         family = _lint_eda_tool_family(target.eda_tool)
-        executable = "verible-verilog-lint" if family == "verible" else "verilator"
-        marker = render_failure_marker("0" * 32, "missing_tool", "lint", executable).replace(
+        executable = _lint_eda_executable(family)
+        marker = render_failure_marker("0" * 32, "missing_eda_tool", "lint", executable).replace(
             "0" * 32, "<attempt-token>"
         )
         preflight = (
@@ -624,11 +638,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
         result.duration_s = time.monotonic() - start
         result.returncode = proc.returncode
 
-        if proc.timed_out:
-            result.error = f"Timed out after {self._get_timeout()}s"
-            result.error_is_eda_tool_failure = True
-            return result
-
         # Verilator writes warnings to stderr (and sometimes stdout)
         combined = proc.stdout + "\n" + proc.stderr
         # Persist the raw output beside the build dir (A-2): the parsed report
@@ -645,6 +654,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
             result.log_path = posix_relpath(log_path, self.args.work_dir)
         except OSError:
             logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
+        if proc.timed_out:
+            result.error = f"Timed out after {self._get_timeout()}s"
+            result.error_is_eda_tool_failure = True
+            return result
         if family == "verible":
             result.warnings = parse_verible_warnings(combined, selector)
         else:
@@ -669,7 +682,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         for target in targets:
             result = LintConfigResult(target=target.selector)
             try:
-                command, resolved = self._prepare_lint_command(target)
+                prepared_command = self._prepare_lint_command(target)
             except Exception as exc:  # isolate and normalize a Target setup failure
                 result.error = f"lint setup failed: {exc}"
                 result.error_is_eda_tool_failure = True
@@ -680,12 +693,19 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 )
                 errors.append(result)
                 continue
+            if isinstance(prepared_command, _PreparedLintCommand):
+                command = prepared_command.command
+                resolved = prepared_command.resolved
+                attempt_token = prepared_command.attempt_token
+            else:
+                # Compatibility for focused tests that replace the preparation
+                # boundary with the historical two-tuple.
+                command, resolved = prepared_command
+                attempt_token = ""
             family = _lint_eda_tool_family(resolved.eda_tool)
             if not self._record_coverage_facts(result, resolved, family):
                 errors.append(result)
                 continue
-            token_match = re.search(r"token=([0-9a-f]{32})", " ".join(command))
-            attempt_token = token_match.group(1) if token_match else ""
             prepared[target.identity] = _PreparedLintTarget(
                 command, resolved, result, attempt_token
             )
@@ -939,6 +959,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # Set per-Target criteria
         errored = [cr for cr in target_results if cr.error]
         for cr in target_results:
+            if cr.error_is_eda_tool_failure:
+                continue
             key = f"lint_clean_{cr.target}"
             warning_count = _scoped_warning_count(cr.warnings, self.args.scope)
             is_clean = warning_count == 0 and not cr.error

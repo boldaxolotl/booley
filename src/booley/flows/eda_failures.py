@@ -10,14 +10,14 @@ from typing import Literal
 
 from booley.flows.base import SubprocessResult
 
-FailureKind = Literal["missing_tool", "missing_required_file", "missing_output"]
+FailureKind = Literal["missing_eda_tool", "missing_required_file", "missing_output"]
 FailureOwner = Literal["design", "infrastructure"]
 
 _STAGES = frozenset({"lint", "simulation", "sv2v", "yosys", "openroad", "vivado"})
 _SUBJECT_RE = re.compile(r"[A-Za-z0-9_.+/-]+")
 _MARKER_RE = re.compile(
     r"^BOOLEY_EDA_FAILURE token=(?P<token>[0-9a-f]{32}) "
-    r"kind=(?P<kind>missing_tool|missing_required_file|missing_output) "
+    r"kind=(?P<kind>missing_eda_tool|missing_required_file|missing_output) "
     r"stage=(?P<stage>[a-z0-9_+-]+) subject=(?P<subject>[A-Za-z0-9_.+/-]+)$",
     re.MULTILINE,
 )
@@ -72,7 +72,7 @@ def render_failure_marker(token: str, kind: FailureKind, stage: str, subject: st
     return f"BOOLEY_EDA_FAILURE token={token} kind={kind} stage={stage} subject={subject}"
 
 
-def format_missing_tool(executable: str) -> str:
+def format_missing_eda_tool(executable: str) -> str:
     """Return the canonical actionable missing-program message."""
     name = Path(executable).name
     return (
@@ -106,8 +106,8 @@ def _authenticated_marker(
 
 
 def _marker_failure(kind: FailureKind, stage: str, subject: str, text: str) -> EdaFailure:
-    if kind == "missing_tool":
-        reason = format_missing_tool(subject)
+    if kind == "missing_eda_tool":
+        reason = format_missing_eda_tool(subject)
     elif kind == "missing_output":
         reason = f"{stage} did not produce required output: {subject}"
     else:
@@ -130,10 +130,10 @@ def _termination_failure(
         subject = Path(boundary_executable).name
         return EdaFailure(
             "infrastructure",
-            "missing_tool",
+            "missing_eda_tool",
             stage,
             subject,
-            format_missing_tool(subject),
+            format_missing_eda_tool(subject),
             text,
         )
     return EdaFailure(
@@ -166,9 +166,17 @@ def classify_eda_failure(
     if termination is not None:
         return termination
     missing = find_missing_executable(text)
-    if missing and (expected_executable is None or missing == Path(expected_executable).name):
+    trusted_missing = authenticated_build or (
+        expected_executable is not None and missing == Path(expected_executable).name
+    )
+    if missing and trusted_missing:
         return EdaFailure(
-            "infrastructure", "missing_tool", stage, missing, format_missing_tool(missing), text
+            "infrastructure",
+            "missing_eda_tool",
+            stage,
+            missing,
+            format_missing_eda_tool(missing),
+            text,
         )
     if authenticated_build:
         required = _MISSING_REQUIRED_RE.search(text)
@@ -186,7 +194,7 @@ __all__ = [
     "FailureKind",
     "classify_eda_failure",
     "find_missing_executable",
-    "format_missing_tool",
+    "format_missing_eda_tool",
     "new_attempt_token",
     "render_failure_marker",
 ]

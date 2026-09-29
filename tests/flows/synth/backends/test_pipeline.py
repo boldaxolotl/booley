@@ -217,6 +217,7 @@ class TestConfigureSynthesis:
         assert "Nangate45_tech.lef" in text
         assert "falling back" not in text
         assert "run_opensta.tcl" not in text
+        assert "test -f reports/timing/overall.csv.rpt" in text
 
     @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires a POSIX shell")
     def test_physical_mode_fails_when_openroad_is_missing(self, tmp_path: Path):
@@ -235,7 +236,7 @@ class TestConfigureSynthesis:
         )
 
         assert result.returncode != 0
-        assert "kind=missing_tool" in result.stdout
+        assert "kind=missing_eda_tool" in result.stdout
         assert "stage=openroad" in result.stdout
         assert "subject=openroad" in result.stdout
 
@@ -432,6 +433,8 @@ class TestBoundaryOutput:
         )
         outcome = syn_make.boundary_output(plan, 0, is_stale=lambda p: True)
         assert "Chip area" not in outcome.text
+        assert "kind=missing_output" in outcome.text
+        assert "subject=sv2v_converted.v" in outcome.text
 
     def test_rederives_sta_markers_from_log(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))

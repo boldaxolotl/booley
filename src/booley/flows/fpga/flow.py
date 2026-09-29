@@ -855,6 +855,8 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         stderr: str,
     ) -> None:
         """Apply design-vs-infrastructure ownership to a failed Vivado run."""
+        if metrics.infra_error or (metrics.returncode == 0 and not result.timed_out):
+            return
         failure = self._classify_vivado_failure(result, evidence)
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
@@ -1013,12 +1015,16 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             timed_out=result.timed_out,
             oom_kill_delta=result.oom_kill_delta,
         )
-        infrastructure = classify_eda_failure(combined, expected_stage="vivado")
+        infrastructure = classify_eda_failure(
+            combined,
+            expected_stage="vivado",
+            expected_executable="vivado",
+        )
         if infrastructure is not None:
             return infrastructure
         match = re.search(
             r"^ERROR:\s*\[Synth\s+8-\d+\]"
-            r"(?=[^\r\n]*(?:syntax|elaborat|module|port))[^\r\n]*$",
+            r"(?=[^\r\n]*(?:syntax|parse|unexpected\s+token|port))[^\r\n]*$",
             combined.stdout,
             re.IGNORECASE | re.MULTILINE,
         )

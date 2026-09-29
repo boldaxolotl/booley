@@ -159,6 +159,31 @@ class TestBoundaryCompatibility:
         assert metrics.yosys_complete is True
         assert metrics.structural_checks_complete is True
 
+    @pytest.mark.parametrize(
+        ("process", "expected"),
+        (
+            (SubprocessResult(returncode=-1, timed_out=True), "timeout"),
+            (SubprocessResult(returncode=2, oom_kill_delta=1), "oom"),
+            (SubprocessResult(returncode=137), "resource_killed"),
+        ),
+    )
+    def test_terminal_reason_survives_infrastructure_classification(
+        self, tmp_path: Path, process: SubprocessResult, expected: str
+    ) -> None:
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+        metrics = SynthMetrics()
+        outcome = SimpleNamespace(
+            diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+            forced_failure=None,
+            yosys_complete=False,
+            attempt_token="0123456789abcdef0123456789abcdef",
+        )
+
+        flow._apply_boundary_completion(metrics, outcome, process, process.stderr)
+
+        assert metrics.termination == expected
+
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
     return make_target_handle(

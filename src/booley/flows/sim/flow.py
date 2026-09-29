@@ -31,7 +31,7 @@ from booley.core.build_paths import work_root_for
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.display import format_flow_display_label
-from booley.flows.eda_failures import find_missing_executable
+from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.plan import (
     CommandPlan,
@@ -109,7 +109,6 @@ from .build import (
     SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
-    new_attempt_token,
     prepare_simulation_build,
     setup_failure_outcome,
 )

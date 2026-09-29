@@ -16,6 +16,7 @@ from typing import cast
 
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.eda_failures import new_attempt_token
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
@@ -24,7 +25,6 @@ from booley.flows.sim.build import (
     SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
-    new_attempt_token,
     prepare_simulation_build,
 )
 from booley.flows.sim.build_session import (

@@ -216,9 +216,10 @@ class TestLintResolution:
             "_resolve_target",
             side_effect=fake_resolve,
         ):
-            cmd, resolved = flow._prepare_lint_command(
+            prepared = flow._prepare_lint_command(
                 _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
             )
+            cmd, resolved = prepared.command, prepared.resolved
 
         # The ResolvedTarget rides along for EDA-tool/coverage reporting.
         assert resolved is fake
@@ -296,9 +297,10 @@ class TestLintResolution:
                 **{**k, "fusesoc_cmd": fusesoc_cmd},
             ),
         ):
-            cmd, _resolved = flow._prepare_lint_command(
+            prepared = flow._prepare_lint_command(
                 _target_handle("lite", project_root=work_dir, vlnv="::lint_demo:0")
             )
+            cmd, _resolved = prepared.command, prepared.resolved
 
         assert cmd[:2] == ["sh", "-c"]
         assert "command -v verilator" in cmd[2]
@@ -1016,13 +1018,45 @@ class TestErrorVsFailTaxonomy:
             ),
         ):
             mock_exec.return_value = MagicMock(
-                returncode=-1, stdout="", stderr="", timed_out=True, duration_s=99.0
+                returncode=-1,
+                stdout="partial lint output",
+                stderr="partial timeout diagnostic",
+                timed_out=True,
+                duration_s=99.0,
             )
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             flow.read_state()
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
+        assert "lint_clean_lite" not in flow.state.criteria
+        run_log = tmp_path / ".booley_project/.runtime/edalize/lint/lite/run.log"
+        assert "partial lint output" in run_log.read_text(encoding="utf-8")
+        assert "partial timeout diagnostic" in run_log.read_text(encoding="utf-8")
+
+    def test_missing_linter_leaves_criterion_unset(self, tmp_path: Path, state_file: Path) -> None:
+        with (
+            patch.object(LintFlow, "_execute") as mock_exec,
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
+            ),
+        ):
+            mock_exec.return_value = MagicMock(
+                returncode=2,
+                stdout="",
+                stderr="make: verilator: No such file or directory\n",
+                timed_out=False,
+                duration_s=0.1,
+            )
+            flow = LintFlow()
+            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+            flow.read_state()
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert "lint_clean_lite" not in flow.state.criteria
 
     def test_hard_fail_error_carries_run_log_pointer(self, tmp_path: Path, state_file: Path):
         """The classified hard-fail error cites only the FIRST error line; the
@@ -1777,9 +1811,9 @@ class TestFlowEnablement:
         assert flow._resolve_job_class() is None
 
     def test_verible_missing_message_names_runtime(self):
-        from booley.flows.eda_failures import format_missing_tool
+        from booley.flows.eda_failures import format_missing_eda_tool
 
-        message = format_missing_tool("verible-verilog-lint")
+        message = format_missing_eda_tool("verible-verilog-lint")
         assert "Sandbox Image" in message
         assert "booley doctor" in message
 

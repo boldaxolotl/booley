@@ -1330,6 +1330,21 @@ class TestFailureTailSurfacesStderr:
 
 
 class TestVivadoFailureClassification:
+    def test_passing_route_ignores_incidental_missing_program_text(self) -> None:
+        metrics = FpgaMetrics(returncode=0, lut_count=10, ff_count=5)
+        process = SubprocessResult(
+            returncode=0,
+            stdout="/bin/sh: lsb_release: command not found\n",
+            stderr="",
+        )
+
+        FpgaImplFlow._apply_vivado_failure(
+            FpgaImplFlow(), metrics, process, "", process.stdout, process.stderr
+        )
+
+        assert metrics.returncode == 0
+        assert metrics.infra_error == ""
+
     def test_fresh_synth_runlog_syntax_error_is_design_failure(
         self, tmp_path: Path, state_file: Path
     ) -> None:

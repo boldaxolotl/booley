@@ -24,7 +24,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -1397,10 +1397,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
             metrics.termination = "infrastructure_error"
-        failure = classify_eda_failure(
-            result,
-            expected_token=getattr(outcome, "attempt_token", None),
-        )
+        failure = None
+        if metrics.termination not in {"timeout", "oom", "resource_killed"}:
+            failure = classify_eda_failure(
+                replace(result, stdout=output, stderr=""),
+                expected_token=getattr(outcome, "attempt_token", None),
+            )
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
             metrics.infra_error = failure.reason
