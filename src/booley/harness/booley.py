@@ -1362,12 +1362,15 @@ def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.io import TicketIO
 
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(args.slug)
+    board = tio.inspect_ticket(args.slug)
     if board is None:
         print(f"ERROR: ticket {args.slug!r} not found", file=sys.stderr)
         return 2
     slug = Path(board["file"]).stem
     status = board["status"]
+    if board.get("authored_drift"):
+        print(f"{board['authored_drift_reason']}; use return-to-draft")
+        return 0
     if status == "blocked":
         from booley.harness.blocked_prep import render_blocked_dossier
 

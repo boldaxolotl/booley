@@ -1830,6 +1830,9 @@ async def test_review_command_reports_missing_corrupt_and_wrong_state(tmp_path, 
         def find_ticket(self, _slug):
             return self.board
 
+        def inspect_ticket(self, slug):
+            return self.find_ticket(slug)
+
     monkeypatch.setattr(review_lifecycle, "TicketIO", FakeTio)
     missing = await review_lifecycle.review_command(tmp_path, "demo")
     assert not missing.ready and "not found" in missing.message

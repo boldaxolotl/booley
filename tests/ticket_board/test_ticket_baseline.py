@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from booley.harness import init_cmd
+from booley.harness._ticket_ops import DirectTicketOps, TicketCLIError
 from booley.harness.models import TicketContext
 from booley.harness.setup.common import InitContext
 from booley.harness.setup.workspace import run as prepare_ticket_workspace
@@ -23,8 +24,12 @@ from booley.ticket_board import (
     acceptance_targets,
     basis_publication,
     basis_refresh,
+    cli_handlers,
     draft_transition,
     enqueue_publication,
+    operations,
+    review_execution,
+    review_lifecycle,
     ticket_repositories,
     workspace_ops,
 )
@@ -1277,6 +1282,295 @@ def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     queued_again.replace(blocked_again)
     reopened_again = tio.return_to_draft("new-generation")
     assert reopened_again["generation"] != reopened["generation"]
+
+
+def _recover_after_interrupted_board_cutover(
+    tio: TicketIO,
+    project_dir: Path,
+    slug: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, str], Path, bytes]:
+    publish_board = draft_transition._publish_board
+    interrupted = False
+
+    def interrupt_board(*args, **kwargs):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise OSError("before board cutover")
+        return publish_board(*args, **kwargs)
+
+    monkeypatch.setattr(draft_transition, "_publish_board", interrupt_board)
+    with pytest.raises(OSError, match="before board cutover"):
+        tio.return_to_draft(slug)
+    drift_record = project_dir / "tickets/logs" / slug / "runs/001/authored-drift.json"
+    first_record = drift_record.read_bytes()
+    monkeypatch.setattr(draft_transition, "_publish_board", publish_board)
+    return tio.return_to_draft(slug), drift_record, first_record
+
+
+def _assert_authored_drift_diagnostics(
+    tio: TicketIO,
+    slug: str,
+    blocked: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    show_result = cli_handlers._cmd_show(tio, SimpleNamespace(slug=slug))
+    shown = capsys.readouterr()
+    assert show_result == 0
+    assert "acceptance-input-change-required: authored Ticket changed" in shown.out
+    assert "use return-to-draft" in shown.out
+    log_report = cli_handlers._validate_logs_report(tio, slug)
+    assert log_report is not None
+    assert "authored Ticket changed; use return-to-draft" in log_report[0]
+
+    unblock_result = cli_handlers._cmd_unblock(tio, SimpleNamespace(slug=slug, feedback="retry"))
+    unblocked = capsys.readouterr()
+    assert unblock_result == 2
+    assert (
+        "acceptance-input-change-required: authored Ticket changed; use return-to-draft"
+        in unblocked.err
+    )
+    assert "Traceback" not in unblocked.err
+    assert blocked.exists()
+
+
+def test_authored_drift_recovery_reports_and_preserves_current_ticket(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project_dir, tio = _basis_project(tmp_path)
+    slug = "authored-drift-recovery"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Keep the sealed threshold",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
+    blocked.parent.mkdir(parents=True)
+    queued.replace(blocked)
+    sealed = tio._convert_ticket(blocked, slug, "executable")
+    expected_digest = sealed.generated["machine"]["authored_sha256"]
+    blocked.write_text(
+        blocked.read_text(encoding="utf-8")
+        .replace(
+            "summary: Keep the sealed threshold",
+            "summary: Preserve the edited threshold",
+        )
+        .replace("bugs: clean", "bugs: done"),
+        encoding="utf-8",
+    )
+    edited = tio._convert_ticket(blocked, slug, "executable")
+    observed_digest = edited.spec.semantic_digest()
+
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        tio.load_basis(slug)
+    with pytest.raises(TicketCLIError, match="use return-to-draft"):
+        DirectTicketOps().next_step(root, slug, "setup")
+
+    _assert_authored_drift_diagnostics(tio, slug, blocked, capsys)
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+
+    reopened, drift_record, first_record = _recover_after_interrupted_board_cutover(
+        tio, project_dir, slug, monkeypatch
+    )
+
+    draft = project_dir / "tickets/board/drafts" / f"{slug}.md"
+    draft_fields, _body = parse_frontmatter(draft.read_text(encoding="utf-8"))
+    assert reopened["generation"]
+    assert draft_fields["summary"] == "Preserve the edited threshold"
+    assert draft_fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] == "done"
+    assert "machine" not in draft_fields
+    assert drift_record.read_bytes() == first_record
+    assert drift_record.read_text(encoding="utf-8") == (
+        "{\n"
+        '  "expected_authored_sha256": "'
+        + expected_digest
+        + '",\n  "observed_authored_sha256": "'
+        + observed_digest
+        + '",\n  "reason": "acceptance-input-change-required: authored Ticket changed"\n}\n'
+    )
+
+
+def test_authored_drift_recovery_preserves_edited_branch_in_new_draft(
+    tmp_path: Path,
+) -> None:
+    root, project_dir, tio = _basis_project(tmp_path)
+    slug = "authored-branch-drift"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Change destination while blocked",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    blocked = project_dir / "tickets/board/blocked" / f"{slug}.md"
+    blocked.parent.mkdir(parents=True)
+    queued.replace(blocked)
+    _git(root, "switch", "-c", "next")
+    (root / "next.txt").write_text("next destination\n", encoding="utf-8")
+    _git(root, "add", "next.txt")
+    _git(root, "commit", "-m", "Add next destination")
+    next_sha = _git(root, "rev-parse", "HEAD")
+    _git(root, "switch", "main")
+    blocked.write_text(
+        blocked.read_text(encoding="utf-8")
+        .replace("branch: main", "branch: missing")
+        .replace(
+            "summary: Change destination while blocked",
+            "summary: Keep the edited destination",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(draft_transition.DraftTransitionError, match="does not exist"):
+        tio.return_to_draft(slug)
+    assert not draft_transition.transition_pending(root, slug)
+    (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
+    blocked.write_text(
+        blocked.read_text(encoding="utf-8").replace("branch: missing", "branch: next"),
+        encoding="utf-8",
+    )
+
+    reopened = tio.return_to_draft(slug)
+
+    draft = project_dir / "tickets/board/drafts" / f"{slug}.md"
+    fields, _body = parse_frontmatter(draft.read_text(encoding="utf-8"))
+    assert reopened["generation"]
+    assert fields["branch"] == "next"
+    assert fields["summary"] == "Keep the edited destination"
+    assert reopened["outer_base_sha"] == next_sha
+
+
+def test_inspection_does_not_downgrade_drift_with_invalid_machine_identity(
+    tmp_path: Path,
+) -> None:
+    _root, project_dir, tio = _basis_project(tmp_path)
+    slug = "drifted-invalid-identity"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Keep immutable identity",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    fields, body = parse_frontmatter(queued.read_text(encoding="utf-8"))
+    fields["summary"] = "Drift the authored meaning"
+    machine = fields["machine"]
+    machine["amendment"] = {
+        "slug": "another-ticket",
+        "operation_id": machine["generation"],
+        "previous_generation": "a" * 32,
+        "actor": "Human",
+        "reason": "test immutable identity",
+        "changes": [
+            {
+                "criterion": "review_rtl_bugs_clean",
+                "before_mandatory": True,
+                "after_mandatory": True,
+                "thresholds": {},
+            }
+        ],
+        "scope_added": [],
+        "optional_conversions": [],
+    }
+    queued.write_text(format_frontmatter(fields, body), encoding="utf-8")
+
+    with pytest.raises(TicketBaselineError, match="amendment names another Ticket"):
+        tio.inspect_ticket(slug)
+
+    machine.pop("amendment")
+    machine["authored_sha256"] = "f" * 64
+    queued.write_text(format_frontmatter(fields, body), encoding="utf-8")
+    with pytest.raises(TicketBaselineError, match="Ticket commit identity changed"):
+        tio.inspect_ticket(slug)
+
+
+def test_authored_drift_stays_strict_for_execution_and_board_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _root, project_dir, tio = _basis_project(tmp_path)
+    slug = "drifted-execution-gates"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Keep execution sealed",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+    queued.write_text(
+        queued.read_text(encoding="utf-8").replace(
+            "summary: Keep execution sealed", "summary: Drift execution inputs"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        operations.op_activate(tio, slug)
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        operations._approve_transition(tio, slug)
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        review_lifecycle._validate_action(tio, slug, "request", False)
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        review_execution.run_review_command(_root, slug, ["true"])
+    update_result = cli_handlers._cmd_update_board(
+        tio,
+        SimpleNamespace(
+            slug=slug,
+            set=["step=setup"],
+            reset_steps=False,
+            reset_steps_from=None,
+            append_step=None,
+            log=False,
+        ),
+    )
+    assert update_result == 2
+    assert "authored Ticket changed" in capsys.readouterr().err
+    move_result = cli_handlers._cmd_move_ticket(tio, SimpleNamespace(slug=slug, to="blocked"))
+    assert move_result == 1
+    (tio.logs_dir / slug / "human-logs/run.log").parent.mkdir(parents=True, exist_ok=True)
+    (tio.logs_dir / slug / "human-logs/run.log").write_text("run\n", encoding="utf-8")
+    with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
+        operations.op_handoff(tio, slug)
+    assert operations.op_block(tio, slug, "authored Ticket changed", "setup") is True
+    assert (project_dir / "tickets/board/blocked" / f"{slug}.md").exists()
+    assert operations.op_requeue(tio, slug) is False
+    assert "use return-to-draft" in capsys.readouterr().err
+    assert operations._validated_reset_context(tio, slug) is None
+    assert "use return-to-draft" in capsys.readouterr().err
 
 
 def _prepared_ticket(

@@ -1050,5 +1050,11 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
         queued.read_text(encoding="utf-8").replace("- merge\n", "- review\n"),
         encoding="utf-8",
     )
+    inspected = board.inspect_ticket("basis-v2")
+    assert inspected is not None
+    assert inspected["authored_drift"] is True
+    assert inspected["authored_drift_reason"] == (
+        "acceptance-input-change-required: authored Ticket changed"
+    )
     with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
         board.load_basis("basis-v2")

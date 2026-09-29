@@ -208,6 +208,14 @@ def _get_old_state(tio, slug, default_step=""):
     return entry, old_status, old_step
 
 
+def _inspect_old_state(tio, slug, default_step=""):
+    """Read state for recovery transitions that must remain available during drift."""
+    entry = tio.inspect_ticket(slug)
+    old_status = entry.get("status", "running") if entry else "running"
+    old_step = entry.get("step", default_step) if entry else default_step
+    return entry, old_status, old_step
+
+
 def op_activate(
     tio: Any,
     slug: str,
@@ -316,7 +324,7 @@ def op_block(
     expected_execution_id: str | None = None,
 ) -> bool:
     """Block a ticket: move to blocked/, update frontmatter, log transition."""
-    entry, old_status, old_step = _get_old_state(tio, slug, step)
+    entry, old_status, old_step = _inspect_old_state(tio, slug, step)
 
     ok = _op_move_and_log(
         tio,
@@ -345,9 +353,11 @@ def op_fail(tio: Any, slug: str, error: str, step: str) -> bool:
 
 def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
     """Requeue an interrupted run after proving no other process owns it."""
-    entry, old_status, old_step = _get_old_state(tio, slug)
+    entry, old_status, old_step = _inspect_old_state(tio, slug)
     if entry:
         slug = Path(str(entry["file"])).stem
+        if not _queue_recovery_permitted(tio, entry, slug):
+            return False
     live_pid = _live_owner_pid(tio, slug)
     if live_pid is not None:
         print(
@@ -680,7 +690,7 @@ def op_unblock(
     The harness auto-retry path overrides them so a machine requeue is
     distinguishable from a human one in the board history.
     """
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
@@ -718,12 +728,16 @@ def op_unblock(
 
 def _queue_recovery_permitted(tio: Any, entry: dict[str, Any], slug: str) -> bool:
     from .amendment import pending_amendment
-    from .ticket_baseline import requires_return_to_draft
+    from .ticket_baseline import AUTHORED_DRIFT_GUIDANCE, requires_return_to_draft
 
     if pending_amendment(Path(tio._project_root), slug) is not None:
         print(
             f"Error: ticket '{slug}' has a pending amendment; retry amend --apply", file=sys.stderr
         )
+        return False
+
+    if entry.get("authored_drift"):
+        print(AUTHORED_DRIFT_GUIDANCE, file=sys.stderr)
         return False
 
     if not requires_return_to_draft(entry):
@@ -975,7 +989,7 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
 
 def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     try:
-        current = tio.find_ticket(slug)
+        current = tio.inspect_ticket(slug)
     except (OSError, ValueError):
         current = None
     if current is not None and current.get("status") == "review":
@@ -1303,7 +1317,7 @@ def op_board_move(
     actions. Only the review->done edge runs any, so they are announced as
     ignored on the others rather than silently dropped.
     """
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
@@ -1542,9 +1556,14 @@ def _validated_reset_context(
     file_path = _locked_reset_candidate(tio, slug)
     if file_path is None:
         return None
-    current = tio.find_ticket(slug)
-    if current is None:
-        print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+    current = tio.inspect_ticket(slug)
+    if current is None or current.get("authored_drift"):
+        if current is None:
+            print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+        else:
+            from .ticket_baseline import AUTHORED_DRIFT_GUIDANCE
+
+            print(AUTHORED_DRIFT_GUIDANCE, file=sys.stderr)
         return None
     if "acceptance_basis" in current or (
         current.get("status") != "draft" and current.get("machine") is None
@@ -1709,7 +1728,7 @@ def op_reset(
     never advertises stale active-run evidence, even if cleanup fails.
     """
     try:
-        entry = tio.find_ticket(slug)
+        entry = tio.inspect_ticket(slug)
     except ValueError as exc:
         print(f"Error: unsupported Ticket format for '{slug}': {exc}", file=sys.stderr)
         return False

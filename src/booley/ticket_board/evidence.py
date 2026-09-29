@@ -11,11 +11,11 @@ from typing import Any
 
 def op_collect_evidence(tio: Any, slug: str) -> dict[str, Any] | None:
     """Collect ticket evidence that still has an authoritative source."""
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if not entry:
         return None
 
-    return {
+    evidence: dict[str, Any] = {
         "ticket": {
             "type": entry.get("type", "feature"),
             "scope": entry.get("scope", []),
@@ -27,3 +27,7 @@ def op_collect_evidence(tio: Any, slug: str) -> dict[str, Any] | None:
             ],
         },
     }
+    if entry.get("authored_drift"):
+        evidence["authored_drift"] = True
+        evidence["authored_drift_reason"] = entry["authored_drift_reason"]
+    return evidence

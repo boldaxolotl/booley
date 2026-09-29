@@ -49,6 +49,8 @@ class BlockedContext:
     log_dir: Path
     runtime_dir: Path
     worktree: Path | None
+    authored_drift: bool = False
+    authored_drift_reason: str = ""
 
 
 def _find_checkout(project_root: Path, branch: str) -> Path | None:
@@ -74,7 +76,7 @@ def _find_checkout(project_root: Path, branch: str) -> Path | None:
 def _resolve_context(project_root: Path, slug: str) -> BlockedContext:
     tickets_dir = tickets_dir_from_project_root(project_root)
     tio = TicketIO(tickets_dir, project_root=project_root)
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if not entry:
         raise RuntimeError(f"ticket '{slug}' was not found")
     if entry.get("status") != "blocked":
@@ -95,6 +97,8 @@ def _resolve_context(project_root: Path, slug: str) -> BlockedContext:
         log_dir=log_dir,
         runtime_dir=ticket_runtime_dir(log_dir) / "triage-prep",
         worktree=worktree,
+        authored_drift=bool(entry.get("authored_drift")),
+        authored_drift_reason=str(entry.get("authored_drift_reason", "")),
     )
 
 
@@ -320,6 +324,42 @@ def _fresh(ctx: BlockedContext, source_sha: str) -> Path | None:
     return None
 
 
+def _publish_blocked_dossier(
+    ctx: BlockedContext,
+    slug: str,
+    diagnosis: dict,
+    result: Any,
+    duration: float,
+    source_sha: str,
+) -> Path:
+    package = {
+        "version": BLOCKED_PACKAGE_VERSION,
+        "kind": "blocked",
+        "slug": slug,
+        "ticket_path": str(ctx.ticket_path),
+        "blocked_log_path": str(ctx.log_dir / "blocked.md"),
+        "authored_drift": ctx.authored_drift,
+        "authored_drift_reason": ctx.authored_drift_reason,
+        "diagnosis": diagnosis,
+    }
+    path = _package_path(ctx)
+    _write_json(path, package)
+    _write_json(
+        _manifest_path(ctx),
+        {
+            "version": BLOCKED_PACKAGE_VERSION,
+            "status": "ready",
+            "source_sha256": source_sha,
+            "package_path": str(path),
+            "package_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "duration_s": round(duration, 2),
+            "cost_usd": round(result.cost_usd, 4),
+            "updated_at": utc_now_rfc3339(),
+        },
+    )
+    return path
+
+
 async def prepare_blocked_dossier(
     project_root: Path, slug: str, *, force: bool = False
 ) -> BlockedPrepOutcome:
@@ -337,27 +377,7 @@ async def prepare_blocked_dossier(
         duration = time.monotonic() - started
         _record_call(ctx, result, duration)
         source_sha = _source_sha(ctx)
-        package = {
-            "version": BLOCKED_PACKAGE_VERSION,
-            "kind": "blocked",
-            "slug": slug,
-            "ticket_path": str(ctx.ticket_path),
-            "blocked_log_path": str(ctx.log_dir / "blocked.md"),
-            "diagnosis": diagnosis,
-        }
-        path = _package_path(ctx)
-        _write_json(path, package)
-        manifest = {
-            "version": BLOCKED_PACKAGE_VERSION,
-            "status": "ready",
-            "source_sha256": source_sha,
-            "package_path": str(path),
-            "package_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            "duration_s": round(duration, 2),
-            "cost_usd": round(result.cost_usd, 4),
-            "updated_at": utc_now_rfc3339(),
-        }
-        _write_json(_manifest_path(ctx), manifest)
+        path = _publish_blocked_dossier(ctx, slug, diagnosis, result, duration, source_sha)
         return BlockedPrepOutcome("ready", "blocked dossier prepared", path)
     except Exception as exc:
         logger.warning("Blocked dossier preparation failed for %s: %s", slug, exc, exc_info=True)
@@ -393,6 +413,14 @@ def render_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
         package = json.loads(path.read_text(encoding="utf-8"))
         diagnosis = _validate(package.get("diagnosis"))
         lines = [f"### {slug}", "", "**Blocked by:**", ""]
+        if package.get("authored_drift"):
+            lines.extend(
+                [
+                    f"**Authored drift:** {package.get('authored_drift_reason', '')}; "
+                    "use return-to-draft",
+                    "",
+                ]
+            )
         for index, blocker in enumerate(diagnosis["blockers"], 1):
             lines.append(
                 f"{index}. **{blocker['name']} — {blocker['reason']}.** {blocker['evidence']}"

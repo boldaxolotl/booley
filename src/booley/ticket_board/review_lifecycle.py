@@ -321,7 +321,7 @@ def _abandon_publication(tio, slug, operation):
     """Withdraw stale, never-accepted publication without discarding source work."""
     log_dir = tio.logs_dir / slug
     prior = operation.get("previous_entry")
-    board = tio.find_ticket(slug)
+    board = tio.inspect_ticket(slug)
     if board and board["status"] == "review" and operation["entry"]["source_status"] == "blocked":
         source = tio.tickets_dir / board["file"]
         target = tio.tickets_dir / "board" / "blocked" / source.name
@@ -700,7 +700,7 @@ def _accepted_unselected_handoff_for_ticket(
 ) -> prep.ReviewPrepOutcome | None:
     """Resolve an accepted, unselected review Ticket's handoff outcome, if applicable."""
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(slug)
+    board = tio.inspect_ticket(slug)
     if board is None or board["status"] != "review":
         return None
     canonical = Path(board["file"]).stem
@@ -784,7 +784,7 @@ async def review_command(  # noqa: PLR0911 — each Ticket state has a distinct 
 ) -> prep.ReviewPrepOutcome:
     """Prepare review material according to the Ticket's lifecycle state."""
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(slug)
+    board = tio.inspect_ticket(slug)
     if board is None:
         return prep.ReviewPrepOutcome("failed", f"ticket {slug!r} not found")
     slug = Path(board["file"]).stem

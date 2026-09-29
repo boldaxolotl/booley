@@ -146,6 +146,9 @@ class _TicketIO:
     def find_ticket(self, _slug: str) -> dict[str, Any]:
         return self.entry
 
+    def inspect_ticket(self, slug: str) -> dict[str, Any]:
+        return self.find_ticket(slug)
+
     def load_basis(self, _slug: str) -> TicketBaseline:
         return self._bases[self._project_root.resolve()]
 

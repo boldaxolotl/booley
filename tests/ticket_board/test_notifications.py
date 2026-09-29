@@ -28,6 +28,7 @@ def _notification_ticket_entries(tio, monkeypatch):
         }
 
     monkeypatch.setattr(tio, "find_ticket", find)
+    monkeypatch.setattr(tio, "inspect_ticket", find)
 
 
 @pytest.mark.parametrize("setting", ["events = 42", "ntfy_topic = 42", "notifications = []"])
