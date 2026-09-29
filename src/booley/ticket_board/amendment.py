@@ -54,6 +54,7 @@ from .ticket_baseline import (
 from .ticket_document import (
     TicketDocument,
     convert_ticket_document,
+    serialize_ticket_document,
     ticket_conversion_context,
 )
 from .validation import _scope_contains_path, validate_ticket_spec
@@ -297,6 +298,14 @@ def _convert_ticket(root: Path, slug: str, source: str) -> TicketDocument:
         detail = "; ".join(item.message for item in converted.diagnostics)
         raise AmendmentError(f"invalid amended Ticket: {detail}")
     return converted.document
+
+
+def _serialize_ticket(root: Path, slug: str, document: TicketDocument) -> bytes:
+    try:
+        with ticket_conversion_context(root, slug, "executable") as context:
+            return serialize_ticket_document(document, context).encode()
+    except ValueError as exc:
+        raise AmendmentError(f"invalid amended Ticket: {exc}") from exc
 
 
 def _validate_preview_heads(
@@ -606,7 +615,9 @@ def _prepare_amendment_participants(
             for row in old.participants
         )
         journal["new_basis"] = TicketBaseline(participants).as_dict()
-        journal["machine"] = _amendment_machine(root, old, journal, participants=participants)
+        journal["machine"] = json.loads(
+            json.dumps(_amendment_machine(root, old, journal, participants=participants))
+        )
         journal["phase"] = "prepared"
         _write_journal(root, journal)
 
@@ -790,11 +801,19 @@ def _publish_board_and_state(
     ticket, status = find_ticket_file(tio.tickets_dir, journal["slug"])
     if ticket is None or status != "blocked":
         raise AmendmentError("blocked Ticket disappeared during publication")
-    fields = dict(journal["revised_fields"])
-    fields["machine"] = journal["machine"]
-    candidate = _render_ticket(fields, journal["body"]).encode()
-    if ticket.read_bytes() != candidate:
-        original = hashlib.sha256(ticket.read_bytes()).hexdigest()
+    current = ticket.read_bytes()
+    source_document = _convert_ticket(root, journal["slug"], current.decode())
+    revised_fields = dict(journal["revised_fields"])
+    revised_fields["machine"] = journal["machine"]
+    revised_document = _convert_ticket(
+        root, journal["slug"], _render_ticket(revised_fields, journal["body"])
+    )
+    generated = {**source_document.generated, "machine": journal["machine"]}
+    candidate = _serialize_ticket(
+        root, journal["slug"], TicketDocument(revised_document.spec, generated)
+    )
+    if current != candidate:
+        original = hashlib.sha256(current).hexdigest()
         if original != journal["ticket_sha256"]:
             raise AmendmentError("Board Ticket changed during amendment publication")
         atomic_replace_bytes(ticket, candidate, mode=0o644)
