@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 
@@ -21,6 +22,23 @@ def test_host_lifecycle_lock_records_owner(tmp_path, monkeypatch) -> None:
 
     owner = (tmp_path / "locks" / "docker-lifecycle.lock").read_text(encoding="utf-8")
     assert owner == f"pid={os.getpid()} operation=session refresh\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+def test_host_lifecycle_lock_creates_private_booley_directories_below_shared_xdg_root(
+    tmp_path, monkeypatch
+) -> None:
+    xdg_root = tmp_path / "config"
+    xdg_root.mkdir(mode=0o755)
+    booley_config = xdg_root / "booley"
+    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: booley_config)
+
+    with lifecycle_lock.host_lifecycle_lock("session up"):
+        pass
+
+    assert stat.S_IMODE(xdg_root.stat().st_mode) == 0o755
+    assert stat.S_IMODE(booley_config.stat().st_mode) == 0o700
+    assert stat.S_IMODE((booley_config / "locks").stat().st_mode) == 0o700
 
 
 def test_host_lifecycle_lock_waits_for_current_owner(tmp_path, monkeypatch, caplog) -> None:

@@ -31,6 +31,7 @@ from booley.harness import developer_probe, doctor, doctor_stamp, host_diagnosti
 from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
+    issuance_invalidation,
     runtime_context,
     session_issuance,
     session_runtime,
@@ -359,6 +360,39 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     assert "--dry-run" in tool_calls[0]
     assert "--target" in tool_calls[0]
     assert tool_calls[0][tool_calls[0].index("--target") + 1] == "sim_fast"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    real_up = session_runtime.up
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    pending = issuance_invalidation.prepare(
+        str(tmp_path.resolve()),
+        cleanup_resources=False,
+    )
+    issuance_invalidation.cancel(pending)
+    booley_config = config_root / "booley"
+    booley_config.chmod(0o755)
+    monkeypatch.setattr(doctor.session_runtime, "up", real_up)
+
+    result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "FAIL" in captured.out
+    assert "could not enter the Sandbox" in captured.out
+    assert str(booley_config) in captured.out
+    assert "0755" in captured.out
+    assert f"chmod 700 {booley_config}" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
 
 
 def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, capsys):
