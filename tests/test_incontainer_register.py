@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from unittest.mock import patch
 
 from booley.harness import incontainer_register as entry
 from booley.runtime import incontainer_setup as reg
@@ -19,7 +20,11 @@ def test_legacy_runtime_module_keeps_entrypoint_compatibility():
 def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
     events: list[str] = []
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-    monkeypatch.setattr(reg, "ensure_http_server", lambda: "started")
+    monkeypatch.setattr(
+        reg,
+        "ensure_http_server",
+        lambda *, mode: events.append(f"server:{mode}") or "started",
+    )
     monkeypatch.setattr(reg, "register", lambda _app: "claude:current")
     monkeypatch.setattr(entry, "observe_upgrade", lambda: events.append("observe") or "current")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: events.append("health") or "started")
@@ -29,7 +34,7 @@ def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
     assert (
         "server:started upgrade:current health:started claude:current" in capsys.readouterr().err
     )
-    assert events == ["observe", "health"]
+    assert events == ["server:interactive", "observe", "health"]
 
 
 # ===========================================================================
@@ -255,7 +260,48 @@ class TestCodexPermissionMode:
 class TestEnsureHttpServer:
     def test_already_running(self, monkeypatch):
         monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: True)
-        assert reg.ensure_http_server() == "running"
+        assert reg.ensure_http_server(mode="interactive") == "running"
+
+    def test_explicit_interactive_mode_controls_spawned_server_surface(
+        self, tmp_path, monkeypatch
+    ):
+        from booley.mcp.server import _mcp_tool_visible, _status_mcp_tool_visible
+
+        states = iter([False, True])
+        monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: next(states))
+        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
+        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "submit_run_report")
+        monkeypatch.setenv("BOOLEY_MCP_TOOLS", "submit_run_report")
+        spawned = {}
+
+        class FakeProc:
+            def poll(self):
+                return None
+
+        def fake_popen(cmd, **kwargs):
+            spawned["env"] = kwargs["env"]
+            return FakeProc()
+
+        monkeypatch.setattr(reg.subprocess, "Popen", fake_popen)
+
+        assert (
+            reg.ensure_http_server(
+                mode="interactive",
+                log_path=str(tmp_path / "server.log"),
+            )
+            == "started"
+        )
+
+        child_env = spawned["env"]
+        assert child_env["BOOLEY_MCP_MODE"] == "interactive"
+        assert "BOOLEY_NESTED_AGENT" not in child_env
+        assert "BOOLEY_NESTED_MCP_TOOLS" not in child_env
+        assert "BOOLEY_MCP_TOOLS" not in child_env
+
+        with patch.dict(os.environ, child_env, clear=True):
+            assert not _mcp_tool_visible("submit_run_report")
+            assert _status_mcp_tool_visible()
 
     def test_starts_and_waits_for_port(self, tmp_path, monkeypatch):
         # Port dead on the pre-check, alive once the (fake) server was spawned.
@@ -279,7 +325,7 @@ class TestEnsureHttpServer:
 
         monkeypatch.setattr(reg.subprocess, "Popen", fake_popen)
         log = tmp_path / "server.log"
-        assert reg.ensure_http_server(log_path=str(log)) == "started"
+        assert reg.ensure_http_server(mode="interactive", log_path=str(log)) == "started"
         assert spawned["cmd"][-2:] == ["--transport", "http"]
         # Detached: must not die with the postStartCommand shell.
         assert spawned["kwargs"]["start_new_session"] is True
@@ -299,7 +345,7 @@ class TestEnsureHttpServer:
             lambda cmd, **kw: DeadProc(),
         )
         log = tmp_path / "server.log"
-        assert reg.ensure_http_server(log_path=str(log)) == "failed"
+        assert reg.ensure_http_server(mode="interactive", log_path=str(log)) == "failed"
 
     def test_spawn_oserror_is_failed_not_raised(self, tmp_path, monkeypatch):
         monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: False)
@@ -309,7 +355,7 @@ class TestEnsureHttpServer:
 
         monkeypatch.setattr(reg.subprocess, "Popen", boom)
         log = tmp_path / "server.log"
-        assert reg.ensure_http_server(log_path=str(log)) == "failed"
+        assert reg.ensure_http_server(mode="interactive", log_path=str(log)) == "failed"
 
 
 # ===========================================================================
@@ -774,11 +820,17 @@ class TestRegister:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
         # Registration must not depend on the real server spawn in tests.
-        monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
+        requested_modes = []
+        monkeypatch.setattr(
+            reg,
+            "ensure_http_server",
+            lambda *, mode: requested_modes.append(mode) or "running",
+        )
         monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
         monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
         entry.main()
         assert reg.claude_config_path(tmp_path).exists()
+        assert requested_modes == ["interactive"]
 
     def test_main_skips_server_without_app(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
