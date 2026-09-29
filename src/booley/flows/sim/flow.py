@@ -16,6 +16,7 @@ import shlex
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -1855,20 +1856,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         number = max(existing, default=0) + 1
         while number <= 1_000_000:
             invocation = endpoint_dir / str(number)
-            lock = campaign_invocation_lock(invocation)
-            try:
-                lock.__enter__()
-            except LockContentionError:
-                number += 1
-                continue
-            try:
-                invocation.mkdir()
-            except FileExistsError:
-                lock.__exit__(None, None, None)
-                number += 1
-                continue
-            self.context.publication_resources.callback(lock.__exit__, None, None, None)
-            return invocation
+            # The attempt stack releases the lock on every exit that does not
+            # publish the directory: a raced number or any mkdir failure.
+            with ExitStack() as attempt:
+                try:
+                    attempt.enter_context(campaign_invocation_lock(invocation))
+                    invocation.mkdir()
+                except (LockContentionError, FileExistsError):
+                    number += 1
+                    continue
+                self.context.publication_resources.push(attempt.pop_all())
+                return invocation
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
 
     def record_campaign_acceptance(self, outcomes: tuple[object, ...]) -> None:
