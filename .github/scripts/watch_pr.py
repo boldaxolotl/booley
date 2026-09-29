@@ -44,6 +44,10 @@ TRANSIENT_ERROR = re.compile(
 IMMEDIATE_ERROR = re.compile(
     r"(?:auth|permission|forbidden|unauthor|invalid|unknown field|schema)", re.I
 )
+# Mergify labels configured in .mergify.yml. On a requeue Mergify adds the
+# active labels before it removes the prior attempt's dequeued label.
+DEQUEUED_LABEL = "dequeued"
+ACTIVE_QUEUE_LABELS = frozenset({"queued", "merge-queue-checking"})
 NO_CHECKS_REPORTED = re.compile(r"^no checks reported on .+ branch$", re.I)
 NONTERMINAL_PRODUCER_STATUSES = {
     "action_required",
@@ -784,7 +788,7 @@ def _queue_terminal(snapshot: Snapshot, memory: QueueMemory) -> Decision | None:
         return Decision(Outcome.COMPETING_CONTROL, True)
     if snapshot.merged_at or snapshot.state == "closed":
         return Decision(Outcome.MERGED if snapshot.merged_at else Outcome.CLOSED, True)
-    if "dequeued" in snapshot.labels:
+    if DEQUEUED_LABEL in snapshot.labels and not snapshot.labels & ACTIVE_QUEUE_LABELS:
         return Decision(Outcome.DEQUEUED, True)
     current = _latest_checks(snapshot.checks, snapshot.head_sha)
     failures = tuple(check for check in current if check.bucket in {"fail", "cancel"})
