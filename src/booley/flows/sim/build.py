@@ -146,7 +146,7 @@ def prepare_simulation_build(
         fusesoc_registry.FuseSocError,
         ParameterIntegrityError,
         selftest_overlay.SelftestOverlayError,
-        FileNotFoundError,
+        OSError,
     ) as exc:
         raise SimulationBuildPreparationError(str(exc)) from exc
 
@@ -214,11 +214,14 @@ def simulation_setup_command(
     inspection: TargetInspection | None = None,
 ) -> list[str]:
     """Preview the exact FuseSoC setup command used by Simulation preparation."""
-    _, _, backend_arguments = _simulation_recipe_inputs(
-        handle,
-        lane_kind=lane_kind,
-        inspection=inspection,
-    )
+    try:
+        _, _, backend_arguments = _simulation_recipe_inputs(
+            handle,
+            lane_kind=lane_kind,
+            inspection=inspection,
+        )
+    except (fusesoc_registry.FuseSocError, OSError) as exc:
+        raise SimulationBuildPreparationError(str(exc)) from exc
     kwargs: dict[str, Any] = {"build_root": build_root}
     if resolution_vlnv is not None:
         kwargs["resolution_vlnv"] = resolution_vlnv

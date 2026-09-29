@@ -1565,6 +1565,26 @@ def test_default_verilator_make_recipe_is_resource_bounded(
         assert re.search(r"make -f Vtb\.mk -j4 VM_PARALLEL_BUILDS=1", makefile)
 
 
+def test_cgroup_probe_failure_is_a_typed_setup_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    _write_runtime_input_project(
+        project,
+        tool_declaration="    flow: sim\n    flow_options: {tool: verilator}\n",
+    )
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    monkeypatch.setattr(
+        build_parallelism,
+        "_read_text",
+        lambda _path: (_ for _ in ()).throw(PermissionError("cgroup denied")),
+    )
+
+    with pytest.raises(SimulationBuildPreparationError, match="cgroup denied"):
+        prepare_simulation_build(handle)
+
+
 @pytest.mark.parametrize("api", ("modern", "legacy"))
 @pytest.mark.parametrize("authored_jobs", (False, True), ids=("non-jobs", "jobs"))
 def test_real_verilator_setup_merges_authored_make_options_once(

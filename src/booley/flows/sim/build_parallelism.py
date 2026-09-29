@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ _MEMORY_LIMITS = (
     Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
 )
 _CGROUP_UNLIMITED_FLOOR = 1 << 60
+_SHORT_OPTION_CLUSTER_WITH_JOBS = re.compile(r"-[bBdehikLnprRstvwqS]*j\d*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +117,13 @@ def load_verilator_build_budget(
     config_loader: Callable[[], dict] | None = None,
 ) -> VerilatorBuildBudget:
     """Compute the deterministic Make budget for one admitted compilation lane."""
+    if lane_kind == "unreserved":
+        return VerilatorBuildBudget(
+            effective_cpu_count=1,
+            memory_bytes=0,
+            heavy_lane_count=1,
+            make_jobs=1,
+        )
     affinity_cpu_count = affinity_cpu_count or _affinity_cpu_count
     read_text = read_text or _read_text
     config_loader = config_loader or load_job_budget_config
@@ -131,12 +140,9 @@ def load_verilator_build_budget(
     memory_limit = _cgroup_memory_limit(read_text)
     if memory_limit is not None:
         memory_bytes = min(memory_bytes, memory_limit // caps.max_heavy)
-    if lane_kind == "unreserved":
-        jobs = 1
-    else:
-        cpu_jobs = max(1, effective_cpu // caps.max_heavy)
-        memory_jobs = max(1, memory_bytes // GIB_BYTES)
-        jobs = min(cpu_jobs, memory_jobs)
+    cpu_jobs = max(1, effective_cpu // caps.max_heavy)
+    memory_jobs = max(1, memory_bytes // GIB_BYTES)
+    jobs = min(cpu_jobs, memory_jobs)
     return VerilatorBuildBudget(
         effective_cpu_count=effective_cpu,
         memory_bytes=memory_bytes,
@@ -164,14 +170,8 @@ def _has_jobs_option(options: Sequence[object]) -> bool:
         for token in tokens:
             if token in {"-j", "--jobs"} or token.startswith("--jobs="):
                 return True
-            if token.startswith("-") and not token.startswith("--"):
-                cluster = token[1:]
-                for index, character in enumerate(cluster):
-                    if character != "j":
-                        continue
-                    suffix = cluster[index + 1 :]
-                    if not suffix or suffix.isdigit():
-                        return True
+            if _SHORT_OPTION_CLUSTER_WITH_JOBS.fullmatch(token):
+                return True
     return False
 
 

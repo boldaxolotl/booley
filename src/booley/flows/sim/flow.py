@@ -4516,7 +4516,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 handle,
                 build_root=build_root,
             )
-        except fusesoc_registry.TargetResolutionError as exc:
+        except (
+            fusesoc_registry.TargetResolutionError,
+            SimulationBuildPreparationError,
+        ) as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
         parts = [

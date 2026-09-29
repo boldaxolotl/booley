@@ -159,6 +159,20 @@ def test_unreserved_lane_stays_serial_and_divided_cpu_clamps_to_one() -> None:
     assert unreserved.make_jobs == 1
 
 
+def test_unreserved_lane_does_not_probe_shared_resources() -> None:
+    def unexpected() -> int:
+        pytest.fail("unreserved lane probed shared resources")
+
+    budget = load_verilator_build_budget(
+        "unreserved",
+        affinity_cpu_count=unexpected,
+        read_text=lambda _path: pytest.fail("unreserved lane read cgroup state"),
+        config_loader=lambda: pytest.fail("unreserved lane loaded Project config"),
+    )
+
+    assert budget == build_parallelism.VerilatorBuildBudget(1, 0, 1, 1)
+
+
 @pytest.mark.parametrize(
     "option",
     ("-j", "-j8", "--jobs", "--jobs=8", "-kj4", "-j 8", "--jobs 8"),
@@ -169,7 +183,10 @@ def test_authored_jobs_options_are_preserved_without_injection(option: str, api:
     assert verilator_backend_arguments(_inspection(**kwargs)) == ()
 
 
-@pytest.mark.parametrize("option", ("-junk", "--job=8", "OPT_FAST=-O3"))
+@pytest.mark.parametrize(
+    "option",
+    ("-junk", "--job=8", "OPT_FAST=-O3", "-I/x/proj", "-fobj", "-Wno-j", "-I/usr/j2"),
+)
 def test_jobs_option_lookalikes_do_not_disable_parallel_policy(
     monkeypatch: pytest.MonkeyPatch,
     option: str,
