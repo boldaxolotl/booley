@@ -407,11 +407,10 @@ def test_preview_rejects_unblocked_ticket(tmp_path: Path) -> None:
 
 def test_preview_directs_authored_drift_to_return_to_draft(tmp_path: Path) -> None:
     _root, blocked, tio = _blocked_ticket(tmp_path)
-    blocked.write_text(
-        blocked.read_text(encoding="utf-8").replace(
-            "summary: Recover publication", "summary: Edited while blocked"
-        ),
-        encoding="utf-8",
+    blocked.write_bytes(
+        blocked.read_text(encoding="utf-8")
+        .replace("summary: Recover publication", "summary: Edited while blocked")
+        .encode(),
     )
 
     with pytest.raises(

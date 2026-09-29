@@ -27,6 +27,7 @@ from booley.ticket_board.cli_handlers import (
     _cmd_timing,
     _cmd_validate_logs,
     _cmd_validate_ticket,
+    _print_criteria_summary,
 )
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.paths import existing_runtime_file
@@ -425,6 +426,27 @@ class TestCmdClassify:
 
 
 class TestCmdNextStage:
+    def test_ticket_slug_reports_authored_drift(self, tio, capsys, monkeypatch):
+        reason = "acceptance-input-change-required: authored Ticket changed"
+        monkeypatch.setattr(
+            tio,
+            "inspect_ticket",
+            lambda _slug: {
+                "type": "bugfix",
+                "authored_drift": True,
+                "authored_drift_reason": reason,
+            },
+        )
+
+        rc = _cmd_next_step_or_steps(
+            tio,
+            Namespace(type_or_slug="drifted", current="planning", skip=""),
+            "next-step",
+        )
+
+        assert rc == 0
+        assert f"{reason}; use return-to-draft" in capsys.readouterr().err
+
     def test_next_stage_returns_next(self, tio, capsys):
         args = Namespace(type_or_slug="feature", current="planning", skip="")
         rc = _cmd_next_step_or_steps(tio, args, "next-step")
@@ -480,6 +502,18 @@ class TestCmdValidateLogs:
 
 
 class TestCmdShow:
+    def test_criteria_summary_handles_unavailable_and_invalid_rows(self, capsys):
+        _print_criteria_summary(
+            {"met": True, "unknown": True},
+            {"unmet": True},
+            {"met": {"met": True}, "unknown": "unavailable", "unmet": {"met": False}},
+            None,
+        )
+        assert "mandatory 1/2 met, optional 0/1 met" in capsys.readouterr().out
+
+        _print_criteria_summary({"met": True}, {}, {}, "acceptance unavailable")
+        assert "mandatory ?/1, optional ?/0" in capsys.readouterr().out
+
     def test_no_slug_aliases_board(self, tio, capsys):
         # With no slug, show is a plain alias for board (empty here).
         rc = _cmd_show(tio, Namespace(slug=None))

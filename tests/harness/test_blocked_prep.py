@@ -77,6 +77,8 @@ def test_render_blocked_dossier_is_check_only(tmp_path: Path, monkeypatch):
         "slug": "demo",
         "ticket_path": str(ctx.ticket_path),
         "blocked_log_path": str(ctx.log_dir / "blocked.md"),
+        "authored_drift": True,
+        "authored_drift_reason": "acceptance-input-change-required: authored Ticket changed",
         "diagnosis": _diagnosis(),
     }
     bp._write_json(path, package)
@@ -97,6 +99,8 @@ def test_render_blocked_dossier_is_check_only(tmp_path: Path, monkeypatch):
 
     assert outcome.ready
     assert "**Blocked by:**" in outcome.message
+    assert "**Authored drift:**" in outcome.message
+    assert "use return-to-draft" in outcome.message
     assert "**sim_pass — one test failed.**" in outcome.message
     assert "**Passing / non-blocking:** lint_clean" in outcome.message
 
