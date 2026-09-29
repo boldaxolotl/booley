@@ -99,15 +99,26 @@ execution but does not hide valid earlier work units from the plan.
 
 ### Simulation Campaign layout
 
-Ordinary HDL, Cocotb-batch, and native-coverage-aggregate executions publish
-their resume authority at
+Every `sim` run uses the same layout, whatever the testbench (HDL or cocotb) and
+whether or not it collects coverage. Each run reserves the next number in the
+`sim/` sequence under the report root (`<resolved-project-data>/flow-reports` by
+default), and each Target gets its Simulation Campaign at
 `<report-root>/sim/<N>/targets/<encoded-target>/campaign/manifest.json`, with
 append-only attempts/results beneath it and an atomically regenerated
-`summary.json`. Direct Simulation, native coverage, and resume all use
-`<resolved-project-data>/flow-reports` by default and reserve numbers from the
-same `sim/` sequence. A resume creates a new compatibility invocation but keeps
-authoritative Simulation Campaign writes beside the original manifest. Qualified
-Target selectors are percent-encoded into one directory component.
+`summary.json`. Qualified Target selectors are percent-encoded into one
+directory component.
+
+Three cases add to this layout:
+
+- **Coverage** adds `coverage.json`, the point store, and `native/` beside
+  `campaign/` in the same Target directory (see
+  [Coverage Campaign files](#coverage-campaign-files)).
+- **Resume** reserves a new number for its own `report.json` and
+  `progress.json`, but writes Campaign results beside the *original* manifest,
+  so one Campaign stays in one place.
+- **A Cycle Count baseline** gets its own Target directory next to the
+  candidate's, named from `<target>@baseline-<first 12 hex of revision>` and
+  encoded like any selector.
 
 ```text
 targets/<encoded-target>/
