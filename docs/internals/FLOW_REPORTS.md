@@ -53,10 +53,16 @@ Long-running Simulation, ASIC Synthesis, and FPGA Implementation invocations als
 write a run-scoped `progress.json`. `complete: true` means the producer is
 terminal, not necessarily successful. `phase: complete` means every planned
 Target was processed; `phase: aborted` means the invocation stopped with the
-listed `pending_targets`; and coverage resume can mark the authenticated origin
-`phase: superseded` with a bounded `superseded_by` identity. A superseded
-origin's Target lists are historical and are deliberately not rewritten from the
-recovered Campaign. Every new checkpoint includes `run_id` and `timestamp`.
+listed `pending_targets`.
+
+`phase: superseded` appears only on an interrupted coverage run that was later
+resumed. The resume runs as a new invocation, and `superseded_by` names it
+(`invocation` number and, when known, `run_id`). A superseded run's Target lists
+still show its state when it was interrupted; check the resuming invocation's
+`progress.json` for the outcome. Marking is best effort: if it fails, the
+original run keeps its `running` or `aborted` phase.
+
+Every new checkpoint includes `run_id` and `timestamp`.
 
 The lifecycle, locking, and repair rules are in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#progress-lifecycle).
