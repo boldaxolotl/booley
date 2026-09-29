@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 import pytest
 
+from booley.harness import init_cmd
+from booley.harness.setup.common import InitContext
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
@@ -191,13 +193,21 @@ def _boundary_contract() -> TicketBaseline:
 
 
 def _paired_completion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    project_gitignore: str | None = None,
 ) -> tuple[Path, Path, _TicketIO, tuple[BasisParticipant, ...]]:
     root = tmp_path / "rtl"
     outer_base = _repository(root)
     outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
     project = root / ".booley_project"
     project_base = _repository(project)
+    if project_gitignore is not None:
+        (project / ".gitignore").write_text(project_gitignore, encoding="utf-8")
+        _git(project, "add", ".gitignore")
+        _git(project, "commit", "-m", "add legacy project ignore policy")
+        project_base = _git(project, "rev-parse", "HEAD")
     project_ticket = _ticket_commit(
         project, "booley-ticket/change-target", "project implementation\n"
     )
@@ -1837,6 +1847,154 @@ def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monk
     assert _git(root, "show", "main:design.txt") == "outer implementation"
 
 
+def test_complete_preserves_unrelated_untracked_project_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project, tio, participants = _paired_completion(tmp_path, monkeypatch)
+    other_ticket = project / "tickets" / "board" / "queue" / "other-ticket.md"
+    diagnostic = project / "logs" / "runner-diagnostics.log"
+    other_ticket.parent.mkdir(parents=True)
+    diagnostic.parent.mkdir(parents=True)
+    other_ticket_bytes = b"---\nstatus: queue\n---\n"
+    diagnostic_bytes = b"pre-intake failure details\n"
+    other_ticket.write_bytes(other_ticket_bytes)
+    diagnostic.write_bytes(diagnostic_bytes)
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+
+    assert other_ticket.read_bytes() == other_ticket_bytes
+    assert diagnostic.read_bytes() == diagnostic_bytes
+    journal = _acceptance_journal(root)
+    assert (
+        acceptance_impl._ref_commit(root, participants[0].destination_ref)
+        == journal["candidates"]["outer"]["finalized_sha"]
+    )
+    assert (
+        acceptance_impl._ref_commit(project, participants[1].destination_ref)
+        == journal["candidates"]["project"]["finalized_sha"]
+    )
+
+
+def test_project_gitignore_backfill_blocks_until_committed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    dirty_root, dirty_project, dirty_tio, _dirty_participants = _paired_completion(
+        tmp_path / "dirty",
+        monkeypatch,
+        project_gitignore="tmp/\n",
+    )
+    init_cmd._backfill_project_gitignore(
+        dirty_project,
+        InitContext(project_root=dirty_root),
+    )
+
+    assert complete_review_ticket(dirty_tio, "change-target", _Policy()) is False
+    assert ".gitignore" in capsys.readouterr().err
+
+    root, project, _tio, participants = _paired_completion(
+        tmp_path / "committed",
+        monkeypatch,
+        project_gitignore="tmp/\n",
+    )
+    reset_cache()
+    init_cmd._backfill_project_gitignore(project, InitContext(project_root=root))
+    _git(project, "add", ".gitignore")
+    _git(project, "commit", "-m", "backfill transient ignore policy")
+    project_base = _git(project, "rev-parse", "HEAD")
+    _git(project, "switch", "booley-ticket/change-target")
+    _git(project, "rebase", "main")
+    project_ticket = _git(project, "rev-parse", "HEAD")
+    _git(project, "switch", "main")
+    participants = (
+        participants[0],
+        replace(
+            participants[1],
+            authoring_sha=project_ticket,
+            destination_sha=project_base,
+        ),
+    )
+    tio = _TicketIO(root, _contract(root, participants))
+    diagnostic = project / "logs" / "runner-diagnostics.log"
+    diagnostic.parent.mkdir()
+    diagnostic.write_text("ignored diagnostic\n", encoding="utf-8")
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert diagnostic.read_text(encoding="utf-8") == "ignored diagnostic\n"
+
+
+@pytest.mark.parametrize(
+    ("candidate_path", "untracked_path"),
+    [
+        ("collision", "collision"),
+        ("collision/child.txt", "collision"),
+        ("collision", "collision/child.txt"),
+    ],
+)
+def test_complete_rejects_untracked_candidate_path_overlap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate_path: str,
+    untracked_path: str,
+) -> None:
+    root, project, _tio, participants = _paired_completion(tmp_path, monkeypatch)
+    _git(project, "switch", "booley-ticket/change-target")
+    candidate = project / candidate_path
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("candidate bytes\n", encoding="utf-8")
+    _git(project, "add", candidate_path)
+    _git(project, "commit", "-m", "add collision candidate")
+    project_ticket = _git(project, "rev-parse", "HEAD")
+    _git(project, "switch", "main")
+    participants = (
+        participants[0],
+        replace(participants[1], authoring_sha=project_ticket),
+    )
+    tio = _TicketIO(root, _contract(root, participants))
+    untracked = project / untracked_path
+    untracked.parent.mkdir(parents=True, exist_ok=True)
+    untracked_bytes = b"local bytes must survive\n"
+    untracked.write_bytes(untracked_bytes)
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+
+    assert untracked.read_bytes() == untracked_bytes
+    assert (
+        acceptance_impl._ref_commit(root, participants[0].destination_ref)
+        == participants[0].destination_sha
+    )
+    assert (
+        acceptance_impl._ref_commit(project, participants[1].destination_ref)
+        == participants[1].destination_sha
+    )
+    assert untracked_path in capsys.readouterr().err
+
+
+def test_complete_preserves_unrelated_untracked_outer_state(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+    untracked = root / "local-notes.txt"
+    untracked_bytes = b"unrelated local state\n"
+    untracked.write_bytes(untracked_bytes)
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+
+    assert untracked.read_bytes() == untracked_bytes
+    assert _git(root, "show", "main:design.txt") == "implemented"
+
+
 def test_retry_rolls_forward_after_only_project_was_published(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2115,13 +2273,59 @@ def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
     assert tio.entry["status"] == "review"
 
 
-def test_complete_rejects_unrelated_project_edit_through_bind_mount_alias(
+def test_complete_preserves_unrelated_project_edit_through_bind_mount_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fake_bind_mounts: Callable[[Path, Collection[Path]], None],
 ) -> None:
     _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
-    (project / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
+    unrelated = project / "unrelated.txt"
+    unrelated.write_text("unrelated\n", encoding="utf-8")
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert unrelated.read_text(encoding="utf-8") == "unrelated\n"
+
+
+def test_complete_rejects_tracked_project_edit_through_bind_mount_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_bind_mounts: Callable[[Path, Collection[Path]], None],
+) -> None:
+    _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
+    (project / "design.txt").write_text("tracked local edit\n", encoding="utf-8")
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert tio.entry["status"] == "review"
+
+
+def test_complete_rejects_unrelated_tracked_ticket_board_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, _tio, participants = _paired_completion(tmp_path, monkeypatch)
+    queued = project / "tickets" / "board" / "queue" / "other-ticket.md"
+    queued.parent.mkdir(parents=True)
+    queued.write_text("other ticket\n", encoding="utf-8")
+    _git(project, "add", "tickets/board/queue/other-ticket.md")
+    _git(project, "commit", "-m", "track another queued ticket")
+    project_base = _git(project, "rev-parse", "HEAD")
+    _git(project, "switch", "booley-ticket/change-target")
+    _git(project, "rebase", "main")
+    project_ticket = _git(project, "rev-parse", "HEAD")
+    _git(project, "switch", "main")
+    participants = (
+        participants[0],
+        replace(
+            participants[1],
+            authoring_sha=project_ticket,
+            destination_sha=project_base,
+        ),
+    )
+    tio = _TicketIO(root, _contract(root, participants))
+    moved = project / "tickets" / "board" / "review" / "other-ticket.md"
+    queued.rename(moved)
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert tio.entry["status"] == "review"
+    assert moved.read_text(encoding="utf-8") == "other ticket\n"
+    assert acceptance_impl._ref_commit(project, "refs/heads/main") == project_base
