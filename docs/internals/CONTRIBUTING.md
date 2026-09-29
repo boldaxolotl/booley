@@ -50,6 +50,34 @@ worktree's source. Human contributors may continue using the editable `.venv`
 workflow above. Readiness output contains local paths and is diagnostic
 material; do not publish it.
 
+### Maintainer QA skills
+
+Maintainers may install the repository-owned QA skills from a complete, clean
+primary Booley checkout on `main` whose HEAD matches the canonical installed
+revision:
+
+```bash
+cd /path/to/Booley
+booley bootstrap --with-qa-skills
+```
+
+The canonical host-installed `booley` records the opt-in under
+`~/.agents/booley-qa-skills.json`. Plain Bootstrap, check-only, and Project
+Initialization then reconcile the live checkout. Optional QA-source and pending
+reconciliation warnings do not block product Bootstrap or change check-only's
+exit status. Restore or re-enable a moved, deleted, dirty, off-main, incomplete,
+or revision-skewed source checkout. Recover from an unreadable or corrupt
+selection with the explicit opt-out below.
+
+Disable the integration with `booley bootstrap --without-qa-skills`. Opt-out
+removes only links in the independent `.booley-qa-skill-links.json` ownership
+manifest; foreign and replaced entries remain. Initial hand-installed links
+stay unmanaged unless `--force` explicitly transfers ownership, and different
+content is never replaced. The QA skills remain outside release wheels and
+Sandbox host-skill mounts and require explicit invocation. When
+`mount_host_skills` is enabled, rerun `booley init --seed` after enabling or
+removing them so generated devcontainer mounts are refreshed.
+
 ### Development environment troubleshooting
 
 Debian and Ubuntu split `venv` out of the Python package. If `python3 -m venv
