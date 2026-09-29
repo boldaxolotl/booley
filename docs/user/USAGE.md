@@ -369,19 +369,29 @@ probably too narrow.
 
 ### Where the work lands (`on_success`)
 
-Each Ticket lists what should happen when its criteria pass. Anything left out
-of the list doesn't happen:
+Each Ticket lists what should happen once its criteria pass:
 
 ```yaml
 on_success: [triage_report, review, merge, cleanup]
 ```
 
-| Action | What it does |
-| --- | --- |
-| `review` | Parks the Ticket for your decision and keeps its branch and working copy until then. Without it, the Ticket goes straight to done. |
-| `merge` | Merges the work into the destination branch. Leave it out to keep that branch untouched. |
-| `cleanup` | Deletes the Ticket's branch and working copy (after review, if there is one). The accepted commits stay reachable. Leave it out to keep them. |
-| `triage_report` | Makes one extra AI call to write an HTML explanation of the work for review. |
+The actions always run in this order, whatever order you write them in, and
+each step waits for the one before it. Leave an action out and it's skipped:
+
+1. **`triage_report`**: writes an HTML explanation of the work for the reviewer
+   (one extra AI call). It only applies together with `review`.
+2. **`review`**: parks the Ticket until you approve it. Its branch and working
+   copy stay in place so you can inspect them. Nothing below happens until you
+   approve. Without `review`, the Ticket goes straight on to the next step.
+3. **`merge`**: merges the work into the destination branch. Leave it
+   out to keep that branch untouched.
+4. **`cleanup`**: deletes the Ticket's branch and working copy, after the merge
+   succeeds if there is one. The accepted commits stay reachable. Leave it out
+   to keep them.
+
+So with `review` in the list, nothing reaches your branch until you've
+approved it. Without `review`, `merge` and `cleanup` run as soon as the
+criteria pass.
 
 **Adding Targets in a Ticket.** Most Tickets use the Targets you already have.
 To add one, mark it where the Ticket mentions it, and include `merge`:
