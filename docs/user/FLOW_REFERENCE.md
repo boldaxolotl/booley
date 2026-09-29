@@ -31,7 +31,7 @@ booley flow <name> --help          # the authoritative option list
 Every run needs `--target`; there is no project-wide default. (The one exception
 is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 
-- `booley targets` lists all Targets; `booley targets --for-flow <flow>` lists
+- `booley targets` lists all Targets; `booley targets --for <flow>` lists
   the ones a Flow can drive.
 - Select several Targets by repeating the flag, using commas, or both:
   `--target a --target b,c` runs `a`, `b`, `c` in that order. Naming the same
@@ -87,6 +87,7 @@ booley flow sim --target sim_soc                          # full registered suit
 booley flow sim --target sim_soc --test reset --test irq  # exact tests, in order
 booley flow sim --target sim_soc --tests-file smoke.txt   # names from a file
 booley flow sim --target sim_soc --test irq --trace       # capture a waveform
+booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Verilator only)
 ```
 
 | Option | Effect |

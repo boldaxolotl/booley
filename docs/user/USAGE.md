@@ -373,7 +373,7 @@ Inside the Sandbox:
 booley flow sim --target sim_soc --test reset
 ```
 
-Use `booley flow` to list discovered Flows, `booley targets --for-flow <flow>` to
+Use `booley flow` to list discovered Flows, `booley targets --for <flow>` to
 list compatible Targets, and `booley flow <name> --help` for the live argument
 schema. [FLOW_REFERENCE.md](FLOW_REFERENCE.md) is the canonical reference for
 Target selectors, controls, exit codes, verdicts, and Criteria;

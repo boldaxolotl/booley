@@ -155,7 +155,7 @@ class TargetCatalog:
             raise IncompatibleTargetError(
                 f"Target {token!r} cannot be driven by the {for_flow!r} Flow "
                 f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
-                f"Choose a compatible Target with `booley targets --for-flow {for_flow}`."
+                f"Choose a compatible Target with `booley targets --for {for_flow}`."
             )
         return self._handle(ref, declarations[ref.name])
 

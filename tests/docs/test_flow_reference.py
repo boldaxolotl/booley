@@ -128,8 +128,8 @@ def test_flow_reference_distinguishes_target_owned_synth_mode() -> None:
 
 
 def test_flow_reference_uses_the_executable_target_filter() -> None:
-    assert "`booley targets --for-flow <flow>`" in _shared_section()
-    assert "booley targets --for <flow>" not in _reference_text()
+    assert "`booley targets --for <flow>`" in _shared_section()
+    assert "booley targets --for-flow <flow>" not in _reference_text()
 
 
 def test_sim_campaign_resume_granularity_stays_documented() -> None:
