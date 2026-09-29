@@ -360,8 +360,9 @@ deliberately outside every repo and bind mount so it cannot be committed) and
 re-seeds the devcontainer spec; Booley then injects it on every container start.
 **Rebuild an existing container once** so the read-only mount exists.
 `booley auth --status` reports which credential each agent would use, and
-`booley doctor` warns when a run is about to rely on a refreshing one. Full
-billing and precedence detail is in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing).
+`booley doctor` warns when a run is about to rely on a refreshing one. Billing
+options are in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing);
+choosing between several credentials is in [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#pinning-what-bills-agent-auth).
 
 ## Two interactive agents keep clobbering each other's edits
 
@@ -371,6 +372,48 @@ the repo you opened, so two interactive agents editing the same worktree trip
 over each other's changes. When you want an interactive agent to work in
 parallel with others, tell it up front to create a fresh worktree and work
 there. (Background on the two modes: [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#interactive-mode).)
+
+## Ticket worktrees show as `prunable` on the host
+
+```
+/work/.booley_project/worktrees/axi-fix  0000000 [detached HEAD] prunable
+```
+
+Ticket Workspaces are host-addressable only when both the host and the Sandbox
+use Git 2.48 or newer. Run `booley init` after upgrading; new worktrees then use
+relative metadata, so host `git status` and `git worktree list` work normally.
+Existing worktrees are not rewritten.
+
+With an older or unverified Git, new worktrees keep the container-only fallback,
+and `prunable` on the host is expected. **Do not "clean it up"**: a host-side
+`git worktree prune` can deregister an active Ticket Workspace. Use Git through
+the Sandbox instead. Once relative worktrees are enabled, keep both Git clients
+at 2.48 or newer. `booley doctor` reports fallback, incompatible downgrades,
+and non-portable live worktrees.
+
+## `git` cannot see files under `.booley_project/`
+
+```
+$ git checkout -- .booley_project/booley.toml
+error: pathspec '.booley_project/booley.toml' did not match any file(s) known to git
+```
+
+`.booley_project/` is usually its own Git repository, and the outer repository
+ignores it so your RTL history stays clean of Booley bookkeeping. Outer-repo
+commands therefore cannot see anything inside it. Run them against the inner
+repository instead:
+
+```bash
+git -C .booley_project checkout -- booley.toml     # restore Booley config
+git -C .booley_project status                      # what changed in Booley's own repo
+git -C .booley_project log --oneline -5
+```
+
+The same applies to `tests.toml`, `ticket_creation.md`, the legacy
+`ticket_defaults.md`, `criteria.toml`, and the `.core` files. If
+`git -C .booley_project rev-parse --git-dir` errors, the directory is not a
+repository on this machine and those files were never version-controlled: copy
+one aside before you edit it.
 
 ## RTL simulates cleanly but `synth` rejects it under `slang`
 

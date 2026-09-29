@@ -47,6 +47,14 @@ _FLOW_DISPLAY_RANK = {name: rank for rank, name in enumerate(("sim", "lint", "sy
 _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 
 
+# Docs render: user docs link to the full per-Flow reference instead of
+# repeating the control summaries that `booley cheat` carries.
+_FLOW_REFERENCE_POINTER = (
+    "Every Flow's options, results, and reports are in "
+    "[FLOW_REFERENCE.md](FLOW_REFERENCE.md); `booley flow <name> --help` "
+    "prints them too."
+)
+
 _FLOW_KEY_CONTROLS: dict[str, str] = {
     "fpga": f"{_BASELINE_CONTROL}; `--ppa-profile compact|balanced|max_frequency` "
     "selects portable optimization intent; `--no-cache` forces a fresh implementation",
@@ -145,6 +153,7 @@ def render_flow_reference(
     *,
     project_mcp_tools_dir: Path | None = None,
     execution_column: bool = True,
+    key_controls: bool = True,
 ) -> str:
     """Render the Booley Flows Markdown block from the MCP endpoint registry.
 
@@ -158,6 +167,10 @@ def render_flow_reference(
             given, project-specific Flows are discovered and rendered too.
         execution_column: Retained for compatibility; ignored because all
             Flows execute inside the Sandbox.
+        key_controls: When true, append the common and per-Flow control
+            summaries (used by ``booley cheat``, which is read in the Sandbox).
+            When false, link to FLOW_REFERENCE.md instead, for the user docs
+            that sit next to it.
     """
     endpoints = discover_mcp_tools(project_mcp_tools_dir=project_mcp_tools_dir)
     flows = sorted(
@@ -176,6 +189,9 @@ def render_flow_reference(
         lines.append(
             f"| `{t.name}` | {_summarize(t.description)} | {_format_satisfies(t.satisfies)} |"
         )
+    if not key_controls:
+        lines.extend(["", _FLOW_REFERENCE_POINTER])
+        return "\n".join(lines)
     controls = [
         f"- `{flow.name}`: {_FLOW_KEY_CONTROLS[flow.name]}"
         for flow in flows
@@ -322,6 +338,7 @@ def render_flow_specialist_reference(
     flows = render_flow_reference(
         project_mcp_tools_dir=project_mcp_tools_dir,
         execution_column=execution_column,
+        key_controls=False,
     )
     specialists = render_specialists_reference(project_mcp_tools_dir=project_mcp_tools_dir)
     return f"**Booley Flows**\n\n{flows}\n\n**Specialists**\n\n{specialists}"

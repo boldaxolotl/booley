@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import re
 import threading
+from pathlib import Path
 from unittest.mock import patch
 
 from booley.harness import terminal
@@ -30,6 +31,26 @@ def _strip_ansi(text: str) -> str:
 
 _NUM_THREADS = 8
 _CALLS_PER_THREAD = 20
+
+
+def test_flush_log_persists_buffered_output_without_appending(tmp_path: Path) -> None:
+    log_path = tmp_path / "run.log"
+    terminal.open_log(log_path)
+    try:
+        terminal.raw("blocked before totals")
+        assert log_path.read_text(encoding="utf-8") == ""
+
+        terminal.flush_log()
+
+        assert log_path.read_text(encoding="utf-8") == "blocked before totals\n"
+    finally:
+        terminal.close_log()
+
+
+def test_flush_log_is_harmless_without_open_log() -> None:
+    terminal.close_log()
+
+    terminal.flush_log()
 
 
 def _writer(barrier: threading.Barrier, buf: io.StringIO, thread_id: int) -> None:

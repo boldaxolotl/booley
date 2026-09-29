@@ -527,7 +527,10 @@ can pass on warnings-only while the Criteria keep the honest number.
 Findings are parsed with the shared regexes in the private parser module
 (`booley.flows._eda_parsers`, one source of truth for the Verilator and
 Verible dialects), then deduplicated across Targets on `(rule, file, line)`
-and scope-filtered.
+and scope-filtered. Deduplication retains the first finding's diagnostic fields
+and row order while collecting every contributing Target. When different EDA
+tool families contribute to one row, the report also maps each Target to its
+EDA tool. These provenance fields do not change the deduplication key or count.
 The console echoes the first five; the full list always goes to the report:
 
 ```text
@@ -538,9 +541,10 @@ The console echoes the first five; the full list always goes to the report:
 The numbered copy exists because consecutive runs would otherwise clobber each
 other: a Verilator pass followed by a Verible pass is two runs of one Flow.
 The report carries `passed`, `total_warnings`, per-finding rule/file:line/
-message, any `errors`, and a `target_results` entry per Target: the EDA tool
-that actually linted, finding count, `files_linted`, `toplevel`,
-`toplevel_linted`, and duration.
+message with contributing Targets and mixed-family EDA tool provenance, any
+`errors`, and a `target_results` entry per Target: the EDA tool that actually
+linted, finding count, `files_linted`, `toplevel`, `toplevel_linted`, and
+duration.
 
 **Coverage guard (`toplevel_linted`).** A Target can lint a fileset that
 excludes its own toplevel: a style fileset trimmed of macro-heavy files, for

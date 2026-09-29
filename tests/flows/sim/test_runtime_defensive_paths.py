@@ -176,3 +176,19 @@ def test_durable_publication_removes_partial_destination_on_failure(
     with pytest.raises(RuntimeError, match="write failed"):
         campaign_durability.durable_create(destination, b"value")
     assert not destination.exists()
+
+
+def test_durable_directory_accepts_concurrent_creation(tmp_path: Path, monkeypatch) -> None:
+    destination = tmp_path / "shared"
+    original_mkdir = Path.mkdir
+
+    def concurrent_mkdir(path: Path, *args, **kwargs) -> None:
+        if path == destination and not path.exists():
+            original_mkdir(path)
+        original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", concurrent_mkdir)
+
+    campaign_durability.durable_directory(destination)
+
+    assert destination.is_dir()

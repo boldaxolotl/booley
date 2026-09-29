@@ -225,7 +225,7 @@ produce. An interrupted cleanup is safe to retry with the same arguments.
 |---|---|
 | `targets`, `eda_tools` | The Targets and the linter used for each. |
 | `passed`, `elapsed_s`, `total_warnings` | Whether lint is clean, duration, and the number of distinct findings. `passed` is false whenever there are findings, even when `warnings_as_errors = false` lets the CLI exit `0`. |
-| `warnings[]` | One `rule`, `file`, `line`, and `message` per distinct finding. |
+| `warnings[]` | One `rule`, `file`, `line`, `message`, and sorted `targets` (the Targets that reported it) per distinct finding. `eda_tools` maps each Target to its linter when the findings come from more than one EDA tool family. |
 | `errors[]` | `target` and `message` for each Target that could not be linted. |
 | `target_results[]` | Per Target: `target`, `eda_tool`, raw `warnings` count (before deduplication and `--scope`), `files_linted`, `toplevel`, `toplevel_linted`, `duration_s`, `error`, and `log`. |
 | `artifacts` | The report and per-Target logs. |

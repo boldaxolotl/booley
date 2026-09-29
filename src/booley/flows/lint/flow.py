@@ -17,7 +17,8 @@ import logging
 import re
 import shlex
 import time
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -96,14 +97,17 @@ def _lint_eda_executable(family: str) -> str:
 
 @dataclass
 class LintWarning:
-    """Single parsed Verilator warning."""
+    """Parsed lint warning, optionally enriched with grouped provenance."""
 
     rule: str
     file: str
     line: int
     col: int
     message: str
-    target: str  # which build Target produced it
+    target: str  # Target that supplied the retained diagnostic fields
+    # Populated by deduplication; raw parser results leave these empty.
+    targets: tuple[str, ...] = ()
+    eda_tools: tuple[tuple[str, str], ...] = ()
 
     @property
     def dedup_key(self) -> tuple[str, str, int]:
@@ -141,9 +145,9 @@ class LintConfigResult:
     Defaults True to avoid false alarms when unknown."""
     log_path: str = ""
     """Project-relative path of this Target's persisted ``run.log``. The parsed
-    report carries rule/file:line/message per warning, but the linter's raw
-    output — banner, include resolution, the lines around a diagnostic — only
-    exists there. Empty when the log could not be written."""
+    report carries rule/file:line/message and Target provenance per warning,
+    but the linter's raw output — banner, include resolution, the lines around
+    a diagnostic — only exists there. Empty when the log could not be written."""
 
 
 @dataclass
@@ -273,13 +277,33 @@ def _classify_lint_failure(
     result.error = first or f"lint eda_tool exited {result.returncode}"
 
 
-def deduplicate_warnings(warnings: list[LintWarning]) -> list[LintWarning]:
-    """Deduplicate warnings across Targets: keep first occurrence per (rule, file, line)."""
+def deduplicate_warnings(
+    warnings: list[LintWarning],
+    eda_tool_by_target: Mapping[str, str] | None = None,
+) -> list[LintWarning]:
+    """Deduplicate warnings while retaining each contributing Target."""
     seen: dict[tuple[str, str, int], LintWarning] = {}
+    targets_by_key: dict[tuple[str, str, int], set[str]] = {}
     for w in warnings:
         if w.dedup_key not in seen:
             seen[w.dedup_key] = w
-    return list(seen.values())
+            targets_by_key[w.dedup_key] = set()
+        targets_by_key[w.dedup_key].add(w.target)
+
+    grouped: list[LintWarning] = []
+    for key, warning in seen.items():
+        targets = tuple(sorted(targets_by_key[key]))
+        if eda_tool_by_target is None:
+            eda_tools: tuple[tuple[str, str], ...] = ()
+        else:
+            missing_targets = [target for target in targets if target not in eda_tool_by_target]
+            assert not missing_targets, (
+                "missing EDA-tool provenance for contributing Target(s): "
+                + ", ".join(missing_targets)
+            )
+            eda_tools = tuple((target, eda_tool_by_target[target]) for target in targets)
+        grouped.append(replace(warning, targets=targets, eda_tools=eda_tools))
+    return grouped
 
 
 def filter_by_scope(warnings: list[LintWarning], scope: str) -> list[LintWarning]:
@@ -402,14 +426,16 @@ def _build_warning_details(
     """Build warning detail dicts for reports."""
     details: list[dict[str, Any]] = []
     for w in unique_warnings:
-        details.append(
-            {
-                "rule": w.rule,
-                "file": w.file,
-                "line": w.line,
-                "message": w.message,
-            }
-        )
+        detail = {
+            "rule": w.rule,
+            "file": w.file,
+            "line": w.line,
+            "message": w.message,
+            "targets": list(w.targets or (w.target,)),
+        }
+        if len({eda_tool for _, eda_tool in w.eda_tools}) > 1:
+            detail["eda_tools"] = dict(w.eda_tools)
+        details.append(detail)
     return details
 
 
@@ -969,7 +995,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
         selectors = [target.selector for target in targets]
 
         # Deduplicate and scope-filter
-        unique = deduplicate_warnings(all_warnings)
+        eda_tool_by_target = {
+            result.target: _lint_eda_tool_family(result.eda_tool) for result in target_results
+        }
+        unique = deduplicate_warnings(all_warnings, eda_tool_by_target)
         if self.args.scope:
             unique = filter_by_scope(unique, self.args.scope)
         print(f"[lint] {len(unique)} unique in-scope warning{'s' if len(unique) != 1 else ''}")

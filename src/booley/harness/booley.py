@@ -1380,6 +1380,17 @@ def _cmd_board_approve(args: argparse.Namespace, project_root: Path) -> int:
     return 0 if ok else 1
 
 
+def _show_blocked_dossier(project_root: Path, slug: str) -> int:
+    from booley.harness.blocked_prep import render_blocked_dossier
+
+    dossier = render_blocked_dossier(project_root, slug)
+    if not dossier.ready:
+        print(f"ERROR: {dossier.message}; run booley board review {slug}", file=sys.stderr)
+        return 2
+    print(dossier.message)
+    return 0
+
+
 def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.io import TicketIO
 
@@ -1394,14 +1405,8 @@ def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
         print(f"{board['authored_drift_reason']}; use return-to-draft")
         return 0
     if status == "blocked":
-        from booley.harness.blocked_prep import render_blocked_dossier
-
-        dossier = render_blocked_dossier(project_root, slug)
-        if not dossier.ready:
-            print(f"ERROR: {dossier.message}; run booley board review {slug}", file=sys.stderr)
-            return 2
-        print(dossier.message)
-    if status in {"blocked", "review"}:
+        return _show_blocked_dossier(project_root, slug)
+    if status == "review":
         from booley.ticket_board.review_lifecycle import review_briefing_command
 
         outcome = review_briefing_command(
