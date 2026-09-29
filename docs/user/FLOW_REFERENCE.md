@@ -217,6 +217,16 @@ Coverage is measured per Target, per run:
    approved waivers apply (see [Collecting vs. gating](#collecting-vs-gating)),
    waived points are left out of the count.
 
+What counts as RTL:
+
+- Every file in the Target's resolved fileset **without** the `tb` tag. Tag
+  every testbench file `tb`; an untagged one is scored as RTL.
+- Only code elaborated under the testbench top gets coverage points. An RTL
+  module that is never instantiated produces no points, so it neither lowers
+  the percentages nor shows up as a gap.
+- Points are per instance: a module instantiated four times contributes four
+  sets of points, and each instance must be exercised.
+
 Each Target gets its own Coverage Campaign. Nothing is merged across Targets or
 across runs.
 
