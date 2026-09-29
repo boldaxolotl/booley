@@ -1540,7 +1540,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     assert doctor._deep_timeout_s(project, "synth") == (
         5400 + doctor._SYNTH_DEEP_FINALIZE_MARGIN_S
     )
-    assert doctor._deep_timeout_s(project, "sim") == doctor._DEEP_TIMEOUTS_S["sim"]
+    assert doctor._deep_timeout_s(project, "sim") == 4290
     assert doctor._deep_timeout_s(project, "lint") == doctor._DEEP_TIMEOUTS_S["lint"]
     # No knob at all -> the hardcoded floor.
     bare = doctor.ProjectAudit(
@@ -1554,6 +1554,49 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
         doctor._deep_timeout_s(bare, "synth")
         == doctor._DEEP_TIMEOUTS_S["synth"] + doctor._SYNTH_DEEP_FINALIZE_MARGIN_S
     )
+    assert doctor._deep_timeout_s(bare, "sim") == 4830
+
+    custom = doctor.ProjectAudit(
+        project_root=tmp_path,
+        project_dir=tmp_path / ".booley_project",
+        booley_toml={"flows": {"sim": {"timeout_ms": 5000, "build_timeout_ms": 7000}}},
+        configs_toml={},
+        first_target="",
+    )
+    assert doctor._deep_timeout_s(custom, "sim") == doctor._DEEP_TIMEOUTS_S["sim"]
+
+
+def test_sim_selftest_timeout_names_stage_specific_knobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        project_dir=tmp_path / ".booley_project",
+        booley_toml={},
+        configs_toml={},
+        first_target="",
+    )
+    failures: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(["sim"], 10)),
+    )
+
+    result = doctor._execute_selftest(
+        project,
+        ["sim"],
+        {},
+        10,
+        "sim self-test",
+        "sim",
+        _fail=lambda message, remedy: failures.append((message, remedy)),
+    )
+
+    assert result is None
+    assert "build_timeout_ms" in failures[0][1]
+    assert "timeout_ms" in failures[0][1]
 
 
 def test_validate_known_tables_warns_on_unknown_and_retired():

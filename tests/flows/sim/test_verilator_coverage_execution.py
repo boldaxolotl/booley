@@ -552,7 +552,13 @@ def test_coverage_image_changed_after_build_cannot_launch(tmp_path: Path, monkey
     assert "run_script" not in captured
 
 
-def _execution_fixture(tmp_path: Path, monkeypatch, *, cocotb: bool = False):
+def _execution_fixture(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    cocotb: bool = False,
+    options: SimulationOptions | None = None,
+):
     _write_target(tmp_path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     build_root = tmp_path / "build" / "coverage"
@@ -592,7 +598,7 @@ def _execution_fixture(tmp_path: Path, monkeypatch, *, cocotb: bool = False):
     execution = VerilatorCoverageExecution(
         handle,
         invoke=_fake_invoke(captured, raw_path),
-        options=SimulationOptions(),
+        options=options or SimulationOptions(),
         provenance_path=provenance,
     )
     target = CoverageTarget(handle.identity, handle.selector, "counter_tb", "generated_main", ())
@@ -628,6 +634,7 @@ def _fake_adapter(captured):
 
 def _fake_invoke(captured, raw_path: Path):
     def fake_invoke(command, *, timeout):
+        captured.setdefault("timeouts", []).append((tuple(command), timeout))
         if command == ["verilator", "--version"]:
             return captured.get("version") or SubprocessResult(
                 returncode=0, stdout="Verilator 5.052 2026-09-05\n"
@@ -678,6 +685,25 @@ def _fake_invoke(captured, raw_path: Path):
         )
 
     return fake_invoke
+
+
+def test_coverage_build_run_and_identity_keep_distinct_budgets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(
+        tmp_path,
+        monkeypatch,
+        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
+    )
+
+    assert _build_coverage(execution, target).success
+    assert execution.run(_run_request(target, raw_path)).verdict == "pass"
+
+    timeouts = captured["timeouts"]
+    assert timeouts[0] == (("verilator", "--version"), 30)
+    assert timeouts[1][1] == 7
+    assert timeouts[2][1] == 95
 
 
 def _run_request(target: CoverageTarget, raw_path: Path) -> SimulationRunRequest:

@@ -48,7 +48,7 @@ is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 | `--report-dir <path>` | Write reports here instead of the default report root. |
 | `--diagnostic` | Run without recording Ticket Criteria. A strict Ticket requires it for Flow/Target pairs outside its baseline. |
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
-| `--timeout-ms <ms>` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. |
+| `--timeout-ms <ms>` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. Simulation builds instead use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use an independent fixed budget; see [Simulation timeouts](CONFIG.md#simulation-build-pre-sim-and-run-timeouts). |
 
 ## Reading results
 
@@ -73,6 +73,12 @@ sources, constraints, resolved parameters, and the exact commands it would run.
 It exits `0` when everything can be planned and `2` otherwise, keeping the valid
 parts of the plan for diagnosis. FuseSoC generators may run in a throwaway
 scratch directory when resolution needs them; the plan says so.
+
+For Simulation, ordinary candidate and baseline units expose the simulator
+budget as `timeout_ms` and the invocation-carried build budget as recipe
+`build_timeout_ms`. Elaboration Check units expose their build budget in both
+fields because the Target build is their only subprocess. Standalone units
+retain the standalone-sweep `timeout_ms` and have no build field.
 
 ## `sim`
 
@@ -150,6 +156,10 @@ Within a Ticket, a `sim` run can satisfy these Criteria:
 tests. It is a fast "does it build?" check, and a later full run reuses the
 build. `--mode elab-only-standalone` adds a sweep that elaborates each reusable
 RTL module on its own and can satisfy `elaborate_standalone`.
+
+The Target build in either mode uses the shared
+[`build_timeout_ms`](CONFIG.md#simulation-build-pre-sim-and-run-timeouts)
+budget rather than `--timeout-ms`.
 
 Within a Ticket, a successful build satisfies `elab_pass_<target>`, whether it
 comes from `--mode elab-only` or from the build step of a normal run. It is

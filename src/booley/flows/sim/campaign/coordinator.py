@@ -19,6 +19,7 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     publish_coverage_campaign_reference,
 )
+from booley.flows.sim.execution.contract import SimulationOptions
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -44,6 +45,7 @@ from .store import CampaignRecovery, CampaignStore, WorkItemRecovery
 @dataclass(frozen=True, slots=True)
 class CampaignPolicy:
     timeout_seconds: float | None = None
+    build_timeout_seconds: float | None = None
     no_kill: bool = False
     diagnostic: bool = False
     result_verbosity: str = "compact"
@@ -51,8 +53,28 @@ class CampaignPolicy:
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("campaign timeout must be positive")
+        if self.build_timeout_seconds is not None and self.build_timeout_seconds <= 0:
+            raise ValueError("campaign build timeout must be positive")
         if self.result_verbosity not in {"compact", "full"}:
             raise ValueError("result verbosity must be compact or full")
+
+
+def simulation_options_from_policy(
+    policy: CampaignPolicy,
+    *,
+    trace: bool,
+) -> SimulationOptions:
+    """Translate one invocation policy into leaf Simulation options."""
+    return SimulationOptions(
+        trace=trace,
+        timeout_ms=round(policy.timeout_seconds * 1000)
+        if policy.timeout_seconds is not None
+        else None,
+        build_timeout_ms=round(policy.build_timeout_seconds * 1000)
+        if policy.build_timeout_seconds is not None
+        else None,
+        result_verbosity=policy.result_verbosity,
+    )
 
 
 class SimulationCampaignCancellationError(RuntimeError):

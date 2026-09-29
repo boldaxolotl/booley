@@ -280,6 +280,23 @@ def test_all_builtin_flow_timeouts_must_be_positive_integers(value: object) -> N
         assert "timeout_ms must be a positive integer" in audit.findings[0].message
 
 
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "3600000"])
+def test_sim_build_timeout_must_be_a_positive_integer(value: object) -> None:
+    audit = flow_schema.audit_flow_table("sim", {"build_timeout_ms": value})
+
+    assert not audit.is_valid
+    assert "build_timeout_ms must be a positive integer" in audit.findings[0].message
+
+
+def test_sim_build_timeout_is_valid_and_other_flows_warn() -> None:
+    sim = flow_schema.audit_flow_table("sim", {"build_timeout_ms": 3_600_000})
+    lint = flow_schema.audit_flow_table("lint", {"build_timeout_ms": 3_600_000})
+
+    assert sim.is_valid
+    assert not any(item.check_id == "config.flow-knob-ignored" for item in sim.findings)
+    assert any(item.subject == "lint.build_timeout_ms" for item in lint.findings)
+
+
 def test_flow_collection_reports_required_sections_and_retired_aliases() -> None:
     audit = flow_schema.audit_flow_tables(
         {"flows": {"simulate": {"default_target": "sim_fast"}}},

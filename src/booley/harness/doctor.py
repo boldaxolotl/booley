@@ -37,8 +37,10 @@ from booley.audit import (
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.config.jobs import parse_caps
 from booley.config.project_config import normalize_tests_toml
-from booley.core.boundary import is_str_list
+from booley.core.boundary import BoundaryError, is_str_list, require_int
 from booley.flows import execution
+from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.sim.config import DEFAULT_SIM_BUILD_TIMEOUT_MS, DEFAULT_SIM_TIMEOUT_MS
 from booley.fusesoc import (
     core_security,
     fusesoc_registry,
@@ -110,6 +112,7 @@ _DEEP_TIMEOUTS_S = {
 # cleanup, boundary interpretation, and the eager terminal report write after
 # that inner boundary expires.
 _SYNTH_DEEP_FINALIZE_MARGIN_S = 180
+_SIM_DEEP_FINALIZE_MARGIN_S = 30
 
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
@@ -3032,8 +3035,10 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
-            "flows manually with a raised --timeout-ms, and set "
-            "[flows.<flow>].timeout_ms so --deep honors a larger budget."
+            "flows manually with a raised --timeout-ms. For Simulation compiler "
+            "progress, raise [flows.sim].build_timeout_ms; for simulator or "
+            "standalone-sweep progress, raise timeout_ms. Set the corresponding "
+            "[flows.<flow>] knob so --deep honors the larger budget."
         )
     else:
         _pass(
@@ -5293,9 +5298,16 @@ def _execute_selftest(
             check=False,
         )
     except subprocess.TimeoutExpired:
+        remedy = (
+            "raise [flows.sim].build_timeout_ms for credible compiler progress, "
+            "raise [flows.sim].timeout_ms for credible simulator or standalone-sweep "
+            "progress, or use a lighter fixture"
+            if flow_name == "sim"
+            else f"raise [flows.{flow_name}].timeout_ms or use a lighter fixture"
+        )
         _fail(
             f"{label} timed out after {timeout_s}s",
-            f"raise [flows.{flow_name}].timeout_ms or use a lighter fixture",
+            remedy,
         )
         return None
     except OSError as exc:
@@ -5392,17 +5404,44 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     """Wall-clock budget for a ``--deep`` Flow smoke, in seconds (F5).
 
     The hardcoded :data:`_DEEP_TIMEOUTS_S` floor is a *minimum*, not the
-    authority: a project that raised ``[flows.<flow>].timeout_ms`` (e.g. a
-    415K-LOC core needing 90-min asic synth, or a heavy sim) would otherwise be
-    spuriously killed by the shorter deep budget. Honor the configured knob by
-    taking the larger of the two, so deep never falls below the safe smoke floor
-    yet respects a legitimately-raised per-Flow timeout. Unparseable values are
-    ignored and the floor stands.
+    authority. Synthesis honors its configured run budget plus finalization.
+    Simulation validates and reserves its distinct build, Pre-Sim, run, and
+    finalization budgets. Other legacy calculations retain their established
+    fallback behavior for unparseable values.
     """
+    if flow_name == "sim":
+        build_s = _configured_sim_build_timeout_s(project)
+        run_s = _configured_sim_timeout_s(project)
+        planned_s = build_s + DEFAULT_TIMEOUT_S + run_s + _SIM_DEEP_FINALIZE_MARGIN_S
+        return max(_DEEP_TIMEOUTS_S["sim"], planned_s)
     timeout_s = _configured_timeout_s(project, flow_name, _DEEP_TIMEOUTS_S[flow_name])
     if flow_name == "synth":
         timeout_s += _SYNTH_DEEP_FINALIZE_MARGIN_S
     return timeout_s
+
+
+def _configured_sim_build_timeout_s(project: ProjectAudit) -> int:
+    """Return the validated Project Simulation build budget in whole seconds."""
+    flows = project.booley_toml.get("flows", {})
+    section = config_section(flows, "sim") if isinstance(flows, dict) else {}
+    raw = section.get("build_timeout_ms", DEFAULT_SIM_BUILD_TIMEOUT_MS)
+    field = "[flows.sim].build_timeout_ms"
+    value = require_int(raw, field=field)
+    if value <= 0:
+        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
+    return max(1, value // 1000)
+
+
+def _configured_sim_timeout_s(project: ProjectAudit) -> int:
+    """Return the validated Project simulator budget in whole seconds."""
+    flows = project.booley_toml.get("flows", {})
+    section = config_section(flows, "sim") if isinstance(flows, dict) else {}
+    raw = section.get("timeout_ms", DEFAULT_SIM_TIMEOUT_MS)
+    field = "[flows.sim].timeout_ms"
+    value = require_int(raw, field=field)
+    if value <= 0:
+        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
+    return max(1, value // 1000)
 
 
 def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> int:
