@@ -73,6 +73,118 @@ from tests.target_test_support import install_lenient_target_catalog, make_targe
 _REAL_CATALOG_BUILD = TargetCatalog.build
 
 
+class TestEdaFailureClassification:
+    @pytest.mark.parametrize(
+        ("stage", "executable"),
+        (("sv2v", "sv2v"), ("yosys", "yosys"), ("openroad", "openroad")),
+    )
+    def test_missing_executable_is_infrastructure_error(self, stage: str, executable: str) -> None:
+        from booley.flows.eda_failures import classify_eda_failure
+
+        result = classify_eda_failure(
+            SubprocessResult(
+                returncode=2,
+                stdout=f"/bin/sh: 1: {executable}: not found\n",
+                stderr="",
+            ),
+            expected_stage=stage,
+            expected_executable=executable,
+        )
+        assert result is not None
+        assert result.kind == "infrastructure"
+        assert f"missing tool: {executable}" in result.reason
+
+    def test_missing_sv2v_is_infrastructure_error(self) -> None:
+        self.test_missing_executable_is_infrastructure_error("sv2v", "sv2v")
+
+    def test_missing_yosys_is_infrastructure_error(self) -> None:
+        self.test_missing_executable_is_infrastructure_error("yosys", "yosys")
+
+    def test_missing_openroad_is_infrastructure_error(self) -> None:
+        self.test_missing_executable_is_infrastructure_error("openroad", "openroad")
+
+    @pytest.mark.parametrize(
+        ("stage", "subject"),
+        (
+            ("yosys", "read_slang"),
+            ("yosys", "cells.lib"),
+            ("openroad", "Nangate45_tech.lef"),
+        ),
+    )
+    def test_missing_dependency_is_infrastructure_error(self, stage: str, subject: str) -> None:
+        from booley.flows.eda_failures import classify_eda_failure, render_failure_marker
+
+        token = "0123456789abcdef0123456789abcdef"
+        marker = render_failure_marker(token, "missing_required_file", stage, subject)
+        result = classify_eda_failure(
+            SubprocessResult(returncode=2, stdout=marker, stderr=""),
+            expected_token=token,
+            expected_stage=stage,
+        )
+        assert result is not None
+        assert result.kind == "infrastructure"
+        assert subject in result.reason
+
+    def test_missing_read_slang_is_infrastructure_error(self) -> None:
+        self.test_missing_dependency_is_infrastructure_error("yosys", "read_slang")
+
+    def test_missing_liberty_is_infrastructure_error(self) -> None:
+        self.test_missing_dependency_is_infrastructure_error("yosys", "cells.lib")
+
+    def test_missing_physical_pdk_is_infrastructure_error(self) -> None:
+        self.test_missing_dependency_is_infrastructure_error("openroad", "Nangate45_tech.lef")
+
+
+class TestBoundaryCompatibility:
+    def test_legacy_inline_metrics_remain_complete(self, tmp_path: Path) -> None:
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+        metrics = _parse_synth_output("Chip area for module 'dut': 1000.0", 0.1)
+        outcome = SimpleNamespace(
+            diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+            forced_failure=None,
+            yosys_complete=False,
+            infrastructure_failure=None,
+        )
+        flow._apply_boundary_completion(
+            metrics,
+            outcome,
+            SubprocessResult(
+                returncode=0,
+                stdout="Chip area for module 'dut': 1000.0",
+                stderr="",
+            ),
+            "Chip area for module 'dut': 1000.0",
+        )
+        assert metrics.yosys_complete is True
+        assert metrics.structural_checks_complete is True
+
+    @pytest.mark.parametrize(
+        ("process", "expected"),
+        (
+            (SubprocessResult(returncode=-1, timed_out=True), "timeout"),
+            (SubprocessResult(returncode=2, oom_kill_delta=1), "oom"),
+            (SubprocessResult(returncode=137), "resource_killed"),
+        ),
+    )
+    def test_terminal_reason_survives_infrastructure_classification(
+        self, tmp_path: Path, process: SubprocessResult, expected: str
+    ) -> None:
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+        metrics = SynthMetrics()
+        outcome = SimpleNamespace(
+            diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+            forced_failure=None,
+            yosys_complete=False,
+            attempt_token="0123456789abcdef0123456789abcdef",
+        )
+
+        flow._apply_boundary_completion(metrics, outcome, process, process.stderr)
+
+        assert metrics.termination == expected
+
+
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
     return make_target_handle(
         project_root,

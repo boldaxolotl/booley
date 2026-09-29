@@ -28,7 +28,6 @@ execution of the generated Makefile.
 
 from __future__ import annotations
 
-import contextlib
 import io
 import json
 import re
@@ -40,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
+from booley.flows.eda_failures import FailureKind, new_attempt_token, render_failure_marker
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.flows.synth.backends.yosys import core as syn_core
@@ -96,6 +96,7 @@ class SynthPlan:
     build_dir: Path
     spec: SynthSpec
     warnings: tuple[str, ...] = ()
+    attempt_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ class BoundaryOutcome:
     # A fresh final ``stat_<design>.txt`` is the durable proof that the Yosys
     # stage reached its contractual statistics/check boundary.
     yosys_complete: bool = False
+    attempt_token: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +167,24 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
             source_sdc_paths=sdc_paths,
         )
 
-    (build_dir / "Makefile").write_text(_render_makefile(spec, build_dir), encoding="utf-8")
-    return SynthPlan(build_dir=build_dir, spec=spec, warnings=tuple(warnings))
+    attempt_token = new_attempt_token()
+    (build_dir / "Makefile").write_text(
+        _render_makefile(spec, build_dir, attempt_token), encoding="utf-8"
+    )
+    return SynthPlan(
+        build_dir=build_dir,
+        spec=spec,
+        warnings=tuple(warnings),
+        attempt_token=attempt_token,
+    )
 
 
 def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
     """Remove the artifacts a previous run may have left in *build_dir*.
 
-    Best-effort (a survivor is caught by the freshness gate at interpret
-    time), but deliberate: the false-pass log scan reads files by name and
-    must never see last run's logs.
+    Cleanup is mandatory: a surviving artifact could satisfy a generated
+    recipe's existence check. Interpretation still applies a freshness gate
+    for clock skew and externally recreated files.
     """
     stale = [
         "sv2v.log",
@@ -195,9 +205,10 @@ def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
         f"openroad_{design}.v",
     ]
     for name in stale:
-        with contextlib.suppress(OSError):
-            (build_dir / name).unlink(missing_ok=True)
-    shutil.rmtree(build_dir / "reports", ignore_errors=True)
+        (build_dir / name).unlink(missing_ok=True)
+    reports_dir = build_dir / "reports"
+    if reports_dir.exists():
+        shutil.rmtree(reports_dir)
 
 
 def _rel(path: Path, build_dir: Path) -> str:
@@ -298,23 +309,45 @@ def _fail_tail(log_name: str) -> str:
     return f"|| {{ rc=$$?; tail -n {_FAIL_TAIL_LINES} {log_name}; exit $$rc; }}"
 
 
-def _sta_recipe_lines(spec: SynthSpec) -> list[str]:
+def _marker(token: str, kind: FailureKind, stage: str, subject: str) -> str:
+    """Return one shell-quoted authenticated infrastructure marker."""
+    return shlex.quote(render_failure_marker(token, kind, stage, subject))
+
+
+def _eda_tool_preflight(token: str, stage: str, executable: str) -> str:
+    marker = _marker(token, "missing_eda_tool", stage, executable)
+    return f"\t@command -v {executable} >/dev/null 2>&1 || {{ echo {marker}; exit 127; }}"
+
+
+def _required_file(token: str, stage: str, path: str, subject: str | None = None) -> str:
+    marker = _marker(token, "missing_required_file", stage, subject or Path(path).name)
+    return f"\t@test -r {shlex.quote(path)} || {{ echo {marker}; exit 2; }}"
+
+
+def _required_output(token: str, stage: str, path: str, *, nonempty: bool = True) -> str:
+    marker = _marker(token, "missing_output", stage, path)
+    predicate = "-s" if nonempty else "-f"
+    return f"\t@test {predicate} {shlex.quote(path)} || {{ echo {marker}; exit 2; }}"
+
+
+def _sta_recipe_lines(spec: SynthSpec, token: str) -> list[str]:
     """The physical synthesis + timing stage's recipe body."""
     lines = ["\t@echo 'BOOLEY_STAGE: sta'"]
-    tech_lef = shlex.quote(str(openroad_timing.openroad_pdk_paths().tech_lef))
+    pdk = openroad_timing.openroad_pdk_paths()
     body = [
-        "\t@if ! command -v openroad >/dev/null 2>&1; then "
-        "echo 'ERROR: physical synthesis requires OpenROAD in the Sandbox'; "
-        "exit 127; fi",
-        f"\t@test -f {tech_lef} || {{ echo 'ERROR: physical synthesis PDK is missing'; exit 1; }}",
+        _eda_tool_preflight(token, "openroad", "openroad"),
+        *(_required_file(token, "openroad", str(path), path.name) for path in pdk),
         "\topenroad -no_init -exit run_openroad.tcl > openroad.log 2>&1 "
         + _fail_tail("openroad.log"),
+        _required_output(token, "openroad", "reports/timing/overall.rpt"),
+        _required_output(token, "openroad", "reports/timing/overall.csv.rpt", nonempty=False),
+        _required_output(token, "openroad", f"openroad_{spec.design_name}.v"),
     ]
     lines.extend(body)
     return lines
 
 
-def _render_makefile(spec: SynthSpec, build_dir: Path) -> str:
+def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
     """Render the stage-chaining Makefile (the boundary command's far side).
 
     Contract (ADR 0037 §5): recipes use only EDA binaries + POSIX shell — no
@@ -346,18 +379,34 @@ def _render_makefile(spec: SynthSpec, build_dir: Path) -> str:
         lines += [
             "sv2v:",
             "\t@echo 'BOOLEY_STAGE: sv2v'",
+            _eda_tool_preflight(token, "sv2v", "sv2v"),
             f"\t{_sv2v_recipe(spec, build_dir)} > sv2v.log 2>&1 {_fail_tail('sv2v.log')}",
+            _required_output(token, "sv2v", syn_core.SV2V_OUTPUT_NAME),
             "",
         ]
         yosys_prereq = " sv2v"
     lines += [
         f"yosys:{yosys_prereq}",
         "\t@echo 'BOOLEY_STAGE: yosys'",
+        _eda_tool_preflight(token, "yosys", "yosys"),
+        _required_file(token, "yosys", spec.liberty.as_posix(), spec.liberty.name),
+    ]
+    if spec.frontend == "slang":
+        marker = _marker(token, "missing_required_file", "yosys", "read_slang")
+        lines.append(
+            "\t@yosys -Q -p 'help read_slang' > .booley_read_slang.log 2>&1; "
+            "grep -q 'No such command' .booley_read_slang.log && "
+            f"{{ echo {marker}; exit 2; }} || true"
+        )
+    lines += [
         f"\tyosys -s synth.ys > yosys.log 2>&1 {_fail_tail('yosys.log')}",
+        _required_output(token, "yosys", f"stat_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"check_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"synth_{spec.design_name}.v"),
         "",
     ]
     if runs_openroad(mode):
-        lines += ["sta: yosys", *_sta_recipe_lines(spec), ""]
+        lines += ["sta: yosys", *_sta_recipe_lines(spec, token), ""]
     return "\n".join(lines)
 
 
@@ -434,7 +483,8 @@ def boundary_output(
     spec = plan.spec
     fresh_text = _fresh_text_reader(build_dir, is_stale)
     parts, have_yosys_log, parameter_failure, stat_text = _collect_yosys_sections(plan, fresh_text)
-    if runs_openroad(spec.timing.mode):
+    physical = runs_openroad(spec.timing.mode)
+    if physical:
         parts.extend(_timing_sections(plan, fresh_text))
     diagnostic_sources = _diagnostic_sources(plan, fresh_text)
     final_check = diagnostic_sources.get("final_check")
@@ -449,11 +499,50 @@ def boundary_output(
         if provenance:
             parts.append(provenance)
 
+    if returncode == 0 and re.fullmatch(r"[0-9a-f]{32}", plan.attempt_token):
+        required_outputs = [
+            ("yosys", f"stat_{spec.design_name}.txt", stat_text),
+            ("yosys", f"check_{spec.design_name}.txt", final_check),
+            ("yosys", f"synth_{spec.design_name}.v", fresh_text(f"synth_{spec.design_name}.v")),
+        ]
+        if spec.frontend == "sv2v":
+            required_outputs.insert(
+                0,
+                ("sv2v", syn_core.SV2V_OUTPUT_NAME, fresh_text(syn_core.SV2V_OUTPUT_NAME)),
+            )
+        if physical:
+            required_outputs.extend(
+                [
+                    (
+                        "openroad",
+                        "reports/timing/overall.rpt",
+                        fresh_text("reports/timing/overall.rpt"),
+                    ),
+                    (
+                        "openroad",
+                        "reports/timing/overall.csv.rpt",
+                        fresh_text("reports/timing/overall.csv.rpt"),
+                    ),
+                    (
+                        "openroad",
+                        f"openroad_{spec.design_name}.v",
+                        fresh_text(f"openroad_{spec.design_name}.v"),
+                    ),
+                ]
+            )
+        for stage, subject, contents in required_outputs:
+            if contents is None:
+                parts.append(
+                    render_failure_marker(plan.attempt_token, "missing_output", stage, subject)
+                )
+                break
+
     return BoundaryOutcome(
         text="\n".join(p for p in parts if p),
         diagnostics=diagnostics,
         forced_failure=forced_failure,
         yosys_complete=stat_text is not None,
+        attempt_token=plan.attempt_token,
     )
 
 
