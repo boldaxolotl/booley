@@ -1001,7 +1001,7 @@ class TestJobsConfigParsing:
         monkeypatch,
         caplog,
     ):
-        from booley.config.jobs import load_job_budget_config
+        from booley.runtime.shared_infra import load_job_budget_config
 
         monkeypatch.setattr(
             "booley.runtime.shared_infra._load_rtl_config",
@@ -1012,7 +1012,7 @@ class TestJobsConfigParsing:
         assert "Failed to load the shared Project job budget" in caplog.text
 
     def test_shared_budget_loader_propagates_unexpected_failure(self, monkeypatch):
-        from booley.config.jobs import load_job_budget_config
+        from booley.runtime.shared_infra import load_job_budget_config
 
         monkeypatch.setattr(
             "booley.runtime.shared_infra._load_rtl_config",

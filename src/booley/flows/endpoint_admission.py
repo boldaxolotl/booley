@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from booley.config.jobs import load_job_budget_config, parse_caps
+from booley.config.jobs import parse_caps
 from booley.core.boundary import as_float
 from booley.flows.endpoint_events import (
     _endpoint_progress_event,
@@ -26,6 +26,7 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 from booley.runtime.job_records import _proc_cmdline
+from booley.runtime.shared_infra import load_job_budget_config
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState

@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Literal
 
 from booley.audit.resource_policy import GIB_BYTES, heavy_memory_reservation
-from booley.config.jobs import load_job_budget_config, parse_caps
+from booley.config.jobs import parse_caps
 from booley.core.boundary import as_dict, as_int
+from booley.runtime.shared_infra import load_job_budget_config
 from booley.targets.domain import TargetInspection
 
 LaneKind = Literal["heavy", "unreserved"]

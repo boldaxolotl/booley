@@ -165,6 +165,15 @@ def _load_rtl_config(project_root: Path | None = None) -> dict | None:
     return _TOML_CACHE
 
 
+def load_job_budget_config() -> dict:
+    """Load the Project configuration that owns the shared Job Slot budget."""
+    try:
+        return _load_rtl_config(None) or {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning("Failed to load the shared Project job budget: %s", exc)
+        return {}
+
+
 # ============================================================================
 # Configurable directory paths — read from booley.toml, with backward-compat
 # defaults matching the previous hardcoded values.
