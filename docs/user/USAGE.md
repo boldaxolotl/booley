@@ -676,11 +676,6 @@ For a relative threshold on a new Target, add `baseline: <existing-target>` insi
 
 In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relative `SYNTH` or `FPGA` Criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
 
-Editing valid authored content in a sealed Ticket is reported by `board show` as authored
-drift. `unblock` cannot resume that generation; use `return-to-draft` instead. The new
-draft preserves the Ticket's current authored content, while Booley archives the sealed
-generation and its evidence.
-
 **`synthesis_ok` (ASIC)**
 
 | Metric | _max | _min | _increase_at_most | _reduce_at_least |
@@ -735,6 +730,11 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
+
+Editing valid authored content in a sealed Ticket is reported by `board show` as authored
+drift. `unblock` cannot resume that generation; use `return-to-draft` instead. The new
+draft preserves the Ticket's current authored content, while Booley archives the sealed
+generation and its evidence.
 
 `create-file` materializes an isolated Ticket Workspace. This is where the
 Ticket-creation agent adds any Target the Ticket will require; the Project's
