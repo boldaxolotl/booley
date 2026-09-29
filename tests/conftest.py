@@ -146,10 +146,14 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     Without this a lock lives until the garbage collector finalizes it, possibly
     inside a later test that has faked ``fcntl`` (issue #938). It runs after all
     fixture finalizers, so no test patch of ``Path`` or ``fcntl`` is active.
+    The close runs even when an earlier finalizer failed, so a teardown error
+    cannot hand the lock back to the garbage collector.
     """
-    result = yield
-    for session in item.stash.get(_FLOW_SESSIONS, []):
-        session.publication_resources.close()
+    try:
+        result = yield
+    finally:
+        for session in item.stash.get(_FLOW_SESSIONS, []):
+            session.publication_resources.close()
     tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
     if sys.platform == "win32" or not isinstance(tmp_path, Path):
         return result

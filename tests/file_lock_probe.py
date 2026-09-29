@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def lock_is_held(path: Path) -> bool:
-    """Probe through a second open file description, as another Windows handle would."""
+    """Report whether another open file description currently holds *path*'s lock."""
     import fcntl
 
     with path.open("a+b") as probe:
