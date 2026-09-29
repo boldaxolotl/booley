@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.criteria.templates import PER_TARGET_CRITERIA, TARGET_CAMPAIGN_CRITERIA
 
+from .board_layout import document_state
 from .constants import (
     CRITERION_FLOW_MAP,
     DEPRECATED_FIELDS,
@@ -21,7 +22,7 @@ from .constants import (
     VALID_TYPES,
 )
 from .git_status import parse_porcelain_v1_z
-from .lifecycle import TicketState, document_state
+from .lifecycle import TicketState
 from .validation_logs import (  # noqa: F401  # re-exported for backward compatibility
     _validate_state_file,
     append_authored_drift_diagnostic,

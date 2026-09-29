@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from booley.runtime.project_dir import resolve_checkout_project_dir
-from booley.ticket_board.lifecycle import TicketState, state_directory
+from booley.ticket_board.board_layout import required_board_directories
 
 _GOOD = re.compile(r"sim self-test good case .* passes")
 _BAD = re.compile(r"sim self-test bad case .* correctly graded a failure")
@@ -44,7 +44,7 @@ def _prepare_clone_state(project: Path) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"failed to configure checkout worktree guard\n{result.stderr}")
     tickets = resolve_checkout_project_dir(project) / "tickets"
-    board = [state_directory(tickets, state) for state in TicketState]
+    board = required_board_directories(tickets)
     for directory in (*board, tickets / "logs", tickets / "locks"):
         directory.mkdir(parents=True, exist_ok=True)
 

@@ -22,10 +22,32 @@ import pytest
 from booley.harness import booley as tlr
 from booley.harness import subscription_limit as sl
 from booley.runtime.project_dir import reset_cache
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    state_record_path,
+    ticket_document_path,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import parse_board_target
 from booley.ticket_board.ticket_document import (
     convert_ticket_document,
     ticket_conversion_context,
 )
+
+TICKETS_REL = Path(".booley") / "project" / "tickets"
+
+
+def _place_ticket(project_root: Path, slug: str, board_name: str, content: str) -> Path:
+    """Write a board document for *slug* plus a state record for *board_name*."""
+    tickets_dir = project_root / TICKETS_REL
+    state = parse_board_target(board_name)
+    assert state is not None, board_name
+    path = ticket_document_path(tickets_dir, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    write_state_record(tickets_dir, slug, StateRecord.fresh(state))
+    return path
+
 
 # ===========================================================================
 # ts()
@@ -128,7 +150,8 @@ def _board_create_project(
     outer_sha = _initialize_board_repository(root, branch, "initial outer")
 
     project_dir = root / ".booley_project"
-    (project_dir / "tickets" / "board" / "drafts").mkdir(parents=True)
+    for board_dir in ("board", "state"):
+        (project_dir / "tickets" / board_dir).mkdir(parents=True)
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     if paired:
@@ -171,8 +194,10 @@ def test_board_create_uses_matching_paired_project_branch(
 
     assert tlr._cmd_board(args, root) == 0
 
-    draft = project_dir / "tickets" / "board" / "drafts" / f"{slug}.md"
+    draft = project_dir / "tickets" / "board" / f"{slug}.md"
     assert draft.is_file()
+    # A draft has no state record.
+    assert not state_record_path(project_dir / "tickets", slug).exists()
     with ticket_conversion_context(root, slug, "draft") as context:
         converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
     assert converted.diagnostics == ()
@@ -207,7 +232,7 @@ def test_board_create_quotes_yaml_keyword_branch(
 
     assert tlr._cmd_board(args, root) == 0
 
-    draft = project_dir / "tickets" / "board" / "drafts" / f"{slug}.md"
+    draft = project_dir / "tickets" / "board" / f"{slug}.md"
     with ticket_conversion_context(root, slug, "draft") as context:
         converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
     assert converted.diagnostics == ()
@@ -239,7 +264,7 @@ def test_board_create_rejects_detached_head(
     assert tlr._cmd_board(args, root) == 1
 
     assert "detached HEAD" in capsys.readouterr().err
-    assert not (project_dir / "tickets" / "board" / "drafts" / "detached-draft.md").exists()
+    assert not (project_dir / "tickets" / "board" / "detached-draft.md").exists()
     materialize.assert_not_called()
 
 
@@ -262,7 +287,7 @@ def test_board_create_reports_branch_inspection_failure(
     assert tlr._cmd_board(args, root) == 1
 
     assert "cannot inspect the Project checkout branch" in capsys.readouterr().err
-    draft = project_dir / "tickets" / "board" / "drafts" / "inspection-failure.md"
+    draft = project_dir / "tickets" / "board" / "inspection-failure.md"
     assert not draft.exists()
 
 
@@ -273,7 +298,7 @@ def test_board_create_rejects_non_git_project(
 ) -> None:
     root = tmp_path / "project"
     project_dir = root / ".booley_project"
-    drafts = project_dir / "tickets" / "board" / "drafts"
+    drafts = project_dir / "tickets" / "board"
     drafts.mkdir(parents=True)
     board_create_project_env.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
     reset_cache()
@@ -340,7 +365,7 @@ def test_board_create_rejects_mismatched_paired_project_branch(
     assert tlr._cmd_board(args, root) == 1
 
     assert "paired project destination 'refs/heads/release/next'" in capsys.readouterr().err
-    assert not (project_dir / "tickets" / "board" / "drafts" / "mismatched-project.md").exists()
+    assert not (project_dir / "tickets" / "board" / "mismatched-project.md").exists()
     materialize.assert_not_called()
 
 
@@ -1092,11 +1117,11 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
     missing_args = tlr._build_parser().parse_args(["board", "show", "demo"])
     assert tlr._cmd_board_show(missing_args, tmp_path) == 2
 
-    FakeTio.board = {"file": "board/active/demo.md", "status": "active", "summary": "work"}
+    FakeTio.board = {"file": "board/demo.md", "status": "active", "summary": "work"}
     assert tlr._cmd_board_show(missing_args, tmp_path) == 0
     assert "demo: active — work" in capsys.readouterr().out
 
-    FakeTio.board = {"file": "board/blocked/demo.md", "status": "blocked", "summary": "work"}
+    FakeTio.board = {"file": "board/demo.md", "status": "blocked", "summary": "work"}
     monkeypatch.setattr(
         blocked_prep,
         "render_blocked_dossier",
@@ -1130,7 +1155,7 @@ def test_board_show_does_not_append_review_guidance_to_accepted_failure(
             pass
 
         def find_ticket(self, _slug):
-            return {"file": "board/review/demo.md", "status": "review", "summary": "work"}
+            return {"file": "board/demo.md", "status": "review", "summary": "work"}
 
         def inspect_ticket(self, slug):
             return self.find_ticket(slug)
@@ -1804,9 +1829,10 @@ class TestGetTicketCounts:
 
 class TestGetActiveSlugs:
     def test_returns_stems_of_md_files(self, project_root: Path):
-        active_dir = project_root / ".booley" / "project" / "tickets" / "board" / "active"
-        (active_dir / "fix-fsm.md").write_text("---\n---\n")
-        (active_dir / "add-sha3.md").write_text("---\n---\n")
+        _place_ticket(project_root, "fix-fsm", "active", "---\n---\n")
+        _place_ticket(project_root, "add-sha3", "active", "---\n---\n")
+        # A queued Ticket on the same board is not running.
+        _place_ticket(project_root, "queued-one", "queue", "---\n---\n")
         result = tlr.get_active_slugs(project_root)
         assert sorted(result) == ["add-sha3", "fix-fsm"]
 
@@ -1824,30 +1850,25 @@ class TestGetActiveSlugs:
 
 class TestGetTicketSummary:
     def test_extracts_summary_from_frontmatter(self, project_root: Path):
-        ticket = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "queue" / "fix-fsm.md"
-        )
-        ticket.write_text(
+        _place_ticket(
+            project_root,
+            "fix-fsm",
+            "queue",
             "---\nsummary: Fix FSM counter overflow\ntype: bugfix\n---\n",
-            encoding="utf-8",
         )
         assert tlr.get_ticket_summary(project_root, "fix-fsm") == "Fix FSM counter overflow"
 
     def test_strips_quotes(self, project_root: Path):
-        ticket = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "queue" / "fix-fsm.md"
-        )
-        ticket.write_text(
+        _place_ticket(
+            project_root,
+            "fix-fsm",
+            "queue",
             '---\nsummary: "Quoted summary"\n---\n',
-            encoding="utf-8",
         )
         assert tlr.get_ticket_summary(project_root, "fix-fsm") == "Quoted summary"
 
     def test_searches_all_directories(self, project_root: Path):
-        ticket = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "done" / "old-ticket.md"
-        )
-        ticket.write_text("---\nsummary: Old done ticket\n---\n", encoding="utf-8")
+        _place_ticket(project_root, "old-ticket", "done", "---\nsummary: Old done ticket\n---\n")
         assert tlr.get_ticket_summary(project_root, "old-ticket") == "Old done ticket"
 
     def test_returns_slug_when_not_found(self, project_root: Path):
@@ -1870,16 +1891,7 @@ class TestHandleStartupOrphans:
             stderr="",
         )
         # Create an orphaned ticket with a lock file containing a dead PID
-        active = (
-            project_root
-            / ".booley"
-            / "project"
-            / "tickets"
-            / "board"
-            / "active"
-            / "orphan-ticket.md"
-        )
-        active.write_text("---\nsummary: Orphan\n---\n", encoding="utf-8")
+        _place_ticket(project_root, "orphan-ticket", "active", "---\nsummary: Orphan\n---\n")
         lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "orphan-ticket"
         lock_dir.mkdir(parents=True, exist_ok=True)
         (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
@@ -1905,10 +1917,7 @@ class TestHandleStartupOrphans:
 
 class TestHandlePostRunOrphans:
     def _create_orphan(self, project_root: Path, slug: str = "orphan") -> None:
-        active = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "active" / f"{slug}.md"
-        )
-        active.write_text("---\nsummary: Orphan\n---\n", encoding="utf-8")
+        _place_ticket(project_root, slug, "active", "---\nsummary: Orphan\n---\n")
 
     @patch("booley.harness.booley._run_board")
     def test_requeue_on_limit_wait(self, mock_board, project_root: Path):
@@ -1972,9 +1981,7 @@ class TestHandlePostRunOrphans:
 class TestDetectSubscriptionLimit:
     def _setup_failed_ticket(self, project_root: Path, slug: str, failure_text: str) -> None:
         """Create a blocked ticket + blocked.md with recent mtime."""
-        blocked_dir = project_root / ".booley" / "project" / "tickets" / "board" / "blocked"
-        blocked_dir.mkdir(parents=True, exist_ok=True)
-        (blocked_dir / f"{slug}.md").write_text("---\n---\n")
+        _place_ticket(project_root, slug, "blocked", "---\n---\n")
 
         log_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -2777,9 +2784,8 @@ class TestBoardPathCorrectness:
     detect_subscription_limit use the correct board/ paths."""
 
     def test_get_active_slugs_uses_board_path(self, project_root: Path):
-        """Files in tickets/board/active/ are found."""
-        active_dir = project_root / ".booley" / "project" / "tickets" / "board" / "active"
-        (active_dir / "foo.md").write_text("---\n---\n")
+        """Running board documents in tickets/board/ are found."""
+        _place_ticket(project_root, "foo", "active", "---\n---\n")
         result = tlr.get_active_slugs(project_root)
         assert result == ["foo"]
 
@@ -2792,10 +2798,8 @@ class TestBoardPathCorrectness:
         assert result == []
 
     def test_detect_subscription_limit_uses_board_path(self, project_root: Path):
-        """detect_subscription_limit scans tickets/board/blocked/."""
-        # Create in board/blocked/ (correct path)
-        blocked_dir = project_root / ".booley" / "project" / "tickets" / "board" / "blocked"
-        (blocked_dir / "test-slug.md").write_text("---\n---\n")
+        """detect_subscription_limit scans blocked Tickets on tickets/board/."""
+        _place_ticket(project_root, "test-slug", "blocked", "---\n---\n")
         log_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "test-slug"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "blocked.md").write_text("usage limit exceeded", encoding="utf-8")
@@ -2811,10 +2815,7 @@ class TestBoardPathCorrectness:
 class TestStartupOrphansPIDAware:
     def _create_active_with_lock(self, project_root: Path, slug: str, pid: int):
         """Create an active ticket + lock file with given PID."""
-        active = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "active" / f"{slug}.md"
-        )
-        active.write_text(f"---\nsummary: {slug}\n---\n", encoding="utf-8")
+        _place_ticket(project_root, slug, "active", f"---\nsummary: {slug}\n---\n")
         lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
         lock_dir.mkdir(parents=True, exist_ok=True)
         (lock_dir / "ticket.lock").write_text(str(pid), encoding="utf-8")
@@ -2854,10 +2855,7 @@ class TestStartupOrphansPIDAware:
 
 class TestPostRunOrphansPIDAware:
     def _create_active_with_lock(self, project_root: Path, slug: str, pid: int):
-        active = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "active" / f"{slug}.md"
-        )
-        active.write_text(f"---\nsummary: {slug}\n---\n", encoding="utf-8")
+        _place_ticket(project_root, slug, "active", f"---\nsummary: {slug}\n---\n")
         lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
         lock_dir.mkdir(parents=True, exist_ok=True)
         (lock_dir / "ticket.lock").write_text(str(pid), encoding="utf-8")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
 import os
 import shutil
@@ -21,6 +22,7 @@ from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDi
 
 logger = logging.getLogger(__name__)
 
+from .board_layout import RUNTIME_DEFAULTS
 from .git_ops import cleanup_worktree_and_branch
 from .helpers import compute_done_slugs, parse_arrow, slug_from_file
 from .io import scan_all_tickets
@@ -30,9 +32,8 @@ from .lifecycle import (
     format_user_board_moves,
     is_user_board_move,
     parse_board_target,
-    ticket_document_path,
 )
-from .logs import RESET_BOUNDARY_PREFIX, reset_progress, save_progress
+from .logs import RESET_BOUNDARY_PREFIX
 from .notifications import is_event_enabled, ntfy_review_digest, ntfy_send
 from .paths import (
     existing_human_log_file,
@@ -223,7 +224,7 @@ def op_activate(
     owner_pid: int | None = None,
     execution_id: str | None = None,
 ) -> bool:
-    """Activate a ticket for execution: move to active/, log transition.
+    """Activate a ticket for execution: mark it running, log transition.
 
     When the ticket is already running, checks PID ownership to prevent
     two runners from executing the same ticket concurrently. Returns False
@@ -261,8 +262,8 @@ def op_activate(
             expected_execution_id=old_execution_id,
         )
 
-    # F-43: this is the run loop's PRE-claim (`booley run --ticket <slug>` moves
-    # the ticket to active/ before the harness starts), and the harness's own
+    # F-43: this is the run loop's PRE-claim (`booley run --ticket <slug>` marks
+    # the ticket running before the harness starts), and the harness's own
     # init_ticket logs "picked up" moments later. Calling both "picked up
     # (resume)" told a never-run ticket's transitions.log it had resumed. The
     # resume wording is only truthful when there is something to resume: prior
@@ -287,7 +288,7 @@ def op_claim(tio: Any, slug: str) -> bool:
     """Atomically claim a queued ticket for execution.
 
     Acquires the per-ticket lock and verifies the ticket is still
-    queued before moving to active/. Returns True on success, False
+    queued before marking it running. Returns True on success, False
     if the ticket was already claimed by another runner.
 
     Unlike init_ticket (which creates logs and copies the ticket),
@@ -298,17 +299,12 @@ def op_claim(tio: Any, slug: str) -> bool:
 
     with tio._ticket_lock(slug):
         file_path, status = find_ticket_file(tio.tickets_dir, slug)
-        if file_path is None or status != "queued":
+        if file_path is None or status != "queued" or tio._enqueue_pending(slug):
             return False
-        dest = ticket_document_path(tio.tickets_dir, file_path.stem, TicketState.RUNNING)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            return False
-        progress = tio._load_or_bootstrap_progress(slug, file_path)
+        progress = tio.read_progress(file_path.stem)
         progress["execution_id"] = uuid.uuid4().hex
         progress["execution_owner_pid"] = os.getpid()
-        save_progress(tio.logs_dir, slug, progress)
-        shutil.move(str(file_path), str(dest))
+        tio.commit_state(file_path.stem, TicketState.RUNNING, progress)
         tio._append_transition_unlocked(
             slug, "queued:claim", "running:claim", "ticket-execute", "claimed for execution"
         )
@@ -323,7 +319,7 @@ def op_block(
     *,
     expected_execution_id: str | None = None,
 ) -> bool:
-    """Block a ticket: move to blocked/, update frontmatter, log transition."""
+    """Block a ticket: mark it blocked, update runtime fields, log transition."""
     entry, old_status, old_step = _inspect_old_state(tio, slug, step)
 
     ok = _op_move_and_log(
@@ -824,7 +820,7 @@ def op_approve(tio: Any, slug: str) -> bool:
 
 
 def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
-    """Move waiting tickets to queue/ if all their dependencies are now done.
+    """Queue waiting tickets whose dependencies are all done.
 
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
@@ -1433,25 +1429,9 @@ def _wipe_log_dir(tio, slug, preserved):
             shutil.rmtree(str(bak_dir), ignore_errors=True)
 
 
-def _move_to_queue(tio, file_path):
-    """Move a ticket file to the queued state. Returns False on conflict."""
-    new_path = ticket_document_path(tio.tickets_dir, file_path.stem, TicketState.QUEUED)
-    new_path.parent.mkdir(parents=True, exist_ok=True)
-    if new_path.exists() and new_path != file_path:
-        print(f"Error: destination already exists: {new_path}", file=sys.stderr)
-        return False
-    if file_path.exists() and file_path != new_path:
-        shutil.move(str(file_path), str(new_path))
-    return True
-
-
-def _queue_destination_available(tio: Any, file_path: Path) -> bool:
-    """Refuse a reset before destructive work if queue/ already has this ticket."""
-    new_path = ticket_document_path(tio.tickets_dir, file_path.stem, TicketState.QUEUED)
-    if new_path.exists() and new_path != file_path:
-        print(f"Error: destination already exists: {new_path}", file=sys.stderr)
-        return False
-    return True
+def _publish_reset(tio: Any, file_path: Path) -> None:
+    """Publish queued with an empty runtime: the one commit of a reset."""
+    tio.commit_state(file_path.stem, TicketState.QUEUED, copy.deepcopy(RUNTIME_DEFAULTS))
 
 
 def _append_reset_boundary(logs_dir: Path, slug: str) -> None:
@@ -1528,7 +1508,6 @@ def _reset_runtime_state(tio: Any, slug: str) -> None:
     # rename or delete an open file, so preserve that directory and archive
     # every other runtime entry around the live lock.
     _wipe_log_dir(tio, slug, {"ticket.md", "runs", "blocked.md", ".runtime"})
-    reset_progress(tio.logs_dir, slug)
     _append_reset_boundary(tio.logs_dir, slug)
     if transition_history:
         transitions_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1541,11 +1520,16 @@ def _locked_reset_candidate(tio: Any, slug: str) -> Path | None:
 
     if not _reset_jobs_inactive(tio, slug):
         return None
-    file_path, _ = find_ticket_file(tio.tickets_dir, slug)
+    file_path, status = find_ticket_file(tio.tickets_dir, slug)
     if file_path is None:
         print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
         return None
-    return file_path if _queue_destination_available(tio, file_path) else None
+    if status == TicketState.DRAFT.status:
+        # A draft has no run to reset, and queueing its draft-form document
+        # would publish a state without the executable document.
+        print(f"Error: ticket '{slug}' is a draft; use enqueue", file=sys.stderr)
+        return None
+    return file_path
 
 
 def _validated_reset_context(
@@ -1616,8 +1600,7 @@ def _perform_reset(tio: Any, slug: str, reason: str) -> bool:
         ):
             return False
 
-        if not _move_to_queue(tio, file_path):
-            return False
+        _publish_reset(tio, file_path)
 
         tio._append_transition_unlocked(
             slug,
@@ -1721,7 +1704,7 @@ def op_reset(
     force: bool = False,
     reason: str = "user reset ticket",
 ) -> bool:
-    """Reset a ticket's state and artifacts, then move it to queue/.
+    """Reset a ticket's state and artifacts, then queue it.
 
     The queue move is the final publication step: a queued ticket therefore
     never advertises stale active-run evidence, even if cleanup fails.

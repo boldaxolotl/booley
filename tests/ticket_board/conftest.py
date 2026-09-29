@@ -50,20 +50,10 @@ def make_paired_repository(root: Path) -> Path:
 
 
 def _make_tio(tmp_path: Path) -> TicketIO:
-    """Create a tickets dir with all subdirectories and return a TicketIO."""
+    """Create a tickets dir with its board, state, and logs dirs; return a TicketIO."""
     tickets_dir = tmp_path / "tickets"
-    for d in [
-        "board/drafts",
-        "board/queue",
-        "board/waiting",
-        "board/active",
-        "board/blocked",
-        "board/review",
-        "board/done",
-        "board/archived",
-    ]:
+    for d in ["board", "state", "logs"]:
         (tickets_dir / d).mkdir(parents=True, exist_ok=True)
-    (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
     # Pin project_root: the bare tmp/tickets layout matches neither supported
     # convention, so TicketIO's inference would walk up to the SHARED pytest
     # tmp base — where stale .core files from other tests' retained runs leak
@@ -104,7 +94,11 @@ def make_ticket_file(
     extra_fields: dict | None = None,
     body: str = "## Description\nSome work.\n",
 ) -> Path:
-    """Create a ticket .md file with frontmatter in the specified directory."""
+    """Create a ticket .md file with frontmatter in the state named by *subdir*.
+
+    *subdir* is a board name such as ``queue`` or ``board/active``; the document
+    lands at ``board/<slug>.md`` and, unless it is a draft, gets a state record.
+    """
     fields = {
         "summary": slug.replace("-", " "),
         "type": "feature",
@@ -123,13 +117,29 @@ def make_ticket_file(
 
     content = format_frontmatter(fields, body)
 
-    if not subdir.startswith("board/"):
-        subdir = f"board/{subdir}"
-    d = tio.tickets_dir / subdir
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{slug}.md"
-    p.write_text(content, encoding="utf-8")
-    return p
+    return place_ticket(tio.tickets_dir, slug, subdir, content)
+
+
+def place_ticket(tickets_dir: Path, slug: str, board_name: str, content: str) -> Path:
+    """Write *content* as the board document of *slug* in the state *board_name*."""
+    from booley.ticket_board.board_layout import (
+        StateRecord,
+        delete_state_record,
+        ticket_document_path,
+        write_state_record,
+    )
+    from booley.ticket_board.lifecycle import TicketState, parse_board_target
+
+    state = parse_board_target(board_name)
+    assert state is not None, board_name
+    path = ticket_document_path(tickets_dir, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    if state is TicketState.DRAFT:
+        delete_state_record(tickets_dir, slug)
+    else:
+        write_state_record(tickets_dir, slug, StateRecord.fresh(state))
+    return path
 
 
 @pytest.fixture(autouse=True)

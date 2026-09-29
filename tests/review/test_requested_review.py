@@ -7,19 +7,22 @@ from booley.harness.booley import _cmd_board_show
 from booley.ticket_board.cli_handlers import _cmd_move_ticket
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.lifecycle import TicketState
+from tests.ticket_board.conftest import place_ticket
 
 
 def test_mechanical_move_cannot_create_unaccepted_review(tmp_path: Path):
     tickets = tmp_path / ".booley_project" / "tickets"
-    active = tickets / "board" / "active"
-    active.mkdir(parents=True)
-    ticket = active / "demo.md"
-    ticket.write_text(
-        "---\nsummary: Synthetic review transition\ntype: feature\nbranch: demo\n---\n"
+    ticket = place_ticket(
+        tickets,
+        "demo",
+        "active",
+        "---\nsummary: Synthetic review transition\ntype: feature\nbranch: demo\n---\n",
     )
     tio = TicketIO(tickets, project_root=tmp_path)
     assert _cmd_move_ticket(tio, SimpleNamespace(slug="demo", to="review")) != 0
     assert ticket.exists()
+    record = read_state_record(tickets, "demo")
+    assert record is not None and record.state is TicketState.RUNNING
 
 
 import asyncio
@@ -33,7 +36,11 @@ from booley.criteria.state import DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.ticket_board import review_preparation as prep
-from booley.ticket_board.logs import save_progress
+from booley.ticket_board.board_layout import (
+    RUNTIME_DEFAULTS,
+    read_state_record,
+    write_state_record,
+)
 from booley.ticket_board.review_lifecycle import request_review_command
 from booley.ticket_board.review_records import read_entry
 from tests.ticket_board.test_ticket_baseline import _basis_project
@@ -167,10 +174,14 @@ def _initialize_blocked_state(
         criteria["_report_submitted"] = True
         state.init_criteria(criteria, strict=True)
     state.save()
-    save_progress(
-        tio.logs_dir,
+    record = read_state_record(tio.tickets_dir, "demo")
+    assert record is not None
+    write_state_record(
+        tio.tickets_dir,
         "demo",
-        {"blocked_reason": "Verification incomplete", "execution_id": "first"},
+        record.with_runtime(
+            {"blocked_reason": "Verification incomplete", "execution_id": "first"}
+        ),
     )
 
 
@@ -701,10 +712,10 @@ def test_failed_refresh_retains_previous_generation(blocked, monkeypatch):
 
 def test_repair_stranded_review_requires_explicit_option(blocked):
     root, tio, _ = blocked
-    path = tio.tickets_dir / tio.find_ticket("demo")["file"]
-    dest = tio.tickets_dir / "board" / "review" / path.name
-    dest.parent.mkdir(parents=True)
-    path.replace(dest)
+    # Strand the Ticket in review without a review entry.
+    record = read_state_record(tio.tickets_dir, "demo")
+    assert record is not None
+    write_state_record(tio.tickets_dir, "demo", record.with_state(TicketState.REVIEW))
     assert not asyncio.run(request_review_command(root, "demo", reason="repair")).ready
     outcome = asyncio.run(request_review_command(root, "demo", reason="repair", repair=True))
     assert outcome.ready, outcome.message
@@ -1091,11 +1102,24 @@ def test_review_exec_rejects_preexisting_basis_drift(blocked):
         )
 
 
+def _rewrite_record(tio, drift: str) -> None:
+    """Change only runtime fields, or the review state, of the demo state record."""
+    record = read_state_record(tio.tickets_dir, "demo")
+    assert record is not None
+    changed = (
+        record.with_runtime({"step": "review-note"})
+        if drift == "runtime"
+        else record.with_state(TicketState.BLOCKED)
+    )
+    write_state_record(tio.tickets_dir, "demo", changed)
+
+
 @pytest.mark.parametrize(
     ("drift", "message"),
     [
         ("basis", "runtime Ticket"),
-        ("status", "Ticket Board review Ticket"),
+        ("status", "Ticket Board review Ticket state"),
+        ("runtime", None),
         ("acceptance", "accepted Criteria Satisfaction Record"),
         ("job", "matching detached job"),
     ],
@@ -1130,8 +1154,8 @@ def test_review_exec_lease_rejects_lifecycle_drift(blocked, monkeypatch, drift, 
     if drift == "basis":
         runtime_ticket = lease.required_files[1].path
         runtime_ticket.write_text(runtime_ticket.read_text() + "drift\n")
-    elif drift == "status":
-        lease.required_files[0].path.replace(tio.tickets_dir / "board" / "blocked" / "demo.md")
+    elif drift in {"runtime", "status"}:
+        _rewrite_record(tio, drift)
     elif drift == "acceptance":
         accepted = lease.absent_paths[0].path
         accepted.parent.mkdir(parents=True, exist_ok=True)
@@ -1158,6 +1182,10 @@ def test_review_exec_lease_rejects_lifecycle_drift(blocked, monkeypatch, drift, 
             "active_jobs",
             lambda _root: [SimpleNamespace(lease_id="another-lease")],
         )
+    if message is None:
+        # A runtime-only record write leaves the review state, so the lease holds.
+        execution_context.validate_recording(worktree)
+        return
     with pytest.raises(ExecutionLeaseError, match=message):
         execution_context.validate_recording(worktree)
 
@@ -1895,15 +1923,18 @@ async def test_review_command_reports_missing_corrupt_and_wrong_state(tmp_path, 
         def inspect_ticket(self, slug):
             return self.find_ticket(slug)
 
+        def read_progress(self, _slug):
+            return dict(RUNTIME_DEFAULTS)
+
     monkeypatch.setattr(review_lifecycle, "TicketIO", FakeTio)
     missing = await review_lifecycle.review_command(tmp_path, "demo")
     assert not missing.ready and "not found" in missing.message
 
-    FakeTio.board = {"file": "board/queue/demo.md", "status": "queue"}
+    FakeTio.board = {"file": "board/demo.md", "status": "queue"}
     wrong_state = await review_lifecycle.review_command(tmp_path, "demo")
     assert not wrong_state.ready and "blocked or review" in wrong_state.message
 
-    FakeTio.board = {"file": "board/review/demo.md", "status": "review"}
+    FakeTio.board = {"file": "board/demo.md", "status": "review"}
     monkeypatch.setattr(
         review_lifecycle,
         "_current_review_package",
@@ -1924,7 +1955,7 @@ def test_run_review_command_rejects_invalid_entry_states(tmp_path, monkeypatch):
 
     class FakeTio:
         board: ClassVar[dict[str, str] | None] = {
-            "file": "board/review/demo.md",
+            "file": "board/demo.md",
             "status": "review",
         }
 
@@ -1950,7 +1981,7 @@ def test_run_review_command_rejects_invalid_entry_states(tmp_path, monkeypatch):
     with pytest.raises(ReviewEntryError, match="requires a review ticket"):
         review_execution.run_review_command(tmp_path, "demo", ["echo", "ok"])
 
-    FakeTio.board = {"file": "board/review/demo.md", "status": "review"}
+    FakeTio.board = {"file": "board/demo.md", "status": "review"}
     with pytest.raises(ReviewEntryError, match="after --"):
         review_execution.run_review_command(tmp_path, "demo", [])
 
@@ -2000,11 +2031,11 @@ def test_prepare_blocked_dossier_reuses_fresh_dossier(tmp_path, monkeypatch):
 
 def test_mechanical_move_to_review_is_rejected(tmp_path, capsys):
     tickets = tmp_path / ".booley_project" / "tickets"
-    active = tickets / "board" / "active"
-    active.mkdir(parents=True)
-    (active / "demo.md").write_text(
+    place_ticket(
+        tickets,
+        "demo",
+        "active",
         "---\nsummary: Synthetic review transition\ntype: feature\nbranch: demo\n---\n",
-        encoding="utf-8",
     )
     tio = TicketIO(tickets, project_root=tmp_path)
     assert not tio._move_prerequisite("demo", TicketState.REVIEW, None)

@@ -23,6 +23,7 @@ from booley.ticket_board.analytics import (
     parse_transitions_log,
     usage_entries_to_steps,
 )
+from booley.ticket_board.board_layout import document_stage, is_board_document, read_state_record
 from booley.ticket_board.cli_handlers import (
     _cmd_update_board,
 )
@@ -35,8 +36,7 @@ from booley.ticket_board.execution import (
 )
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO, scan_all_tickets
-from booley.ticket_board.lifecycle import SETTLED_STATUSES, document_stage
-from booley.ticket_board.logs import load_progress
+from booley.ticket_board.lifecycle import SETTLED_STATUSES
 from booley.ticket_board.operations import (
     op_activate,
     op_block,
@@ -239,9 +239,15 @@ class DirectTicketOps:
         document = converted.document
         fields = {**document.spec.fields, **document.generated}
         body = document.spec.body
-        progress = load_progress(tio.logs_dir, p.stem)
-        if progress is not None:
-            fields.update(progress)
+        # Only a board document has a state record; a snapshot or a
+        # user-supplied file elsewhere reports its document fields alone.
+        record = (
+            read_state_record(tio.tickets_dir, p.stem)
+            if is_board_document(tio.tickets_dir, p)
+            else None
+        )
+        if record is not None:
+            fields.update(record.progress())
         return {"fields": fields, "body": body}
 
     def validate_ticket(

@@ -15,6 +15,7 @@ from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import acceptance_targets, cli_handlers
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+from booley.ticket_board.board_layout import read_state_record, write_state_record
 from booley.ticket_board.cli import main
 from booley.ticket_board.cli_handlers import (
     _cmd_amend,
@@ -32,6 +33,7 @@ from booley.ticket_board.cli_handlers import (
     _print_criteria_summary,
 )
 from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import existing_runtime_file
 from booley.ticket_board.ticket_baseline import worktree_for_ref
 
@@ -133,10 +135,10 @@ def _paired_generated_amendment(
     assert tio.enqueue_ticket(slug)
     outer_exclude.write_text("", encoding="utf-8")
     project_exclude.write_text("", encoding="utf-8")
-    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
-    blocked = project_dir / "tickets/board/blocked" / queued.name
-    blocked.parent.mkdir(parents=True, exist_ok=True)
-    queued.replace(blocked)
+    blocked = project_dir / "tickets/board" / f"{slug}.md"
+    record = read_state_record(tio.tickets_dir, slug)
+    assert record is not None and record.state is TicketState.QUEUED
+    write_state_record(tio.tickets_dir, slug, record.with_state(TicketState.BLOCKED))
     state = DevelopmentState.load(tio.logs_dir / slug / ".runtime/booley_state.json")
     state.init_criteria({"review_rtl_bugs_clean": True})
     state.save()
@@ -602,7 +604,7 @@ class TestCmdShow:
             tio,
             "inspect_ticket",
             lambda _slug: {
-                "file": "board/done/completed.md",
+                "file": "board/completed.md",
                 "status": "done",
                 "branch": "main",
                 "criteria": {"mandatory": {"sim_pass": "pass"}, "optional": {}},

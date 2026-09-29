@@ -2059,16 +2059,8 @@ def _build_hook_env(
     logs_dir: Path,
 ) -> dict[str, str]:
     """Build environment dict for hook subprocess."""
-    # Resolve current ticket location (may have moved between statuses)
+    # The Ticket document path is stable across states (ADR 0065).
     ticket_file = str(ctx.ticket_path)
-    if not ctx.ticket_path.exists():
-        from booley.ticket_board.helpers import tickets_dir_from_project_root
-        from booley.ticket_board.lifecycle import locate_document
-
-        located = locate_document(tickets_dir_from_project_root(ctx.project_root), ctx.slug)
-        if located is not None:
-            ticket_file = str(located[0])
-
     project_dir = _ticket_project_dir(ctx)
 
     return {

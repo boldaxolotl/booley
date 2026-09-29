@@ -37,7 +37,7 @@ def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
     entry = {
         "status": "running",
         "step": "summary",
-        "file": "board/review/ticket.md",
+        "file": "board/ticket.md",
         "on_success": {"destination": "review"},
     }
     tio = SimpleNamespace(
@@ -102,7 +102,6 @@ def test_reset_helpers_report_missing_basis_and_preflight_failure(
     )
     monkeypatch.setattr(operations, "_reset_owner_available", lambda *_args: True)
     monkeypatch.setattr(operations, "_reset_jobs_inactive", lambda *_args: True)
-    monkeypatch.setattr(operations, "_queue_destination_available", lambda *_args: True)
     monkeypatch.setattr(
         "booley.ticket_board.io.find_ticket_file", lambda *_args: (ticket, "blocked")
     )

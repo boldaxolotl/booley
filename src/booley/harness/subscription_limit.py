@@ -13,8 +13,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from booley.runtime.agent_errors import LIMIT_PATTERNS
+from booley.ticket_board.board_layout import documents_in_state
 from booley.ticket_board.helpers import tickets_dir_from_project_root
-from booley.ticket_board.lifecycle import TicketState, documents_in_state
+from booley.ticket_board.lifecycle import TicketState
 
 logger = logging.getLogger("booley")
 

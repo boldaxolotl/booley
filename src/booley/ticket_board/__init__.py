@@ -53,6 +53,25 @@ from .archive import (
 )
 
 # ---------------------------------------------------------------------------
+# board layout and state records (ADR 0065)
+# ---------------------------------------------------------------------------
+from .board_layout import (
+    RUNTIME_DEFAULTS as RUNTIME_DEFAULTS,
+)
+from .board_layout import (
+    StateRecord as StateRecord,
+)
+from .board_layout import (
+    StateRecordError as StateRecordError,
+)
+from .board_layout import (
+    read_state_record as read_state_record,
+)
+from .board_layout import (
+    write_state_record as write_state_record,
+)
+
+# ---------------------------------------------------------------------------
 # cli
 # ---------------------------------------------------------------------------
 from .cli import build_parser as build_parser
@@ -159,25 +178,10 @@ from .io import (
 # logs
 # ---------------------------------------------------------------------------
 from .logs import (
-    PROGRESS_DEFAULTS as PROGRESS_DEFAULTS,
-)
-from .logs import (
     append_incident as append_incident,
 )
 from .logs import (
     clear_from_step as clear_from_step,
-)
-from .logs import (
-    load_progress as load_progress,
-)
-from .logs import (
-    progress_default as progress_default,
-)
-from .logs import (
-    reset_progress as reset_progress,
-)
-from .logs import (
-    save_progress as save_progress,
 )
 
 # ---------------------------------------------------------------------------

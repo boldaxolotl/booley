@@ -30,6 +30,13 @@ and lifecycle state. Human-authored frontmatter and Markdown state the work;
 the reserved `machine` section records execution identities.
 _Avoid_: task, issue, story
 
+**Ticket State Record**:
+The per-Ticket record of a live Ticket's lifecycle state and execution
+progress, kept on the Ticket Board beside the Ticket. A Ticket without one is a
+draft; one that cannot be trusted stops every command on that Ticket rather
+than making it a draft.
+_Avoid_: progress file, status file, board directory
+
 ### Authoring
 
 **Ticket Creation Guidance**:

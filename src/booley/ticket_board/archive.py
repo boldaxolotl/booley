@@ -18,10 +18,11 @@ from booley.core.boundary import require_bool, require_dict, require_str
 from booley.runtime.project_dir import runtime_dir
 
 from .archive_generation import plan_generation, release_generation
+from .board_layout import board_relative_document_path, delete_state_record, documents_in_state
 from .frontmatter import parse_frontmatter
 from .git_ops import cleanup_worktree_and_branch
 from .io import scan_all_tickets
-from .lifecycle import TicketState, board_relative_document_path, documents_in_state
+from .lifecycle import TicketState
 from .paths import existing_ticket_runtime_file, ticket_log_dir
 from .persistence import atomic_replace_bytes
 from .ticket_repositories import (
@@ -130,8 +131,10 @@ def _load_marker(path: Path, slug: str) -> dict | None:
     if marker["step"] != "":
         require_str(marker, "step")
     # The marker records the board-relative document path it archived.
-    board_documents = {board_relative_document_path(slug, state) for state in TicketState}
-    if ticket not in board_documents or re.fullmatch(r"[0-9a-f]{64}", marker["digest"]) is None:
+    if (
+        ticket != board_relative_document_path(slug)
+        or re.fullmatch(r"[0-9a-f]{64}", marker["digest"]) is None
+    ):
         raise ValueError(f"archive marker identity is invalid: {path}")
     return marker
 
@@ -191,6 +194,9 @@ def _finish_archive(tio: Any, slug: str, marker_path: Path, marker: dict) -> Non
         if digest != marker["digest"]:
             raise RuntimeError(f"Ticket {slug} changed during archive finalization")
         ticket_path.unlink()
+    # The state record goes with the document; phase 3 of ADR 0065 replaces
+    # this unlink with the move to Ticket History.
+    delete_state_record(tio.tickets_dir, slug)
     marker["unlinked"] = True
     _save_marker(marker_path, marker)
     descriptor = runtime_dir(Path(tio._project_root)) / "acceptance" / "drafts" / f"{slug}.json"

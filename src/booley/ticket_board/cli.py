@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
+from .board_layout import StateRecordError
 from .cli_handlers import (
     _cmd_activate,
     _cmd_amend,
@@ -123,7 +125,7 @@ def _add_lifecycle_subcommands(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("move-ticket", help="Move ticket file between directories")
     p.add_argument("slug", help="Ticket slug")
     # Accept both bare names (queue) and board/-prefixed (board/queue)
-    p.add_argument("--to", required=True, choices=board_target_choices(), help="Target directory")
+    p.add_argument("--to", required=True, choices=board_target_choices(), help="Target state")
 
     # block
     p = sub.add_parser("block", help="Block a ticket")
@@ -211,7 +213,7 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
 def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register ticket creation, queueing, and approval subcommands."""
     # create-file
-    p = sub.add_parser("create-file", help="Create a new ticket .md file in drafts/")
+    p = sub.add_parser("create-file", help="Create a new draft ticket .md file on the board")
     _add_create_file_args(p)
 
     p = sub.add_parser("return-to-draft", help="Start fresh Ticket authoring")
@@ -222,7 +224,7 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     p.add_argument("slug", help="Ticket slug")
 
     # activate
-    p = sub.add_parser("activate", help="Activate a ticket for execution (move to active/)")
+    p = sub.add_parser("activate", help="Activate a ticket for execution (mark it running)")
     p.add_argument("slug", help="Ticket slug")
 
     # unblock
@@ -447,7 +449,12 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = HANDLERS.get(command)
     if handler is not None:
-        return handler(tio, args)
+        try:
+            return handler(tio, args)
+        except StateRecordError as exc:
+            # A broken state record fails closed: say which one instead of a traceback.
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
 
     parser.print_help()
     return 1

@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / ".github/scripts"))
 
 from release_validation import simulation_selftest
 
-from booley.ticket_board.lifecycle import TicketState, state_directory
+from booley.ticket_board.board_layout import required_board_directories
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="release container validation requires POSIX executables"
@@ -105,5 +105,5 @@ def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> 
     )
     assert configured.stdout.strip() == "never"
     tickets = project / ".booley_project" / "tickets"
-    board = [state_directory(tickets, state) for state in TicketState]
+    board = required_board_directories(tickets)
     assert all(directory.is_dir() for directory in (*board, tickets / "logs", tickets / "locks"))

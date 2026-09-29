@@ -10,7 +10,13 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import basis_refresh, ticket_document
+from booley.ticket_board.board_layout import (
+    read_state_record,
+    ticket_document_path,
+    write_state_record,
+)
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.operations import op_promote_waiting
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.ticket_baseline import ticket_machine_from_spec
@@ -23,6 +29,8 @@ from booley.ticket_board.workspace_ops import (
     prepare_converted_ticket_baseline,
     prepare_replacement_ticket_baseline,
 )
+
+from .conftest import place_ticket
 
 
 def _git_project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
@@ -72,15 +80,20 @@ def _enqueue_waiting(project: Path, board: TicketIO, slug: str) -> Path:
     assert created is not None
     prepare_converted_ticket_baseline(project, created, slug)
     assert board.enqueue_ticket(slug)
-    queued = board.tickets_dir / "board" / "queue" / f"{slug}.md"
-    waiting = board.tickets_dir / "board" / "waiting" / queued.name
-    waiting.parent.mkdir(parents=True, exist_ok=True)
-    queued.replace(waiting)
-    return waiting
+    queued = read_state_record(board.tickets_dir, slug)
+    assert queued is not None and queued.state is TicketState.QUEUED
+    write_state_record(board.tickets_dir, slug, queued.with_state(TicketState.WAITING))
+    return ticket_document_path(board.tickets_dir, slug)
+
+
+def _state(board: TicketIO, slug: str) -> TicketState | None:
+    """Return the recorded lifecycle state of *slug* (``None`` for a draft)."""
+    record = read_state_record(board.tickets_dir, slug)
+    return None if record is None else record.state
 
 
 def _write_prepared_refresh(project: Path, board: TicketIO, slug: str, operation: str):
-    ticket = board.tickets_dir / "board/waiting" / f"{slug}.md"
+    ticket = ticket_document_path(board.tickets_dir, slug)
     with ticket_conversion_context(project, slug, "executable") as context:
         converted = convert_ticket_document(ticket.read_text(encoding="utf-8"), context)
     assert converted.document is not None
@@ -147,8 +160,8 @@ def test_waiting_basis_refresh_preserves_v2_authored_body(tmp_path: Path, monkey
         {"slug": "preserve-v2", "summary": "Preserve authored whitespace"}
     ]
 
-    promoted = board.tickets_dir / "board" / "queue" / waiting.name
-    after = promoted.read_text(encoding="utf-8")
+    assert _state(board, "preserve-v2") is TicketState.QUEUED
+    after = waiting.read_text(encoding="utf-8")
     with ticket_conversion_context(project, "preserve-v2", "executable") as context:
         new = convert_ticket_document(after, context)
     assert new.document is not None
@@ -201,9 +214,10 @@ def test_waiting_refresh_serialization_failure_is_blocked_and_scan_continues(
     assert op_promote_waiting(board) == [
         {"slug": "z-success-v2", "summary": "Preserve authored whitespace"}
     ]
-    blocked = board.tickets_dir / "board/blocked/a-fail-v2.md"
-    assert blocked.read_bytes() == original_bytes
-    assert (board.tickets_dir / "board/queue/z-success-v2.md").is_file()
+    assert _state(board, "a-fail-v2") is TicketState.BLOCKED
+    assert waiting.read_bytes() == original_bytes
+    assert _state(board, "z-success-v2") is TicketState.QUEUED
+    assert ticket_document_path(board.tickets_dir, "z-success-v2").is_file()
     assert finished == []
     assert basis_refresh.load_basis_refresh(project, "a-fail-v2") == journal
 
@@ -212,18 +226,18 @@ def test_prepare_spec_fields_handles_legacy_invalid_and_removed_generated_values
     tmp_path: Path, monkeypatch
 ) -> None:
     project, board = _git_project(tmp_path, monkeypatch)
-    legacy = board.tickets_dir / "board/drafts/legacy.md"
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("---\nsummary: Legacy\n---\n\nBody\n", encoding="utf-8")
+    legacy = place_ticket(
+        board.tickets_dir, "legacy", "drafts", "---\nsummary: Legacy\n---\n\nBody\n"
+    )
 
     prepared = board._prepare_spec_fields(legacy, {"feature_branch": "legacy"})
 
     assert prepared is not None
     assert b"feature_branch: legacy" in prepared
 
-    invalid = board.tickets_dir / "board/queue/invalid.md"
-    invalid.parent.mkdir(parents=True, exist_ok=True)
-    invalid.write_text("---\nCRITERIA_MANDATORY: {}\n---\n", encoding="utf-8")
+    invalid = place_ticket(
+        board.tickets_dir, "invalid", "queue", "---\nCRITERIA_MANDATORY: {}\n---\n"
+    )
     with pytest.raises(ValueError, match="Ticket document is invalid"):
         board._prepare_spec_fields(invalid, {"created": "2026-09-29T00:00:00Z"})
     invalid.unlink()
@@ -252,6 +266,6 @@ def test_waiting_refresh_without_prepared_journal_is_blocked(
 
     assert op_promote_waiting(board) == []
 
-    blocked = board.tickets_dir / "board/blocked/missing-refresh-journal.md"
-    assert blocked.read_bytes() == before
+    assert _state(board, "missing-refresh-journal") is TicketState.BLOCKED
+    assert waiting.read_bytes() == before
     assert "prepared waiting Ticket metadata is unavailable" in capsys.readouterr().err

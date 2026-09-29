@@ -12,8 +12,9 @@ from booley.targets.domain import FuseSocError
 from . import workspace_ops
 from .acceptance_targets import deferable_rtl_or_tb_input
 from .acceptance_validation import prepare_acceptance_checkout
+from .board_layout import document_stage
 from .io import TicketIO
-from .lifecycle import TicketState, document_stage
+from .lifecycle import TicketState
 from .planned_dependencies import (
     PlannedDependencyError,
     target_surface_sha256,

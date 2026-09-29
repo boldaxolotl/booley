@@ -15,16 +15,30 @@ from booley.core.project_dir import reset_cache
 from booley.ticket_board import archive as archive_module
 from booley.ticket_board import archive_generation
 from booley.ticket_board.archive import op_archive
+from booley.ticket_board.board_layout import (
+    read_state_record,
+    state_record_path,
+    write_state_record,
+)
 from booley.ticket_board.cli_handlers import _cmd_archive
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine
 from booley.ticket_board.workspace_ops import load_draft_generation
+from tests.ticket_board.conftest import place_ticket
 from tests.ticket_board.test_ticket_baseline import (
     _basis_project,
     _create_v2_ticket,
     _paired_basis_project,
 )
+
+
+def _mark_done(tio: TicketIO, slug: str) -> None:
+    """Record *slug* as done, the way completion leaves it for the done sweep."""
+    record = read_state_record(tio.tickets_dir, slug)
+    assert record is not None
+    write_state_record(tio.tickets_dir, slug, record.with_state(TicketState.DONE))
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -61,7 +75,7 @@ def _draft(
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
     reset_cache()
     tickets = data / "tickets"
-    ticket = tickets / "board" / "drafts" / "ticket.md"
+    ticket = tickets / "board" / "ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text(
         "---\nsummary: Ticket\ntype: feature\nbranch: main\nscope: []\n"
@@ -108,7 +122,7 @@ def test_archive_draft_releases_paired_generation(tmp_path: Path, monkeypatch) -
     assert _git(outer, "branch", "--list", unrelated)
     assert _git(project, "branch", "--list", unrelated)
     assert unrelated_path.is_dir()
-    assert not (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert not (tio.tickets_dir / "board" / "ticket.md").exists()
     assert not (project / ".runtime" / "acceptance" / "drafts" / "ticket.json").exists()
 
 
@@ -199,7 +213,7 @@ def test_archive_refuses_unidentified_canonical_workspace(tmp_path: Path, monkey
     outcome = op_archive(tio, slug="ticket", force=True)
 
     assert "ticket" in outcome.failures
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(outer, "branch", "--list", branch)
 
 
@@ -217,7 +231,7 @@ def test_archive_refuses_unbound_generation_without_descriptor(
 
     assert "generation refs without a descriptor" in outcome.failures["ticket"]
     assert _git(outer, "branch", "--list", branch)
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
 
 
 def test_archive_workspace_free_draft_without_descriptor(tmp_path: Path, monkeypatch) -> None:
@@ -243,7 +257,7 @@ def test_archive_rejects_corrupt_draft_descriptor(tmp_path: Path, monkeypatch) -
     outcome = op_archive(tio, slug="ticket", force=True)
 
     assert "descriptor" in outcome.failures["ticket"]
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(outer, "branch", "--list", branch)
 
 
@@ -255,7 +269,7 @@ def test_archive_refuses_missing_paired_repository(tmp_path: Path, monkeypatch) 
     outcome = op_archive(tio, slug="ticket", force=True)
 
     assert "source repository is unavailable" in outcome.failures["ticket"]
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(outer, "branch", "--list", branch)
 
 
@@ -276,7 +290,7 @@ def test_archive_published_ticket_uses_machine_refs(tmp_path: Path, monkeypatch)
     )
     assert ticket is not None
     assert tio.enqueue_ticket("published")
-    queued = project / "tickets" / "board" / "queue" / "published.md"
+    queued = project / "tickets" / "board" / "published.md"
     fields, _ = parse_frontmatter(queued.read_text(encoding="utf-8"))
     basis = ticket_baseline_from_machine(fields["machine"])
     refs = {row.role: row.ticket_ref for row in basis.participants}
@@ -288,6 +302,7 @@ def test_archive_published_ticket_uses_machine_refs(tmp_path: Path, monkeypatch)
     assert outcome.archived == ["Published Ticket"]
     assert outcome.failures == {}
     assert not queued.exists()
+    assert not state_record_path(tio.tickets_dir, "published").exists()
     assert _git(root, "branch", "--list", refs["outer"].removeprefix("refs/heads/")) == ""
     assert _git(project, "branch", "--list", refs["project"].removeprefix("refs/heads/")) == ""
     assert refs["outer"] not in _git(root, "worktree", "list", "--porcelain")
@@ -324,7 +339,7 @@ def test_archive_published_single_repository(tmp_path: Path, monkeypatch) -> Non
     )
     assert ticket is not None
     assert tio.enqueue_ticket("single")
-    queued = project / "tickets" / "board" / "queue" / "single.md"
+    queued = project / "tickets" / "board" / "single.md"
     fields, _ = parse_frontmatter(queued.read_text(encoding="utf-8"))
     ref = fields["machine"]["baseline"]["outer"]["ticket_ref"]
 
@@ -352,7 +367,7 @@ def test_archive_retries_after_worktree_failure(tmp_path: Path, monkeypatch, rol
     monkeypatch.setattr(archive_generation, "_require_git", fail_worktree_remove)
     failed = op_archive(tio, slug="ticket", force=True)
     assert f"injected {role} worktree failure" in failed.failures["ticket"]
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(outer, "branch", "--list", branch)
     assert _git(project, "branch", "--list", branch)
 
@@ -382,7 +397,7 @@ def test_archive_rejects_ref_movement_after_preflight(tmp_path: Path, monkeypatc
     failed = op_archive(tio, slug="ticket", force=True)
     assert "ticket" in failed.failures
     assert changed
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(outer, "branch", "--list", branch)
 
 
@@ -399,7 +414,7 @@ def test_archive_retries_after_branch_deletion_failure(tmp_path: Path, monkeypat
     monkeypatch.setattr(archive_generation, "_require_git", fail_delete)
     failed = op_archive(tio, slug="ticket", force=True)
     assert "injected branch deletion failure" in failed.failures["ticket"]
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(project, "branch", "--list", branch)
 
     monkeypatch.setattr(archive_generation, "_require_git", original)
@@ -420,7 +435,7 @@ def test_archive_resumes_log_cleanup_after_ticket_unlink(tmp_path: Path, monkeyp
     monkeypatch.setattr(archive_module, "_cleanup_log_dir", fail_cleanup)
     failed = op_archive(tio, slug="ticket", force=True)
     assert "injected log cleanup failure" in failed.failures["ticket"]
-    assert not (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert not (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(outer, "branch", "--list", branch) == ""
 
     monkeypatch.setattr(archive_module, "_cleanup_log_dir", original)
@@ -442,10 +457,8 @@ def test_done_sweep_resumes_after_ticket_unlink(tmp_path: Path, monkeypatch) -> 
     )
     assert ticket is not None
     assert tio.enqueue_ticket("ticket")
-    queued = project / "tickets" / "board" / "queue" / "ticket.md"
-    done = project / "tickets" / "board" / "done"
-    done.mkdir(parents=True)
-    queued.rename(done / queued.name)
+    queued = project / "tickets" / "board" / "ticket.md"
+    _mark_done(tio, queued.stem)
     original = archive_module._cleanup_log_dir
 
     def fail_cleanup(_log_dir: Path, _keep_logs: bool) -> None:
@@ -454,7 +467,7 @@ def test_done_sweep_resumes_after_ticket_unlink(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(archive_module, "_cleanup_log_dir", fail_cleanup)
     failed = op_archive(tio)
     assert "injected log cleanup failure" in failed.failures["ticket"]
-    assert not (done / "ticket.md").exists()
+    assert not queued.exists()
 
     monkeypatch.setattr(archive_module, "_cleanup_log_dir", original)
     retried = op_archive(tio)
@@ -523,7 +536,7 @@ def test_archive_refuses_pending_lifecycle_operation(
     outcome = op_archive(tio, slug="ticket", force=True)
 
     assert "ticket" in outcome.failures
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
     assert _git(outer, "branch", "--list", branch)
     assert _git(project, "branch", "--list", branch)
 
@@ -550,7 +563,7 @@ def test_archive_retries_transition_failure_once(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(tio, "_append_transition_unlocked", fail_transition)
     failed = op_archive(tio, slug="ticket", force=True)
     assert "injected transition failure" in failed.failures["ticket"]
-    assert (tio.tickets_dir / "board" / "drafts" / "ticket.md").exists()
+    assert (tio.tickets_dir / "board" / "ticket.md").exists()
 
     monkeypatch.setattr(tio, "_append_transition_unlocked", original)
     retried = op_archive(tio, slug="ticket", force=True)
@@ -602,12 +615,9 @@ def test_partial_done_sweep_fails_in_both_clis(
     )
     assert ticket is not None
     assert tio.enqueue_ticket("a-good")
-    queued = project / "tickets" / "board" / "queue" / "a-good.md"
-    done = project / "tickets" / "board" / "done"
-    done.mkdir(parents=True)
-    queued.rename(done / queued.name)
-    invalid = tio.tickets_dir / "board" / "done" / "z-invalid.md"
-    invalid.write_text("invalid Ticket\n", encoding="utf-8")
+    queued = project / "tickets" / "board" / "a-good.md"
+    _mark_done(tio, queued.stem)
+    invalid = place_ticket(tio.tickets_dir, "z-invalid", "done", "invalid Ticket\n")
     args = SimpleNamespace(slug=None, keep_logs=False, force=False)
 
     if command == "harness":
@@ -619,5 +629,5 @@ def test_partial_done_sweep_fails_in_both_clis(
     assert result == 1
     assert "Good Ticket" in captured.out
     assert "z-invalid" in captured.err
-    assert not (tio.tickets_dir / "board" / "done" / "a-good.md").exists()
+    assert not queued.exists()
     assert invalid.exists()

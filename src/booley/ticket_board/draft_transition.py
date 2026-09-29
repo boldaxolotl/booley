@@ -1,4 +1,10 @@
-"""Recoverable blocked-to-draft transition for Tickets with a recorded baseline."""
+"""Recoverable blocked-to-draft transition for Tickets with a recorded baseline.
+
+The Ticket document keeps its path (ADR 0065). The cutover first replaces the
+blocked executable document with its draft form, then deletes the state record,
+so a crash can leave at most a draft-form document next to a blocked record,
+which the journal rolls forward.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +43,12 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
-from .lifecycle import TicketState, ticket_document_path
+from .board_layout import (
+    delete_state_record,
+    read_state_record,
+    ticket_document_path,
+)
+from .lifecycle import TicketState
 from .persistence import atomic_replace_bytes
 from .ticket_baseline import (
     AUTHORED_DRIFT_REASON,
@@ -106,6 +117,10 @@ class DraftTransitionJournal:
 
 def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _tickets_dir(root: Path) -> Path:
+    return resolve_checkout_project_dir(root) / "tickets"
 
 
 def _transition_root(root: Path) -> Path:
@@ -185,9 +200,8 @@ def _validate_journal(
         ticket_baseline_from_machine(journal.machine)
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
-    tickets = resolve_checkout_project_dir(root) / "tickets"
-    draft = Path(journal.draft_ticket).resolve()
-    if draft != ticket_document_path(tickets, slug, TicketState.DRAFT).resolve():
+    document = ticket_document_path(_tickets_dir(root), slug).resolve()
+    if Path(journal.draft_ticket).resolve() != document:
         raise DraftTransitionError("return-to-draft destination path is invalid")
     if not re.fullmatch(r"[0-9a-f]{16}", journal.generation):
         raise DraftTransitionError("return-to-draft generation token is invalid")
@@ -198,8 +212,7 @@ def _validate_journal(
     )
     if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
         raise DraftTransitionError("return-to-draft content identity is invalid")
-    blocked = Path(journal.blocked_ticket).resolve()
-    if blocked != ticket_document_path(tickets, slug, TicketState.BLOCKED).resolve():
+    if Path(journal.blocked_ticket).resolve() != document:
         raise DraftTransitionError("return-to-draft blocked Ticket path is invalid")
     archive = Path(journal.archive_dir).resolve()
     archive_root = (logs_dir / slug / "runs").resolve()
@@ -309,8 +322,7 @@ def _new_journal(
     generation_content = (json.dumps({"generation": generation}, sort_keys=True) + "\n").encode()
     atomic_replace_bytes(draft_path, draft_content, mode=0o644)
     atomic_replace_bytes(operation / "generation.json", generation_content)
-    tickets = resolve_checkout_project_dir(root) / "tickets"
-    draft_destination = ticket_document_path(tickets, slug, TicketState.DRAFT)
+    draft_destination = ticket_document_path(_tickets_dir(root), slug)
     journal = DraftTransitionJournal(
         2,
         operation_id,
@@ -360,6 +372,10 @@ def _require_file(path: Path, digest: str, label: str) -> None:
 def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBaseline:
     blocked = Path(journal.blocked_ticket)
     _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
+    record = read_state_record(_tickets_dir(root), journal.slug)
+    if record is None or record.state is not TicketState.BLOCKED:
+        state = "draft" if record is None else record.state.status
+        raise DraftTransitionError(f"return-to-draft requires a blocked ticket, found {state}")
     candidate = _operation_dir(root, journal.operation_id) / "draft.md"
     _require_file(candidate, journal.draft_sha256, "replacement draft")
     document = _converted_document(root, blocked, journal.slug, "executable")
@@ -537,6 +553,8 @@ def _finish_published_transition(
     """Confirm published identities, then retire the slug-level recovery journal."""
     draft = Path(journal.draft_ticket)
     _require_file(draft, journal.draft_sha256, "published draft")
+    if read_state_record(_tickets_dir(root), journal.slug) is not None:
+        raise DraftTransitionError("published draft still has a state record")
     _require_file(_generation_file(root, journal.slug), journal.generation_sha256, "generation")
     worktrees = _published_worktrees(root, journal, basis)
     new_ref = f"refs/heads/{_generation_branch(journal.generation, journal.slug)}"
@@ -553,24 +571,47 @@ def _finish_published_transition(
 
 
 def _publish_board(root: Path, journal: DraftTransitionJournal) -> None:
+    """Publish the draft-form document first, then delete the state record.
+
+    The record must still be the blocked generation this journal captured
+    (or already gone): that compare-and-swap runs before anything is written,
+    including when the cutover resumes after a crash.
+    """
     operation = _operation_dir(root, journal.operation_id)
-    blocked = Path(journal.blocked_ticket)
+    document = Path(journal.draft_ticket)
+    tickets = _tickets_dir(root)
+    record = read_state_record(tickets, journal.slug)
+    if record is not None and record.state is not TicketState.BLOCKED:
+        raise DraftTransitionError(
+            f"return-to-draft requires a blocked ticket, found {record.state.status}"
+        )
+    try:
+        published = _digest(document.read_bytes()) == journal.draft_sha256
+    except FileNotFoundError as exc:
+        raise DraftTransitionError("blocked Ticket disappeared during cutover") from exc
+    if not published:
+        _publish_draft_document(operation, document, journal)
+    if record is not None:
+        # Keep the retired generation's runtime fields with its archived logs.
+        atomic_replace_bytes(
+            Path(journal.archive_dir) / "state.json", record.to_bytes(), mode=0o644
+        )
+        delete_state_record(tickets, journal.slug)
+
+
+def _publish_draft_document(
+    operation: Path, document: Path, journal: DraftTransitionJournal
+) -> None:
+    """Back up the blocked document, then replace it with the prepared draft."""
+    _require_file(document, journal.blocked_sha256, "blocked Ticket")
     blocked_backup = operation / "blocked.md"
-    draft = Path(journal.draft_ticket)
-    candidate = operation / "draft.md"
-    if blocked.exists():
-        _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
-        if blocked_backup.exists():
-            raise DraftTransitionError("blocked Ticket and its backup both exist")
-        blocked.replace(blocked_backup)
-    elif not blocked_backup.exists() and not draft.exists():
-        raise DraftTransitionError("blocked Ticket disappeared during cutover")
-    if draft.exists():
-        _require_file(draft, journal.draft_sha256, "published draft")
+    if blocked_backup.exists():
+        _require_file(blocked_backup, journal.blocked_sha256, "blocked Ticket backup")
     else:
-        _require_file(candidate, journal.draft_sha256, "replacement draft")
-        draft.parent.mkdir(parents=True, exist_ok=True)
-        candidate.replace(draft)
+        atomic_replace_bytes(blocked_backup, document.read_bytes(), mode=0o644)
+    candidate = operation / "draft.md"
+    _require_file(candidate, journal.draft_sha256, "replacement draft")
+    candidate.replace(document)
 
 
 def _publish_generation(root: Path, journal: DraftTransitionJournal) -> None:

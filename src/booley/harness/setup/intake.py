@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import re
@@ -18,15 +17,17 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+from booley.ticket_board.board_layout import (
+    StateRecordError,
+    document_state,
+    documents_in_state,
+    read_state_record,
+    ticket_document_path,
+)
 from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
-from booley.ticket_board.lifecycle import (
-    TicketState,
-    document_state,
-    documents_in_state,
-    ticket_document_path,
-)
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import (
     existing_runtime_file,
     migrate_runtime_file,
@@ -215,8 +216,8 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
     resume_stage = resume_info.get("stage", "")
     logger.debug("Resume action for %s: %s (stage=%s)", ctx.slug, action, resume_stage)
 
-    # Load progress.json for steps_completed and blocked_reason
-    # (resume_detect doesn't return these -- they live in progress.json)
+    # Load the state record for steps_completed and blocked_reason
+    # (resume_detect doesn't return these -- they live in the state record)
     progress = _load_progress(project_root, ctx.slug)
     persisted_intent = progress.get("workspace_intent", "fresh")
     if persisted_intent not in {"fresh", "resume"}:
@@ -258,8 +259,8 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
     _ensure_ticket_snapshot(project_root, ctx.slug, ctx.ticket_path)
 
     # Activate ticket for non-fresh resume.
-    # init_ticket (fresh path) moves to active/. For all other resume
-    # actions, the ticket may be in queue/ after reset/unblock.
+    # init_ticket (fresh path) marks it running. For all other resume
+    # actions, the ticket may be queued after reset/unblock.
     # activate() checks PID ownership: if another live runner owns
     # the ticket, it returns False and we abort.
     if action != "fresh" and not ticket_cli.activate(
@@ -289,15 +290,9 @@ def _ensure_ticket_snapshot(project_root: Path, slug: str, ticket_path: Path) ->
     if ticket_md.exists():
         return
     logs_dir.mkdir(parents=True, exist_ok=True)
-    # ticket_path may point at queue/ or blocked/ — find the actual file
+    # ticket_path may name a runtime copy — fall back to the board document
     tickets_dir = tickets_dir_from_project_root(project_root)
-    for candidate in (
-        ticket_path,
-        *(
-            ticket_document_path(tickets_dir, slug, state)
-            for state in (TicketState.RUNNING, TicketState.BLOCKED, TicketState.QUEUED)
-        ),
-    ):
+    for candidate in (ticket_path, ticket_document_path(tickets_dir, slug)):
         if candidate.exists():
             shutil.copy2(str(candidate), str(ticket_md))
             logger.info("Recovered missing ticket.md from %s", candidate)
@@ -306,14 +301,16 @@ def _ensure_ticket_snapshot(project_root: Path, slug: str, ticket_path: Path) ->
 
 
 def _load_progress(project_root: Path, slug: str) -> dict:
-    """Load progress.json for a ticket, returning {} on missing/corrupt file."""
-    logs_dir = tickets_dir_from_project_root(project_root) / "logs"
-    prog_path = existing_runtime_file(logs_dir, slug, "progress.json")
-    if not prog_path.exists():
-        return {}
-    with contextlib.suppress(json.JSONDecodeError, OSError):
-        return json.loads(prog_path.read_text(encoding="utf-8"))
-    return {}
+    """Return the runtime fields of the Ticket's state record; {} for a draft.
+
+    A corrupt record is fatal: it is never treated as a fresh Ticket.
+    """
+    tickets_dir = tickets_dir_from_project_root(project_root)
+    try:
+        record = read_state_record(tickets_dir, slug)
+    except StateRecordError as exc:
+        raise FatalError(str(exc), slug=slug) from exc
+    return {} if record is None else record.progress()
 
 
 def _apply_continue(ctx: TicketContext, progress: dict, fields: dict) -> None:
@@ -327,7 +324,8 @@ def _apply_continue(ctx: TicketContext, progress: dict, fields: dict) -> None:
 
 def _apply_resume_blocked(ctx: TicketContext, progress: dict, fields: dict) -> None:
     """Apply 'resume_blocked' state — verify questions answered if needed."""
-    block_reason = progress.get("blocked_reason", "")
+    # The record always carries blocked_reason; null means no reason was given.
+    block_reason = progress.get("blocked_reason") or ""
     ctx.completed_steps = progress.get("steps_completed", fields.get("steps_completed", []))
     # current_step must be the LAST COMPLETED stage before the blocked one,
     # so the main loop's next_stage() call re-runs the blocked stage (not skips it).
@@ -438,8 +436,14 @@ def _promote_waiting_before_auto_select(project_root: Path) -> None:
 
 
 def _board_state(project_root: Path, ticket_path: Path) -> TicketState | None:
-    """Return the Ticket Board state *ticket_path* represents, if it is a board document."""
-    return document_state(tickets_dir_from_project_root(project_root), ticket_path)
+    """Return the Ticket Board state *ticket_path* represents, if it is a board document.
+
+    A corrupt state record is fatal rather than an off-board path.
+    """
+    try:
+        return document_state(tickets_dir_from_project_root(project_root), ticket_path)
+    except StateRecordError as exc:
+        raise FatalError(str(exc), slug=ticket_path.stem) from exc
 
 
 def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str) -> Path:
@@ -503,16 +507,23 @@ def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
     if candidate.exists():
         return candidate
 
-    # Try as slug -- search the executable board states
-    for state in (
-        TicketState.QUEUED,
-        TicketState.RUNNING,
-        TicketState.BLOCKED,
-        TicketState.WAITING,
-        TicketState.REVIEW,
-    ):
-        candidate = ticket_document_path(tickets_dir, path_or_slug, state)
-        if candidate.exists():
+    # Try as slug -- accept a board document in an executable, live state
+    try:
+        candidate = ticket_document_path(tickets_dir, path_or_slug)
+    except ValueError:
+        candidate = None
+    if candidate is not None and candidate.exists():
+        try:
+            state = document_state(tickets_dir, candidate)
+        except StateRecordError as exc:
+            raise FatalError(str(exc)) from exc
+        if state in {
+            TicketState.QUEUED,
+            TicketState.RUNNING,
+            TicketState.BLOCKED,
+            TicketState.WAITING,
+            TicketState.REVIEW,
+        }:
             return candidate
 
     # Try with .md extension

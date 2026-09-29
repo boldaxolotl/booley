@@ -13,9 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from .acceptance_journal import AcceptanceJournalError, acceptance_state
+from .board_layout import (
+    StateRecord,
+    iter_board_documents,
+    iter_board_records,
+    locate_document,
+)
 from .execution import next_from_planned
-from .lifecycle import TicketState, iter_board_documents, locate_document
-from .logs import load_progress
+from .lifecycle import TicketState
 from .paths import existing_runtime_file
 from .ticket_document import convert_ticket_document, ticket_conversion_context
 
@@ -133,7 +138,7 @@ def _enrich_from_state(entry: dict[str, Any], logs_dir: Path, slug: str) -> None
     if cr is not None:
         entry["criteria_passed"], entry["criteria_total"] = cr
 
-    # Override stale progress.json fields with authoritative timeline data
+    # Override stale state-record runtime fields with authoritative timeline data
     tl = _load_timeline_summary(state_data)
     if tl is not None:
         entry["step"] = tl["last_endpoint"]
@@ -212,8 +217,8 @@ def scan_all_tickets(
     logs_dir = tickets_dir / "logs"
     result = []
 
-    for md_file, state in iter_board_documents(tickets_dir):
-        entry = _scan_ticket(md_file, state, root, tickets_dir, logs_dir)
+    for md_file, record in iter_board_records(tickets_dir):
+        entry = _scan_ticket(md_file, record, root, tickets_dir, logs_dir)
         if entry is not None:
             result.append(entry)
 
@@ -222,7 +227,7 @@ def scan_all_tickets(
 
 def _scan_ticket(
     path: Path,
-    state: TicketState,
+    record: StateRecord | None,
     root: Path,
     tickets_dir: Path,
     logs_dir: Path,
@@ -231,6 +236,7 @@ def _scan_ticket(
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
+    state = TicketState.DRAFT if record is None else record.state
     file = path.relative_to(tickets_dir).as_posix()
     with ticket_conversion_context(root, path.stem, state.conversion_stage) as context:
         converted = convert_ticket_document(text, context)
@@ -246,8 +252,7 @@ def _scan_ticket(
         }
     spec = converted.document.spec
     fields = {**spec.fields, **converted.document.generated}
-    progress = load_progress(logs_dir, path.stem)
-    runtime_fields = progress if progress is not None else fields
+    runtime_fields = record.progress() if record is not None else fields
     entry = _build_ticket_entry(path, file, state.status, fields, runtime_fields)
     entry["criteria"] = spec.semantic_record()["criteria"]
     entry["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []

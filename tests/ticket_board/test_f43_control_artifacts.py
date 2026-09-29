@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from booley.harness._ticket_ops import DirectTicketOps
+from booley.ticket_board.board_layout import read_state_record, write_state_record
 from booley.ticket_board.cli import main
 from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
@@ -15,6 +16,7 @@ from booley.ticket_board.criteria_markdown import (
 )
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
 from booley.ticket_board.validation import validate_ticket_fields
@@ -60,7 +62,7 @@ def _project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
         encoding="utf-8",
     )
     project = root / ".booley_project"
-    (project / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project / "tickets" / "board").mkdir(parents=True)
     (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project / "booley.toml").write_text(
         "[flows.lint]\ndefault_target = 'lint_toy'\n", encoding="utf-8"
@@ -287,7 +289,7 @@ def test_validate_ticket_does_not_reopen_published_authoring_workspace(
     root, tio = _project(tmp_path, monkeypatch)
     _ticket(tio)
     assert tio.enqueue_ticket("change-target") is True
-    ticket = tio.tickets_dir / "board" / "queue" / "change-target.md"
+    ticket = tio.tickets_dir / "board" / "change-target.md"
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
     capsys.readouterr()
@@ -335,7 +337,7 @@ def _review_completion_case(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     assert tio.enqueue_ticket("change-target") is True
-    queue = draft.parent.parent / "queue" / draft.name
+    queue = draft
     unrelated_ticket = queue.parent / "unrelated-ticket.md"
     unrelated_ticket.write_text(queue.read_text(encoding="utf-8"), encoding="utf-8")
     _git(
@@ -346,16 +348,16 @@ def _review_completion_case(tmp_path: Path, monkeypatch):
         str(unrelated_ticket.relative_to(root)),
     )
     _commit_all(root, "queue ticket")
-    review = queue.parent.parent / "review" / queue.name
-    review.parent.mkdir(parents=True, exist_ok=True)
-    queue.rename(review)
+    record = read_state_record(tio.tickets_dir, "change-target")
+    assert record is not None
+    write_state_record(tio.tickets_dir, "change-target", record.with_state(TicketState.REVIEW))
     monkeypatch.chdir(root)
     source = root / "rtl" / "toy.sv"
     original = source.read_text(encoding="utf-8")
     return root, tio, unrelated_ticket, source, original
 
 
-def test_review_completion_ignores_its_board_rename_but_not_product_edits(
+def test_review_completion_ignores_its_board_transition_but_not_product_edits(
     tmp_path: Path, monkeypatch
 ) -> None:
     root, tio, unrelated_ticket, source, original = _review_completion_case(tmp_path, monkeypatch)

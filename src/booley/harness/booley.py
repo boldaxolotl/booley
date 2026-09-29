@@ -76,9 +76,10 @@ from booley.runtime.project_repositories import (
     is_git_worktree_root,
 )
 from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
+from booley.ticket_board.board_layout import documents_in_state, locate_document
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
-from booley.ticket_board.lifecycle import TicketState, documents_in_state, locate_document
+from booley.ticket_board.lifecycle import TicketState
 
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
@@ -1231,6 +1232,17 @@ def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
 
 
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.ticket_board.board_layout import StateRecordError
+
+    try:
+        return _run_board_command(args, project_root)
+    except StateRecordError as exc:
+        # A broken state record fails closed: say which one instead of a traceback.
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 
@@ -2232,9 +2244,9 @@ def _run_harness(
 
     try:
         if args.slug:
-            # Claim early so the ticket moves to active/ before the harness
+            # Claim early so the ticket is running before the harness
             # subprocess starts. Without this, killing booley between launch
-            # and harness's init_ticket leaves the ticket stuck in queue/.
+            # and harness's init_ticket leaves the ticket stuck queued.
             _run_board(project_root, ["activate", args.slug])
             cmd.extend(["--ticket", args.slug])
         if args.verbose:

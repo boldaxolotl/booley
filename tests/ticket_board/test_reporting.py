@@ -290,6 +290,54 @@ class TestBuildBoardRows:
 # ---------------------------------------------------------------------------
 
 
+def _board_with_broken(tmp_path: Path, broken: list[str]) -> Path:
+    """Tickets dir with one readable draft plus Tickets whose records are corrupt."""
+    tickets = tmp_path / "tickets"
+    (tickets / "board").mkdir(parents=True)
+    (tickets / "state").mkdir()
+    for slug in broken:
+        (tickets / "board" / f"{slug}.md").write_text("---\n", encoding="utf-8")
+        (tickets / "state" / f"{slug}.json").write_text("{", encoding="utf-8")
+    return tickets
+
+
+_QUEUED = {
+    "file": "board/ok.md",
+    "status": "queued",
+    "step": "",
+    "steps_completed": [],
+    "last_update": "",
+    "priority": "medium",
+}
+
+
+class TestBrokenTicketNote:
+    """Tickets with an unreadable state record are reported, never silently hidden."""
+
+    def test_no_note_when_every_record_reads(self, tmp_path, capsys):
+        display_board([_QUEUED], tickets_dir=_board_with_broken(tmp_path, []))
+        assert "not shown" not in capsys.readouterr().out
+
+    def test_one_broken_ticket_is_named_with_its_reason(self, tmp_path, capsys):
+        display_board([_QUEUED], tickets_dir=_board_with_broken(tmp_path, ["bad"]))
+        out = capsys.readouterr().out
+        assert "bad is not shown" in out
+        assert "not valid JSON" in out
+        assert "refuse to run" in out
+
+    def test_several_broken_tickets_get_one_summary_line(self, tmp_path, capsys):
+        display_board([_QUEUED], tickets_dir=_board_with_broken(tmp_path, ["b1", "b2", "b3"]))
+        out = capsys.readouterr().out
+        assert "3 tickets are not shown" in out
+        assert "b1" not in out and "b2" not in out and "b3" not in out
+
+    def test_board_of_only_broken_tickets_is_not_called_empty(self, tmp_path, capsys):
+        display_board([], tickets_dir=_board_with_broken(tmp_path, ["bad"]))
+        out = capsys.readouterr().out
+        assert "empty" not in out.lower()
+        assert "bad is not shown" in out
+
+
 class TestDisplayBoard:
     def test_empty_board(self, capsys):
         display_board([])

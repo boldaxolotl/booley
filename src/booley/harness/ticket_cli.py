@@ -99,7 +99,7 @@ def activate(
     owner_pid: int | None = None,
     execution_id: str | None = None,
 ) -> bool:
-    """Activate a ticket for execution (move to active/).
+    """Activate a ticket for execution (mark it running).
 
     Returns False if another live runner already owns the ticket.
     """

@@ -20,7 +20,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 from .acceptance_targets import deferable_rtl_or_tb_input, scope_allows_new_path
-from .lifecycle import document_stage
+from .board_layout import document_stage
 from .persistence import atomic_replace_bytes
 from .scanner import find_ticket_file, scan_all_tickets
 from .target_surface_edit import (

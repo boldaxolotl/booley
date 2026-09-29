@@ -6,7 +6,6 @@ context defaults, activation logic, and unanswered question detection.
 
 from __future__ import annotations
 
-import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +21,15 @@ from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
 from booley.harness.setup.intake import _zero_mandatory_amendment_basis
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    read_state_record,
+    state_record_path,
+    ticket_document_path,
+    ticket_state,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import existing_runtime_file
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
@@ -450,11 +458,27 @@ def _mock_cli_defaults(mock_cli, *, action="fresh", stage="", fields=None):
     mock_cli.resume.return_value = {"action": action, "stage": stage}
 
 
+_TICKETS_REL = Path(".booley") / "project" / "tickets"
+
+
 def _write_progress(project_root: Path, slug: str, data: dict):
-    """Write a progress.json for the given slug."""
-    logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    (logs_dir / "progress.json").write_text(json.dumps(data), encoding="utf-8")
+    """Write *data* as the runtime fields of the Ticket's state record.
+
+    The record keeps its current state (queued when the Ticket has none yet).
+    """
+    tickets_dir = project_root / _TICKETS_REL
+    existing = read_state_record(tickets_dir, slug)
+    state = TicketState.QUEUED if existing is None else existing.state
+    write_state_record(tickets_dir, slug, StateRecord.fresh(state, **data))
+
+
+def _place_ticket(tickets_dir: Path, slug: str, state: TicketState, content: str) -> Path:
+    """Write a board document for *slug* plus a state record in *state*."""
+    path = ticket_document_path(tickets_dir, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    write_state_record(tickets_dir, slug, StateRecord.fresh(state))
+    return path
 
 
 def test_explicit_waiting_intake_promotes_before_parsing(
@@ -464,23 +488,21 @@ def test_explicit_waiting_intake_promotes_before_parsing(
     from booley.ticket_board import operations
 
     tickets = tmp_path / ".booley/project/tickets"
-    waiting = tickets / "board/waiting/ticket.md"
-    queued = tickets / "board/queue/ticket.md"
-    waiting.parent.mkdir(parents=True)
-    queued.parent.mkdir(parents=True)
-    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    document = _place_ticket(tickets, "ticket", TicketState.WAITING, "---\nsummary: Ticket\n---\n")
     monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
     monkeypatch.setattr(
         intake.ticket_cli, "validate_ticket", lambda *_args, **_kwargs: {"valid": True}
     )
 
     def promote(_tio):
-        waiting.rename(queued)
+        write_state_record(tickets, "ticket", StateRecord.fresh(TicketState.QUEUED))
         return [{"slug": "ticket", "summary": "Ticket"}]
 
     monkeypatch.setattr(operations, "op_promote_waiting", promote)
 
-    assert intake._promote_waiting_for_intake(tmp_path, waiting, "ticket") == queued
+    # Promotion flips the state record; the document stays at its board path.
+    assert intake._promote_waiting_for_intake(tmp_path, document, "ticket") == document
+    assert ticket_state(tickets, "ticket") is TicketState.QUEUED
 
 
 @pytest.mark.asyncio
@@ -491,22 +513,18 @@ async def test_automatic_intake_promotes_waiting_before_selection(
     from booley.ticket_board import operations
 
     tickets = tmp_path / ".booley/project/tickets"
-    waiting = tickets / "board/waiting/ticket.md"
-    queued = tickets / "board/queue/ticket.md"
-    waiting.parent.mkdir(parents=True)
-    queued.parent.mkdir(parents=True)
-    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    queued = _place_ticket(tickets, "ticket", TicketState.WAITING, "---\nsummary: Ticket\n---\n")
     monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
     calls = []
 
     def promote(_tio):
         calls.append("promote")
-        waiting.rename(queued)
+        write_state_record(tickets, "ticket", StateRecord.fresh(TicketState.QUEUED))
         return [{"slug": "ticket", "summary": "Ticket"}]
 
     def select(_root):
         calls.append("select")
-        assert queued.is_file()
+        assert ticket_state(tickets, "ticket") is TicketState.QUEUED
         return "ticket"
 
     monkeypatch.setattr(operations, "op_promote_waiting", promote)
@@ -533,18 +551,19 @@ async def test_explicit_waiting_intake_validates_after_promotion(
     from booley.harness.setup import intake
 
     tickets = tmp_path / ".booley/project/tickets"
-    waiting = tickets / "board/waiting/ticket.md"
-    queued = tickets / "board/queue/ticket.md"
-    waiting.parent.mkdir(parents=True)
-    queued.parent.mkdir(parents=True)
-    waiting.write_text("---\nsummary: Ticket\n---\n", encoding="utf-8")
+    document = _place_ticket(tickets, "ticket", TicketState.WAITING, "---\nsummary: Ticket\n---\n")
     monkeypatch.setattr(intake, "tickets_dir_from_project_root", lambda _root: tickets)
-    monkeypatch.setattr(intake, "_promote_waiting_for_intake", lambda *_args: queued)
-    validated: list[tuple[Path, Path, str]] = []
+
+    def promote(*_args):
+        write_state_record(tickets, "ticket", StateRecord.fresh(TicketState.QUEUED))
+        return document
+
+    monkeypatch.setattr(intake, "_promote_waiting_for_intake", promote)
+    validated: list[tuple[Path, Path, str, TicketState]] = []
     monkeypatch.setattr(
         intake,
         "_validate_intake_ticket",
-        lambda root, path, slug: validated.append((root, path, slug)),
+        lambda root, path, slug: validated.append((root, path, slug, ticket_state(tickets, slug))),
     )
     monkeypatch.setattr(intake, "_load_progress", lambda *_args: {})
     monkeypatch.setattr(intake, "requires_return_to_draft", lambda *_args: False)
@@ -556,8 +575,9 @@ async def test_explicit_waiting_intake_validates_after_promotion(
     monkeypatch.setattr(intake, "_verify_ticket_baseline", lambda *_args: None)
     monkeypatch.setattr(intake, "_init_criteria_state", lambda *_args: None)
 
-    assert await intake.run(str(waiting), tmp_path) is expected
-    assert validated == [(tmp_path, queued, "ticket")]
+    assert await intake.run(str(document), tmp_path) is expected
+    # Validation sees the promoted (queued) Ticket, not the waiting one.
+    assert validated == [(tmp_path, document, "ticket", TicketState.QUEUED)]
 
 
 def test_ticket_baseline_verifies_published_refs(tmp_path: Path) -> None:
@@ -918,6 +938,7 @@ class TestResumeBlocked:
             },
         )
         logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
+        logs_dir.mkdir(parents=True, exist_ok=True)
         (logs_dir / "questions.md").write_text("## Q1\n**Answer:**\n\n## Q2", encoding="utf-8")
         from booley.harness.setup.intake import run
 
@@ -956,6 +977,7 @@ class TestResumeBlocked:
             },
         )
         logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
+        logs_dir.mkdir(parents=True, exist_ok=True)
         (logs_dir / "questions.md").write_text(
             "## Q1\n**Answer:**\nThe fix is to widen the bus.\n\n", encoding="utf-8"
         )
@@ -981,6 +1003,7 @@ class TestResumeBlocked:
             },
         )
         logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
+        logs_dir.mkdir(parents=True, exist_ok=True)
         (logs_dir / "questions.md").write_text("## Q1\n**Answer:**\n\n", encoding="utf-8")
         from booley.harness.setup.intake import run
 
@@ -1001,6 +1024,17 @@ class TestResumeBlocked:
                 "blocked_reason": "eda_tool_failure: vivado crashed",
             },
         )
+        from booley.harness.setup.intake import run
+
+        ctx = await run(str(sample_ticket), project_root)
+        assert ctx.current_step == "planning"
+
+    @pytest.mark.asyncio
+    @patch("booley.harness.setup.intake.ticket_cli")
+    async def test_null_blocked_reason_skips_check(self, mock_cli, project_root, sample_ticket):
+        """A state record always carries blocked_reason; null means no question block."""
+        _mock_cli_defaults(mock_cli, action="resume_blocked")
+        _write_progress(project_root, sample_ticket.stem, {"steps_completed": ["planning"]})
         from booley.harness.setup.intake import run
 
         ctx = await run(str(sample_ticket), project_root)
@@ -1090,16 +1124,16 @@ class TestContextDefaults:
 
 
 # ---------------------------------------------------------------------------
-# Progress.json loading
+# State record runtime-field loading
 # ---------------------------------------------------------------------------
 
 
 class TestProgressLoading:
-    """Kills: L109 negate_if (progress.json exists check)."""
+    """Runtime progress comes from the Ticket state record."""
 
     @pytest.mark.asyncio
     @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_progress_json_loaded(self, mock_cli, project_root, sample_ticket):
+    async def test_state_record_progress_loaded(self, mock_cli, project_root, sample_ticket):
         slug = sample_ticket.stem
         _mock_cli_defaults(mock_cli, action="continue")
         _write_progress(
@@ -1117,16 +1151,47 @@ class TestProgressLoading:
 
     @pytest.mark.asyncio
     @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_missing_progress_json_ignores_retired_runtime_fields(
+    async def test_empty_step_history_ignores_retired_runtime_fields(
         self, mock_cli, project_root, sample_ticket
     ):
-        """No progress.json means old runtime fields in Ticket input are ignored."""
+        """A record without step history ignores old runtime fields in Ticket input."""
         fields = dict(_MINIMAL_FIELDS, steps_completed=["planning"])
         _mock_cli_defaults(mock_cli, action="continue", fields=fields)
         from booley.harness.setup.intake import run
 
         ctx = await run(str(sample_ticket), project_root)
         assert ctx.completed_steps == []
+
+    @pytest.mark.asyncio
+    @patch("booley.harness.setup.intake.ticket_cli")
+    async def test_corrupt_state_record_is_fatal(self, mock_cli, project_root, sample_ticket):
+        """A corrupt state record fails closed instead of restarting the Ticket fresh."""
+        _mock_cli_defaults(mock_cli, action="fresh")
+        record = state_record_path(project_root / _TICKETS_REL, sample_ticket.stem)
+        record.write_text("{not json", encoding="utf-8")
+        from booley.harness.setup.intake import run
+
+        with pytest.raises(FatalError, match="not valid JSON"):
+            await run(sample_ticket.stem, project_root)
+
+        mock_cli.init_ticket.assert_not_called()
+        assert record.read_text(encoding="utf-8") == "{not json"
+
+    def test_load_progress_rejects_corrupt_record(self, project_root, sample_ticket):
+        from booley.harness.setup.intake import _load_progress
+
+        record = state_record_path(project_root / _TICKETS_REL, sample_ticket.stem)
+        record.write_text('{"schema": 99, "state": "queued"}', encoding="utf-8")
+
+        with pytest.raises(FatalError, match="schema 99 is unsupported"):
+            _load_progress(project_root, sample_ticket.stem)
+
+    def test_load_progress_returns_empty_for_draft(self, project_root, sample_ticket):
+        from booley.harness.setup.intake import _load_progress
+
+        state_record_path(project_root / _TICKETS_REL, sample_ticket.stem).unlink()
+
+        assert _load_progress(project_root, sample_ticket.stem) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1142,10 +1207,9 @@ class TestDependencies:
     async def test_all_deps_met_continues(self, mock_cli, project_root, sample_ticket):
         fields = dict(_MINIMAL_FIELDS, dependencies=["dep-a", "dep-b"])
         _mock_cli_defaults(mock_cli, action="fresh", fields=fields)
-        done_dir = project_root / ".booley" / "project" / "tickets" / "board" / "done"
-        done_dir.mkdir(parents=True, exist_ok=True)
-        (done_dir / "dep-a.md").write_text("---\n---\n", encoding="utf-8")
-        (done_dir / "dep-b.md").write_text("---\n---\n", encoding="utf-8")
+        tickets_dir = project_root / _TICKETS_REL
+        _place_ticket(tickets_dir, "dep-a", TicketState.DONE, "---\n---\n")
+        _place_ticket(tickets_dir, "dep-b", TicketState.DONE, "---\n---\n")
         from booley.harness.setup.intake import run
 
         ctx = await run(str(sample_ticket), project_root)
@@ -1156,9 +1220,7 @@ class TestDependencies:
     async def test_partial_deps_raises(self, mock_cli, project_root, sample_ticket):
         fields = dict(_MINIMAL_FIELDS, dependencies=["dep-a", "dep-missing"])
         _mock_cli_defaults(mock_cli, action="fresh", fields=fields)
-        done_dir = project_root / ".booley" / "project" / "tickets" / "board" / "done"
-        done_dir.mkdir(parents=True, exist_ok=True)
-        (done_dir / "dep-a.md").write_text("---\n---\n", encoding="utf-8")
+        _place_ticket(project_root / _TICKETS_REL, "dep-a", TicketState.DONE, "---\n---\n")
         from booley.harness.setup.intake import run
 
         with pytest.raises(FatalError, match=r"Unmet dependencies.*dep-missing"):
@@ -1195,23 +1257,19 @@ class TestPathResolution:
         assert result == sample_ticket
 
     def test_slug_search_in_board_dirs(self, project_root):
-        """Slug search finds tickets in board/ subdirectories."""
+        """Slug search finds executable board documents."""
         from booley.harness.setup.intake import _resolve_ticket_path
 
-        board_queue = project_root / ".booley" / "project" / "tickets" / "board" / "queue"
-        board_queue.mkdir(parents=True, exist_ok=True)
-        path = board_queue / "my-slug.md"
-        path.write_text("---\n---\n", encoding="utf-8")
+        path = _place_ticket(
+            project_root / _TICKETS_REL, "my-slug", TicketState.QUEUED, "---\n---\n"
+        )
         result = _resolve_ticket_path(project_root, "my-slug")
         assert result == path
 
     def test_adds_md_extension(self, project_root):
         from booley.harness.setup.intake import _resolve_ticket_path
 
-        board_queue = project_root / ".booley" / "project" / "tickets" / "board" / "queue"
-        board_queue.mkdir(parents=True, exist_ok=True)
-        path = board_queue / "some-case.md"
-        path.write_text("---\n---\n", encoding="utf-8")
+        _place_ticket(project_root / _TICKETS_REL, "some-case", TicketState.QUEUED, "---\n---\n")
         # Pass without .md — should find it
         result = _resolve_ticket_path(project_root, "some-case")
         assert result.suffix == ".md"
@@ -1238,13 +1296,16 @@ class TestAutoSelect:
         from booley.harness.setup.intake import run
 
         # Create two tickets — claim succeeds on first try
-        active = project_root / ".booley" / "project" / "tickets" / "board" / "active"
-        active.mkdir(parents=True, exist_ok=True)
-        (active / "first.md").write_text("---\nsummary: first\n---\n", encoding="utf-8")
+        _place_ticket(
+            project_root / _TICKETS_REL,
+            "first",
+            TicketState.RUNNING,
+            "---\nsummary: first\n---\n",
+        )
         mock_cli.classify.return_value = {
             "executable": [
-                {"file": "board/queue/first.md", "slug": "first"},
-                {"file": "board/queue/second.md", "slug": "second"},
+                {"file": "board/first.md", "slug": "first"},
+                {"file": "board/second.md", "slug": "second"},
             ]
         }
         mock_cli.claim.return_value = True
@@ -1259,13 +1320,16 @@ class TestAutoSelect:
         """When first ticket is already claimed, tries the next one."""
         from booley.harness.setup.intake import run
 
-        active = project_root / ".booley" / "project" / "tickets" / "board" / "active"
-        active.mkdir(parents=True, exist_ok=True)
-        (active / "second.md").write_text("---\nsummary: second\n---\n", encoding="utf-8")
+        _place_ticket(
+            project_root / _TICKETS_REL,
+            "second",
+            TicketState.RUNNING,
+            "---\nsummary: second\n---\n",
+        )
         mock_cli.classify.return_value = {
             "executable": [
-                {"file": "board/queue/first.md", "slug": "first"},
-                {"file": "board/queue/second.md", "slug": "second"},
+                {"file": "board/first.md", "slug": "first"},
+                {"file": "board/second.md", "slug": "second"},
             ]
         }
         mock_cli.claim.side_effect = [False, True]
@@ -1282,7 +1346,7 @@ class TestAutoSelect:
 
         mock_cli.classify.return_value = {
             "executable": [
-                {"file": "board/queue/first.md", "slug": "first"},
+                {"file": "board/first.md", "slug": "first"},
             ]
         }
         mock_cli.claim.return_value = False

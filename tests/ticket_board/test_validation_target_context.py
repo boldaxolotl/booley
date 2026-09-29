@@ -13,8 +13,14 @@ import pytest
 from booley.harness._ticket_ops import DirectTicketOps
 from booley.harness.setup.intake import _resolve_and_validate
 from booley.runtime.project_dir import reset_cache
+from booley.ticket_board.board_layout import (
+    read_state_record,
+    ticket_document_path,
+    write_state_record,
+)
 from booley.ticket_board.cli import main
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 
 
 def _git(root: Path, *args: str) -> None:
@@ -84,7 +90,9 @@ def _provider(root: Path, board: TicketIO) -> Path:
         b"    filesets: [rtl]\n    toplevel: dut\n"
     )
     assert board.enqueue_ticket("provider")
-    return board.tickets_dir / "board/queue/provider.md"
+    path = ticket_document_path(board.tickets_dir, "provider")
+    assert read_state_record(board.tickets_dir, "provider").state is TicketState.QUEUED
+    return path
 
 
 def _assert_both_valid(root: Path, path: Path, capsys) -> None:
@@ -139,7 +147,8 @@ def test_published_simulation_target_binds_all_required_criteria(project, capsys
         (tests.read_bytes() if tests.exists() else b"") + b"\n[sim_future]\ntests = ['smoke']\n"
     )
     assert board.enqueue_ticket("simulation")
-    queued = board.tickets_dir / "board/queue/simulation.md"
+    queued = ticket_document_path(board.tickets_dir, "simulation")
+    assert read_state_record(board.tickets_dir, "simulation").state is TicketState.QUEUED
     _git(root, "worktree", "remove", "--force", str(workspace))
 
     _assert_both_valid(root, queued, capsys)
@@ -208,7 +217,8 @@ def test_draft_provider_target_is_not_consumer_authored(project, capsys) -> None
     ).read_bytes() == before
     assert {entry.name: entry.read_bytes() for entry in marker.iterdir()} == marker_before
     assert board.enqueue_ticket("consumer")
-    assert (board.tickets_dir / "board/waiting/consumer.md").exists()
+    assert ticket_document_path(board.tickets_dir, "consumer").exists()
+    assert read_state_record(board.tickets_dir, "consumer").state is TicketState.WAITING
 
 
 def _deferred_provider(root: Path, board: TicketIO) -> None:
@@ -272,8 +282,9 @@ def test_draft_provider_test_table_and_missing_rtl_placeholder(project, capsys) 
 
     _assert_both_valid(root, path, capsys)
     assert board.enqueue_ticket("consumer")
-    waiting = board.tickets_dir / "board/waiting/consumer.md"
+    waiting = ticket_document_path(board.tickets_dir, "consumer")
     assert waiting.exists()
+    assert read_state_record(board.tickets_dir, "consumer").state is TicketState.WAITING
     _assert_both_valid(root, waiting, capsys)
 
 
@@ -381,10 +392,9 @@ def test_published_git_check_uses_product_checkout(project, capsys) -> None:
 
 def test_active_validation_preserves_generation_and_workspace(project, capsys) -> None:
     root, board = project
-    queued = _provider(root, board)
-    active = queued.parent.parent / "active" / queued.name
-    active.parent.mkdir(exist_ok=True)
-    queued.rename(active)
+    active = _provider(root, board)
+    queued = read_state_record(board.tickets_dir, "provider")
+    write_state_record(board.tickets_dir, "provider", queued.with_state(TicketState.RUNNING))
     before = active.read_bytes()
     workspace = root / ".booley_project/worktrees/provider"
     core = next(workspace.glob("*.core"))

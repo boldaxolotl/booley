@@ -39,6 +39,14 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    read_state_record,
+    required_board_directories,
+    ticket_document_path,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import TicketState
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
@@ -172,8 +180,8 @@ tests = ["full"]
 
 def _write_tickets_tree(project_dir: Path) -> None:
     tickets_dir = project_dir / "tickets"
-    for state in ("drafts", "queue", "active", "review", "done", "blocked", "waiting"):
-        (tickets_dir / "board" / state).mkdir(parents=True, exist_ok=True)
+    for directory in required_board_directories(tickets_dir):
+        directory.mkdir(parents=True, exist_ok=True)
     (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
     (tickets_dir / "locks").mkdir(parents=True, exist_ok=True)
 
@@ -655,6 +663,26 @@ def test_doctor_fails_without_tickets_tree(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert rc == 1
     assert "tickets tree missing" in output
+
+
+def test_tickets_tree_requires_state_record_directory(tmp_path):
+    """A pre-ADR-0065 board (per-state dirs, no state/) is not a healthy tree."""
+    tickets_dir = tmp_path / "tickets"
+    for legacy in ("queue", "active"):
+        (tickets_dir / "board" / legacy).mkdir(parents=True)
+    (tickets_dir / "logs").mkdir()
+    (tickets_dir / "locks").mkdir()
+    rec = _Rec()
+
+    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
+
+    assert rec.events == [("fail", "tickets tree missing 1 directories")]
+    assert rec.fix_hints == ["booley init"]
+
+    (tickets_dir / "state").mkdir()
+    rec = _Rec()
+    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
+    assert rec.events == [("pass", "tickets tree present")]
 
 
 def test_doctor_reports_ticket_board_import_failure(tmp_path, monkeypatch, capsys):
@@ -4616,17 +4644,19 @@ class TestWorktreeCoreShadowGuard:
 def _seed_board(tmp_path: Path) -> Path:
     """Create a minimal tickets tree; return the tickets dir."""
     tickets = tmp_path / "tickets"
-    for state in ("queue", "active", "blocked"):
-        (tickets / "board" / state).mkdir(parents=True, exist_ok=True)
+    for directory in required_board_directories(tickets):
+        directory.mkdir(parents=True, exist_ok=True)
     (tickets / "logs").mkdir(parents=True, exist_ok=True)
     return tickets
 
 
 def _seed_active_ticket(tickets: Path, slug: str = "stuck") -> None:
-    (tickets / "board" / "active" / f"{slug}.md").write_text(
+    """Place a running Ticket (board document + running state record) with a lock."""
+    ticket_document_path(tickets, slug).write_text(
         "---\nsummary: Stuck ticket\n---\n",
         encoding="utf-8",
     )
+    write_state_record(tickets, slug, StateRecord.fresh(TicketState.RUNNING))
     lock_dir = tickets / "logs" / slug
     lock_dir.mkdir(parents=True, exist_ok=True)
     (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
@@ -4707,6 +4737,9 @@ class TestBoardOrphanSelfHeal:
         assert rec.kinds() == {"warn"}
         assert "found 1 orphaned" in rec.events[0][1]
         assert board_calls == []
+        record = read_state_record(tickets, "stuck")
+        assert record is not None
+        assert record.state is TicketState.RUNNING
 
 
 # ---------------------------------------------------------------------------

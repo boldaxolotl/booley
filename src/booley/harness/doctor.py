@@ -104,7 +104,7 @@ from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, TargetRef
 from booley.targets.flow_names import config_section
-from booley.ticket_board.lifecycle import required_board_directories
+from booley.ticket_board.board_layout import required_board_directories
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60

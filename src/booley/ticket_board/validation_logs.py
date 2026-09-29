@@ -1,7 +1,7 @@
 """Validate a ticket's run logs + state file and format the report.
 
 What: given a ticket's log directory, checks that the expected log artifacts
-(transitions.log, booley_state.json, progress.json) exist, that the developer
+(transitions.log, booley_state.json, the state record) exist, that the developer
 state file passes its gate checks, and that no expected steps were skipped; then
 renders the result as a human-readable Markdown report.
 
@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .board_layout import state_record_path
 from .constants import STEP_ORDER
 from .paths import existing_human_log_file, existing_runtime_file
 
@@ -97,13 +98,13 @@ def validate_logs(
     missing_files = []
     gate_failures = []
     state_path = existing_runtime_file(logs_dir, slug, "booley_state.json")
-    progress_path = existing_runtime_file(logs_dir, slug, "progress.json")
+    record_path = state_record_path(Path(logs_dir).parent, slug)
     if not state_path.exists():
         missing_files.append({"step": "developer", "file": "booley_state.json"})
     else:
         gate_failures.extend(_validate_state_file(state_path))
-    if not progress_path.exists():
-        missing_files.append({"step": "runtime", "file": "progress.json"})
+    if not record_path.exists():
+        missing_files.append({"step": "runtime", "file": f"state/{slug}.json"})
 
     legacy_steps = [
         step for step in steps_completed if step in STEP_ORDER and step not in {"setup", "summary"}

@@ -28,6 +28,7 @@ from .analytics import (
     usage_entries_to_steps,
 )
 from .archive import op_archive, report_archive_outcome
+from .board_layout import RUNTIME_DEFAULTS, document_stage, read_state_record
 from .constants import VALID_TYPES
 from .evidence import op_collect_evidence
 from .execution import (
@@ -38,12 +39,7 @@ from .execution import (
 )
 from .helpers import detect_project_root, generate_slug
 from .io import scan_all_tickets
-from .lifecycle import (
-    SETTLED_STATUSES,
-    TicketState,
-    document_stage,
-    parse_board_target,
-)
+from .lifecycle import SETTLED_STATUSES, TicketState, parse_board_target
 from .operations import (
     op_activate,
     op_approve,
@@ -389,17 +385,24 @@ def _cmd_update_board(tio, args):
         return _apply_board_update(tio, canonical_slug, args, updates, old_status, old_step)
 
 
+def _runtime_changed(progress: dict) -> bool:
+    """Whether *progress* differs from the defaults beyond its update stamp."""
+    return any(
+        progress[key] != RUNTIME_DEFAULTS[key] for key in RUNTIME_DEFAULTS if key != "last_update"
+    )
+
+
 def _apply_board_update(tio, slug, args, updates, old_status, old_step):
     """Apply field updates and log transition (caller holds lock)."""
     from .io import find_ticket_file
-    from .logs import save_progress
 
     file_path, _ = find_ticket_file(tio.tickets_dir, slug)
     if file_path is None:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return 2
 
-    progress = copy.deepcopy(tio._load_or_bootstrap_progress(slug, file_path))
+    record = read_state_record(tio.tickets_dir, file_path.stem)
+    progress = record.progress() if record is not None else copy.deepcopy(RUNTIME_DEFAULTS)
     if args.reset_steps:
         progress["steps_completed"] = []
     if args.reset_steps_from:
@@ -409,13 +412,17 @@ def _apply_board_update(tio, slug, args, updates, old_status, old_step):
             progress["steps_completed"] = stages[: idx + 1]
 
     spec_updates = tio._apply_updates(progress, updates, args.append_step)
+    if record is None and _runtime_changed(progress):
+        print(f"Error: ticket '{slug}' is a draft and has no runtime state", file=sys.stderr)
+        return 1
     try:
         prepared_ticket = tio._prepare_spec_fields(file_path, spec_updates)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    save_progress(tio.logs_dir, slug, progress)
     tio._publish_spec_fields(file_path, prepared_ticket)
+    if record is not None:
+        tio.commit_state(file_path.stem, record.state, progress)
 
     if args.log:
         new_status = updates.get("status", old_status)

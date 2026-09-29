@@ -15,7 +15,7 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
     - Project directory (.booley_project/ with config skeletons)
-    - Tickets directory tree (board states + logs)
+    - Tickets directory tree (board, state records, logs)
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
     - Pinned Nangate45 download into the per-user cache
@@ -148,7 +148,7 @@ from booley.runtime.project_dir import (
 )
 from booley.runtime.session_issuance import SessionSpecInputs
 from booley.runtime.timefmt import detect_host_timezone
-from booley.ticket_board.lifecycle import required_board_directories
+from booley.ticket_board.board_layout import required_board_directories
 
 # ---------------------------------------------------------------------------
 # Layout constants

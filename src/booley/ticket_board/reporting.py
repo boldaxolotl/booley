@@ -7,6 +7,7 @@ from typing import Any
 
 from .acceptance_journal import JournalState
 from .analytics import compute_step_cost
+from .board_layout import state_root, unreadable_board_documents
 from .constants import (
     PRIORITY_ORDER,
     STEP_ORDER,
@@ -479,8 +480,11 @@ def display_board(
     When *tickets_dir* is given, ticket names become OSC 8 hyperlinks to
     their .md files (clickable in VS Code and other modern terminals).
     """
+    unreadable = unreadable_board_documents(tickets_dir) if tickets_dir is not None else []
     if not tickets:
-        print("Ticket board is empty -- no tickets tracked.")
+        if not unreadable:
+            print("Ticket board is empty -- no tickets tracked.")
+        _print_unreadable_note(unreadable, tickets_dir)
         return
 
     tickets = _sort_tickets(tickets)
@@ -514,3 +518,29 @@ def display_board(
         if (c := counts.get(s, 0)) > 0
     ]
     print(f" {bold(str(len(tickets)))} tickets: {', '.join(parts)}")
+    _print_unreadable_note(unreadable, tickets_dir)
+
+
+def _print_unreadable_note(unreadable: list[tuple[Path, str]], tickets_dir: Path | None) -> None:
+    """Say which Tickets the board could not show because their state record is broken.
+
+    One broken Ticket is named with its reason; several get a single summary line
+    so a damaged state directory does not flood the board.
+    """
+    if not unreadable or tickets_dir is None:
+        return
+    records = state_root(tickets_dir)
+    if len(unreadable) == 1:
+        path, reason = unreadable[0]
+        print(red(f" ! {path.stem} is not shown: {reason}"))
+    else:
+        print(
+            red(
+                f" ! {len(unreadable)} tickets are not shown: "
+                f"their state records in {records} cannot be read"
+            )
+        )
+    print(
+        "   Commands on a broken ticket refuse to run until its state record is "
+        "repaired or removed."
+    )

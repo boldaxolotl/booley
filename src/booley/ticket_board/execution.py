@@ -171,7 +171,7 @@ def classify_tickets(
 ) -> dict[str, list[dict[str, Any]]]:
     """Partition tickets into executable, active, blocked, waiting-on-deps, review, and orphaned lists.
 
-    Waiting tickets live in the waiting/ directory. Queued tickets (in queue/)
+    Waiting tickets are reported as waiting. Queued tickets
     are executable only if all their dependencies are done.
 
     Orphaned tickets are 'running' tickets detected by:

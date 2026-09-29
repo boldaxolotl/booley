@@ -1,4 +1,4 @@
-"""TicketIO -- filesystem-based ticket operations with directory-as-status."""
+"""TicketIO -- locked Ticket operations over board documents and state records (ADR 0065)."""
 
 from __future__ import annotations
 
@@ -42,6 +42,17 @@ class TicketFileSpec:
 
 
 from .acceptance_journal import acceptance_state
+from .board_layout import (
+    RUNTIME_DEFAULTS,
+    StateRecord,
+    document_stage,
+    document_state,
+    read_state_record,
+    runtime_default,
+    state_record_path,
+    ticket_document_path,
+    write_state_record,
+)
 from .constants import RUNTIME_FIELDS
 from .frontmatter import (
     is_v2_ticket_document,
@@ -56,23 +67,8 @@ from .helpers import (
     unlock_fd,
     validate_ticket_slug,
 )
-from .lifecycle import (
-    STATE_BY_STATUS,
-    TicketState,
-    can_transition,
-    document_stage,
-    format_transition_error,
-    ticket_document_path,
-)
-from .logs import (
-    PROGRESS_DEFAULTS,
-    load_progress,
-    progress_default,
-    save_progress,
-)
-from .logs import (
-    append_incident as _append_incident_unlocked,
-)
+from .lifecycle import STATE_BY_STATUS, TicketState, can_transition, format_transition_error
+from .logs import append_incident as _append_incident_unlocked
 from .paths import (
     existing_runtime_file,
     human_log_file,
@@ -90,7 +86,7 @@ from .scanner import find_ticket_file, scan_all_tickets
 
 
 class TicketIO:
-    """Handles filesystem operations for tickets using directories as source of truth."""
+    """Handles Ticket operations; each Ticket's state record is its source of truth."""
 
     LOCK_TIMEOUT: int = 30  # seconds
 
@@ -186,8 +182,8 @@ class TicketIO:
     def find_ticket(self, slug: str) -> dict[str, Any] | None:
         """Find a ticket by slug, parse frontmatter, return dict with status/file/feature_branch.
 
-        Runtime fields are loaded from .runtime/progress.json when available,
-        falling back to frontmatter for backward compatibility.
+        Runtime fields come from the Ticket's state record; a draft has none and
+        reports their defaults.
 
         Returns dict or None.
         """
@@ -250,18 +246,7 @@ class TicketIO:
         if journal_state is not None:
             entry["acceptance_state"] = str(journal_state)
 
-        # Overlay runtime fields from .runtime/progress.json (backward compat fallback)
-        progress = load_progress(self.logs_dir, file_path.stem)
-        if progress is not None:
-            for k in RUNTIME_FIELDS:
-                entry[k] = progress.get(k, progress_default(k))
-        else:
-            # Backward compat defaults when no .runtime/progress.json exists
-            if "steps_completed" not in entry:
-                entry["steps_completed"] = []
-            if "step" not in entry:
-                entry["step"] = ""
-
+        entry.update(self.read_progress(file_path.stem))
         return entry
 
     def _convert_ticket(self, path: Path, slug: str, stage: str):
@@ -350,22 +335,23 @@ class TicketIO:
             raise FileNotFoundError(f"executable Ticket Board entry {slug!r} is unavailable")
         return self._convert_ticket(board_path, slug, "executable")
 
-    def _load_or_bootstrap_progress(self, slug, file_path):
-        """Load .runtime/progress.json, bootstrapping from frontmatter if missing."""
-        progress = load_progress(self.logs_dir, slug)
-        if progress is None:
-            with file_path.open(encoding="utf-8") as f:
-                text = f.read()
-            fields, _ = parse_frontmatter(text)
-            progress = {k: fields.get(k, progress_default(k)) for k in RUNTIME_FIELDS}
-        return progress
+    def read_progress(self, slug: str) -> dict[str, Any]:
+        """Return a copy of the runtime fields of *slug*; defaults for a draft.
+
+        Raises :class:`~booley.ticket_board.board_layout.StateRecordError` for a
+        corrupt state record rather than treating it as a draft.
+        """
+        record = read_state_record(self.tickets_dir, slug)
+        if record is None:
+            return copy.deepcopy(RUNTIME_DEFAULTS)
+        return record.progress()
 
     def _apply_updates(self, progress, updates, append_step=None):
         """Partition updates into spec vs runtime, apply to progress. Returns spec_updates dict."""
         spec_updates = {}
         for k, v in updates.items():
             if k in RUNTIME_FIELDS:
-                progress[k] = progress_default(k) if v is None or v == "" else v
+                progress[k] = runtime_default(k) if v is None or v == "" else v
             else:
                 spec_updates[k] = v
         if append_step:
@@ -445,9 +431,9 @@ class TicketIO:
         self._publish_spec_fields(file_path, self._prepare_spec_fields(file_path, spec_updates))
 
     def move_ticket_file(self, slug: str, destination: TicketState) -> bool:
-        """Move a ticket .md file to *destination* without lifecycle validation."""
+        """Set a Ticket's state to *destination* without lifecycle validation."""
         with self._ticket_lock(slug):
-            file_path, _ = find_ticket_file(
+            file_path, status = find_ticket_file(
                 self.tickets_dir, slug, project_root=self._project_root
             )
             if file_path is None:
@@ -460,13 +446,15 @@ class TicketIO:
                     file=sys.stderr,
                 )
                 return False
-            new_path = ticket_document_path(self.tickets_dir, file_path.stem, destination)
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            if new_path.exists() and new_path != file_path:
-                print(f"Error: destination already exists: {new_path}", file=sys.stderr)
+            source = STATE_BY_STATUS.get(status or "")
+            if self._crosses_draft(slug, source, destination) or self._enqueue_pending(slug):
                 return False
-            shutil.move(str(file_path), str(new_path))
+            self.commit_state(file_path.stem, destination, self.read_progress(file_path.stem))
         return True
+
+    def commit_state(self, slug: str, state: TicketState, progress: dict[str, Any]) -> None:
+        """Publish *state* with *progress* in one atomic record replace (lock held)."""
+        write_state_record(self.tickets_dir, slug, StateRecord(state, progress))
 
     def _validated_destination(
         self,
@@ -476,8 +464,8 @@ class TicketIO:
         destination: TicketState,
         *,
         enforce_lifecycle: bool,
-    ) -> tuple[Path, TicketState | None, TicketState] | None:
-        """Resolve a conflict-free destination and validate its lifecycle edge."""
+    ) -> tuple[TicketState | None, TicketState] | None:
+        """Validate the lifecycle edge from the locked source state to *destination*."""
         source = STATE_BY_STATUS.get(source_status or "")
         if enforce_lifecycle:
             if source is None:
@@ -490,11 +478,42 @@ class TicketIO:
             if not can_transition(source, destination):
                 print(f"Error: {format_transition_error(source, destination)}", file=sys.stderr)
                 return None
-        new_path = ticket_document_path(self.tickets_dir, file_path.stem, destination)
-        if new_path.exists() and new_path != file_path:
-            print(f"Error: destination already exists: {new_path}", file=sys.stderr)
+        if self._crosses_draft(slug, source, destination) or self._enqueue_pending(slug):
             return None
-        return new_path, source, destination
+        return source, destination
+
+    @staticmethod
+    def _crosses_draft(slug: str, source: TicketState | None, destination: TicketState) -> bool:
+        """Refuse a plain state change into or out of draft, and say which verb to use.
+
+        Only enqueue and return-to-draft convert between the draft and executable
+        document forms, so only they may create or delete a state record.
+        """
+        if TicketState.DRAFT not in {source, destination}:
+            return False
+        other = destination if source is TicketState.DRAFT else source
+        print(
+            f"Error: cannot move '{slug}' between draft and "
+            f"{other.status if other else 'unknown'}; use enqueue or return-to-draft",
+            file=sys.stderr,
+        )
+        return True
+
+    def _enqueue_pending(self, slug: str) -> bool:
+        """Refuse to move a Ticket whose enqueue has not finished publishing.
+
+        After a crash, the state record can already exist beside the draft-form
+        document. Only retrying enqueue may finish or roll that back.
+        """
+        from .enqueue_publication import enqueue_pending
+
+        if not enqueue_pending(self._project_root, slug):
+            return False
+        print(
+            f"Error: ticket '{slug}' has an unfinished enqueue; run enqueue again to finish it",
+            file=sys.stderr,
+        )
+        return True
 
     @staticmethod
     def _canonical_transition(
@@ -547,8 +566,8 @@ class TicketIO:
         )
         if file_path is None or source_status != expected_status:
             return False
-        progress = self._load_or_bootstrap_progress(slug, file_path)
-        if progress.get("execution_id", "") != expected_execution_id:
+        progress = self.read_progress(file_path.stem)
+        if progress["execution_id"] != expected_execution_id:
             return False
         resolved = self._validated_destination(
             slug,
@@ -559,10 +578,7 @@ class TicketIO:
         )
         if resolved is None:
             return False
-        new_path, _source, _destination = resolved
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        if file_path.exists():
-            shutil.move(str(file_path), str(new_path))
+        self.commit_state(file_path.stem, TicketState.REVIEW, progress)
         return True
 
     def move_and_update(
@@ -580,8 +596,9 @@ class TicketIO:
     ) -> bool:
         """Atomic move + field update under per-ticket lock.
 
-        Runtime fields are routed to .runtime/progress.json.
-        Spec fields are written to frontmatter before the file move.
+        Runtime fields and the new state are committed together by one atomic
+        replace of the Ticket's state record. Spec fields are written to the
+        document first, so a crash never publishes a state without them.
 
         Args:
             to_state: Destination lifecycle state.
@@ -592,7 +609,7 @@ class TicketIO:
             enforce_lifecycle: Derive the locked source state and reject moves
                                outside the canonical lifecycle graph.
             expected_status: Compare-and-swap guard. When set, reject the move
-                             unless the locked filesystem state still matches.
+                             unless the locked state record still matches.
             expected_execution_id: Reject unless the locked execution generation
                                    matches the caller's activation generation.
             before_move: Optional integrity callback run after compare-and-swap
@@ -616,8 +633,8 @@ class TicketIO:
                 )
                 return False
 
-            progress = self._load_or_bootstrap_progress(slug, file_path)
-            actual_execution_id = progress.get("execution_id", "")
+            progress = self.read_progress(file_path.stem)
+            actual_execution_id = progress["execution_id"]
             if expected_execution_id is not None and actual_execution_id != expected_execution_id:
                 print(
                     f"Error: ticket '{slug}' execution changed concurrently: expected "
@@ -635,7 +652,7 @@ class TicketIO:
             )
             if resolved is None:
                 return False
-            new_path, source, destination = resolved
+            source, destination = resolved
             transition = self._canonical_transition(transition, source, destination)
             if not self._move_prerequisite(slug, destination, before_move):
                 return False
@@ -643,14 +660,8 @@ class TicketIO:
             updated_progress = copy.deepcopy(progress)
             spec_updates = self._apply_updates(updated_progress, updates, append_step)
             prepared_ticket = self._prepare_spec_fields(file_path, spec_updates)
-            save_progress(self.logs_dir, slug, updated_progress)
             self._publish_spec_fields(file_path, prepared_ticket)
-
-            # Move file (.runtime/progress.json stays in logs/<slug>/.runtime/)
-            new_dir = new_path.parent
-            new_dir.mkdir(parents=True, exist_ok=True)
-            if file_path.exists():
-                shutil.move(str(file_path), str(new_path))
+            self.commit_state(file_path.stem, destination, updated_progress)
 
             if transition:
                 self._append_transition_unlocked(slug, *transition)
@@ -664,7 +675,7 @@ class TicketIO:
         execution_id: str,
         owner_pid: int | None,
     ) -> Path:
-        """Perform the locked init work: move, copy, stamp, create progress.
+        """Perform the locked init work: snapshot, stamp, then publish running.
 
         Returns the log_dir path.
         """
@@ -675,34 +686,26 @@ class TicketIO:
         if not fields.get("created"):
             prepared_created = self._prepare_spec_fields(ticket_path, {"created": now_iso()})
 
-        # Move file to board/active/. Guard on identity, not just string
-        # inequality: the source may already BE the destination reached via a
-        # different bind mount of the same dir (devcontainer mounts
-        # .booley_project at both /booley-project and /work/.booley_project),
-        # where a plain shutil.move would raise EXDEV/SameFileError instead of
-        # no-op'ing an already-active ticket (ADR 0028).
-        active_path = ticket_document_path(self.tickets_dir, slug, TicketState.RUNNING)
-        active_path.parent.mkdir(parents=True, exist_ok=True)
-        already_active = active_path.exists() and ticket_path.samefile(active_path)
-        if ticket_path != active_path and not already_active:
-            shutil.move(str(ticket_path), str(active_path))
-
         # Create logs directory and copy ticket
         log_dir = ticket_log_dir(self.logs_dir, slug)
         log_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(active_path), str(log_dir / "ticket.md"))
+        shutil.copy2(str(ticket_path), str(log_dir / "ticket.md"))
 
         # Stamp 'created' in frontmatter (immutable, set once)
-        self._publish_spec_fields(active_path, prepared_created)
+        self._publish_spec_fields(ticket_path, prepared_created)
 
-        # Create .runtime/progress.json with initial runtime state
-        initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
-        initial_progress["step"] = "init"
-        initial_progress["steps_completed"] = []
-        initial_progress["execution_id"] = execution_id
-        initial_progress["execution_owner_pid"] = owner_pid
-        initial_progress["last_update"] = now_iso()
-        save_progress(self.logs_dir, slug, initial_progress)
+        # Publish running with a fresh runtime: the one commit of the pickup.
+        self.commit_state(
+            slug,
+            TicketState.RUNNING,
+            StateRecord.fresh(
+                TicketState.RUNNING,
+                step="init",
+                execution_id=execution_id,
+                execution_owner_pid=owner_pid,
+                last_update=now_iso(),
+            ).progress(),
+        )
 
         # Log transition (lock already held)
         self._append_transition_unlocked(
@@ -717,7 +720,7 @@ class TicketIO:
         execution_id: str = "",
         owner_pid: int | None = None,
     ) -> dict[str, str] | None:
-        """Initialize a fresh ticket: move to active/, create logs/, copy ticket.
+        """Initialize a fresh ticket: mark it running, create logs/, copy ticket.
 
         Updates frontmatter with step, steps_completed, created, last_update.
         Returns dict with slug and logs_dir path, or None if the ticket was
@@ -746,13 +749,38 @@ class TicketIO:
                 print(f"  - {error}", file=sys.stderr)
             return None
 
+        # The state seen before the lock is this caller's claim: a state
+        # change by the time the lock is held means another process took it.
+        observed = self._initializable_state(ticket_path, slug)
+        if observed is None:
+            return None
         with self._ticket_lock(slug):
-            if not ticket_path.exists():
-                print(f"Error: ticket '{slug}' claimed by another process", file=sys.stderr)
+            if not self._still_initializable(ticket_path, slug, observed):
                 return None
             log_dir = self._init_ticket_locked(ticket_path, slug, execution_id, owner_pid)
 
         return {"slug": slug, "logs_dir": str(log_dir)}
+
+    def _initializable_state(self, ticket_path: Path, slug: str) -> TicketState | None:
+        """Return the state of an executable board document, else report why not."""
+        observed = document_state(self.tickets_dir, ticket_path)
+        if observed is None:
+            print(f"Error: {ticket_path} is not a Ticket Board document", file=sys.stderr)
+            return None
+        if observed is TicketState.DRAFT:
+            print(f"Error: ticket '{slug}' is a draft; enqueue it first", file=sys.stderr)
+            return None
+        return observed
+
+    def _still_initializable(self, ticket_path: Path, slug: str, observed: TicketState) -> bool:
+        """Under the lock: the state is the one observed and no enqueue is unfinished."""
+        if (
+            not ticket_path.exists()
+            or document_state(self.tickets_dir, ticket_path) is not observed
+        ):
+            print(f"Error: ticket '{slug}' claimed by another process", file=sys.stderr)
+            return False
+        return not self._enqueue_pending(slug)
 
     def stamp_execution(
         self,
@@ -769,13 +797,13 @@ class TicketIO:
             )
             if file_path is None or status != "running":
                 return False
-            progress = self._load_or_bootstrap_progress(slug, file_path)
-            if progress.get("execution_id", "") != expected_execution_id:
+            progress = self.read_progress(file_path.stem)
+            if progress["execution_id"] != expected_execution_id:
                 return False
             progress["execution_id"] = execution_id
             progress["execution_owner_pid"] = owner_pid
             progress["last_update"] = now_iso()
-            save_progress(self.logs_dir, slug, progress)
+            self.commit_state(file_path.stem, TicketState.RUNNING, progress)
         return True
 
     # Git branch names derived from slugs must fit in filesystem paths;
@@ -794,7 +822,16 @@ class TicketIO:
         if existing is not None:
             print(f"Error: ticket '{slug}' already exists ({status}): {existing}", file=sys.stderr)
             return None
-        file_path = ticket_document_path(self.tickets_dir, slug, TicketState.DRAFT)
+        leftover = state_record_path(self.tickets_dir, slug)
+        if leftover.exists():
+            # A draft has no state record; a leftover one would make the new
+            # document a live Ticket in an unrelated state.
+            print(
+                f"Error: ticket '{slug}' has a state record without a document: {leftover}",
+                file=sys.stderr,
+            )
+            return None
+        file_path = ticket_document_path(self.tickets_dir, slug)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             created = atomic_write_once(file_path, content.encode(), mode=0o644)
@@ -889,12 +926,6 @@ class TicketIO:
 
         ticket_path = file_path
         if ticket_path is None or not ticket_path.exists():
-            for candidate_state in (TicketState.DRAFT, TicketState.QUEUED):
-                candidate = ticket_document_path(self.tickets_dir, slug, candidate_state)
-                if candidate.exists():
-                    ticket_path = candidate
-                    break
-        if ticket_path is None or not ticket_path.exists():
             print(f"Error: ticket file not found for '{slug}'", file=sys.stderr)
             return None, True
         return ticket_path, False
@@ -925,9 +956,6 @@ class TicketIO:
         self._validate_enqueue_journal_basis(journal)
         if journal.state == "prepared":
             journal = publish_enqueue(self._project_root, journal)
-        initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
-        initial_progress["last_update"] = journal.created
-        save_progress(self.logs_dir, journal.slug, initial_progress)
         if journal.state == "published":
             self._append_enqueue_transition_once(journal)
             journal = journal.with_state("transitioned")
@@ -942,7 +970,7 @@ class TicketIO:
 
         path = Path(journal.candidate)
         if not path.is_file():
-            path = Path(journal.destination)
+            path = Path(journal.document)
         document = self._convert_ticket(path, journal.slug, "executable")
         if document.generated.get("machine") != journal.machine:
             raise RuntimeError(
@@ -987,7 +1015,7 @@ class TicketIO:
         on_success: dict | None = None,
         integration_base: str = "",
     ) -> bool:
-        """Stamp created/last_update, validate, and move to queue/ or waiting/.
+        """Stamp created/last_update, validate, and publish as queued or waiting.
 
         Returns True/False.
         """
@@ -1083,8 +1111,6 @@ class TicketIO:
         from .enqueue_publication import prepare_enqueue
 
         created = now_iso()
-        destination_state = TicketState.WAITING if has_unmet else TicketState.QUEUED
-        destination = ticket_document_path(self.tickets_dir, ticket_path.stem, destination_state)
         from .ticket_document import (
             TicketDocument,
             serialize_ticket_document,
@@ -1099,7 +1125,6 @@ class TicketIO:
             self._project_root,
             slug,
             ticket_path,
-            destination,
             content,
             has_unmet=has_unmet,
             created=created,
@@ -1154,9 +1179,7 @@ class TicketIO:
             )
             result = return_to_draft(
                 self._project_root,
-                current_path
-                or ticket_path
-                or ticket_document_path(self.tickets_dir, slug, TicketState.BLOCKED),
+                current_path or ticket_path or ticket_document_path(self.tickets_dir, slug),
                 slug,
                 status=current_status or status or "",
                 logs_dir=self.logs_dir,

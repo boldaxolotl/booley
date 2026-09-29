@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from booley.ticket_board.board_layout import StateRecord, write_state_record
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import (
     existing_human_log_file,
     existing_runtime_file,
@@ -37,7 +39,8 @@ def test_validate_logs_checks_current_runtime_artifacts(tmp_path):
     human = logs_dir / "slug" / "human-logs"
     runtime.mkdir(parents=True)
     human.mkdir()
-    (runtime / "progress.json").write_text("{}", encoding="utf-8")
+    # Runtime fields live in the state record beside logs/ (tickets dir = tmp_path).
+    write_state_record(tmp_path, "slug", StateRecord.fresh(TicketState.RUNNING))
     (human / "transitions.log").write_text("", encoding="utf-8")
     (runtime / "booley_state.json").write_text(
         json.dumps(
@@ -59,11 +62,22 @@ def test_validate_logs_checks_current_runtime_artifacts(tmp_path):
     assert result["gate_failures"] == []
 
 
+def test_validate_logs_reports_missing_state_record(tmp_path):
+    logs_dir = tmp_path / "logs"
+    runtime = logs_dir / "slug" / ".runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "booley_state.json").write_text(json.dumps({"slug": "slug"}), encoding="utf-8")
+
+    result = validate_logs(logs_dir, "slug", "bugfix", ["setup", "summary"])
+
+    assert result["missing_files"] == [{"step": "runtime", "file": "state/slug.json"}]
+
+
 def test_validate_logs_flags_empty_slug_and_optional_only_criteria(tmp_path):
     logs_dir = tmp_path / "logs"
     runtime = logs_dir / "slug" / ".runtime"
     runtime.mkdir(parents=True)
-    (runtime / "progress.json").write_text("{}", encoding="utf-8")
+    write_state_record(tmp_path, "slug", StateRecord.fresh(TicketState.RUNNING))
     (runtime / "booley_state.json").write_text(
         json.dumps(
             {

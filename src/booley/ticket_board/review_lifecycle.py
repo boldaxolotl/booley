@@ -27,12 +27,11 @@ from booley.ticket_board.acceptance_ledger import (
 )
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
-from booley.ticket_board.logs import load_progress
 from booley.ticket_board.persistence import atomic_replace_bytes
 from booley.ticket_board.ticket_jobs import active_ticket_jobs, wait_for_ticket_jobs
 
 from . import review_preparation as prep
-from .lifecycle import TicketState, ticket_document_path
+from .lifecycle import TicketState
 from .review_records import (
     ReviewEntryError,
     ReviewInspection,
@@ -69,7 +68,7 @@ def _write(path: Path, value: dict[str, Any]) -> None:
 
 
 def _quiescent(tio: TicketIO, slug: str) -> None:
-    progress = load_progress(tio.logs_dir, slug) or {}
+    progress = tio.read_progress(slug)
     owner = progress.get("execution_owner_pid")
     if isinstance(owner, int) and owner != os.getpid() and is_pid_alive(owner):
         raise ReviewEntryError("ticket execution owner is still running")
@@ -325,11 +324,7 @@ def _abandon_publication(tio, slug, operation):
     board = tio.inspect_ticket(slug)
     if board and board["status"] == "review" and operation["entry"]["source_status"] == "blocked":
         source = tio.tickets_dir / board["file"]
-        target = ticket_document_path(tio.tickets_dir, source.stem, TicketState.BLOCKED)
-        if target.exists():
-            raise ReviewEntryError("blocked recovery destination already exists")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        source.replace(target)
+        tio.commit_state(source.stem, TicketState.BLOCKED, tio.read_progress(source.stem))
     if prior is None:
         entry_path(log_dir).unlink(missing_ok=True)
     else:

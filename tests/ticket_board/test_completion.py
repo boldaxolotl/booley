@@ -37,6 +37,7 @@ from booley.ticket_board.ticket_baseline import (
     ticket_baseline_from_machine,
     ticket_machine_fields,
 )
+from tests.ticket_board.conftest import place_ticket
 
 ContractParticipant = BasisParticipant
 
@@ -125,14 +126,15 @@ class _TicketIO:
         self.tickets_dir = root / ".booley_project" / "tickets"
         self.logs_dir = self.tickets_dir / "logs"
         self.entry: dict[str, Any] = {
-            "file": "board/review/change-target.md",
+            "file": "board/change-target.md",
             "status": "review",
             "branch": "main",
             "machine": basis.ticket_identity(),
         }
-        ticket = self.tickets_dir / str(self.entry["file"])
-        ticket.parent.mkdir(parents=True, exist_ok=True)
-        ticket.write_text(
+        place_ticket(
+            self.tickets_dir,
+            "change-target",
+            "review",
             format_frontmatter(
                 {
                     "branch": "main",
@@ -140,7 +142,6 @@ class _TicketIO:
                 },
                 "## Description\n\nTest completion.\n",
             ),
-            encoding="utf-8",
         )
         self.transitions: list[tuple[str, str, str, str]] = []
 
@@ -244,8 +245,8 @@ def _paired_completion_alias(
 ) -> tuple[Path, Path, _TicketIO]:
     root, project, tio, _participants = _paired_completion(tmp_path, monkeypatch)
     runtime_alias = tmp_path / "runtime-project-alias"
-    (runtime_alias / "tickets" / "board" / "queue").mkdir(parents=True)
-    (runtime_alias / "tickets" / "board" / "review").mkdir()
+    (runtime_alias / "tickets" / "board").mkdir(parents=True)
+    (runtime_alias / "tickets" / "state").mkdir()
 
     fake_bind_mounts(project, (runtime_alias,))
     tio.tickets_dir = runtime_alias / "tickets"
@@ -476,7 +477,7 @@ def test_complete_rejects_retired_integration_metadata(
 ) -> None:
     tio = _BoundaryTicketIO(
         {
-            "file": "board/review/ambiguous.md",
+            "file": "board/ambiguous.md",
             "status": "review",
             "branch": "main",
             "integration_base": "main~1",
@@ -1857,9 +1858,9 @@ def test_complete_preserves_unrelated_untracked_project_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, project, tio, participants = _paired_completion(tmp_path, monkeypatch)
-    other_ticket = project / "tickets" / "board" / "queue" / "other-ticket.md"
+    other_ticket = project / "tickets" / "board" / "other-ticket.md"
     diagnostic = project / "logs" / "runner-diagnostics.log"
-    other_ticket.parent.mkdir(parents=True)
+    other_ticket.parent.mkdir(parents=True, exist_ok=True)
     diagnostic.parent.mkdir(parents=True)
     other_ticket_bytes = b"---\nstatus: queue\n---\n"
     diagnostic_bytes = b"pre-intake failure details\n"
@@ -2263,7 +2264,7 @@ def test_complete_accepts_project_board_transition_through_bind_mount_alias(
 ) -> None:
     _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
 
-    assert (project / "tickets" / "board" / "review" / "change-target.md").is_file()
+    assert (project / "tickets" / "board" / "change-target.md").is_file()
     assert complete_review_ticket(tio, "change-target", _Policy()) is True
 
 
@@ -2273,7 +2274,7 @@ def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
     fake_bind_mounts: Callable[[Path, Collection[Path]], None],
 ) -> None:
     _root, project, tio = _paired_completion_alias(tmp_path, monkeypatch, fake_bind_mounts)
-    _git(project, "add", "tickets/board/review/change-target.md")
+    _git(project, "add", "tickets/board/change-target.md")
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert tio.entry["status"] == "review"
@@ -2304,15 +2305,15 @@ def test_complete_rejects_tracked_project_edit_through_bind_mount_alias(
     assert tio.entry["status"] == "review"
 
 
-def test_complete_rejects_unrelated_tracked_ticket_board_move(
+def test_complete_rejects_unrelated_tracked_ticket_board_edit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, project, _tio, participants = _paired_completion(tmp_path, monkeypatch)
-    queued = project / "tickets" / "board" / "queue" / "other-ticket.md"
-    queued.parent.mkdir(parents=True)
-    queued.write_text("other ticket\n", encoding="utf-8")
-    _git(project, "add", "tickets/board/queue/other-ticket.md")
+    other = project / "tickets" / "board" / "other-ticket.md"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("other ticket\n", encoding="utf-8")
+    _git(project, "add", "tickets/board/other-ticket.md")
     _git(project, "commit", "-m", "track another queued ticket")
     project_base = _git(project, "rev-parse", "HEAD")
     _git(project, "switch", "booley-ticket/change-target")
@@ -2328,10 +2329,10 @@ def test_complete_rejects_unrelated_tracked_ticket_board_move(
         ),
     )
     tio = _TicketIO(root, _contract(root, participants))
-    moved = project / "tickets" / "board" / "review" / "other-ticket.md"
-    queued.rename(moved)
+    # Only this Ticket's own board document may change during completion.
+    other.write_text("other ticket, edited\n", encoding="utf-8")
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
     assert tio.entry["status"] == "review"
-    assert moved.read_text(encoding="utf-8") == "other ticket\n"
+    assert other.read_text(encoding="utf-8") == "other ticket, edited\n"
     assert acceptance_impl._ref_commit(project, "refs/heads/main") == project_base

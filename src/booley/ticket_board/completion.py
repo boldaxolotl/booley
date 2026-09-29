@@ -19,7 +19,6 @@ from .acceptance_journal import (
     AcceptanceRequest,
     advance_acceptance,
 )
-from .lifecycle import TicketState, ticket_document_path
 from .ticket_baseline import TicketBaseline, TicketBaselineError
 from .validation import retired_ticket_field_errors
 
@@ -92,18 +91,15 @@ def _request(
     cleanup: bool,
     expected_sources: Mapping[str, str] | None = None,
 ) -> AcceptanceRequest:
-    ticket_slug = Path(str(entry["file"])).stem
-    allowed_board_rename = (
-        ticket_document_path(tio.tickets_dir, ticket_slug, TicketState.QUEUED),
-        tio.tickets_dir / str(entry["file"]),
-    )
     return AcceptanceRequest(
         root=Path(tio._project_root).resolve(),
         slug=slug,
         basis=basis,
         cleanup=cleanup,
         ticket_status=entry["status"],
-        allowed_board_rename=allowed_board_rename,
+        # State changes no longer rename the document (ADR 0065), so there is
+        # no board rename to exempt; phase 4 removes the parameter.
+        allowed_board_rename=None,
         expected_sources=expected_sources,
     )
 

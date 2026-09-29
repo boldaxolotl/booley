@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from tests.ticket_board.conftest import publish_handoff_snapshot
+from tests.ticket_board.conftest import place_ticket, publish_handoff_snapshot
 
 # Import from the scripts directory (one level up from unit/)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -27,7 +27,6 @@ from datetime import UTC
 
 from booley.ticket_board import (
     PRIORITY_ORDER,
-    PROGRESS_DEFAULTS,
     STEP_ORDER,
     VALID_PRIORITIES,
     TicketIO,
@@ -48,7 +47,6 @@ from booley.ticket_board import (
     format_usage_report,
     format_validate_logs_report,
     generate_slug,
-    load_progress,
     main,
     next_from_planned,
     no_large_area_increase,
@@ -68,7 +66,6 @@ from booley.ticket_board import (
     parse_transitions_log,
     parse_usage_log,
     resume_detect,
-    save_progress,
     scan_all_tickets,
     select_mutation_config,
     update_frontmatter,
@@ -83,8 +80,16 @@ from booley.ticket_board import ticket_document as ticket_document_module
 
 # Internal helpers imported directly from source modules for testing
 from booley.ticket_board.analytics import _match_pricing
+from booley.ticket_board.board_layout import (
+    RUNTIME_DEFAULTS,
+    StateRecord,
+    read_state_record,
+    state_record_path,
+    ticket_document_path,
+    write_state_record,
+)
 from booley.ticket_board.constants import RUNTIME_FIELDS
-from booley.ticket_board.lifecycle import TicketState
+from booley.ticket_board.lifecycle import TicketState, parse_board_target
 from booley.ticket_board.paths import (
     STEP_DIR_MAP,
     human_log_file,
@@ -98,7 +103,6 @@ from booley.ticket_board.paths import (
 _TEST_RUNTIME_FILENAMES = {
     "booley_state.json",
     "display.jsonl",
-    "progress.json",
     "status.json",
     "ticket.lock",
 }
@@ -147,11 +151,11 @@ def _synthetic_non_git_ticket_view(monkeypatch):
             with original_context(root, slug, stage) as resolved:
                 yield resolved
             return
-        candidates = list(Path(root).glob(f"tickets/board/*/{slug}.md"))
-        candidates.extend(Path(root).glob(f"board/*/{slug}.md"))
+        candidates = list(Path(root).glob(f"tickets/board/{slug}.md"))
+        candidates.extend(Path(root).glob(f"board/{slug}.md"))
         configured_root = Path(os.environ.get("BOOLEY_PROJECT_DIR", root))
-        candidates.extend(configured_root.glob(f"tickets/board/*/{slug}.md"))
-        candidates.extend(configured_root.glob(f"board/*/{slug}.md"))
+        candidates.extend(configured_root.glob(f"tickets/board/{slug}.md"))
+        candidates.extend(configured_root.glob(f"board/{slug}.md"))
         stage = (
             "executable"
             if any("machine:" in path.read_text(encoding="utf-8") for path in candidates)
@@ -189,20 +193,10 @@ def _synthetic_non_git_ticket_view(monkeypatch):
 
 
 def make_tio(tmp_path):
-    """Create a tickets dir with subdirectories and return a TicketIO instance."""
+    """Create a tickets dir with its board, state, and logs dirs; return a TicketIO."""
     tickets_dir = tmp_path / "tickets"
-    for d in [
-        "board/drafts",
-        "board/queue",
-        "board/waiting",
-        "board/active",
-        "board/blocked",
-        "board/review",
-        "board/done",
-        "board/archived",
-    ]:
+    for d in ["board", "state", "logs"]:
         (tickets_dir / d).mkdir(parents=True, exist_ok=True)
-    (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
     # Pin project_root: the bare tmp/tickets layout matches neither supported
     # convention, so TicketIO's inference would walk up to the SHARED pytest
     # tmp base — where stale .core files from other tests' retained runs leak
@@ -226,12 +220,7 @@ def make_ticket_file(tio, subdir, slug, content=None):
             "---\n"
             "## Description\nSome work.\n"
         )
-    # Normalize bare dir names to board/ prefix
-    d = tio.tickets_dir / subdir
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{slug}.md"
-    p.write_text(content, encoding="utf-8")
-    return p
+    return place_ticket(tio.tickets_dir, slug, subdir, content)
 
 
 def write_simple_v2_ticket(path, summary, *, priority=None, feature_branch=None, dependencies=()):
@@ -292,14 +281,47 @@ def write_stage_file(logs_dir, slug, stage, filename, content="# placeholder"):
     (d / filename).write_text(content, encoding="utf-8")
 
 
+def board_path(tickets_dir, slug, board_name):
+    """Record *slug* as being in *board_name* and return its board document path."""
+    state = parse_board_target(board_name)
+    assert state is not None and state is not TicketState.DRAFT, board_name
+    write_state_record(tickets_dir, slug, StateRecord.fresh(state))
+    path = ticket_document_path(tickets_dir, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def record_state(tickets_dir, slug):
+    """Return *slug*'s state from its state record, or None for a draft."""
+    record = read_state_record(tickets_dir, slug)
+    return None if record is None else record.state
+
+
+def load_progress(logs_dir, slug):
+    """Return the runtime fields of *slug*'s state record, or None for a draft."""
+    record = read_state_record(Path(logs_dir).parent, slug)
+    return None if record is None else record.progress()
+
+
+def save_progress(logs_dir, slug, updates):
+    """Merge *updates* into the runtime fields of *slug*'s (non-draft) state record."""
+    tickets_dir = Path(logs_dir).parent
+    record = read_state_record(tickets_dir, slug)
+    assert record is not None, f"{slug} is a draft and has no state record"
+    write_state_record(tickets_dir, slug, record.with_runtime(updates))
+
+
 def make_progress(tio, slug, progress_fields=None):
-    """Create progress.json for a ticket with optional runtime field overrides."""
+    """Set *slug*'s state-record runtime fields to defaults plus overrides."""
     import copy
 
-    progress = copy.deepcopy(PROGRESS_DEFAULTS)
+    progress = copy.deepcopy(RUNTIME_DEFAULTS)
     if progress_fields:
         progress.update(progress_fields)
     save_progress(tio.logs_dir, slug, progress)
+    # Tests lay runtime files (locks, booley_state.json) beside the progress;
+    # the old progress.json write created this directory as a side effect.
+    runtime_file(tio.logs_dir, slug, "ticket.lock").parent.mkdir(parents=True, exist_ok=True)
     return progress
 
 
@@ -340,11 +362,7 @@ def make_ticket_in_dir(
 
     content = "---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n\n" + body
 
-    # Normalize bare dir names to board/ prefix
-    d = tio.tickets_dir / subdir
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{slug}.md"
-    p.write_text(content, encoding="utf-8")
+    p = place_ticket(tio.tickets_dir, slug, subdir, content)
     if runtime:
         make_progress(tio, slug, runtime)
     return p
@@ -1445,7 +1463,7 @@ class TestScanAllTickets:
         assert t["summary"] == "t1"
         assert t["type"] == "feature"
         assert t["status"] == "queued"
-        assert t["file"] == "board/queue/t1.md"
+        assert t["file"] == "board/t1.md"
 
     def test_done_ticket_criteria_come_from_accepted_snapshot(self, tmp_path):
         from booley.criteria.state import DevelopmentState
@@ -1509,7 +1527,7 @@ class TestTicketIOFindTicket:
         t = tio.find_ticket("my-ticket")
         assert t is not None
         assert t["status"] == "queued"
-        assert t["file"] == "board/queue/my-ticket.md"
+        assert t["file"] == "board/my-ticket.md"
 
     def test_not_found(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -1521,8 +1539,8 @@ class TestTicketIOMoveTicketFile:
         tio = make_tio(tmp_path)
         make_ticket_file(tio, "queue", "t1")
         tio.move_ticket_file("t1", TicketState.RUNNING)
-        assert (tio.tickets_dir / "board" / "active" / "t1.md").exists()
-        assert not (tio.tickets_dir / "board" / "queue" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is TicketState.RUNNING
+        assert (tio.tickets_dir / "board" / "t1.md").exists()
 
     def test_file_accessible_after_move(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -1565,8 +1583,8 @@ class TestOpClaim:
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "queue", "t1")
         assert op_claim(tio, "t1") is True
-        assert (tio.tickets_dir / "board" / "active" / "t1.md").exists()
-        assert not (tio.tickets_dir / "board" / "queue" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is TicketState.RUNNING
+        assert record_state(tio.tickets_dir, "t1") is not TicketState.QUEUED
         log = human_log_file(tio.logs_dir, "t1", "transitions.log").read_text(encoding="utf-8")
         assert "claimed for execution" in log
 
@@ -1599,8 +1617,8 @@ class TestOpBlock:
         make_progress(tio, "t1", {"step": "planning"})
         op_block(tio, "t1", "need spec clarification", "planning")
         # File moved
-        assert (tio.tickets_dir / "board" / "blocked" / "t1.md").exists()
-        # Runtime fields updated in progress.json
+        assert record_state(tio.tickets_dir, "t1") is TicketState.BLOCKED
+        # Runtime fields updated in the state record
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
         assert status == "blocked"
         progress = load_progress(tio.logs_dir, "t1")
@@ -1617,7 +1635,7 @@ class TestOpFail:
         make_ticket_in_dir(tio, "active", "t1")
         make_progress(tio, "t1", {"step": "sim-debug-loop"})
         op_fail(tio, "t1", "sim timeout", "sim-debug-loop")
-        assert (tio.tickets_dir / "board" / "blocked" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is TicketState.BLOCKED
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
         assert status == "blocked"
         progress = load_progress(tio.logs_dir, "t1")
@@ -1814,14 +1832,14 @@ class TestOpHandoff:
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
         assert op_handoff(tio, "t1") is False
-        assert not (tio.tickets_dir / "board" / "review" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is not TicketState.REVIEW
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
         assert status == "running"
 
     def test_rejects_stale_execution_generation(self, tmp_path, capsys):
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
-        progress = load_progress(tio.logs_dir, "t1") or dict(PROGRESS_DEFAULTS)
+        progress = load_progress(tio.logs_dir, "t1") or dict(RUNTIME_DEFAULTS)
         progress["step"] = "summary"
         progress["steps_completed"] = ["setup", "planning", "summary"]
         progress["execution_id"] = "current-run"
@@ -1871,7 +1889,7 @@ class TestOpHandoff:
         result = op_handoff(tio, "t2")
         assert result is False
         # Ticket should NOT have moved to review
-        assert not (tio.tickets_dir / "board" / "review" / "t2.md").exists()
+        assert record_state(tio.tickets_dir, "t2") is not TicketState.REVIEW
 
     def test_handoff_blocked_with_missing_stages(self, tmp_path):
         """Handoff must fail if steps_completed has stages not in transitions.log."""
@@ -1915,7 +1933,7 @@ class TestOpHandoff:
         )
         result = op_handoff(tio, "t4")
         assert result is True
-        assert (tio.tickets_dir / "board" / "review" / "t4.md").exists()
+        assert record_state(tio.tickets_dir, "t4") is TicketState.REVIEW
 
     def test_handoff_with_extra_stages_in_transitions(self, tmp_path, monkeypatch):
         """Handoff succeeds when transitions.log has all steps_completed covered."""
@@ -1960,12 +1978,12 @@ class TestInitTicket:
             v2=True,
         )
         before = queued.read_text(encoding="utf-8")
-        result = tio.init_ticket(str(tio.tickets_dir / "board" / "queue" / "fix-fsm-bug.md"))
+        result = tio.init_ticket(str(tio.tickets_dir / "board" / "fix-fsm-bug.md"))
         assert result is not None
         assert result["slug"] == "fix-fsm-bug"
         # File moved to active/
-        assert (tio.tickets_dir / "board" / "active" / "fix-fsm-bug.md").exists()
-        active = tio.tickets_dir / "board" / "active" / "fix-fsm-bug.md"
+        assert record_state(tio.tickets_dir, "fix-fsm-bug") is TicketState.RUNNING
+        active = tio.tickets_dir / "board" / "fix-fsm-bug.md"
         with ticket_document_module.ticket_conversion_context(
             tmp_path, "fix-fsm-bug", "executable"
         ) as ctx:
@@ -1988,7 +2006,7 @@ class TestInitTicket:
             tio.init_ticket(queued)
 
         assert queued.is_file()
-        assert not (tio.tickets_dir / "board/active/invalid-v2.md").exists()
+        assert record_state(tio.tickets_dir, "invalid-v2") is TicketState.QUEUED
         assert not (tio.logs_dir / "invalid-v2/ticket.md").exists()
 
     def test_init_slug_uses_filename_not_summary(self, tmp_path):
@@ -2010,7 +2028,7 @@ class TestInitTicket:
             v2=True,
         )
         result = tio.init_ticket(
-            str(tio.tickets_dir / "board" / "queue" / "fix-cm3-word-count-false-positive.md")
+            str(tio.tickets_dir / "board" / "fix-cm3-word-count-false-positive.md")
         )
         assert result is not None
         # Slug must be filename stem, NOT the truncated generate_slug output
@@ -2054,15 +2072,13 @@ class TestEnqueueTicket:
             "---\n"
             "## Description\nSome work.\n"
         )
-        queue_dir = tio.tickets_dir / "board" / "queue"
-        queue_dir.mkdir(parents=True, exist_ok=True)
-        (queue_dir / "add-thing.md").write_text(content, encoding="utf-8")
+        path = place_ticket(tio.tickets_dir, "add-thing", "queue", content)
 
         result = tio.enqueue_ticket(
             "add-thing", "A completely different summary here", "feature", "master"
         )
         assert result is False
-        fields, _ = parse_frontmatter((queue_dir / "add-thing.md").read_text(encoding="utf-8"))
+        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert fields.get("created") is None
 
     def test_enqueue_transition_log(self, tmp_path):
@@ -2086,7 +2102,7 @@ class TestCLI:
     def _patch_tickets_dir(self, tmp_path):
         """Create a tickets dir with subdirs and return the path."""
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
         return tickets_dir
@@ -2974,7 +2990,7 @@ class TestOpReset:
 
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
         assert status == "queued"
-        # op_reset wipes logs then calls reset_progress -> PROGRESS_DEFAULTS
+        # op_reset wipes logs then calls reset_progress -> RUNTIME_DEFAULTS
         progress = load_progress(tio.logs_dir, "my-ticket")
         assert progress["step"] == ""  # reset to default
         assert progress["steps_completed"] == []
@@ -3223,7 +3239,7 @@ class TestOpReset:
         op_reset(tio, "my-ticket")
 
         # Log dir should exist but be empty except transitions.log,
-        # progress.json, ticket.lock, and runs/ (archived artifacts).
+        # ticket.lock, and runs/ (archived artifacts).
         assert log_dir.exists()
         allowed = {".runtime", "human-logs", "runs"}
         remaining = [f.name for f in log_dir.iterdir() if f.name not in allowed]
@@ -3370,8 +3386,8 @@ class TestMoveAndUpdate:
         assert status == "blocked"
         progress = load_progress(tio.logs_dir, "t1")
         assert progress["blocked_reason"] == "need info"
-        assert (tio.tickets_dir / "board" / "blocked" / "t1.md").exists()
-        assert not (tio.tickets_dir / "board" / "active" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is TicketState.BLOCKED
+        assert record_state(tio.tickets_dir, "t1") is not TicketState.RUNNING
 
     def test_clears_fields_with_none(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -3508,10 +3524,10 @@ class TestOpArchive:
         archived = op_archive(tio)
 
         assert archived.archived == ["done ticket"]
-        assert not (tio.tickets_dir / "board" / "done" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is not TicketState.DONE
         assert not (tio.logs_dir / "t1").exists()
         # active ticket should still exist
-        assert (tio.tickets_dir / "board" / "active" / "t2.md").exists()
+        assert record_state(tio.tickets_dir, "t2") is TicketState.RUNNING
 
     def test_keep_logs(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -3663,11 +3679,11 @@ class TestCLIUpdateBoardWithLog:
 
     def test_update_board_with_log(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
-        # Create a ticket in active/ with frontmatter + progress.json
+        # Create a running ticket with frontmatter + state-record progress
         tio = TicketIO(tickets_dir)
         make_ticket_in_dir(tio, "active", "t1")
         make_progress(tio, "t1", {"step": "planning", "steps_completed": ["setup"]})
@@ -3724,7 +3740,7 @@ class TestCLIUpdateBoardWithLog:
         tio = make_tio(tmp_path)
         ticket = make_ticket_in_dir(tio, "active", "t1", v2=True)
         make_progress(tio, "t1", {"step": "planning"})
-        progress_path = runtime_file(tio.logs_dir, "t1", "progress.json")
+        progress_path = state_record_path(tio.tickets_dir, "t1")
         before_ticket = ticket.read_bytes()
         before_progress = progress_path.read_bytes()
 
@@ -3746,7 +3762,8 @@ class TestCLIUpdateBoardWithLog:
         assert progress_path.read_bytes() == before_progress
         assert not human_log_file(tio.logs_dir, "t1", "transitions.log").exists()
 
-    def test_update_board_runtime_field_is_valid_for_v2_draft(self, tmp_path):
+    def test_update_board_runtime_field_is_refused_for_v2_draft(self, tmp_path, capsys):
+        """A draft has no state record, so it has no runtime fields to set."""
         tio = make_tio(tmp_path)
         ticket = make_ticket_in_dir(tio, "drafts", "draft", v2=True)
         before = ticket.read_bytes()
@@ -3754,9 +3771,10 @@ class TestCLIUpdateBoardWithLog:
         with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tio.tickets_dir):
             rc = main(["update-board", "draft", "--set", "step=planning"])
 
-        assert rc == 0
+        assert rc == 1
+        assert "is a draft and has no runtime state" in capsys.readouterr().err
         assert ticket.read_bytes() == before
-        assert load_progress(tio.logs_dir, "draft")["step"] == "planning"
+        assert not state_record_path(tio.tickets_dir, "draft").exists()
 
 
 class TestCLIMoveTicket:
@@ -3764,7 +3782,7 @@ class TestCLIMoveTicket:
 
     def test_move_ticket(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -3774,7 +3792,7 @@ class TestCLIMoveTicket:
         with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
             rc = main(argv=["move-ticket", "t1", "--to", "active"])
         assert rc == 0
-        assert (tickets_dir / "board" / "active" / "t1.md").exists()
+        assert record_state(tickets_dir, "t1") is TicketState.RUNNING
 
     def test_move_ticket_cannot_bypass_review_reset(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
@@ -3797,7 +3815,7 @@ class TestCLIMoveTicket:
             rc = main(argv=["move-ticket", "t1", "--to", "queue"])
 
         assert rc == 1
-        assert (tickets_dir / "board" / "review" / "t1.md").exists()
+        assert record_state(tickets_dir, "t1") is TicketState.REVIEW
         assert "Use 'reset' for a clean run" in capsys.readouterr().err
 
 
@@ -3806,7 +3824,7 @@ class TestCLIUsageEndToEnd:
 
     def test_usage_with_slug(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -3854,7 +3872,7 @@ class TestCLIUsageEndToEnd:
     def test_usage_slug_only_auto_discover(self, tmp_path, capsys):
         """When only --slug is given (no positional transcript), discover transcripts from stages/."""
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -3970,7 +3988,7 @@ class TestCLIUsageEndToEnd:
     def test_usage_no_transcript_no_slug_errors(self, tmp_path, capsys):
         """Error when neither transcript nor --slug is provided."""
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -3986,7 +4004,7 @@ class TestCLIArchive:
 
     def test_archive_cli(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -4000,9 +4018,9 @@ class TestCLIArchive:
         output = capsys.readouterr().out
         assert "Done ticket" in output
         # done ticket should be removed
-        assert not (tickets_dir / "board" / "done" / "t1.md").exists()
+        assert record_state(tickets_dir, "t1") is not TicketState.DONE
         # active ticket should still exist
-        assert (tickets_dir / "board" / "active" / "t2.md").exists()
+        assert record_state(tickets_dir, "t2") is TicketState.RUNNING
 
 
 class TestInitAlreadyActive:
@@ -4017,7 +4035,7 @@ class TestInitAlreadyActive:
             extra_fields={"summary": "Fix FSM bug"},
             v2=True,
         )
-        result = tio.init_ticket(str(tio.tickets_dir / "board" / "active" / "fix-fsm-bug.md"))
+        result = tio.init_ticket(str(tio.tickets_dir / "board" / "fix-fsm-bug.md"))
         # Should succeed (idempotent), not crash
         assert result is not None
         assert result["slug"] == "fix-fsm-bug"
@@ -4221,7 +4239,7 @@ class TestCLIEnqueueOnSuccess:
     def test_cli_enqueue_duplicate_returns_2(self, tmp_path, capsys):
         """Enqueue with pre-existing ticket file returns exit code 2 (duplicate guard)."""
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -4241,7 +4259,7 @@ class TestCLIEnqueueOnSuccess:
     def test_cli_enqueue_no_file_returns_2(self, tmp_path, capsys):
         """Enqueue when no ticket file exists returns exit code 2."""
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -4256,7 +4274,7 @@ class TestCLIApproveBoundary:
 
     def test_cli_approve_custom_actor_still_requires_acceptance(self, tmp_path, capsys):
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -4368,10 +4386,8 @@ class TestValidateLogs:
             ),
             encoding="utf-8",
         )
-        (runtime_dir / "progress.json").write_text(
-            json.dumps({"step": "", "steps_completed": []}),
-            encoding="utf-8",
-        )
+        # The Ticket's runtime fields live in its state record beside logs/.
+        write_state_record(tmp_path, slug, StateRecord.fresh(TicketState.RUNNING))
         if meta:
             _test_save_step_meta(logs_dir, slug, meta)
         return logs_dir
@@ -4587,7 +4603,7 @@ class TestCollectEvidence:
 
     def _setup_tickets_dir(self, tmp_path):
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
         return tickets_dir
@@ -4619,7 +4635,7 @@ class TestValidateLogsCLI:
 
     def _setup_tickets_dir(self, tmp_path):
         tickets_dir = tmp_path / "tickets"
-        for d in ["drafts", "queue", "waiting", "active", "blocked", "review", "done", "archived"]:
+        for d in ["board", "state"]:
             (tickets_dir / d).mkdir(parents=True, exist_ok=True)
         (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
         return tickets_dir
@@ -4630,7 +4646,7 @@ class TestValidateLogsCLI:
         make_ticket_in_dir(tio, "done", "t1", extra_fields={"type": "feature"})
         import copy
 
-        p = copy.deepcopy(PROGRESS_DEFAULTS)
+        p = copy.deepcopy(RUNTIME_DEFAULTS)
         p["steps_completed"] = ["setup", "planning"]
         save_progress(tickets_dir / "logs", "t1", p)
 
@@ -4656,7 +4672,7 @@ class TestValidateLogsCLI:
         make_ticket_in_dir(tio, "done", "t1", extra_fields={"type": "feature"})
         import copy
 
-        p2 = copy.deepcopy(PROGRESS_DEFAULTS)
+        p2 = copy.deepcopy(RUNTIME_DEFAULTS)
         p2["steps_completed"] = [
             "setup",
             "planning",
@@ -4840,7 +4856,8 @@ class TestDraftsDirectory:
         )
         path = tio.create_ticket_document("new-ticket", content)
         assert path is not None
-        assert path.parent.name == "drafts"
+        assert path == tio.tickets_dir / "board" / "new-ticket.md"
+        assert record_state(tio.tickets_dir, "new-ticket") is None
         assert path.read_text(encoding="utf-8") == content
 
     def test_scan_draft_status(self, tmp_path):
@@ -5028,7 +5045,7 @@ class TestEnqueueAppliesParams:
                 "master",
                 on_success=on_success,
             )
-        path = tio.tickets_dir / "board" / "queue" / "t1.md"
+        path = tio.tickets_dir / "board" / "t1.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert result is False
         assert fields["on_success"] == ["review"]
@@ -5039,7 +5056,7 @@ class TestEnqueueAppliesParams:
         # Bypass the duplicate guard so enqueue_ticket actually stamps the file.
         with patch("booley.ticket_board.io.find_ticket_file", return_value=(None, None)):
             tio.enqueue_ticket("t2", "t2", "feature", "master")
-        path = tio.tickets_dir / "board" / "queue" / "t2.md"
+        path = tio.tickets_dir / "board" / "t2.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert fields["on_success"] == ["review"]
 
@@ -5240,9 +5257,7 @@ class TestFrontmatterPriority:
 class TestScanTicketsPriority:
     def test_priority_copied_from_frontmatter(self, tmp_path):
         """scan_all_tickets picks up priority from ticket files."""
-        queue = tmp_path / "board" / "queue"
-        queue.mkdir(parents=True)
-        ticket = queue / "test-ticket.md"
+        ticket = board_path(tmp_path, "test-ticket", "queue")
         write_simple_v2_ticket(ticket, "test", priority="high")
         tickets = scan_all_tickets(tmp_path)
         assert len(tickets) == 1
@@ -5250,9 +5265,7 @@ class TestScanTicketsPriority:
 
     def test_missing_priority_not_in_entry(self, tmp_path):
         """Tickets without priority don't get a priority key in the entry."""
-        queue = tmp_path / "board" / "queue"
-        queue.mkdir(parents=True)
-        ticket = queue / "test-ticket.md"
+        ticket = board_path(tmp_path, "test-ticket", "queue")
         ticket.write_text(
             "---\nsummary: test\ntype: bugfix\nbranch: main\n"
             "scope_current:\n  - rtl/x.sv\n"
@@ -5363,9 +5376,7 @@ class TestFeatureBranchIdentity:
 
     def test_frontmatter_feature_branch_preferred(self, tmp_path):
         """When feature_branch is in frontmatter, use it over filename stem."""
-        active = tmp_path / "board" / "active"
-        active.mkdir(parents=True)
-        ticket = active / "old-slug-name.md"
+        ticket = board_path(tmp_path, "old-slug-name", "active")
         write_simple_v2_ticket(ticket, "test ticket", feature_branch="actual-branch-name")
         tickets = scan_all_tickets(tmp_path, project_root=tmp_path)
         assert len(tickets) == 1
@@ -5373,24 +5384,21 @@ class TestFeatureBranchIdentity:
 
     def test_fallback_to_filename_stem(self, tmp_path):
         """Without frontmatter feature_branch, fall back to filename stem."""
-        queue = tmp_path / "board" / "queue"
-        queue.mkdir(parents=True)
-        ticket = queue / "my-ticket.md"
+        ticket = board_path(tmp_path, "my-ticket", "queue")
         write_simple_v2_ticket(ticket, "test")
         tickets = scan_all_tickets(tmp_path)
         assert tickets[0]["feature_branch"] == "my-ticket"
 
     def test_dependency_resolution_uses_frontmatter_branch(self, tmp_path):
         """classify_tickets resolves deps via feature_branch from frontmatter."""
-        done_dir = tmp_path / "board" / "done"
-        done_dir.mkdir(parents=True)
-        queue_dir = tmp_path / "board" / "queue"
-        queue_dir.mkdir(parents=True)
-
         # Done ticket: filename is "old-name.md" but feature_branch is "real-dep"
-        write_simple_v2_ticket(done_dir / "old-name.md", "dep ticket", feature_branch="real-dep")
+        write_simple_v2_ticket(
+            board_path(tmp_path, "old-name", "done"), "dep ticket", feature_branch="real-dep"
+        )
         # Queued ticket depends on "real-dep"
-        write_simple_v2_ticket(queue_dir / "child-ticket.md", "child", dependencies=("real-dep",))
+        write_simple_v2_ticket(
+            board_path(tmp_path, "child-ticket", "queue"), "child", dependencies=("real-dep",)
+        )
         tickets = scan_all_tickets(tmp_path, project_root=tmp_path)
         result = classify_tickets(tickets)
         # Child should be executable because "real-dep" is done
@@ -5630,6 +5638,7 @@ class TestClearFromStage:
     def test_from_stage_clears_subsequent(self, tmp_path):
         """from_stage mode clears target + all subsequent stages."""
         tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         log_dir = tio.logs_dir / "my-ticket"
         log_dir.mkdir(parents=True, exist_ok=True)
         write_stage_file(tio.logs_dir, "my-ticket", "planning", "plan.md", "plan")
@@ -5663,9 +5672,7 @@ class TestClearFromStage:
         clear_from_step(tio.logs_dir, "my-ticket", "planning")
 
         # progress should only have setup
-        import json
-
-        progress = json.loads(runtime_file(tio.logs_dir, "my-ticket", "progress.json").read_text())
+        progress = load_progress(tio.logs_dir, "my-ticket")
         assert progress["steps_completed"] == ["setup"]
 
     def test_preserves_ticket_lock(self, tmp_path):
@@ -5676,6 +5683,7 @@ class TestClearFromStage:
         is managed by _ticket_lock's context manager instead.
         """
         tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         log_dir = tio.logs_dir / "my-ticket"
         log_dir.mkdir(parents=True, exist_ok=True)
         lock_path = runtime_file(tio.logs_dir, "my-ticket", "ticket.lock")
@@ -5690,6 +5698,7 @@ class TestClearFromStage:
     def test_appends_retry_banner(self, tmp_path):
         """clear_from_step should append a retry banner to harness.log."""
         tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         log_dir = tio.logs_dir / "my-ticket"
         log_dir.mkdir(parents=True, exist_ok=True)
         harness_log = human_log_file(tio.logs_dir, "my-ticket", "harness.log")
@@ -5705,6 +5714,7 @@ class TestClearFromStage:
     def test_restores_prerequisite_stages(self, tmp_path):
         """from_stage mode restores prerequisite stages lost by earlier resets."""
         tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         log_dir = tio.logs_dir / "my-ticket"
         log_dir.mkdir(parents=True, exist_ok=True)
         # run-config (idx=2) is missing from stages_done — lost by
@@ -5725,9 +5735,7 @@ class TestClearFromStage:
 
         clear_from_step(tio.logs_dir, "my-ticket", "rtl-review-1")
 
-        import json
-
-        progress = json.loads(runtime_file(tio.logs_dir, "my-ticket", "progress.json").read_text())
+        progress = load_progress(tio.logs_dir, "my-ticket")
         assert progress["steps_completed"] == [
             "setup",
             "planning",
@@ -5740,6 +5748,7 @@ class TestClearFromStage:
     def test_does_not_restore_unplanned_stages(self, tmp_path):
         """from_stage mode keeps only planned prerequisite stages."""
         tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "blocked", "my-ticket")
         log_dir = tio.logs_dir / "my-ticket"
         log_dir.mkdir(parents=True, exist_ok=True)
         make_progress(
@@ -5767,9 +5776,7 @@ class TestClearFromStage:
         }
         clear_from_step(tio.logs_dir, "my-ticket", "sim-debug-loop", planned_steps=planned)
 
-        import json
-
-        progress = json.loads(runtime_file(tio.logs_dir, "my-ticket", "progress.json").read_text())
+        progress = load_progress(tio.logs_dir, "my-ticket")
         assert "implementation" not in progress["steps_completed"]
         assert progress["steps_completed"] == [
             "setup",
@@ -6039,11 +6046,9 @@ class TestBoardMoveTerminalActionOverrides:
         from booley.ticket_board.operations import op_complete
 
         tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        review, _status = find_ticket_file(tio.tickets_dir, "my-ticket")
-        assert review is not None
-        done = review.parent.parent / "done" / review.name
-        done.parent.mkdir(parents=True, exist_ok=True)
-        review.rename(done)
+        record = read_state_record(tio.tickets_dir, "my-ticket")
+        assert record is not None
+        write_state_record(tio.tickets_dir, "my-ticket", record.with_state(TicketState.DONE))
 
         with patch(
             "booley.ticket_board.completion.complete_review_ticket", return_value=True
@@ -6103,7 +6108,7 @@ class TestArchiveWithSlug:
 
         archived = op_archive(tio, slug="t1")
         assert archived.archived == ["done ticket"]
-        assert not (tio.tickets_dir / "board" / "done" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is not TicketState.DONE
         assert not (tio.logs_dir / "t1").exists()
 
     def test_archive_blocked_ticket_refused_without_force(self, tmp_path):
@@ -6114,7 +6119,7 @@ class TestArchiveWithSlug:
 
         archived = op_archive(tio, slug="t1")
         assert archived.archived == []
-        assert (tio.tickets_dir / "board" / "blocked" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is TicketState.BLOCKED
 
     def test_archive_blocked_ticket_by_slug_with_force(self, tmp_path):
         """Archive a specific blocked ticket by slug with force=True."""
@@ -6124,7 +6129,7 @@ class TestArchiveWithSlug:
 
         archived = op_archive(tio, slug="t1", force=True)
         assert archived.archived == ["blocked ticket"]
-        assert not (tio.tickets_dir / "board" / "blocked" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is not TicketState.BLOCKED
 
     def test_archive_slug_keep_logs(self, tmp_path):
         """Archive with slug + keep_logs preserves log directory."""
@@ -6135,7 +6140,7 @@ class TestArchiveWithSlug:
         archived = op_archive(tio, slug="t1", keep_logs=True)
         assert len(archived.archived) == 1
         # Ticket file should be gone
-        assert not (tio.tickets_dir / "board" / "done" / "t1.md").exists()
+        assert record_state(tio.tickets_dir, "t1") is not TicketState.DONE
         # Logs should be preserved
         assert _test_step_artifact(tio.logs_dir, "t1", "planning", "plan.md").exists()
 
@@ -6170,7 +6175,7 @@ class TestActivateTransitionDetail:
     def test_ticket_with_progress_still_reads_as_a_resume(self, tmp_path):
         tio = make_tio(tmp_path)
         make_ticket_file(tio, "queue", "t1")
-        # steps_completed is a runtime field: it lives in .runtime/progress.json.
+        # steps_completed is a runtime field: it lives in the state record.
         save_progress(tio.logs_dir, "t1", {"step": "planning", "steps_completed": ["setup"]})
 
         assert TestActivateTransitionDetail._op_activate(tio, "t1")
@@ -6192,6 +6197,6 @@ class TestActivateTransitionDetail:
         make_ticket_in_dir(tio, "queue", "t1", v2=True)
         TestActivateTransitionDetail._op_activate(tio, "t1")
 
-        tio.init_ticket(tio.tickets_dir / "board" / "active" / "t1.md")
+        tio.init_ticket(tio.tickets_dir / "board" / "t1.md")
 
         assert self._details(tio, "t1") == ["claimed for execution", "picked up"]
