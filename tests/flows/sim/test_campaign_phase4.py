@@ -16,7 +16,7 @@ import pytest
 
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
-from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
@@ -116,6 +116,67 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("condition did not become true before the deadline")
+
+
+@pytest.mark.parametrize("runtime_execution_id", ["b" * 32, None])
+def test_admission_parent_identity_survives_three_child_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_execution_id: str | None,
+) -> None:
+    manifest = _three_item_manifest()
+    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=3))
+    outer = slots.acquire(
+        CLASS_HEAVY,
+        pid=os.getpid(),
+        execution_id=ExecutionId(runtime_execution_id) if runtime_execution_id else None,
+    )
+    if runtime_execution_id is None:
+        monkeypatch.delenv("BOOLEY_RUNTIME_EXECUTION_ID", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", runtime_execution_id)
+
+    class Endpoint:
+        _invocation_id = "sim-20260925T153819Z-1"
+
+        @staticmethod
+        def _acquire_job_slot():
+            return slots, outer
+
+    with AdmissionGate(Endpoint()).enter() as admission:  # type: ignore[arg-type]
+        assert admission.execution_id == (
+            ExecutionId(runtime_execution_id) if runtime_execution_id else None
+        )
+        assert isinstance(admission.parent_execution_id, ExecutionId)
+        expected_parent = admission.parent_execution_id
+        prepared = []
+        for item in manifest.document["work_items"]:
+            attempt = _scheduled_attempt(campaign_store, item)
+            child = registry.prepare(
+                ExecutionId(uuid.uuid4().hex),
+                work_item_id=str(item["work_item_id"]),
+                attempt_id=attempt.attempt_id,
+                attempt_ordinal=attempt.ordinal,
+                attempt_directory=attempt.directory,
+                parent_execution_id=admission.parent_execution_id,
+            )
+            registry.mark_terminal(child, "completed")
+            prepared.append(child)
+
+        registry.recover_unretired(slots)
+        registry.recover_unretired(slots)
+
+    assert len(prepared) == 3
+    for child in prepared:
+        entry = json.loads(child.project_entry.read_text(encoding="utf-8"))
+        assert entry["parent_execution_id"] == str(expected_parent)
+    assert slots.snapshot(CLASS_HEAVY) == ([], [])
 
 
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -281,7 +342,8 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child() -> None:
         _unmanaged(), terminal_proof=lambda _execution_id: True, recover_child=lambda _id: True
     )
     with capacity.outer_permit() as permit:
-        assert permit.execution_id == ""
+        assert permit.execution_id is None
+        assert isinstance(capacity.parent_execution_id, ExecutionId)
         assert capacity.max_lanes == 1
         assert capacity.managed is False
     with pytest.raises(HeavyCapacityError, match="exactly once"), capacity.outer_permit():

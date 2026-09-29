@@ -241,7 +241,7 @@ class BoundedCampaignScheduler:
         if state.token is not None and not self._capacity.token_absent(state.token):
             raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
 
-    def _capacity_parent_id(self) -> str:
+    def _capacity_parent_id(self) -> ExecutionId:
         return self._capacity.parent_execution_id
 
 

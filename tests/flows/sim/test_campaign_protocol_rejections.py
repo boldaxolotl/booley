@@ -56,6 +56,21 @@ def test_child_entry_rejects_schema_and_filename_mismatches(tmp_path: Path) -> N
         child_protocol._validate_entry(tmp_path / f"{'f' * 32}.json", _entry())
 
 
+def test_child_recovery_rejects_display_form_parent_identity(tmp_path: Path) -> None:
+    registry = object.__new__(child_protocol.ChildExecutionRegistry)
+    registry._manifest = SimpleNamespace(
+        document={"campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}
+    )
+    entry = _entry()
+    entry["parent_execution_id"] = "sim-20260925T153819Z-1"
+
+    with pytest.raises(
+        SimulationCampaignIntegrityError,
+        match="child entry parent execution identity is invalid",
+    ):
+        registry._validate_entry_identity(entry, "sha256:" + "0" * 64)
+
+
 @pytest.mark.parametrize("value", [r"items\attempt", "/absolute", "../escape", "a/../b"])
 def test_child_attempt_path_must_be_canonical_and_contained(value: str) -> None:
     with pytest.raises(SimulationCampaignIntegrityError):

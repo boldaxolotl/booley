@@ -2934,11 +2934,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             executor,
             publication_checkpoint=self._campaign_publication_checkpoint,
         )
-        execution_id = (
-            admission.execution_id
-            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
-            else ""
-        )
+        execution_id = str(admission.execution_id or "")
         requests = [
             NewCampaignRunRequest(
                 self._coverage_campaign_plan(plan, int(invocation.name), execution_id),
@@ -3442,11 +3438,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         invocation: Path,
         admission: AdmissionContext,
     ) -> list[NewCampaignRunRequest]:
-        execution_id = (
-            admission.execution_id
-            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
-            else ""
-        )
+        execution_id = str(admission.execution_id or "")
         requests = []
         for target in targets:
             plan = self._ordinary_campaign_plan(
@@ -3581,9 +3573,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target,
             test_names_map,
             invocation_id=int(invocation.name),
-            execution_id=admission.execution_id
-            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
-            else "",
+            execution_id=str(admission.execution_id or ""),
             role="cycle_count_baseline",
             revision=baseline_ref,
             selected_override=tuple(
