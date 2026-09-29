@@ -9,6 +9,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from tests.file_lock_probe import invocation_lock_paths
 
 from booley.core import file_lock
 
@@ -113,3 +114,14 @@ def test_wait_timeout_reports_contention(monkeypatch: pytest.MonkeyPatch) -> Non
         )
 
     assert reports == [True]
+
+
+def test_invocation_lock_probe_prunes_git_internals(tmp_path) -> None:
+    expected = tmp_path / "run" / ".invocation-1.lock"
+    ignored = tmp_path / ".git" / "objects" / "8d" / ".invocation-object.lock"
+    expected.parent.mkdir()
+    ignored.parent.mkdir(parents=True)
+    expected.touch()
+    ignored.touch()
+
+    assert list(invocation_lock_paths(tmp_path)) == [expected]
