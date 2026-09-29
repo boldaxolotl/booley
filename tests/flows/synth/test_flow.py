@@ -26,6 +26,7 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import ClockTiming, make_clock_timing
+from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.implementation_comparison import TargetExecutionRef
@@ -237,6 +238,65 @@ def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
     assert (tmp_path / artifacts["log"]).read_text(encoding="utf-8") == "first log\n"
     copied_timing = tmp_path / artifacts["timing"] / "slack.rpt"
     assert copied_timing.read_text(encoding="utf-8") == "first timing\n"
+
+
+def test_numbered_log_publication_failure_is_best_effort(tmp_path: Path) -> None:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    metrics = SynthMetrics()
+    process = SubprocessResult(returncode=0, stdout="ok", stderr="")
+
+    with patch(
+        "booley.flows.synth.flow.artifacts.publish_bytes",
+        side_effect=OSError("evidence disk full"),
+    ):
+        flow._record_boundary_diagnostics("demo", metrics, process, 0.1, "complete output")
+
+    assert metrics.log_path == ""
+    assert work_root_for(tmp_path, "synth", "demo").joinpath("run.log").is_file()
+
+
+def test_timing_snapshot_failure_cleans_partial_evidence(tmp_path: Path) -> None:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    timing = tmp_path / "shared/timing"
+    timing.mkdir(parents=True)
+    (timing / "one.rpt").write_text("one", encoding="utf-8")
+    (timing / "two.rpt").write_text("two", encoding="utf-8")
+    metrics = SynthMetrics(dirs={"timing": "shared/timing"})
+    real_publish = artifacts.publish_file
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("evidence disk full")
+        return real_publish(*args, **kwargs)
+
+    with patch("booley.flows.synth.flow.artifacts.publish_file", side_effect=fail_second):
+        published = flow._snapshot_report_artifacts(tmp_path / "reports", "demo", metrics)
+
+    assert "timing" not in published
+    assert not (tmp_path / "reports/synth/1/artifacts/synth_demo/timing").exists()
 
 
 def test_clockless_sdc_marker_is_classified_as_configuration_error(tmp_path: Path) -> None:

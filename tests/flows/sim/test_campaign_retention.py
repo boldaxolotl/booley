@@ -135,7 +135,15 @@ def test_full_pruning_accepts_abandoned_nonterminal_progress(tmp_path):
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
 
 
-def test_full_pruning_accepts_report_referenced_invocation_artifacts(tmp_path):
+@pytest.mark.parametrize(
+    "artifact_relative",
+    [
+        "artifacts/candidate/sim_sim_0/tests/smoke/run.log",
+        "artifacts/candidate/sim_sim_0/tests/batch/run.log",
+        "artifacts/baseline/abc123/sim_sim_0/tests/smoke/run.log",
+    ],
+)
+def test_full_pruning_accepts_report_referenced_invocation_artifacts(tmp_path, artifact_relative):
     from booley.flows.sim.campaign_retention import prune_invocation
 
     invocation = tmp_path / "reports/sim/1"
@@ -143,7 +151,7 @@ def test_full_pruning_accepts_report_referenced_invocation_artifacts(tmp_path):
     progress.checkpoint(complete=True)
     target = invocation / "targets/sim_0"
     target.mkdir(parents=True)
-    artifact = invocation / "artifacts/candidate/sim_sim_0/tests/smoke/run.log"
+    artifact = invocation / artifact_relative
     artifact.parent.mkdir(parents=True)
     artifact.write_text("immutable evidence", encoding="utf-8")
     (target / "simulation.json").write_text(
@@ -154,10 +162,7 @@ def test_full_pruning_accepts_report_referenced_invocation_artifacts(tmp_path):
                 "tests": [
                     {
                         "name": "smoke",
-                        "artifacts": {
-                            "run_log": "reports/sim/1/artifacts/candidate/"
-                            "sim_sim_0/tests/smoke/run.log"
-                        },
+                        "artifacts": {"run_log": f"reports/sim/1/{artifact_relative}"},
                     }
                 ],
             }

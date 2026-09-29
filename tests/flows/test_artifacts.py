@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows import artifacts
-from booley.flows.sim.campaign_durability import durable_copy
+from booley.flows.artifact_durability import durable_copy
 
 
 class TestDurablePublication:

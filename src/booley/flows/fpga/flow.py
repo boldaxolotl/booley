@@ -822,14 +822,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                 log_text + "\n" + stderr_text + (("\n" + report_text) if report_text else "")
             )
             self._persist_fpga_log(target, combined)
-            invocation_dir = self.reserve_invocation_dir()
-            if invocation_dir is not None:
-                metrics.log_path = artifacts.publish_bytes(
-                    invocation_dir,
-                    ("artifacts", f"fpga_{target_report_slug(target)}", "run.log"),
-                    combined.encode(),
-                    work_dir=Path(self.args.work_dir),
-                )
+            metrics.log_path = self._publish_numbered_fpga_log(target, combined)
         if metrics.passed and fingerprint:
             fpga_cache.store(
                 work_root,
@@ -931,6 +924,22 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             )
             return ""
         return posix_relpath(log_path, self.args.work_dir)
+
+    def _publish_numbered_fpga_log(self, target: str, text: str) -> str:
+        """Publish captured output as best-effort invocation evidence."""
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is None:
+            return ""
+        try:
+            return artifacts.publish_bytes(
+                invocation_dir,
+                ("artifacts", f"fpga_{target_report_slug(target)}", "run.log"),
+                text.encode(),
+                work_dir=Path(self.args.work_dir),
+            )
+        except OSError:
+            logger.warning("could not publish numbered FPGA log for %s", target, exc_info=True)
+            return ""
 
     @staticmethod
     def _failure_tail(log_text: str, stderr_text: str) -> str:

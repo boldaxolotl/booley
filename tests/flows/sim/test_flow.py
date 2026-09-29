@@ -342,6 +342,60 @@ def test_direct_evidence_namespaces_separate_candidate_and_baseline(
     assert flow._simulation_artifact_root("baseline") == (invocation / "artifacts/baseline/abc123")
 
 
+def test_baseline_evidence_is_reported_and_prunable(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.flows.sim.coverage_progress import CoverageProgress
+
+    flow = _make_flow(tmp_path, config="lite")
+    invocation = flow.reserve_invocation_dir()
+    assert invocation is not None
+    log = invocation / "artifacts/baseline/abc123/sim_lite/tests/smoke/run.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("baseline output", encoding="utf-8")
+    identity = "acme:lib:demo:1#lite"
+    flow._baseline_results = {
+        identity: TargetResult(
+            target="lite",
+            target_identity=identity,
+            artifacts=(
+                SimulationArtifactEvidence("run_log", str(log), log.stat().st_size, ("smoke",)),
+            ),
+        )
+    }
+    candidate = TargetResult(target="lite", target_identity=identity, passed=True)
+
+    flow._write_target_report(candidate)
+    CoverageProgress(invocation, ("lite",)).checkpoint(complete=True)
+    report = json.loads((invocation / "targets/lite/simulation.json").read_text())
+
+    assert report["baseline_evidence"][identity]["artifacts"]["log"].endswith(
+        "artifacts/baseline/abc123/sim_lite/tests/smoke/run.log"
+    )
+    flow.context.publication_resources.close()
+    prune_invocation(tmp_path / "reports", 1)
+    assert not invocation.exists()
+
+
+def test_artifact_report_keys_do_not_drop_colliding_test_names(tmp_path: Path) -> None:
+    flow = _make_flow(tmp_path, config="lite")
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text("{}", encoding="utf-8")
+    second.write_text("{}", encoding="utf-8")
+    block = flow._artifacts_for(
+        TargetResult(
+            target="lite",
+            artifacts=(
+                SimulationArtifactEvidence("result", str(first), 2, ("a_b", "c")),
+                SimulationArtifactEvidence("result", str(second), 2, ("a", "b_c")),
+            ),
+        )
+    )
+
+    assert set(block.values()) == {"first.json", "second.json"}
+    assert len(block) == 2
+
+
 def test_dry_run_does_not_reserve_invocation_directory(tmp_path: Path) -> None:
     flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
 

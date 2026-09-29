@@ -5011,9 +5011,30 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 continue
             if key in block:
                 names = "_".join(item.test_names) or "batch"
-                key = f"{key}_{_artifact_path_component(names)}"
+                base = f"{key}_{_artifact_path_component(names)}"
+                key = base
+                suffix = 2
+                while key in block:
+                    key = f"{base}_{suffix}"
+                    suffix += 1
             block[key] = posix_relpath(item.path, evidence_work_dir)
         return block
+
+    def _baseline_evidence_for_report(self) -> dict[str, object]:
+        """Serialize baseline provenance and invocation-owned artifact references."""
+        evidence: dict[str, object] = {}
+        for identity, result in sorted(getattr(self, "_baseline_results", {}).items()):
+            if not isinstance(result, TargetResult):
+                continue
+            artifact_block = self._artifacts_for(result)
+            if not artifact_block:
+                continue
+            evidence[identity] = {
+                "target": result.target,
+                "target_identity": result.target_identity,
+                "artifacts": artifact_block,
+            }
+        return evidence
 
     def _headline_lines(self, all_results: list[TargetResult]) -> list[str]:
         """Compact per-target verdict block, emitted at the END of report_text.
@@ -5585,6 +5606,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         artifacts = self._artifacts_for(result)
         artifacts["report"] = posix_relpath(report_path, self.args.work_dir)
         report["artifacts"] = artifacts
+        baseline_evidence = self._baseline_evidence_for_report()
+        if baseline_evidence:
+            report["baseline_evidence"] = baseline_evidence
         return report
 
     def _write_progress_report(

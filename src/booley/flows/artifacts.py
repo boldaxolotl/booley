@@ -56,7 +56,7 @@ import os
 import re
 from pathlib import Path
 
-from booley.flows.sim.campaign_durability import durable_copy, durable_create
+from booley.flows.artifact_durability import durable_copy, durable_create
 from booley.runtime.platform_paths import posix_relpath
 
 logger = logging.getLogger(__name__)

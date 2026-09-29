@@ -1997,7 +1997,7 @@ def _archive_run_logs(
     if attempt.adapter == "cocotb":
         relative = flow_artifacts.publish_bytes(
             artifact_root,
-            (target, "batch", "run.log"),
+            (target, "tests", "batch", "run.log"),
             output.encode(),
             work_dir=artifact_root,
         )
@@ -2035,15 +2035,20 @@ def _archive_file_evidence(
         else artifact_path_component((attempt.test_names or (handle.selector,))[0])
     )
     archived: list[SimulationArtifactEvidence] = []
-    for item in evidence:
-        source = Path(item.path)
-        relative = flow_artifacts.publish_file(
-            artifact_root,
-            (target, "tests", group, item.kind, source.name),
-            source,
-            work_dir=artifact_root,
-        )
-        archived.append(replace(item, path=str(artifact_root / relative)))
+    try:
+        for item in evidence:
+            source = Path(item.path)
+            relative = flow_artifacts.publish_file(
+                artifact_root,
+                (target, "tests", group, item.kind, source.name),
+                source,
+                work_dir=artifact_root,
+            )
+            archived.append(replace(item, path=str(artifact_root / relative)))
+    except (OSError, ValueError) as exc:
+        raise SimulationArtifactPersistenceError(
+            f"could not preserve Simulation artifact: {exc}"
+        ) from exc
     return tuple(archived)
 
 

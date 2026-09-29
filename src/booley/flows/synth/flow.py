@@ -1474,12 +1474,17 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if getattr(self, "_execution_role", "candidate") == "candidate":
             invocation_dir = self.reserve_invocation_dir()
             if invocation_dir is not None:
-                metrics.log_path = artifacts.publish_bytes(
-                    invocation_dir,
-                    ("artifacts", f"synth_{target_report_slug(target)}", "run.log"),
-                    output.encode(),
-                    work_dir=Path(self.args.work_dir),
-                )
+                try:
+                    metrics.log_path = artifacts.publish_bytes(
+                        invocation_dir,
+                        ("artifacts", f"synth_{target_report_slug(target)}", "run.log"),
+                        output.encode(),
+                        work_dir=Path(self.args.work_dir),
+                    )
+                except OSError:
+                    logger.warning(
+                        "could not publish numbered synth log for %s", target, exc_info=True
+                    )
         metrics.dirs = self._artifact_dirs(target, metrics.synth_mode)
         if metrics.termination == "oom":
             logger.warning("Synth %s was killed by the cgroup OOM killer", target)
@@ -1728,22 +1733,30 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if timing:
             source_dir = root / timing
             if source_dir.is_dir():
-                copied_any = False
-                for source in sorted(path for path in source_dir.rglob("*") if path.is_file()):
-                    artifacts.publish_file(
-                        invocation_dir,
-                        (
-                            "artifacts",
-                            f"synth_{safe_target}",
-                            "timing",
-                            *source.relative_to(source_dir).parts,
-                        ),
-                        source,
-                        work_dir=root,
+                try:
+                    copied_any = False
+                    for source in sorted(path for path in source_dir.rglob("*") if path.is_file()):
+                        artifacts.publish_file(
+                            invocation_dir,
+                            (
+                                "artifacts",
+                                f"synth_{safe_target}",
+                                "timing",
+                                *source.relative_to(source_dir).parts,
+                            ),
+                            source,
+                            work_dir=root,
+                        )
+                        copied_any = True
+                    if copied_any:
+                        result["timing"] = posix_relpath(destination / "timing", root)
+                except (OSError, ValueError):
+                    shutil.rmtree(destination / "timing", ignore_errors=True)
+                    logger.warning(
+                        "could not publish numbered synth timing evidence for %s",
+                        safe_target,
+                        exc_info=True,
                     )
-                    copied_any = True
-                if copied_any:
-                    result["timing"] = posix_relpath(destination / "timing", root)
         return result
 
     def _write_progress_report(

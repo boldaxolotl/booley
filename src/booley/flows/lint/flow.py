@@ -634,7 +634,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 work_dir=self.args.work_dir,
             )
         except OSError:
-            logger.debug("could not publish lint evidence for %s", selector, exc_info=True)
+            logger.warning("could not publish lint evidence for %s", selector, exc_info=True)
             return ""
 
     def _run_lint_target(

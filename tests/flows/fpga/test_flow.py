@@ -158,6 +158,43 @@ def test_cache_hit_omits_unauthenticated_shared_flow_log(tmp_path: Path, state_f
     assert cached.log_path == ""
 
 
+def test_numbered_log_publication_failure_does_not_skip_cache_store(
+    tmp_path: Path, state_file: Path
+) -> None:
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    flow._project_root = tmp_path
+    work_root = work_root_for(tmp_path, "fpga", "default")
+    prepared = _PreparedFpgaCommand(
+        ["make", "-C", str(work_root)],
+        work_root,
+        "fingerprint",
+        False,
+    )
+    process = SubprocessResult(returncode=0, stdout="route", stderr="")
+
+    with (
+        patch.object(flow, "_prepare_fpga_command", return_value=prepared),
+        patch.object(flow, "_execute_boundary", return_value=process),
+        patch.object(flow, "_collect_vivado_evidence", return_value="status: pass"),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value={"status": "pass", "lut_count": 1, "ff_count": 1},
+        ),
+        patch.object(
+            flow,
+            "_metrics_from_parsed_reports",
+            return_value=FpgaMetrics(lut_count=1, ff_count=1, wns_ns=0.1, whs_ns=0.1),
+        ),
+        patch("booley.flows.fpga.flow.artifacts.publish_bytes", side_effect=OSError("disk full")),
+        patch("booley.flows.fpga.flow.fpga_cache.store") as store,
+    ):
+        metrics = flow._run_single_target("default")
+
+    assert metrics.log_path == ""
+    store.assert_called_once()
+
+
 def test_relative_ticket_criterion_auto_applies_pinned_baseline(
     tmp_path: Path,
     state_file: Path,
