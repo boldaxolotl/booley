@@ -146,14 +146,12 @@ historical results to the new suite.
 
 ### Schema versions and references
 
-New `simulation.json` files use `booley.simulation-projection/v2`. Their manifest
+`simulation.json` uses `booley.simulation-projection/v2`. Their manifest
 and optional Coverage pointers are typed `origin_target` references with a
 normalized relative path, byte count, digest, artifact kind, and Simulation
-Campaign owner. Legacy absolute manifest and summary strings remain readable only
-as hints after the supplied local Simulation Campaign has authenticated; readers
-never follow them back to the producer path.
+Campaign owner.
 
-Versioned `report.json` files use `booley.simulation-report/v2`. Each Target has
+`report.json` uses `booley.simulation-report/v2`. Each Target has
 one `artifacts` map whose references use `report_invocation` for local artifacts
 or `reports_root` for an origin Simulation Campaign under the same reports root.
 A cross-root resume uses `external_origin_target`; its caller supplies the origin
@@ -164,10 +162,8 @@ copying a reports root preserves same-root resume references. Copying only a
 resume invocation leaves its immutable Simulation Campaign identity, digest, and
 external relative path, but not the external artifact bytes.
 
-Flat `sim_<target>.json` files and the earlier `targets/sim_<target>.json`
-copies are no longer written. Use the exact `artifacts[target].report` path in
-the numbered invocation's `report.json`. See the
-[Simulation Campaign migration guide](../user/SIMULATION_CAMPAIGN_MIGRATION.md).
+Find each Target's report through the exact `artifacts[target].report` path in
+the numbered invocation's `report.json`.
 
 If completion reporting fails, the Flow returns exit code 2 with a structured
 `detail.completion_error` while preserving existing Target, Campaign, and
@@ -228,9 +224,8 @@ reference appears only after its public reference was successfully published
 and authenticated; failures before that publication omit it, while a failure at
 the subsequent `after:coverage_reference` checkpoint retains it.
 
-New `coverage.json` manifests use `booley.coverage-campaign/v4`. They retain V3's
-fingerprints, verdicts, capabilities, evaluation, and valid rollups, and add
-required `scoring`: complete, compatible collection uses `valid` with a null
+`coverage.json` uses `booley.coverage-campaign/v4`. It carries fingerprints,
+verdicts, capabilities, evaluation, rollups, and `scoring`: complete, compatible collection uses `valid` with a null
 reason; every other collection status uses `invalid` with that status as its
 reason and empty overall/source rollups. Compatible points and available
 native/hook evidence remain diagnostic; incompatible native evidence has no
@@ -242,10 +237,9 @@ file.
 
 Required `coverage-points.jsonl.gz` stores lossless point identities and sparse
 positive hit incidence; the manifest binds it by schema, exact relative path,
-compressed and uncompressed byte counts, point count, and SHA-256. Valid V3
-remains readable; score-bearing invalid V3 and all V1/V2 Campaigns require
-recollection. Native artifact paths are relative to the Target directory. New
-Simulation report references are relative to their containing report invocation
+compressed and uncompressed byte counts, point count, and SHA-256. Native
+artifact paths are relative to the Target directory. Simulation report
+references are relative to their containing report invocation
 or reports root, never to the producing work directory.
 
 ### Coverage retention

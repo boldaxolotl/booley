@@ -317,7 +317,7 @@ Each Target gets its own Campaign under the run's numbered report directory:
 
 Always pass the exact `coverage.json` path to consumers; never edit or pass the
 point store directly. There is no "latest Campaign" and no merging across Targets
-or runs. Campaigns from older Booley releases may need to be recollected.
+or runs.
 
 #### Analyzing a Campaign
 
