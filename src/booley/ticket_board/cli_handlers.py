@@ -610,6 +610,8 @@ def _validate_logs_report(tio, slug):
     Returns ``(report_markdown, error_count, raw_result)``, or None when the
     ticket is not on the board.
     """
+    from .ticket_validation import _convert_executable_ticket
+
     entry = tio.inspect_ticket(slug)
     if not entry:
         return None
@@ -623,7 +625,7 @@ def _validate_logs_report(tio, slug):
     if ticket_path.exists():
         if not entry.get("authored_drift"):
             tio.load_basis(slug, runtime_ticket_path=ticket_path)
-        document = tio._convert_executable_ticket(ticket_path, slug)
+        document = _convert_executable_ticket(tio._project_root, ticket_path, slug)
         ticket_fields = {**document.spec.fields, **document.generated}
 
     result = validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
