@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -231,6 +232,28 @@ def _release_workspaces(tio: Any, slug: str, status: str, fields: dict, file_pat
         raise RuntimeError(f"feature branch cleanup failed: {feature_branch}")
 
 
+def _refuse_live_owner(tio: Any, slug: str) -> None:
+    """Refuse to abandon a Ticket a live developer process still owns.
+
+    Checked before taking the Ticket lock, which stamps this process's PID.
+    """
+    from booley.runtime.pid import is_pid_alive
+
+    from .board_layout import read_state_record
+    from .operations import _live_owner_pid
+
+    owners = {_live_owner_pid(tio, slug)}
+    record = read_state_record(tio.tickets_dir, slug)
+    if record is not None:
+        pid = record.runtime["execution_owner_pid"]
+        if pid is not None and pid != os.getpid() and is_pid_alive(pid):
+            owners.add(pid)
+    owners.discard(None)
+    if owners:
+        pid = min(owners)
+        raise RuntimeError(f"Ticket is owned by live process {pid}; stop it (kill {pid}) first")
+
+
 def _archive_single(tio: Any, slug: str) -> ArchiveOutcome:
     """Archive one Ticket under its lock, resuming an interrupted archive."""
     from .helpers import validate_ticket_slug
@@ -244,6 +267,7 @@ def _archive_single(tio: Any, slug: str) -> ArchiveOutcome:
         if file_path is not None:
             slug = file_path.stem
         marker_path = _marker_path(Path(tio._project_root), slug)
+        _refuse_live_owner(tio, slug)
         with tio._ticket_lock(slug):
             marker = _prepare_marker(tio, slug, marker_path)
             _finish_archive(tio, slug, marker_path, marker)

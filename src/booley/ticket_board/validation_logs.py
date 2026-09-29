@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .board_layout import state_record_path
+from .board_layout import state_record_path, state_record_relative_path
 from .constants import STEP_ORDER
 from .paths import existing_human_log_file, existing_runtime_file
 
@@ -104,7 +104,9 @@ def validate_logs(
     else:
         gate_failures.extend(_validate_state_file(state_path))
     if not record_path.exists():
-        missing_files.append({"step": "runtime", "file": f"state/{slug}.json"})
+        missing_files.append(
+            {"step": "runtime", "file": state_record_relative_path(slug).as_posix()}
+        )
 
     legacy_steps = [
         step for step in steps_completed if step in STEP_ORDER and step not in {"setup", "summary"}

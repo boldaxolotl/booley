@@ -26,6 +26,7 @@ from booley.core.boundary import (
     require_dict,
     require_int,
     require_str,
+    require_str_value,
 )
 from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
@@ -44,6 +45,7 @@ from booley.ticket_board.ticket_repositories import (
 )
 
 from .board_layout import (
+    StateRecord,
     delete_state_record,
     read_state_record,
     ticket_document_path,
@@ -101,6 +103,9 @@ class DraftTransitionJournal:
     archive_dir: str
     has_project: bool
     authored_drift: dict[str, str] = field(default_factory=dict)
+    # Schema 3: the blocked record's execution identity. The document no longer
+    # changes with state (ADR 0065), so the record is the compare-and-swap target.
+    blocked_execution_id: str | None = None
 
     def with_state(
         self,
@@ -156,6 +161,8 @@ def _parse_journal(value: Any) -> DraftTransitionJournal:
     mapping = require_dict(value, field="return-to-draft journal")
     schema = require_int(mapping.get("schema"), field="return-to-draft journal schema")
     expected = set(DraftTransitionJournal.__dataclass_fields__)
+    if schema < 3:
+        expected.remove("blocked_execution_id")
     if schema == 1:
         expected.remove("authored_drift")
     if set(mapping) != expected:
@@ -177,8 +184,17 @@ def _parse_journal(value: Any) -> DraftTransitionJournal:
         has_project=require_bool(mapping, "has_project"),
         authored_drift=(
             require_dict(mapping.get("authored_drift"), field="return-to-draft authored drift")
-            if schema == 2
+            if schema >= 2
             else {}
+        ),
+        blocked_execution_id=(
+            require_str_value(
+                mapping.get("blocked_execution_id"),
+                field="return-to-draft blocked execution",
+                allow_empty=True,
+            )
+            if schema >= 3
+            else None
         ),
     )
 
@@ -191,7 +207,7 @@ def transition_pending(project_root: Path | str, slug: str) -> bool:
 def _validate_journal(
     root: Path, logs_dir: Path, slug: str, journal: DraftTransitionJournal
 ) -> None:
-    if journal.schema not in {1, 2} or journal.slug != slug or journal.state not in _STATES:
+    if journal.schema not in {1, 2, 3} or journal.slug != slug or journal.state not in _STATES:
         raise DraftTransitionError("return-to-draft journal identity or schema is invalid")
     _validate_authored_drift(journal)
     if not _OPERATION_RE.fullmatch(journal.operation_id):
@@ -323,8 +339,9 @@ def _new_journal(
     atomic_replace_bytes(draft_path, draft_content, mode=0o644)
     atomic_replace_bytes(operation / "generation.json", generation_content)
     draft_destination = ticket_document_path(_tickets_dir(root), slug)
+    record = read_state_record(_tickets_dir(root), slug)
     journal = DraftTransitionJournal(
-        2,
+        3,
         operation_id,
         slug,
         "initializing",
@@ -338,6 +355,7 @@ def _new_journal(
         str(_next_archive(logs_dir / slug).resolve()),
         False,
         _authored_drift_record(document, drift_reason),
+        record.execution_id if record is not None else "",
     )
     _write_journal(root, journal)
     return journal
@@ -373,9 +391,9 @@ def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBase
     blocked = Path(journal.blocked_ticket)
     _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
     record = read_state_record(_tickets_dir(root), journal.slug)
-    if record is None or record.state is not TicketState.BLOCKED:
-        state = "draft" if record is None else record.state.status
-        raise DraftTransitionError(f"return-to-draft requires a blocked ticket, found {state}")
+    if record is None:
+        raise DraftTransitionError("return-to-draft requires a blocked ticket, found draft")
+    _require_captured_record(journal, record)
     candidate = _operation_dir(root, journal.operation_id) / "draft.md"
     _require_file(candidate, journal.draft_sha256, "replacement draft")
     document = _converted_document(root, blocked, journal.slug, "executable")
@@ -570,6 +588,21 @@ def _finish_published_transition(
     return worktrees
 
 
+def _require_captured_record(journal: DraftTransitionJournal, record: StateRecord) -> None:
+    """Refuse a record that is no longer the blocked execution this journal captured."""
+    if record.state is not TicketState.BLOCKED:
+        raise DraftTransitionError(
+            f"return-to-draft requires a blocked ticket, found {record.state.status}"
+        )
+    if (
+        journal.blocked_execution_id is not None
+        and record.execution_id != journal.blocked_execution_id
+    ):
+        raise DraftTransitionError(
+            "blocked Ticket was re-run since return-to-draft started; retry return-to-draft"
+        )
+
+
 def _publish_board(root: Path, journal: DraftTransitionJournal) -> None:
     """Publish the draft-form document first, then delete the state record.
 
@@ -581,10 +614,8 @@ def _publish_board(root: Path, journal: DraftTransitionJournal) -> None:
     document = Path(journal.draft_ticket)
     tickets = _tickets_dir(root)
     record = read_state_record(tickets, journal.slug)
-    if record is not None and record.state is not TicketState.BLOCKED:
-        raise DraftTransitionError(
-            f"return-to-draft requires a blocked ticket, found {record.state.status}"
-        )
+    if record is not None:
+        _require_captured_record(journal, record)
     try:
         published = _digest(document.read_bytes()) == journal.draft_sha256
     except FileNotFoundError as exc:

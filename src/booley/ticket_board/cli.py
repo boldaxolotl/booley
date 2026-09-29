@@ -49,9 +49,9 @@ from .helpers import (
     detect_tickets_dir,
     ensure_utf8_output,
 )
-from .history_publication import recover_ticket_history
 from .io import TicketIO
 from .lifecycle import board_target_choices
+from .operations import reconcile_board
 from .ticket_history import TicketHistoryError
 
 
@@ -474,8 +474,8 @@ def main(argv: list[str] | None = None) -> int:
     if handler is not None:
         try:
             if command not in READ_ONLY_COMMANDS:
-                # Finish interrupted closings and retry uncommitted history first.
-                recover_ticket_history(tio)
+                # Finish closing work a crash or a failed commit left behind.
+                reconcile_board(tio)
             return handler(tio, args)
         except (StateRecordError, TicketHistoryError) as exc:
             # A broken state record fails closed: say which one instead of a traceback.

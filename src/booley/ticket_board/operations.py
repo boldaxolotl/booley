@@ -299,7 +299,7 @@ def op_claim(tio: Any, slug: str) -> bool:
 
     with tio._ticket_lock(slug):
         file_path, status = find_ticket_file(tio.tickets_dir, slug)
-        if file_path is None or status != "queued" or tio._enqueue_pending(slug):
+        if file_path is None or status != "queued" or tio._transition_refused(slug):
             return False
         progress = tio.read_progress(file_path.stem)
         progress["execution_id"] = uuid.uuid4().hex
@@ -819,6 +819,20 @@ def op_approve(tio: Any, slug: str) -> bool:
     return op_complete(tio, slug)
 
 
+def reconcile_board(tio: Any) -> None:
+    """Finish closing work a crash or a failed commit left behind (idempotent).
+
+    Closes done Tickets whose completion finished but whose close was lost,
+    finishes interrupted closings, and retries uncommitted Ticket History
+    records, which can commit to the Project repository. Board commands that
+    change the board and waiting promotion run this first.
+    """
+    from .history_publication import recover_ticket_history
+
+    _close_finished_done_tickets(tio)
+    recover_ticket_history(tio)
+
+
 def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     """Queue waiting tickets whose dependencies all closed done.
 
@@ -829,47 +843,47 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
 
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
-    from .history_publication import recover_ticket_history
+    from .basis_refresh import recover_published_basis_refreshes
     from .ticket_history import closed_outcomes
 
-    _close_finished_done_tickets(tio)
-    recover_ticket_history(tio)
+    reconcile_board(tio)
     tickets = scan_all_tickets(tio.tickets_dir, project_root=Path(tio._project_root))
-    from .basis_refresh import recover_published_basis_refreshes
-
     recover_published_basis_refreshes(Path(tio._project_root), tickets)
-
     closed = closed_outcomes(tio.tickets_dir)
-    done_slugs = {slug for slug, outcome in closed.items() if outcome is TicketState.DONE}
-
     promoted = []
-    for t in tickets:
-        if t.get("status") != "waiting":
-            continue
-        slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
-        archived = sorted(
-            dep for dep in t.get("dependencies", []) if closed.get(dep) is TicketState.ARCHIVED
-        )
-        if archived:
-            _block_archived_dependency(tio, slug, archived)
-            continue
-        provider_error = _waiting_provider_error(tio, t, tickets, done_slugs)
-        if provider_error:
-            print(
-                f"Error: cannot promote '{slug}': acceptance-input-change-required: "
-                f"{provider_error}",
-                file=sys.stderr,
-            )
-            _block_failed_basis_refresh(tio, slug)
-            continue
-        deps = t.get("dependencies", [])
-        if deps and not all(d in done_slugs for d in deps):
-            continue
-        promoted_entry = _promote_waiting_ticket(tio, t)
-        if promoted_entry is not None:
-            promoted.append(promoted_entry)
-
+    for ticket in tickets:
+        if ticket.get("status") == "waiting":
+            entry = _advance_waiting_ticket(tio, ticket, tickets, closed)
+            if entry is not None:
+                promoted.append(entry)
     return promoted
+
+
+def _advance_waiting_ticket(
+    tio: Any,
+    ticket: dict[str, Any],
+    tickets: list[dict[str, Any]],
+    closed: dict[str, TicketState],
+) -> dict[str, str] | None:
+    """Block, keep waiting, or promote one waiting Ticket; return it if promoted."""
+    slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
+    dependencies = ticket.get("dependencies", [])
+    archived = sorted(dep for dep in dependencies if closed.get(dep) is TicketState.ARCHIVED)
+    if archived:
+        _block_archived_dependency(tio, slug, archived)
+        return None
+    done = {name for name, outcome in closed.items() if outcome is TicketState.DONE}
+    provider_error = _waiting_provider_error(tio, ticket, tickets, done)
+    if provider_error:
+        print(
+            f"Error: cannot promote '{slug}': acceptance-input-change-required: {provider_error}",
+            file=sys.stderr,
+        )
+        _block_failed_basis_refresh(tio, slug)
+        return None
+    if not all(dep in done for dep in dependencies):
+        return None
+    return _promote_waiting_ticket(tio, ticket)
 
 
 def _block_archived_dependency(tio: Any, slug: str, archived: list[str]) -> None:

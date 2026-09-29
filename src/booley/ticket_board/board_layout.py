@@ -72,7 +72,8 @@ class StateRecord:
     """One Ticket's lifecycle state plus its runtime progress fields.
 
     ``runtime`` always holds exactly the keys of :data:`RUNTIME_DEFAULTS`.
-    Drafts have no record, so ``state`` is never :attr:`TicketState.DRAFT`.
+    Drafts have no record and archived Tickets live in Ticket History, so
+    ``state`` is never :attr:`TicketState.DRAFT` or :attr:`TicketState.ARCHIVED`.
     """
 
     state: TicketState
@@ -81,6 +82,8 @@ class StateRecord:
     def __post_init__(self) -> None:
         if self.state is TicketState.DRAFT:
             raise StateRecordError("a draft Ticket has no state record")
+        if self.state is TicketState.ARCHIVED:
+            raise StateRecordError("an archived Ticket is closed into Ticket History")
         runtime = copy.deepcopy(dict(self.runtime))
         _validate_runtime(runtime)
         object.__setattr__(self, "runtime", runtime)
@@ -141,7 +144,7 @@ def parse_state_record(value: Any) -> StateRecord:
         raise StateRecordError(f"state record schema {schema!r} is unsupported")
     status = value.get("state")
     state = STATE_BY_STATUS.get(status) if isinstance(status, str) else None
-    if state is None or state is TicketState.DRAFT:
+    if state is None or state in {TicketState.DRAFT, TicketState.ARCHIVED}:
         raise StateRecordError(f"state record state {status!r} is invalid")
     runtime = {key: item for key, item in value.items() if key not in {"schema", "state"}}
     return StateRecord(state, runtime)
@@ -208,9 +211,14 @@ def ticket_document_path(tickets_dir: Path, slug: str) -> Path:
     return Path(tickets_dir) / board_relative_document_path(slug)
 
 
+def state_record_relative_path(slug: str) -> Path:
+    """Return the state record path for *slug*, relative to the tickets dir."""
+    return Path(STATE_DIR_NAME, f"{_require_slug(slug)}.json")
+
+
 def state_record_path(tickets_dir: Path, slug: str) -> Path:
     """Return the path of the state record for *slug*."""
-    return state_root(tickets_dir) / f"{_require_slug(slug)}.json"
+    return Path(tickets_dir) / state_record_relative_path(slug)
 
 
 # State records -----------------------------------------------------------------

@@ -1234,7 +1234,9 @@ def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
 
 # Board commands that only read; they never trigger Ticket History recovery,
 # which can commit to the Project repository.
-_READ_ONLY_BOARD_COMMANDS = frozenset({None, "show", "review-briefing", "blocked-briefing"})
+_READ_ONLY_BOARD_COMMANDS = frozenset(
+    {None, "show", "check-ready", "review-briefing", "blocked-briefing"}
+)
 
 
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
@@ -1254,23 +1256,20 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 
     board_cmd = getattr(args, "board_command", None)
-
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
     if board_cmd not in _READ_ONLY_BOARD_COMMANDS:
-        # Finish interrupted closings and retry uncommitted Ticket History first.
-        from booley.ticket_board.history_publication import recover_ticket_history
+        # Finish closing work a crash or a failed commit left behind.
+        from booley.ticket_board.operations import reconcile_board
 
-        recover_ticket_history(
-            TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-        )
+        reconcile_board(tio)
 
     if board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None)):
         from booley.ticket_board.io import scan_all_tickets
         from booley.ticket_board.reporting import display_board
 
-        tickets_dir = tickets_dir_from_project_root(project_root)
         display_board(
-            scan_all_tickets(tickets_dir, project_root=project_root),
-            tickets_dir=tickets_dir,
+            scan_all_tickets(tio.tickets_dir, project_root=project_root),
+            tickets_dir=tio.tickets_dir,
         )
         return 0
 
@@ -1279,32 +1278,10 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
 
         return _render_ticket_readiness(args.slug, check_ticket_ready(project_root, args.slug))
 
-    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-
-    if board_cmd == "move":
-        from booley.ticket_board.operations import op_board_move
-
-        ok = op_board_move(
-            tio,
-            args.slug,
-            args.target,
-            feedback=args.feedback,
-        )
-        return 0 if ok else 1
-
-    if board_cmd == "reset":
-        from booley.ticket_board.operations import op_reset
-
-        ok = op_reset(
-            tio,
-            args.slug,
-            force=getattr(args, "force", False),
-            reason=getattr(args, "reason", "user reset ticket"),
-        )
-        return 0 if ok else 1
-
+    edit = _board_edit_command(args, tio, project_root)
+    if edit is not None:
+        return edit
     special = {
-        "create": lambda: 0 if _cmd_board_create(tio, args.slug, project_root) else 1,
         "show": lambda: _cmd_board_show(args, project_root),
         "review": lambda: _cmd_board_review(args, project_root),
         "approve": lambda: _cmd_board_approve(args, project_root),
@@ -1322,6 +1299,28 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
         return special()
 
     return 1
+
+
+def _board_edit_command(args: argparse.Namespace, tio: TicketIO, project_root: Path) -> int | None:
+    """Run ``create``, ``move`` or ``reset``; ``None`` for any other command."""
+    board_cmd = getattr(args, "board_command", None)
+    if board_cmd == "create":
+        return 0 if _cmd_board_create(tio, args.slug, project_root) else 1
+    if board_cmd == "move":
+        from booley.ticket_board.operations import op_board_move
+
+        return 0 if op_board_move(tio, args.slug, args.target, feedback=args.feedback) else 1
+    if board_cmd == "reset":
+        from booley.ticket_board.operations import op_reset
+
+        ok = op_reset(
+            tio,
+            args.slug,
+            force=getattr(args, "force", False),
+            reason=getattr(args, "reason", "user reset ticket"),
+        )
+        return 0 if ok else 1
+    return None
 
 
 def _cmd_board_archive(args: argparse.Namespace, tio: TicketIO) -> int:

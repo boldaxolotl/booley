@@ -3404,7 +3404,7 @@ class TestOpReset:
         tio = make_tio(tmp_path)
         make_ticket_in_dir(
             tio,
-            "archived",
+            "blocked",
             "my-ticket",
             extra_fields={"summary": "important work", "error": "kaboom", "failed_step": "sim"},
         )
@@ -4177,7 +4177,9 @@ class TestCLIArchive:
         output = capsys.readouterr().out
         assert "No interrupted archives to resume; name a Ticket to archive it." in output
         assert "Done ticket" not in output
-        assert record_state(tickets_dir, "t1") is TicketState.DONE
+        # Board reconciliation closes the finished done Ticket as done; bare
+        # archive never turns it into an archived one.
+        assert read_closed_ticket(tickets_dir, "t1").closed.outcome is TicketState.DONE
 
     def test_legacy_flags_are_accepted_no_ops(self, tmp_path, capsys):
         tickets_dir, tio = self._tickets(tmp_path)

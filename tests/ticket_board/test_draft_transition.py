@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.ticket_board import (
     draft_transition,
     workspace_ops,
@@ -184,9 +185,16 @@ def test_draft_journal_reads_schema_one_and_validates_schema_two_drift(
 ) -> None:
     schema_one = asdict(_draft_journal(tmp_path))
     schema_one.pop("authored_drift")
+    schema_one.pop("blocked_execution_id")
     parsed = draft_transition._parse_journal(schema_one)
     assert parsed.schema == 1
     assert parsed.authored_drift == {}
+    assert parsed.blocked_execution_id is None
+
+    schema_three = {**schema_one, "schema": 3, "authored_drift": {}, "blocked_execution_id": "e1"}
+    assert draft_transition._parse_journal(schema_three).blocked_execution_id == "e1"
+    with pytest.raises(BoundaryError):
+        draft_transition._parse_journal({**schema_three, "blocked_execution_id": None})
 
     schema_two = {**schema_one, "schema": 2, "authored_drift": {"reason": "wrong"}}
     parsed_two = draft_transition._parse_journal(schema_two)

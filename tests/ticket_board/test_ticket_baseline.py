@@ -1865,9 +1865,7 @@ def test_board_basis_rejects_stale_runtime_ticket_snapshot(tmp_path: Path) -> No
         tio.load_basis("transaction", runtime_ticket_path=runtime_ticket)
 
 
-@pytest.mark.parametrize(
-    "board_dir", ["queue", "waiting", "active", "blocked", "review", "done", "archived"]
-)
+@pytest.mark.parametrize("board_dir", ["queue", "waiting", "active", "blocked", "review", "done"])
 def test_legacy_executable_ticket_is_rejected_in_every_state(
     tmp_path: Path, board_dir: str
 ) -> None:

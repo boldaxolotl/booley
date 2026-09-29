@@ -551,7 +551,7 @@ def test_read_only_cli_commands_never_recover(tio, monkeypatch):
 
     calls = []
     monkeypatch.setattr(cli, "detect_tickets_dir", lambda: tio.tickets_dir)
-    monkeypatch.setattr(cli, "recover_ticket_history", calls.append)
+    monkeypatch.setattr(cli, "reconcile_board", calls.append)
 
     cli.main(["classify"])
     assert calls == []
@@ -598,3 +598,61 @@ def test_retired_archive_flags_only_earn_a_note(tio, capsys):
     err = capsys.readouterr().err
     assert "--force has no effect" in err and "--keep-logs has no effect" in err
     assert read_closed_ticket(tio.tickets_dir, "feat").closed.outcome is TicketState.ARCHIVED
+
+
+# Whole-branch review fixes ------------------------------------------------------------------
+
+
+def test_unfinished_return_to_draft_refuses_plain_moves(tio, capsys):
+    from booley.ticket_board.draft_transition import _journal_path
+
+    make_ticket_file(tio, "blocked", "feat")
+    journal = _journal_path(Path(tio._project_root).resolve(), "feat")
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    journal.write_text("{}", encoding="utf-8")
+
+    assert tio.move_ticket_file("feat", TicketState.QUEUED) is False
+    assert "unfinished return-to-draft" in capsys.readouterr().err
+    assert read_state_record(tio.tickets_dir, "feat").state is TicketState.BLOCKED
+
+
+def test_closed_ticket_leftovers_refuse_moves(tio, capsys):
+    _close(tio, "feat")
+    make_ticket_file(tio, "queue", "feat")  # board copies a crash left behind
+
+    assert tio.move_ticket_file("feat", TicketState.BLOCKED) is False
+    assert "closed in Ticket History" in capsys.readouterr().err
+    assert read_state_record(tio.tickets_dir, "feat").state is TicketState.QUEUED
+
+
+def test_return_to_draft_refuses_a_record_that_ran_again():
+    from types import SimpleNamespace
+
+    from booley.ticket_board.draft_transition import (
+        DraftTransitionError,
+        _require_captured_record,
+    )
+
+    rerun = StateRecord.fresh(TicketState.BLOCKED, execution_id="e2")
+    with pytest.raises(DraftTransitionError, match="re-run"):
+        _require_captured_record(SimpleNamespace(blocked_execution_id="e1"), rerun)
+    _require_captured_record(SimpleNamespace(blocked_execution_id="e2"), rerun)
+    _require_captured_record(SimpleNamespace(blocked_execution_id=None), rerun)  # schema < 3
+
+
+def test_archive_refuses_a_ticket_with_a_live_owner(tio):
+    from booley.ticket_board.archive import op_archive
+
+    place_ticket(tio.tickets_dir, "feat", "drafts", _draft("Running work"))
+    owner = subprocess.Popen(["sleep", "30"])
+    try:
+        record = StateRecord.fresh(TicketState.BLOCKED, execution_owner_pid=owner.pid)
+        write_state_record(tio.tickets_dir, "feat", record)
+
+        outcome = op_archive(tio, slug="feat")
+
+        assert f"live process {owner.pid}" in outcome.failures["feat"]
+        assert read_closed_ticket(tio.tickets_dir, "feat") is None
+    finally:
+        owner.kill()
+        owner.wait(timeout=10)

@@ -233,13 +233,7 @@ def complete_review_ticket(
             )
         )
         progress = _finish_progress(
-            tio,
-            slug,
-            entry,
-            basis,
-            effective_policy.cleanup,
-            progress,
-            expected_sources,
+            tio, slug, entry, basis, effective_policy.cleanup, progress, expected_sources
         )
     except LockContentionError:
         print("Error: another acceptance is already running", file=sys.stderr)
@@ -253,6 +247,11 @@ def complete_review_ticket(
     ) as exc:
         # A done Ticket whose recovery is pending stays live until a retry finishes.
         return AcceptanceOutcome.ACCEPTED_PENDING if _report_failure(tio, slug, exc) else None
+    return _reported_outcome(slug, progress)
+
+
+def _reported_outcome(slug: str, progress: AcceptanceProgress) -> AcceptanceOutcome:
+    """Warn when acceptance is only partly finished, then return its outcome."""
     if progress.outcome is AcceptanceOutcome.ACCEPTED_PENDING:
         print(
             f"Warning: accepted '{slug}' but cleanup is pending or acceptance "

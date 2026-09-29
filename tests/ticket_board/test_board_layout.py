@@ -68,7 +68,9 @@ class TestStateRecords:
         assert read_state_record(tmp_path, "t1") is None
         assert ticket_state(tmp_path, "t1") is TicketState.DRAFT
 
-    @pytest.mark.parametrize("state", [s for s in TicketState if s is not TicketState.DRAFT])
+    @pytest.mark.parametrize(
+        "state", [s for s in TicketState if s not in {TicketState.DRAFT, TicketState.ARCHIVED}]
+    )
     def test_round_trip(self, tmp_path, state):
         record = StateRecord.fresh(state, execution_id="e1", execution_owner_pid=42)
         write_state_record(tmp_path, "t1", record)
@@ -81,6 +83,17 @@ class TestStateRecords:
     def test_draft_has_no_record(self):
         with pytest.raises(StateRecordError):
             StateRecord.fresh(TicketState.DRAFT)
+
+    def test_archived_record_fails_closed(self, tmp_path):
+        """Archived Tickets live only in Ticket History (ADR 0065)."""
+        with pytest.raises(StateRecordError, match="Ticket History"):
+            StateRecord.fresh(TicketState.ARCHIVED)
+        path = state_record_path(tmp_path, "t1")
+        path.parent.mkdir(parents=True)
+        stored = StateRecord.fresh(TicketState.BLOCKED).to_json() | {"state": "archived"}
+        path.write_text(json.dumps(stored), encoding="utf-8")
+        with pytest.raises(StateRecordError, match="invalid"):
+            read_state_record(tmp_path, "t1")
 
     def test_with_state_and_runtime_keep_other_fields(self):
         record = StateRecord.fresh(TicketState.QUEUED, step="lint")
@@ -190,7 +203,7 @@ class TestBoardDocuments:
         path = _place(tmp_path, "t1", TicketState.DRAFT)
         assert document_state(tmp_path, path) is TicketState.DRAFT
         for state in TicketState:
-            if state is not TicketState.DRAFT:
+            if state not in {TicketState.DRAFT, TicketState.ARCHIVED}:
                 write_state_record(tmp_path, "t1", StateRecord.fresh(state))
                 assert document_state(tmp_path, path) is state
 

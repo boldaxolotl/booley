@@ -450,7 +450,7 @@ class TicketIO:
                 print(f"Error: use 'booley board archive {slug}' to abandon it", file=sys.stderr)
                 return False
             source = STATE_BY_STATUS.get(status or "")
-            if self._crosses_draft(slug, source, destination) or self._enqueue_pending(slug):
+            if self._crosses_draft(slug, source, destination) or self._transition_refused(slug):
                 return False
             self.commit_state(file_path.stem, destination, self.read_progress(file_path.stem))
         return True
@@ -481,7 +481,7 @@ class TicketIO:
             if not can_transition(source, destination):
                 print(f"Error: {format_transition_error(source, destination)}", file=sys.stderr)
                 return None
-        if self._crosses_draft(slug, source, destination) or self._enqueue_pending(slug):
+        if self._crosses_draft(slug, source, destination) or self._transition_refused(slug):
             return None
         return source, destination
 
@@ -502,21 +502,42 @@ class TicketIO:
         )
         return True
 
-    def _enqueue_pending(self, slug: str) -> bool:
-        """Refuse to move a Ticket whose enqueue has not finished publishing.
+    def _transition_refused(self, slug: str) -> bool:
+        """Refuse to move a Ticket that is closed or mid enqueue or return-to-draft.
 
-        After a crash, the state record can already exist beside the draft-form
-        document. Only retrying enqueue may finish or roll that back.
+        After a crash, a state record can sit beside a draft-form document, or
+        a closed Ticket's board copies can outlive its history record. Only
+        retrying the interrupted verb (or board recovery, for a closed Ticket)
+        may finish or roll that back.
         """
+        from .draft_transition import transition_pending
         from .enqueue_publication import enqueue_pending
+        from .ticket_history import slug_is_closed
 
-        if not enqueue_pending(self._project_root, slug):
-            return False
-        print(
-            f"Error: ticket '{slug}' has an unfinished enqueue; run enqueue again to finish it",
-            file=sys.stderr,
-        )
-        return True
+        if slug_is_closed(self.tickets_dir, slug):
+            print(
+                f"Error: ticket '{slug}' is closed in Ticket History; "
+                "any board command finishes removing its leftovers",
+                file=sys.stderr,
+            )
+            return True
+
+        if enqueue_pending(self._project_root, slug):
+            print(
+                f"Error: ticket '{slug}' has an unfinished enqueue; run enqueue again to finish it",
+                file=sys.stderr,
+            )
+            return True
+        if transition_pending(self._project_root, slug):
+            # A crash between publishing the draft form and deleting the state
+            # record leaves a live record beside a draft-form document.
+            print(
+                f"Error: ticket '{slug}' has an unfinished return-to-draft; "
+                "run return-to-draft again to finish it",
+                file=sys.stderr,
+            )
+            return True
+        return False
 
     @staticmethod
     def _canonical_transition(
@@ -783,7 +804,7 @@ class TicketIO:
         ):
             print(f"Error: ticket '{slug}' claimed by another process", file=sys.stderr)
             return False
-        return not self._enqueue_pending(slug)
+        return not self._transition_refused(slug)
 
     def stamp_execution(
         self,
