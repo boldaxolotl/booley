@@ -20,6 +20,7 @@ from booley.fusesoc.core_projection import (
     reconcile_isolated_registry,
     reconcile_projected_cores,
 )
+from tests.conftest import symlink_or_skip
 
 _CORE = "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n"
 
@@ -204,6 +205,39 @@ def test_isolated_registry_rebases_files_and_excludes_native_cores(tmp_path: Pat
     assert any(path in text for path in (str(root / "rtl"), (root / "rtl").as_posix()))
     assert "native.core" not in text
     assert core.read_text(encoding="utf-8").startswith("CAPI=2:\nname: booley::demo:0")
+
+
+def test_isolated_registry_resolves_fileset_symlink_but_preserves_file_parameter(
+    tmp_path: Path,
+) -> None:
+    root, core = _project(tmp_path)
+    (root / "constraints").mkdir()
+    physical = root / "constraints" / "physical.sdc"
+    physical.write_text("create_clock -period 10 clk\n", encoding="utf-8")
+    symlink_or_skip(root / "constraints" / "timing.sdc", physical)
+    core.write_text(
+        "CAPI=2:\n"
+        "name: booley::demo:0\n"
+        "filesets:\n"
+        "  constraints:\n"
+        "    files:\n"
+        "      - constraints/timing.sdc: {file_type: SDC}\n"
+        "parameters:\n"
+        "  CONFIG: {datatype: file, paramtype: plusarg, default: config/authored.cfg}\n"
+        "targets: {}\n",
+        encoding="utf-8",
+    )
+    (root / ".booley_project" / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+
+    generated = reconcile_isolated_registry(root).written[0]
+    text = generated.read_text(encoding="utf-8")
+
+    assert physical.resolve().as_posix() in text
+    assert "default: config/authored.cfg" in text
+    assert str(root / "config" / "authored.cfg") not in text
 
 
 def test_generated_isolated_projection_requires_strict_provenance(tmp_path: Path) -> None:
