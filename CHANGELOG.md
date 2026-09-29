@@ -11,6 +11,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### New features
 
+- Maintainers can persistently opt the three repository-owned QA skills into
+  Host Bootstrap with `booley bootstrap --with-qa-skills` and safely remove
+  only managed QA links with `--without-qa-skills`. Optional-source failures
+  warn without blocking product Bootstrap or Project Initialization, and QA
+  skills remain outside release wheels and Sandbox host-skill mounts.
+
 - `booley board show` and generated review packages now compare recorded
   Criterion and Reviewer-receipt evidence with the live Ticket worktree. They
   show changed source categories, hold on stale mandatory evidence, and leave
@@ -28,6 +34,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- REVIEW category/focus declarations now require exactly one scalar `done` or
+  `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
+  already-published Tickets. `booley board check-ready <slug>` is equivalent to
+  `booley run --ticket <slug> --check-ready` for detecting the invalid grammar.
 - Projects that placed formal proof artifacts at `<anchor>/proofs/...` as a
   workaround must move them beneath
   `<anchor>/<approval-directory>/proofs/...`. Keep the authored proof reference
@@ -55,6 +65,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- `python -m booley.ticket_board validate-logs <slug>` now renders its normal
+  Markdown and machine-readable JSON diagnostics for executable Tickets with
+  runtime snapshots instead of raising `AttributeError`.
+  ([#849](https://github.com/boldaxolotl/Booley/issues/849))
 - Clean liberty-mapped synthesis no longer receives false no-driver, ABC
   multi-output, `IFP-0028`, `GPL-0302`, or `STA-0349` advisories from Booley's
   generated Yosys and OpenROAD scripts. OpenROAD now removes every eligible

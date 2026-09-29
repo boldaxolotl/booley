@@ -581,7 +581,8 @@ def _adapter_result_for_test_process(
 
 
 def _cocotb_adapter_result(names, process, output, summary, parsed) -> AdapterResult:
-    if "cocotb simulation timed out" in output.lower() or process.timed_out:
+    timed_out = "cocotb simulation timed out" in output.lower() or process.timed_out
+    if timed_out:
         parsed = cocotb_results.recover_timeout_progress(output, list(names), parsed)
     elapsed = {test.name: test.elapsed_s for test in parsed.tests}
     tests = tuple(
@@ -603,7 +604,8 @@ def _cocotb_adapter_result(names, process, output, summary, parsed) -> AdapterRe
         else ()
     )
     sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-    inconclusive = any(test.verdict == "inconclusive" for test in tests)
+    tests = _normalize_canned_cocotb_timeout(tests, timed_out)
+    inconclusive = not timed_out and any(test.verdict == "inconclusive" for test in tests)
     passed = bool(
         process.returncode == 0
         and summary is not None
@@ -620,6 +622,28 @@ def _cocotb_adapter_result(names, process, output, summary, parsed) -> AdapterRe
         sva_errors,
         diagnostics,
         _test_trace_result(output),
+        simulator_returncode=process.returncode,
+        termination="timeout" if timed_out else "completed",
+        termination_detail="cocotb simulation timed out" if timed_out else "",
+    )
+
+
+def _normalize_canned_cocotb_timeout(tests, timed_out):
+    if not timed_out:
+        return tests
+    detail = "cocotb simulation timed out"
+    return tuple(
+        test
+        if test.verdict in {"pass", "fail"}
+        else AdapterTestResult(
+            test.name,
+            "timeout",
+            test.elapsed_s,
+            detail,
+            "timeout",
+            "timeout",
+        )
+        for test in tests
     )
 
 
@@ -642,7 +666,14 @@ def _native_adapter_result(names, process, output, summary) -> AdapterResult:
     tests = tuple(AdapterTestResult(name, verdict, process.duration_s) for name in names)
     sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
     return _test_adapter_result(
-        names, tests, passed, inconclusive, sva_errors, (), _test_trace_result(output)
+        names,
+        tests,
+        passed,
+        inconclusive,
+        sva_errors,
+        (),
+        _test_trace_result(output),
+        simulator_returncode=process.returncode,
     )
 
 
@@ -660,13 +691,27 @@ def _test_trace_result(output: str) -> AdapterTraceResult | None:
     )
 
 
-def _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnostics, trace=None):
+def _test_adapter_result(
+    names,
+    tests,
+    passed,
+    inconclusive,
+    sva_errors,
+    diagnostics,
+    trace=None,
+    *,
+    simulator_returncode=0,
+    termination="completed",
+    termination_detail="",
+):
     timed_out = any(test.verdict == "timeout" for test in tests)
     return AdapterResult(
         passed=passed,
         inconclusive=inconclusive,
         sva_errors=sva_errors,
         tests=names,
+        simulator_returncode=simulator_returncode,
+        termination=termination,
         failure_kind=(
             "timeout"
             if timed_out
@@ -676,6 +721,7 @@ def _test_adapter_result(names, tests, passed, inconclusive, sva_errors, diagnos
             if not passed
             else ""
         ),
+        detail=termination_detail,
         test_results=tests,
         diagnostics=diagnostics,
         trace=trace,

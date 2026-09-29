@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime import job_slots
+from booley.runtime import execution_records, job_slots
 from booley.runtime import project_dir as runtime_project_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
@@ -106,7 +106,11 @@ def make_execution_store(
     *,
     execution_terminal,
     cancellations: list[str],
+    inherited_execution_verifier=None,
 ) -> SlotStore:
+    kwargs = {}
+    if inherited_execution_verifier is not None:
+        kwargs["inherited_execution_verifier"] = inherited_execution_verifier
     return SlotStore(
         root,
         is_pid_alive=world.is_pid_alive,
@@ -121,11 +125,26 @@ def make_execution_store(
             recover_execution=lambda _execution_id: False,
             recover_process_owner=lambda _identity: False,
         ),
+        **kwargs,
     )
 
 
 def spawn(world: FakeWorld, pid: int, argv: list[str] | None = None):
     world.alive[pid] = argv
+
+
+def active_execution_record(supervisor: ProcessIdentity) -> dict:
+    return {
+        "schema_version": PROTOCOL_VERSION,
+        "state": "running",
+        "runtime_identity": supervisor.identity_scope,
+        "supervisor": supervisor.to_payload(),
+        "leader": None,
+        "exit_code": None,
+        "tree_terminal": False,
+        "terminal_cause": None,
+        "updated_at": "1970-01-01T00:00:00Z",
+    }
 
 
 class TestSingleProcess:
@@ -452,34 +471,153 @@ class TestGhostReaping:
         store.release(token)
         assert not token.path.exists()
 
-    def test_execution_id_is_inherited_and_persisted(self, root, world, monkeypatch):
+    def test_execution_id_is_inherited_and_persisted(self, tmp_path, world, monkeypatch):
         execution_id = "c" * 32
-        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
+        project = tmp_path / ".booley_project"
+        root = project / "runtime" / "jobs" / "slots"
+        spawn(world, 50)
         spawn(world, 100)
-        store = make_execution_store(
-            root,
-            world,
-            execution_terminal=lambda _execution_id: False,
-            cancellations=[],
+        supervisor = world.capture_identity(50)
+        assert supervisor is not None
+        atomic_write_json(
+            execution_paths(execution_id, project_dir=project).record,
+            active_execution_record(supervisor),
         )
-        token = store.submit(CLASS_HEAVY, pid=100)
-        assert store.refresh(token).state == HOLDING
-
-        holder = store.snapshot(CLASS_HEAVY)[0][0]
-        assert holder.execution_id == execution_id
-        assert holder.owner_kind == "execution"
-        assert holder.lease_id
-        assert holder.lease_expires_at is not None
-
-    def test_one_runtime_execution_can_own_multiple_job_leases(self, root, world, monkeypatch):
-        execution_id = "e" * 32
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
         monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
+        monkeypatch.setattr(
+            job_slots,
+            "verify_inherited_execution_id",
+            lambda raw, *, project_dir, owner_pid: execution_records.verify_inherited_execution_id(
+                raw,
+                project_dir=project_dir,
+                owner_pid=owner_pid,
+                observe_identity=world.observe_identity,
+                ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
+            ),
+        )
+        runtime_project_dir.reset_cache()
+        terminal = False
+        cancellations: list[str] = []
+        try:
+            store = make_execution_store(
+                root,
+                world,
+                execution_terminal=lambda _execution_id: terminal,
+                cancellations=cancellations,
+            )
+            token = store.submit(CLASS_HEAVY, pid=100)
+            assert store.refresh(token).state == HOLDING
+
+            holder = store.snapshot(CLASS_HEAVY)[0][0]
+            assert holder.execution_id == execution_id
+            assert holder.owner_kind == "execution"
+            assert holder.lease_id
+            assert holder.lease_expires_at is not None
+
+            del world.alive[100]
+            assert store.reap(CLASS_HEAVY) == []
+            assert cancellations == [execution_id]
+            assert store.snapshot(CLASS_HEAVY)[0][0].lease_state == job_slots.LEASE_CANCELLING
+
+            terminal = True
+            assert store.reap(CLASS_HEAVY) == [token.path.name]
+        finally:
+            runtime_project_dir.reset_cache()
+
+    def assert_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
+        self, tmp_path, world, monkeypatch, unverified_reason
+    ):
+        execution_id = "7" * 32
+        project = tmp_path / "current" / ".booley_project"
+        project.mkdir(parents=True)
+        root = project / "runtime" / "jobs" / "slots"
+        record_project = (
+            tmp_path / "foreign" / ".booley_project"
+            if unverified_reason == "foreign_project"
+            else project
+        )
+        spawn(world, 50, ["supervisor"])
+        spawn(world, 100, ["owner"])
+        spawn(world, 200, ["waiter"])
+        supervisor = world.capture_identity(50)
+        assert supervisor is not None
+        atomic_write_json(
+            execution_paths(execution_id, project_dir=record_project).record,
+            active_execution_record(supervisor),
+        )
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, execution_id)
+        monkeypatch.setattr(
+            job_slots,
+            "verify_inherited_execution_id",
+            lambda raw, *, project_dir, owner_pid: execution_records.verify_inherited_execution_id(
+                raw,
+                project_dir=project_dir,
+                owner_pid=owner_pid,
+                observe_identity=world.observe_identity,
+                ancestor_check=lambda owner, ancestor: (
+                    unverified_reason == "foreign_project" and (owner, ancestor) == (100, 50)
+                ),
+            ),
+        )
+        runtime_project_dir.reset_cache()
+        cancellations: list[str] = []
+        store = SlotStore(
+            root,
+            SlotCaps(max_heavy=1),
+            is_pid_alive=world.is_pid_alive,
+            read_cmdline=world.read_cmdline,
+            now=world.now,
+            sleep=lambda _seconds: None,
+            capture_identity=world.capture_identity,
+            observe_identity=world.observe_identity,
+            recovery=job_slots.SlotRecovery(
+                execution_is_terminal=lambda _execution_id: False,
+                cancel_execution=cancellations.append,
+                recover_execution=lambda _execution_id: False,
+                recover_process_owner=lambda _identity: True,
+            ),
+        )
+        owner = store.submit(CLASS_HEAVY, pid=100, argv=["owner"])
+        assert store.refresh(owner).state == HOLDING
+        waiter = store.submit(CLASS_HEAVY, pid=200, argv=["waiter"])
+        assert store.refresh(waiter).state == QUEUED
+
+        assert owner.owner_kind == "process"
+        del world.alive[100]
+        assert store.refresh(waiter).state == HOLDING
+        assert not owner.path.exists()
+        assert cancellations == []
+        runtime_project_dir.reset_cache()
+
+    def test_one_runtime_execution_can_own_multiple_job_leases(self, tmp_path, world, monkeypatch):
+        execution_id = "e" * 32
+        project = tmp_path / ".booley_project"
+        root = project / "runtime" / "jobs" / "slots"
+        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
+        spawn(world, 50)
         spawn(world, 100)
+        supervisor = world.capture_identity(50)
+        assert supervisor is not None
+        atomic_write_json(
+            execution_paths(execution_id, project_dir=project).record,
+            active_execution_record(supervisor),
+        )
         store = make_execution_store(
             root,
             world,
             execution_terminal=lambda _execution_id: False,
             cancellations=[],
+            inherited_execution_verifier=lambda raw, _root, pid: (
+                execution_records.verify_inherited_execution_id(
+                    raw,
+                    project_dir=project,
+                    owner_pid=pid,
+                    observe_identity=world.observe_identity,
+                    ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
+                )
+            ),
         )
 
         heavy = store.submit(CLASS_HEAVY, pid=100)
@@ -500,6 +638,71 @@ class TestGhostReaping:
         holder = store.snapshot(CLASS_HEAVY)[0][0]
         assert holder.execution_id is None
         assert holder.owner_kind == "process"
+
+    def test_project_resolution_failure_does_not_inherit_execution_owner(
+        self, root, world, monkeypatch
+    ):
+        def fail_project_resolution():
+            raise RuntimeError("project unavailable")
+
+        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "8" * 32)
+        monkeypatch.setattr(
+            runtime_project_dir,
+            "resolve_project_dir",
+            fail_project_resolution,
+        )
+        spawn(world, 100)
+
+        token = make_store(root, world).submit(CLASS_HEAVY, pid=100)
+
+        assert token.execution_id is None
+        assert token.owner_kind == "process"
+
+    def test_noncanonical_slot_root_does_not_inherit_execution_owner(
+        self, tmp_path, world, monkeypatch
+    ):
+        execution_id = "9" * 32
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, execution_id)
+        runtime_project_dir.reset_cache()
+        spawn(world, 50)
+        spawn(world, 100)
+        supervisor = world.capture_identity(50)
+        assert supervisor is not None
+        atomic_write_json(
+            execution_paths(execution_id, project_dir=project).record,
+            active_execution_record(supervisor),
+        )
+        monkeypatch.setattr(
+            job_slots,
+            "verify_inherited_execution_id",
+            lambda raw, *, project_dir, owner_pid: execution_records.verify_inherited_execution_id(
+                raw,
+                project_dir=project_dir,
+                owner_pid=owner_pid,
+                observe_identity=world.observe_identity,
+                ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
+            ),
+        )
+        try:
+            store = SlotStore(
+                tmp_path / "override-slots",
+                is_pid_alive=world.is_pid_alive,
+                read_cmdline=world.read_cmdline,
+                now=world.now,
+                sleep=lambda _seconds: None,
+                capture_identity=world.capture_identity,
+                observe_identity=world.observe_identity,
+                recovery=job_slots.SlotRecovery(recover_process_owner=lambda _identity: True),
+            )
+            token = store.submit(CLASS_HEAVY, pid=100)
+
+            assert token.execution_id is None
+            assert token.owner_kind == "process"
+        finally:
+            runtime_project_dir.reset_cache()
 
     def test_linked_missing_promotion_metadata_uses_recovery_deadline(self, root, world):
         execution_id = "d" * 32
@@ -751,6 +954,15 @@ class TestAcquire:
         assert a.cancel_waiter(200) is True
         assert a.refresh(waiter).state == LOST
         assert a.refresh(holder).state == HOLDING
+
+
+@pytest.mark.parametrize("unverified_reason", ["foreign_project", "non_ancestor"])
+def test_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
+    tmp_path, world, monkeypatch, unverified_reason
+):
+    TestGhostReaping().assert_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
+        tmp_path, world, monkeypatch, unverified_reason
+    )
 
 
 class TestSnapshot:

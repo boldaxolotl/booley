@@ -29,7 +29,11 @@ from booley.flows.sim.adapter_transport import (
     partial_result_identity,
     write_adapter_result,
 )
-from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.build import (
+    PreparedSimulationBuild,
+    SimulationBuildPreparationError,
+    prepare_simulation_build,
+)
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
@@ -56,7 +60,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
 
-def _handle(root: Path, *, selector: str = "sim") -> TargetHandle:
+def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
     return cast(
         TargetHandle,
         SimpleNamespace(
@@ -64,6 +68,7 @@ def _handle(root: Path, *, selector: str = "sim") -> TargetHandle:
             selector=selector,
             identity=f"acme:lib:demo:1#{selector}",
             vlnv="acme:lib:demo:1",
+            eda_tool=eda_tool,
         ),
     )
 
@@ -233,7 +238,11 @@ def _runtime_input_vvp(root: Path, build_root: Path) -> Path:
     return fake_bin
 
 
-def _write_runtime_input_project(root: Path) -> Path:
+def _write_runtime_input_project(
+    root: Path,
+    *,
+    tool_declaration: str = "    flow: sim\n    flow_options: {tool: icarus}\n",
+) -> Path:
     state = root / ".booley_project"
     state.mkdir(parents=True)
     (state / "booley.toml").write_text("", encoding="utf-8")
@@ -251,8 +260,7 @@ def _write_runtime_input_project(root: Path) -> Path:
         "      - data/firmware.hex: {file_type: user, copyto: firmware.hex}\n"
         "targets:\n"
         "  sim:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: icarus}\n"
+        f"{tool_declaration}"
         "    filesets: [tb]\n"
         "    toplevel: tb\n",
         encoding="utf-8",
@@ -380,11 +388,17 @@ def _write_stale_compiler_fixture(root: Path) -> tuple[Path, Path]:
 
 
 def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
+    source_root = Path(__file__).resolve().parents[3] / "src"
+    python_path = os.pathsep.join(
+        part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
+    )
+
     def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         started = time.monotonic()
         result = subprocess.run(
             command,
             cwd=root,
+            env={**os.environ, "PYTHONPATH": python_path},
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -526,14 +540,29 @@ def _write_partial_timeout_transport(
     )
     result = AdapterResult(
         False,
-        True,
+        False,
         0,
         identity.selected_tests,
+        simulator_returncode=-9,
+        termination="timeout",
         failure_kind="timeout",
+        detail="cocotb batch ended before terminal adapter transport",
         test_results=(
             AdapterTestResult("done", "pass"),
-            AdapterTestResult("active", "timeout"),
-            AdapterTestResult("later", "inconclusive"),
+            AdapterTestResult(
+                "active",
+                "timeout",
+                detail="timed out while running",
+                termination="timeout",
+                failure_kind="timeout",
+            ),
+            AdapterTestResult(
+                "later",
+                "timeout",
+                detail="not run before timeout",
+                termination="timeout",
+                failure_kind="timeout",
+            ),
         ),
     )
     partial_identity = partial_result_identity(identity)
@@ -757,14 +786,29 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
             identity,
             AdapterResult(
                 passed=False,
-                inconclusive=True,
+                inconclusive=False,
                 sva_errors=0,
                 tests=identity.selected_tests,
+                simulator_returncode=-9,
+                termination="timeout",
                 failure_kind="timeout",
+                detail="cocotb simulation timed out",
                 test_results=(
                     AdapterTestResult("done", "pass", elapsed_s=0.1),
-                    AdapterTestResult("active", "timeout", detail="timed out while running"),
-                    AdapterTestResult("later", "inconclusive", detail="did not run"),
+                    AdapterTestResult(
+                        "active",
+                        "timeout",
+                        detail="timed out while running",
+                        termination="timeout",
+                        failure_kind="timeout",
+                    ),
+                    AdapterTestResult(
+                        "later",
+                        "timeout",
+                        detail="did not run before timeout",
+                        termination="timeout",
+                        failure_kind="timeout",
+                    ),
                 ),
             ),
         )
@@ -780,7 +824,7 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
     assert [(test.name, test.verdict, test.timed_out) for test in outcome.tests] == [
         ("done", "pass", False),
         ("active", "timeout", True),
-        ("later", "inconclusive", False),
+        ("later", "timeout", True),
     ]
 
 
@@ -806,8 +850,129 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
     assert [(test.name, test.verdict) for test in outcome.tests] == [
         ("done", "pass"),
         ("active", "timeout"),
-        ("later", "inconclusive"),
+        ("later", "timeout"),
     ]
+
+
+@pytest.mark.parametrize("simulator_returncode", [-15, 0, 7])
+def test_guard_abort_reason_uses_simulator_not_adapter_returncode(
+    tmp_path: Path, simulator_returncode: int
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                passed=False,
+                inconclusive=False,
+                sva_errors=0,
+                tests=("smoke",),
+                simulator_returncode=simulator_returncode,
+                termination="disk_budget",
+                failure_kind="infrastructure",
+                detail="run directory exceeded its disk budget",
+                test_results=(
+                    AdapterTestResult(
+                        "smoke",
+                        "fail",
+                        detail="run directory exceeded its disk budget",
+                        termination="disk_budget",
+                        failure_kind="infrastructure",
+                    ),
+                ),
+            ),
+        )
+        return SubprocessResult(
+            returncode=1,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\nadapter wrapper failed\n",
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert outcome.verdict == "error"
+    assert outcome.tests[0].simulator_returncode == simulator_returncode
+    assert outcome.tests[0].reason.endswith(f"(rc={simulator_returncode})")
+
+
+def test_adapter_exit_one_with_design_result_is_failure_not_infrastructure(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                False,
+                False,
+                0,
+                ("smoke",),
+                simulator_returncode=1,
+                failure_kind="design",
+                test_results=(AdapterTestResult("smoke", "fail", detail="DUT mismatch"),),
+            ),
+        )
+        return SubprocessResult(returncode=1, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert outcome.verdict == "fail"
+    assert outcome.infrastructure_failure is None
+    assert outcome.tests[0].failure_kind == "design"
+
+
+@pytest.mark.parametrize(
+    ("process", "expected_verdict", "expected_kind"),
+    [
+        (
+            SubprocessResult(returncode=2, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n"),
+            "error",
+            "adapter_protocol",
+        ),
+        (
+            SubprocessResult(
+                returncode=-9,
+                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+                timed_out=True,
+            ),
+            "fail",
+            None,
+        ),
+    ],
+)
+def test_missing_transport_distinguishes_adapter_error_from_outer_timeout(
+    tmp_path: Path,
+    process: SubprocessResult,
+    expected_verdict: str,
+    expected_kind: str | None,
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    outcome = _run_execution(
+        handle,
+        prepared,
+        lambda _command, timeout: process,
+        ("smoke",),
+        cocotb=False,
+    )
+
+    assert outcome.verdict == expected_verdict
+    if expected_kind is not None:
+        assert outcome.infrastructure_failure is not None
+        assert outcome.infrastructure_failure.kind == expected_kind
+    else:
+        assert outcome.infrastructure_failure is None
+        assert outcome.tests[0].timed_out is True
+        assert outcome.tests[0].termination == "completed"
 
 
 def test_unchanged_timeout_partial_result_is_stale(tmp_path: Path) -> None:
@@ -1238,6 +1403,116 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
     ] == [("firmware.hex", "user")]
     assert outcome.passed is True
     assert not (project / "firmware.hex").is_symlink()
+
+
+@pytest.mark.parametrize(
+    "tool_declaration",
+    (
+        "    flow: sim\n    flow_options: {tool: icarus}\n",
+        "    default_tool: icarus\n    tools:\n      icarus: {}\n",
+    ),
+    ids=("modern-flow-api", "legacy-tool-api"),
+)
+def test_real_icarus_declarations_build_authorize_and_launch_as_icarus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_declaration: str,
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project, tool_declaration=tool_declaration)
+    (state / "tests.toml").write_text('[sim]\ntests = ["dhry"]\n', encoding="utf-8")
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    outcome = _run_real_icarus(project, handle)
+
+    build_root = next((state / ".runtime").rglob("*.eda.yml")).parent
+    makefile = (build_root / "Makefile").read_text(encoding="utf-8")
+    scripts = tuple(build_root.glob("*.scr"))
+    assert "iverilog" in makefile
+    assert "vvp" in makefile
+    assert len(scripts) == 1
+    assert scripts[0].with_suffix("").is_file()
+    assert not (build_root / "Vtb").exists()
+    assert outcome.eda_tool == "icarus"
+    assert outcome.passed is True
+
+
+def test_preparation_rejects_declared_and_configured_simulator_disagreement(
+    tmp_path: Path,
+) -> None:
+    handle = _handle(tmp_path, selector="sim_disagree", eda_tool="icarus")
+    resolved = replace(
+        _prepared(handle, cocotb=False).resolved,
+        configured_eda_tool="verilator",
+    )
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(SimulationBuildPreparationError) as exc,
+    ):
+        prepare_simulation_build(handle)
+
+    message = str(exc.value)
+    assert "sim_disagree" in message
+    assert "icarus" in message
+    assert "verilator" in message
+    assert "flow_options.tool" in message
+    assert "default_tool" in message
+
+
+def test_real_legacy_verilator_target_prepares_as_verilator(tmp_path: Path) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    _write_runtime_input_project(
+        project,
+        tool_declaration=("    default_tool: verilator\n    tools:\n      verilator: {}\n"),
+    )
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    real_resolve = fusesoc_registry.resolve_target_handle
+    fusesoc_cmd = (
+        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+        if shutil.which("fusesoc")
+        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+    )
+    with patch.object(
+        fusesoc_registry,
+        "resolve_target_handle",
+        side_effect=lambda *args, **kwargs: real_resolve(
+            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+        ),
+    ):
+        prepared = prepare_simulation_build(handle)
+
+    assert prepared.resolved.eda_tool is None
+    assert prepared.resolved.configured_eda_tool == "verilator"
+    assert prepared.eda_tool == "verilator"
+    assert "verilator" in (prepared.build_root / "Makefile").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("configured_tool", (None, "mystery-sim"))
+def test_preparation_rejects_missing_or_unknown_configured_simulator(
+    tmp_path: Path,
+    configured_tool: str | None,
+) -> None:
+    handle = _handle(tmp_path, selector="sim_unresolved", eda_tool="icarus")
+    resolved = replace(
+        _prepared(handle, cocotb=False).resolved,
+        configured_eda_tool=configured_tool,
+    )
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(SimulationBuildPreparationError, match="sim_unresolved") as exc,
+    ):
+        prepare_simulation_build(handle)
+
+    assert "flow_options.tool" in str(exc.value)
+    assert "default_tool" in str(exc.value)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Doctor runtime shadow requires symlinks")

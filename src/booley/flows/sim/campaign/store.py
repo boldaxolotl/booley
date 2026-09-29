@@ -854,13 +854,14 @@ def _validate_result_selection(
             "setup_error",
             "timeout",
             "crash",
+            "aborted",
         }
         discovered = bool(observed) and all(isinstance(name, str) and name for name in observed)
         if not (unnamed_failure or discovered):
             raise SimulationCampaignIntegrityError(
                 "unfiltered Cocotb result has invalid observation identity"
             )
-    if result.document["state"] not in {"completed", "timeout", "crash"}:
+    if result.document["state"] not in {"completed", "timeout", "crash", "aborted"}:
         return
     evidence = cast(tuple[Mapping[str, object], ...], result.document["evidence"])
     expected_kind = "coverage_campaign_manifest" if kind == "coverage_aggregate" else None

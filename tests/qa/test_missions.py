@@ -60,6 +60,25 @@ def test_relative_links_resolve(document: Path):
     assert not missing, f"{document.relative_to(QA_ROOT)} links to missing files: {missing}"
 
 
+@pytest.mark.parametrize("skill", sorted(QA_ROOT.glob("*/SKILL.md")), ids=lambda p: p.parent.name)
+def test_installable_skill_markdown_links_do_not_escape_skill_directory(skill: Path):
+    links = {link for link in MARKDOWN_LINK.findall(skill.read_text()) if "://" not in link}
+    escaping = sorted(link for link in links if ".." in Path(link).parts)
+    assert not escaping, f"{skill.relative_to(QA_ROOT)} has escaping links: {escaping}"
+
+
+def test_qa_skills_derive_repository_inputs_from_loaded_skill_path():
+    combined = "\n".join(path.read_text() for path in sorted(QA_ROOT.glob("*/SKILL.md")))
+    for required in (
+        "real path of this loaded `SKILL.md`",
+        "qa/DISK.md",
+        "qa/AREAS.md",
+        "qa/SMOKE.md",
+        "qa/missions/",
+    ):
+        assert required in combined
+
+
 def test_qa_run_uses_the_canonical_host_install():
     skill = (QA_ROOT / "booley-qa-run" / "SKILL.md").read_text()
     hard_rules = skill.split("## Hard rules", 1)[1].split("## Run directory", 1)[0]

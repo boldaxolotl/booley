@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.build import BuildOutcome
 
 SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "crash", "inconclusive"]
@@ -110,6 +111,9 @@ class SimulationTestOutcome:
     cycles: int | None = None
     cycle_status: str = "missing"
     inconclusive: bool = False
+    termination: RunTerminationKind = "completed"
+    failure_kind: SimulationFailureKind = ""
+    simulator_returncode: int | None = None
     reason: str = ""
     sva_errors: int = 0
     error_tail: str = ""

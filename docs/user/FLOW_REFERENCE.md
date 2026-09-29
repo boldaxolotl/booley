@@ -124,6 +124,11 @@ Each test gets one verdict:
   fail the test.
 - A test that exits cleanly without a valid verdict is **inconclusive**, never a
   pass. So is a `--trace` run that produced no fresh waveform.
+- A test stopped by a Booley guard stays **aborted** even if the simulator
+  exits `0`. An infrastructure abort is exit `2`. A `$readmemh` input file that
+  is missing and not declared in the Target is a design failure
+  (`missing_input`, exit `1`). Either way the cause is kept, and assertions are
+  reported as not observed.
 
 Criteria are Ticket Mode acceptance conditions: a Ticket declares them, and
 Flow runs made for that Ticket record whether they were met (see

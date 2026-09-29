@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import sys
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -120,11 +123,62 @@ def _stub_resolved(eda_tool: str | None = "verilator") -> object:
         vlnv="::stub_demo:0",
         toplevel="",
         eda_tool=eda_tool,
+        configured_eda_tool=eda_tool,
         files=(),
         parameters={},
         build_root=Path("build"),
         edam_path=Path("build/stub_demo_0.eda.yml"),
     )
+
+
+@pytest.mark.parametrize("eda_tool", (None, "mystery-lint"))
+def test_real_preparation_rejects_missing_or_unknown_configured_linter(
+    tmp_path: Path,
+    eda_tool: str | None,
+) -> None:
+    flow = LintFlow()
+    flow.parse_args(["--target", "lint_bad", "--work-dir", str(tmp_path)])
+    handle = _target_handle("lint_bad", project_root=tmp_path)
+    resolved = _stub_resolved(eda_tool)
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(ValueError, match="unknown lint EDA tool"),
+    ):
+        flow._prepare_lint_command(handle)
+
+
+@pytest.mark.parametrize("eda_tool", (None, "mystery-lint"))
+def test_dry_run_plan_rejects_missing_or_unknown_declared_linter(
+    tmp_path: Path,
+    eda_tool: str | None,
+) -> None:
+    flow = LintFlow()
+    flow.parse_args(["--target", "lint_bad", "--work-dir", str(tmp_path)])
+    handle = _target_handle("lint_bad", project_root=tmp_path, eda_tool=eda_tool)
+
+    plan = flow._plan_lint((handle,))
+
+    assert len(plan.aggregate_errors) == 1
+    assert "unknown lint EDA tool" in plan.aggregate_errors[0]
+
+
+def test_preparation_rejects_declared_and_configured_linter_disagreement(
+    tmp_path: Path,
+) -> None:
+    flow = LintFlow()
+    flow.parse_args(["--target", "lint_disagree", "--work-dir", str(tmp_path)])
+    handle = _target_handle(
+        "lint_disagree",
+        project_root=tmp_path,
+        eda_tool="verible",
+    )
+    resolved = _stub_resolved("verilator")
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        pytest.raises(ValueError, match=r"declared 'verible'.*configured 'verilator'"),
+    ):
+        flow._prepare_lint_command(handle)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +248,7 @@ class TestLintResolution:
             vlnv="::lint_demo:0",
             toplevel="top",
             eda_tool="verilator",
+            configured_eda_tool="verilator",
             files=(),
             parameters={},
             build_root=resolved_build,
@@ -215,9 +270,10 @@ class TestLintResolution:
             "_resolve_target",
             side_effect=fake_resolve,
         ):
-            cmd, resolved = flow._prepare_lint_command(
+            prepared = flow._prepare_lint_command(
                 _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
             )
+            cmd, resolved = prepared.command, prepared.resolved
 
         # The ResolvedTarget rides along for EDA-tool/coverage reporting.
         assert resolved is fake
@@ -229,12 +285,12 @@ class TestLintResolution:
         assert captured["build_root"] == (
             tmp_path / ".booley_project" / ".runtime" / "edalize" / "lint" / "lite"
         )
-        # Drives make over the resolved build dir via a relocatable relpath.
-        assert cmd == [
-            "make",
-            "-C",
-            ".booley_project/.runtime/edalize/lint/lite/lint_demo_0/lite",
-        ]
+        # Authenticated preflight names the selected linter before make can
+        # translate a child 127 into its own exit 2.
+        assert cmd[:2] == ["sh", "-c"]
+        assert "command -v verilator" in cmd[2]
+        assert re.search(r"BOOLEY_EDA_FAILURE token=[0-9a-f]{32}", cmd[2])
+        assert "make -C .booley_project/.runtime/edalize/lint/lite/lint_demo_0/lite" in cmd[2]
 
     def test_setup_failure_propagates(self, tmp_path: Path, state_file: Path):
         """A FuseSoC resolution failure surfaces (caller records a Flow error)."""
@@ -295,18 +351,69 @@ class TestLintResolution:
                 **{**k, "fusesoc_cmd": fusesoc_cmd},
             ),
         ):
-            cmd, _resolved = flow._prepare_lint_command(
+            prepared = flow._prepare_lint_command(
                 _target_handle("lite", project_root=work_dir, vlnv="::lint_demo:0")
             )
+            cmd, _resolved = prepared.command, prepared.resolved
 
-        assert cmd[0] == "make" and cmd[1] == "-C"
-        make_dir = (work_dir / cmd[2]).resolve()
+        assert cmd[:2] == ["sh", "-c"]
+        assert "command -v verilator" in cmd[2]
+        make_dir = Path(_resolved.build_root)
         assert (make_dir / "Makefile").exists()
         vc = next(make_dir.glob("*.vc")).read_text(encoding="utf-8")
         assert "--lint-only" in vc
         assert "-Wall" in vc
         # Relocatable: no absolute project/build paths baked into the .vc.
         assert str(work_dir) not in vc
+
+    def test_real_fusesoc_legacy_verilator_lint_setup(
+        self,
+        tmp_path: Path,
+        state_file: Path,
+    ) -> None:
+        pytest.importorskip("fusesoc")
+        pytest.importorskip("edalize")
+        work_dir = tmp_path / "legacy-proj"
+        (work_dir / "rtl").mkdir(parents=True)
+        (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+        (work_dir / "lint_demo.core").write_text(
+            "CAPI=2:\n"
+            "name: ::lint_demo:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files: [rtl/top.sv]\n"
+            "    file_type: systemVerilogSource\n"
+            "targets:\n"
+            "  lint_legacy:\n"
+            "    default_tool: verilator\n"
+            "    tools:\n"
+            "      verilator: {mode: lint-only}\n"
+            "    filesets: [rtl]\n"
+            "    toplevel: top\n",
+            encoding="utf-8",
+        )
+        flow = LintFlow()
+        flow.parse_args(["--work-dir", str(work_dir), "--target", "lint_legacy"])
+        flow.read_state()
+        handle = TargetCatalog.build(work_dir).select("lint_legacy", for_flow="lint")
+        fusesoc_cmd = (
+            list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+            if shutil.which("fusesoc")
+            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        )
+        real_resolve = fusesoc_registry._resolve_target
+        with patch.object(
+            fusesoc_registry,
+            "_resolve_target",
+            side_effect=lambda *args, **kwargs: real_resolve(
+                *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+            ),
+        ):
+            prepared = flow._prepare_lint_command(handle)
+
+        assert prepared.resolved.eda_tool is None
+        assert prepared.resolved.configured_eda_tool == "verilator"
+        assert (prepared.resolved.build_root / "Makefile").is_file()
 
 
 class TestDoctorTargetAuthority:
@@ -1014,13 +1121,45 @@ class TestErrorVsFailTaxonomy:
             ),
         ):
             mock_exec.return_value = MagicMock(
-                returncode=-1, stdout="", stderr="", timed_out=True, duration_s=99.0
+                returncode=-1,
+                stdout="partial lint output",
+                stderr="partial timeout diagnostic",
+                timed_out=True,
+                duration_s=99.0,
             )
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             flow.read_state()
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
+        assert "lint_clean_lite" not in flow.state.criteria
+        run_log = tmp_path / ".booley_project/.runtime/edalize/lint/lite/run.log"
+        assert "partial lint output" in run_log.read_text(encoding="utf-8")
+        assert "partial timeout diagnostic" in run_log.read_text(encoding="utf-8")
+
+    def test_missing_linter_leaves_criterion_unset(self, tmp_path: Path, state_file: Path) -> None:
+        with (
+            patch.object(LintFlow, "_execute") as mock_exec,
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
+            ),
+        ):
+            mock_exec.return_value = MagicMock(
+                returncode=2,
+                stdout="",
+                stderr="make: verilator: No such file or directory\n",
+                timed_out=False,
+                duration_s=0.1,
+            )
+            flow = LintFlow()
+            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+            flow.read_state()
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert "lint_clean_lite" not in flow.state.criteria
 
     def test_hard_fail_error_carries_run_log_pointer(self, tmp_path: Path, state_file: Path):
         """The classified hard-fail error cites only the FIRST error line; the
@@ -1462,6 +1601,24 @@ SAMPLE_VERIBLE_PARSE_ERROR = """\
 rtl/top.sv:3:1: syntax error at token "endmodule"
 """
 
+
+class TestLintFailureClassification:
+    def test_verilator_missing_is_infrastructure_error(self) -> None:
+        from booley.flows.lint.flow import LintConfigResult, _classify_lint_failure
+
+        result = LintConfigResult(target="lint_default", returncode=2)
+        _classify_lint_failure(
+            result,
+            "verilator",
+            "/bin/sh: 1: verilator: not found\nmake: *** [lint] Error 127",
+        )
+
+        assert result.error_is_eda_tool_failure is True
+        assert "missing tool: verilator" in result.error
+        assert "Sandbox Image" in result.error
+        assert "booley doctor" in result.error
+
+
 # Two Verible lint Targets so cross-target dedup is exercised on the Verible
 # parser path; the cheap .core read is what routes parsing to it.
 _VERIBLE_CORE_TEXT = """\
@@ -1650,8 +1807,8 @@ class TestVeribleTargets:
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
         out = capsys.readouterr().out
-        assert "rebuild the image" in out.lower()
-        assert "predates Verible support" in out
+        assert "rebuild the sandbox image" in out.lower()
+        assert "booley doctor" in out
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -1757,9 +1914,11 @@ class TestFlowEnablement:
         assert flow._resolve_job_class() is None
 
     def test_verible_missing_message_names_runtime(self):
-        from booley.flows.lint.flow import _verible_missing_msg
+        from booley.flows.eda_failures import format_missing_eda_tool
 
-        assert "Sandbox" in _verible_missing_msg()
+        message = format_missing_eda_tool("verible-verilog-lint")
+        assert "Sandbox Image" in message
+        assert "booley doctor" in message
 
 
 # ---------------------------------------------------------------------------
@@ -1890,6 +2049,7 @@ class TestLintObservability:
             vlnv="::demo:0",
             toplevel="design_top",  # declared by NO linted source
             eda_tool="verible",
+            configured_eda_tool="verible",
             files=(ResolvedFile(name="other.sv", file_type="systemVerilogSource"),),
             parameters={},
             build_root=tmp_path,
@@ -1932,6 +2092,7 @@ class TestLintObservability:
             vlnv="::demo:0",
             toplevel="design_top",
             eda_tool="verilator",
+            configured_eda_tool="verilator",
             files=(ResolvedFile(name="top.sv", file_type="systemVerilogSource"),),
             parameters={},
             build_root=tmp_path,

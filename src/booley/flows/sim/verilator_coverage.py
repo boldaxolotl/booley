@@ -14,6 +14,7 @@ from typing import Literal, Protocol
 
 from booley.core.boundary import as_positive_int
 
+from .backends.shared import RunTerminationKind, SimulationFailureKind
 from .coverage_campaign import (
     CoverageArtifact,
     CoverageCapability,
@@ -202,6 +203,9 @@ class SimulationRunResult:
     output: str = ""
     pre_sim: PreSimEvidence | None = None
     infrastructure_error: bool = False
+    termination: RunTerminationKind = "completed"
+    failure_kind: SimulationFailureKind = ""
+    simulator_returncode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -409,6 +413,8 @@ def _collect_one_run(
         return _pre_sim_failure(request, context, result)
     if result.infrastructure_error:
         return _collected_infrastructure_failure(request, context, result)
+    if result.termination != "completed":
+        return _collected_simulation_abort(request, context, result)
     return _collect_run_evidence(request, context, result)
 
 
@@ -492,12 +498,53 @@ def _collected_infrastructure_failure(
         code="COV_INFRASTRUCTURE_ERROR",
         message=result.output or "coverage Simulation infrastructure failed",
         pointer="execution",
-        attributes=_pre_sim_attributes(result.pre_sim),
+        attributes=MappingProxyType(
+            {
+                **_pre_sim_attributes(result.pre_sim),
+                "termination": result.termination,
+                "failure_kind": result.failure_kind or "infrastructure",
+                "error_tail": result.output,
+                **(
+                    {"simulator_returncode": result.simulator_returncode}
+                    if result.simulator_returncode is not None
+                    else {}
+                ),
+            }
+        ),
     )
     return replace(
         failed,
         infrastructure_error=True,
         infrastructure_detail=result.output,
+    )
+
+
+def _collected_simulation_abort(
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
+) -> _CollectedRun:
+    """Retain a design-caused abort without treating it as collector evidence."""
+    return _run_failure(
+        request,
+        context,
+        result.verdict,
+        code="COV_SIMULATION_ABORTED",
+        message=result.output or "coverage Simulation aborted",
+        pointer="execution",
+        attributes=MappingProxyType(
+            {
+                **_pre_sim_attributes(result.pre_sim),
+                "termination": result.termination,
+                "failure_kind": result.failure_kind,
+                "error_tail": result.output,
+                **(
+                    {"simulator_returncode": result.simulator_returncode}
+                    if result.simulator_returncode is not None
+                    else {}
+                ),
+            }
+        ),
     )
 
 
@@ -1376,7 +1423,13 @@ def _infrastructure_failure(
                     simulation_verdict="inconclusive",
                     collection="collector_error",
                     raw_artifact=None,
-                    attributes=MappingProxyType({"execution": "not_completed"}),
+                    attributes=MappingProxyType(
+                        {
+                            "execution": "not_run",
+                            "failure_kind": "infrastructure",
+                            "error_tail": "not run after an earlier infrastructure abort",
+                        }
+                    ),
                 ),
                 None,
                 (),

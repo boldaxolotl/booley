@@ -30,7 +30,7 @@ class HeavyCapacityError(RuntimeError):
 class HeavyPermit:
     """The borrowed outer lane; it is never released by this module."""
 
-    execution_id: str
+    execution_id: ExecutionId | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,8 +70,8 @@ class HeavyCapacity:
         return self._admission.mode == "managed"
 
     @property
-    def parent_execution_id(self) -> str:
-        return self._admission.execution_id
+    def parent_execution_id(self) -> ExecutionId:
+        return self._admission.parent_execution_id
 
     @property
     def shutdown_requested(self) -> bool:

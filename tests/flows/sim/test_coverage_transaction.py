@@ -132,6 +132,49 @@ def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
     )
 
 
+def test_missing_input_is_a_design_failure_with_structured_abort_projection(
+    tmp_path: Path,
+) -> None:
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class MissingInput(NativeExecution):
+        def run(self, request):
+            self.runs.append(request)
+            return SimulationRunResult(
+                "fail",
+                "$readmemh: Cannot open memory.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+                simulator_returncode=3,
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a design abort")
+
+    outcome = run_coverage_target(plan, MissingInput(), Progress())
+
+    assert outcome.exit_code == 1
+    assert outcome.abort_remaining is False
+    simulation = json.loads(outcome.simulation_path.read_text())
+    assert simulation["passed"] is False
+    assert simulation["simulation"] == "aborted"
+    assert simulation["collection"] == "incomplete"
+    assert simulation["tests"][0] == {
+        "name": "reset",
+        "verdict": "fail",
+        "passed": False,
+        "collection": "collector_error",
+        "termination": "fatal_init",
+        "failure_kind": "missing_input",
+        "error_tail": "$readmemh: Cannot open memory.hex",
+        "simulator_returncode": 3,
+    }
+    campaign = json.loads(outcome.campaign_path.read_text())
+    assert campaign["collection"]["status"] == "incomplete"
+
+
 def test_coverage_cli_renders_one_concise_line_per_pre_sim_firing(tmp_path: Path):
     detail = freeze_coverage_mapping(
         {

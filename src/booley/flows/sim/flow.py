@@ -16,6 +16,7 @@ import shlex
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -31,6 +32,7 @@ from booley.core.build_paths import work_root_for
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.display import format_flow_display_label
+from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.plan import (
     CommandPlan,
@@ -108,7 +110,6 @@ from .build import (
     SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
-    new_attempt_token,
     prepare_simulation_build,
     setup_failure_outcome,
 )
@@ -168,7 +169,6 @@ from .execution import (
     SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
-from .execution.failures import find_missing_executable
 from .mode import SimulationMode, normalize_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
 from .target_tests import (
@@ -331,6 +331,8 @@ class TestResult:
     # whose result.json said passed:true, because a *missing waveform* had
     # downgraded the verdict (fpu F-22). Empty when not inconclusive.
     inconclusive_reason: str = ""
+    termination: str = "completed"
+    failure_kind: str = ""
     elab_failed: bool = False
     test_validated: bool = True
     # Waveform this run produced (--trace only): project-relative path and
@@ -372,6 +374,7 @@ class TargetResult:
     target_identity: str = ""
     diagnostics: tuple[str, ...] = ()
     artifacts: tuple[SimulationArtifactEvidence, ...] = ()
+    infrastructure_error: bool = False
 
 
 @dataclass
@@ -1517,6 +1520,8 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
         "passed": test.passed,
         "verdict": _test_verdict(test),
         "timed_out": test.timed_out,
+        "termination": test.termination,
+        "failure_kind": test.failure_kind,
         # F-39: 3 decimals — a 12ms cocotb test rounded to 0.0 at 1 decimal,
         # which erased every sub-second duration from the structured report.
         "elapsed_s": round(test.elapsed_s, 3),
@@ -1550,6 +1555,8 @@ def _test_verdict(test: TestResult) -> str:
         return "pass"
     if test.timed_out:
         return "timeout"
+    if test.termination != "completed":
+        return "fail"
     if test.inconclusive:
         return "inconclusive"
     if test.elab_failed:
@@ -1855,20 +1862,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         number = max(existing, default=0) + 1
         while number <= 1_000_000:
             invocation = endpoint_dir / str(number)
-            lock = campaign_invocation_lock(invocation)
-            try:
-                lock.__enter__()
-            except LockContentionError:
-                number += 1
-                continue
-            try:
-                invocation.mkdir()
-            except FileExistsError:
-                lock.__exit__(None, None, None)
-                number += 1
-                continue
-            self.context.publication_resources.callback(lock.__exit__, None, None, None)
-            return invocation
+            # The attempt stack releases the lock on every exit that does not
+            # publish the directory: a raced number or any mkdir failure.
+            with ExitStack() as attempt:
+                try:
+                    attempt.enter_context(campaign_invocation_lock(invocation))
+                    invocation.mkdir()
+                except (LockContentionError, FileExistsError):
+                    number += 1
+                    continue
+                self.context.publication_resources.push(attempt.pop_all())
+                return invocation
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
 
     def record_campaign_acceptance(self, outcomes: tuple[object, ...]) -> None:
@@ -2937,11 +2941,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             executor,
             publication_checkpoint=self._campaign_publication_checkpoint,
         )
-        execution_id = (
-            admission.execution_id
-            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
-            else ""
-        )
+        execution_id = str(admission.execution_id or "")
         requests = [
             NewCampaignRunRequest(
                 self._coverage_campaign_plan(plan, int(invocation.name), execution_id),
@@ -3309,7 +3309,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         detail = self._legacy_result_detail(results, elapsed, resolution_s)
         self._attach_legacy_artifacts(detail, results)
         return EndpointOutcome(
-            exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
+            exit_code=(
+                EXIT_ERROR
+                if any(result.infrastructure_error for result in results)
+                else EXIT_SUCCESS
+                if passed
+                else EXIT_FAILURE
+            ),
             criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
             criterion_met=passed,
             display_lines=_build_display_lines(results, elapsed),
@@ -3445,11 +3451,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         invocation: Path,
         admission: AdmissionContext,
     ) -> list[NewCampaignRunRequest]:
-        execution_id = (
-            admission.execution_id
-            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
-            else ""
-        )
+        execution_id = str(admission.execution_id or "")
         requests = []
         for target in targets:
             plan = self._ordinary_campaign_plan(
@@ -3584,9 +3586,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             target,
             test_names_map,
             invocation_id=int(invocation.name),
-            execution_id=admission.execution_id
-            if re.fullmatch(r"[0-9a-f]{32}", admission.execution_id or "")
-            else "",
+            execution_id=str(admission.execution_id or ""),
             role="cycle_count_baseline",
             revision=baseline_ref,
             selected_override=tuple(
@@ -5254,7 +5254,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _project_execution_outcome(self, outcome: SimulationTargetOutcome) -> TargetResult:
         """Project immutable execution evidence into the compatibility report model."""
-        if outcome.infrastructure_failure is not None:
+        if outcome.infrastructure_failure is not None and not outcome.tests:
             detail = (
                 outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
             )
@@ -5282,6 +5282,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             diagnostics=tuple(f"  (note: {note})" for note in outcome.diagnostics),
             phase_timings_s=dict(outcome.phase_timings_s),
             artifacts=outcome.artifacts,
+            infrastructure_error=outcome.infrastructure_failure is not None,
         )
 
     def _project_execution_test(self, outcome: Any) -> TestResult:
@@ -5299,6 +5300,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             timed_out=outcome.timed_out,
             inconclusive=outcome.inconclusive,
             inconclusive_reason=outcome.reason,
+            termination=outcome.termination,
+            failure_kind=outcome.failure_kind,
             elab_failed=outcome.elab_failed,
             test_validated=outcome.test_validated,
             trace_path=(

@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
+    from booley.ticket_board.readiness import ReadinessResult
 
 # --- Constants ---
 LOOP_LOG_REL = Path("logs") / "booley.log"
@@ -492,13 +493,18 @@ def _add_board_subparsers(sub) -> None:
     board_p = sub.add_parser("board", help="Ticket board operations", parents=[root_opt])
     board_sub = board_p.add_subparsers(
         dest="board_command",
-        metavar="{show,review,approve,validate,create,move,reset,archive}",
+        metavar="{show,review,approve,validate,check-ready,create,move,reset,archive}",
     )
 
     _add_board_review_subparsers(board_sub, root_opt)
 
     create_p = board_sub.add_parser("create", help="Create a new ticket draft", parents=[root_opt])
     create_p.add_argument("slug", help="Ticket slug")
+
+    ready_p = board_sub.add_parser(
+        "check-ready", help="Inspect Ticket readiness without starting work", parents=[root_opt]
+    )
+    ready_p.add_argument("slug", help="Ticket slug")
 
     move_p = board_sub.add_parser("move", help="Move ticket between states", parents=[root_opt])
     move_p.add_argument("slug", help="Ticket slug")
@@ -820,6 +826,17 @@ def _add_bootstrap_subparser(sub) -> None:
         dest="update",
         action="store_true",
         help="Update Host Bootstrap after upgrading Booley",
+    )
+    qa_skills = parser.add_mutually_exclusive_group()
+    qa_skills.add_argument(
+        "--with-qa-skills",
+        action="store_true",
+        help="Persist and reconcile maintainer QA skills from this primary main checkout",
+    )
+    qa_skills.add_argument(
+        "--without-qa-skills",
+        action="store_true",
+        help="Disable QA skills and remove only Booley-managed QA links",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show detailed reconciliation output"
@@ -1233,10 +1250,12 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         )
         return 0
 
-    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    if board_cmd == "check-ready":
+        from booley.ticket_board.readiness import check_ticket_ready
 
-    if board_cmd == "create":
-        return 0 if _cmd_board_create(tio, args.slug, project_root) else 1
+        return _render_ticket_readiness(args.slug, check_ticket_ready(project_root, args.slug))
+
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
 
     if board_cmd == "move":
         from booley.ticket_board.operations import op_board_move
@@ -1261,6 +1280,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         return 0 if ok else 1
 
     special = {
+        "create": lambda: 0 if _cmd_board_create(tio, args.slug, project_root) else 1,
         "show": lambda: _cmd_board_show(args, project_root),
         "review": lambda: _cmd_board_review(args, project_root),
         "approve": lambda: _cmd_board_approve(args, project_root),
@@ -2006,15 +2026,19 @@ def _check_ticket_readiness(args: argparse.Namespace, project_root: Path) -> int
     """Run deterministic preparation and ticket/Target validation only."""
     from booley.ticket_board.readiness import check_ticket_ready
 
-    result = check_ticket_ready(project_root, args.ticket)
+    return _render_ticket_readiness(args.ticket, check_ticket_ready(project_root, args.ticket))
+
+
+def _render_ticket_readiness(slug: str, result: ReadinessResult) -> int:
+    """Render the shared observational Ticket readiness result."""
     for warning in result.warnings:
         print(warning, file=sys.stderr)
     if result.errors:
-        print(f"Ticket {args.ticket!r} is not ready:", file=sys.stderr)
+        print(f"Ticket {slug!r} is not ready:", file=sys.stderr)
         for error in result.errors:
             print(f"  - {error}", file=sys.stderr)
         return 2
-    print(f"Ticket {args.ticket!r} is ready")
+    print(f"Ticket {slug!r} is ready")
     return 0
 
 

@@ -6,7 +6,9 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 import pytest
 
@@ -113,6 +115,63 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         shutil.rmtree(_XDIST_WORKER_TEMP)
         _XDIST_WORKER_TEMP = None
         tempfile.tempdir = None
+
+
+_FLOW_SESSIONS = pytest.StashKey[list[Any]]()
+
+
+@pytest.fixture(autouse=True)
+def _track_flow_sessions(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Record each Flow session a test creates for the teardown lock check below.
+
+    Minimal CI environments (for example the production-image smoke jobs) lack
+    Flow dependencies such as PyYAML. No Flow session can exist there, so the
+    fixture tracks nothing instead of failing every test's setup.
+    """
+    try:
+        from booley.flows.flow_session import FlowSession
+    except ModuleNotFoundError:
+        yield
+        return
+
+    sessions = request.node.stash.setdefault(_FLOW_SESSIONS, [])
+    initialize = FlowSession.__init__
+
+    def tracking_init(session: FlowSession, *args: Any, **kwargs: Any) -> None:
+        initialize(session, *args, **kwargs)
+        sessions.append(session)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(FlowSession, "__init__", tracking_init)
+        yield
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
+    """Close every Flow session's publication scope, then fail on a still-held lock.
+
+    Unit tests drive ``flow._run()`` and report writers directly, bypassing the
+    ``execute_prepared()`` scope that releases Simulation invocation locks.
+    Without this a lock lives until the garbage collector finalizes it, possibly
+    inside a later test that has faked ``fcntl`` (issue #938). It runs after all
+    fixture finalizers, so no test patch of ``Path`` or ``fcntl`` is active.
+    The close runs even when an earlier finalizer failed, so a teardown error
+    cannot hand the lock back to the garbage collector.
+    """
+    try:
+        result = yield
+    finally:
+        for session in item.stash.get(_FLOW_SESSIONS, []):
+            session.publication_resources.close()
+    tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
+    if sys.platform == "win32" or not isinstance(tmp_path, Path):
+        return result
+    from tests.file_lock_probe import invocation_lock_paths, lock_is_held
+
+    held = sorted(path for path in invocation_lock_paths(tmp_path) if lock_is_held(path))
+    if held:
+        pytest.fail(f"Simulation invocation locks leaked past the test: {held}")
+    return result
 
 
 @pytest.fixture(autouse=True)

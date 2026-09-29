@@ -150,7 +150,8 @@ If writing the final report fails, the run exits `2` with
 | `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
 | `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
 
-Each `tests[]` entry has `name`, `passed`, `verdict`, `timed_out`,
+Each `tests[]` entry has `name`, `passed`, `verdict`, `termination`,
+`failure_kind`, `timed_out`,
 `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`,
 `error_tail`, `test_validated`, `phase_timings_s`, and `resources`
 (`command_peak_rss_mb`, `command_oom_kill_delta`, and on supported platforms

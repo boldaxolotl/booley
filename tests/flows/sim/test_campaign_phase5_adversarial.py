@@ -607,7 +607,10 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     )
     document = json.loads(nested.read_text(encoding="utf-8"))
     assert document["collection"]["status"] == "collector_error"
-    assert document["tests"]["runs"][1]["execution"] == "not_completed"
+    never_run = document["tests"]["runs"][1]
+    assert never_run["execution"] == "not_run"
+    assert never_run["failure_kind"] == "infrastructure"
+    assert "termination" not in never_run
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:
@@ -686,9 +689,6 @@ class _CocotbGroup:
 
     def bind_authenticated_bundle(self, evidence) -> None:
         assert evidence == _build_execution()
-
-    def reuse_compilation_from(self, source) -> None:
-        assert source is not None
 
     def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
         del snapshot_root, run_cwd

@@ -9,7 +9,6 @@ command and turn one completed process into typed build evidence.
 from __future__ import annotations
 
 import re
-import secrets
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from booley.core.build_paths import work_root_for
+from booley.flows.eda_failures import classify_eda_failure
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
@@ -38,6 +38,32 @@ class SimulationBuildPreparationError(RuntimeError):
     """An expected Target/configuration failure before the build can run."""
 
 
+def _validated_simulator(
+    handle: TargetHandle,
+    resolved: fusesoc_registry.ResolvedTarget,
+) -> str:
+    """Return the configured simulator after authenticating it against the Target."""
+    declaration_help = (
+        "declare either `flow: sim` with `flow_options.tool`, or legacy `default_tool`"
+    )
+    try:
+        eda_tool = sim_edam.matching_eda_tool(
+            handle.eda_tool,
+            resolved.configured_eda_tool,
+            target=handle.selector,
+        )
+    except ValueError as exc:
+        raise SimulationBuildPreparationError(
+            f"Simulation Target {handle.selector!r}: {exc}; {declaration_help}"
+        ) from exc
+    if eda_tool not in {"icarus", "verilator"}:
+        raise SimulationBuildPreparationError(
+            f"simulator {eda_tool!r} is not supported by the public sim Flow; "
+            "select a Verilator or Icarus Target"
+        )
+    return eda_tool
+
+
 _TERMINAL_RECORD_RE = re.compile(
     r"^BOOLEY_BUILD_STAGE token=(?P<token>[0-9a-f]+) rc=(?P<rc>-?\d+)"
     r"(?: duration_ms=(?P<duration_ms>\d+))?$",
@@ -49,10 +75,6 @@ _IVERILOG_DESIGN_ERROR_RE = re.compile(
     r"|^error:\s*(?:unable to bind|unable to elaborate|unknown module type|"
     r"invalid module item|syntax error)",
     re.IGNORECASE | re.MULTILINE,
-)
-_MISSING_TOOL_RE = re.compile(
-    r"(?:command not found|No such file or directory|could not invoke fusesoc)",
-    re.IGNORECASE,
 )
 
 
@@ -100,11 +122,6 @@ class BuildOutcome:
         return self.verdict == "fail" and self.failure_kind == "design"
 
 
-def new_attempt_token() -> str:
-    """Return an unpredictable token for one build execution attempt."""
-    return secrets.token_hex(16)
-
-
 def prepare_simulation_build(
     handle: TargetHandle,
     *,
@@ -149,12 +166,7 @@ def _prepare_simulation_build(
         resolution_vlnv=resolution_vlnv,
     )
     validate_top_parameter_intent(resolved, flow="sim")
-    eda_tool = sim_edam.normalize_eda_tool(resolved.eda_tool)
-    if eda_tool not in {"icarus", "verilator"}:
-        raise SimulationBuildPreparationError(
-            f"simulator {eda_tool!r} is not supported by the public sim Flow; "
-            "select a Verilator or Icarus Target"
-        )
+    eda_tool = _validated_simulator(handle, resolved)
     _stage_doctor_overlay(root, resolved.build_root)
     try:
         inspection = TargetCatalog.build(root).inspect(handle)
@@ -296,13 +308,17 @@ def _failed_build_outcome(
             returncode=build_rc,
             reason="abnormal build termination",
         )
-    if _MISSING_TOOL_RE.search(build_output):
+    failure = classify_eda_failure(
+        replace(result, returncode=build_rc, stdout=build_output, stderr=""),
+        authenticated_build=True,
+    )
+    if failure is not None and failure.kind == "infrastructure":
         return _infrastructure_outcome(
             result,
             output,
             ran=True,
             returncode=build_rc,
-            reason="required build tool or file was unavailable",
+            reason=failure.reason,
         )
     if _recognized_design_diagnostic(build_output):
         return BuildOutcome(

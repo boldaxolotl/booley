@@ -152,10 +152,16 @@ class TargetCatalog:
         declarations = self._visible_declarations()
         ref = resolve(declarations, token)
         if for_flow is not None and not flow_can_drive(for_flow, ref):
+            guidance = f"Choose a compatible Target with `booley targets --for {for_flow}`."
+            if for_flow == "sim":
+                guidance = (
+                    "Declare either `flow: sim` with `flow_options.tool`, or legacy "
+                    "`default_tool`, using Verilator or Icarus."
+                )
             raise IncompatibleTargetError(
                 f"Target {token!r} cannot be driven by the {for_flow!r} Flow "
                 f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
-                f"Choose a compatible Target with `booley targets --for {for_flow}`."
+                f"{guidance}"
             )
         return self._handle(ref, declarations[ref.name])
 

@@ -63,6 +63,18 @@ def source_checkout_root(start: Path) -> Path | None:
     return None
 
 
+def is_booley_qa_skill_path(path: Path) -> bool:
+    """Return whether *path* resolves below ``qa/`` in a Booley source checkout."""
+    resolved = Path(path).resolve()
+    for parent in resolved.parents:
+        if parent.name != "qa":
+            continue
+        checkout = parent.parent
+        if is_booley_source_checkout(checkout) and resolved.is_relative_to(parent):
+            return True
+    return False
+
+
 def require_project_checkout(root: Path) -> Path:
     """Return a resolved Project candidate, rejecting Booley source."""
     checkout = Path(root).resolve()

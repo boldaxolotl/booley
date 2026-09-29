@@ -838,8 +838,8 @@ entry retains `test`, `execution`, `functional`, `assertions`,
 `observations_truncated` disclose whether the preview is complete. The
 independent observation axes mean:
 
-- `execution`: whether the simulator process completed, timed out, or failed
-  before producing trustworthy test evidence;
+- `execution`: whether the simulator completed, timed out, was guard-aborted,
+  or failed before producing trustworthy test evidence;
 - `functional`: the pass/fail/inconclusive test verdict;
 - `assertions`: assertion evidence independently observed for that test.
 

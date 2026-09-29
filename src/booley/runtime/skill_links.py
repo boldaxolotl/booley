@@ -21,6 +21,7 @@ from booley.core.boundary import BoundaryError, require_dict, require_int, requi
 from booley.runtime.platform_paths import IS_WINDOWS
 
 MANIFEST_FILENAME = ".booley-skill-links.json"
+QA_MANIFEST_FILENAME = ".booley-qa-skill-links.json"
 _MANIFEST_VERSION = 1
 _TEMP_PREFIX = ".booley-skill-link-tmp-"
 _BACKUP_PREFIX = ".booley-skill-link-backup-"
@@ -200,28 +201,51 @@ def _regular_file(path: Path) -> bool:
         return False
 
 
-def _discover_source(root: Path) -> tuple[dict[str, _Desired], str | None]:
+def _validate_manifest_filename(name: str) -> str:
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise ValueError(f"invalid skill-link manifest filename {name!r}")
+    return name
+
+
+def _discover_source(
+    root: Path,
+    *,
+    manifest_name: str,
+    desired_names: frozenset[str] | None,
+) -> tuple[dict[str, _Desired], str | None]:
     try:
         metadata = root.lstat()
         if not stat.S_ISDIR(metadata.st_mode):
             return {}, f"packaged skills path is not a directory: {root}"
         children = sorted(root.iterdir(), key=lambda path: _name_key(path.name))
-        return _discover_children(children)
+        return _discover_children(
+            children,
+            manifest_name=manifest_name,
+            desired_names=desired_names,
+        )
     except FileNotFoundError:
         return {}, f"packaged skills directory is missing: {root}"
     except OSError as exc:
         return {}, f"cannot inspect packaged skills directory {root}: {exc}"
 
 
-def _discover_children(children: list[Path]) -> tuple[dict[str, _Desired], str | None]:
+def _discover_children(
+    children: list[Path],
+    *,
+    manifest_name: str,
+    desired_names: frozenset[str] | None,
+) -> tuple[dict[str, _Desired], str | None]:
     desired: dict[str, _Desired] = {}
-    reserved = _name_key(MANIFEST_FILENAME)
+    reserved = _name_key(manifest_name)
+    allowed = None if desired_names is None else {_name_key(name) for name in desired_names}
     for child in children:
         if not _regular_directory(child) or not _regular_file(child / "SKILL.md"):
             continue
         if _name_key(child.name) == reserved:
             return {}, f"reserved skill name {child.name!r} in packaged source"
         key = _name_key(child.name)
+        if allowed is not None and key not in allowed:
+            continue
         if key in desired:
             return {}, f"duplicate skill name {child.name!r} in packaged source"
         desired[key] = _Desired(
@@ -233,20 +257,20 @@ def _discover_children(children: list[Path]) -> tuple[dict[str, _Desired], str |
     return desired, None
 
 
-def _load_manifest(target_dir: Path) -> tuple[dict[str, _Record], str | None]:
-    manifest = target_dir / MANIFEST_FILENAME
+def _load_manifest(target_dir: Path, manifest_name: str) -> tuple[dict[str, _Record], str | None]:
+    manifest = target_dir / manifest_name
     if not _occupied(manifest):
         return {}, None
     if not _regular_file(manifest):
         return {}, f"skill-link manifest is not a regular file: {manifest}"
     try:
         raw = json.loads(manifest.read_text(encoding="utf-8"))
-        return _parse_manifest(raw), None
+        return _parse_manifest(raw, manifest_name=manifest_name), None
     except (BoundaryError, json.JSONDecodeError, OSError, UnicodeError) as exc:
         return {}, f"cannot read skill-link manifest {manifest}: {exc}"
 
 
-def _parse_manifest(raw: object) -> dict[str, _Record]:
+def _parse_manifest(raw: object, *, manifest_name: str = MANIFEST_FILENAME) -> dict[str, _Record]:
     document = require_dict(raw, field="skill-link manifest")
     version = require_int(document.get("version"), field="skill-link manifest version")
     if version != _MANIFEST_VERSION:
@@ -254,7 +278,7 @@ def _parse_manifest(raw: object) -> dict[str, _Record]:
     links = require_dict(document.get("links"), field="skill-link manifest links")
     records: dict[str, _Record] = {}
     for name, value in links.items():
-        _validate_manifest_name(name)
+        _validate_manifest_name(name, manifest_name=manifest_name)
         record = require_dict(value, field=f"skill-link manifest entry {name!r}")
         source_kind = require_str(record, "source_kind")
         if source_kind != "packaged":
@@ -268,12 +292,12 @@ def _parse_manifest(raw: object) -> dict[str, _Record]:
     return records
 
 
-def _validate_manifest_name(name: object) -> None:
+def _validate_manifest_name(name: object, *, manifest_name: str = MANIFEST_FILENAME) -> None:
     if not isinstance(name, str) or not name:
         raise BoundaryError("skill-link manifest names must be non-empty strings")
     if name in {".", ".."} or "/" in name or "\\" in name:
         raise BoundaryError(f"invalid skill-link manifest name {name!r}")
-    if _name_key(name) == _name_key(MANIFEST_FILENAME):
+    if _name_key(name) == _name_key(manifest_name):
         raise BoundaryError(f"reserved skill-link manifest name {name!r}")
 
 
@@ -284,7 +308,9 @@ def _validate_manifest_target(name: str, target: str) -> None:
         raise BoundaryError(f"target for skill-link manifest entry {name!r} must be normalized")
 
 
-def _target_entries(target_dir: Path) -> tuple[dict[str, tuple[str, _Entry]], str | None]:
+def _target_entries(
+    target_dir: Path, manifest_name: str
+) -> tuple[dict[str, tuple[str, _Entry]], str | None]:
     if not _occupied(target_dir):
         return {}, None
     if not _regular_directory(target_dir):
@@ -294,7 +320,7 @@ def _target_entries(target_dir: Path) -> tuple[dict[str, tuple[str, _Entry]], st
         entries = {
             _name_key(child.name): (child.name, _read_entry(child))
             for child in children
-            if child.name != MANIFEST_FILENAME
+            if child.name != manifest_name
         }
     except OSError as exc:
         return {}, f"cannot inspect skills target {target_dir}: {exc}"
@@ -388,6 +414,7 @@ def _plan_unrecorded(
     entry: _Entry,
     *,
     allow_retarget: bool,
+    allow_exact_adoption: bool,
 ) -> _Action | None:
     if desired is None:
         return None
@@ -395,23 +422,75 @@ def _plan_unrecorded(
         event = _event(desired.name, "created", target_dir, desired, entry)
         return _Action(event, "create", entry, _record_for(desired), None)
     if entry.kind == "link" and entry.target == desired.target:
-        event = _event(desired.name, "adopted", target_dir, desired, entry)
-        return _Action(event, "none", entry, _record_for(desired), None)
-    if entry.kind == "link" and entry.target and _equivalent_skill(entry.target, desired.path):
-        if allow_retarget:
-            event = _event(desired.name, "retargeted", target_dir, desired, entry)
-            return _Action(event, "replace", entry, _record_for(desired), None)
-        event = _event(
-            desired.name,
-            "equivalent",
+        return _plan_exact_unrecorded(
             target_dir,
             desired,
             entry,
-            "equivalent packaged skill accepted without mutation; use --force to relink",
+            allow_exact_adoption=allow_exact_adoption,
         )
-        return _Action(event, "none", entry, None, None)
+    if entry.kind == "link" and entry.target and _equivalent_skill(entry.target, desired.path):
+        return _plan_equivalent_unrecorded(
+            target_dir,
+            desired,
+            entry,
+            allow_retarget=allow_retarget,
+            allow_exact_adoption=allow_exact_adoption,
+        )
     event = _event(
         entry_name, "conflict", target_dir, desired, entry, "desired skill name is occupied"
+    )
+    return _Action(event, "none", entry, None, None)
+
+
+def _plan_exact_unrecorded(
+    target_dir: Path,
+    desired: _Desired,
+    entry: _Entry,
+    *,
+    allow_exact_adoption: bool,
+) -> _Action:
+    if not allow_exact_adoption:
+        event = _event(
+            desired.name,
+            "conflict",
+            target_dir,
+            desired,
+            entry,
+            "unmanaged exact skill link requires explicit --force ownership transfer",
+        )
+        return _Action(event, "none", entry, None, None)
+    event = _event(desired.name, "adopted", target_dir, desired, entry)
+    return _Action(event, "none", entry, _record_for(desired), None)
+
+
+def _plan_equivalent_unrecorded(
+    target_dir: Path,
+    desired: _Desired,
+    entry: _Entry,
+    *,
+    allow_retarget: bool,
+    allow_exact_adoption: bool,
+) -> _Action:
+    if not allow_exact_adoption:
+        event = _event(
+            desired.name,
+            "conflict",
+            target_dir,
+            desired,
+            entry,
+            "unmanaged equivalent skill link requires explicit --force ownership transfer",
+        )
+        return _Action(event, "none", entry, None, None)
+    if allow_retarget:
+        event = _event(desired.name, "retargeted", target_dir, desired, entry)
+        return _Action(event, "replace", entry, _record_for(desired), None)
+    event = _event(
+        desired.name,
+        "equivalent",
+        target_dir,
+        desired,
+        entry,
+        "equivalent packaged skill accepted without mutation; use --force to relink",
     )
     return _Action(event, "none", entry, None, None)
 
@@ -423,6 +502,7 @@ def _plan_actions(
     entries: dict[str, tuple[str, _Entry]],
     *,
     allow_retarget: bool,
+    allow_exact_adoption: bool,
 ) -> list[_Action]:
     actions: list[_Action] = []
     for key in sorted(desired.keys() | records.keys() | entries.keys()):
@@ -447,6 +527,7 @@ def _plan_actions(
                 entry_name,
                 entry,
                 allow_retarget=allow_retarget,
+                allow_exact_adoption=allow_exact_adoption,
             )
         )
         if action is not None:
@@ -600,9 +681,11 @@ def _manifest_payload(records: dict[str, _Record]) -> str:
     return json.dumps({"version": _MANIFEST_VERSION, "links": links}, indent=2) + "\n"
 
 
-def _write_manifest(target_dir: Path, records: dict[str, _Record]) -> tuple[str, ...]:
-    manifest = target_dir / MANIFEST_FILENAME
-    temporary = _unique_path(target_dir, f".{MANIFEST_FILENAME}.tmp-")
+def _write_manifest(
+    target_dir: Path, records: dict[str, _Record], manifest_name: str
+) -> tuple[str, ...]:
+    manifest = target_dir / manifest_name
+    temporary = _unique_path(target_dir, f".{manifest_name}.tmp-")
     diagnostics: list[str] = []
     try:
         temporary.write_text(_manifest_payload(records), encoding="utf-8")
@@ -621,19 +704,26 @@ def _write_manifest(target_dir: Path, records: dict[str, _Record]) -> tuple[str,
 def _preflight(
     target_dir: Path,
     packaged_dir: Path,
+    *,
+    manifest_name: str,
+    desired_names: frozenset[str] | None,
 ) -> tuple[
     dict[str, _Desired],
     dict[str, _Record],
     dict[str, tuple[str, _Entry]],
     str | None,
 ]:
-    packaged, error = _discover_source(packaged_dir)
+    packaged, error = _discover_source(
+        packaged_dir,
+        manifest_name=manifest_name,
+        desired_names=desired_names,
+    )
     if error:
         return {}, {}, {}, error
-    records, error = _load_manifest(target_dir)
+    records, error = _load_manifest(target_dir, manifest_name)
     if error:
         return {}, {}, {}, error
-    entries, error = _target_entries(target_dir)
+    entries, error = _target_entries(target_dir, manifest_name)
     return packaged, records, entries, error
 
 
@@ -643,6 +733,9 @@ def reconcile_skill_links(
     *,
     dry_run: bool = False,
     allow_retarget: bool = False,
+    manifest_name: str = MANIFEST_FILENAME,
+    desired_names: frozenset[str] | None = None,
+    allow_exact_adoption: bool = True,
 ) -> SkillLinkReport:
     """Converge one agent skills directory while preserving foreign entries.
 
@@ -650,7 +743,16 @@ def reconcile_skill_links(
     a content-equivalent packaged skill link. A fatal report guarantees that no
     filesystem mutation occurred.
     """
-    desired, records, entries, fatal = _preflight(target_dir, packaged_dir)
+    try:
+        manifest_name = _validate_manifest_filename(manifest_name)
+    except ValueError as exc:
+        return SkillLinkReport(fatal=str(exc))
+    desired, records, entries, fatal = _preflight(
+        target_dir,
+        packaged_dir,
+        manifest_name=manifest_name,
+        desired_names=desired_names,
+    )
     if fatal:
         return SkillLinkReport(fatal=fatal)
     actions = _plan_actions(
@@ -659,16 +761,19 @@ def reconcile_skill_links(
         records,
         entries,
         allow_retarget=allow_retarget,
+        allow_exact_adoption=allow_exact_adoption,
     )
     if dry_run:
         return SkillLinkReport(events=tuple(action.event for action in actions))
-    return _apply_actions(target_dir, records, actions)
+    return _apply_actions(target_dir, records, actions, manifest_name=manifest_name)
 
 
 def _apply_actions(
     target_dir: Path,
     records: dict[str, _Record],
     actions: list[_Action],
+    *,
+    manifest_name: str = MANIFEST_FILENAME,
 ) -> SkillLinkReport:
     if not actions:
         return SkillLinkReport()
@@ -688,5 +793,5 @@ def _apply_actions(
         else:
             updated[key] = record_after
     if updated != records:
-        diagnostics.extend(_write_manifest(target_dir, updated))
+        diagnostics.extend(_write_manifest(target_dir, updated, manifest_name))
     return SkillLinkReport(tuple(events), tuple(diagnostics))
