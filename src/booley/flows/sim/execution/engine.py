@@ -35,6 +35,7 @@ from booley.flows.sim.build import (
     build_stage_script,
     classify_build_outcome,
     prepare_simulation_build,
+    simulation_setup_command,
 )
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
@@ -1087,9 +1088,10 @@ class SimulationExecution:
         root = handle.project_root
         policy = _build_policy(self._options.trace)
         build_root = preview_generation_root(handle, policy.variant)
-        setup = fusesoc_registry.setup_command_for_handle(
+        setup = simulation_setup_command(
             handle,
             build_root=build_root,
+            inspection=inspection,
         )
         rel = edam_layer.relpath_for_make(build_root, root)
         work = _preview_work(self, handle, inspection, test_names, cocotb, rel)

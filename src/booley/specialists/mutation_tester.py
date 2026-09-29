@@ -47,7 +47,6 @@ from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
-from booley.flows import edam as edam_layer
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.backends.cocotb_results import (
@@ -57,6 +56,7 @@ from booley.flows.sim.backends.cocotb_results import (
     CocotbResults,
     parse_results_line,
 )
+from booley.flows.sim.build import PreparedSimulationBuild, prepare_simulation_build
 from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
@@ -1653,7 +1653,7 @@ replacement must differ, and every proposal must remain a single source edit.
         so the callers' ``returncode`` / ``stdout+stderr`` checks are unchanged.
         """
         try:
-            handle, resolved = self._resolve_elab_target(target, work_dir, build_path)
+            _handle, prepared = self._resolve_elab_target(target, work_dir, build_path)
         except (
             Exception  # noqa: BLE001 — isolate resolve failure; surface as return code 1
         ) as exc:
@@ -1663,16 +1663,12 @@ replacement must differ, and every proposal must remain a single source edit.
                 stdout="",
                 stderr=f"FuseSoC target resolution failed: {exc}",
             )
-        configured_tool = self._matching_sim_tool(
-            handle.eda_tool,
-            resolved.configured_eda_tool,
-            target,
-        )
-        rel = edam_layer.relpath_for_make(resolved.build_root, work_dir)
+        configured_tool = prepared.eda_tool
+        rel = posix_relpath(prepared.build_root, work_dir)
         (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
         (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(configured_tool, encoding="utf-8")
         return subprocess.run(
-            edam_layer.make_command(rel),
+            list(prepared.make_argv),
             cwd=work_dir,
             env=relocate_python_artifacts(
                 os.environ,
@@ -1686,11 +1682,17 @@ replacement must differ, and every proposal must remain a single source edit.
         )
 
     @staticmethod
-    def _resolve_elab_target(target: str, work_dir: Path, build_path: Path) -> tuple[Any, Any]:
+    def _resolve_elab_target(
+        target: str, work_dir: Path, build_path: Path
+    ) -> tuple[Any, PreparedSimulationBuild]:
         """Resolve one mutation Target without swallowing tool-authority errors."""
         handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
-        resolved = fusesoc_registry.resolve_target_handle(handle, build_root=build_path)
-        return handle, resolved
+        prepared = prepare_simulation_build(
+            handle,
+            build_root=build_path,
+            lane_kind="unreserved",
+        )
+        return handle, prepared
 
     def cocotb_target(self, target: str, work_dir: Path) -> CocotbSimTarget | None:
         """Resolve *target*'s cocotb identity, or ``None`` for a classic Target.
@@ -1801,12 +1803,15 @@ replacement must differ, and every proposal must remain a single source edit.
         if marker.exists():
             return marker.read_text(encoding="utf-8").strip()
         # Defensive: marker lost (e.g. external cleanup) — re-resolve.
-        handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
-        resolved = fusesoc_registry.resolve_target_handle(
-            handle,
-            build_root=build_path,
+        _handle, prepared = self._resolve_elab_target(
+            target,
+            work_dir,
+            build_path,
         )
-        return edam_layer.relpath_for_make(resolved.build_root, work_dir)
+        rel = posix_relpath(prepared.build_root, work_dir)
+        marker.write_text(rel, encoding="utf-8")
+        (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(prepared.eda_tool, encoding="utf-8")
+        return rel
 
     @staticmethod
     def _target_test_suite(target: str) -> TargetTestSuite:

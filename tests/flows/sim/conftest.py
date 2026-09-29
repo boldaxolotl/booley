@@ -20,7 +20,7 @@ def explicit_surface_for_lightweight_target_handles(
     resolve = engine.resolve_target_compile_surface
 
     def resolve_or_fake(handle: TargetHandle) -> TargetCompileSurface:
-        if not hasattr(handle, "snapshot_id"):
+        if not isinstance(handle, TargetHandle):
             return TargetCompileSurface(
                 project_root=Path(handle.project_root).resolve(),
                 authored_paths=(),

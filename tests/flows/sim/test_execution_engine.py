@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +23,7 @@ import pytest
 
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
+from booley.flows.sim import build_parallelism
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
@@ -69,6 +72,7 @@ def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus
             identity=f"acme:lib:demo:1#{selector}",
             vlnv="acme:lib:demo:1",
             eda_tool=eda_tool,
+            snapshot_id="",
         ),
     )
 
@@ -132,6 +136,9 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
         eda_tool="icarus",
         parameters={},
         flow_options={"cocotb_module": "test_demo"} if cocotb else {},
+        tool_options={},
+        rtl_files=(),
+        tb_files=(),
     )
     inspection.inspect = lambda _handle: inspection
     return inspection
@@ -1452,6 +1459,10 @@ def test_preparation_rejects_declared_and_configured_simulator_disagreement(
 
     with (
         patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        patch(
+            "booley.flows.sim.build.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
         pytest.raises(SimulationBuildPreparationError) as exc,
     ):
         prepare_simulation_build(handle)
@@ -1494,6 +1505,152 @@ def test_real_legacy_verilator_target_prepares_as_verilator(tmp_path: Path) -> N
     assert "verilator" in (prepared.build_root / "Makefile").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "tool_declaration",
+    (
+        "    flow: sim\n    flow_options: {tool: verilator}\n",
+        "    default_tool: verilator\n    tools:\n      verilator: {}\n",
+    ),
+    ids=("modern-flow-api", "legacy-tool-api"),
+)
+def test_default_verilator_make_recipe_is_resource_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_declaration: str,
+) -> None:
+    """The nested Verilator C++ compilation receives Booley's job budget."""
+    importlib.import_module("fusesoc")
+    importlib.import_module("edalize")
+    project = tmp_path / "project"
+    _write_runtime_input_project(project, tool_declaration=tool_declaration)
+    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
+    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
+    monkeypatch.setattr(
+        build_parallelism,
+        "load_job_budget_config",
+        lambda _project_root=None: {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
+    )
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    real_resolve = fusesoc_registry.resolve_target_handle
+    fusesoc_cmd = (
+        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+        if shutil.which("fusesoc")
+        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+    )
+
+    with patch.object(
+        fusesoc_registry,
+        "resolve_target_handle",
+        side_effect=lambda *args, **kwargs: real_resolve(
+            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+        ),
+    ):
+        prepared = prepare_simulation_build(handle)
+
+    makefile = (prepared.build_root / "Makefile").read_text(encoding="utf-8")
+    with patch.object(
+        fusesoc_registry,
+        "resolve_target_handle",
+        side_effect=lambda *args, **kwargs: real_resolve(
+            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+        ),
+    ):
+        repeated = prepare_simulation_build(handle)
+    assert (repeated.build_root / "Makefile").read_text(encoding="utf-8") == makefile
+    if "$(MAKE_OPTIONS)" in makefile:
+        config = (prepared.build_root / "config.mk").read_text(encoding="utf-8")
+        assert "$(MAKE) $(MAKE_OPTIONS) -f" in makefile
+        assert "MAKE_OPTIONS      := -j4 VM_PARALLEL_BUILDS=1" in config
+    else:
+        assert re.search(r"make -f Vtb\.mk -j4 VM_PARALLEL_BUILDS=1", makefile)
+
+
+def test_cgroup_probe_failure_is_a_typed_setup_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    _write_runtime_input_project(
+        project,
+        tool_declaration="    flow: sim\n    flow_options: {tool: verilator}\n",
+    )
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    monkeypatch.setattr(
+        build_parallelism,
+        "_read_text",
+        lambda _path: (_ for _ in ()).throw(PermissionError("cgroup denied")),
+    )
+
+    with pytest.raises(SimulationBuildPreparationError, match="cgroup denied"):
+        prepare_simulation_build(handle)
+
+
+@pytest.mark.parametrize("api", ("modern", "legacy"))
+@pytest.mark.parametrize("authored_jobs", (False, True), ids=("non-jobs", "jobs"))
+def test_real_verilator_setup_merges_authored_make_options_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    api: str,
+    authored_jobs: bool,
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    options = "[-j2, OPT_FAST=-O3]" if authored_jobs else "[OPT_FAST=-O3]"
+    if api == "modern":
+        declaration = (
+            "    flow: sim\n"
+            "    flow_options:\n"
+            "      tool: verilator\n"
+            f"      make_options: {options}\n"
+        )
+    else:
+        declaration = (
+            "    default_tool: verilator\n"
+            "    tools:\n"
+            "      verilator:\n"
+            f"        make_options: {options}\n"
+        )
+    project = tmp_path / "project"
+    _write_runtime_input_project(project, tool_declaration=declaration)
+    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
+    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
+    monkeypatch.setattr(
+        build_parallelism,
+        "load_job_budget_config",
+        lambda _project_root=None: {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
+    )
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    real_resolve = fusesoc_registry.resolve_target_handle
+    fusesoc_cmd = (
+        list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+        if shutil.which("fusesoc")
+        else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+    )
+
+    with patch.object(
+        fusesoc_registry,
+        "resolve_target_handle",
+        side_effect=lambda *args, **kwargs: real_resolve(
+            *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
+        ),
+    ):
+        prepared = prepare_simulation_build(handle)
+
+    makefile = (prepared.build_root / "Makefile").read_text(encoding="utf-8")
+    recipe = (
+        (prepared.build_root / "config.mk").read_text(encoding="utf-8")
+        if "$(MAKE_OPTIONS)" in makefile
+        else makefile
+    )
+    assert recipe.count("OPT_FAST=-O3") == 1
+    if authored_jobs:
+        assert recipe.count("-j2") == 1
+        assert "VM_PARALLEL_BUILDS=1" not in recipe
+        assert "-j4" not in recipe
+    else:
+        assert re.search(r"OPT_FAST=-O3.*-j4.*VM_PARALLEL_BUILDS=1", recipe)
+
+
 @pytest.mark.parametrize("configured_tool", (None, "mystery-sim"))
 def test_preparation_rejects_missing_or_unknown_configured_simulator(
     tmp_path: Path,
@@ -1507,6 +1664,10 @@ def test_preparation_rejects_missing_or_unknown_configured_simulator(
 
     with (
         patch.object(fusesoc_registry, "resolve_target_handle", return_value=resolved),
+        patch(
+            "booley.flows.sim.build.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
         pytest.raises(SimulationBuildPreparationError, match="sim_unresolved") as exc,
     ):
         prepare_simulation_build(handle)

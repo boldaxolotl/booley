@@ -16,12 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
+from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
@@ -611,18 +612,32 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
         return types.SimpleNamespace(
             selector=target,
             name=target,
+            identity=f"::{target}:0#{target}",
             vlnv=f"::{target}:0",
             project_root=Path(work_dir),
             eda_tool=eda_tool,
             cocotb_module=None,
         )
 
-    def _fake_resolve(handle, *, build_root, **kwargs):
-        return types.SimpleNamespace(
+    def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
+        assert lane_kind == "unreserved"
+        resolved = types.SimpleNamespace(
             build_root=Path(build_root),
             toplevel="tb",
             eda_tool=eda_tool,
             configured_eda_tool=eda_tool,
+        )
+        return PreparedSimulationBuild(
+            target=handle.selector,
+            target_identity=getattr(
+                handle, "identity", f"::{handle.selector}:0#{handle.selector}"
+            ),
+            resolved=resolved,
+            work_root=Path(build_root),
+            build_root=Path(build_root),
+            eda_tool=eda_tool or "verilator",
+            toplevel="tb",
+            make_argv=("make", "-C", str(build_root)),
         )
 
     monkeypatch.setattr(
@@ -641,8 +656,8 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
         ),
     )
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.resolve_target_handle",
-        _fake_resolve,
+        "booley.specialists.mutation_tester.prepare_simulation_build",
+        _fake_prepare,
     )
 
 
@@ -707,6 +722,71 @@ def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
     assert not any("MUT_ID" in arg for arg in sim_cmd)
     assert "--top" in sim_cmd and "tb" in sim_cmd
     assert "--trace" not in sim_cmd
+
+
+def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeypatch) -> None:
+    handle = SimpleNamespace(selector="default", identity="::demo:0#default")
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    prepared = PreparedSimulationBuild(
+        target="default",
+        target_identity=handle.identity,
+        resolved=SimpleNamespace(build_root=build_dir / "nested"),
+        work_root=build_dir,
+        build_root=build_dir / "nested",
+        eda_tool="verilator",
+        toplevel="tb",
+        make_argv=("custom-build", "--exact-command"),
+    )
+    catalog = SimpleNamespace(select=lambda *args, **kwargs: handle)
+    monkeypatch.setattr(TargetCatalog, "build", classmethod(lambda _cls, _root: catalog))
+    prepare = MagicMock(return_value=prepared)
+    monkeypatch.setattr("booley.specialists.mutation_tester.prepare_simulation_build", prepare)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.subprocess.run",
+        lambda command, **kwargs: (
+            captured.append(command),
+            _fake_proc(rc=0),
+        )[1],
+    )
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+    result = endpoint._run_elab("default", tmp_path, build_dir)
+
+    prepare.assert_called_once_with(handle, build_root=build_dir, lane_kind="unreserved")
+    assert captured == [["custom-build", "--exact-command"]]
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Target parameter intent is inconsistent",
+        "Doctor requested a bad simulation fixture but its overlay is empty",
+    ),
+)
+def test_elab_surfaces_shared_preparation_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    message: str,
+) -> None:
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.prepare_simulation_build",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SimulationBuildPreparationError(message)),
+    )
+    run = MagicMock()
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", run)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = endpoint._run_elab("default", tmp_path, build_dir)
+
+    assert result.returncode == 1
+    assert message in result.stderr
+    run.assert_not_called()
 
 
 def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monkeypatch):
@@ -1446,18 +1526,21 @@ class TestCocotbSimDispatch:
     ) -> None:
         _patch_resolve_target(monkeypatch, eda_tool="icarus")
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.fusesoc_registry.resolve_target_handle",
-            lambda handle, *, build_root: SimpleNamespace(
-                build_root=Path(build_root),
-                configured_eda_tool="verilator",
+            "booley.specialists.mutation_tester.prepare_simulation_build",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                SimulationBuildPreparationError(
+                    "Target 'default' declared 'icarus' but setup configured 'verilator'"
+                )
             ),
         )
         endpoint = _make_endpoint(tmp_path, monkeypatch)
         build_dir = tmp_path / "build"
         build_dir.mkdir()
 
-        with pytest.raises(UnsupportedSimTargetError, match=r"declared 'icarus'.*verilator"):
-            endpoint._run_elab("default", tmp_path, build_dir)
+        result = endpoint._run_elab("default", tmp_path, build_dir)
+
+        assert result.returncode == 1
+        assert "declared 'icarus' but setup configured 'verilator'" in result.stderr
 
     def test_invalid_cocotb_target_selection_is_not_reclassified(
         self,

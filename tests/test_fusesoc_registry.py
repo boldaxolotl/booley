@@ -2135,6 +2135,26 @@ class TestSetupCommandEdaToolFlag:
         cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         assert "--flag" not in cmd  # legacy API sets tool_verilator natively
 
+    def test_handle_setup_transports_backend_options_after_vlnv(self, tmp_path: Path):
+        from booley.fusesoc.fusesoc_registry import setup_command_for_handle
+
+        _write_core(tmp_path / "ip")
+        handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+        default = setup_command_for_handle(handle, build_root=tmp_path / "b")
+        explicit_empty = setup_command_for_handle(
+            handle, build_root=tmp_path / "b", backend_arguments=()
+        )
+        injected = setup_command_for_handle(
+            handle,
+            build_root=tmp_path / "b",
+            backend_arguments=("-j4", "VM_PARALLEL_BUILDS=1"),
+        )
+
+        assert default == explicit_empty
+        assert injected[:-1] == default
+        assert injected[-1] == "--make_options=-j4 VM_PARALLEL_BUILDS=1"
+
 
 class TestHdlSourceSlice:
     """Dependency cores contribute non-HDL EDAM entries (`user` .vmem data,

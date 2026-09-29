@@ -86,6 +86,13 @@ def _inspection_flags(handle: TargetHandle) -> dict[str, Any]:
     return _target_flags(handle.name, handle.flow, handle.eda_tool)
 
 
+def _inspect_tool_options(core: Any, flags: Mapping[str, Any]) -> dict[str, Any]:
+    """Return selected legacy options only when FuseSoC has a selected EDA tool."""
+    if not flags.get("tool"):
+        return {}
+    return dict(core.get_tool_options(flags))
+
+
 def _inspect_inputs(
     root: Path,
     cores: list[Any],
@@ -294,6 +301,7 @@ class _TargetSourceInspector:
                 flow_options=dict(core.get_flow_options(flags)),
                 parameters=_inspect_parameters(cores, flags),
                 inputs=_inspect_inputs(self.root, cores, flags, tb_paths=tb_paths),
+                tool_options=_inspect_tool_options(core, flags),
             )
         except (OSError, SyntaxError, RuntimeError, ValueError) as exc:
             raise fusesoc_registry.FuseSocError(

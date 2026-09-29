@@ -112,6 +112,7 @@ from .build import (
     classify_build_outcome,
     prepare_simulation_build,
     setup_failure_outcome,
+    simulation_setup_command,
 )
 from .build_session import (
     SimulationBuildSession,
@@ -4511,11 +4512,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         try:
             handle = self._target_handle(target)
             build_root = preview_generation_root(handle)
-            setup = fusesoc_registry.setup_command_for_handle(
+            setup = simulation_setup_command(
                 handle,
                 build_root=build_root,
             )
-        except fusesoc_registry.TargetResolutionError as exc:
+        except (
+            fusesoc_registry.TargetResolutionError,
+            SimulationBuildPreparationError,
+        ) as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
         parts = [
