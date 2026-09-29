@@ -26,10 +26,10 @@ install Booley using the [README](../../README.md#installation), then follow
 Codex, run your project's EDA tools. A coding agent is more than a chatbot: it
 can read and edit files, run commands, and call Booley while it works. You
 describe what you want in plain language, and the agent picks the right Booley
-tool and runs it. You are still responsible for reviewing its reasoning, its
+Flow or Specialist and runs it. You are still responsible for reviewing its reasoning, its
 code, and the hardware results.
 
-Booley's tools come in two kinds:
+Booley offers two kinds of capability:
 
 - **Flows** (`sim`, `lint`, `synth`, `fpga`) run EDA tools in a fixed,
   predictable way. No AI is involved.
@@ -60,7 +60,7 @@ Run these in a **host terminal**. They check that Booley works and show what it
 can see:
 
 ```bash
-booley doctor          # health check: configuration, container image, tools
+booley doctor          # health check: configuration, Sandbox Image, EDA tools
 booley targets         # every Target Booley can see, grouped by core
 booley cheat           # a one-page summary of Booley's commands and files
 ```
@@ -141,8 +141,8 @@ and one-off Flow runs.
    > Check whether Booley Interactive Mode is ready. List the available
    > simulation targets and explain what each one is for. Do not change files.
 
-   The agent calls Booley's tools and summarizes what it found. You never type
-   those tool calls yourself.
+   The agent asks Booley for this and summarizes what it found. You never call
+   Booley's MCP tools yourself.
 
 5. If the agent listed a simulation Target, try a real run:
 
@@ -151,7 +151,7 @@ and one-off Flow runs.
    > was written.
 
    A good answer names the Target and Flow it used, says whether the result was
-   a pass, a design failure, or a tool problem, and suggests what to do next.
+   a pass, a design failure, or an infrastructure failure, and suggests what to do next.
    If there is no simulation Target, ask for lint instead.
 
 That's a complete session. You don't need to read the rest of this guide
@@ -201,7 +201,7 @@ doesn't replace your own review.
 > container. (Ticket Mode always works this way.)
 
 Chat transcripts are saved in `.booley_project/.interactive_logs/`. If the
-agent can't see Booley's tools (`booley` is missing from its `/mcp` list), see
+agent can't reach Booley (`booley` is missing from its `/mcp` list), see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
 How the connection works is in
 [ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode).
@@ -595,7 +595,7 @@ It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
 
 This section is reference. You rarely call Flows or Specialists yourself: ask
 the agent (*"run the reset test on `sim_lite`"*, *"how much area did that
-cost?"*) and it picks the tool, Target, and options. The **Sets** column shows
+cost?"*) and it picks the Flow or Specialist, Target, and options. The **Sets** column shows
 which [acceptance criteria](#acceptance-criteria) each one can satisfy. Which
 EDA program runs underneath depends on the Target; see
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md). `booley cheat --flows` and
