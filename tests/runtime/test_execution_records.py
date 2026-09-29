@@ -10,12 +10,23 @@ from pathlib import Path
 import pytest
 
 from booley.runtime.execution_records import (
+    PROTOCOL_VERSION,
     ExecutionId,
     atomic_write_json,
     execution_paths,
     gc_terminal_executions,
     read_attachment_heartbeat,
+    verify_inherited_execution_id,
     write_attachment_heartbeat,
+)
+from booley.runtime.pid import (
+    DEAD,
+    REUSED,
+    RUNNING,
+    UNKNOWN,
+    ZOMBIE,
+    ProcessIdentity,
+    ProcessObservation,
 )
 
 
@@ -53,6 +64,169 @@ def test_execution_id_owns_validation() -> None:
     assert str(ExecutionId("a" * 32)) == "a" * 32
     with pytest.raises(ValueError, match="32 lowercase hexadecimal"):
         ExecutionId("not-an-execution")
+
+
+def _active_execution_record(supervisor: ProcessIdentity | None) -> dict:
+    return {
+        "schema_version": PROTOCOL_VERSION,
+        "state": "running",
+        "runtime_identity": supervisor.identity_scope if supervisor is not None else None,
+        "supervisor": supervisor.to_payload() if supervisor is not None else None,
+        "leader": None,
+        "exit_code": None,
+        "tree_terminal": False,
+        "terminal_cause": None,
+        "updated_at": "1970-01-01T00:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(("owner_pid", "ancestor_result"), [(20, True), (10, False)])
+def test_verified_inherited_execution_accepts_descendant_and_supervisor_itself(
+    tmp_path: Path, owner_pid: int, ancestor_result: bool
+) -> None:
+    execution_id = "d" * 32
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=tmp_path).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert verify_inherited_execution_id(
+        execution_id,
+        project_dir=tmp_path,
+        owner_pid=owner_pid,
+        observe_identity=lambda _identity: ProcessObservation(RUNNING),
+        ancestor_check=lambda pid, ancestor: ancestor_result and (pid, ancestor) == (20, 10),
+    ) == ExecutionId(execution_id)
+
+
+def test_verified_inherited_execution_rejects_record_from_another_project(
+    tmp_path: Path,
+) -> None:
+    execution_id = "e" * 32
+    foreign = tmp_path / "foreign"
+    current = tmp_path / "current"
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=foreign).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=current,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda pid, ancestor: (pid, ancestor) == (20, 10),
+        )
+        is None
+    )
+
+
+def test_verified_inherited_execution_rejects_non_ancestor(tmp_path: Path) -> None:
+    execution_id = "f" * 32
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=tmp_path).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda _pid, _ancestor: False,
+        )
+        is None
+    )
+
+
+def test_verified_inherited_execution_rejects_invalid_id(tmp_path: Path) -> None:
+    assert (
+        verify_inherited_execution_id(
+            "not-an-execution",
+            project_dir=tmp_path,
+            owner_pid=20,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("record_kind", ["missing", "malformed", "terminal", "future"])
+def test_verified_inherited_execution_rejects_unusable_records(
+    tmp_path: Path, record_kind: str
+) -> None:
+    execution_id = "1" * 32
+    paths = execution_paths(execution_id, project_dir=tmp_path)
+    supervisor = ProcessIdentity(10, "fake", 1)
+    if record_kind == "malformed":
+        paths.root.mkdir(parents=True)
+        paths.record.write_text("not-json", encoding="utf-8")
+    elif record_kind != "missing":
+        record = _active_execution_record(supervisor)
+        if record_kind == "terminal":
+            record.update(state="terminal", tree_terminal=True, exit_code=0)
+        else:
+            record["schema_version"] = PROTOCOL_VERSION + 1
+        atomic_write_json(paths.record, record)
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda _pid, _ancestor: True,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("state", [DEAD, REUSED, ZOMBIE, UNKNOWN])
+def test_verified_inherited_execution_requires_live_durable_supervisor(
+    tmp_path: Path, state
+) -> None:
+    execution_id = "2" * 32
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=tmp_path).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(state),
+            ancestor_check=lambda _pid, _ancestor: True,
+        )
+        is None
+    )
+
+
+def test_verified_inherited_execution_rejects_live_leader_without_supervisor(
+    tmp_path: Path,
+) -> None:
+    execution_id = "3" * 32
+    leader = ProcessIdentity(10, "fake", 1)
+    record = _active_execution_record(None)
+    record["leader"] = leader.to_payload()
+    atomic_write_json(execution_paths(execution_id, project_dir=tmp_path).record, record)
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda _pid, _ancestor: True,
+        )
+        is None
+    )
 
 
 def _old_terminal(project_dir: Path, execution_id: str) -> None:

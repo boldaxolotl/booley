@@ -10,12 +10,15 @@ import stat
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from booley.runtime.filesystem_utils import replace_file
+from booley.runtime.pid import RUNNING, ProcessIdentity, ProcessObservation, observe_process
+from booley.runtime.process_tree import has_ancestor
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -145,6 +148,46 @@ def read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def verify_inherited_execution_id(
+    raw_execution_id: object,
+    *,
+    project_dir: Path,
+    owner_pid: int,
+    observe_identity: Callable[[ProcessIdentity], ProcessObservation] = observe_process,
+    ancestor_check: Callable[[int, int], bool] = has_ancestor,
+) -> ExecutionId | None:
+    """Validate a Project-local inherited execution owner, failing closed."""
+    try:
+        execution_id = ExecutionId(raw_execution_id)
+    except ValueError:
+        return None
+    record = read_json(execution_paths(execution_id, project_dir=project_dir).record)
+    if record is None or set(record) != _TERMINAL_FIELDS:
+        return None
+    if (
+        record.get("schema_version") != PROTOCOL_VERSION
+        or record.get("state") not in {"starting", "running", "cancelling"}
+        or record.get("tree_terminal") is not False
+        or record.get("exit_code") is not None
+        or record.get("terminal_cause") is not None
+        or not isinstance(record.get("updated_at"), str)
+        or not record["updated_at"]
+    ):
+        return None
+    supervisor = ProcessIdentity.from_payload(record.get("supervisor"))
+    leader = record.get("leader")
+    if (
+        supervisor is None
+        or record.get("runtime_identity") != supervisor.identity_scope
+        or (leader is not None and ProcessIdentity.from_payload(leader) is None)
+        or observe_identity(supervisor).state is not RUNNING
+    ):
+        return None
+    if owner_pid != supervisor.pid and not ancestor_check(owner_pid, supervisor.pid):
+        return None
+    return execution_id
 
 
 def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:

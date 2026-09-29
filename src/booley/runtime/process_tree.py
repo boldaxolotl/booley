@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -20,6 +21,33 @@ def _ppid_of(pid: int) -> int | None:
     except (OSError, ValueError):
         return None
     return _parse_ppid(stat)
+
+
+def has_ancestor(
+    pid: int,
+    ancestor_pid: int,
+    *,
+    read_ppid: Callable[[int], int | None] = _ppid_of,
+    max_hops: int = 1024,
+) -> bool:
+    """Return whether *ancestor_pid* is proven in *pid*'s bounded ancestry."""
+    if pid <= 0 or ancestor_pid <= 0 or max_hops <= 0:
+        return False
+    if pid == ancestor_pid:
+        return True
+    current = pid
+    seen = {current}
+    for _hop in range(max_hops):
+        if current <= 1:
+            return False
+        parent = read_ppid(current)
+        if parent is None or parent <= 1 or parent in seen:
+            return False
+        if parent == ancestor_pid:
+            return True
+        seen.add(parent)
+        current = parent
+    return False
 
 
 def descendant_pids(root: int) -> list[int]:
