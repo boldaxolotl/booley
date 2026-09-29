@@ -1224,6 +1224,63 @@ def test_resolve_target_reports_silent_setup_failure(tmp_path: Path) -> None:
 
 
 class TestResolveTargetReal:
+    def test_isolated_constraint_is_absolute_but_file_parameter_remains_authored(
+        self, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("fusesoc")
+        project = tmp_path / "proj"
+        cores = project / ".booley_project" / "cores"
+        cores.mkdir(parents=True)
+        (project / ".booley_project" / "booley.toml").write_text(
+            "[stealth]\nenabled = true\nignore_native_cores = true\n",
+            encoding="utf-8",
+        )
+        (project / "rtl").mkdir()
+        (project / "constraints").mkdir()
+        (project / "rtl" / "top.sv").write_text(
+            "module top(input logic clk); endmodule\n", encoding="utf-8"
+        )
+        physical = project / "constraints" / "physical.sdc"
+        physical.write_text("create_clock -period 10 [get_ports clk]\n", encoding="utf-8")
+        symlink_or_skip(project / "constraints" / "timing.sdc", physical)
+        (cores / "design.core").write_text(
+            "CAPI=2:\n"
+            "name: ::isolated:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files: [rtl/top.sv]\n"
+            "    file_type: systemVerilogSource\n"
+            "  constraints:\n"
+            "    files:\n"
+            "      - constraints/timing.sdc: {file_type: SDC}\n"
+            "parameters:\n"
+            "  CONFIG: {datatype: file, paramtype: plusarg, default: config/authored.cfg}\n"
+            "targets:\n"
+            "  synth:\n"
+            "    default_tool: yosys\n"
+            "    flow: generic\n"
+            "    flow_options: {tool: yosys, arch: xilinx}\n"
+            "    filesets: [rtl, constraints]\n"
+            "    parameters: [CONFIG]\n"
+            "    toplevel: top\n",
+            encoding="utf-8",
+        )
+        cmd = (
+            list(DEFAULT_FUSESOC_CMD)
+            if shutil.which("fusesoc")
+            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        )
+
+        resolved = _resolve_target(
+            "synth",
+            project_root=project,
+            build_root=project / "out",
+            fusesoc_cmd=cmd,
+        )
+
+        assert resolved.sdc_files[0].name == physical.resolve().as_posix()
+        assert resolved.parameters["CONFIG"]["default"] == "config/authored.cfg"
+
     def test_real_setup_resolves_projected_stealth_core(self, tmp_path: Path):
         pytest.importorskip("fusesoc")
         project = tmp_path / "proj"

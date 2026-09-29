@@ -16,7 +16,12 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
-from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
+from booley.evidence.fields import (
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
+    BASELINE_TARGET_DETAIL,
+    CANDIDATE_TARGET_DETAIL,
+)
+from booley.evidence.recipe import recipe_snapshot_fingerprint
 from booley.flows.synth.recipe import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
@@ -58,6 +63,20 @@ def _init_with_params(state: DevelopmentState, params: dict) -> None:
     )
 
 
+def _synth_recipe(*, target: str = "default") -> dict:
+    return {
+        "schema": 4,
+        "flow": "synth",
+        "target": target,
+        "vlnv": "::core:0",
+        "toplevel": "top",
+        "parameters": {},
+        "recipe_args": ["--synth-mode", "logical"],
+        "constraints": [],
+        "technology": {"liberty": "/opt/pdk/stdcells.lib", "physical_pdk": None},
+    }
+
+
 class TestRecipeFingerprint:
     def test_matching_frozen_recipe_passes(self, state):
         _init_with_params(state, {RECIPE_FINGERPRINT_PARAM: "abc123"})
@@ -70,8 +89,8 @@ class TestRecipeFingerprint:
         assert state.criteria["synthesis_ok_default"].detail["checks"][0]["pass"] is True
 
     def test_changed_recipe_is_recorded_without_rejecting_evidence(self, state):
-        baseline = {"target": "default", "recipe_args": ["balanced"]}
-        current = {"target": "default", "recipe_args": ["delay"]}
+        baseline = {"target": "default", "recipe_args": ["balanced"], "constraints": []}
+        current = {"target": "default", "recipe_args": ["delay"], "constraints": []}
         _init_with_params(
             state,
             {RECIPE_FINGERPRINT_PARAM: "frozen", RECIPE_SNAPSHOT_PARAM: baseline},
@@ -94,7 +113,7 @@ class TestRecipeFingerprint:
     def test_relative_recipe_evidence_requires_pinned_baseline(self, state):
         params = {
             RECIPE_FINGERPRINT_PARAM: "frozen",
-            RECIPE_SNAPSHOT_PARAM: {"target": "default"},
+            RECIPE_SNAPSHOT_PARAM: {"target": "default", "constraints": []},
             BASELINE_REF_PARAM: "a" * 40,
         }
         _init_with_params(state, params)
@@ -103,12 +122,174 @@ class TestRecipeFingerprint:
             True,
             detail={
                 RECIPE_FINGERPRINT_DETAIL: "changed",
-                RECIPE_SNAPSHOT_DETAIL: {"target": "default", "mode": "new"},
+                RECIPE_SNAPSHOT_DETAIL: {
+                    "target": "default",
+                    "mode": "new",
+                    "constraints": [],
+                },
                 BASELINE_RECIPE_FINGERPRINT_DETAIL: "frozen",
                 BASELINE_REF_DETAIL: "a" * 40,
             },
         )
         assert state.is_met("synthesis_ok_default")
+
+    def test_sealed_legacy_snapshot_accepts_path_free_rerun(self, state) -> None:
+        digest = "a" * 64
+        legacy = {
+            "schema": 3,
+            "target": "default",
+            "vlnv": "::core:0",
+            "toplevel": "top",
+            "parameters": {},
+            "recipe_args": ["--synth-mode", "logical"],
+            "constraints": [{"name": "/old/checkout/timing.sdc", "sha256": digest}],
+            "technology": {"liberty": "/opt/pdk/stdcells.lib", "physical_pdk": None},
+        }
+        current = {
+            **legacy,
+            "schema": 4,
+            "flow": "synth",
+            "constraints": [{"core": "::core:0", "sha256": digest}],
+        }
+        legacy_fingerprint = recipe_snapshot_fingerprint(legacy)
+        current_fingerprint = recipe_snapshot_fingerprint(current)
+        _init_with_params(
+            state,
+            {
+                RECIPE_FINGERPRINT_PARAM: legacy_fingerprint,
+                RECIPE_SNAPSHOT_PARAM: legacy,
+                BASELINE_REF_PARAM: "a" * 40,
+            },
+        )
+
+        state.set_criterion(
+            "synthesis_ok_default",
+            True,
+            detail={
+                RECIPE_FINGERPRINT_DETAIL: current_fingerprint,
+                RECIPE_SNAPSHOT_DETAIL: current,
+                BASELINE_RECIPE_FINGERPRINT_DETAIL: current_fingerprint,
+                BASELINE_RECIPE_SNAPSHOT_DETAIL: current,
+                BASELINE_REF_DETAIL: "a" * 40,
+            },
+        )
+
+        assert state.is_met("synthesis_ok_default")
+        comparison = state.criteria["synthesis_ok_default"].detail["recipe_comparison"]
+        assert comparison["changes"] == []
+        assert comparison["changed"] is False
+
+    def test_same_schema_snapshot_rejects_missing_constraint_digest(self, state) -> None:
+        snapshot = {
+            **_synth_recipe(target="default"),
+            "schema": 4,
+            "flow": "synth",
+            "constraints": [{"core": "::core:0", "sha256": None}],
+        }
+        fingerprint = recipe_snapshot_fingerprint(snapshot)
+        _init_with_params(
+            state,
+            {
+                RECIPE_FINGERPRINT_PARAM: fingerprint,
+                RECIPE_SNAPSHOT_PARAM: snapshot,
+            },
+        )
+
+        state.set_criterion(
+            "synthesis_ok_default",
+            True,
+            detail={
+                RECIPE_FINGERPRINT_DETAIL: fingerprint,
+                RECIPE_SNAPSHOT_DETAIL: snapshot,
+            },
+        )
+
+        assert not state.is_met("synthesis_ok_default")
+
+    def test_legacy_compatibility_rejects_unreadable_candidate(self, state) -> None:
+        legacy = _synth_recipe(target="default")
+        legacy.update(
+            schema=3,
+            constraints=[{"name": "/old/timing.sdc", "sha256": "a" * 64}],
+        )
+        legacy.pop("flow")
+        rerun = {
+            **legacy,
+            "schema": 4,
+            "flow": "synth",
+            "constraints": [{"core": "::core:0", "sha256": "a" * 64}],
+        }
+        candidate = {
+            **rerun,
+            "constraints": [{"core": "::core:0", "sha256": None}],
+        }
+        _init_with_params(
+            state,
+            {
+                RECIPE_FINGERPRINT_PARAM: recipe_snapshot_fingerprint(legacy),
+                RECIPE_SNAPSHOT_PARAM: legacy,
+                BASELINE_REF_PARAM: "a" * 40,
+            },
+        )
+
+        state.set_criterion(
+            "synthesis_ok_default",
+            True,
+            detail={
+                RECIPE_FINGERPRINT_DETAIL: recipe_snapshot_fingerprint(candidate),
+                RECIPE_SNAPSHOT_DETAIL: candidate,
+                BASELINE_RECIPE_FINGERPRINT_DETAIL: recipe_snapshot_fingerprint(rerun),
+                BASELINE_RECIPE_SNAPSHOT_DETAIL: rerun,
+                BASELINE_REF_DETAIL: "a" * 40,
+            },
+        )
+
+        assert not state.is_met("synthesis_ok_default")
+
+    def test_changed_constraint_still_rejects_sealed_legacy_snapshot(self, state) -> None:
+        digest = "a" * 64
+        legacy = {
+            "schema": 3,
+            "target": "default",
+            "vlnv": "::core:0",
+            "toplevel": "top",
+            "parameters": {},
+            "recipe_args": ["--synth-mode", "logical"],
+            "constraints": [{"name": "/old/timing.sdc", "sha256": digest}],
+            "technology": {"liberty": "/opt/pdk/stdcells.lib", "physical_pdk": None},
+        }
+        rerun = {
+            **legacy,
+            "schema": 4,
+            "flow": "synth",
+            "constraints": [{"core": "::core:0", "sha256": "b" * 64}],
+        }
+        _init_with_params(
+            state,
+            {
+                RECIPE_FINGERPRINT_PARAM: recipe_snapshot_fingerprint(legacy),
+                RECIPE_SNAPSHOT_PARAM: legacy,
+                BASELINE_REF_PARAM: "a" * 40,
+            },
+        )
+        rerun_fingerprint = recipe_snapshot_fingerprint(rerun)
+
+        state.set_criterion(
+            "synthesis_ok_default",
+            True,
+            detail={
+                RECIPE_FINGERPRINT_DETAIL: rerun_fingerprint,
+                RECIPE_SNAPSHOT_DETAIL: rerun,
+                BASELINE_RECIPE_FINGERPRINT_DETAIL: rerun_fingerprint,
+                BASELINE_RECIPE_SNAPSHOT_DETAIL: rerun,
+                BASELINE_REF_DETAIL: "a" * 40,
+            },
+        )
+
+        assert not state.is_met("synthesis_ok_default")
+        assert state.criteria["synthesis_ok_default"].detail["checks"][0]["param"] == (
+            "_recipe_evidence"
+        )
 
     def test_paired_targets_require_matching_measurement_basis(self, state):
         baseline = {

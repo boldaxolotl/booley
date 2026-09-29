@@ -7,7 +7,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from booley.evidence.recipe import jsonable, recipe_snapshot_fingerprint
+from booley.evidence.recipe import (
+    constraint_recipe_entry,
+    jsonable,
+    recipe_snapshot_fingerprint,
+)
 
 from .profiles import VivadoProfile, resolve_fpga_profile
 
@@ -33,14 +37,16 @@ def fpga_recipe_snapshot(
             digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
         except OSError:
             digest = None
-        constraints.append({"name": xdc_file.name, "sha256": digest})
+        constraints.append(
+            constraint_recipe_entry(xdc_file.core, digest, fallback_vlnv=resolved.vlnv)
+        )
 
     selected_profile = profile or resolve_fpga_profile(resolved.flow_options, target=target)
     # Store the effective profile exactly once so omitted-default and explicit
     # ``balanced`` Targets have the same semantic recipe identity.
     flow_options = normalized_fpga_flow_options(resolved.flow_options)
     return {
-        "schema": 2,
+        "schema": 3,
         "flow": "fpga",
         "target": target,
         "vlnv": resolved.vlnv,
