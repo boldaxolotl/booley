@@ -666,6 +666,8 @@ class TestProjectGitignoreBackfill:
 
         lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
         assert "flow-reports/" in lines
+        assert "/logs/" in lines
+        assert "/.baseline-wt-*/" in lines
         assert "__pycache__/" in lines
         assert "*.pyc" in lines
 
@@ -678,6 +680,8 @@ class TestProjectGitignoreBackfill:
         lines = gitignore.read_text(encoding="utf-8").splitlines()
         assert "my_custom_dir/" in lines
         assert lines.count("flow-reports/") == 1
+        assert lines.count("/logs/") == 1
+        assert lines.count("/.baseline-wt-*/") == 1
         assert "__pycache__/" in lines
         assert lines.count("tmp/") == 1  # already present -> not re-added
 
@@ -689,3 +693,42 @@ class TestProjectGitignoreBackfill:
         init_cmd._backfill_project_gitignore(tmp_path, ctx)
 
         assert (tmp_path / ".gitignore").read_bytes() == first
+
+    def test_generated_patterns_are_honored_by_git(self, tmp_path: Path):
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+        diagnostic = tmp_path / "logs" / "runner-diagnostics.log"
+        baseline_worktree = tmp_path / ".baseline-wt-42-deadbeef"
+        diagnostic.parent.mkdir()
+        baseline_worktree.mkdir()
+        diagnostic.write_text("diagnostic\n", encoding="utf-8")
+        nested_log = tmp_path / "cores" / "example" / "logs" / "result.log"
+        nested_log.parent.mkdir(parents=True)
+        nested_log.write_text("durable input\n", encoding="utf-8")
+
+        result = subprocess.run(
+            [
+                "git",
+                "check-ignore",
+                "logs/runner-diagnostics.log",
+                ".baseline-wt-42-deadbeef/",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        assert result.stdout.splitlines() == [
+            "logs/runner-diagnostics.log",
+            ".baseline-wt-42-deadbeef/",
+        ]
+        nested_result = subprocess.run(
+            ["git", "check-ignore", "cores/example/logs/result.log"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert nested_result.returncode == 1
+        assert nested_result.stdout == ""
