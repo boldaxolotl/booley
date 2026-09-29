@@ -1103,6 +1103,7 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
 
     class FakeTio:
         board = None
+        tickets_dir = tmp_path / "tickets"  # no Ticket History: a missing slug stays missing
 
         def __init__(self, *_args, **_kwargs):
             pass

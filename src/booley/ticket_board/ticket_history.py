@@ -98,7 +98,7 @@ class ClosedTicket:
 
     slug: str
     path: Path
-    closed: ClosedBlock
+    block: ClosedBlock
     document: str  # the Ticket document as it was when it closed, without the block
 
 
@@ -192,7 +192,7 @@ def read_closed_ticket(tickets_dir: Path, slug: str) -> ClosedTicket | None:
     """
     for path in history_documents(tickets_dir):
         if path.stem == slug:
-            return _read(path) if _is_record(path) else None
+            return read_history_record(path) if _is_record(path) else None
     return None
 
 
@@ -218,7 +218,8 @@ def closed_ticket_documents(tickets_dir: Path) -> list[Path]:
     return records
 
 
-def _read(path: Path) -> ClosedTicket:
+def read_history_record(path: Path) -> ClosedTicket:
+    """Return the Closed Ticket recorded at *path*; a malformed record raises."""
     text = _text(path)
     try:
         document, block = parse_closed_document(text)
@@ -233,7 +234,10 @@ def closed_outcomes(tickets_dir: Path) -> dict[str, TicketState]:
     A record with a malformed closed block raises: dependency decisions must
     never treat a Ticket of unknown outcome as absent.
     """
-    return {path.stem: _read(path).closed.outcome for path in closed_ticket_documents(tickets_dir)}
+    return {
+        path.stem: read_history_record(path).block.outcome
+        for path in closed_ticket_documents(tickets_dir)
+    }
 
 
 def done_slugs(tickets_dir: Path) -> set[str]:
@@ -275,7 +279,7 @@ def close_ticket(tickets_dir: Path, slug: str, block: ClosedBlock) -> ClosedBloc
         # A concurrent close that already recorded an outcome wins.
         with contextlib.suppress(WriteOnceConflictError):
             atomic_write_once(history, with_closed_block(document, block).encode(), mode=0o644)
-    recorded = _read(history).closed
+    recorded = read_history_record(history).block
     finish_closing(tickets_dir, slug)
     return recorded
 

@@ -233,7 +233,7 @@ def commit_history_record(tickets_dir: Path, slug: str, *, policy_root: Path) ->
         raise HistoryCommitError(str(exc)) from exc
     if closed is None:
         raise HistoryCommitError(f"Ticket {slug!r} has no history record to commit")
-    message = f"chore({slug}): close Ticket ({closed.closed.outcome.status})"
+    message = f"chore({slug}): close Ticket ({closed.block.outcome.status})"
     if repository.worktree == Path(policy_root).resolve():
         _check_policy(repository.worktree, message, policy_root)
     from .acceptance_journal import AcceptanceOperationError, publication_idle

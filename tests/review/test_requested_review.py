@@ -56,7 +56,7 @@ def _assert_closed_done(tio, slug):
     assert not state_record_path(tio.tickets_dir, slug).exists()
     closed = read_closed_ticket(tio.tickets_dir, slug)
     assert closed is not None
-    assert closed.closed.outcome is TicketState.DONE
+    assert closed.block.outcome is TicketState.DONE
 
 
 def _on_success(options):

@@ -59,25 +59,37 @@ from .paths import (
     ticket_runtime_dir,
 )
 from .reporting import (
+    closed_ticket_summary,
     display_board,
     format_timing_report,
     format_usage_report,
 )
 from .scanner import _load_state_data
-from .ticket_history import done_slugs
+from .ticket_history import done_slugs, read_closed_ticket
 from .validation import (
     append_authored_drift_diagnostic,
     format_validate_logs_report,
     validate_logs,
 )
 
+ALL_TICKETS_ONLY_LISTS = "--all only applies when listing the board, not to one Ticket"
+
 # ---------------------------------------------------------------------------
 # Pure output commands (no side effects)
 # ---------------------------------------------------------------------------
 
 
+def _scan_for_view(tio, args):
+    """Scan the board, adding Closed Tickets when the view was asked ``--all``."""
+    return scan_all_tickets(
+        tio.tickets_dir,
+        project_root=tio._project_root,
+        include_closed=getattr(args, "all", False),
+    )
+
+
 def _cmd_board(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
+    tickets = _scan_for_view(tio, args)
     display_board(tickets, tickets_dir=Path(tio.tickets_dir))
     return 0
 
@@ -88,7 +100,7 @@ def _cmd_slug(tio, args):
 
 
 def _cmd_read_board(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
+    tickets = _scan_for_view(tio, args)
     json.dump({"tickets": tickets}, sys.stdout, indent=2, ensure_ascii=False)
     print()
     return 0
@@ -144,6 +156,9 @@ def _cmd_show(tio, args):
     slug = getattr(args, "slug", None)
     if not slug:
         return _cmd_board(tio, args)
+    if getattr(args, "all", False):
+        print(f"Error: {ALL_TICKETS_ONLY_LISTS}", file=sys.stderr)
+        return 2
 
     try:
         entry = tio.inspect_ticket(slug)
@@ -151,8 +166,7 @@ def _cmd_show(tio, args):
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     if entry is None:
-        print(f"Error: ticket '{slug}' not found", file=sys.stderr)
-        return 2
+        return _show_closed_ticket(tio, slug)
 
     # find_ticket accepts a copied-from-board ``<slug>.md``; re-derive the
     # canonical slug from the resolved file so log/worktree paths stay correct.
@@ -167,6 +181,21 @@ def _cmd_show(tio, args):
 
     _print_ticket_overview(entry, tio, slug, ticket_file, logs_dir)
     _print_criteria_summary(mandatory, optional, state_crit, accepted_error)
+    return 0
+
+
+def _show_closed_ticket(tio, slug: str) -> int:
+    """Show a Ticket that is no longer live from its Ticket History record."""
+    closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+    if closed is None:
+        print(f"Error: ticket '{slug}' not found", file=sys.stderr)
+        return 2
+    print(f"ticket:    {closed.slug}")
+    print(f"status:    {closed.block.outcome.status}")
+    print(f"closed:    {closed.block.date}")
+    print(f"summary:   {closed_ticket_summary(closed)}")
+    print(f"file:      {closed.path}")
+    print(f"logs:      {ticket_log_dir(tio.logs_dir, closed.slug)}")
     return 0
 
 

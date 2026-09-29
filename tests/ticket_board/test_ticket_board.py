@@ -3611,7 +3611,7 @@ def assert_closed_archived(tio, slug):
     """Assert *slug* left the board and closed into Ticket History as archived."""
     closed = read_closed_ticket(tio.tickets_dir, slug)
     assert closed is not None
-    assert closed.closed.outcome is TicketState.ARCHIVED
+    assert closed.block.outcome is TicketState.ARCHIVED
     assert not ticket_document_path(tio.tickets_dir, slug).exists()
     assert read_state_record(tio.tickets_dir, slug) is None
 
@@ -4179,7 +4179,7 @@ class TestCLIArchive:
         assert "Done ticket" not in output
         # Board reconciliation closes the finished done Ticket as done; bare
         # archive never turns it into an archived one.
-        assert read_closed_ticket(tickets_dir, "t1").closed.outcome is TicketState.DONE
+        assert read_closed_ticket(tickets_dir, "t1").block.outcome is TicketState.DONE
 
     def test_legacy_flags_are_accepted_no_ops(self, tmp_path, capsys):
         tickets_dir, tio = self._tickets(tmp_path)
@@ -6258,7 +6258,7 @@ class TestBoardMoveTerminalActionOverrides:
             assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
         cleanup.assert_called_once()
         closed = read_closed_ticket(tio.tickets_dir, "my-ticket")
-        assert closed is not None and closed.closed.outcome is TicketState.DONE
+        assert closed is not None and closed.block.outcome is TicketState.DONE
         assert not ticket_document_path(tio.tickets_dir, "my-ticket").exists()
 
     def test_overrides_never_enable_a_declined_action(self, tmp_path):

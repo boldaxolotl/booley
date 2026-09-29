@@ -372,7 +372,7 @@ def test_review_completion_blocks_on_product_edits_but_not_on_ignored_board_docu
     assert not (tio.tickets_dir / "board" / "change-target.md").exists()
     closed = read_closed_ticket(tio.tickets_dir, "change-target")
     assert closed is not None
-    assert closed.closed.outcome is TicketState.DONE
+    assert closed.block.outcome is TicketState.DONE
     # Closing commits the history record wherever Git tracks it (a global
     # ignore of .booley_project/ leaves nothing to commit).
     assert pending_history_commits(tio.tickets_dir) == []

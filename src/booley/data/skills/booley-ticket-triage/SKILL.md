@@ -43,7 +43,7 @@ For each step, read ONLY that step's file before executing it. Do NOT preload al
 ## Conventions
 
 - Process tickets in order: blocked → review
-- "Failed" tickets are not a separate board state — `fail` is an alias for `block`, so failed tickets live in `blocked/` and are handled by the blocked step
+- "Failed" tickets are not a separate board state — `fail` is an alias for `block`, so failed tickets are in state `blocked` and are handled by the blocked step
 - Within each category, process **oldest `last_update` first** (tickets waiting longest get attention first)
 - After handling orphans, if no blocked/failed/review tickets remain → print "All clear" and STOP
 - User can say "skip" on any ticket to leave it unchanged

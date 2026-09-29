@@ -295,7 +295,7 @@ def _verify_providers(
                 closed = read_closed_ticket(tickets, binding.provider)
             except TicketHistoryError as exc:
                 raise BasisRefreshError(str(exc)) from exc
-            if closed is None or closed.closed.outcome is not TicketState.DONE:
+            if closed is None or closed.block.outcome is not TicketState.DONE:
                 raise BasisRefreshError(f"provider Ticket {binding.provider!r} is not accepted")
             try:
                 provider_document = _converted_text(root, closed.document, binding.provider)

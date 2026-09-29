@@ -60,8 +60,8 @@ def _assert_archived(tio: TicketIO, slug: str, generation: str) -> None:
     """Assert *slug* closed as archived: only its history record and logs remain."""
     closed = read_closed_ticket(tio.tickets_dir, slug)
     assert closed is not None
-    assert closed.closed.outcome is TicketState.ARCHIVED
-    assert closed.closed.generation == generation
+    assert closed.block.outcome is TicketState.ARCHIVED
+    assert closed.block.generation == generation
     assert not ticket_document_path(tio.tickets_dir, slug).exists()
     assert not state_record_path(tio.tickets_dir, slug).exists()
     assert not _marker(tio, slug).exists()

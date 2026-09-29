@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from .execution import next_from_planned
 from .lifecycle import TicketState
 from .paths import existing_runtime_file
 from .ticket_document import convert_ticket_document, ticket_conversion_context
+from .ticket_history import TicketHistoryError, closed_ticket_documents, read_history_record
 
 logger = logging.getLogger(__name__)
 
@@ -206,39 +208,87 @@ def _build_ticket_entry(md_file, file, dir_status, fields, rt):
     return entry
 
 
+@dataclass(frozen=True)
+class _ScanRoots:
+    """Where one board scan resolves Tickets, their runtime logs, and the Project."""
+
+    project_root: Path
+    tickets_dir: Path
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.tickets_dir / "logs"
+
+
 def scan_all_tickets(
     tickets_dir: str | Path,
     *,
     project_root: Path | None = None,
+    include_closed: bool = False,
 ) -> list[dict[str, Any]]:
-    """Scan Tickets through the document converter, retaining invalid entries."""
+    """Scan Tickets through the document converter, retaining invalid entries.
+
+    Live Tickets only, unless *include_closed* also asks for Ticket History.
+    A malformed history record is retained too, with status ``closed`` and a
+    ``ticket_error``; dependency checks read history separately and fail closed.
+    """
     tickets_dir = Path(tickets_dir)
-    root = project_root or tickets_dir.parent.parent
-    logs_dir = tickets_dir / "logs"
+    roots = _ScanRoots(project_root or tickets_dir.parent.parent, tickets_dir)
     result = []
 
     for md_file, record in iter_board_records(tickets_dir):
-        entry = _scan_ticket(md_file, record, root, tickets_dir, logs_dir)
+        entry = _scan_ticket(md_file, record, roots)
         if entry is not None:
             result.append(entry)
+    if include_closed:
+        result.extend(_scan_closed(path, roots) for path in closed_ticket_documents(tickets_dir))
 
     return result
+
+
+def _scan_closed(path: Path, roots: _ScanRoots) -> dict[str, Any]:
+    """Scan one Closed Ticket under its outcome, dated by its closing."""
+    try:
+        closed = read_history_record(path)
+    except TicketHistoryError as exc:
+        return {
+            "file": path.relative_to(roots.tickets_dir).as_posix(),
+            "summary": path.stem,
+            "status": "closed",
+            "ticket_error": str(exc),
+        }
+    entry = _scan_document(closed.path, closed.document, closed.block.outcome, None, roots)
+    entry["closed"] = closed.block.date
+    # The board sorts and dates rows by last_update; a closed row's is its closing.
+    entry["last_update"] = closed.block.date
+    return entry
 
 
 def _scan_ticket(
     path: Path,
     record: StateRecord | None,
-    root: Path,
-    tickets_dir: Path,
-    logs_dir: Path,
+    roots: _ScanRoots,
 ) -> dict[str, Any] | None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
     state = TicketState.DRAFT if record is None else record.state
-    file = path.relative_to(tickets_dir).as_posix()
-    with ticket_conversion_context(root, path.stem, state.conversion_stage) as context:
+    return _scan_document(path, text, state, record, roots)
+
+
+def _scan_document(
+    path: Path,
+    text: str,
+    state: TicketState,
+    record: StateRecord | None,
+    roots: _ScanRoots,
+) -> dict[str, Any]:
+    """Build the board entry of the Ticket document *text* in *state*."""
+    file = path.relative_to(roots.tickets_dir).as_posix()
+    with ticket_conversion_context(
+        roots.project_root, path.stem, state.conversion_stage
+    ) as context:
         converted = convert_ticket_document(text, context)
     if converted.document is None:
         preview = converted.preview
@@ -256,6 +306,6 @@ def _scan_ticket(
     entry = _build_ticket_entry(path, file, state.status, fields, runtime_fields)
     entry["criteria"] = spec.semantic_record()["criteria"]
     entry["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []
-    _enrich_from_acceptance(entry, tickets_dir, path.stem)
-    _enrich_from_state(entry, logs_dir, path.stem)
+    _enrich_from_acceptance(entry, roots.tickets_dir, path.stem)
+    _enrich_from_state(entry, roots.logs_dir, path.stem)
     return entry

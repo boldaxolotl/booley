@@ -77,6 +77,8 @@ from booley.runtime.project_repositories import (
 )
 from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
 from booley.ticket_board.board_layout import documents_in_state, locate_document
+from booley.ticket_board.cli import add_all_tickets_flag
+from booley.ticket_board.cli_handlers import ALL_TICKETS_ONLY_LISTS
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.legacy_layout import LegacyBoardLayoutError, require_current_layout
@@ -490,6 +492,7 @@ def _add_board_subparsers(sub) -> None:
     # driving the board for another checkout meant cd-ing or exporting env.
     root_opt = _project_root_parent()
     board_p = sub.add_parser("board", help="Ticket board operations", parents=[root_opt])
+    add_all_tickets_flag(board_p)
     board_sub = board_p.add_subparsers(
         dest="board_command",
         metavar="{show,review,approve,validate,check-ready,create,move,reset,archive}",
@@ -553,6 +556,7 @@ def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
         "show", help="Display the board or a prepared ticket briefing", parents=[root_opt]
     )
     show_p.add_argument("slug", nargs="?", help="Ticket to inspect")
+    add_all_tickets_flag(show_p, keep_parent=True)
     show_p.add_argument("--no-open-diffs", action="store_true", help="Do not open prepared diffs")
 
     review_p = board_sub.add_parser(
@@ -1257,17 +1261,25 @@ def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 
     board_cmd = getattr(args, "board_command", None)
+    listing = board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None))
+    if getattr(args, "all", False) and not listing:
+        print(f"Error: {ALL_TICKETS_ONLY_LISTS}", file=sys.stderr)
+        return 2
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
     from booley.ticket_board.operations import open_board
 
     open_board(tio, recover=board_cmd not in _READ_ONLY_BOARD_COMMANDS)
 
-    if board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None)):
+    if listing:
         from booley.ticket_board.io import scan_all_tickets
         from booley.ticket_board.reporting import display_board
 
         display_board(
-            scan_all_tickets(tio.tickets_dir, project_root=project_root),
+            scan_all_tickets(
+                tio.tickets_dir,
+                project_root=project_root,
+                include_closed=getattr(args, "all", False),
+            ),
             tickets_dir=tio.tickets_dir,
         )
         return 0
@@ -1418,8 +1430,7 @@ def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
     board = tio.inspect_ticket(args.slug)
     if board is None:
-        print(f"ERROR: ticket {args.slug!r} not found", file=sys.stderr)
-        return 2
+        return _show_closed_ticket(tio, args.slug)
     slug = Path(board["file"]).stem
     status = board["status"]
     if board.get("authored_drift"):
@@ -1441,6 +1452,20 @@ def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
         print(outcome.briefing)
         return 0
     print(f"{slug}: {status} — {board.get('summary', '')}")
+    return 0
+
+
+def _show_closed_ticket(tio: TicketIO, slug: str) -> int:
+    from booley.ticket_board.reporting import closed_ticket_summary
+    from booley.ticket_board.ticket_history import read_closed_ticket
+
+    closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+    if closed is None:
+        print(f"ERROR: ticket {slug!r} not found", file=sys.stderr)
+        return 2
+    outcome = closed.block.outcome.status
+    print(f"{closed.slug}: {outcome} — {closed_ticket_summary(closed)}")
+    print(f"closed {closed.block.date}; record: {closed.path}")
     return 0
 
 

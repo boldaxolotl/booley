@@ -316,7 +316,7 @@ class DirectTicketOps:
         if entry:
             return entry.get("status", "")
         closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
-        return closed.closed.outcome.status if closed is not None else ""
+        return closed.block.outcome.status if closed is not None else ""
 
     # -- State-changing ----------------------------------------------------
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import yaml
 
 from .acceptance_journal import JournalState
 from .analytics import compute_step_cost
@@ -12,7 +14,11 @@ from .constants import (
     PRIORITY_ORDER,
     STEP_ORDER,
 )
+from .frontmatter import parse_frontmatter
 from .helpers import fmt_datetime_user, fmt_duration, fmt_tokens, parse_iso
+
+if TYPE_CHECKING:
+    from .ticket_history import ClosedTicket
 
 # Import colors from harness; fall back to no-op if unavailable
 try:
@@ -544,3 +550,13 @@ def _print_unreadable_note(unreadable: list[tuple[Path, str]], tickets_dir: Path
         "   Commands on a broken ticket refuse to run until its state record is "
         "repaired or removed."
     )
+
+
+def closed_ticket_summary(closed: ClosedTicket) -> str:
+    """Return the ``summary`` a Closed Ticket had when it closed, or its slug."""
+    try:
+        fields, _body = parse_frontmatter(closed.document)
+    except (ValueError, yaml.YAMLError):
+        return closed.slug
+    summary = fields.get("summary")
+    return summary if isinstance(summary, str) and summary else closed.slug

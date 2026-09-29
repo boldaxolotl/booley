@@ -56,21 +56,38 @@ from .operations import open_board
 from .ticket_history import TicketHistoryError
 
 
+def add_all_tickets_flag(p: argparse.ArgumentParser, *, keep_parent: bool = False) -> None:
+    """Add ``--all``, which adds Closed Tickets to a board listing.
+
+    *keep_parent* leaves a value a parent parser already set in place: a
+    subparser's own default would otherwise reset ``booley board --all show``.
+    """
+    p.add_argument(
+        "--all",
+        action="store_true",
+        default=argparse.SUPPRESS if keep_parent else False,
+        help="Also list Closed Tickets from Ticket History",
+    )
+
+
 def _add_query_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register read-only board/ticket inspection subcommands."""
     # board (default)
-    sub.add_parser("board", help="Display board as markdown table")
+    p = sub.add_parser("board", help="Display board as markdown table")
+    add_all_tickets_flag(p)
     # show: with a slug, print one ticket's paths/branch/criteria; without, an
     # alias for 'board' (back-compat).
     p = sub.add_parser("show", help="Show a ticket's paths/branch/criteria (or the board)")
     p.add_argument("slug", nargs="?", default=None, help="Ticket slug to inspect")
+    add_all_tickets_flag(p)
 
     # slug
     p = sub.add_parser("slug", help="Generate slug from summary text")
     p.add_argument("summary", help="Summary text to slugify")
 
     # read-board
-    sub.add_parser("read-board", help="Print all tickets as JSON")
+    p = sub.add_parser("read-board", help="Print all tickets as JSON")
+    add_all_tickets_flag(p)
 
 
 def _add_ticket_edit_subcommands(sub: argparse._SubParsersAction) -> None:

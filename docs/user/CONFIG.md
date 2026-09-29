@@ -736,7 +736,7 @@ garbage-collected automatically.
 ### Auto-retry on transient crashes (`[developer.auto_retry]`)
 
 When the Developer Agent dies to a server-side failure (today, an `API Error:
-Response stalled mid-stream`), the ticket lands in `blocked/` with the
+Response stalled mid-stream`), the ticket is blocked with the
 half-finished verdict (usually "exited with N unmet criteria"). No human can fix
 a stream stall, so triaging it wastes a pass. Booley requeues the ticket itself:
 

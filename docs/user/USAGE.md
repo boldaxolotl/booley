@@ -416,8 +416,9 @@ in [ADR 0060](../adr/0060-model-target-changes-with-ticket-target-plans.md).
 
 ### Ticket Board lifecycle
 
-`booley board show` lists every Ticket and its status. A Ticket usually moves
-like this:
+`booley board show` lists every live Ticket and its status; add `--all` to
+include done and archived Tickets from Ticket History. `booley board show
+<slug>` finds a Ticket either way. A Ticket usually moves like this:
 
 ```text
 draft ──► queued ──► running ──► review ──► done
@@ -872,6 +873,7 @@ booley run                        # work through the whole queue
 booley run --dry-run              # check the setup without running anything
 booley run --idle-timeout 0       # keep waiting for new Tickets forever
 booley board                      # show the Ticket board
+booley board --all                # ...including done and archived Tickets
 
 # Quick reference
 booley cheat                      # the whole cheatsheet

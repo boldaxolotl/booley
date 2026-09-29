@@ -705,9 +705,9 @@ def _approve_closed_ticket(tio: TicketIO, slug: str) -> bool:
     closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
     if closed is None:
         raise ReviewEntryError(f"ticket {slug!r} not found")
-    if closed.closed.outcome is not TicketState.DONE:
+    if closed.block.outcome is not TicketState.DONE:
         raise ReviewEntryError(
-            f"ticket {slug!r} is already closed ({closed.closed.outcome.status})"
+            f"ticket {slug!r} is already closed ({closed.block.outcome.status})"
         )
     print(f"Ticket '{slug}' is already closed (done); nothing to approve.", file=sys.stderr)
     return True

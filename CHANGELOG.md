@@ -51,6 +51,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   Tickets remain in the old `board/<status>/` folders and when Git still
   tracks files under `tickets/board/` or `tickets/state/`. Follow
   [Migrating a Ticket Board to state records](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#migrating-a-ticket-board-to-state-records).
+- `booley board` now lists live Tickets only. Add `--all` (also accepted by
+  `python -m booley.ticket_board board|show|read-board`) to include done and
+  archived Tickets, dated by when they closed. `booley board show <slug>`
+  also finds a Closed Ticket.
+- Doctor's `interactive.logs-gitignore` warning is now `project.gitignore`
+  and checks every ignore pattern `booley init` writes. Waivers on the old id
+  no longer match; re-waive under the new one.
 - REVIEW category/focus declarations now require exactly one scalar `done` or
   `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
   already-published Tickets. `booley board check-ready <slug>` is equivalent to

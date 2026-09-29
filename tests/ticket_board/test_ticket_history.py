@@ -191,7 +191,7 @@ class TestCloseTicket:
 
         assert recorded.outcome is TicketState.ARCHIVED
         closed = read_closed_ticket(tio.tickets_dir, "feat")
-        assert closed is not None and closed.closed.outcome is TicketState.ARCHIVED
+        assert closed is not None and closed.block.outcome is TicketState.ARCHIVED
         assert not ticket_document_path(tio.tickets_dir, "feat").exists()
 
     def test_close_without_any_document_fails(self, tio):
@@ -571,8 +571,8 @@ def test_lost_done_close_is_finished_by_the_next_promotion(tmp_path, monkeypatch
     op_promote_waiting(board)
 
     closed = read_closed_ticket(board.tickets_dir, "feat")
-    assert closed is not None and closed.closed.outcome is TicketState.DONE
-    assert len(closed.closed.generation) == 32
+    assert closed is not None and closed.block.outcome is TicketState.DONE
+    assert len(closed.block.generation) == 32
     assert not ticket_document_path(board.tickets_dir, "feat").exists()
 
 
@@ -598,7 +598,7 @@ def test_retired_archive_flags_only_earn_a_note(tio, capsys):
     assert run_archive_command(tio, "feat", force=True, keep_logs=True) == 0
     err = capsys.readouterr().err
     assert "--force has no effect" in err and "--keep-logs has no effect" in err
-    assert read_closed_ticket(tio.tickets_dir, "feat").closed.outcome is TicketState.ARCHIVED
+    assert read_closed_ticket(tio.tickets_dir, "feat").block.outcome is TicketState.ARCHIVED
 
 
 # Whole-branch review fixes ------------------------------------------------------------------

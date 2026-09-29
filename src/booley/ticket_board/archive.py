@@ -174,7 +174,7 @@ def _refuse_closed_or_done(tio: Any, slug: str, status: str | None) -> None:
     if status is None:
         closed = read_closed_ticket(tio.tickets_dir, slug)
         if closed is not None:
-            raise RuntimeError(f"Ticket is already closed ({closed.closed.outcome.status})")
+            raise RuntimeError(f"Ticket is already closed ({closed.block.outcome.status})")
         raise RuntimeError("Ticket not found")
 
 
