@@ -996,6 +996,32 @@ class TestSlotCaps:
 
 
 class TestJobsConfigParsing:
+    def test_shared_budget_loader_warns_for_expected_read_failure(
+        self,
+        monkeypatch,
+        caplog,
+    ):
+        from booley.config.jobs import load_job_budget_config
+
+        monkeypatch.setattr(
+            "booley.runtime.shared_infra._load_rtl_config",
+            lambda _root: (_ for _ in ()).throw(OSError("unreadable")),
+        )
+
+        assert load_job_budget_config() == {}
+        assert "Failed to load the shared Project job budget" in caplog.text
+
+    def test_shared_budget_loader_propagates_unexpected_failure(self, monkeypatch):
+        from booley.config.jobs import load_job_budget_config
+
+        monkeypatch.setattr(
+            "booley.runtime.shared_infra._load_rtl_config",
+            lambda _root: (_ for _ in ()).throw(RuntimeError("broken invariant")),
+        )
+
+        with pytest.raises(RuntimeError, match="broken invariant"):
+            load_job_budget_config()
+
     def test_defaults_when_section_absent(self):
         from booley.config.agent import _parse_jobs_config
 

@@ -11,7 +11,7 @@ from typing import Literal
 
 from booley.audit.resource_policy import GIB_BYTES, heavy_memory_reservation
 from booley.config.jobs import load_job_budget_config, parse_caps
-from booley.core.boundary import as_dict
+from booley.core.boundary import as_dict, as_int
 from booley.targets.domain import TargetInspection
 
 LaneKind = Literal["heavy", "unreserved"]
@@ -46,7 +46,7 @@ class VerilatorBuildBudget:
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except FileNotFoundError:
         return None
 
 
@@ -72,11 +72,11 @@ def _cgroup_cpu_count(read_text: Callable[[Path], str | None]) -> int | None:
         period = read_text(period_path)
         if quota is None or period is None:
             continue
-        try:
-            if int(quota) < 0:
-                return None
-        except ValueError:
+        quota_value = as_int(quota)
+        if quota_value is None:
             continue
+        if quota_value < 0:
+            return None
         jobs = _quota_jobs(quota, period)
         if jobs is not None:
             return jobs
@@ -84,10 +84,9 @@ def _cgroup_cpu_count(read_text: Callable[[Path], str | None]) -> int | None:
 
 
 def _quota_jobs(quota: str, period: str) -> int | None:
-    try:
-        quota_value = int(quota)
-        period_value = int(period)
-    except ValueError:
+    quota_value = as_int(quota)
+    period_value = as_int(period)
+    if quota_value is None or period_value is None:
         return None
     if quota_value < 0 or period_value <= 0:
         return None
@@ -101,9 +100,8 @@ def _cgroup_memory_limit(read_text: Callable[[Path], str | None]) -> int | None:
             continue
         if value == "max":
             return None
-        try:
-            parsed = int(value)
-        except ValueError:
+        parsed = as_int(value)
+        if parsed is None:
             continue
         return None if parsed >= _CGROUP_UNLIMITED_FLOOR else parsed
     return None

@@ -2159,8 +2159,7 @@ def require_current_target_handle(
             f"Target {handle.identity!r} was selected for Project {root}, "
             f"not {Path(project_root).resolve()}"
         )
-    snapshot_id = getattr(handle, "snapshot_id", "")
-    if snapshot_id and target_snapshot_id(root) != snapshot_id:
+    if handle.snapshot_id and target_snapshot_id(root) != handle.snapshot_id:
         raise StaleTargetCatalogError(
             f"Target catalog for {root} is stale; select the Target again"
         )

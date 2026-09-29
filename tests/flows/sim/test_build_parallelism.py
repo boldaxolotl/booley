@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -39,6 +40,20 @@ def _inspection(
 
 def _reader(values: dict[str, str]):
     return lambda path: values.get(str(path))
+
+
+def test_cgroup_reader_ignores_absent_files_but_surfaces_access_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "missing"
+    assert build_parallelism._read_text(missing) is None
+
+    monkeypatch.setattr(
+        Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied"))
+    )
+    with pytest.raises(PermissionError, match="denied"):
+        build_parallelism._read_text(tmp_path / "denied")
 
 
 def test_affinity_and_v2_quota_bound_each_heavy_lane() -> None:

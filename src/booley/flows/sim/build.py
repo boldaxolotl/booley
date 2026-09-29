@@ -161,11 +161,9 @@ def _prepare_simulation_build(
     lane_kind: LaneKind,
 ) -> PreparedSimulationBuild:
     """Prepare one supported simulator Target after boundary normalization."""
-    root = fusesoc_registry.require_current_target_handle(handle)
+    root, inspection, backend_arguments = _simulation_recipe_inputs(handle, lane_kind=lane_kind)
     target = handle.selector
     work_root = build_root or work_root_for(root, "sim", target, variant=variant)
-    inspection = TargetCatalog.build(root).inspect(handle)
-    backend_arguments = verilator_backend_arguments(inspection, lane_kind=lane_kind)
     resolved = fusesoc_registry.resolve_target_handle(
         handle,
         build_root=work_root,
@@ -194,6 +192,19 @@ def _prepare_simulation_build(
     )
 
 
+def _simulation_recipe_inputs(
+    handle: TargetHandle,
+    *,
+    lane_kind: LaneKind,
+    inspection: TargetInspection | None = None,
+) -> tuple[Path, TargetInspection, tuple[str, ...]]:
+    """Return validated Project, Target facts, and backend setup arguments."""
+    root = fusesoc_registry.require_current_target_handle(handle)
+    selected = inspection or TargetCatalog.build(root).inspect(handle)
+    backend_arguments = verilator_backend_arguments(selected, lane_kind=lane_kind)
+    return root, selected, backend_arguments
+
+
 def simulation_setup_command(
     handle: TargetHandle,
     *,
@@ -203,9 +214,11 @@ def simulation_setup_command(
     inspection: TargetInspection | None = None,
 ) -> list[str]:
     """Preview the exact FuseSoC setup command used by Simulation preparation."""
-    root = fusesoc_registry.require_current_target_handle(handle)
-    inspection = inspection or TargetCatalog.build(root).inspect(handle)
-    backend_arguments = verilator_backend_arguments(inspection, lane_kind=lane_kind)
+    _, _, backend_arguments = _simulation_recipe_inputs(
+        handle,
+        lane_kind=lane_kind,
+        inspection=inspection,
+    )
     kwargs: dict[str, Any] = {"build_root": build_root}
     if resolution_vlnv is not None:
         kwargs["resolution_vlnv"] = resolution_vlnv

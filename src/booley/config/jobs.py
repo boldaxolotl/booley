@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import tomllib
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,7 +20,8 @@ def load_job_budget_config() -> dict[str, Any]:
 
     try:
         return _load_rtl_config(None) or {}
-    except Exception:  # noqa: BLE001 — malformed/unavailable config uses safe defaults
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning("Failed to load the shared Project job budget: %s", exc)
         return {}
 
 

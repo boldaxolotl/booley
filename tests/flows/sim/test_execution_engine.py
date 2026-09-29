@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -71,6 +72,7 @@ def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus
             identity=f"acme:lib:demo:1#{selector}",
             vlnv="acme:lib:demo:1",
             eda_tool=eda_tool,
+            snapshot_id="",
         ),
     )
 
@@ -1511,14 +1513,14 @@ def test_real_legacy_verilator_target_prepares_as_verilator(tmp_path: Path) -> N
     ),
     ids=("modern-flow-api", "legacy-tool-api"),
 )
-def test_real_verilator_setup_parallelizes_the_generated_model_build(
+def test_default_verilator_make_recipe_is_resource_bounded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tool_declaration: str,
 ) -> None:
     """The nested Verilator C++ compilation receives Booley's job budget."""
-    pytest.importorskip("fusesoc")
-    pytest.importorskip("edalize")
+    importlib.import_module("fusesoc")
+    importlib.import_module("edalize")
     project = tmp_path / "project"
     _write_runtime_input_project(project, tool_declaration=tool_declaration)
     monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
