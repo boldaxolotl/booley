@@ -291,9 +291,6 @@ lane. With `[jobs].max_heavy = 1` execution is serial. Higher caps allow at most
 outer lane; work sharing a literal `run_cwd` still serializes to prevent
 cross-talk. Templated attempt directories can overlap safely.
 
-Existing CLI, MCP, and report consumers should follow the concise
-[Simulation Campaign migration guide](SIMULATION_CAMPAIGN_MIGRATION.md).
-
 Each Simulation Campaign freezes the Target's Required Simulation Suite in its immutable
 manifest. A target-level `sim_pass_<target>` Criterion is eligible to pass only
 when every member of that frozen suite has a durable passing result; selecting
