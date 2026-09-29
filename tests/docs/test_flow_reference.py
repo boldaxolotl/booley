@@ -224,6 +224,14 @@ def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
     _assert_documented("lint", lint_report["target_results"][0])
 
 
+def test_lint_warning_row_fields_stay_documented() -> None:
+    warning_row = next(
+        line for line in _flow_section("lint").splitlines() if line.startswith("| `warnings[]` |")
+    )
+    assert "`targets`" in warning_row
+    assert "`eda_tools`" in warning_row
+
+
 def test_synth_report_fields_stay_documented(tmp_path: Path) -> None:
     synth, report_dir = _configured_flow(AsicSynthesizeFlow, tmp_path, "synth_demo")
     current_synth = SynthMetrics(

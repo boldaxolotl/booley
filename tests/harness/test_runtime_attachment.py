@@ -219,15 +219,15 @@ def test_second_sigint_forces_cleanup(tmp_path: Path, monkeypatch) -> None:
         "time.sleep(120)\n"
     )
 
-    interrupted_at: list[float] = []
+    second_interrupt_sent = threading.Event()
 
     def interrupt_twice() -> None:
         _interrupt_when(ready.exists)
         if not ready.exists():
             return
-        interrupted_at.append(time.monotonic())
         time.sleep(0.05)
         os.kill(os.getpid(), signal.SIGINT)
+        second_interrupt_sent.set()
 
     interrupter = threading.Thread(target=interrupt_twice, daemon=True)
     interrupter.start()
@@ -237,10 +237,10 @@ def test_second_sigint_forces_cleanup(tmp_path: Path, monkeypatch) -> None:
 
     interrupter.join(timeout=2)
     assert ready.exists()
-    assert len(interrupted_at) == 1
+    assert second_interrupt_sent.is_set()
     assert result.exit_code == 130
     assert result.tree_terminal is True
-    assert time.monotonic() - interrupted_at[0] < 2
+    assert list((data / ".runtime" / "executions").glob("*/force-cancel"))
 
 
 def test_sigint_after_root_exit_cancels_surviving_descendant(tmp_path: Path, monkeypatch) -> None:
