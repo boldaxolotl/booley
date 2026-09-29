@@ -1813,6 +1813,67 @@ def _not_ready_dossier():
     return BlockedPrepOutcome("failed", "dossier unavailable")
 
 
+def _blocked_diagnosis():
+    return {
+        "classification": "ticket-code",
+        "board_reason": "failed",
+        "blocked_stage": "developer",
+        "blockers": [{"name": "sim", "reason": "failed", "evidence": "state"}],
+        "passing_non_blocking": [],
+        "developer_questions": [],
+        "recommended_action": "retry with feedback",
+        "findings": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_review_blocked_ticket_keeps_live_log_appends_fresh(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from booley.core.models import AgentResult
+    from booley.harness import blocked_prep
+    from booley.ticket_board import review_lifecycle
+    from booley.ticket_board import review_preparation as prep
+
+    ticket = tmp_path / "blocked" / "demo.md"
+    ticket.parent.mkdir()
+    ticket.write_text("ticket\n", encoding="utf-8")
+    log_dir = tmp_path / "logs" / "demo"
+    run_log = log_dir / "human-logs" / "run.log"
+    run_log.parent.mkdir(parents=True)
+    run_log.write_text("blocked\n", encoding="utf-8")
+    ctx = blocked_prep.BlockedContext(
+        tmp_path,
+        "demo",
+        ticket,
+        log_dir,
+        log_dir / ".runtime" / "triage-prep",
+        None,
+    )
+
+    async def invoke(_ctx, _evidence):
+        return AgentResult(structured=_blocked_diagnosis())
+
+    async def prepare_review(*_args, **_kwargs):
+        with run_log.open("a", encoding="utf-8") as stream:
+            stream.write("review activity\n")
+        return prep.ReviewPrepOutcome("ready", "review ready", package_path=tmp_path / "review")
+
+    tio = SimpleNamespace(
+        logs_dir=log_dir.parent,
+        _ticket_lock=lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(blocked_prep, "_invoke", invoke)
+    monkeypatch.setattr(review_lifecycle, "_quiescent", lambda *_args: None)
+    monkeypatch.setattr(prep, "prepare_review_command", prepare_review)
+
+    outcome = await review_lifecycle._review_blocked_ticket(tmp_path, "demo", tio, force=False)
+
+    assert outcome.ready
+    assert blocked_prep.render_blocked_dossier(tmp_path, "demo").ready
+
+
 @pytest.mark.asyncio
 async def test_review_command_reports_missing_corrupt_and_wrong_state(tmp_path, monkeypatch):
     from booley.ticket_board import review_lifecycle
@@ -1926,8 +1987,11 @@ def test_prepare_blocked_dossier_reuses_fresh_dossier(tmp_path, monkeypatch):
     fresh = tmp_path / "dossier.json"
     ctx = SimpleNamespace()
     monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: ctx)
-    monkeypatch.setattr(blocked_prep, "_source_sha", lambda _ctx: "source")
-    monkeypatch.setattr(blocked_prep, "_fresh", lambda _ctx, _sha: fresh)
+    monkeypatch.setattr(
+        blocked_prep,
+        "_fresh",
+        lambda _ctx: blocked_prep.FreshResult(package_path=fresh),
+    )
     outcome = asyncio.run(blocked_prep.prepare_blocked_dossier(tmp_path, "demo"))
     assert outcome.status == "fresh"
     assert outcome.package_path == fresh

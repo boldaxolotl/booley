@@ -73,6 +73,28 @@ async def test_invalid_resumed_basis_prepares_blocked_triage(
     prepare.assert_awaited_once_with(ctx, tmp_path)
 
 
+@pytest.mark.asyncio
+async def test_blocked_triage_flushes_log_before_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _context(tmp_path)
+    calls: list[str] = []
+
+    async def prepare(*_args):
+        calls.append("prepare")
+        return MagicMock(ready=True)
+
+    monkeypatch.setattr(developer.ticket_cli, "ticket_status", lambda *_args: "blocked")
+    monkeypatch.setattr(developer, "_status_step", lambda *_args: "developer")
+    monkeypatch.setattr(developer, "_write_status", lambda *_args: None)
+    monkeypatch.setattr(developer.terminal, "flush_log", lambda: calls.append("flush"))
+    monkeypatch.setattr("booley.harness.blocked_prep.prepare_blocked_dossier", prepare)
+
+    await developer._prepare_blocked_triage(ctx, tmp_path)
+
+    assert calls == ["flush", "prepare"]
+
+
 def test_context_without_completed_setup_needs_no_invalidation(tmp_path: Path) -> None:
     ctx = _context(tmp_path)
 
