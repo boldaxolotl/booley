@@ -27,12 +27,11 @@ from .verilator_coverage_execution import prepare_coverage_collection
 
 @dataclass(frozen=True)
 class CoverageInvocationRequest:
-    """Explicit coverage selection; absent test selection means policy then suite."""
+    """Explicit coverage selection; absent test names mean the registered suite minus skips."""
 
     targets: tuple[str, ...]
     tests: tuple[str, ...] | None = None
     trace: bool = False
-    test_filter: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,13 +111,10 @@ def _suite(
     skipped = set(
         context.skipped_tests.get(handle.selector, context.skipped_tests.get(handle.name, ()))
     )
-    if request.test_filter is not None:
-        selected = tuple(name for name in declared if request.test_filter in name)
-        selected = tuple(name for name in selected if name not in skipped)
-    elif request.tests is not None:
+    # Selection never consults the Coverage Criterion: its test list is required
+    # evidence, compared with what ran by evaluate_coverage_campaign (suite mismatch).
+    if request.tests is not None:
         selected = request.tests
-    elif criterion is not None and criterion.tests is not None:
-        selected = criterion.tests
     else:
         selected = tuple(name for name in declared if name not in skipped)
     if criterion is not None:

@@ -85,9 +85,7 @@ def test_preflight_aggregates_invalid_targets_and_rejects_mixed_tools_atomically
     assert set(tmp_path.rglob("*")) == before
 
 
-def test_selection_precedence_is_explicit_then_criterion_then_registered_suite(
-    tmp_path: Path,
-) -> None:
+def test_criterion_never_selects_coverage_tests(tmp_path: Path) -> None:
     context = project(tmp_path)
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),
@@ -96,7 +94,8 @@ def test_selection_precedence_is_explicit_then_criterion_then_registered_suite(
     )
     context = replace(context, criteria={"coverage_sim_0": criterion})
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    assert prepared.plan.targets[0].selected_tests == ("wrap",)
+    assert prepared.plan.targets[0].selected_tests == ("reset", "wrap")
+    assert prepared.plan.targets[0].criterion == criterion
     explicit = prepare_coverage_invocation(
         CoverageInvocationRequest(("sim_0",), ("reset",)), context
     )
@@ -169,7 +168,7 @@ def test_explicit_suite_overrides_configured_skips(tmp_path: Path, tests, expect
     assert prepared.plan.targets[0].selected_tests == expected
 
 
-def test_exact_criterion_suite_overrides_configured_skips(tmp_path: Path) -> None:
+def test_criterion_suite_does_not_bypass_configured_skips(tmp_path: Path) -> None:
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),
         (CoverageThreshold("line", Fraction(100)),),
@@ -181,7 +180,7 @@ def test_exact_criterion_suite_overrides_configured_skips(tmp_path: Path) -> Non
         skipped_tests={"sim_0": ("wrap",)},
     )
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    assert prepared.plan.targets[0].selected_tests == ("wrap",)
+    assert prepared.plan.targets[0].selected_tests == ("reset",)
 
 
 def test_all_tests_criterion_applies_configured_skips(tmp_path: Path) -> None:
@@ -199,12 +198,16 @@ def test_all_tests_criterion_applies_configured_skips(tmp_path: Path) -> None:
     assert prepared.plan.targets[0].selected_tests == ("reset",)
 
 
-def test_legacy_filter_applies_configured_skips(tmp_path: Path) -> None:
-    context = replace(project(tmp_path), skipped_tests={"sim_0": ("wrap",)})
-    filtered = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), test_filter="r"), context
+def test_criterion_listing_unregistered_test_fails_preflight(tmp_path: Path) -> None:
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        ("ghost",),
     )
-    assert filtered.plan.targets[0].selected_tests == ("reset",)
+    context = replace(project(tmp_path), criteria={"coverage_sim_0": criterion})
+    result = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert result.plan is None
+    assert {finding.code for finding in result.findings} == {"COV_SUITE_INVALID"}
 
 
 def test_coverage_selection_sorts_input_and_registry_order(tmp_path: Path) -> None:

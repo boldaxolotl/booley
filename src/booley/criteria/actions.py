@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
+from booley.core.boundary import is_str_list
 from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 
@@ -73,4 +75,7 @@ def planned_invocation(
     selector = params.get("test_selector") or params.get("selector")
     if family == "sim_pass" and isinstance(selector, str) and selector not in {"", "all"}:
         command = f"{command} --test {selector}"
+    tests = params.get("tests")
+    if family == "coverage" and is_str_list(tests) and "--test" not in command.split():
+        command += "".join(f" --test {shlex.quote(name)}" for name in tests)
     return command
