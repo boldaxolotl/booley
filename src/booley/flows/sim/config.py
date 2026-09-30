@@ -9,6 +9,7 @@ from typing import Any, Final
 
 from booley.core.boundary import BoundaryError, require_int
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
+from booley.flows.sim.campaign_reports import is_report_link
 from booley.targets.flow_names import config_section
 
 DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3
@@ -60,6 +61,50 @@ def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
     except ValueError as exc:
         raise ValueError(f"invalid [flows.sim].run_cwd template: {exc}") from exc
     return tuple(fields)
+
+
+# The one remedy sentence shared by the run-time error and the Doctor WARN fix column.
+LITERAL_RUN_CWD_REMEDY: Final[str] = (
+    "Booley never creates a literal [flows.sim].run_cwd. Create it and commit a "
+    "placeholder file so it exists in every checkout and Ticket worktree (for "
+    "example: mkdir -p <dir> && touch <dir>/.gitkeep, then git add -f the "
+    ".gitkeep in the repository that contains it and commit). Or, if the "
+    "directory only receives per-run outputs, add an {attempt} placeholder (for "
+    'example "runs/{attempt}") so Booley creates, owns, and removes one '
+    "directory per attempt."
+)
+
+
+def literal_run_cwd_error(path: Path) -> str | None:
+    """Return why a resolved literal run_cwd cannot be used, with the remedy; None when usable."""
+    if is_report_link(path):
+        return (
+            f"literal run directory must be a real directory, not a link: {path}. "
+            "Point [flows.sim].run_cwd at the directory itself."
+        )
+    if not path.exists():
+        return f"literal run directory must already exist: {path}. {LITERAL_RUN_CWD_REMEDY}"
+    if not path.is_dir():
+        return (
+            f"literal run directory path exists but is not a directory: {path}. "
+            "Remove or rename it, or point [flows.sim].run_cwd at a directory."
+        )
+    return None
+
+
+def literal_run_cwd_problem(project_root: Path | str) -> str | None:
+    """Explain why the configured literal ``run_cwd`` is unusable; templated values pass.
+
+    An invalid template is reported as the problem, since planning rejects it too.
+    """
+    configured = resolve_run_cwd(project_root)
+    try:
+        placeholders = parse_run_cwd_template(configured)
+    except ValueError as exc:
+        return str(exc)
+    if placeholders:
+        return None
+    return literal_run_cwd_error((Path(project_root) / configured).absolute())
 
 
 def resolve_trace_args(work_dir: Path | str | None = None) -> list[str]:

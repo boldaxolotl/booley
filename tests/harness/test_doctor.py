@@ -6813,3 +6813,162 @@ def test_doctor_reuses_one_target_source_inspector(
 
     assert len(managers) == 1
     assert resolutions == 1
+
+
+# ---------------------------------------------------------------------------
+# sim run_cwd probe (issue #881)
+# ---------------------------------------------------------------------------
+
+
+def _git_commit_all(root: Path, message: str = "add") -> None:
+    """Commit everything staged under ``root`` with a throwaway identity."""
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message],
+        cwd=root,
+        check=True,
+    )
+
+
+def _run_cwd_project(root: Path, run_cwd: str | None) -> doctor.ProjectAudit:
+    sim: dict[str, object] = {} if run_cwd is None else {"run_cwd": run_cwd}
+    return doctor.ProjectAudit(root, root / ".booley_project", {"flows": {"sim": sim}}, {}, "sim")
+
+
+def _check_run_cwd(root: Path, run_cwd: str | None) -> _Collector:
+    collector = _Collector()
+    doctor._check_sim_run_cwd(_run_cwd_project(root, run_cwd), collector._pass, collector._warn)
+    return collector
+
+
+def _committed_repo(root: Path) -> None:
+    """A git repo with one unrelated committed file, so HEAD exists."""
+    _git_init(root)
+    (root / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=root, check=True)
+    _git_commit_all(root)
+
+
+def test_flow_audit_wires_sim_run_cwd_check_only_for_enabled_sim(tmp_path, monkeypatch):
+    checked: list[str] = []
+    monkeypatch.setattr(
+        doctor, "_check_sim_run_cwd", lambda project, *_: checked.append(str(project.project_root))
+    )
+    monkeypatch.setattr(doctor, "_check_doctor_targets", lambda *args, **kwargs: [])
+    project = _run_cwd_project(tmp_path, "run")
+    enabled = doctor.ProjectAudit(
+        project.project_root,
+        project.project_dir,
+        {"flows": {"sim": {"run_cwd": "run"}, "lint": {"enabled": False}}},
+        {},
+        "sim",
+    )
+
+    _run_isolated_flow_audit(enabled, monkeypatch)
+    assert checked == [str(tmp_path)]
+
+    checked.clear()
+    disabled = doctor.ProjectAudit(
+        project.project_root,
+        project.project_dir,
+        {"flows": {"sim": {"enabled": False}}},
+        {},
+        "sim",
+    )
+    _run_isolated_flow_audit(disabled, monkeypatch)
+    assert checked == []
+
+
+def test_sim_run_cwd_missing_warns(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-missing"]
+    assert str(tmp_path / "run") in c.warned[0]
+    assert c.warned[0].subject == "run"
+    assert not c.passed
+
+
+def test_sim_run_cwd_regular_file_warns_as_not_a_directory(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").write_text("file\n", encoding="utf-8")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-missing"]
+    assert "not a directory" in c.warned[0]
+
+
+def test_sim_run_cwd_gitignored_warns_untracked(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("run/\n", encoding="utf-8")
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-untracked"]
+    assert not c.passed
+
+
+def test_sim_run_cwd_untracked_not_ignored_warns_untracked(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-untracked"]
+
+
+def test_sim_run_cwd_staged_but_uncommitted_warns_untracked(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "run/.gitkeep"], cwd=tmp_path, check=True)
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-untracked"]
+
+
+def test_sim_run_cwd_committed_placeholder_passes(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "run/.gitkeep"], cwd=tmp_path, check=True)
+    _git_commit_all(tmp_path, "placeholder")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert not c.warned
+    assert any("is committed" in m for m in c.passed)
+
+
+@pytest.mark.parametrize("run_cwd", [None, "", ".", "runs/{attempt}", "runs/{bogus}"])
+def test_sim_run_cwd_unset_or_templated_is_silent(tmp_path: Path, run_cwd: str | None) -> None:
+    _committed_repo(tmp_path)
+
+    c = _check_run_cwd(tmp_path, run_cwd)
+
+    assert not c.warned and not c.passed
+
+
+def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
+    tmp_path: Path,
+) -> None:
+    """The host repo ignores ``.booley_project/``; its own repo owns the placeholder."""
+    _committed_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text(".booley_project/\n", encoding="utf-8")
+    nested = tmp_path / ".booley_project"
+    nested.mkdir()
+    _committed_repo(nested)
+    (nested / "runs" / "sim").mkdir(parents=True)
+    (nested / "runs" / "sim" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "runs/sim/.gitkeep"], cwd=nested, check=True)
+    _git_commit_all(nested, "placeholder")
+
+    c = _check_run_cwd(tmp_path, ".booley_project/runs/sim")
+
+    assert not c.warned
+    assert any("is committed" in m for m in c.passed)

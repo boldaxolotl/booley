@@ -57,7 +57,10 @@ from booley.flows.sim.backends.cocotb_results import (
     parse_results_line,
 )
 from booley.flows.sim.build import PreparedSimulationBuild, prepare_simulation_build
-from booley.flows.sim.config import resolve_run_cwd
+from booley.flows.sim.config import (
+    literal_run_cwd_problem,
+    resolve_run_cwd,
+)
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
 from booley.flows.target_campaign import (
@@ -1389,6 +1392,19 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _run_pristine_baseline(self, plan: MutationRunPlan) -> McpToolResult | None:
         """Build and run the byte-identical project before any proposal is applied."""
+        run_cwd_problem = literal_run_cwd_problem(plan.work_dir)
+        if run_cwd_problem is not None:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"mutation baseline cannot run: {run_cwd_problem}",
+                detail=_failure_detail(
+                    phase="baseline_run_cwd",
+                    reason=run_cwd_problem,
+                    specs=[],
+                    work_dir=plan.work_dir,
+                    log_tail="",
+                ),
+            )
         build_path = lock_mod.baseline_build_dir()
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)

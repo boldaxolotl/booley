@@ -3500,6 +3500,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         checkpoint: Callable[[], None] | None = None,
     ) -> list[CampaignOutcome]:
         completed = outcomes if outcomes is not None else []
+        # Reject an unusable literal run_cwd before anything is published or built,
+        # including Cycle Count baselines that would otherwise build first.
+        for request in (*baselines, *candidates):
+            campaign.preflight(request)
         for request in (*baselines, *candidates):
             campaign.publish_new(request)
         for request in baselines:

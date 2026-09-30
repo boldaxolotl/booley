@@ -1714,3 +1714,26 @@ _INFRA_OUT = (
     "ERROR: Verilator executable Vtb not found in build\n"
     "[SIM_INFRA_ERROR] Verilator executable Vtb not found in build\n"
 )
+
+
+def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
+    tmp_path: Path,
+) -> None:
+    """Issue #881: the baseline must not build before it knows run_cwd is usable."""
+    state = tmp_path / ".booley_project"
+    state.mkdir()
+    (state / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
+    plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")
+    endpoint = MutationTesterSpecialist()
+
+    with patch.object(endpoint, "_run_elab", side_effect=AssertionError("built")) as elab:
+        result = endpoint._run_pristine_baseline(plan)  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result.exit_code == EXIT_ERROR
+    assert "mutation baseline cannot run: literal run directory must already exist" in (
+        result.report_text
+    )
+    assert ".gitkeep" in result.report_text
+    assert result.detail["phase"] == "baseline_run_cwd"
+    elab.assert_not_called()

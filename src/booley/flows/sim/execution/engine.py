@@ -50,6 +50,7 @@ from booley.flows.sim.build_session import (
 )
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
+    literal_run_cwd_problem,
     resolve_cycle_sentinels,
     resolve_max_rundir_bytes,
     resolve_pre_sim_commands,
@@ -620,6 +621,9 @@ class SimulationExecution:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
         self._reset_build_roots.clear()
+        run_cwd_problem = literal_run_cwd_problem(handle.project_root)
+        if run_cwd_problem is not None:
+            return _setup_failure(handle, run_cwd_problem, started)
         try:
             inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         except fusesoc_registry.FuseSocError as exc:

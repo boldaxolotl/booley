@@ -36,6 +36,8 @@ from .resume import ValidatedResumeManifest
 from .run_directory import (
     cleanup_interrupted_run_directory,
     expand_run_directory,
+    literal_run_path,
+    require_literal_run_directory,
     restore_run_directory,
 )
 from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
@@ -284,6 +286,11 @@ class SimulationCampaign:
         recovery = store.scan_validated(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
+    @staticmethod
+    def preflight(request: NewCampaignRunRequest) -> None:
+        """Fail before any publication or build when a literal run_cwd is unusable."""
+        _preflight_run_directory(request.plan.manifest, request.project_root)
+
     def run(self, request: CampaignRunRequest) -> CampaignOutcome:
         if self._executor is None:
             raise RuntimeError("SimulationCampaign requires a serial work executor")
@@ -324,6 +331,7 @@ class SimulationCampaign:
         request: CampaignRunRequest,
     ) -> CampaignOutcome:
         self._raise_if_cancelled(request)
+        self._preflight_owner(store, manifest, authenticated_sha256, request)
         self._run_prerequisites(store, manifest, request, set())
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
@@ -414,6 +422,65 @@ class SimulationCampaign:
         store.publish_manifest(manifest)
         self._publication_checkpoint("after:manifest_commit")
 
+    def _preflight_owner(
+        self,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        authenticated_sha256: str | None,
+        request: CampaignRunRequest,
+    ) -> None:
+        """Reject a missing run_cwd anywhere in the prerequisite tree before any build."""
+        if not manifest.document["prerequisites"]:
+            return  # _run_pending performs the same check for the sole campaign.
+        recovery = _scan_recovery(store, manifest, authenticated_sha256)
+        self._preflight_incomplete(manifest, recovery, request)
+        self._preflight_prerequisites(store, manifest, request, set())
+
+    @staticmethod
+    def _preflight_incomplete(
+        manifest: SimulationCampaignManifest,
+        recovery: CampaignRecovery,
+        request: CampaignRunRequest,
+    ) -> None:
+        """Preflight one campaign's run_cwd when it still has work to run."""
+        if all(item.state == "complete" for item in recovery.items):
+            return
+        binding = (
+            request.validated.binding_for(manifest)
+            if isinstance(request, ResumeCampaignRunRequest)
+            else None
+        )
+        _preflight_run_directory(
+            manifest, binding.project_root if binding is not None else request.project_root
+        )
+
+    def _preflight_prerequisites(
+        self,
+        owner_store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        request: CampaignRunRequest,
+        visited: set[str],
+    ) -> None:
+        """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``."""
+        entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
+        invocation = owner_store.root.parents[2]
+        for entry in entries:
+            campaign_id = cast(str, entry["campaign_id"])
+            if campaign_id in visited:
+                return  # cycles are rejected by _run_prerequisites itself
+            visited.add(campaign_id)
+            reference = cast(Mapping[str, object], entry["manifest"])
+            node = (
+                request.validated.prerequisite_for(reference)
+                if isinstance(request, ResumeCampaignRunRequest)
+                else None
+            )
+            path = node.path if node is not None else invocation / cast(str, reference["path"])
+            store = CampaignStore(path.parent)
+            prerequisite = node.manifest if node is not None else store.load_manifest()
+            self._preflight_incomplete(prerequisite, store.scan(), request)
+            self._preflight_prerequisites(store, prerequisite, request, visited)
+
     def _run_prerequisites(
         self,
         owner_store: CampaignStore,
@@ -478,6 +545,8 @@ class SimulationCampaign:
             for recovered in recovery.items
             if recovered.state != "complete"
         ]
+        if pending:
+            _preflight_run_directory(manifest, project_root)
         self._raise_if_cancelled(request)
         capacity = HeavyCapacity(
             request.admission,
@@ -832,6 +901,17 @@ def _recovery_status(
         completed=recovery.complete,
         interrupted=recovery.interrupted,
         pending=recovery.pending,
+    )
+
+
+def _preflight_run_directory(manifest: SimulationCampaignManifest, project_root: Path) -> None:
+    """Require a literal run_cwd to exist before any attempt, build, or launch."""
+    workload = cast(Mapping[str, object], manifest.document["workload"])
+    run_cwd = cast(Mapping[str, object], workload["run_cwd"])
+    if run_cwd["kind"] != "literal":
+        return
+    require_literal_run_directory(
+        literal_run_path(cast(str, run_cwd["configured"]), project_root=project_root)
     )
 
 

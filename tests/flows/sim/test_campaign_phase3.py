@@ -320,6 +320,7 @@ def test_shared_build_failure_preserves_each_selection_identity(
     plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
+    (project / "run").mkdir()  # a literal run_cwd must exist before any build (#881)
     handle = _handle(project)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
@@ -346,6 +347,7 @@ def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
     plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
+    (project / "run").mkdir()  # a literal run_cwd must exist before any build (#881)
     handle = _handle(project)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
