@@ -276,14 +276,12 @@ across runs.
 ```bash
 # 1. Collect coverage for the full suite
 booley flow sim --target sim_soc --coverage
-
-# 2. Ask the Coverage Analyst for waiver candidates and for how to improve the
-#    testbench to raise coverage (advisory only)
-booley flow coverage_analyst \
-  --campaign <reports>/sim/12/targets/sim_soc/coverage.json
 ```
 
-The verdict card prints the exact `coverage.json` path to use in step 2.
+Then call the `coverage_analyst` Specialist from your connected agent session with
+`campaign="<reports>/sim/12/targets/sim_soc/coverage.json"` for waiver candidates
+and testbench improvements (advisory only). The verdict card prints the exact
+`coverage.json` path to pass as `campaign`.
 
 #### Requirements
 
@@ -365,9 +363,7 @@ or runs.
 `coverage_analyst` explains one Campaign: what is uncovered, likely reasons,
 which tests to add, and possible waiver candidates for human review.
 
-```bash
-booley flow coverage_analyst --campaign <exact coverage.json>
-```
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact coverage.json>"`.
 
 It never runs simulation, changes Criteria, or approves waivers. See
 [USAGE.md](USAGE.md#coverage_analyst).

@@ -37,7 +37,7 @@ source and its container target; restore that source, or run `booley init
 
 A rebuild may otherwise select a stopped VS Code container whose old bind list
 still mentions a deleted skill, credential file, tool installation, mask
-directory, or editor-injected socket. During `booley session prepare`, Booley
+directory, or editor-injected socket. When preparing the Sandbox for attachment, Booley
 now removes such a stopped container (without deleting named volumes) so Dev
 Containers creates one from the current spec. When exactly one running legacy
 VS Code container is authenticated to this Project, Booley stops it by immutable
@@ -338,10 +338,10 @@ mismatches show up when building a core's boot software:
 
 Don't stop at "a RISC-V toolchain exists in the image". **Test the project's
 exact compile flags** against the sandbox compiler on one real file before
-writing config:
+writing config. Run the probe directly in the Sandbox shell:
 
 ```bash
-booley shell -- riscv-none-elf-gcc -march=<theirs> ...
+riscv-none-elf-gcc -march=<theirs> ...
 ```
 
 Better to plan for it during setup planning (Step 0 of the
