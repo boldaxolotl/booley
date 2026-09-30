@@ -996,8 +996,9 @@ loads approved waivers only when gated, evaluates, and publishes in order:
 Campaign, Simulation projection, Criterion evidence, saved Criteria state,
 terminal progress. Source/Target drift is rejected. Ungated evaluation remains
 `not_requested`, including incompatible input; collection errors still exit 2.
-Simulation failures exit 1. A valid threshold miss exits 0; the Criterion records it. Blocking evaluation,
-collector, infrastructure, or persistence errors take precedence with exit 2.
+Simulation failures exit 1. A valid threshold miss exits 0; the Criterion
+records it. Blocking evaluation, collector, infrastructure, or persistence
+errors take precedence with exit 2.
 Target-local collector failures permit later Targets; shared execution or
 publication failures abort with earlier Target results and pending Targets
 preserved in structured output. Progress is observational and never resumed.

@@ -76,6 +76,6 @@ def planned_invocation(
     if family == "sim_pass" and isinstance(selector, str) and selector not in {"", "all"}:
         command = f"{command} --test {selector}"
     tests = params.get("tests")
-    if family == "coverage" and is_str_list(tests) and "--test" not in command:
+    if family == "coverage" and is_str_list(tests) and "--test" not in command.split():
         command += "".join(f" --test {shlex.quote(name)}" for name in tests)
     return command
