@@ -169,12 +169,13 @@ def _make_approval_unreachable(
     waiver_file: Path,
     reference: str,
     proof_sha256: str = "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3",
+    kind: str = "formal",
 ) -> None:
     document = waiver_file.read_text(encoding="utf-8")
     document = document.replace('reason = "excluded"', 'reason = "unreachable"')
     document += f'''
 [approval.proof]
-kind = "formal"
+kind = "{kind}"
 reference = "{reference}"
 sha256 = "{proof_sha256}"
 '''
@@ -610,6 +611,31 @@ def test_valid_unreachable_proof_is_authenticated_and_retained(tmp_path: Path) -
         "reference": "proofs/counter.sby#cover_17",
         "sha256": "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3",
     }
+
+
+@pytest.mark.parametrize(("kind", "accepted"), [("review", True), ("hunch", False)])
+def test_unreachable_review_proof_is_accepted_and_unknown_kinds_are_not(
+    tmp_path: Path, kind: str, accepted: bool
+) -> None:
+    """ADR 0066: a review proof file authorizes `unreachable` like a formal one."""
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    proof = roots.project_data_repository / "coverage-waivers" / "proofs" / "counter.md"
+    proof.parent.mkdir()
+    proof.write_bytes(b"proof-result\n")
+    _make_approval_unreachable(waiver_file, "proofs/counter.md", kind=kind)
+    config = CoverageWaiverConfig("project_data_repository", "coverage-waivers")
+
+    if not accepted:
+        with pytest.raises(CoverageWaiverValidationError) as raised:
+            load_approved_waiver_set(config, roots, known_targets=(_TARGET,))
+        codes = {item.code for item in raised.value.findings}
+        assert "COV_WAIVER_PROOF_INVALID" in codes
+        return
+    approved = load_approved_waiver_set(config, roots, known_targets=(_TARGET,))
+    assert approved.waivers[0].provenance["proof"]["kind"] == "review"
+    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    assert evaluated.evaluation["status"] == "pass"
 
 
 def test_unsafe_proof_reference_cannot_escape_approval_directory(tmp_path: Path) -> None:

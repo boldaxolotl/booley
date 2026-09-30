@@ -764,3 +764,24 @@ def test_setup_tells_owned_main_verilator_targets_to_declare_trace_files():
     assert "Icarus needs no wiring" in step
     assert "owns its C++ `main()`" in step
     assert "`[flows.sim].trace_files` to that name relative to `run_cwd`" in step
+
+
+def test_triage_decides_waiver_candidates_one_at_a_time():
+    """ADR 0066: the triage skill is the approval interface; nothing defaults to accept."""
+    review = " ".join(_skill_text("booley-ticket-triage", "steps/03-review.md").split())
+    template = _skill_text("booley-ticket-triage", "review-template.md")
+
+    for required in (
+        "**decide waivers and approve**",
+        "**one at a time**",
+        "justification is unverified",
+        "never accept on the user's behalf",
+        "--accept-waivers <id,...> --reject-waivers <id,...>",
+        "records the rejections, promotes nothing, and leaves the Ticket in review",
+        "chore(<slug>): approve coverage waivers",
+    ):
+        assert required in review
+    assert template.index("#### Criteria") < template.index("#### Waiver Candidates")
+    assert template.index("#### Waiver Candidates") < template.index(
+        "#### Review findings and dispositions"
+    )

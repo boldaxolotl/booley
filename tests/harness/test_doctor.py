@@ -712,7 +712,13 @@ def test_project_gitignore_names_each_missing_pattern(tmp_path: Path) -> None:
 
     assert [f.severity for f in findings] == ["warn"]
     assert findings[0].check_id == "project.gitignore"
-    for pattern in ("tickets/board/", "tickets/state/", "tickets/logs/", "tickets/locks/"):
+    for pattern in (
+        "tickets/board/",
+        "tickets/state/",
+        "tickets/waiver-candidates/",
+        "tickets/logs/",
+        "tickets/locks/",
+    ):
         assert pattern in findings[0].message
     assert findings[0].fix == "booley init"
 

@@ -29,7 +29,8 @@ from __future__ import annotations
 # ``tickets/board/`` and ``tickets/state/`` (ADR 0065): live Ticket documents
 # and their state records are working state, so a Ticket worktree never carries
 # a stale board copy and closing a Ticket leaves the checkout clean. Only
-# ``tickets/history/`` (Closed Tickets) stays tracked.
+# ``tickets/history/`` (Closed Tickets) stays tracked. ``tickets/waiver-candidates/``
+# (ADR 0066) holds per-Ticket Waiver Candidates, disposable until approval.
 #
 # ``__pycache__/`` + ``*.pyc``: Project-authored Python lifecycle hooks may
 # still run in ``.booley_project/hooks/``. The managed Git policy bundle is
@@ -41,6 +42,7 @@ PROJECT_GITIGNORE_PATTERNS = (
     "/.baseline-wt-*/",
     "tickets/board/",
     "tickets/state/",
+    "tickets/waiver-candidates/",
     "tickets/logs/",
     "tickets/locks/",
     ".interactive_logs/",

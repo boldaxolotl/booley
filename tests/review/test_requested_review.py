@@ -731,6 +731,70 @@ def test_repair_stranded_review_requires_explicit_option(blocked):
     assert prep.review_briefing_command(root, "demo", open_diffs=False).status == "ready"
 
 
+def _strand_provisional_review(tio, execution_id: str = "first") -> None:
+    """Simulate an ADR 0066 provisional handoff: review, no acceptance, a marker."""
+    record = read_state_record(tio.tickets_dir, "demo")
+    assert record is not None
+    write_state_record(tio.tickets_dir, "demo", record.with_state(TicketState.REVIEW))
+    marker = tio.logs_dir / "demo" / "review" / "provisional-handoff.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"schema": 1, "execution_id": execution_id}))
+
+
+def test_provisional_review_publishes_unaccepted_inspection_without_repair(blocked):
+    """ADR 0066: board review opens the inspection a provisional handoff awaits."""
+    from booley.ticket_board.review_lifecycle import approve_review_command, review_command
+
+    root, tio, _ = blocked
+    _strand_provisional_review(tio)
+
+    outcome = asyncio.run(review_command(root, "demo"))
+
+    assert outcome.ready, outcome.message
+    row = read_entry(tio.logs_dir / "demo")
+    assert row["disposition"] == "unaccepted"
+    assert row["source_status"] == "review"
+    assert row["capture_sha"]
+    assert tio.find_ticket("demo")["status"] == "review"
+    assert not (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
+    # Without candidates to promote, strict acceptance still refuses; stays in review.
+    with pytest.raises(ValueError, match="strict acceptance would still fail"):
+        approve_review_command(root, "demo")
+    assert tio.find_ticket("demo")["status"] == "review"
+
+
+def test_waiver_candidate_record_change_makes_the_package_stale(blocked):
+    """ADR 0066: the candidate record is a review input, so edits must be noticed."""
+    from booley.ticket_board import waiver_candidates as store
+
+    root, tio, _ = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    assert prep.review_briefing_command(root, "demo", open_diffs=False).status == "ready"
+
+    store.record_rejections(
+        tio.tickets_dir,
+        "demo",
+        [
+            store.Rejection(
+                "acme:x:y:1#sim", "cp1:abc", "sha256:" + "a" * 64, "2026-09-30T00:00:00Z", "A"
+            )
+        ],
+    )
+
+    assert prep.review_briefing_command(root, "demo", open_diffs=False).status != "ready"
+
+
+def test_review_without_provisional_marker_still_needs_repair(blocked):
+    from booley.ticket_board.review_lifecycle import review_command
+
+    root, tio, _ = blocked
+    record = read_state_record(tio.tickets_dir, "demo")
+    write_state_record(tio.tickets_dir, "demo", record.with_state(TicketState.REVIEW))
+
+    assert not asyncio.run(review_command(root, "demo")).ready
+    assert read_entry(tio.logs_dir / "demo") is None
+
+
 def test_unaccepted_completion_and_finalization_reject_unmet_gates(blocked):
     from booley.ticket_board.operations import _completion_acceptance_valid
 
@@ -1342,10 +1406,54 @@ def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
     _assert_closed_done(tio, "demo")
 
 
+def _approval_with_rejection(tio, ctx, _decisions, *, merge):
+    """Exercise the public approval lifecycle with an approval-owned input change."""
+    from booley.ticket_board import waiver_candidates as store
+
+    store.record_rejections(
+        tio.tickets_dir,
+        ctx.slug,
+        [
+            store.Rejection(
+                "acme:x:y:1#sim", "cp1:abc", "sha256:" + "a" * 64, "2026-09-30T00:00:00Z", "A"
+            )
+        ],
+    )
+    return prep._source_fingerprint(ctx)
+
+
+def _interrupt_public_approval(root, tio, monkeypatch, interrupt):
+    from booley.ticket_board import operations
+    from booley.ticket_board import review_lifecycle as lifecycle
+
+    if not interrupt:
+        return None
+    if interrupt == "completion":
+        complete = operations.op_complete
+        monkeypatch.setattr(operations, "op_complete", lambda *_args, **_kwargs: False)
+        assert not lifecycle.approve_review_command(root, "demo")
+        monkeypatch.setattr(operations, "op_complete", complete)
+    else:
+        freeze = lifecycle.freeze_acceptance
+
+        def interrupted(*args, **kwargs):
+            snapshot = freeze(*args, **kwargs)
+            raise OSError(f"interrupted after acceptance {snapshot.digest}")
+
+        monkeypatch.setattr(lifecycle, "freeze_acceptance", interrupted)
+        with pytest.raises(OSError, match="interrupted after acceptance"):
+            lifecycle.approve_review_command(root, "demo")
+        monkeypatch.setattr(lifecycle, "freeze_acceptance", freeze)
+    return (tio.logs_dir / "demo" / "acceptance" / "accepted.json").read_bytes()
+
+
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
-@pytest.mark.parametrize("interrupt", [False, True])
+@pytest.mark.parametrize("interrupt", [False, True, "completion"])
+@pytest.mark.parametrize("waiver_writes", [False, True])
 @pytest.mark.timeout(180)
-def test_board_approve_freezes_selected_package_without_agent(blocked, monkeypatch, interrupt):
+def test_board_approve_freezes_selected_package_without_agent(
+    blocked, monkeypatch, interrupt, waiver_writes
+):
     import sys
 
     from booley.ticket_board import review_lifecycle as lifecycle
@@ -1378,20 +1486,11 @@ def test_board_approve_freezes_selected_package_without_agent(blocked, monkeypat
         pytest.fail("approval launched an agent")
 
     monkeypatch.setattr(prep, "_invoke_agent", unexpected_agent)
-    if interrupt:
-        freeze = lifecycle.freeze_acceptance
-
-        def interrupted(*args, **kwargs):
-            snapshot = freeze(*args, **kwargs)
-            raise OSError(f"interrupted after acceptance {snapshot.digest}")
-
-        monkeypatch.setattr(lifecycle, "freeze_acceptance", interrupted)
-        with pytest.raises(OSError, match="interrupted after acceptance"):
-            approve_review_command(root, "demo")
-        frozen = (tio.logs_dir / "demo" / "acceptance" / "accepted.json").read_bytes()
-        monkeypatch.setattr(lifecycle, "freeze_acceptance", freeze)
+    if waiver_writes:
+        monkeypatch.setattr(lifecycle, "_apply_waiver_decisions", _approval_with_rejection)
+    frozen = _interrupt_public_approval(root, tio, monkeypatch, interrupt)
     assert approve_review_command(root, "demo")
-    if interrupt:
+    if frozen is not None:
         assert (tio.logs_dir / "demo" / "acceptance" / "accepted.json").read_bytes() == frozen
     _assert_closed_done(tio, "demo")
     assert (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
@@ -1400,6 +1499,22 @@ def test_board_approve_freezes_selected_package_without_agent(blocked, monkeypat
     record = read_closed_ticket(tio.tickets_dir, "demo").path.read_bytes()
     assert approve_review_command(root, "demo")
     assert read_closed_ticket(tio.tickets_dir, "demo").path.read_bytes() == record
+
+
+def test_waiver_approval_capture_still_rejects_unrelated_input_changes(blocked):
+    from booley.ticket_board import review_lifecycle as lifecycle
+
+    root, tio, _worktree = blocked
+    assert asyncio.run(request_review_command(root, "demo", reason="inspect")).ready
+    ctx = lifecycle._selected_context(tio, "demo")
+    lifecycle._record_approval_capture(ctx, prep._source_fingerprint(ctx))
+    (ctx.log_dir / "REPORT.md").write_text("Changed outside approval.\n")
+
+    with pytest.raises(ReviewEntryError, match="selected review inputs changed"):
+        lifecycle.approve_review_command(root, "demo")
+
+    assert not (ctx.log_dir / "acceptance" / "accepted.json").exists()
+    assert tio.find_ticket("demo")["status"] == "review"
 
 
 @pytest.mark.parametrize("damage", ["missing", "downgraded"])

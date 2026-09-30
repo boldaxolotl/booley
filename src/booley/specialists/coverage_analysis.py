@@ -497,14 +497,11 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
             "investigate",
             "Verified sources and supporting evidence are required for human review",
         )
-    if item["reason"] == "unreachable" and (
-        not item["proof_reference"].strip() or point.hits_by_run
-    ):
-        return (
-            "investigate",
-            "Unreachability requires a proof reference and no contradictory observed hits",
-        )
+    if item["reason"] == "unreachable" and sum(point.hits_by_run.values()) > 0:
+        # ADR 0066: a human review proof is written at approval, so a model
+        # proof reference is optional; observed hits still contradict the claim.
+        return "investigate", "Unreachability is contradicted by observed hits"
     return (
         "ready_for_human_review",
-        "Advisory only; a human must verify evidence and author any approval",
+        "A human must accept or reject this candidate at Ticket review",
     )

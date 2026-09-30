@@ -8,10 +8,10 @@ import pytest
 
 from booley.config.coverage_waiver_inputs import (
     approval_record_has_required_strings,
-    formal_proof_references,
     is_safe_relative_posix,
     is_sha256,
     parse_coverage_waiver_config,
+    proof_references,
 )
 
 _DIGEST = "sha256:" + "a" * 64
@@ -132,20 +132,20 @@ def test_safe_relative_posix_requires_nfc_and_accepts_normalized_path() -> None:
     assert is_safe_relative_posix("café/waivers")
 
 
-def test_formal_proof_references_use_the_shared_closed_shape() -> None:
+def test_proof_references_use_the_shared_closed_shape() -> None:
     document = _approval_document()
     approvals = document["approval"]
     assert isinstance(approvals, list)
     record = approvals[0]
     assert isinstance(record, dict)
 
-    assert formal_proof_references(document) == ("proofs/counter.sby",)
+    assert proof_references(document) == ("proofs/counter.sby",)
     assert approval_record_has_required_strings(record)
     assert is_sha256(_DIGEST)
     assert not is_sha256("sha256:not-a-digest")
 
     excluded = _approval_document(reason="excluded")
-    assert formal_proof_references(excluded) == ()
+    assert proof_references(excluded) == ()
 
     invalid = _approval_document()
     invalid_approvals = invalid["approval"]
@@ -153,4 +153,20 @@ def test_formal_proof_references_use_the_shared_closed_shape() -> None:
     invalid_record = invalid_approvals[0]
     assert isinstance(invalid_record, dict)
     invalid_record["justification"] = ""
-    assert formal_proof_references(invalid) == ()
+    assert proof_references(invalid) == ()
+
+
+def _with_proof_kind(kind: str) -> dict[str, object]:
+    document = _approval_document()
+    approvals = document["approval"]
+    assert isinstance(approvals, list)
+    record = approvals[0]
+    assert isinstance(record, dict)
+    record["proof"] = {"kind": kind, "reference": "proofs/counter.md", "sha256": _DIGEST}
+    return document
+
+
+def test_proof_references_accept_review_proof_and_reject_unknown_kinds() -> None:
+    """ADR 0066: `review` proofs are first-class; any other kind stays invalid."""
+    assert proof_references(_with_proof_kind("review")) == ("proofs/counter.md",)
+    assert proof_references(_with_proof_kind("hunch")) == ()

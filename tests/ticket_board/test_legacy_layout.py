@@ -154,6 +154,23 @@ def test_tracked_board_and_state_files_are_reported(tmp_path: Path) -> None:
     assert tracked_live_state_files(tickets_dir) == ["board/queue/a.md", "state/b.json"]
 
 
+def test_tracked_waiver_candidate_record_refuses_board_commands(tmp_path: Path) -> None:
+    """ADR 0066: a tracked Waiver Candidate record is live state like a state record."""
+    root = _repo(tmp_path / "repo")
+    tickets_dir = _current_tree(root / "tickets")
+    (tickets_dir / "waiver-candidates").mkdir()
+    (tickets_dir / "waiver-candidates" / "a.json").write_text("{}\n", encoding="utf-8")
+    _git(root, "add", "-A")
+
+    assert tracked_live_state_files(tickets_dir) == ["waiver-candidates/a.json"]
+    with pytest.raises(LegacyBoardLayoutError) as caught:
+        require_current_layout(tickets_dir)
+    assert "board/, state/, or waiver-candidates/" in str(caught.value)
+    (problem,) = legacy_layout_problems(tickets_dir)
+    _run_printed_fix(problem.fix.removesuffix(" && commit the removal"), root)
+    assert tracked_live_state_files(tickets_dir) == []
+
+
 def test_tracked_file_deleted_from_disk_still_counts(tmp_path: Path) -> None:
     """The index entry, not the working file, is what the next commit would keep."""
     root = _repo(tmp_path / "repo")
@@ -179,7 +196,10 @@ def test_tracked_files_raise_with_git_rm_cached_fix(tmp_path: Path) -> None:
     # The fix targets a POSIX shell (board commands run in the Linux container),
     # so the path is quoted for one; a Windows path always needs quoting.
     quoted = shlex.quote(str(tickets_dir))
-    assert f"git -C {quoted} rm -r --cached --ignore-unmatch -- board state" in message
+    assert (
+        f"git -C {quoted} rm -r --cached --ignore-unmatch -- board state waiver-candidates"
+        in message
+    )
     assert MIGRATION_GUIDE in message
 
 

@@ -44,6 +44,7 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
+from . import waiver_candidates
 from .board_layout import (
     StateRecord,
     delete_state_record,
@@ -628,6 +629,8 @@ def _publish_board(root: Path, journal: DraftTransitionJournal) -> None:
             Path(journal.archive_dir) / "state.json", record.to_bytes(), mode=0o644
         )
         delete_state_record(tickets, journal.slug)
+    # ADR 0066: the draft's Waiver Candidates go; its rejections stay. Idempotent.
+    waiver_candidates.clear_candidates(tickets, journal.slug)
 
 
 def _publish_draft_document(

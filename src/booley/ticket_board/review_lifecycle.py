@@ -8,9 +8,9 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from booley.core.boundary import require_dict
+from booley.core.boundary import require_dict, require_str
 from booley.criteria.state import DevelopmentState
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import is_pid_alive
@@ -28,14 +28,18 @@ from booley.ticket_board.acceptance_ledger import (
 )
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
-from booley.ticket_board.persistence import atomic_replace_bytes
+from booley.ticket_board.persistence import atomic_replace_bytes, atomic_write_once
 from booley.ticket_board.ticket_jobs import active_ticket_jobs, wait_for_ticket_jobs
 
 from . import review_preparation as prep
 from .lifecycle import TicketState
+
+if TYPE_CHECKING:
+    from .waiver_approval import WaiverDecisions
 from .review_records import (
     ReviewEntryError,
     ReviewInspection,
+    approval_capture_path,
     assert_idle,
     digest,
     entry_path,
@@ -148,7 +152,10 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
     if accepted.kind == "accepted" and action != "regenerate":
         raise ReviewEntryError(f"already accepted; run booley board approve {slug} to complete it")
     if action == "request":
-        if board["status"] != "blocked" and not (repair and board["status"] == "review"):
+        if board["status"] != "blocked" and not (
+            (repair or _awaits_provisional_inspection(tio, slug, prior))
+            and board["status"] == "review"
+        ):
             raise ReviewEntryError(
                 "board review --request requires blocked; use --repair for stranded review"
             )
@@ -156,6 +163,18 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
         raise ReviewEntryError("refresh/finalize requires an explicitly requested review")
     if action == "regenerate" and prior is None:
         raise ReviewEntryError("no inspection to regenerate")
+
+
+def _awaits_provisional_inspection(tio: TicketIO, slug: str, prior: dict[str, Any] | None) -> bool:
+    """A provisional handoff (ADR 0066) whose unaccepted inspection is not yet published."""
+    from .provisional_handoff import read_provisional_marker
+
+    log_dir = tio.logs_dir / slug
+    return (
+        prior is None
+        and read_acceptance(log_dir).kind == "unavailable"
+        and read_provisional_marker(log_dir) is not None
+    )
 
 
 def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
@@ -308,7 +327,7 @@ def _recover_publication(tio, slug, operation):
         locked_basis=tio._load_basis_unlocked(slug),
     )
     ctx = replace(ctx, inspection=row, runtime_dir=package_dir(ctx.log_dir, row))
-    _check_capture(tio, ctx, operation["source_sha"])
+    _check_capture(tio, ctx, operation.get("live_source_sha", operation["source_sha"]))
     manifest = prep._read_manifest(ctx)
     _prompt, prompt_sha = prep._review_prompt(ctx)
     outcome = prep._fresh_outcome(ctx, manifest, prompt_sha, operation["source_sha"])
@@ -525,11 +544,18 @@ def _selected_context(tio: TicketIO, slug: str) -> prep.ReviewPrepContext:
     return replace(ctx, inspection=row, runtime_dir=package_dir(ctx.log_dir, row))
 
 
-def _require_selected_package(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
+def _require_selected_package(
+    tio: TicketIO, ctx: prep.ReviewPrepContext, live_capture: str | None = None
+) -> None:
+    """Require the selected package, with live inputs matching *live_capture*.
+
+    *live_capture* defaults to the inspection's capture; waiver approval passes
+    the fingerprint taken right after its own writes (ADR 0066).
+    """
     row = ctx.inspection
     assert row is not None
     try:
-        _check_capture(tio, ctx, row["capture_sha"])
+        _check_capture(tio, ctx, live_capture or row["capture_sha"])
     except prep.ReviewPrepConcurrentChangeError as exc:
         accepted = read_acceptance(ctx.log_dir)
         if accepted.kind == "accepted":
@@ -568,13 +594,73 @@ def _selected_approval_context(tio: TicketIO, slug: str) -> prep.ReviewPrepConte
         ctx = _selected_context(tio, slug)
     except StaleAcceptanceError as exc:
         raise ReviewEntryError(format_stale_acceptance(slug, exc.drift, status="review")) from exc
-    _require_selected_package(tio, ctx)
+    _require_selected_package(tio, ctx, _approval_capture(ctx))
     return ctx
 
 
-def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
+def _approval_capture(ctx: prep.ReviewPrepContext) -> str | None:
+    """Read approval's live-input binding without changing the reviewed package."""
+    assert ctx.inspection is not None
+    record = read_json(approval_capture_path(ctx.log_dir, ctx.inspection))
+    if record is None:
+        return None
+    if record.get("inspection_sha") != digest(ctx.inspection):
+        raise ReviewEntryError("waiver approval capture names a different review inspection")
+    return require_str(record, "live_source_sha")
+
+
+def _record_approval_capture(ctx: prep.ReviewPrepContext, live_capture: str | None) -> None:
+    """Keep approval-owned changes bound across publication and completion retries."""
+    if live_capture is None:
+        return
+    import json
+
+    assert ctx.inspection is not None
+    record = {"inspection_sha": digest(ctx.inspection), "live_source_sha": live_capture}
+    atomic_write_once(
+        approval_capture_path(ctx.log_dir, ctx.inspection),
+        (json.dumps(record, sort_keys=True) + "\n").encode(),
+    )
+
+
+def _apply_waiver_decisions(
+    tio: TicketIO,
+    ctx: prep.ReviewPrepContext,
+    decisions: WaiverDecisions,
+    *,
+    merge: bool,
+) -> str | None:
+    """Apply decisions for a provisional review; return the post-approval capture."""
+    from .provisional_handoff import read_provisional_marker
+    from .waiver_approval import (
+        WaiverDecisionError,
+        apply_waiver_decisions,
+        approval_inputs,
+        read_promotion_plan,
+    )
+
+    provisional = read_provisional_marker(ctx.log_dir) is not None
+    if not provisional and read_promotion_plan(ctx.log_dir) is None:
+        if decisions.given:
+            raise WaiverDecisionError("this review has no Waiver Candidates to decide")
+        return None
+    assert ctx.inspection is not None
+    inputs = approval_inputs(tio, ctx.slug, ctx.inspection, ctx.worktree)
+    apply_waiver_decisions(inputs, decisions, merge=merge)
+    return prep._source_fingerprint(ctx)
+
+
+def _approve_review_ticket(
+    tio: TicketIO,
+    slug: str,
+    *,
+    no_merge: bool,
+    no_cleanup: bool,
+    decisions: WaiverDecisions | None = None,
+) -> bool:
     """Publish acceptance for a selected review and complete the Ticket."""
     from .operations import _completion_context, op_complete
+    from .waiver_approval import WaiverDecisions
 
     completion = _completion_context(tio, slug, no_merge, no_cleanup)
     if completion is None:
@@ -597,8 +683,12 @@ def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_clean
         if selected is not None or accepted.kind != "accepted":
             ctx = _selected_approval_context(tio, slug)
         if accepted.kind == "unavailable":
+            live_capture = _apply_waiver_decisions(
+                tio, ctx, decisions or WaiverDecisions(), merge=completion[1].merge
+            )
+            _record_approval_capture(ctx, live_capture)
             _acceptance_ready(tio, ctx)
-            _require_selected_package(tio, ctx)
+            _require_selected_package(tio, ctx, live_capture)
             operation = {
                 "pid": os.getpid(),
                 "phase": "accepting",
@@ -606,6 +696,7 @@ def _approve_review_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_clean
                 "reason": ctx.inspection["reason"],
                 "entry": ctx.inspection,
                 "source_sha": ctx.inspection["capture_sha"],
+                "live_source_sha": live_capture or ctx.inspection["capture_sha"],
                 "accepted_at": utc_now_rfc3339(),
             }
             _write(operation_path(ctx.log_dir), operation)
@@ -714,7 +805,12 @@ def _approve_closed_ticket(tio: TicketIO, slug: str) -> bool:
 
 
 def approve_review_command(
-    project_root: Path, slug: str, *, no_merge: bool = False, no_cleanup: bool = False
+    project_root: Path,
+    slug: str,
+    *,
+    no_merge: bool = False,
+    no_cleanup: bool = False,
+    decisions: WaiverDecisions | None = None,
 ) -> bool:
     """Accept the selected inspection and complete without agent preparation."""
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
@@ -726,7 +822,9 @@ def approve_review_command(
         return _approve_done_ticket(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
     if board["status"] != "review":
         raise ReviewEntryError("approve requires a review ticket")
-    return _approve_review_ticket(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
+    return _approve_review_ticket(
+        tio, slug, no_merge=no_merge, no_cleanup=no_cleanup, decisions=decisions
+    )
 
 
 def _current_review_package(tio: TicketIO, slug: str) -> prep.ReviewPrepOutcome | None:
@@ -768,8 +866,18 @@ async def _review_existing_ticket(
     project_root: Path, slug: str, tio: TicketIO, *, force: bool
 ) -> prep.ReviewPrepOutcome:
     """Reuse or refresh review material for an existing review Ticket."""
+    from .provisional_handoff import PROVISIONAL_REVIEW_REASON
+
     if not force and (fresh := _current_review_package(tio, slug)) is not None:
         return fresh
+    try:
+        provisional = _awaits_provisional_inspection(tio, slug, read_entry(tio.logs_dir / slug))
+    except (ReviewEntryError, ValueError) as exc:
+        return prep.ReviewPrepOutcome("failed", str(exc))
+    if provisional:
+        return await request_review_command(
+            project_root, slug, action="request", reason=PROVISIONAL_REVIEW_REASON
+        )
     accepted = read_acceptance(tio.logs_dir / slug)
     if accepted.kind == "corrupt":
         return prep.ReviewPrepOutcome(

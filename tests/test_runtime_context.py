@@ -125,13 +125,6 @@ class TestEnsureProxyEnv:
 class TestAgentSessionApp:
     """Which agent CLI spawned us — the other half of "host agent, no Booley Flows"."""
 
-    @pytest.fixture(autouse=True)
-    def _no_inherited_markers(self, monkeypatch):
-        """The suite may itself run from an agent shell; start from a clean slate."""
-        for markers in dict(runtime_context._AGENT_SESSION_MARKERS).values():
-            for marker in markers:
-                monkeypatch.delenv(marker, raising=False)
-
     def test_none_in_a_plain_shell(self):
         assert runtime_context.agent_session_app() is None
 

@@ -567,10 +567,22 @@ class TicketIO:
         if destination is TicketState.REVIEW:
             from .acceptance_ledger import read_acceptance
 
-            if read_acceptance(ticket_log_dir(self.logs_dir, slug)).kind != "accepted":
+            kind = read_acceptance(ticket_log_dir(self.logs_dir, slug)).kind
+            if kind != "accepted" and not (
+                kind == "unavailable" and self._provisional_handoff_marked(slug)
+            ):
                 print("Error: unaccepted review requires board review --request", file=sys.stderr)
                 return False
         return True
+
+    def _provisional_handoff_marked(self, slug: str) -> bool:
+        """ADR 0066: the current execution recorded a provisional-coverage handoff."""
+        from .provisional_handoff import read_provisional_marker
+
+        marker = read_provisional_marker(ticket_log_dir(self.logs_dir, slug))
+        if marker is None:
+            return False
+        return marker.get("execution_id") == self.read_progress(slug)["execution_id"]
 
     def _move_unaccepted_review_locked(
         self,

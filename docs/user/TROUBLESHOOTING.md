@@ -764,3 +764,28 @@ the Campaign-bound evidence tool.
   the exact numbered report pointer. Missing `coverage_report.json` or mutable
   `coverage_waivers.json` is expected; use a canonical Campaign and the configured
   human-approved waiver directory.
+
+### Waiver Candidates at review
+
+- Ticket went to `review` although coverage missed: the Provisional Coverage
+  Verdict met the Criteria only by counting Waiver Candidates. Decide them in
+  `booley board show <slug>`; if the inspection is missing, run
+  `booley board review <slug>`.
+- `decide every offered Waiver Candidate`: approve lists the undecided IDs. Pass
+  each one to `--accept-waivers` or `--reject-waivers`; nothing defaults to accept.
+- `accepting Waiver Candidates requires merge`: drop `--no-merge`.
+- `[coverage.waivers] is not configured`: configure the
+  [approval directory](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#approved-coverage-waivers)
+  before accepting.
+- `waivers were already approved`: an earlier approve promoted them but did not
+  finish; rerun `booley board approve <slug>` without waiver flags.
+- Approve exits non-zero and the Ticket stays in review: the strict verdict with
+  your accepted candidates would still fail. Rejections are kept; nothing was
+  promoted. Fix the Ticket in review, reset it, or archive it.
+- Approver refused as the `[agent.git]` identity: set your own `user.name` and
+  `user.email` in the Project checkout.
+- Candidate shown as stale or invalid: its source changed since recording, it
+  came from another Campaign, or the evidence no longer supports it. Rerun
+  coverage and the Analyst to record fresh candidates.
+- A point you rejected is no longer proposed. It reopens when its source file
+  changes; closing the Ticket discards rejections.

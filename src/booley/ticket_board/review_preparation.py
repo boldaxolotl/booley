@@ -66,6 +66,7 @@ from booley.ticket_board.acceptance_diagnostics import (
 )
 from booley.ticket_board.acceptance_ledger import read_acceptance
 from booley.ticket_board.agent_execution import configure_agent_call
+from booley.ticket_board.board_layout import waiver_candidates_path
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
@@ -173,7 +174,56 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
         ),
         criterion_presenter=state_criterion_presentation,
         coverage_report_resolver=_resolve_review_coverage_report,
+        waiver_candidates=_waiver_candidate_rows(ctx, state),
     )
+
+
+def _candidate_location(point_id: str, source: str) -> str:
+    """``source:line`` for a cp1 point, or the bare source when undecodable."""
+    from booley.flows.sim.coverage_campaign import decode_coverage_point_id
+
+    identity = decode_coverage_point_id(point_id) or {}
+    location = identity.get("location")
+    start = location.get("start") if isinstance(location, Mapping) else None
+    line = start.get("line") if isinstance(start, Mapping) else None
+    return f"{source}:{line}" if isinstance(line, int) else source
+
+
+def _waiver_candidate_rows(ctx: ReviewPrepContext, state: Mapping[str, Any]) -> list[dict]:
+    """ADR 0066: every recorded Waiver Candidate, re-derived from evidence."""
+    from booley.criteria.state import CriterionEntry
+
+    from .provisional_coverage import TicketCoverageContext, describe_waiver_candidates
+
+    raw = state.get("criteria", {})
+    criteria = {
+        str(key): CriterionEntry.from_dict(dict(value))
+        for key, value in (raw.items() if isinstance(raw, Mapping) else ())
+        if isinstance(value, Mapping)
+    }
+    context = TicketCoverageContext(
+        ctx.slug, tickets_dir_from_project_root(ctx.project_root), ctx.log_dir, ctx.worktree
+    )
+    views, _digest = describe_waiver_candidates(criteria, context)
+    return [
+        {
+            "candidate_id": view.candidate.candidate_id,
+            "status": view.status,
+            "status_reason": view.reason,
+            "needed": view.needed,
+            "criteria": list(view.criteria),
+            "target": view.candidate.binding.target_identity,
+            "point_id": view.candidate.proposal.point_id,
+            "location": _candidate_location(
+                view.candidate.proposal.point_id, view.candidate.proposal.source
+            ),
+            "waiver_reason": view.candidate.proposal.reason,
+            "justification": view.candidate.proposal.justification,
+            "proposal_count": view.candidate.proposal_count,
+            "metrics": [dict(item) for item in view.metrics],
+        }
+        for view in views
+    ]
 
 
 class ReviewPrepError(RuntimeError):
@@ -668,6 +718,9 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
             )
         elif candidate.is_file():
             paths.append((relative, candidate))
+    candidates = waiver_candidates_path(tickets_dir_from_project_root(ctx.project_root), ctx.slug)
+    if candidates.is_file():
+        paths.append(("waiver-candidates", candidates))
     if ctx.inspection is not None:
         evidence = ctx.log_dir / "acceptance" / "evidence"
         paths.extend(

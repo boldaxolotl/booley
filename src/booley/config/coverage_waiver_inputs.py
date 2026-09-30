@@ -29,6 +29,8 @@ APPROVAL_RECORD_FIELDS = frozenset(
 )
 REQUIRED_APPROVAL_RECORD_FIELDS = APPROVAL_RECORD_FIELDS - {"proof"}
 PROOF_FIELDS = frozenset({"kind", "reference", "sha256"})
+# ADR 0066: a human review argument is as valid a proof record as a formal one.
+PROOF_KINDS = frozenset({"formal", "review"})
 _ANCHORS = frozenset({"rtl_repository", "project_data_repository"})
 
 
@@ -109,11 +111,11 @@ def _approval_documents(document: Mapping[str, object]) -> list[object] | None:
     return approvals
 
 
-def _formal_reference(proof: object) -> tuple[bool, str | None]:
+def _proof_reference(proof: object) -> tuple[bool, str | None]:
     if not isinstance(proof, Mapping) or set(proof) != PROOF_FIELDS:
         return False, None
     reference = proof.get("reference")
-    if proof.get("kind") != "formal" or not isinstance(reference, str):
+    if proof.get("kind") not in PROOF_KINDS or not isinstance(reference, str):
         return False, None
     if not is_sha256(proof.get("sha256")):
         return False, None
@@ -135,11 +137,11 @@ def _approval_proof_reference(record: object) -> tuple[bool, str | None]:
         return proof is None, None
     if reason != "unreachable":
         return False, None
-    return _formal_reference(proof)
+    return _proof_reference(proof)
 
 
-def formal_proof_references(document: Mapping[str, object]) -> tuple[str, ...]:
-    """Extract safe formal-proof file identities from one shaped approval document."""
+def proof_references(document: Mapping[str, object]) -> tuple[str, ...]:
+    """Extract safe proof file identities from one shaped approval document."""
     approvals = _approval_documents(document)
     if approvals is None:
         return ()

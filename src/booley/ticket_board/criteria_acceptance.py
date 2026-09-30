@@ -3,6 +3,8 @@
 Reads ``booley_state.json`` after the developer agent exits and determines
 ticket disposition:
   - all mandatory met → review
+  - every unmet mandatory Criterion met provisionally → review, marked
+    provisional (ADR 0066; only when the caller supplies a judge)
   - any mandatory unmet → failed (with unmet list)
   - blocked_reason in state → blocked
 
@@ -15,8 +17,10 @@ from __future__ import annotations
 
 import logging
 import tomllib
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from booley.core.boundary import as_str_list
 from booley.criteria.freshness import (
@@ -57,6 +61,9 @@ class CriteriaVerdict:
     # Legacy criteria that declared a "fail -> pass" transition but were only
     # ever observed passing — strict Ticket states reject them before verdict.
     unverified_transitions: list[str] = field(default_factory=list)
+    # ADR 0066: mandatory Criteria met only by a Provisional Coverage Verdict.
+    # Non-empty means "review, but never done without a Human waiver decision".
+    provisional: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -78,15 +85,22 @@ class CriteriaVerdict:
         )
 
 
+# Given the state and its unmet mandatory Criteria, return those met provisionally.
+ProvisionalJudge = Callable[[Any, Sequence[str]], frozenset[str]]
+
+
 def check_criteria_acceptance(
     state_path: Path,
     *,
     work_dir: Path | None = None,
+    provisional: ProvisionalJudge | None = None,
 ) -> CriteriaVerdict:
     """Read state file and determine ticket disposition.
 
     Args:
         state_path: Path to ``booley_state.json``.
+        provisional: Optional judge of provisionally met Criteria (ADR 0066).
+            Without one, only strictly met Criteria count.
 
     Returns:
         CriteriaVerdict with disposition and summary stats.
@@ -111,7 +125,7 @@ def check_criteria_acceptance(
     refresh_verification_freshness(state, work_dir=work_dir)
     _enforce_acceptance_evidence(state, work_dir=work_dir)
     stats = _compute_criteria_stats(state.criteria)
-    verdict = _determine_disposition(state, stats)
+    verdict = _determine_disposition(state, stats, provisional)
     verdict.unverified_transitions = _find_unverified_transitions(state.criteria)
     note = verdict.unverified_transitions_note()
     if note:
@@ -488,7 +502,9 @@ def _all_mandatory_met_verdict(state, stats: dict, base: dict) -> CriteriaVerdic
     return CriteriaVerdict(disposition="review", **base)
 
 
-def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
+def _determine_disposition(
+    state, stats: dict, provisional: ProvisionalJudge | None = None
+) -> CriteriaVerdict:
     """Decide ticket disposition from criteria stats and blocked reason."""
     all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
     base = {
@@ -509,6 +525,13 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
 
     if all_mandatory_met:
         return _all_mandatory_met_verdict(state, stats, base)
+
+    if provisional is not None and set(stats["unmet"]) <= provisional(state, stats["unmet"]):
+        verdict = _all_mandatory_met_verdict(state, stats, base)
+        if verdict.disposition == "review":
+            verdict.provisional = tuple(sorted(stats["unmet"]))
+            logger.info("Ticket %s met provisionally: %s", state.slug, verdict.provisional)
+        return verdict
 
     logger.warning(
         "%d/%d mandatory criteria unmet for %s: %s",

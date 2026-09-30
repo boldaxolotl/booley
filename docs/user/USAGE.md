@@ -625,7 +625,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Ticket Mode, Booley records its screened Waiver Candidates for a human to accept or reject at Ticket review. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
@@ -698,7 +698,11 @@ Then call the `coverage_analyst` Specialist from your connected agent session wi
 
 In a Ticket, add a [coverage criterion](CONFIG.md#native-coverage-configuration)
 for each Target that needs one. Only a passing coverage run satisfies it. The
-Analyst only gives advice; it never changes criteria or approves waivers.
+Analyst never changes criteria. In a Ticket it may record Waiver Candidates;
+if counting them would meet the criterion, the Ticket goes to `review` and you
+accept or reject each one with `booley board approve <slug> --accept-waivers
+ID,... --reject-waivers ID,...`. See
+[FLOW_REFERENCE.md](FLOW_REFERENCE.md#coverage-waivers-at-review).
 
 ## Criteria catalog
 

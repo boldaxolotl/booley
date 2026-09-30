@@ -17,9 +17,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from booley.core.differences import format_differences
+from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 
 from ..git_ops import worktree_blocking_changes, worktree_is_clean
@@ -55,6 +56,9 @@ from ._store import (
     AcceptanceStore,
     FileAcceptanceStore,
 )
+
+if TYPE_CHECKING:
+    from booley.flows.sim.coverage_waiver_application import WaiverPromotionPlan
 
 
 class AcceptanceOperationError(RuntimeError):
@@ -92,6 +96,8 @@ class AcceptanceRequest:
     cleanup: bool
     ticket_status: Literal["review", "done"]
     expected_sources: Mapping[str, str] | None = None
+    # ADR 0066: accepted Waiver Candidates committed in the finalized candidate.
+    waiver_promotion: WaiverPromotionPlan | None = None
 
 
 def _git(
@@ -157,12 +163,14 @@ def _initial_journal(
     *,
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
+    promotion_digest: str | None = None,
 ) -> AcceptanceJournal:
     return initial_journal(
         slug,
         [item.as_dict() for item in basis.participants],
         cleanup=cleanup,
         removal_targets=removal_targets,
+        promotion_digest=promotion_digest,
     )
 
 
@@ -174,11 +182,18 @@ def _load_journal(
     cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
     store: AcceptanceStore | None = None,
+    promotion_digest: str | None = None,
 ) -> AcceptanceJournal:
     store = store or FileAcceptanceStore()
     expected = [item.as_dict() for item in basis.participants]
     if not path.exists():
-        return _initial_journal(slug, basis, cleanup=cleanup, removal_targets=removal_targets)
+        return _initial_journal(
+            slug,
+            basis,
+            cleanup=cleanup,
+            removal_targets=removal_targets,
+            promotion_digest=promotion_digest,
+        )
     try:
         return store.load(
             path,
@@ -186,6 +201,7 @@ def _load_journal(
             expected,
             cleanup=cleanup,
             removal_targets=removal_targets,
+            promotion_digest=promotion_digest,
         )
     except AcceptanceJournalError as exc:
         raise AcceptanceOperationError(str(exc)) from exc
@@ -825,7 +841,7 @@ def _persist_candidate_plans(
         repository = transaction.repository(transaction.participants[role])
         _import_candidate(repository, plan)
         candidate = plan.journal_candidate()
-        if not journal.removal_targets:
+        if not journal.needs_finalization:
             candidate = candidate.with_finalized(plan.prepared_sha)
         journal = journal.with_candidate(role, candidate)
     prepared_refs: list[_RefReconciliation] = []
@@ -1003,6 +1019,75 @@ def _commit_finalized_candidates(
     return finalized
 
 
+def _promotion_roots(transaction: _AcceptanceTransaction, temporary: Path):
+    """Coverage repository roots inside the composite finalization checkout."""
+
+    try:
+        project_data = temporary / checkout_project_dir_relative_to(transaction.root)
+    except (FileNotFoundError, ValueError) as exc:
+        raise AcceptanceOperationError(str(exc)) from exc
+    return CoverageRepositoryRoots(rtl_repository=temporary, project_data_repository=project_data)
+
+
+def _reject_unversioned(checkout: Path, paths: list[Path]) -> None:
+    """Never force-add promoted waivers that no participant repository versions."""
+    if not paths:
+        return
+    ignored = _git(checkout, "check-ignore", "--no-index", "--", *(p.as_posix() for p in paths))
+    if ignored.returncode == 0:
+        raise AcceptanceOperationError(
+            "waiver promotion failed: the configured approval directory is not versioned "
+            f"by any Ticket participant ({ignored.stdout.strip().splitlines()[0]} is ignored)"
+        )
+
+
+def _commit_waiver_promotion(
+    transaction: _AcceptanceTransaction,
+    temporary: Path,
+    project_checkout: Path | None,
+    plan: WaiverPromotionPlan,
+) -> dict[str, str]:
+    """ADR 0066: append accepted waivers to the merge candidate, then commit them.
+
+    Rendering starts from the unfinalized candidate on every recovery, so the
+    commit is deterministic; the merged directory is re-validated before any
+    destination can move.
+    """
+    from booley.flows.sim.coverage_waiver_application import (
+        WaiverPlanError,
+        apply_promotion_plan,
+        validate_promoted_directory,
+    )
+    from booley.flows.sim.coverage_waiver_promotion import WaiverPromotionError
+
+    roots = _promotion_roots(transaction, temporary)
+    anchor = Path(getattr(roots, plan.anchor))
+    try:
+        written = apply_promotion_plan(plan, anchor)
+        validate_promoted_directory(plan, roots)
+    except (WaiverPlanError, WaiverPromotionError, OSError) as exc:
+        raise AcceptanceOperationError(f"waiver promotion failed: {exc}") from exc
+    changed = [(anchor / path).relative_to(temporary) for path in written]
+    project_paths, outer_paths = _partition_finalization_paths(
+        temporary, project_checkout, changed
+    )
+    author = ["--author", plan.stamps.approved_by]
+    message = f"chore({transaction.slug}): approve coverage waivers"
+    finalized: dict[str, str] = {}
+    for role, checkout, paths in (
+        ("project", project_checkout, project_paths),
+        ("outer", temporary, outer_paths),
+    ):
+        if checkout is None:
+            continue
+        _reject_unversioned(checkout, paths)
+        if paths:
+            _require_git(checkout, "add", "--", *(path.as_posix() for path in paths))
+            _require_git(checkout, "commit", "--no-verify", *author, "-m", message)
+        finalized[role] = _commit(checkout, "HEAD")
+    return finalized
+
+
 def _update_finalized_refs(
     transaction: _AcceptanceTransaction,
 ) -> None:
@@ -1047,6 +1132,7 @@ def _finalization_was_recorded(
             [item.as_dict() for item in transaction.basis.participants],
             cleanup=journal.cleanup,
             removal_targets=journal.removal_targets,
+            promotion_digest=journal.promotion_digest,
         )
     except (AcceptanceJournalError, OSError, ValueError):
         return False
@@ -1072,6 +1158,11 @@ def _compute_finalized_journal(
     finalized = _commit_finalized_candidates(
         temporary, project_checkout, changed, transaction.slug
     )
+    if journal.promotion_digest is not None:
+        plan = transaction.waiver_promotion
+        if plan is None or plan.sha256() != journal.promotion_digest:
+            raise AcceptanceOperationError("the journaled waiver promotion plan is unavailable")
+        finalized = _commit_waiver_promotion(transaction, temporary, project_checkout, plan)
     for role, sha in finalized.items():
         journal = journal.with_finalized_identity(role, sha)
     return journal, project_checkout
@@ -1425,6 +1516,7 @@ class _AcceptanceTransaction:
     path: Path
     store: AcceptanceStore
     repositories: AcceptanceRepositories
+    waiver_promotion: WaiverPromotionPlan | None = None
 
     @property
     def participants(self) -> dict[str, BasisParticipant]:
@@ -1617,6 +1709,9 @@ def _advance_locked(
         cleanup=request.cleanup,
         removal_targets=request.basis.removal_targets,
         store=runner.store,
+        promotion_digest=(
+            request.waiver_promotion.sha256() if request.waiver_promotion is not None else None
+        ),
     )
     _validate_ticket_status(journal, request.ticket_status)
     root = request.root.resolve()
@@ -1629,6 +1724,7 @@ def _advance_locked(
         path,
         runner.store,
         runner.repositories,
+        request.waiver_promotion,
     )
     transaction.persist(journal, _Checkpoint.NORMALIZED)
     if journal.state is JournalState.DONE:

@@ -45,6 +45,12 @@
 | Review | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 | Other | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 
+#### Waiver Candidates
+
+Only when the briefing lists any. Keep its groups: offered, not needed, stale,
+invalid. Per candidate: `<id>` · reason · `<source:line>` · needed or not ·
+coverage `<strict>% → <provisional>%` · the unverified justification.
+
 #### Review findings and dispositions
 
 | Criterion | Severity | Location | Disposition | Finding / justification |
