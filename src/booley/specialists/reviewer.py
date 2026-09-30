@@ -15,11 +15,11 @@ import hashlib
 import json
 import logging
 import os
-import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import uuid4
 
 from booley.agent_workspace.isolation import (
     filter_state_file_for_category,
@@ -41,7 +41,9 @@ from booley.mcp.base import (
     read_source_dirs_from_toml,
 )
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
+from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.paths import refs_dir
+from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.flow_names import config_section
 from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
 from booley.ticket_board.review_policy import review_policy_digest
@@ -81,7 +83,6 @@ SEVERITY_MAJOR = "MAJOR"
 SEVERITY_MINOR = "MINOR"
 ALL_SEVERITIES = frozenset({SEVERITY_CRITICAL, SEVERITY_MAJOR, SEVERITY_MINOR})
 _SEVERITY_TAG = {SEVERITY_CRITICAL: "C", SEVERITY_MAJOR: "M", SEVERITY_MINOR: "m"}
-_TB_DUMP_CALL_RE = re.compile(r"\$(?:dumpfile|dumpvars)\b")
 
 
 # Confidence levels
@@ -427,97 +428,6 @@ def resolve_documented_assumptions() -> tuple[str, str]:
     return content, str(path)
 
 
-def _strip_sv_comments(text: str) -> str:
-    """Remove SystemVerilog comments before literal source-token checks."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return re.sub(r"//.*", "", text)
-
-
-def _issue_claims_tb_dump_call(issue: dict[str, Any]) -> bool:
-    """Return true when a reviewer finding is specifically about TB dump calls."""
-    haystack = " ".join(str(issue.get(key, "")) for key in ("summary", "fix_suggestion")).lower()
-    return "$dumpfile" in haystack or "$dumpvars" in haystack
-
-
-def _issue_rejects_tb_owned_trace(issue: dict[str, Any]) -> bool:
-    """Return true when a finding categorically forbids TB-owned tracing."""
-    haystack = " ".join(str(issue.get(key, "")) for key in ("summary", "fix_suggestion")).lower()
-    rejection = any(
-        phrase in haystack
-        for phrase in ("forbidden", "remove all", "user-authored", "override the harness")
-    )
-    return _issue_claims_tb_dump_call(issue) and rejection
-
-
-def _issue_requires_builtin_sentinel(issue: dict[str, Any]) -> bool:
-    """Return true for findings that reject a configured custom sentinel."""
-    haystack = " ".join(str(issue.get(key, "")) for key in ("summary", "fix_suggestion")).lower()
-    missing = "missing" in haystack or "never prints" in haystack or "must emit" in haystack
-    return (
-        "sentinel" in haystack
-        and missing
-        and ("[sim_result]" in haystack or "sim_result" in haystack)
-    )
-
-
-def _source_has_tb_dump_call(work_dir: str, source_file: str) -> bool | None:
-    """Check current source for user-authored ``$dumpfile``/``$dumpvars``.
-
-    Returns ``None`` when the cited source cannot be read, preserving the
-    reviewer's fail-closed behavior for ambiguous cases.
-    """
-    path = Path(source_file)
-    if not path.is_absolute():
-        path = Path(work_dir) / path
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        logger.warning("Could not verify dump-call finding against missing file: %s", path)
-        return None
-    return bool(_TB_DUMP_CALL_RE.search(_strip_sv_comments(text)))
-
-
-def _ticket_clause_section_disposition(ticket_text: str, clause: str) -> str | None:
-    """Return the structural disposition of an exact Ticket clause.
-
-    ``None`` means the clause is not present.  Only explicit Markdown headings
-    carry deterministic semantics; prose in other sections remains the
-    reviewer's classification responsibility.
-    """
-    wanted = " ".join(clause.split())
-    heading = ""
-    for raw_line in ticket_text.splitlines():
-        stripped = raw_line.strip()
-        if stripped.startswith("#"):
-            heading = stripped.lstrip("#").strip().casefold()
-            continue
-        if wanted and wanted == " ".join(stripped.split()):
-            if any(word in heading for word in ("deferred", "future work", "out of scope")):
-                return (
-                    DISPOSITION_OUT_OF_SCOPE if "out of scope" in heading else DISPOSITION_DEFERRED
-                )
-            return DISPOSITION_CURRENT
-    return None
-
-
-def _classify_issue_scope(issue: ReviewIssue, scope_text: str) -> str:
-    """Return ``keep``, ``observe``, or ``drop`` for Ticket-bound scope."""
-    has_contract_fields = bool(issue.kind or issue.disposition or issue.ticket_clause)
-    if (
-        scope_text
-        and has_contract_fields
-        and not (issue.kind and issue.disposition and issue.ticket_clause)
-    ):
-        return "drop"
-    if issue.ticket_clause and scope_text:
-        structural = _ticket_clause_section_disposition(scope_text, issue.ticket_clause)
-        if structural is None:
-            return "drop"
-        if structural in _NON_CORRECTIVE_DISPOSITIONS:
-            issue.disposition = structural
-    return "observe" if issue.disposition in _NON_CORRECTIVE_DISPOSITIONS else "keep"
-
-
 @dataclass
 class ReviewIssue:
     """Single issue found during code review."""
@@ -532,6 +442,7 @@ class ReviewIssue:
     kind: str = ""
     disposition: str = ""
     ticket_clause: str = ""
+    proposal_ordinal: int = field(default=0, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -746,6 +657,7 @@ class ReviewParseResult:
     issues: list[ReviewIssue]
     json_present: bool
     rejected: list[tuple[int, list[str]]]  # (1-based item ordinal, errors)
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _find_balanced_json_object(
@@ -837,21 +749,31 @@ def parse_review_output(
     raw_items, json_present = _extract_issues_payload(output)
     issues: list[ReviewIssue] = []
     rejected: list[tuple[int, list[str]]] = []
+    diagnostics: list[dict[str, Any]] = []
+    wrapper = _find_balanced_json_object(output, "issues")
+    if wrapper is not None and not isinstance(wrapper["issues"], list):
+        diagnostics.append(
+            {"ordinal": 1, "raw": wrapper["issues"], "errors": ["issues wrapper must be a list"]}
+        )
     for ord_idx, item in enumerate(raw_items, 1):
         errs = _validate_issue_dict(item, allowed_category=allowed_category)
         if errs:
             rejected.append((ord_idx, errs))
+            diagnostics.append({"ordinal": ord_idx, "raw": item, "errors": errs})
             logger.warning(
                 "Rejecting review issue #%d due to schema violations: %s",
                 ord_idx,
                 "; ".join(errs),
             )
             continue
-        issues.append(ReviewIssue.from_dict(item))
+        issue = ReviewIssue.from_dict(item)
+        issue.proposal_ordinal = ord_idx
+        issues.append(issue)
     return ReviewParseResult(
         issues=issues,
         json_present=json_present,
         rejected=rejected,
+        diagnostics=diagnostics,
     )
 
 
@@ -1099,6 +1021,10 @@ class ReviewerSpecialist(Specialist):
         self._tb_project_policy: TbProjectPolicy | None = None
         self._scope_contract: ReviewScopeContract | None = None
         self._non_corrective_issues: list[ReviewIssue] = []
+        self._audit: dict[str, list[dict[str, Any]]] = {"filtered": [], "rejected": []}
+        self._attempt_id = ""
+        self._audit_phase = "initial"
+        self._review_run_id = ""
 
     def _workspace_isolation_category(self) -> str | None:
         """Hide opposite-category sources only inside the private snapshot."""
@@ -1268,9 +1194,17 @@ class ReviewerSpecialist(Specialist):
             return
         entry.met = False
         entry.stale = True
+        previous_detail = dict(entry.detail)
+        archive = self._write_review_evidence(previous_detail, "previous-receipt")
         entry.detail = {
+            **previous_detail,
             "stale_reason": "Reviewer scope or context changed; restarting discovery.",
-            "current_review_contract": current,
+            "contract": current,
+            "review_detail_version": REVIEW_DETAIL_VERSION,
+            "needs_discovery": True,
+            "filtered": [],
+            "rejected": [],
+            "receipt_history": [*previous_detail.get("receipt_history", []), str(archive)],
         }
         self._clear_session_id(
             f"reviewer-{self.args.category}-{next(iter(self._parse_focus()), '')}"
@@ -1467,8 +1401,9 @@ match the strength of the evidence.
             f"## Staged Ticket (binding scope; source: {source})\n\n"
             "Review only behavior required by this Ticket and the accepted "
             "decisions below. Preserve explicitly deferred, future, and "
-            "out-of-scope work. Every finding must quote the exact Ticket or "
-            "accepted-decision clause that makes it current.\n\n"
+            "out-of-scope work. Cite a relevant Ticket or accepted-decision clause "
+            "and explain its relation to the finding. Choose the disposition "
+            "deliberately; headings do not override it.\n\n"
             f"{_truncate_spec(ticket_text, label=source)}\n"
         )
 
@@ -1581,7 +1516,7 @@ schema are dropped upstream. Fields (all required unless noted):
   - category:       "{focus}"                        (active focus)
   - kind:           "code_defect" | "proof_gap" | "spec_ambiguity"
   - disposition:    "current" | "advisory" | "deferred" | "out_of_scope"
-  - ticket_clause:  exact clause from the staged Ticket or accepted decisions
+  - ticket_clause:  relevant clause from the staged Ticket or accepted decisions
   - file:           non-empty path string
   - line:           non-negative integer
   - summary:        non-empty one-line description
@@ -1596,7 +1531,7 @@ schema are dropped upstream. Fields (all required unless noted):
       "category": "{focus}",
       "kind": "code_defect",
       "disposition": "current",
-      "ticket_clause": "Exact current requirement from the staged Ticket",
+      "ticket_clause": "Relevant current requirement from the staged Ticket",
       "file": "{example_file}",
       "line": 42,
       "summary": "Description of the issue",
@@ -1672,12 +1607,68 @@ object, even after calling the capability.
 
     def _run(self) -> McpToolResult:
         """Single-focus review with terminal _done or disposition-loop _clean mode."""
+        self._audit = {"filtered": [], "rejected": []}
+        self._non_corrective_issues = []
+        self._tb_project_policy = None
+        self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         prepared = self._prepare_review_run()
         if isinstance(prepared, McpToolResult):
             return prepared
         if getattr(self.args, "dry_run", False):
             return self._dry_run_preview()
-        return self._execute_review(prepared)
+        result = self._execute_review(prepared)
+        return self._publish_review_evidence(result, prepared)
+
+    def _evidence_path(self, label: str) -> Path:
+        directory = resolve_project_dir(Path(self.args.work_dir)) / "reviewer-evidence"
+        return directory / f"{self._review_run_id or uuid4().hex}-{label}.json"
+
+    def _write_review_evidence(self, detail: dict[str, Any], label: str) -> Path:
+        path = self._evidence_path(label)
+        atomic_write_json(path, detail)
+        return path
+
+    def _publish_review_evidence(self, result: McpToolResult, crit_key: str) -> McpToolResult:
+        """Publish complete evidence even when a review cannot issue a receipt."""
+        prior = self._get_prior_detail(crit_key) or {}
+        if result.exit_code == EXIT_ERROR:
+            result.detail = {**prior, **result.detail, **self._audit, "review_error": True}
+            if self.state:
+                self.set_criterion(crit_key, False, detail=result.detail)
+        elif not result.detail:
+            result.detail = dict(prior)
+        for name in ("filtered", "rejected"):
+            result.detail.setdefault(name, [])
+        path = self._evidence_path("result")
+        result.detail["audit_evidence"] = str(path)
+        for name in ("filtered", "rejected"):
+            result.detail[name] = [
+                {**row, "evidence": row.get("evidence") or str(path)}
+                for row in result.detail[name]
+            ]
+        result.detail["artifacts"] = {
+            **result.detail.get("artifacts", {}),
+            "reviewer_evidence": str(path),
+        }
+        atomic_write_json(path, {"exit_code": result.exit_code, "detail": result.detail})
+        if self.state and not getattr(self.args, "diagnostic", False):
+            entry = self.state.criteria.get(crit_key)
+            if entry is not None:
+                entry.detail.update(
+                    {
+                        name: result.detail[name]
+                        for name in ("filtered", "rejected", "audit_evidence")
+                    }
+                )
+                self.state.save()
+        result.report_text += f"\nReviewer evidence: {path}"
+        return result
+
+    def _record_rejections(self, rows: list[dict[str, Any]], channel: str) -> None:
+        self._audit["rejected"].extend(
+            {**row, "channel": channel, "phase": self._audit_phase, "attempt_id": self._attempt_id}
+            for row in rows
+        )
 
     def _prepare_review_run(self) -> str | McpToolResult:
         """Validate source, criterion, and specification inputs."""
@@ -1769,6 +1760,8 @@ object, even after calling the capability.
     def _execute_review(self, crit_key: str) -> McpToolResult:
         """Run one validated terminal or corrective review."""
         self._invalidate_changed_invocation_contract(crit_key)
+        prior = self._get_prior_detail(crit_key) or {}
+        self._audit = {name: list(prior.get(name) or []) for name in ("filtered", "rejected")}
 
         # Refresh before either mode's idempotency guard.  Report submission
         # uses this same operation, so Reviewer cannot replay a verdict which
@@ -1863,72 +1856,14 @@ object, even after calling the capability.
         if self.state and self.state.is_met(crit_key):
             return self._already_clean_result(crit_key)
         prior_detail = self._get_prior_detail(crit_key)
-        if prior_detail is not None:
-            prior_detail, resolved_count = self._resolve_out_of_policy_pending(
-                crit_key, prior_detail
-            )
-            if resolved_count and not prior_detail.get("pending"):
-                msg = (
-                    f"{crit_key}: resolved {resolved_count} stale finding(s) outside the "
-                    "enforced diff or in conflict with the project's simulation contract."
-                )
-                return self._build_result_clean_verify(
-                    [],
-                    [msg],
-                    prior_detail,
-                    remaining_indices=set(),
-                    dispositions={},
-                    elapsed=0.0,
-                    crit_key=crit_key,
-                )
+        if prior_detail is not None and prior_detail.get("needs_discovery"):
+            return self._run_clean_initial(crit_key)
         has_prior_findings = prior_detail is not None and (
             "pending" in prior_detail or "issue_list" in prior_detail
         )
         if not has_prior_findings:
             return self._run_clean_initial(crit_key)
         return self._run_clean_verify(crit_key, prior_detail)
-
-    def _resolve_out_of_policy_pending(
-        self,
-        crit_key: str,
-        prior_detail: dict[str, Any],
-    ) -> tuple[dict[str, Any], int]:
-        """Resolve legacy pending findings which conflict with project policy."""
-        policy = self._tb_policy() if self.args.category == "tb" else TbProjectPolicy()
-        if not policy.has_custom_sentinels and not policy.trace_files:
-            return prior_detail, 0
-        source = list(prior_detail.get("pending") or prior_detail.get("issue_list", []))
-        kept: list[dict[str, Any]] = []
-        resolved_now: list[dict[str, Any]] = []
-        for finding in source:
-            policy_conflict = (
-                bool(policy.trace_files) and _issue_rejects_tb_owned_trace(finding)
-            ) or (policy.has_custom_sentinels and _issue_requires_builtin_sentinel(finding))
-            if not policy_conflict:
-                kept.append(finding)
-            else:
-                entry = dict(finding)
-                entry["status"] = "excluded"
-                entry["exclusion_reason"] = (
-                    "conflicts with the configured project simulation contract"
-                )
-                entry["disposition_actor"] = "harness_policy"
-                resolved_now.append(entry)
-        if not resolved_now:
-            return prior_detail, 0
-        detail = dict(prior_detail)
-        detail["review_detail_version"] = REVIEW_DETAIL_VERSION
-        detail["pending"] = kept
-        detail["resolved"] = list(detail.get("resolved", [])) + resolved_now
-        detail.pop("issue_list", None)
-        detail["issues"] = len(kept)
-        counts = count_by_severity([ReviewIssue.from_dict(item) for item in kept])
-        detail.update(counts)
-        # Keep the gate unmet until the caller completes final-state
-        # rediscovery. Persisting a passing fingerprint here would let the
-        # early exclusion path accept changed source that was never reviewed.
-        self.set_criterion(crit_key, False, detail=detail)
-        return detail, len(resolved_now)
 
     def _run_clean_initial(self, crit_key: str) -> McpToolResult:
         """Run the first (no prior findings) review pass for _clean mode."""
@@ -1981,7 +1916,7 @@ object, even after calling the capability.
         if not previous or (current and previous == current):
             return None
         self.emit_progress("final discovery: source changed after review findings")
-        issues, lines = self._run_single_review()
+        issues, lines = self._run_single_review(phase="rediscovery")
         return issues, lines, current
 
     def _replay_done_verdict(self, crit_key: str) -> McpToolResult:
@@ -2051,7 +1986,7 @@ object, even after calling the capability.
     def _provider_failure_report(output_lines: list[str], fallback: str) -> str:
         return next(
             (line for line in reversed(output_lines) if line.startswith("reviewer failed:")),
-            fallback,
+            "\n".join([fallback, *output_lines]),
         )
 
     def _record_review_provider_failure(
@@ -2098,6 +2033,8 @@ object, even after calling the capability.
         Returns (remaining_issues, output_lines, remaining_indices) where
         remaining_indices are 1-based positions into the original issue_list.
         """
+        self._attempt_id = f"{self._review_run_id or self._invocation_id}-{uuid4().hex}"
+        self._audit_phase = "verification"
         focus = next(iter(self._parse_focus()))
         # The "no --report-dir, nothing persisted" notice lives in McpTool._post_run:
         # the gap is every endpoint's, not the reviewer's (SETUP-F-39).
@@ -2304,7 +2241,10 @@ Schema enforcement (applied upstream by the harness):
         # so in-flight tickets stay on the rails through a restart.
         issue_list = prior_detail.get("pending") or prior_detail.get("issue_list", [])
 
-        dispositions = self._extract_verify_dispositions(output)
+        diagnostics: list[dict[str, Any]] = []
+        issue_count = len(issue_list)
+        dispositions = self._extract_verify_dispositions(output, diagnostics, issue_count)
+        self._record_rejections(diagnostics, "verification")
 
         # For issues the model didn't mention, fall back to prior status.
         # Issues previously verified as "fixed" stay fixed unless the model
@@ -2315,20 +2255,6 @@ Schema enforcement (applied upstream by the harness):
         for i, iss_dict in enumerate(issue_list, 1):
             if i in dispositions:
                 if dispositions[i]["status"] == VERIFY_STATUS_STILL_PRESENT:
-                    if (
-                        self.args.category == "tb"
-                        and _issue_claims_tb_dump_call(iss_dict)
-                        and _source_has_tb_dump_call(
-                            self.args.work_dir,
-                            str(iss_dict.get("file", "")),
-                        )
-                        is False
-                    ):
-                        logger.warning(
-                            "Treating stale dump-call verify finding as fixed: %s",
-                            iss_dict.get("file", ""),
-                        )
-                        continue
                     remaining.append(ReviewIssue.from_dict(iss_dict))
                     remaining_indices.add(i)
             elif iss_dict.get("status") != "fixed":
@@ -2337,7 +2263,11 @@ Schema enforcement (applied upstream by the harness):
         return remaining, remaining_indices, dispositions
 
     @staticmethod
-    def _extract_verify_dispositions(output: str) -> dict[int, dict[str, str]]:
+    def _extract_verify_dispositions(
+        output: str,
+        diagnostics: list[dict[str, Any]] | None = None,
+        issue_count: int | None = None,
+    ) -> dict[int, dict[str, str]]:
         """Pull validated per-index dispositions out of agent output.
 
         Applies the strict finding schema (see ``_validate_finding_dict``)
@@ -2354,10 +2284,24 @@ Schema enforcement (applied upstream by the harness):
             )
             return {}
 
+        diagnostics = diagnostics if diagnostics is not None else []
+        raw_findings = data["findings"]
+        if not isinstance(raw_findings, list):
+            diagnostics.append(
+                {"ordinal": 1, "raw": raw_findings, "errors": ["findings wrapper must be a list"]}
+            )
+            return {}
         dispositions: dict[int, dict[str, str]] = {}
-        for ord_idx, finding in enumerate(data.get("findings", []), 1):
+        for ord_idx, finding in enumerate(raw_findings, 1):
             errs = _validate_finding_dict(finding)
+            idx = finding.get("index") if isinstance(finding, dict) else None
+            if not errs and issue_count is not None and idx > issue_count:
+                errs.append("index exceeds the pending finding count")
             if errs:
+                diagnostic = {"ordinal": ord_idx, "raw": finding, "errors": errs}
+                if isinstance(idx, int) and not isinstance(idx, bool) and idx >= 1:
+                    diagnostic["verifier_index"] = idx
+                diagnostics.append(diagnostic)
                 # Missing FIXED/WAIVED support is a rubber-stamp attempt. Demote
                 # the targeted index to STILL_PRESENT rather than drop
                 # the finding (otherwise a previously-fixed item would
@@ -2385,10 +2329,10 @@ Schema enforcement (applied upstream by the harness):
                 )
                 continue
             disposition = {"status": finding["status"].upper()}
-            for field in ("evidence", "justification"):
-                value = finding.get(field)
+            for support_field in ("evidence", "justification"):
+                value = finding.get(support_field)
                 if isinstance(value, str) and value.strip():
-                    disposition[field] = value.strip()
+                    disposition[support_field] = value.strip()
             dispositions[finding["index"]] = disposition
         return dispositions
 
@@ -2419,10 +2363,36 @@ Schema enforcement (applied upstream by the harness):
         if not isinstance(rf_calls, list):
             return None
         findings: list[Any] = []
-        for call in rf_calls:
-            raw = call.get("findings", [])
+        for ordinal, call in enumerate(rf_calls, 1):
+            raw = call.get("findings", []) if isinstance(call, dict) else call
             if isinstance(raw, list):
                 findings.extend(raw)
+            else:
+                self._record_rejections(
+                    [
+                        {
+                            "ordinal": ordinal,
+                            "raw": raw,
+                            "errors": ["findings wrapper must be a list"],
+                        }
+                    ],
+                    "ReportFindings mirror",
+                )
+        malformed = []
+        for ordinal, item in enumerate(findings, 1):
+            if (
+                not isinstance(item, dict)
+                or not str(item.get("file", "")).strip()
+                or not str(item.get("summary", "")).strip()
+            ):
+                malformed.append(
+                    {
+                        "ordinal": ordinal,
+                        "raw": item,
+                        "errors": ["mirror entry requires file and summary"],
+                    }
+                )
+        self._record_rejections(malformed, "ReportFindings mirror")
         issues, dropped = report_findings_to_issues(findings, focus)
         if dropped:
             output_lines.append(
@@ -2468,6 +2438,7 @@ Schema enforcement (applied upstream by the harness):
             return self._interpret_review_parse(result.output, focus, output_lines)
 
         text_parsed = parse_review_output(result.output, allowed_category=focus)
+        self._record_rejections(text_parsed.diagnostics, "canonical")
         if not text_parsed.json_present:
             logger.error(
                 "Review agent for %s/%s called %s but emitted no canonical issues JSON",
@@ -2566,6 +2537,7 @@ Schema enforcement (applied upstream by the harness):
         as a Specialist error rather than an implicit clean pass).
         """
         parsed = parse_review_output(output, allowed_category=focus)
+        self._record_rejections(parsed.diagnostics, "canonical")
         if not parsed.json_present:
             logger.error(
                 "Review agent for %s/%s emitted no recognizable "
@@ -2603,7 +2575,9 @@ Schema enforcement (applied upstream by the harness):
             reasoning_effort=self._resolve_effort(),
         )
 
-    def _run_single_review(self) -> tuple[list[ReviewIssue] | None, list[str]]:
+    def _run_single_review(
+        self, *, phase: str = "discovery"
+    ) -> tuple[list[ReviewIssue] | None, list[str]]:
         """Run exactly one focus review. Returns (issues, output_lines) or (None, lines) on error.
 
         Treats "agent emitted no JSON wrapper at all" as a Specialist error
@@ -2613,6 +2587,8 @@ Schema enforcement (applied upstream by the harness):
         focus = next(iter(self._parse_focus()))
         output_lines = [f"[review] {self.args.category}/{focus}"]
         self._non_corrective_issues = []
+        self._attempt_id = f"{self._review_run_id or self._invocation_id}-{uuid4().hex}"
+        self._audit_phase = phase
 
         start = time.monotonic()
         params = self._single_review_params(focus)
@@ -2653,43 +2629,36 @@ Schema enforcement (applied upstream by the harness):
         issues: list[ReviewIssue],
         output_lines: list[str],
     ) -> list[ReviewIssue]:
-        """Enforce source-scope and project-policy constraints on findings."""
+        """Enforce explicit source membership and honor agent dispositions."""
         kept: list[ReviewIssue] = []
-        policy = self._tb_policy() if self.args.category == "tb" else TbProjectPolicy()
-        ticket_text, _ = _load_ticket_text()
-        decisions_text, _ = resolve_documented_assumptions()
-        scope_text = "\n\n".join(part for part in (ticket_text, decisions_text) if part)
-        dropped = {"policy": 0, "source_scope": 0, "ticket_scope": 0}
-        for issue in issues:
-            action = self._review_issue_action(issue, policy, scope_text)
-            if action in dropped:
-                dropped[action] += 1
-            elif action == "observe":
+        dropped = 0
+        for ordinal, issue in enumerate(issues, 1):
+            if not self._issue_file_in_scope(issue.file):
+                self._audit["filtered"].append(
+                    {
+                        **issue.to_dict(),
+                        "finding_id": _finding_record(issue)["finding_id"],
+                        "reason": "source_scope",
+                        "explanation": "Cited file is outside the explicit source scope.",
+                        "ordinal": issue.proposal_ordinal or ordinal,
+                        "attempt_id": self._attempt_id,
+                        "phase": self._audit_phase,
+                    }
+                )
+                dropped += 1
+            elif issue.disposition in _NON_CORRECTIVE_DISPOSITIONS:
                 self._non_corrective_issues.append(issue)
             else:
                 kept.append(issue)
-        self._append_filter_summary(output_lines, dropped)
+        if dropped:
+            output_lines.append(
+                f"INFO: filtered {dropped} proposal(s) outside explicit source scope; preserved in audit evidence"
+            )
+        if self._non_corrective_issues:
+            output_lines.append(
+                f"INFO: preserved {len(self._non_corrective_issues)} advisory/deferred observation(s) without gating this review"
+            )
         return kept
-
-    def _review_issue_action(
-        self,
-        issue: ReviewIssue,
-        policy: TbProjectPolicy,
-        scope_text: str,
-    ) -> str:
-        if not self._issue_file_in_scope(issue.file):
-            return "source_scope"
-        issue_dict = issue.to_dict()
-        rejects_trace = policy.trace_files and _issue_rejects_tb_owned_trace(issue_dict)
-        contract = self._scope_contract or ReviewScopeContract()
-        rejects_sentinel = _issue_requires_builtin_sentinel(issue_dict) and (
-            policy.has_custom_sentinels
-            or (self.args.category == "tb" and contract.is_cocotb_file(issue.file))
-        )
-        if rejects_trace or rejects_sentinel:
-            return "policy"
-        action = _classify_issue_scope(issue, scope_text)
-        return "ticket_scope" if action == "drop" else action
 
     def _issue_file_in_scope(self, issue_file: str) -> bool:
         """Match an agent-reported file against the explicit review scope."""
@@ -2701,32 +2670,6 @@ Schema enforcement (applied upstream by the harness):
                 return False
         contract = self._scope_contract or ReviewScopeContract()
         return contract.contains_file(str(path))
-
-    def _append_filter_summary(
-        self,
-        output_lines: list[str],
-        dropped: dict[str, int],
-    ) -> None:
-        if dropped["policy"]:
-            output_lines.append(
-                f"INFO: ignored {dropped['policy']} finding(s) that conflict with the "
-                "project's configured sentinel/trace contract"
-            )
-        if dropped["source_scope"]:
-            output_lines.append(
-                f"INFO: ignored {dropped['source_scope']} finding(s) outside the "
-                "explicit source scope"
-            )
-        if dropped["ticket_scope"]:
-            output_lines.append(
-                f"INFO: ignored {dropped['ticket_scope']} finding(s) whose Ticket clause "
-                "was not an exact staged requirement"
-            )
-        if self._non_corrective_issues:
-            output_lines.append(
-                f"INFO: preserved {len(self._non_corrective_issues)} advisory/deferred "
-                "observation(s) without gating this review"
-            )
 
     def _done_finding_records(
         self,
@@ -2763,6 +2706,10 @@ Schema enforcement (applied upstream by the harness):
     ) -> dict[str, Any]:
         return {
             "review_detail_version": REVIEW_DETAIL_VERSION,
+            **self._audit,
+            "receipt_history": (self._get_prior_detail(self._criterion_key()) or {}).get(
+                "receipt_history", []
+            ),
             "issues": len(outcome.issues),
             "observation_count": len(outcome.records),
             "issue_list": outcome.records,
@@ -2833,6 +2780,26 @@ Schema enforcement (applied upstream by the harness):
 
     # --- _clean mode result builders ---
 
+    @staticmethod
+    def _carry_review_obligations(
+        issues: list[ReviewIssue], prior: dict[str, Any]
+    ) -> list[ReviewIssue]:
+        """Preserve open obligations when discovery restarts its contract."""
+        old_pending = (
+            prior.get("pending", prior.get("issue_list", []))
+            if prior.get("needs_discovery")
+            else []
+        )
+        records = {_finding_record(issue)["finding_id"]: issue for issue in issues}
+        for row in old_pending:
+            if (
+                row.get("status") not in {"waived", "fixed", "excluded", "superseded"}
+                and row.get("disposition", "current") == "current"
+            ):
+                issue = ReviewIssue.from_dict(row)
+                records.setdefault(_finding_record(issue)["finding_id"], issue)
+        return list(records.values())
+
     def _build_result_clean_initial(
         self,
         issues: list[ReviewIssue],
@@ -2847,6 +2814,8 @@ Schema enforcement (applied upstream by the harness):
         pass every finding is pending (nothing has been verified fixed
         yet) and ``resolved`` is empty.
         """
+        prior = self._get_prior_detail(crit_key) or {}
+        issues = self._carry_review_obligations(issues, prior)
         counts = count_by_severity(issues)
         gate_passed = not issues
 
@@ -2859,9 +2828,13 @@ Schema enforcement (applied upstream by the harness):
 
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
+            **self._audit,
+            "receipt_history": (self._get_prior_detail(self._criterion_key()) or {}).get(
+                "receipt_history", []
+            ),
             "issues": len(issues),
             "pending": [_finding_record(iss) for iss in issues],
-            "resolved": [],
+            "resolved": list(prior.get("resolved", [])),
             "observations": [_finding_record(iss) for iss in self._non_corrective_issues],
             **counts,
             "elapsed_s": round(elapsed, 1),
@@ -2995,6 +2968,10 @@ Schema enforcement (applied upstream by the harness):
         verify_attempts = context.existing_detail.get("verify_attempts", 0) + 1
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
+            **self._audit,
+            "receipt_history": (self._get_prior_detail(self._criterion_key()) or {}).get(
+                "receipt_history", []
+            ),
             "issues": len(context.remaining),
             "pending": context.pending,
             "resolved": context.resolved,

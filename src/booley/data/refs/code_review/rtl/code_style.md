@@ -20,3 +20,11 @@ Confidence:
 - **LOW** -- Style preference; may be intentional
 
 **Quality over quantity:** Prefer fewer, higher-confidence findings. Project-specific conventions override general best practices.
+
+## Ticket dispositions
+
+Cite a relevant Ticket or accepted-decision clause and explain its relation to
+this finding. Choose `current`, `advisory`, `deferred`, or `out_of_scope`
+deliberately. Project sentinel/trace guidance remains review context. The
+Specialist validates the schema and explicit source membership; it does not
+match clauses literally or rewrite dispositions from headings or phrases.

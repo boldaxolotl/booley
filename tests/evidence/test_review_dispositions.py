@@ -78,3 +78,19 @@ def test_legacy_impasse_is_visible_as_waiver() -> None:
 
     assert row["disposition"] == "waived"
     assert "Legacy automatic impasse" in row["justification"]
+
+
+def test_audit_is_not_a_disposition_or_report_requirement() -> None:
+    from booley.evidence.review_dispositions import collect_review_audit
+
+    row = {"reason": "source_scope", "ordinal": 1, "attempt_id": "one", "phase": "discovery"}
+    criteria = {
+        "review_rtl_bugs_clean": {
+            "detail": {"filtered": [row, row], "audit_evidence": "/tmp/immutable.json"}
+        }
+    }
+    assert collect_review_dispositions(criteria) == []
+    assert review_report_required(criteria) is False
+    audit = collect_review_audit(criteria)
+    assert len(audit) == 2
+    assert audit[0]["evidence"] == "/tmp/immutable.json"

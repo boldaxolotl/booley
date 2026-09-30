@@ -83,3 +83,11 @@ Judge every `ifdef`/`ifndef` against the configuration matrix established in ste
 - **Overly broad guards** (MINOR): Large blocks inside `ifdef` when only a small portion depends on the config
 
 When the configuration matrix is not fully documented, state your assumptions explicitly in the finding rather than guessing silently.
+
+## Ticket dispositions
+
+Cite a relevant Ticket or accepted-decision clause and explain its relation to
+this finding. Choose `current`, `advisory`, `deferred`, or `out_of_scope`
+deliberately. Project sentinel/trace guidance remains review context. The
+Specialist validates the schema and explicit source membership; it does not
+match clauses literally or rewrite dispositions from headings or phrases.

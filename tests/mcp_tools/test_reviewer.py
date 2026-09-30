@@ -244,7 +244,10 @@ def test_review_findings_outside_explicit_source_scope_are_dropped(
         kept = endpoint._filter_review_issues(issues, output_lines)
 
     assert [issue.file for issue in kept] == ["rtl/mod_a.sv"]
-    assert output_lines == ["INFO: ignored 1 finding(s) outside the explicit source scope"]
+    assert output_lines == [
+        "INFO: filtered 1 proposal(s) outside explicit source scope; preserved in audit evidence"
+    ]
+    assert endpoint._audit["filtered"][0]["reason"] == "source_scope"
 
 
 # ---------------------------------------------------------------------------
@@ -2992,7 +2995,7 @@ class TestCleanModeVerify:
         state_file: Path,
         tmp_path: Path,
     ):
-        """A dump-call false positive must not block when current source lacks it."""
+        """STILL_PRESENT remains pending even when no literal dump call exists."""
         tb_path = tmp_path / "verif" / "lane1" / "tb_aes_encrypt.sv"
         tb_path.parent.mkdir(parents=True)
         tb_path.write_text(
@@ -3056,10 +3059,10 @@ class TestCleanModeVerify:
         _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
-        assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.detail["pending"] == []
-        assert result.detail["resolved"][0]["status"] == "fixed"
+        assert result.exit_code == 1
+        assert result.criterion_met is False
+        assert result.detail["pending"][0]["status"] == "still_present"
+        assert result.detail["resolved"] == []
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_attempts_exhausted(
