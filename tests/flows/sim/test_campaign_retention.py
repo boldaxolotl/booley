@@ -3,6 +3,7 @@
 import json
 import re
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,45 @@ def campaign(tmp_path):
     progress.checkpoint(complete=True)
     assert outcome.exit_code == 0
     return outcome
+
+
+@pytest.mark.parametrize(
+    ("relative", "message"),
+    [
+        (Path("artifact"), "layout"),
+        (Path("artifacts/other/revision/target/tests/test/run.log"), "role"),
+        (Path("artifacts/candidate/target/not-tests/test/run.log"), "layout"),
+        (Path("artifacts/candidate/target/tests/test/result.txt"), "file"),
+        (Path("artifacts/candidate/target/tests/test/result/wrong.json"), "file"),
+        (Path("artifacts/candidate/target/tests/test/trace/wave.txt"), "file"),
+        (Path("artifacts/candidate/../tests/test/run.log"), "Unsafe"),
+    ],
+)
+def test_invocation_artifact_layout_rejects_unowned_paths(
+    relative: Path,
+    message: str,
+) -> None:
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _validate_invocation_artifact_layout,
+    )
+
+    with pytest.raises(CampaignRetentionError, match=message):
+        _validate_invocation_artifact_layout(relative)
+
+
+def test_referenced_invocation_artifact_must_exist(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _referenced_invocation_artifacts,
+    )
+
+    document = {
+        "artifacts": {"log": "reports/sim/1/artifacts/candidate/target/tests/test/run.log"}
+    }
+
+    with pytest.raises(CampaignRetentionError, match="missing or unsafe"):
+        _referenced_invocation_artifacts(tmp_path, document)
 
 
 def test_coverage_progress_stamps_run_identity_and_timestamp(tmp_path, monkeypatch):
@@ -133,6 +173,46 @@ def test_full_pruning_accepts_abandoned_nonterminal_progress(tmp_path):
 
     assert not invocation.exists()
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "artifact_relative",
+    [
+        "artifacts/candidate/sim_sim_0/tests/smoke/run.log",
+        "artifacts/candidate/sim_sim_0/tests/batch/run.log",
+        "artifacts/baseline/abc123/sim_sim_0/tests/smoke/run.log",
+    ],
+)
+def test_full_pruning_accepts_report_referenced_invocation_artifacts(tmp_path, artifact_relative):
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    invocation = tmp_path / "reports/sim/1"
+    progress = CoverageProgress(invocation, ("sim_0",))
+    progress.checkpoint(complete=True)
+    target = invocation / "targets/sim_0"
+    target.mkdir(parents=True)
+    artifact = invocation / artifact_relative
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("immutable evidence", encoding="utf-8")
+    (target / "simulation.json").write_text(
+        json.dumps(
+            {
+                "flow": "sim",
+                "target": "sim_0",
+                "tests": [
+                    {
+                        "name": "smoke",
+                        "artifacts": {"run_log": f"reports/sim/1/{artifact_relative}"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert not invocation.exists()
 
 
 def test_full_pruning_resumes_from_live_root_prune_journal(tmp_path):

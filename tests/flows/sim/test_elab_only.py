@@ -658,6 +658,20 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
     assert "old passing output" not in current
 
 
+def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(
+    tmp_path: Path,
+) -> None:
+    flow = _flow_with_state(tmp_path, ["standalone"])
+
+    target_pointer = flow._persist_elab_only_log("standalone", "target output")
+    sweep_pointer = flow._persist_standalone_log("sweep output")
+
+    assert target_pointer != sweep_pointer
+    assert (tmp_path / target_pointer).read_text(encoding="utf-8").endswith("target output")
+    assert sweep_pointer is not None
+    assert (tmp_path / sweep_pointer).read_text(encoding="utf-8").endswith("sweep output")
+
+
 def test_elab_only_dry_run_renders_setup_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

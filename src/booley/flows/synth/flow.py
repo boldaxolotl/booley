@@ -893,7 +893,7 @@ def _target_summary(
         # structuredContent, so the pointers ride along with the numbers.
         "artifacts": {
             **({"log": metrics.log_path} if metrics.log_path else {}),
-            **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
+            **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         },
     }
     if baseline is not None:
@@ -1469,7 +1469,22 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         output: str,
     ) -> None:
         """Persist output and surface terminal diagnostics without duplicating it."""
-        metrics.log_path = self._persist_synth_log(target, output)
+        self._persist_synth_log(target, output)
+        metrics.log_path = ""
+        if getattr(self, "_execution_role", "candidate") == "candidate":
+            invocation_dir = self.reserve_invocation_dir()
+            if invocation_dir is not None:
+                try:
+                    metrics.log_path = artifacts.publish_bytes(
+                        invocation_dir,
+                        ("artifacts", f"synth_{target_report_slug(target)}", "run.log"),
+                        output.encode(),
+                        work_dir=Path(self.args.work_dir),
+                    )
+                except OSError:
+                    logger.warning(
+                        "could not publish numbered synth log for %s", target, exc_info=True
+                    )
         metrics.dirs = self._artifact_dirs(target, metrics.synth_mode)
         if metrics.termination == "oom":
             logger.warning("Synth %s was killed by the cgroup OOM killer", target)
@@ -1707,25 +1722,41 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     ) -> dict[str, Any]:
         """Copy mutable log/timing evidence beside this invocation's report."""
         root = Path(self.args.work_dir)
-        destination = report_dir / "artifacts" / f"synth_{safe_target}"
+        invocation_dir = self.reserve_invocation_dir()
+        assert invocation_dir is not None
+        destination = invocation_dir / "artifacts" / f"synth_{safe_target}"
         result: dict[str, Any] = {
             **({"log": metrics.log_path} if metrics.log_path else {}),
-            **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
+            **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         }
-        if metrics.log_path:
-            source = root / metrics.log_path
-            if source.is_file():
-                destination.mkdir(parents=True, exist_ok=True)
-                copied = destination / "run.log"
-                shutil.copy2(source, copied)
-                result["log"] = posix_relpath(copied, root)
         timing = metrics.dirs.get("timing") if metrics.dirs else None
         if timing:
             source_dir = root / timing
             if source_dir.is_dir():
-                copied_dir = destination / "timing"
-                shutil.copytree(source_dir, copied_dir, dirs_exist_ok=True)
-                result.setdefault("dirs", {})["timing"] = posix_relpath(copied_dir, root)
+                try:
+                    copied_any = False
+                    for source in sorted(path for path in source_dir.rglob("*") if path.is_file()):
+                        artifacts.publish_file(
+                            invocation_dir,
+                            (
+                                "artifacts",
+                                f"synth_{safe_target}",
+                                "timing",
+                                *source.relative_to(source_dir).parts,
+                            ),
+                            source,
+                            work_dir=root,
+                        )
+                        copied_any = True
+                    if copied_any:
+                        result["timing"] = posix_relpath(destination / "timing", root)
+                except (OSError, ValueError):
+                    shutil.rmtree(destination / "timing", ignore_errors=True)
+                    logger.warning(
+                        "could not publish numbered synth timing evidence for %s",
+                        safe_target,
+                        exc_info=True,
+                    )
         return result
 
     def _write_progress_report(

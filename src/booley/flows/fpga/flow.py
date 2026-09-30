@@ -90,6 +90,7 @@ from ..implementation_publication import (
     ImplementationProgressRun,
     ImplementationPublisher,
     target_report_path,
+    target_report_slug,
 )
 from ..implementation_report import (
     ImplementationAggregate,
@@ -820,7 +821,8 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             combined = (
                 log_text + "\n" + stderr_text + (("\n" + report_text) if report_text else "")
             )
-            metrics.log_path = self._persist_fpga_log(target, combined)
+            self._persist_fpga_log(target, combined)
+            metrics.log_path = self._publish_numbered_fpga_log(target, combined)
         if metrics.passed and fingerprint:
             fpga_cache.store(
                 work_root,
@@ -898,16 +900,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         metrics.cache_fingerprint = hit.fingerprint
         metrics.run_evidence = hit.producer_evidence
         metrics.dirs = self._artifact_dirs(work_root)
-        self._attach_existing_log(target, metrics)
         return metrics
-
-    def _attach_existing_log(self, target: str, metrics: FpgaMetrics) -> None:
-        """Point a cache hit at the previous successful run log when it exists."""
-        if Path(self.args.work_dir) != getattr(self, "_project_root", None):
-            return
-        path = work_root_for(self.args.work_dir, self.name, target) / "run.log"
-        if path.is_file():
-            metrics.log_path = posix_relpath(path, self.args.work_dir)
 
     def _persist_fpga_log(self, target: str, text: str) -> str:
         """Write *target*'s full combined run log to its Edalize work dir.
@@ -931,6 +924,22 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             )
             return ""
         return posix_relpath(log_path, self.args.work_dir)
+
+    def _publish_numbered_fpga_log(self, target: str, text: str) -> str:
+        """Publish captured output as best-effort invocation evidence."""
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is None:
+            return ""
+        try:
+            return artifacts.publish_bytes(
+                invocation_dir,
+                ("artifacts", f"fpga_{target_report_slug(target)}", "run.log"),
+                text.encode(),
+                work_dir=Path(self.args.work_dir),
+            )
+        except OSError:
+            logger.warning("could not publish numbered FPGA log for %s", target, exc_info=True)
+            return ""
 
     @staticmethod
     def _failure_tail(log_text: str, stderr_text: str) -> str:
@@ -1335,7 +1344,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             cur = current_results[cfg]
             block = {
                 **({"log": cur.log_path} if cur.log_path else {}),
-                **({"dirs": dict(cur.dirs)} if cur.dirs else {}),
+                **({"live_dirs": dict(cur.dirs)} if cur.dirs else {}),
             }
             if block:
                 detail.setdefault("artifacts", {})[cfg] = block
@@ -1481,7 +1490,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         report["artifacts"] = {
             "report": posix_relpath(report_path, self.args.work_dir),
             **({"log": cur.log_path} if cur.log_path else {}),
-            **({"dirs": dict(cur.dirs)} if cur.dirs else {}),
+            **({"live_dirs": dict(cur.dirs)} if cur.dirs else {}),
         }
         return report
 

@@ -688,8 +688,14 @@ def _assert_authoritative_cocotb_outcome(outcome: SimulationTargetOutcome) -> No
     assert outcome.tests[1].workload_snapshot is not None
     assert outcome.builds[0].passed is True
     assert sum(a.kind == "live_run_log" for a in outcome.artifacts) == 1
+    assert sum(a.kind == "run_log" for a in outcome.artifacts) == 1
     assert outcome.tests[0].run_log_path == outcome.tests[1].run_log_path
-    assert Path(outcome.tests[0].run_log_path).parts[-3:] == ("build", "sim", "run.log")
+    assert Path(outcome.tests[0].run_log_path).parts[-4:] == (
+        "sim_sim",
+        "tests",
+        "batch",
+        "run.log",
+    )
 
 
 def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -> None:
@@ -2512,6 +2518,34 @@ def test_trace_evidence_must_be_fresh_for_this_attempt(
     assert outcome.verdict == expected
     traces = [artifact for artifact in outcome.artifacts if artifact.kind == "trace"]
     assert bool(traces) is fresh
+
+
+def test_trace_archive_failure_is_typed_infrastructure(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    run_cwd = tmp_path / "run"
+    run_cwd.mkdir()
+    trace = run_cwd / "wave.fst"
+
+    with patch(
+        "booley.flows.sim.execution.engine.flow_artifacts.publish_file",
+        side_effect=OSError("evidence disk full"),
+    ):
+        outcome = _run_execution(
+            handle,
+            prepared,
+            _passing_trace_invoker(handle, prepared, trace, fresh=True),
+            ("smoke",),
+            cocotb=False,
+            artifact_root=tmp_path / "reports/sim/1/artifacts/candidate",
+            options=SimulationOptions(trace=True),
+            trace_mode=TraceMode.NATIVE_FST,
+        )
+
+    assert outcome.verdict == "error"
+    assert outcome.infrastructure_failure is not None
+    assert outcome.infrastructure_failure.kind == "artifact_persistence"
+    assert "evidence disk full" in outcome.infrastructure_failure.detail
 
 
 @pytest.mark.parametrize(

@@ -326,6 +326,87 @@ def test_artifact_path_component_never_embeds_unsafe_test_names():
     assert encoded != _artifact_path_component("../../different")
 
 
+def test_direct_evidence_namespaces_separate_candidate_and_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow = _make_flow(tmp_path, config="lite")
+    invocation = flow.reserve_invocation_dir()
+    assert invocation is not None
+    monkeypatch.setattr(
+        flow,
+        "_planned_cycle_baseline_selection",
+        lambda: ("abc123", ["lite"], None),
+    )
+
+    assert flow._simulation_artifact_root(None) == invocation / "artifacts/candidate"
+    assert flow._simulation_artifact_root("baseline") == (invocation / "artifacts/baseline/abc123")
+
+
+def test_baseline_evidence_is_reported_and_prunable(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.flows.sim.coverage_progress import CoverageProgress
+
+    flow = _make_flow(tmp_path, config="lite")
+    invocation = flow.reserve_invocation_dir()
+    assert invocation is not None
+    log = invocation / "artifacts/baseline/abc123/sim_lite/tests/smoke/run.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("baseline output", encoding="utf-8")
+    identity = "acme:lib:demo:1#lite"
+    flow._baseline_results = {
+        identity: TargetResult(
+            target="lite",
+            target_identity=identity,
+            artifacts=(
+                SimulationArtifactEvidence("run_log", str(log), log.stat().st_size, ("smoke",)),
+            ),
+        )
+    }
+    candidate = TargetResult(target="lite", target_identity=identity, passed=True)
+
+    flow._write_target_report(candidate)
+    CoverageProgress(invocation, ("lite",)).checkpoint(complete=True)
+    report = json.loads((invocation / "targets/lite/simulation.json").read_text())
+
+    assert report["baseline_evidence"][identity]["artifacts"]["log"].endswith(
+        "artifacts/baseline/abc123/sim_lite/tests/smoke/run.log"
+    )
+    flow.context.publication_resources.close()
+    prune_invocation(tmp_path / "reports", 1)
+    assert not invocation.exists()
+
+
+def test_artifact_report_keys_do_not_drop_colliding_test_names(tmp_path: Path) -> None:
+    flow = _make_flow(tmp_path, config="lite")
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text("{}", encoding="utf-8")
+    second.write_text("{}", encoding="utf-8")
+    block = flow._artifacts_for(
+        TargetResult(
+            target="lite",
+            artifacts=(
+                SimulationArtifactEvidence("result", str(first), 2, ("a_b", "c")),
+                SimulationArtifactEvidence("result", str(second), 2, ("a", "b_c")),
+            ),
+        )
+    )
+
+    assert set(block.values()) == {"first.json", "second.json"}
+    assert len(block) == 2
+
+
+def test_dry_run_does_not_reserve_invocation_directory(tmp_path: Path) -> None:
+    flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
+
+    result = flow._run()
+
+    assert result.exit_code == EXIT_SUCCESS
+    report_root = tmp_path / "reports/sim"
+    assert not any(path.name.isdigit() for path in report_root.iterdir())
+    assert not list(report_root.glob("*.lock"))
+
+
 # A minimal sim `.core` for the real-fusesoc resolution e2e: the custom
 # Verilator main + dump SV are compiled *sources* (decision 4), so they are
 # fileset members (the cppSource main wired via --exe), and the --timing option
@@ -1647,7 +1728,7 @@ class TestReportGeneration:
         """Each HDL process gets durable evidence before the next one starts."""
         flow = _make_flow(tmp_path, config="lite")
         build_root = tmp_path / "build" / "lite"
-        first_path = tmp_path / "reports/artifacts/sim_lite/tests/smoke/run.log"
+        first_path = tmp_path / "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke/run.log"
         first_bytes: bytes | None = None
         calls = 0
 
@@ -1684,8 +1765,8 @@ class TestReportGeneration:
         assert [test["name"] for test in report["tests"]] == ["smoke", "stress"]
         pointers = [test["artifacts"]["run_log"] for test in report["tests"]]
         assert pointers == [
-            "reports/artifacts/sim_lite/tests/smoke/run.log",
-            "reports/artifacts/sim_lite/tests/stress/run.log",
+            "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke/run.log",
+            "reports/sim/1/artifacts/candidate/sim_lite/tests/stress/run.log",
         ]
         smoke_log, stress_log = (tmp_path / pointer for pointer in pointers)
         assert smoke_log.read_bytes() == first_bytes
@@ -1722,8 +1803,43 @@ class TestReportGeneration:
         report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         assert len(report["tests"]) == 1
         pointer = report["tests"][0]["artifacts"]["run_log"]
-        assert pointer == "reports/artifacts/sim_lite/tests/smoke/run.log"
+        assert pointer == "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke/run.log"
         assert "SINGLE_ONLY" in (tmp_path / pointer).read_text()
+
+    def test_consecutive_direct_runs_preserve_first_archived_evidence(self, tmp_path: Path):
+        def run(output: str):
+            flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "smoke"])
+            with (
+                patch(
+                    "booley.flows.sim.flow._get_test_names",
+                    return_value={"lite": ["smoke"]},
+                ),
+                patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
+                patch.object(
+                    flow,
+                    "_execute",
+                    return_value=SubprocessResult(
+                        returncode=0,
+                        stdout=f"{output}\n[SIM_RESULT] PASSED\n",
+                        duration_s=0.1,
+                    ),
+                ),
+            ):
+                flow._run()
+            report_dir = sorted((tmp_path / "reports/sim").glob("[0-9]*"))[-1]
+            report = json.loads(
+                (report_dir / "targets/lite/simulation.json").read_text(encoding="utf-8")
+            )
+            path = tmp_path / report["tests"][0]["artifacts"]["run_log"]
+            return path, path.read_bytes()
+
+        first_path, first_bytes = run("FIRST_ONLY")
+        second_path, second_bytes = run("SECOND_ONLY")
+
+        assert first_path != second_path
+        assert first_path.read_bytes() == first_bytes
+        assert b"FIRST_ONLY" in first_bytes
+        assert b"SECOND_ONLY" in second_bytes
 
     def test_completed_target_survives_later_campaign_crash(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite,full")
@@ -2179,10 +2295,8 @@ class TestTruncationResilientReport:
         _append_test_output_line(tr, lines)
         assert "  --- error output (last 30 lines) ---" in lines
 
-    def test_headline_prints_run_log_path_on_failure(self, tmp_path: Path, capsys):
-        """The headline block prints the project-relative run.log path recorded
-        at prepare time (the resolved edalize build dir) — for a FAILING
-        target whose log this invocation actually wrote."""
+    def test_headline_prints_numbered_run_log_path_on_failure(self, tmp_path: Path, capsys):
+        """The failure headline cites immutable invocation evidence."""
         from booley.flows.sim.flow import TargetResult, TestResult
 
         flow = _make_flow(tmp_path, config="lite")
@@ -2197,17 +2311,25 @@ class TestTruncationResilientReport:
             / "lite"
         )
         flow._record_run_log_dir("lite", build_root)
-        write_run_log(build_root, "[SIM_RESULT] FAILED\n")  # this run's output
+        write_run_log(build_root, "[SIM_RESULT] FAILED\n")
+        pointer = "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke/run.log"
         tr = TargetResult(
             target="lite",
             passed=False,
             elapsed_s=1.0,
-            tests=[TestResult(name="smoke", passed=False, elapsed_s=1.0)],
+            tests=[
+                TestResult(
+                    name="smoke",
+                    passed=False,
+                    elapsed_s=1.0,
+                    run_log_path=pointer,
+                )
+            ],
         )
 
         report = flow._format_summary([tr], [], False)
 
-        assert ("log: .booley_project/.runtime/edalize/sim/lite/demo_0/lite/run.log") in report
+        assert f"log: {pointer}" in report
         # The log pointer belongs to the headline block, i.e. before RESULT only.
         assert report.splitlines()[-1] == "RESULT: FAIL (0/1 targets)"
 
@@ -2355,8 +2477,10 @@ class TestBuildContextReporting:
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
         flow = _make_flow(tmp_path, config="sim", seed_core=False)
         flow._test_names_map = {}
-        build_root = tmp_path / "build"
-        build_root.mkdir()
+        invocation = flow.reserve_invocation_dir()
+        assert invocation is not None
+        build_root = invocation / "artifacts/candidate/sim_sim/tests/smoke"
+        build_root.mkdir(parents=True)
         log = write_run_log(build_root, "simulator output\n")
         result = build_root / "result.json"
         result.write_text("{}", encoding="utf-8")
@@ -2369,7 +2493,7 @@ class TestBuildContextReporting:
                 passed=False,
                 elapsed_s=1.0,
                 artifacts=(
-                    SimulationArtifactEvidence("live_run_log", str(log), log.stat().st_size, ()),
+                    SimulationArtifactEvidence("run_log", str(log), log.stat().st_size, ()),
                     SimulationArtifactEvidence("result", str(result), result.stat().st_size, ()),
                     SimulationArtifactEvidence("trace", str(trace), trace.stat().st_size, ()),
                 ),
@@ -2379,9 +2503,10 @@ class TestBuildContextReporting:
         artifacts = json.loads(
             (tmp_path / "reports" / "sim/1/targets/sim/simulation.json").read_text()
         )["artifacts"]
-        assert artifacts["log"] == "build/run.log"
-        assert artifacts["result"] == "build/result.json"
-        assert artifacts["trace"] == "build/trace.fst"
+        prefix = "reports/sim/1/artifacts/candidate/sim_sim/tests/smoke"
+        assert artifacts["log"] == f"{prefix}/run.log"
+        assert artifacts["result"] == f"{prefix}/result.json"
+        assert artifacts["trace"] == f"{prefix}/trace.fst"
         assert artifacts["report"] == "reports/sim/1/targets/sim/simulation.json"
         # Nothing wrote these, so they are absent rather than dead pointers.
         assert "results_xml" not in artifacts
@@ -2678,7 +2803,7 @@ class TestTraceArtifactReported:
             result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
-        rel = "build/lite/dump.fst"
+        rel = "reports/sim/1/artifacts/candidate/sim_lite/tests/lite/trace/dump.fst"
         assert f"trace: {rel} (4.0 KB, 42 signals, scope tb.dut, 900 ticks)" in result.report_text
         report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         assert report["tests"][0]["trace_path"] == rel

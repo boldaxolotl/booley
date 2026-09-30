@@ -26,6 +26,7 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import ClockTiming, make_clock_timing
+from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.implementation_comparison import TargetExecutionRef
@@ -204,22 +205,98 @@ def _dry_run_flow(work_dir: Path, target: str = "lite") -> AsicSynthesizeFlow:
 
 def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
     flow = AsicSynthesizeFlow()
-    flow._args = SimpleNamespace(work_dir=tmp_path)
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
     shared = tmp_path / "shared"
     timing = shared / "timing"
     timing.mkdir(parents=True)
     log = shared / "run.log"
     log.write_text("first log\n", encoding="utf-8")
     (timing / "slack.rpt").write_text("first timing\n", encoding="utf-8")
-    metrics = SynthMetrics(log_path="shared/run.log", dirs={"timing": "shared/timing"})
+    invocation = flow.reserve_invocation_dir()
+    assert invocation is not None
+    durable_log = invocation / "artifacts/synth_demo/run.log"
+    durable_log.parent.mkdir(parents=True)
+    durable_log.write_text("first log\n", encoding="utf-8")
+    metrics = SynthMetrics(
+        log_path=durable_log.relative_to(tmp_path).as_posix(),
+        dirs={"timing": "shared/timing"},
+    )
 
     artifacts = flow._snapshot_report_artifacts(tmp_path / "reports", "demo", metrics)
     log.write_text("second log\n", encoding="utf-8")
     (timing / "slack.rpt").write_text("second timing\n", encoding="utf-8")
 
     assert (tmp_path / artifacts["log"]).read_text(encoding="utf-8") == "first log\n"
-    copied_timing = tmp_path / artifacts["dirs"]["timing"] / "slack.rpt"
+    copied_timing = tmp_path / artifacts["timing"] / "slack.rpt"
     assert copied_timing.read_text(encoding="utf-8") == "first timing\n"
+
+
+def test_numbered_log_publication_failure_is_best_effort(tmp_path: Path) -> None:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    metrics = SynthMetrics()
+    process = SubprocessResult(returncode=0, stdout="ok", stderr="")
+
+    with patch(
+        "booley.flows.synth.flow.artifacts.publish_bytes",
+        side_effect=OSError("evidence disk full"),
+    ):
+        flow._record_boundary_diagnostics("demo", metrics, process, 0.1, "complete output")
+
+    assert metrics.log_path == ""
+    assert work_root_for(tmp_path, "synth", "demo").joinpath("run.log").is_file()
+
+
+def test_timing_snapshot_failure_cleans_partial_evidence(tmp_path: Path) -> None:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    timing = tmp_path / "shared/timing"
+    timing.mkdir(parents=True)
+    (timing / "one.rpt").write_text("one", encoding="utf-8")
+    (timing / "two.rpt").write_text("two", encoding="utf-8")
+    metrics = SynthMetrics(dirs={"timing": "shared/timing"})
+    real_publish = artifacts.publish_file
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("evidence disk full")
+        return real_publish(*args, **kwargs)
+
+    with patch("booley.flows.synth.flow.artifacts.publish_file", side_effect=fail_second):
+        published = flow._snapshot_report_artifacts(tmp_path / "reports", "demo", metrics)
+
+    assert "timing" not in published
+    assert not (tmp_path / "reports/synth/1/artifacts/synth_demo/timing").exists()
 
 
 def test_clockless_sdc_marker_is_classified_as_configuration_error(tmp_path: Path) -> None:
@@ -1586,25 +1663,12 @@ class TestSingleConfigRun:
 
         assert result.exit_code == EXIT_SUCCESS
 
-    def test_workspace_is_owned_through_artifact_snapshot(
+    def test_captured_output_publication_does_not_copy_shared_log(
         self,
         flow_and_state,
         tmp_path: Path,
     ):
         flow, _ = flow_and_state
-        copy_started = Event()
-        release_copy = Event()
-        build_root = work_root_for(tmp_path, "synth", "lite")
-        real_copy2 = shutil.copy2
-
-        def held_copy(source, destination, *args, **kwargs):
-            if Path(source).is_relative_to(build_root):
-                copy_started.set()
-                if not release_copy.wait(5.0):
-                    raise TimeoutError("test did not release artifact snapshot")
-            return real_copy2(source, destination, *args, **kwargs)
-
-        dry_run = _dry_run_flow(tmp_path)
         synth_output = "Chip area for top module '\\design_top': 6400.0\n"
 
         with (
@@ -1618,25 +1682,17 @@ class TestSingleConfigRun:
                     duration_s=1.0,
                 ),
             ),
-            patch.object(shutil, "copy2", side_effect=held_copy),
+            patch.object(shutil, "copy2", wraps=shutil.copy2) as copy2,
             patch.object(
                 fusesoc_registry,
                 "_setup_command",
                 return_value=["fusesoc", "run", "--setup", "--target", "lite"],
             ),
-            ThreadPoolExecutor(max_workers=1) as pool,
         ):
-            running = pool.submit(flow._run)
-            assert copy_started.wait(5.0)
-            try:
-                preview = dry_run._run()
-                assert build_root.is_dir()
-                assert preview.exit_code == EXIT_SUCCESS
-            finally:
-                release_copy.set()
-            result = running.result(timeout=10.0)
+            result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
+        copy2.assert_not_called()
 
     def test_workspace_lease_timeout_is_an_infrastructure_error(
         self,
@@ -1830,9 +1886,9 @@ class TestSingleConfigRun:
         # directories holding everything else.
         assert "reports" not in data
         artifacts = data["artifacts"]
-        assert artifacts["report"] == "reports/synth_lite.json"
+        assert artifacts["report"] == "reports/synth/1/targets/lite.json"
         assert artifacts["log"].endswith("run.log")
-        assert artifacts["dirs"]["build"].endswith("synth/lite/synth")
+        assert artifacts["live_dirs"]["build"].endswith("synth/lite/synth")
 
     def test_artifact_dirs_omit_a_timing_dir_that_never_appeared(
         self, flow_and_state, tmp_path: Path
@@ -1856,7 +1912,7 @@ class TestSingleConfigRun:
 
         dirs = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))[
             "artifacts"
-        ]["dirs"]
+        ]["live_dirs"]
         assert "build" in dirs
         assert "timing" not in dirs
 
@@ -1897,11 +1953,11 @@ class TestSingleConfigRun:
             (tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8")
         )["artifacts"]
         # Three entries total, whatever the run produced.
-        assert set(artifacts) == {"report", "log", "dirs"}
-        listing = {p.name for p in (tmp_path / artifacts["dirs"]["build"]).iterdir()}
+        assert set(artifacts) == {"report", "log", "live_dirs"}
+        listing = {p.name for p in (tmp_path / artifacts["live_dirs"]["build"]).iterdir()}
         assert set(written) <= listing, "every artifact is reachable by listing the dir"
         # Every pointer is work-dir-relative and really resolves.
-        assert not artifacts["dirs"]["build"].startswith("/")
+        assert not artifacts["live_dirs"]["build"].startswith("/")
         assert (tmp_path / artifacts["log"]).is_file()
 
     def test_subprocess_failure_without_metrics_fails_json(
@@ -3970,8 +4026,8 @@ class TestTruncationResilientOutput:
         assert "Number of cells: 12345" in log_file.read_text(encoding="utf-8")
         # The report points at the persisted log, project-relative.
         assert (
-            "[synth] lite: log: .booley_project/.runtime/edalize/synth/lite/run.log"
-        ) in result.report_text
+            "[synth] lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
+        )
 
     def test_synth_log_written_on_fail(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
@@ -3995,8 +4051,8 @@ class TestTruncationResilientOutput:
         assert "Yosys died before stat output" in text
         assert "ERROR: frontend rejected converted Verilog" in text
         assert (
-            "[synth] lite: log: .booley_project/.runtime/edalize/synth/lite/run.log"
-        ) in result.report_text
+            "[synth] lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
+        )
 
     def test_command_echo_demoted_to_debug(
         self,

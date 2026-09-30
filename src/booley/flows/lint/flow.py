@@ -48,6 +48,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -373,12 +374,13 @@ def _lint_warnings_as_errors(work_dir: Path) -> bool:
 _MAX_ECHOED_WARNINGS = 5
 
 
-def _echo_warnings(unique: list[LintWarning]) -> None:
+def _echo_warnings(unique: list[LintWarning], report_path: Path | None = None) -> None:
     """Print the first few warnings with file:line so they are actionable."""
     for w in unique[:_MAX_ECHOED_WARNINGS]:
         print(f"[lint]   %Warning-{w.rule}: {w.file}:{w.line}:{w.col} {w.message}")
     if len(unique) > _MAX_ECHOED_WARNINGS:
-        print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more (see lint_report.json)")
+        suffix = f" (see {report_path})" if report_path is not None else ""
+        print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more{suffix}")
 
 
 def _target_summary_line(result: LintConfigResult) -> str:
@@ -639,6 +641,28 @@ class LintFlow(BuiltinFlow[LintRequest]):
             raise ValueError(command[0])
         return command
 
+    def _persist_lint_output(self, selector: str, combined: str) -> str:
+        """Refresh the live tail and publish captured numbered evidence."""
+        try:
+            build_root = work_root_for(self.args.work_dir, "lint", selector)
+            build_root.mkdir(parents=True, exist_ok=True)
+            write_run_log(build_root, combined)
+        except OSError:
+            logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
+        invocation_dir = getattr(self, "_lint_invocation_dir", None)
+        if invocation_dir is None:
+            return ""
+        try:
+            return artifacts.publish_bytes(
+                invocation_dir,
+                ("artifacts", selector, "run.log"),
+                combined.encode(),
+                work_dir=self.args.work_dir,
+            )
+        except OSError:
+            logger.warning("could not publish lint evidence for %s", selector, exc_info=True)
+            return ""
+
     def _run_lint_target(
         self,
         target: TargetHandle,
@@ -680,16 +704,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # carries counts, but the actionable ``%Warning-...: file:line`` text
         # otherwise exists only on the transient stdout — an agent chasing a
         # lint regression had nothing on disk to act on.
-        log_path: Path | None = None
-        try:
-            build_root = work_root_for(self.args.work_dir, "lint", selector)
-            build_root.mkdir(parents=True, exist_ok=True)
-            # write_run_log, not a bare write_text: it is atomic (no torn read
-            # for a concurrent tail) and preserves the run header above.
-            log_path = write_run_log(build_root, combined)
-            result.log_path = posix_relpath(log_path, self.args.work_dir)
-        except OSError:
-            logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
+        result.log_path = self._persist_lint_output(selector, combined)
+        evidence_log = self.args.work_dir / result.log_path if result.log_path else None
         if proc.timed_out:
             result.error = f"Timed out after {self._get_timeout()}s"
             result.error_is_eda_tool_failure = True
@@ -700,11 +716,11 @@ class LintFlow(BuiltinFlow[LintRequest]):
             result.warnings = parse_warnings(combined, selector)
         if proc.returncode != 0 and not result.error:
             _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
-            if result.error and log_path is not None:
+            if result.error and evidence_log is not None:
                 # The classified error cites only the FIRST error line; the
                 # rest of the linter's output was already persisted above, so
                 # point at it — this-invocation-written, never a stale log.
-                pointer = posix_relpath(log_path, self.args.work_dir)
+                pointer = posix_relpath(evidence_log, self.args.work_dir)
                 result.error += f" (full log: {pointer})"
         return result
 
@@ -806,13 +822,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         errored: list[LintConfigResult] | None = None,
         target_results: list[LintConfigResult] | None = None,
     ) -> Path | None:
-        """Write lint_report.json to the report dir (plus a per-run copy).
-
-        ``report_dir/lint_report.json`` stays the stable "latest run" path the
-        console summary points at, but each run also lands a copy in the
-        numbered ``flow-reports/lint/<N>/`` invocation dir so consecutive runs
-        (e.g. a Verilator pass then a Verible pass) stop clobbering each other.
-        """
+        """Publish the numbered report, then refresh its flat latest alias."""
         report_dir = self.args.report_dir
         if report_dir is None:
             return None
@@ -848,7 +858,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 for cr in (target_results or [])
             ],
         }
-        report_path = report_dir / "lint_report.json"
+        invocation_dir = getattr(self, "_lint_invocation_dir", None)
+        if invocation_dir is None:
+            raise RuntimeError("lint invocation was not reserved before execution")
+        report_path = invocation_dir / "lint_report.json"
         # Self-locating: the console summary already names lint_report.json on
         # WARN, but a consumer reading the JSON straight off disk (triage, the
         # MCP poll path) had no way back to the raw linter output per Target.
@@ -856,11 +869,16 @@ class LintFlow(BuiltinFlow[LintRequest]):
             "report": posix_relpath(report_path, self.args.work_dir),
             **{f"log_{cr.target}": cr.log_path for cr in (target_results or []) if cr.log_path},
         }
-        payload = json.dumps(report, indent=2)
-        report_path.write_text(payload, encoding="utf-8")
-        invocation_dir = self.reserve_invocation_dir()
-        if invocation_dir is not None:
-            (invocation_dir / "lint_report.json").write_text(payload, encoding="utf-8")
+        payload = json.dumps(report, indent=2).encode()
+        artifacts.publish_bytes(
+            invocation_dir,
+            ("lint_report.json",),
+            payload,
+            work_dir=self.args.work_dir,
+        )
+        stable_report = report_dir / "lint_report.json"
+        atomic_write_json(stable_report, report)
+        stable_report.chmod(0o644)
         return report_path
 
     # --- Main execution ---
@@ -968,6 +986,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 report_text="lint planning failed: " + "; ".join(plan.aggregate_errors),
                 detail={"plan": plan.as_dict()},
             )
+        self._lint_invocation_dir = self.reserve_invocation_dir()
         for target in targets:
             self._open_run_log(
                 target.selector,
@@ -1002,7 +1021,12 @@ class LintFlow(BuiltinFlow[LintRequest]):
         if self.args.scope:
             unique = filter_by_scope(unique, self.args.scope)
         print(f"[lint] {len(unique)} unique in-scope warning{'s' if len(unique) != 1 else ''}")
-        _echo_warnings(unique)
+        invocation_report = (
+            self._lint_invocation_dir / "lint_report.json"
+            if self._lint_invocation_dir is not None
+            else None
+        )
+        _echo_warnings(unique, invocation_report)
 
         # Set per-Target criteria
         errored = [cr for cr in target_results if cr.error]

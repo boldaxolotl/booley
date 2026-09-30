@@ -217,10 +217,11 @@ def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) 
     report_dir = tmp_path / "reports"
     invocation = report_dir / "synth" / "1"
     invocation.mkdir(parents=True)
-    log = tmp_path / "build" / "run.log"
-    log.parent.mkdir()
+    log = invocation / "artifacts" / "asic" / "run.log"
+    log.parent.mkdir(parents=True)
     log.write_text("complete log\n", encoding="utf-8")
-    baseline_log = tmp_path / "build" / "baseline.log"
+    baseline_log = invocation / "artifacts" / "baseline" / "run.log"
+    baseline_log.parent.mkdir(parents=True)
     baseline_log.write_text("baseline log\n", encoding="utf-8")
     report = build_implementation_report(
         _context(
@@ -228,8 +229,13 @@ def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) 
             requested_baseline_ref="main~1",
             resolved_baseline_ref="a" * 40,
         ),
-        _run(artifacts={"log": "build/run.log", "dirs": {"build": "build"}}),
-        _run(artifacts={"log": "build/baseline.log"}),
+        _run(
+            artifacts={
+                "log": log.relative_to(tmp_path).as_posix(),
+                "dirs": {"build": "build"},
+            }
+        ),
+        _run(artifacts={"log": baseline_log.relative_to(tmp_path).as_posix()}),
         MetricPolicy(("area",)),
     )
     publisher = ImplementationPublisher(tmp_path, report_dir, invocation)
@@ -247,10 +253,12 @@ def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) 
         numbered.relative_to(tmp_path).as_posix()
     )
     snapshot = tmp_path / payload[ENVELOPE_KEY]["artifacts"]["log"]
+    assert snapshot == log
     assert snapshot.read_text(encoding="utf-8") == "complete log\n"
     assert payload[ENVELOPE_KEY]["artifacts"]["live_dirs"] == {"build": "build"}
     baseline_artifacts = payload[ENVELOPE_KEY]["comparison"]["baseline"]["artifacts"]
     baseline_snapshot = tmp_path / baseline_artifacts["log"]
+    assert baseline_snapshot == baseline_log
     assert baseline_snapshot.read_text(encoding="utf-8") == "baseline log\n"
 
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.sim import campaign_durability
+from booley.flows import artifact_durability as campaign_durability
 from booley.flows.sim.build_session import SimulationBuildSlotError
 from booley.flows.sim.execution import pre_sim
 from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution

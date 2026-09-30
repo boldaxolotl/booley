@@ -558,7 +558,7 @@ class StandaloneMixin:
         it can never clobber — or be clobbered by — a per-Target build's
         run.log. Best-effort: a log-write failure must never fail the run.
         """
-        pointer = self._persist_elab_only_log("standalone", combined)
+        pointer = self._persist_elab_only_log("standalone-sweep", combined)
         return pointer or None
 
     def _standalone_failure_lines(
