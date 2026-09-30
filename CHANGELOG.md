@@ -50,7 +50,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   doctor` FAILs and `booley board` and `booley run` refuse to start, both when
   Tickets remain in the old `board/<status>/` folders and when Git still
   tracks files under `tickets/board/` or `tickets/state/`. Follow
-  [Migrating a Ticket Board to state records](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#migrating-a-ticket-board-to-state-records).
+  [the Troubleshooting entry](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
 - `booley board` now lists live Tickets only. Add `--all` (also accepted by
   `python -m booley.ticket_board board|show|read-board`) to include done and
   archived Tickets, dated by when they closed. `booley board show <slug>`

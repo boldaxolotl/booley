@@ -39,8 +39,8 @@ from .lifecycle import BOARD_DIR_NAME
 logger = logging.getLogger(__name__)
 
 MIGRATION_GUIDE = (
-    "https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md"
-    "#migrating-a-ticket-board-to-state-records"
+    "https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md"
+    "#booley-board-refuses-to-start-the-ticket-board-needs-migrating"
 )
 
 _GIT_TIMEOUT_SECONDS = 10
