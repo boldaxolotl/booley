@@ -154,7 +154,7 @@ def test_taxi_mcp_validator_rejects_inconsistent_observation_preview(
         module.validate_mcp_response(response, response.stat().st_size)
 
 
-def _coverage_attempt_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _coverage_refusal_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     manifest = _write(
         tmp_path / "manifest.json",
         {"work_items": [{"kind": "coverage_aggregate", "work_item_id": "item:0000:coverage"}]},
@@ -167,68 +167,52 @@ def _coverage_attempt_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
             "attempt_id": "first",
         },
     )
-    interrupted_result = tmp_path / "interrupted-result.json"
-    resumed_value = {
-        "work_item_id": "item:0000:coverage",
-        "attempt_id": "second",
-        "producer_invocation_id": 2,
-        "state": "completed",
-    }
-    resumed = _write(tmp_path / "resumed.json", resumed_value)
-    return manifest, interrupted_attempt, interrupted_result, resumed
-
-
-def _coverage_reference_files(tmp_path: Path) -> tuple[Path, Path, list[Path], dict[str, object]]:
-    coverage = _write(
-        tmp_path / "coverage.json",
-        {"campaign_id": "nested", "invocation": {"id": 1}},
-    )
-    coverage_raw = coverage.read_bytes()
-    coverage_digest = "sha256:" + __import__("hashlib").sha256(coverage_raw).hexdigest()
-    reference_value = {
-        "$schema": "booley.coverage-campaign-reference/v1",
-        "origin_invocation_id": 1,
-        "producer_invocation_id": 2,
-        "simulation_work_item_id": "item:0000:coverage",
-        "simulation_attempt_id": "second",
-        "coverage_campaign": {
-            "campaign_id": "nested",
-            "path_base": "origin_target",
-            "bytes": len(coverage_raw),
-            "sha256": coverage_digest,
+    rejection = _write(
+        tmp_path / "rejection.json",
+        {
+            "exit_code": 2,
+            "dry_run_exit_code": 2,
+            "diagnostic": "start a new run: booley flow sim --target sim_0 --coverage",
+            "attempts_before": ["first"],
+            "attempts_after": ["first"],
+            "eda_launches": 0,
+            "control_exit_code": 0,
         },
-    }
-    reference = _write(tmp_path / "coverage-reference.json", reference_value)
-    projections = [
-        _write(
-            tmp_path / f"projection-{index}.json",
-            {"coverage_campaign": "coverage.json", "coverage_campaign_base": "origin_target"},
-        )
-        for index in range(2)
-    ]
-    return coverage, reference, projections, reference_value
+    )
+    return manifest, interrupted_attempt, tmp_path / "interrupted-result.json", rejection
 
 
-def test_coverage_phase5_validator_binds_origin_reference(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda value: value.update(exit_code=0), "did not exit 2"),
+        (lambda value: value.update(dry_run_exit_code=0), "dry-run did not exit 2"),
+        (lambda value: value.update(attempts_after=["first", "second"]), "attempt inventory"),
+        (
+            lambda value: (value.pop("attempts_before"), value.pop("attempts_after")),
+            "omitted the attempt inventory",
+        ),
+        (lambda value: value.update(diagnostic="resume failed"), "new coverage run"),
+        (lambda value: value.update(eda_launches=1), "launched EDA"),
+    ],
+)
+def test_coverage_phase5_validator_requires_resume_refusal(
+    tmp_path: Path, mutation: Callable[[dict[str, object]], object], message: str
+) -> None:
     module = _module(
         ROOT / "qa/shared/coverage/simulation-campaign/validate_aggregate.py",
         "coverage_phase5",
     )
-    attempts = _coverage_attempt_files(tmp_path)
-    coverage, reference, projections, reference_value = _coverage_reference_files(tmp_path)
-    module.validate(
-        *attempts,
-        coverage,
-        reference,
-        projections,
-    )
+    manifest, attempt, result, rejection = _coverage_refusal_files(tmp_path)
+    module.validate(manifest, attempt, result, rejection)
 
-    reference_value["producer_invocation_id"] = 3
-    _write(reference, reference_value)
-    with pytest.raises(ValueError, match="producer invocation"):
-        module.validate(
-            *attempts,
-            coverage,
-            reference,
-            projections,
-        )
+    document = json.loads(rejection.read_text())
+    mutation(document)
+    _write(rejection, document)
+    with pytest.raises(ValueError, match=message):
+        module.validate(manifest, attempt, result, rejection)
+
+    _write(rejection, json.loads(_coverage_refusal_files(tmp_path)[3].read_text()))
+    result.write_text("{}")
+    with pytest.raises(ValueError, match="terminal result"):
+        module.validate(manifest, attempt, result, rejection)

@@ -140,7 +140,7 @@ def test_sim_campaign_resume_granularity_stays_documented() -> None:
     assert "One resume continues one Target" in section
     assert "| HDL | one test |" in section
     assert "| cocotb | the whole batch |" in section
-    assert "distinct nested Coverage Campaign" in section
+    assert "Start a new `booley flow sim --coverage` run instead" in section
     assert "Resume never\n  re-runs failures" in section
     mcp = _reference_text(MCP_TOOLS)
     assert "maximum-32 `observations` preview" in mcp

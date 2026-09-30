@@ -30,8 +30,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   Campaign. Immutable manifests, authenticated shared Simulator Bundles,
   isolated append-only attempts, strict resume, and bounded Project-local
   scheduling make completed work reusable without treating mutable reports as
-  authority. Cocotb retries as one disclosed batch; native coverage retries as
-  one aggregate with a distinct attempt-scoped Coverage Campaign.
+  authority. Cocotb retries as one disclosed batch; native coverage is one
+  aggregate that resume finishes only after its collection completed; an
+  unfinished collection is refused.
 - `sim --resume-from <manifest.json>` resumes only the named Campaign. Dry-run
   previews completed, interrupted, pending, and mismatched work without
   admission or mutation. Structured CLI/MCP results retain bounded manifest,
