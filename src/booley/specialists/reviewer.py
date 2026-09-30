@@ -1610,6 +1610,7 @@ object, even after calling the capability.
         self._audit = {"filtered": [], "rejected": []}
         self._non_corrective_issues = []
         self._tb_project_policy = None
+        self._scope_contract = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         prepared = self._prepare_review_run()
         if isinstance(prepared, McpToolResult):
@@ -1628,29 +1629,46 @@ object, even after calling the capability.
         atomic_write_json(path, detail)
         return path
 
+    def _attach_review_evidence(self, detail: dict[str, Any], exit_code: int, label: str) -> Path:
+        """Publish evidence before any Criterion can advertise the outcome."""
+        for name in ("filtered", "rejected"):
+            detail.setdefault(name, [])
+        path = self._evidence_path(label)
+        detail["audit_evidence"] = str(path)
+        for name in ("filtered", "rejected"):
+            detail[name] = [
+                {**row, "evidence": row.get("evidence") or str(path)} for row in detail[name]
+            ]
+        detail["artifacts"] = {
+            **detail.get("artifacts", {}),
+            "reviewer_evidence": str(path),
+        }
+        atomic_write_json(path, {"exit_code": exit_code, "detail": detail})
+        return path
+
+    def _record_review_detail(self, crit_key: str, met: bool, detail: dict[str, Any]) -> None:
+        self._attach_review_evidence(
+            detail, EXIT_SUCCESS if met else EXIT_FAILURE, f"receipt-{uuid4().hex}"
+        )
+        self.set_criterion(crit_key, met, detail=detail)
+
     def _publish_review_evidence(self, result: McpToolResult, crit_key: str) -> McpToolResult:
         """Publish complete evidence even when a review cannot issue a receipt."""
         prior = self._get_prior_detail(crit_key) or {}
         if result.exit_code == EXIT_ERROR:
-            result.detail = {**prior, **result.detail, **self._audit, "review_error": True}
-            if self.state:
-                self.set_criterion(crit_key, False, detail=result.detail)
+            result.detail = {
+                "review_detail_version": REVIEW_DETAIL_VERSION,
+                "contract": self._review_contract_detail(),
+                **prior,
+                **result.detail,
+                **self._audit,
+                "review_error": True,
+            }
         elif not result.detail:
             result.detail = dict(prior)
-        for name in ("filtered", "rejected"):
-            result.detail.setdefault(name, [])
-        path = self._evidence_path("result")
-        result.detail["audit_evidence"] = str(path)
-        for name in ("filtered", "rejected"):
-            result.detail[name] = [
-                {**row, "evidence": row.get("evidence") or str(path)}
-                for row in result.detail[name]
-            ]
-        result.detail["artifacts"] = {
-            **result.detail.get("artifacts", {}),
-            "reviewer_evidence": str(path),
-        }
-        atomic_write_json(path, {"exit_code": result.exit_code, "detail": result.detail})
+        path = self._attach_review_evidence(result.detail, result.exit_code, "result")
+        if result.exit_code == EXIT_ERROR and self.state:
+            self.set_criterion(crit_key, False, detail=result.detail)
         if self.state and not getattr(self.args, "diagnostic", False):
             entry = self.state.criteria.get(crit_key)
             if entry is not None:
@@ -2756,7 +2774,7 @@ Schema enforcement (applied upstream by the harness):
         print(report_text)
         detail = self._done_detail(done_outcome, elapsed=elapsed)
         crit_key = self._criterion_key()
-        self.set_criterion(crit_key, done_outcome.mode_ok, detail=detail)
+        self._record_review_detail(crit_key, done_outcome.mode_ok, detail)
         lines = [
             f"{count_str}, review {'completed' if done_outcome.mode_ok else 'requires _clean'}"
         ]
@@ -2843,11 +2861,11 @@ Schema enforcement (applied upstream by the harness):
         }
 
         if gate_passed:
-            self.set_criterion(crit_key, True, detail=detail)
+            self._record_review_detail(crit_key, True, detail)
         else:
             detail["verify_attempts"] = 0
             detail["original_issues"] = len(issues)
-            self.set_criterion(crit_key, False, detail=detail)
+            self._record_review_detail(crit_key, False, detail)
 
         lines = [f"{count_str}, gate {status}"]
         for issue in issues:
@@ -2935,7 +2953,7 @@ Schema enforcement (applied upstream by the harness):
         report_text = "\n".join(context.output_lines)
         print(report_text)
         detail, verify_attempts = self._clean_verify_detail(context, counts)
-        self.set_criterion(context.crit_key, met, detail=detail)
+        self._record_review_detail(context.crit_key, met, detail)
         if met:
             focus = next(iter(self._parse_focus()))
             self._clear_session_id(f"reviewer-{self.args.category}-{focus}")

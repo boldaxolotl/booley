@@ -16,7 +16,12 @@ from booley.evidence.review_dispositions import (
     review_report_required,
 )
 from booley.mcp.server import _structured_from_report
-from booley.specialists.reviewer import ReviewerSpecialist, parse_review_output
+from booley.specialists.reviewer import (
+    ReviewerSpecialist,
+    ReviewIssue,
+    _finding_record,
+    parse_review_output,
+)
 
 
 def proposal(**overrides):
@@ -204,7 +209,9 @@ def test_audit_survives_verification_and_rediscovery(reviewer, monkeypatch):
     assert second.criterion_met is True
     assert len(second.detail["filtered"]) == 2
     assert len({row["attempt_id"] for row in second.detail["filtered"]}) == 2
-    assert second.detail["filtered"][0]["evidence"] == first.detail["audit_evidence"]
+    assert second.detail["filtered"][0]["evidence"] == first.detail["filtered"][0]["evidence"]
+    original = json.loads(Path(second.detail["filtered"][0]["evidence"]).read_text())
+    assert original["detail"]["filtered"][0] == first.detail["filtered"][0]
     assert len(second.detail["resolved"]) == 1
 
 
@@ -329,9 +336,11 @@ def test_reused_specialist_starts_audit_history_for_new_contract(reviewer, monke
     other = Path(reviewer.args.work_dir, "rtl/other.sv")
     other.write_text("module other; endmodule\n")
     reviewer.args.scope = "rtl/other.sv"
-    output(reviewer, monkeypatch, {"issues": []})
+    output(reviewer, monkeypatch, {"issues": [proposal(file="rtl/other.sv")]})
     result = reviewer._run()
-    assert result.criterion_met is True
+    assert result.criterion_met is False
+    assert result.detail["pending"][0]["file"] == "rtl/other.sv"
+    assert result.detail["filtered"] == []
     assert result.detail["rejected"] == []
     archived = json.loads(Path(result.detail["receipt_history"][-1]).read_text())
     assert archived["rejected"] == first.detail["rejected"]
@@ -344,7 +353,11 @@ def test_historical_policy_exclusion_does_not_suppress_fresh_finding(reviewer, m
     entry = reviewer.state.criteria["review_rtl_bugs_clean"]
     entry.detail["contract"].pop("filtering_semantics_revision")
     entry.detail["resolved"] = [
-        {**proposal(), "status": "excluded", "disposition_actor": "harness_policy"}
+        {
+            **_finding_record(ReviewIssue.from_dict(proposal())),
+            "status": "excluded",
+            "disposition_actor": "harness_policy",
+        }
     ]
     reviewer.state.save()
     output(reviewer, monkeypatch, {"issues": [proposal()]})
@@ -352,6 +365,10 @@ def test_historical_policy_exclusion_does_not_suppress_fresh_finding(reviewer, m
     assert result.criterion_met is False
     assert len(result.detail["pending"]) == 1
     assert result.detail["resolved"][0]["disposition_actor"] == "harness_policy"
+    normalized = collect_review_dispositions(reviewer.state.criteria)
+    assert len(normalized) == 1
+    assert normalized[0]["disposition"] == "open"
+    assert normalized[0]["finding_id"] == result.detail["pending"][0]["finding_id"]
 
 
 @pytest.mark.parametrize(
@@ -362,3 +379,44 @@ def test_valid_ticket_anchors_are_not_literal_filters(reviewer, monkeypatch, cla
     result = reviewer._run()
     assert result.exit_code == 1
     assert result.detail["pending"][0]["ticket_clause"] == clause
+
+
+def test_error_diagnostics_accumulate_within_unchanged_contract(reviewer, monkeypatch):
+    output(reviewer, monkeypatch, {"issues": [None]})
+    first = reviewer._run()
+    output(reviewer, monkeypatch, {"issues": [False]})
+    second = reviewer._run()
+    assert [row["raw"] for row in second.detail["rejected"]] == [None, False]
+    assert len({row["attempt_id"] for row in second.detail["rejected"]}) == 2
+    assert second.detail["rejected"][0]["evidence"] == first.detail["audit_evidence"]
+    assert second.detail.get("receipt_history", []) == []
+
+
+def test_evidence_write_failure_cannot_publish_passing_criterion(reviewer, monkeypatch):
+    output(reviewer, monkeypatch, {"issues": []})
+
+    def fail_write(_path, _detail):
+        raise OSError("evidence disk unavailable")
+
+    monkeypatch.setattr("booley.specialists.reviewer.atomic_write_json", fail_write)
+    with pytest.raises(OSError, match="evidence disk unavailable"):
+        reviewer._run()
+    persisted = DevelopmentState.load(Path(reviewer.args.state_file))
+    assert persisted.is_met("review_rtl_bugs_clean") is False
+
+
+def test_passing_criterion_already_references_durable_evidence(reviewer, monkeypatch):
+    original_set = reviewer.set_criterion
+    published = []
+
+    def inspect_publication(key, met, *, detail):
+        if met:
+            assert json.loads(Path(detail["audit_evidence"]).read_text())["detail"] == detail
+            published.append(key)
+        original_set(key, met, detail=detail)
+
+    monkeypatch.setattr(reviewer, "set_criterion", inspect_publication)
+    output(reviewer, monkeypatch, {"issues": []})
+    result = reviewer._run()
+    assert result.criterion_met is True
+    assert published == ["review_rtl_bugs_clean"]
