@@ -966,3 +966,78 @@ def test_incomplete_collection_never_accuses_module_sources(tmp_path):
     assert outcome.exit_code == 2
     assert not any(f.code in {GAP_CODE, INCOMPLETE_CODE} for f in campaign.findings)
     assert any(a.kind == "declaration_inventory" for a in campaign.artifacts)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("contract", "contract"),
+        ("duplicate_sources", "duplicate paths"),
+        ("source_path", "source identity"),
+        ("source_digest", "source identity"),
+        ("source_aliases", "source aliases"),
+        ("source_roles", "source roles"),
+        ("foreign_declaration", "declaration"),
+        ("declaration_order", "ordering"),
+        ("location", "location"),
+        ("status", "completeness"),
+        ("presence", "source presence"),
+        ("unresolved", "unresolved"),
+        ("raw_path", "raw declaration reference"),
+        ("raw_count", "Too many"),
+        ("compiler", "compiler differs"),
+        ("attributes", "attributes differ"),
+    ],
+)
+def test_authenticated_inventory_rejects_invalid_evidence_contract(tmp_path, damage, message):
+    from booley.flows.sim.coverage_provenance import content_digest
+
+    plan, execution = _gap_plan(tmp_path)
+    outcome = run_coverage_target(plan, execution, Progress())
+    path = outcome.campaign_path.parent / "declarations/inventory.json"
+    document = json.loads(path.read_text())
+    _damage_inventory_document(document, damage)
+    path.write_text(json.dumps(document))
+    manifest = json.loads(outcome.campaign_path.read_text())
+    artifact = next(a for a in manifest["artifacts"] if a["kind"] == "declaration_inventory")
+    artifact.update(sha256=content_digest(path.read_bytes()), bytes=path.stat().st_size)
+    if damage == "attributes":
+        artifact["discovery_status"] = "incomplete"
+    outcome.campaign_path.write_text(json.dumps(manifest))
+    with pytest.raises(CoverageCampaignStoreError, match=message) as error:
+        load_coverage_campaign(outcome.campaign_path)
+    assert error.value.code == "COV_DECLARATION_INTEGRITY"
+
+
+def _damage_inventory_document(document, damage):
+    source = document["sources"][0]
+    if damage == "contract":
+        document["$schema"] = "unknown"
+    elif damage == "duplicate_sources":
+        document["sources"].append(source)
+    elif damage in {"source_path", "source_digest", "source_aliases", "source_roles"}:
+        key, value = {
+            "source_path": ("path", "../outside.sv"),
+            "source_digest": ("sha256", "invalid"),
+            "source_aliases": ("aliases", []),
+            "source_roles": ("testbench", "false"),
+        }[damage]
+        source[key] = value
+    elif damage == "foreign_declaration":
+        document["declarations"][0]["source"] = "foreign.sv"
+    elif damage == "declaration_order":
+        document["declarations"].reverse()
+    elif damage == "location":
+        document["declarations"][0]["line"] = 0
+    elif damage == "status":
+        document["status"] = "incomplete"
+    elif damage == "presence":
+        document["native_source_presence"]["paths"] = ["foreign.sv"]
+    elif damage == "unresolved":
+        document["native_source_presence"]["unresolved"] = [False]
+    elif damage == "raw_path":
+        document["raw_evidence"] = [{"path": "../outside.json", "sha256": source["sha256"]}]
+    elif damage == "raw_count":
+        document["raw_evidence"] = [{}, {}, {}]
+    elif damage == "compiler":
+        document["compiler"]["tag"] = "v5.050"
