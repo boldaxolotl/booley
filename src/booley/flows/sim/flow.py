@@ -283,12 +283,6 @@ _INCONCLUSIVE_NO_SENTINEL = (
     "its verdict in wording Booley does not recognize, declare it in "
     "[flows.sim].pass_sentinels / fail_sentinels."
 )
-_INCONCLUSIVE_NO_WAVEFORM = (
-    "the simulation itself PASSED, but --trace produced no queryable waveform, "
-    "so the trace could not be verified. This is a Flow-infrastructure failure, "
-    "not a design defect — see the TRACE_INCIDENT file, and declare a custom "
-    "testbench's dump path in [flows.sim].trace_files."
-)
 
 # The run-halves' "a queryable waveform actually landed" marker, carrying the
 # store's path. simulate used to scrape it only for *presence* — leaving the

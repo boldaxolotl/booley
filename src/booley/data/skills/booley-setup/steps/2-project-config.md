@@ -302,11 +302,17 @@ Authoring rules:
   `xdc` is a typed fileset, `top` is `toplevel`, and the board `part` plus
   `out_of_context` live in Target `flow_options`. **No `hooks:`** (decision 21,
   below).
-- **Trace: nothing to wire.** `booley flow sim --trace` works without any fileset
-  change — the trace overlay injects the `booley_vcd_dump` dump module from
-  Booley's `refs/` at run time. Do **not** add it to the design's fileset: a
-  tracked `booley_vcd_dump.sv` leaks Booley into the repo's git history
-  (Stealth Mode).
+- **Trace: Icarus needs no wiring; an owned-main Verilator Target needs
+  `trace_files`.** For **Icarus** sim Targets (including cocotb on Icarus),
+  `booley flow sim --trace` works without any fileset change — the trace overlay
+  injects the `booley_vcd_dump` dump module from Booley's `refs/` at run time.
+  Do **not** add it to the design's fileset: a tracked `booley_vcd_dump.sv`
+  leaks Booley into the repo's git history (Stealth Mode). **Verilator** sim
+  Targets get no dump module; they trace through their own C++ harness. For a
+  Target that owns its C++ `main()` (`cppSource`, `--exe`), find the file its
+  tracer opens (`->open("…vcd|fst")`) and set `[flows.sim].trace_files` to that
+  name relative to `run_cwd`, e.g. `trace_files = ["sim.vcd"]`; otherwise
+  `--trace` finds no waveform.
 - **Vendored/example cores** you do not want discovered get a
   `FUSESOC_IGNORE` marker file in their directory — Booley's `.core` scanner
   skips any directory carrying one (mirrors FuseSoC's own scanner).

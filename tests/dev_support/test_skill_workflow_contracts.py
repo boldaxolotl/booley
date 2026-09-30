@@ -755,3 +755,12 @@ def test_triage_reset_retains_baseline_and_routes_contract_changes_to_reauthorin
     assert "validate, and enqueue a new generation" in reference
     assert "Current lifecycle commands reject unsupported legacy Tickets" in reference
     assert "discards implementation state and restores all participant worktrees" in blocked
+
+
+def test_setup_tells_owned_main_verilator_targets_to_declare_trace_files():
+    step = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+
+    assert "**Trace: nothing to wire.**" not in step
+    assert "Icarus needs no wiring" in step
+    assert "owns its C++ `main()`" in step
+    assert "`[flows.sim].trace_files` to that name relative to `run_cwd`" in step

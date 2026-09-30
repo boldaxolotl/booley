@@ -155,6 +155,47 @@ class TraceArtifactPolicy:
             explicitly_allowed=(path,) if configured else (),
         )
 
+    def fresh_candidates(
+        self,
+        *,
+        owned: frozenset[Path],
+        ignored_dirs: tuple[Path, ...],
+        limit: int,
+    ) -> tuple[tuple[Path, ...], int]:
+        """List waveform files this attempt created or changed, for diagnostics only.
+
+        Returns up to *limit* sorted paths plus the count omitted. Nothing here
+        authorizes or adopts a file: the list only tells an agent which name a
+        ``[flows.sim].trace_files`` entry could declare. *owned* paths (Booley's
+        own outputs), files already matched by ``trace_files``, and empty files
+        (runtime never adopts those) are dropped. A path under an *ignored_dirs* entry is dropped
+        unless the root being walked already lives inside that directory, so a
+        broad ``run_cwd`` does not report other attempts' build trees.
+        """
+        before = dict(self.before)
+        declared = frozenset(_configured_trace_paths(self.patterns, self.roots))
+        found: set[Path] = set()
+        for root in self.roots:
+            if not root.is_dir():
+                continue
+            skipped = tuple(d for d in ignored_dirs if not root.is_relative_to(d))
+            for pattern in _TRACE_FILE_PATTERNS:
+                for path in root.glob(pattern):
+                    resolved = _without_symlink_escape(path)
+                    if (
+                        resolved is None
+                        or not path.is_file()
+                        or resolved in owned
+                        or resolved in declared
+                        or path.stat().st_size == 0
+                        or any(resolved.is_relative_to(d) for d in skipped)
+                        or snapshot_artifact(resolved) == before.get(resolved)
+                    ):
+                        continue
+                    found.add(resolved)
+        ordered = sorted(found)
+        return tuple(ordered[:limit]), max(0, len(ordered) - limit)
+
 
 __all__ = [
     "CompatibilityArtifactPolicy",

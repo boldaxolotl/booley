@@ -372,7 +372,14 @@ def test_real_coverage_flow_publishes_canonical_campaign(
             report_dir=tmp_path / "reports",
         )
     )
-    assert result.exit_code == 0, result.outcome
+    if trace and harness == "generated":
+        # The auto-main fixture builds no waveform writer, so the requested
+        # trace is honestly inconclusive (#884); the Coverage Campaign still
+        # publishes complete evidence below.
+        assert result.exit_code == 1, result.outcome
+        assert result.outcome.detail["targets"]["sim"]["simulation"] == "inconclusive"
+    else:
+        assert result.exit_code == 0, result.outcome
     path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
     resolved = resolve_coverage_campaign_reference(path)
     campaign = resolved.loaded.campaign
