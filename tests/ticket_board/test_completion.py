@@ -78,10 +78,12 @@ def _repository(path: Path) -> str:
     _git(path, "init", "-b", "main")
     _git(path, "config", "user.name", "Test")
     _git(path, "config", "user.email", "test@example.invalid")
+    _git(path, "config", "core.autocrlf", "false")
+    _git(path, "config", "core.eol", "lf")
     (path / ".git" / "info" / "exclude").write_text(
         ".booley_project/\n.runtime/\n", encoding="utf-8"
     )
-    (path / "design.txt").write_text("base\n", encoding="utf-8")
+    (path / "design.txt").write_bytes(b"base\n")
     _git(path, "add", "design.txt")
     _git(path, "commit", "-m", "base")
     return _git(path, "rev-parse", "HEAD")
@@ -98,7 +100,7 @@ def _install_project_contract(repo: Path) -> str:
 
 def _ticket_commit(repo: Path, branch: str, content: str) -> str:
     _git(repo, "switch", "-c", branch)
-    (repo / "design.txt").write_text(content, encoding="utf-8")
+    (repo / "design.txt").write_bytes(content.encode("utf-8"))
     _git(repo, "add", "design.txt")
     _git(repo, "commit", "-m", f"implement {branch}")
     sha = _git(repo, "rev-parse", "HEAD")

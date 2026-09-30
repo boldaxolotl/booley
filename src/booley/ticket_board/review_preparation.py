@@ -712,7 +712,7 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
         candidate = ctx.log_dir / relative
         if candidate.is_dir():
             paths.extend(
-                (str(path.relative_to(ctx.log_dir)), path)
+                (path.relative_to(ctx.log_dir).as_posix(), path)
                 for path in sorted(candidate.rglob("*"))
                 if path.is_file()
             )
@@ -724,7 +724,7 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
     if ctx.inspection is not None:
         evidence = ctx.log_dir / "acceptance" / "evidence"
         paths.extend(
-            (str(path.relative_to(ctx.log_dir)), path)
+            (path.relative_to(ctx.log_dir).as_posix(), path)
             for path in sorted(evidence.glob("*/record.json"))
         )
     return paths

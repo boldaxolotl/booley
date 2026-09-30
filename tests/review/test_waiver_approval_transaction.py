@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import replace
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.ticket_board import review_preparation as prep
 from booley.ticket_board import waiver_approval as approval
 from booley.ticket_board import waiver_approval_transaction as transaction
 from booley.ticket_board import waiver_candidates as store
@@ -138,6 +140,21 @@ def test_retry_rejects_changes_outside_approval(selected):
     with pytest.raises(ReviewEntryError, match="inputs changed"):
         transaction.retry_capture(ctx)
     assert report.read_bytes() == before
+
+
+def test_recovery_uses_portable_source_labels(selected, monkeypatch):
+    """Windows path rendering must preserve the transaction's inspected fingerprint."""
+    ctx, decisions, stage = selected
+    relative_to = Path.relative_to
+
+    def windows_relative(path, *args, **kwargs):
+        return PureWindowsPath(relative_to(path, *args, **kwargs).as_posix())
+
+    monkeypatch.setattr(Path, "relative_to", windows_relative)
+    ctx.inspection["capture_sha"] = prep._source_fingerprint(ctx)
+    capture = transaction.apply_transaction(ctx, decisions, stage)
+
+    assert capture == transaction.retry_capture(ctx)
 
 
 @pytest.mark.parametrize("selected", ["reject"], indirect=True)
