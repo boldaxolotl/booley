@@ -344,5 +344,13 @@ def test_atomic_write_publishes_complete_readable_file(tmp_path: Path) -> None:
     inventory.write_atomically(path, data)
 
     assert path.read_bytes() == data
-    assert path.stat().st_mode & 0o777 == 0o644
     assert sorted(child.name for child in tmp_path.iterdir()) == ["inventory.json"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix permission bits require POSIX")
+def test_atomic_write_sets_readable_posix_permissions(tmp_path: Path) -> None:
+    path = tmp_path / "inventory.json"
+
+    inventory.write_atomically(path, inventory.serialize(_document()))
+
+    assert path.stat().st_mode & 0o777 == 0o644

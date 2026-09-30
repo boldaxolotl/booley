@@ -606,6 +606,7 @@ def _valid_inventory() -> bytes:
     [(_valid_inventory(), True), (None, False), (b'{"schema": 1}', False), (b"{", False)],
     ids=["valid", "missing", "malformed", "truncated"],
 )
+@pytest.mark.skipif(sys.platform == "win32", reason="Sandbox Image probe requires Linux bash")
 def test_package_inventory_probe_changes_contract_status(
     tmp_path: Path, flavor: str, contents: bytes | None, passes: bool
 ) -> None:
