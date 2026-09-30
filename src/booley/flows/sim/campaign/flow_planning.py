@@ -190,7 +190,17 @@ def _workload_document(
         "defines": _defines(inspection.flow_options),
         "pre_sim_commands": list(resolve_pre_sim_commands(root)),
     }
+    from ..verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
+
     command_model = {
+        **(
+            {
+                "declaration_contract": DECLARATION_CONTRACT,
+                "declaration_options": DECLARATION_OPTIONS,
+            }
+            if coverage
+            else {}
+        ),
         "target_identity": handle.identity,
         "toplevel": inspection.toplevel,
         "eda_tool": inspection.eda_tool or "",

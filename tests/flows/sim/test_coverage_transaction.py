@@ -8,7 +8,11 @@ import pytest
 
 from booley.flows.sim.campaign_retention import _coverage_owned_files
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, freeze_coverage_mapping
-from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+from booley.flows.sim.coverage_campaign_store import (
+    CoverageCampaignStoreError,
+    load_coverage_campaign,
+    load_coverage_campaign_bytes,
+)
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
@@ -871,3 +875,169 @@ def gated_ticket_plan(tmp_path):
         ),
     )
     return plan, state, state_path
+
+
+def _gap_plan(tmp_path):
+    context = project(tmp_path)
+    (tmp_path / "rtl/unused.sv").write_text("module unused; endmodule\n")
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text().replace(
+            "files: [rtl/counter.sv]", "files: [rtl/counter.sv, rtl/unused.sv]"
+        )
+    )
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    from booley.flows.sim.verilator_declarations import (
+        Declaration,
+        DeclarationInventory,
+        DeclarationSource,
+    )
+
+    sources = tuple(
+        DeclarationSource(
+            r["path"], (r["path"],), r["sha256"], "systemVerilogSource", False, False
+        )
+        for r in plan.source_closure["rtl"]
+    )
+    inventory = DeclarationInventory(
+        (PINNED_VERILATOR.tag, PINNED_VERILATOR.commit),
+        "producing-generation:1",
+        sources,
+        tuple(sorted(Declaration("MODULE", s.path, s.path, s.path, 1, 1) for s in sources)),
+    )
+
+    class Execution(NativeExecution):
+        def build(self, request):
+            return SimulationBuildResult(True, collector=PINNED_VERILATOR, declarations=inventory)
+
+    return plan, Execution()
+
+
+def test_direct_publication_preserves_source_gaps_and_card_preview(tmp_path):
+    from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
+    from booley.flows.sim.coverage_source_gaps import source_gap_summary
+
+    plan, execution = _gap_plan(tmp_path)
+    outcome = run_coverage_target(plan, execution, Progress())
+    assert outcome.exit_code == 0
+    loaded = load_coverage_campaign(outcome.campaign_path)
+    assert source_gap_summary(loaded.campaign).paths == ("rtl/unused.sv",)
+    session = CoverageEvidenceSession(loaded.campaign, None)
+    assert session.query({"view": "zero_point_sources"})["paths"] == ["rtl/unused.sv"]
+    flow = SimulateFlow()
+    from booley.flows.sim.request import SimRequest
+
+    flow.context._args = SimRequest(work_dir=tmp_path)
+    assert "RTL sources without coverage points: 1" in flow._coverage_result([outcome]).report_text
+    assert "rtl/unused.sv" in flow._coverage_result([outcome]).report_text
+    owned = _coverage_owned_files(
+        outcome.campaign_path.parent, outcome.campaign_path.parent, loaded
+    )
+    assert (outcome.campaign_path.parent / "declarations/inventory.json").absolute() in owned
+
+
+@pytest.mark.parametrize("from_bytes", [False, True])
+@pytest.mark.parametrize("damage", ["tampered", "missing"])
+def test_compact_inventory_tampering_is_an_integrity_failure(tmp_path, from_bytes, damage):
+    plan, execution = _gap_plan(tmp_path)
+    outcome = run_coverage_target(plan, execution, Progress())
+    assert outcome.exit_code == 0
+    inventory = outcome.campaign_path.parent / "declarations/inventory.json"
+    if damage == "tampered":
+        inventory.write_text("{}")
+    else:
+        inventory.unlink()
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        if from_bytes:
+            load_coverage_campaign_bytes(outcome.campaign_path, outcome.campaign_path.read_bytes())
+        else:
+            load_coverage_campaign(outcome.campaign_path)
+    assert error.value.code == "COV_DECLARATION_INTEGRITY"
+
+
+def test_incomplete_collection_never_accuses_module_sources(tmp_path):
+    from booley.flows.sim.coverage_source_gaps import GAP_CODE, INCOMPLETE_CODE
+
+    plan, execution = _gap_plan(tmp_path)
+    execution.missing = True
+    outcome = run_coverage_target(plan, execution, Progress())
+    campaign = load_coverage_campaign(outcome.campaign_path).campaign
+    assert outcome.exit_code == 2
+    assert not any(f.code in {GAP_CODE, INCOMPLETE_CODE} for f in campaign.findings)
+    assert any(a.kind == "declaration_inventory" for a in campaign.artifacts)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("contract", "contract"),
+        ("duplicate_sources", "duplicate paths"),
+        ("source_path", "source identity"),
+        ("source_digest", "source identity"),
+        ("source_aliases", "source aliases"),
+        ("source_roles", "source roles"),
+        ("foreign_declaration", "declaration"),
+        ("declaration_order", "ordering"),
+        ("location", "location"),
+        ("status", "completeness"),
+        ("presence", "source presence"),
+        ("unresolved", "unresolved"),
+        ("raw_path", "raw declaration reference"),
+        ("raw_count", "Too many"),
+        ("compiler", "compiler differs"),
+        ("attributes", "attributes differ"),
+    ],
+)
+def test_authenticated_inventory_rejects_invalid_evidence_contract(tmp_path, damage, message):
+    from booley.flows.sim.coverage_provenance import content_digest
+
+    plan, execution = _gap_plan(tmp_path)
+    outcome = run_coverage_target(plan, execution, Progress())
+    path = outcome.campaign_path.parent / "declarations/inventory.json"
+    document = json.loads(path.read_text())
+    _damage_inventory_document(document, damage)
+    path.write_text(json.dumps(document))
+    manifest = json.loads(outcome.campaign_path.read_text())
+    artifact = next(a for a in manifest["artifacts"] if a["kind"] == "declaration_inventory")
+    artifact.update(sha256=content_digest(path.read_bytes()), bytes=path.stat().st_size)
+    if damage == "attributes":
+        artifact["discovery_status"] = "incomplete"
+    outcome.campaign_path.write_text(json.dumps(manifest))
+    with pytest.raises(CoverageCampaignStoreError, match=message) as error:
+        load_coverage_campaign(outcome.campaign_path)
+    assert error.value.code == "COV_DECLARATION_INTEGRITY"
+
+
+def _damage_inventory_document(document, damage):
+    source = document["sources"][0]
+    if damage == "contract":
+        document["$schema"] = "unknown"
+    elif damage == "duplicate_sources":
+        document["sources"].append(source)
+    elif damage in {"source_path", "source_digest", "source_aliases", "source_roles"}:
+        key, value = {
+            "source_path": ("path", "../outside.sv"),
+            "source_digest": ("sha256", "invalid"),
+            "source_aliases": ("aliases", []),
+            "source_roles": ("testbench", "false"),
+        }[damage]
+        source[key] = value
+    elif damage == "foreign_declaration":
+        document["declarations"][0]["source"] = "foreign.sv"
+    elif damage == "declaration_order":
+        document["declarations"].reverse()
+    elif damage == "location":
+        document["declarations"][0]["line"] = 0
+    elif damage == "status":
+        document["status"] = "incomplete"
+    elif damage == "presence":
+        document["native_source_presence"]["paths"] = ["foreign.sv"]
+    elif damage == "unresolved":
+        document["native_source_presence"]["unresolved"] = [False]
+    elif damage == "raw_path":
+        document["raw_evidence"] = [{"path": "../outside.json", "sha256": source["sha256"]}]
+    elif damage == "raw_count":
+        document["raw_evidence"] = [{}, {}, {}]
+    elif damage == "compiler":
+        document["compiler"]["tag"] = "v5.050"

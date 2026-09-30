@@ -1158,3 +1158,46 @@ def test_collector_rejects_any_verilator_other_than_the_exact_safe_pin(tmp_path:
     assert result.infrastructure_error is True
     assert [run.simulation_verdict for run in result.runs] == ["inconclusive"]
     assert [finding.code for finding in result.findings] == ["COV_VERILATOR_IDENTITY_MISMATCH"]
+
+
+@pytest.mark.parametrize("record_type,hits", [("line", 0), ("future", 0), ("toggle", 2)])
+def test_native_source_presence_precedes_metric_filtering(tmp_path, record_type, hits):
+    from booley.flows.sim.verilator_declarations import DeclarationInventory, DeclarationSource
+
+    source = DeclarationSource(
+        "rtl/counter.sv",
+        ("rtl/counter.sv", "src/staged/counter.sv"),
+        "sha256:" + "a" * 64,
+        "systemVerilogSource",
+        False,
+        False,
+    )
+    inventory = DeclarationInventory(
+        (PINNED_VERILATOR.tag, PINNED_VERILATOR.commit), "build:1", (source,)
+    )
+    payload = _HEADER + _native_record(record_type, "point", hits=hits).replace(
+        "rtl/counter.sv", "src/staged/counter.sv"
+    )
+
+    class Execution(_GeneratedMainExecution):
+        def build(self, request):
+            return SimulationBuildResult(True, collector=PINNED_VERILATOR, declarations=inventory)
+
+        def run(self, request):
+            request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+            request.raw_path.write_text(payload)
+            return SimulationRunResult("pass")
+
+        def command(self, request):
+            request.output_path.parent.mkdir(parents=True, exist_ok=True)
+            request.output_path.write_text(payload)
+            return SimulationCommandResult(0)
+
+    result = collect(_request(tmp_path, "presence"), Execution())
+    assert result.status == "complete"
+    assert result.native_sources == ("rtl/counter.sv",)
+    assert result.native_source_diagnostics == ()
+    assert result.build.declarations is inventory
+    if record_type == "future":
+        assert not result.points
+        assert result.unrecognized_records

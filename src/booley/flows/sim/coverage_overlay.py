@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from .trace_overlay import (
     _write_overlay_core_file,
 )
 from .trace_recipe import TraceMode, TraceRecipeError, resolve_verilator_trace_mode
+from .verilator_declarations import DECLARATION_OPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +41,21 @@ def _with_coverage_options(
 ) -> list[str]:
     """Append one canonical copy of every collector-owned coverage switch."""
     owned = {"--coverage", *instrumentation}
-    return [str(option) for option in verilator_options if str(option) not in owned] + list(
-        instrumentation
-    )
+    options = []
+    skip_value = False
+    for option in map(str, verilator_options):
+        if skip_value and (not option.startswith("-") or re.fullmatch(r"-[0-9]+", option)):
+            skip_value = False
+            continue
+        skip_value = False
+        key = option.split("=", 1)[0]
+        if key in {"--dumpi-tree-json", "--dumpi-V3Global"}:
+            skip_value = "=" not in option
+        elif key in {"--no-dump-tree-json", "--no-dumpi-tree-json", "--no-dumpi-V3Global"}:
+            continue
+        elif option not in owned:
+            options.append(option)
+    return options + list(DECLARATION_OPTIONS) + list(instrumentation)
 
 
 def _custom_main_hooks(flow_options: dict) -> tuple[str, ...]:

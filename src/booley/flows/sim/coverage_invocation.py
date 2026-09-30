@@ -160,7 +160,11 @@ def _prepare_target(
     if finding is not None:
         return None, finding
     closure = coverage_source_closure(inspection)
+    from .verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
+
     recipe = {
+        "declaration_contract": DECLARATION_CONTRACT,
+        "declaration_options": DECLARATION_OPTIONS,
         "identity": handle.identity,
         "options": inspection.flow_options,
         "parameters": inspection.parameters,
