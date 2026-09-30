@@ -577,3 +577,59 @@ def test_layer_link_audit_reaps_child_when_parser_fails(
     pid = int(pidfile.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+_HELPER_SOURCE = Path(__file__).parents[2] / "src/booley/data/docker/base_package_inventory.py"
+_INVENTORY_PATH = "/usr/local/share/booley/base-package-inventory.json"
+_HELPER_PATH = "/usr/local/libexec/booley/base_package_inventory.py"
+
+
+def _valid_inventory() -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema": 1,
+                "scope": "runtime-base",
+                "python": {"version": "3.13.15", "pip_version": "26.2.1"},
+                "packages": [{"name": "bash", "version": "5.2", "architecture": "amd64"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+
+
+@pytest.mark.parametrize("flavor", ["standard", "riscv"])
+@pytest.mark.parametrize(
+    ("contents", "passes"),
+    [(_valid_inventory(), True), (None, False), (b'{"schema": 1}', False), (b"{", False)],
+    ids=["valid", "missing", "malformed", "truncated"],
+)
+def test_package_inventory_probe_changes_contract_status(
+    tmp_path: Path, flavor: str, contents: bytes | None, passes: bool
+) -> None:
+    contract = image_contract.load_contract(CONTRACT, flavor)
+    assert {_INVENTORY_PATH, _HELPER_PATH} <= set(contract["required_paths"])
+    probe = next(
+        probe for probe in contract["probes"] if probe["name"] == "runtime-base package inventory"
+    )
+    fixture = tmp_path / "base-package-inventory.json"
+    if contents is not None:
+        fixture.write_bytes(contents)
+    command = (
+        probe["command"]
+        .replace(_INVENTORY_PATH, str(fixture))
+        .replace(_HELPER_PATH, str(_HELPER_SOURCE))
+        .replace("python -I", f"{sys.executable} -I")
+    )
+
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", command],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=probe["timeout_seconds"],
+    )
+
+    assert (result.returncode == 0) is passes, result.stderr

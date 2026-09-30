@@ -282,6 +282,26 @@ jobs:
         run: |
           docker pull "${IMAGE}"
           docker tag "${IMAGE}" booley-sandbox
+      # The standard image must carry the selected runtime base's exact inventory
+      # bytes (#829). The base's layers are a prefix of the already pulled
+      # standard image, so this pull adds only the base configuration.
+      - name: Export standard and runtime-base package inventories
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          RUNTIME_BASE: ${{ needs.build-and-push.outputs.runtime-base }}
+        run: |
+          evidence="${RUNNER_TEMP}/standard-image-evidence"
+          mkdir -p "${evidence}"
+          docker pull "${RUNTIME_BASE}"
+          python .github/scripts/image_package_inventory.py \
+            --image "${RUNTIME_BASE}" \
+            --output "${evidence}/base-package-inventory.json" \
+            --evidence "${evidence}/base-package-inventory-evidence.json"
+          python .github/scripts/image_package_inventory.py \
+            --image "${IMAGE}" --base-reference "${RUNTIME_BASE}" \
+            --expected-inventory "${evidence}/base-package-inventory.json" \
+            --output "${evidence}/package-inventory.json" \
+            --evidence "${evidence}/package-inventory-evidence.json"
       - name: Validate provenance, runtime, size, and resources
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
@@ -559,9 +579,19 @@ jobs:
           EXPECTED_PARENT: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.substrate-digest }}
           EXPECTED_WHEEL_SHA256: ${{ needs.build-and-push-riscv.outputs.wheel-sha256 }}
         run: |
-          mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
+          evidence="${RUNNER_TEMP}/riscv-image-evidence"
+          mkdir -p "${evidence}"
           docker pull "${BASE_IMAGE}"
           docker pull "${RISCV_IMAGE}"
+          python .github/scripts/image_package_inventory.py \
+            --image "${BASE_IMAGE}" \
+            --output "${evidence}/standard-package-inventory.json" \
+            --evidence "${evidence}/standard-package-inventory-evidence.json"
+          python .github/scripts/image_package_inventory.py \
+            --image "${RISCV_IMAGE}" \
+            --expected-inventory "${evidence}/standard-package-inventory.json" \
+            --output "${evidence}/package-inventory.json" \
+            --evidence "${evidence}/package-inventory-evidence.json"
           expected_wheel_source="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
           expected_runtime_base_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import source_image_build_contracts; print(source_image_build_contracts(Path.cwd()).runtime_base)')"
           expected_standard_substrate_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"

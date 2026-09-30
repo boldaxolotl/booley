@@ -887,6 +887,36 @@ jobs:
             '{{json .}}' booley-test \
             | tee "${RUNNER_TEMP}/docker-build-evidence/layers.jsonl"
 
+      # Runtime-base package inventory (#829). The locally built base is checked
+      # against its live package state and the standard image must carry its
+      # exact bytes. The published-base lane only validates the inherited copy:
+      # its base arrives as a BuildKit named context, never loaded here, and
+      # provenance resolution already verified the selected base.
+      - name: Verify and export local runtime-base package inventory
+        if: steps.runtime-base.outputs.build == 'true'
+        run: |
+          python .github/scripts/image_package_inventory.py \
+            --image booley-runtime-base:ci --verify-current-state \
+            --output "${RUNNER_TEMP}/docker-build-evidence/base-package-inventory.json" \
+            --evidence "${RUNNER_TEMP}/docker-build-evidence/base-package-inventory-evidence.json"
+
+      - name: Export standard package inventory
+        shell: bash
+        env:
+          BUILD_STABLE_BASE: ${{ steps.runtime-base.outputs.build }}
+          SELECTED_BASE: ${{ steps.runtime-base.outputs.image }}
+        run: |
+          evidence="${RUNNER_TEMP}/docker-build-evidence"
+          parent_args=()
+          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
+            parent_args=(--expected-inventory "${evidence}/base-package-inventory.json")
+          fi
+          python .github/scripts/image_package_inventory.py \
+            --image booley-test --base-reference "${SELECTED_BASE}" \
+            "${parent_args[@]}" \
+            --output "${evidence}/standard-package-inventory.json" \
+            --evidence "${evidence}/standard-package-inventory-evidence.json"
+
       - name: Validate standard Sandbox contract
         run: |
           PYTHONPATH=src python .github/scripts/image_contract.py \
@@ -1097,7 +1127,8 @@ jobs:
                 --record "${records}/image-checks.json" \
                 --name image_contract_size_resources --topology nested -- \
                 .github/scripts/verify_riscv_image_contract.sh \
-                "${evidence}" booley-riscv-test booley-standard-substrate:ci
+                "${evidence}" booley-riscv-test booley-standard-substrate:ci \
+                "${RUNNER_TEMP}/docker-build-evidence/standard-package-inventory.json"
               python .github/scripts/riscv_phase_metrics.py timed-run \
                 --record "${records}/picorv32-runtime.json" \
                 --name picorv32_runtime_demo --topology nested -- \

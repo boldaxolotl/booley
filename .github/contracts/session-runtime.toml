@@ -91,6 +91,8 @@ required_paths = [
   "/usr/local/lib/ivl/vvp.tgt",
   "/usr/local/share/verilator/include/verilated.h",
   "/usr/local/share/verilator/include/vltstd/vpi_user.h",
+  "/usr/local/libexec/booley/base_package_inventory.py",
+  "/usr/local/share/booley/base-package-inventory.json",
 ]
 absent_paths = [
   "/OpenROAD",
@@ -180,6 +182,16 @@ test "$(id -u)" -eq 1000
 test "$(id -g)" -eq 1000
 test "$PWD" = /work
 printf 'uid=%s gid=%s workdir=%s\n' "$(id -u)" "$(id -g)" "$PWD"
+'''
+
+# Schema-only on purpose: derived layers may add or replace packages, so the
+# inherited base inventory is never compared with the image's current state.
+[[common.probe]]
+name = "runtime-base package inventory"
+timeout_seconds = 30
+command = '''
+python -I /usr/local/libexec/booley/base_package_inventory.py validate \
+  /usr/local/share/booley/base-package-inventory.json
 '''
 
 [[common.probe]]
