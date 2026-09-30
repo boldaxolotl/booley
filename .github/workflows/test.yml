@@ -24,11 +24,14 @@ on:
         type: boolean
         default: false
       riscv_measurement:
-        description: RISC-V timing arm (cold disables BuildKit cache)
+        description: >-
+          RISC-V timing arm (automatic = path-gated; baseline, warm, and cold
+          always build the RISC-V image; cold disables BuildKit cache)
         type: choice
         default: automatic
         options:
           - automatic
+          - baseline
           - warm
           - cold
 
@@ -90,6 +93,7 @@ jobs:
           --event-name "${EVENT_NAME}"
           --windows-shard-count "${{ inputs.windows_shard_count || '6' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
+          --riscv-measurement "${{ inputs.riscv_measurement || 'automatic' }}"
           --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
 
   release-semantic:
@@ -759,6 +763,25 @@ jobs:
           name: pr-dist
           path: dist/
 
+      # The hosted runner's classic image store cannot export a local BuildKit
+      # cache. Warm measurements use Docker's supported containerd image store
+      # so the daemon-backed builder retains access to the exact local candidate
+      # while gaining local cache import/export support.
+      - name: Enable cache-capable Docker image store
+        if: >-
+          needs.changes.outputs.riscv_image == 'true' &&
+          inputs.riscv_measurement == 'warm'
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
+        with:
+          version: v28.0.4 # Match the measured hosted-runner baseline.
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Compute stable-base compatibility contract
@@ -988,6 +1011,17 @@ jobs:
               measurement_arm="${{ inputs.riscv_measurement || 'automatic' }}"
               substrate_cache_args=()
               wheel_cache_args=()
+              mkdir -p "${records}"
+              lane_status=1
+              python .github/scripts/riscv_phase_metrics.py start \
+                --record "${records}/riscv-candidate.json" \
+                --name riscv_candidate --topology parallel
+              finish_lane() {
+                python .github/scripts/riscv_phase_metrics.py finish \
+                  --record "${records}/riscv-candidate.json" \
+                  --exit-code "${lane_status}"
+              }
+              trap finish_lane EXIT
               case "${measurement_arm}" in
                 cold)
                   substrate_cache_args+=(--no-cache)
@@ -1005,17 +1039,6 @@ jobs:
                   fi
                   ;;
               esac
-              mkdir -p "${records}"
-              lane_status=1
-              python .github/scripts/riscv_phase_metrics.py start \
-                --record "${records}/riscv-candidate.json" \
-                --name riscv_candidate --topology parallel
-              finish_lane() {
-                python .github/scripts/riscv_phase_metrics.py finish \
-                  --record "${records}/riscv-candidate.json" \
-                  --exit-code "${lane_status}"
-              }
-              trap finish_lane EXIT
               set -o pipefail
 
               python .github/scripts/riscv_phase_metrics.py start \
