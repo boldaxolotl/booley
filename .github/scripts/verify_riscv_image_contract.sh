@@ -6,7 +6,14 @@ set -euo pipefail
 readonly EVIDENCE_DIR="$1"
 readonly IMAGE="$2"
 readonly BASE_IMAGE="$3"
+readonly STANDARD_INVENTORY="$4"
 
+# First, so a later probe failure cannot lose the inherited inventory evidence.
+python .github/scripts/image_package_inventory.py \
+  --image "${IMAGE}" \
+  --expected-inventory "${STANDARD_INVENTORY}" \
+  --output "${EVIDENCE_DIR}/package-inventory.json" \
+  --evidence "${EVIDENCE_DIR}/package-inventory-evidence.json"
 PYTHONPATH=src python .github/scripts/image_contract.py \
   --image "${IMAGE}" \
   --base-image "${BASE_IMAGE}" \
