@@ -15,7 +15,7 @@ import tomllib
 from pathlib import Path
 from typing import BinaryIO, NotRequired, TypedDict
 
-from booley.core.boundary import require_dict, require_int, require_list, require_str
+from booley.core.boundary import as_str_list, require_dict, require_int, require_list, require_str
 from booley.runtime.timefmt import utc_now_rfc3339
 
 try:  # Python >= 3.14 only; older interpreters fail closed on zstd layers.
@@ -25,6 +25,8 @@ except ImportError:
 
 # Upper bound for one `docker save` stream (coding principle 16).
 _DOCKER_SAVE_DEADLINE_SECONDS = 900
+# Grace for `docker save` to exit after closing its output stream.
+_DOCKER_SAVE_EXIT_GRACE_SECONDS = 60
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
@@ -364,7 +366,9 @@ class _ZstdUnavailableError(Exception):
     """A zstd layer was met on an interpreter without ``compression.zstd``."""
 
 
-def _read_export(archive: BinaryIO, wanted: set[str]):
+def _read_export(
+    archive: BinaryIO, wanted: set[str]
+) -> tuple[dict[str, list[dict] | str], dict[str, str], object]:
     """Stream a `docker save` archive: per-member layer scans, links, manifest."""
     scans: dict[str, list[dict] | str] = {}
     links: dict[str, str] = {}
@@ -426,7 +430,7 @@ def audit_layer_links(archive: BinaryIO, groups: list[list[str]]) -> tuple[list[
         return [], [
             f"exported archive must describe exactly one image (manifest.json has {len(entries)})"
         ]
-    layers = [str(name) for name in entries[0].get("Layers", [])]
+    layers = as_str_list(entries[0].get("Layers"))
     errors: list[str] = []
     per_layer: list[list[dict]] = []
     for name in layers:
@@ -476,9 +480,11 @@ def _layer_link_audit(image: str, groups: list[list[str]]) -> tuple[list[dict], 
             try:
                 assert proc.stdout is not None
                 result = audit_layer_links(proc.stdout, groups)
+                # Let docker finish writing so it exits cleanly.  Bounded by the
+                # deadline timer above, which kills the process and ends the read.
                 while proc.stdout.read(1 << 20):
-                    pass  # let docker finish writing so it exits cleanly
-                proc.wait(timeout=60)
+                    pass
+                proc.wait(timeout=_DOCKER_SAVE_EXIT_GRACE_SECONDS)
             finally:
                 timer.cancel()
                 if proc.stdout is not None:
@@ -493,6 +499,10 @@ def _layer_link_audit(image: str, groups: list[list[str]]) -> tuple[list[dict], 
             if expired.is_set():
                 raise RuntimeError(
                     f"docker save {image} exceeded its {_DOCKER_SAVE_DEADLINE_SECONDS}s deadline"
+                ) from exc
+            if killed_by_us and isinstance(exc, subprocess.TimeoutExpired):
+                raise RuntimeError(
+                    f"docker save {image} closed its output but did not exit; killed"
                 ) from exc
             if not killed_by_us and proc.returncode not in (0, None):
                 raise RuntimeError(f"docker save {image} failed: {_read_text(stderr)}") from exc

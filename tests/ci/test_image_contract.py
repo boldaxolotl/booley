@@ -496,6 +496,20 @@ def test_layer_link_audit_kills_a_hung_docker_save(
 
 
 @posix_only
+def test_layer_link_audit_names_a_docker_save_that_closes_output_but_hangs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = tmp_path / "save.tar"
+    fixture.write_bytes(_archive([([FILE_LIBEXEC, LINK_PACKAGE], "gzip")]).getvalue())
+    _fake_docker(tmp_path, monkeypatch, f'cat "{fixture}"; exec 1>&-; exec sleep 60')
+    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_DEADLINE_SECONDS", 60)
+    monkeypatch.setattr(image_contract, "_DOCKER_SAVE_EXIT_GRACE_SECONDS", 1)
+
+    with pytest.raises(RuntimeError, match="did not exit"):
+        image_contract._layer_link_audit("img", GROUP)
+
+
+@posix_only
 def test_layer_link_audit_reaps_child_when_parser_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
