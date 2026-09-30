@@ -118,6 +118,7 @@ from .build import (
     classify_build_outcome,
     prepare_simulation_build,
     setup_failure_outcome,
+    simulation_build_script,
     simulation_setup_command,
 )
 from .build_session import (
@@ -4460,11 +4461,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         command = [
             "sh",
             "-c",
-            build_stage_script(
-                prepared.make_argv,
-                token,
-                environment=prepared.environment,
-            ),
+            simulation_build_script(prepared, token),
         ]
         timeout_s = max(1, self._effective_build_timeout_ms() // 1000)
         proc = self._execute_boundary(command, timeout=timeout_s)
