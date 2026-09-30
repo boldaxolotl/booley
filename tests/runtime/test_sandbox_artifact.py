@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -207,10 +208,13 @@ def test_prepare_launches_observer_after_releasing_host_lock(tmp_path, monkeypat
     assert events == ["locked", "released", "digest"]
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="receipt writer requires Linux UTS namespaces and POSIX ownership",
+)
 def test_receipt_writer_runs_without_project_imports_or_startup_hooks(tmp_path):
     import os
     import subprocess
-    import sys
 
     # Execute the production snippet with a test-local admin UID and directory;
     # Docker supplies root and the fixed /run path in production.
