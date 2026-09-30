@@ -161,11 +161,13 @@ from .campaign.flow_planning import (
 from .campaign.model import simulation_status_from_observations
 from .campaign.planning import manifest_digest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
+from .coverage_campaign_store import load_coverage_campaign
 from .coverage_reference import (
     MAX_REFERENCE_BYTES,
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from .coverage_source_gaps import source_gap_report_lines
 from .execution import (
     DefaultSelection,
     NamedTests,
@@ -532,6 +534,7 @@ def _campaign_report_lines(
                 reasons.append(reason)
         report_lines = [line, *(f"  {reason}" for reason in reasons)]
         if getattr(outcome, "coverage_reference", None) is not None:
+            report_lines.extend(source_gap_report_lines(campaign))
             report_lines.extend(_coverage_pre_sim_lines(selector, campaign))
         lines.append("\n".join(report_lines))
     return lines
@@ -3259,6 +3262,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             lines.append(
                 f"{outcome.target}: simulation={detail.get('simulation', 'inconclusive')}, collection={detail.get('collection')}, coverage={detail.get('evaluation')}"
             )
+            if outcome.campaign_path.is_file():
+                campaign = load_coverage_campaign(outcome.campaign_path).campaign
+                lines.extend(source_gap_report_lines(campaign))
             tests = detail.get("tests")
             for test in tests if isinstance(tests, list) else ():
                 if not isinstance(test, Mapping):

@@ -875,3 +875,44 @@ def test_remaining_dependencies_reports_members_when_origin_is_missing(tmp_path)
     member.mkdir(parents=True)
 
     assert _remaining_dependencies(root, (member,)) == (member,)
+
+
+def test_native_pruning_preserves_complete_source_gap_queries(tmp_path):
+    from booley.flows.sim.campaign_retention import prune_native_payload
+    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+    from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
+    from tests.flows.sim.test_coverage_transaction import _gap_plan
+
+    plan, execution = _gap_plan(tmp_path)
+    progress = CoverageProgress(plan.invocation_dir, ("sim_0",))
+    outcome = run_coverage_target(plan, execution, progress)
+    progress.checkpoint(complete=True)
+    assert outcome.exit_code == 0
+    inventory = outcome.campaign_path.parent / "declarations/inventory.json"
+    original = inventory.read_bytes()
+    prune_native_payload(tmp_path / "reports", 1, "sim_0")
+    assert inventory.read_bytes() == original
+    loaded = load_coverage_campaign(outcome.campaign_path)
+    assert CoverageEvidenceSession(loaded.campaign, None).query({"view": "zero_point_sources"})[
+        "paths"
+    ] == ["rtl/unused.sv"]
+
+
+def test_interrupted_collection_owns_only_reserved_declaration_evidence(tmp_path):
+    from booley.flows.sim.campaign_retention import _campaign_coverage_files
+
+    root = tmp_path / "coverage-campaign"
+    (root / "declarations").mkdir(parents=True)
+    (root / "build-evidence").mkdir()
+    (root / ".collection-started").write_bytes(b"")
+    for name in (
+        "declarations/inventory.json",
+        "build-evidence/cells.tree.json",
+        "build-evidence/tree.meta.json",
+        "build-evidence/unrelated.json",
+    ):
+        (root / name).write_text("{}")
+    owned = _campaign_coverage_files(root)
+    assert (root / "declarations/inventory.json").absolute() in owned
+    assert (root / "build-evidence/cells.tree.json").absolute() in owned
+    assert (root / "build-evidence/unrelated.json").absolute() not in owned

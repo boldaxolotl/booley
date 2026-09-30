@@ -1110,6 +1110,15 @@ def _campaign_coverage_files(coverage: Path) -> set[Path]:
     return {
         marker.absolute(),
         *(path.absolute() for path in (coverage / "native").rglob("*") if path.is_file()),
+        *(
+            (coverage / name).absolute()
+            for name in (
+                "declarations/inventory.json",
+                "build-evidence/cells.tree.json",
+                "build-evidence/tree.meta.json",
+            )
+            if marker.exists() and (coverage / name).is_file()
+        ),
     }
 
 

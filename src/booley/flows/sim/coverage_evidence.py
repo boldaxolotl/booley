@@ -32,6 +32,7 @@ from .coverage_campaign import (
     freeze_coverage_mapping,
 )
 from .coverage_campaign_store import MAX_POINTS
+from .coverage_source_gaps import source_gap_overview, source_gap_summary
 
 MAX_RESPONSE_BYTES = 64 * 1024
 DEFAULT_TOTAL_BUDGET_BYTES = 384 * 1024
@@ -163,11 +164,13 @@ def _audit_queries(value: object) -> tuple[list[dict[str, object]], set[str]]:
         if set(query) != {"view", "returned", "point_ids"}:
             raise BoundaryError(f"queries[{index}] has unexpected fields")
         view = require_str(query, "view")
-        if view not in {"overview", "points", "source"}:
+        if view not in {"overview", "points", "source", "zero_point_sources"}:
             raise BoundaryError(f"queries[{index}].view is invalid")
         returned = _audit_count(query.get("returned"), f"queries[{index}].returned")
         point_ids = _audit_point_ids(query.get("point_ids"), f"queries[{index}].point_ids")
-        if returned != len(point_ids):
+        if (view == "zero_point_sources" and point_ids) or (
+            view != "zero_point_sources" and returned != len(point_ids)
+        ):
             raise BoundaryError(f"queries[{index}] returned count is inconsistent")
         queried_ids.update(point_ids)
         validated.append({"view": view, "returned": returned, "point_ids": point_ids})
@@ -219,10 +222,14 @@ class CoverageEvidenceSession:
                 result = self._overview(request)
             elif view == "points":
                 result = self._point_page(request)
+            elif view == "zero_point_sources":
+                result = self._zero_point_sources(request)
             elif view == "source":
                 result = self._source_excerpts(request)
             else:
-                raise CoverageEvidenceError("view must be overview, points, or source")
+                raise CoverageEvidenceError(
+                    "view must be overview, points, source, or zero_point_sources"
+                )
         except BoundaryError as exc:
             raise CoverageEvidenceError(f"Malformed evidence query: {exc}") from exc
         return self._deliver(view, request, result)
@@ -253,6 +260,7 @@ class CoverageEvidenceSession:
             self._uncovered_sources.items(), key=lambda item: (-item[1], item[0])
         )
         return {
+            "rtl_sources_without_points": source_gap_overview(self._campaign),
             "campaign_id": self._campaign.campaign_id,
             "target": {
                 "identity": self._campaign.target.identity,
@@ -277,6 +285,28 @@ class CoverageEvidenceSession:
             "findings": [_finding(item) for item in self._campaign.findings[:100]],
             "findings_omitted": max(0, len(self._campaign.findings) - 100),
             "source_access": "verified" if self._sources is not None else "report_only",
+        }
+
+    def _zero_point_sources(self, request: Mapping[str, object]) -> dict[str, object]:
+        _closed(request, {"view", "limit", "cursor"})
+        limit = _bounded_int(request.get("limit", 50), "limit", 1, MAX_POINT_LIMIT)
+        summary = source_gap_summary(self._campaign)
+        offset = _cursor_offset(request, len(summary.paths))
+        paths = []
+        for path in summary.paths[offset : offset + limit]:
+            if _encoded_size({"paths": [*paths, path]}) > MAX_RESPONSE_BYTES - 1024:
+                break
+            paths.append(path)
+        if not paths and offset < len(summary.paths):
+            raise CoverageEvidenceError("One source path exceeds the response limit")
+        end = offset + len(paths)
+        return {
+            "discovery_status": summary.status,
+            "comparison_status": summary.comparison_status,
+            "total_sources": len(summary.paths),
+            "paths": paths,
+            "unusable_findings": summary.unusable_findings,
+            "next_cursor": _cursor(request, end) if end < len(summary.paths) else None,
         }
 
     def _point_page(self, request: Mapping[str, object]) -> dict[str, object]:
@@ -397,7 +427,7 @@ class CoverageEvidenceSession:
             }
         self._delivered_bytes += encoded
         self._delivered_references.update(references)
-        records = result.get("points", result.get("excerpts", []))
+        records = result.get("points", result.get("excerpts", result.get("paths", [])))
         self._queries.append(
             {
                 "view": view,
@@ -405,7 +435,7 @@ class CoverageEvidenceSession:
                 "point_ids": [
                     str(item["id" if view == "points" else "point_id"]) for item in records
                 ]
-                if isinstance(records, list)
+                if isinstance(records, list) and view != "zero_point_sources"
                 else [],
             }
         )
@@ -607,6 +637,13 @@ def _minimal_overview(value: Mapping[str, object]) -> dict[str, object]:
     source_groups_omitted = value.get("uncovered_source_groups_omitted", 0)
     runs_omitted = tests.get("runs_omitted", 0)
     return {
+        "rtl_sources_without_points": {
+            **cast(dict[str, object], value.get("rtl_sources_without_points", {})),
+            "paths": [],
+            "omitted": cast(dict[str, object], value.get("rtl_sources_without_points", {})).get(
+                "total_sources", 0
+            ),
+        },
         "campaign_id": str(value.get("campaign_id", ""))[:256],
         "target": value.get("target"),
         "normalization": value.get("normalization"),

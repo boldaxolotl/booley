@@ -572,7 +572,11 @@ def _execution_fixture(
         target=handle.selector,
         target_identity=handle.identity,
         resolved=SimpleNamespace(
-            cocotb_module="test_counter" if cocotb else "", parameters={}, files=()
+            cocotb_module="test_counter" if cocotb else "",
+            parameters={},
+            files=(),
+            edam_path=build_root / "target.eda.yml",
+            flow_options={},
         ),
         work_root=build_root,
         build_root=build_root,
@@ -619,7 +623,10 @@ def _fake_prepare(prepared, captured):
         captured["prepare"] = kwargs
         root = kwargs["build_root"]
         root.mkdir(parents=True, exist_ok=True)
-        return replace(prepared, work_root=root, build_root=root)
+        edam = root / "target.eda.yml"
+        edam.write_text("cores: {}\nfiles: []\n")
+        resolved = SimpleNamespace(**{**vars(prepared.resolved), "edam_path": edam})
+        return replace(prepared, resolved=resolved, work_root=root, build_root=root)
 
     return fake_prepare
 

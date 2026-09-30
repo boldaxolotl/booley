@@ -86,6 +86,7 @@ from .verilator_coverage import (
     VerilatorCollectorIdentity,
     collect,
 )
+from .verilator_declaration_build import capture_build_declarations
 
 _PROVENANCE_PATH = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
 _VERSION_RE = re.compile(r"\bVerilator (?P<version>[0-9]+\.[0-9]+)\b")
@@ -150,6 +151,7 @@ class VerilatorCoverageExecution:
         if identity is None:
             return SimulationBuildResult(False, version_output, infrastructure_error=True)
         try:
+            inspection = TargetCatalog.build(self._handle.project_root).inspect(self._handle)
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
             with SimulationBuildSession(self._handle, request.variant.name) as session:
@@ -170,6 +172,14 @@ class VerilatorCoverageExecution:
                 if result.success:
                     self._artifact_paths = session.authorize_fresh_image(prepared, inputs)
                     self._build_variant = request.variant.name
+                    inventory = capture_build_declarations(
+                        self._handle,
+                        prepared,
+                        inspection,
+                        compiler=(identity.tag, identity.commit),
+                        build_inputs=inputs,
+                    )
+                    result = replace(result, declarations=inventory)
                 return result
         except SimulationBuildSlotError as exc:
             self._prepared = None

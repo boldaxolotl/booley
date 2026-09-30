@@ -884,8 +884,14 @@ Sources are an immutable complete fingerprint-verified snapshot, never file tool
 Native availability sidecars do not alter normalized measurement truth.
 
 The model prompt contains only a compact Campaign reference. One isolated read-only
-`coverage_evidence` tool exposes `overview`, filtered and cursor-paged `points`, and
-verified `source` excerpts. Model-facing point records use deterministic short
+`coverage_evidence` tool exposes `overview`, filtered and cursor-paged `points`,
+verified `source` excerpts, and cursor-paged `zero_point_sources` (sorted paths,
+`limit` 1–100, optional `cursor`). The latter returns sources with no native
+measurement records, independent of hits, point eligibility and waivers. It is
+available in report-only mode, charges normal evidence byte budgets, and records
+returned source counts with empty point IDs. Overview and its minimal fallback
+retain discovery status, total source count, and a pagination hint. These findings
+are advisory; they do not establish deadness or missing instantiation. Model-facing point records use deterministic short
 `point_ref` values instead of the Campaign's long opaque IDs. A `point_ref` becomes
 usable only after its exact point was successfully delivered within the response and
 cumulative byte budgets; later `points` or `source` queries may pass delivered values

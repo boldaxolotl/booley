@@ -263,8 +263,20 @@ What counts as RTL:
 - Every file in the Target's resolved fileset **without** the `tb` tag. Tag
   every testbench file `tb`; an untagged one is scored as RTL.
 - Only code elaborated under the testbench top gets coverage points. An RTL
-  module that is never instantiated produces no points, so it neither lowers
-  the percentages nor shows up as a gap.
+  module that is never instantiated can produce no points. After complete
+  collection, Booley reports each module-bearing RTL source with no native
+  coverage points as an advisory warning. Percentages remain unchanged.
+- This is a file-level check: a measured module can conceal an unmeasured sibling
+  in the same file. TB-tagged and FuseSoC include files are excluded, as are
+  package-only, interface-only, parameter-only, and defines-only sources.
+- Zero points means no native measurement records, including unsupported record
+  classes. Zero hits, waivers, and point eligibility do not create this warning.
+  It does not establish deadness or lack of instantiation.
+- Discovery uses the pinned producing Verilator build. Missing, ambiguous, or
+  unsafe source evidence produces an explicit discovery-incomplete advisory;
+  no missing-point accusations are made from partial observations. Possible
+  logical source mappings (`line directives or macro token construction) also
+  make discovery incomplete conservatively.
 - Points are per instance: a module instantiated four times contributes four
   sets of points, and each instance must be exercised.
 

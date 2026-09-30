@@ -147,7 +147,11 @@ class CoverageAnalystSpecialist(Specialist):
             text_only=True,
             system_prompt=(
                 "Explain gaps using only the active Coverage Campaign through the "
-                "coverage_evidence tool. Begin with its overview view. Coverage evidence "
+                "coverage_evidence tool. Begin with its overview view. Page through "
+                "zero_point_sources to retrieve all RTL paths with no native records. "
+                "Zero points differs from zero hits; investigate instrumentation and build "
+                "selection without claiming deadness or absent instantiation. Name zero-point "
+                "source paths in recommendations; these files have no point_ref. Coverage evidence "
                 "identifies points with short point_ref values; copy only those short "
                 "references into point_refs fields. Keep causal explanations as hypotheses, "
                 "each referencing delivered point_refs. Suggest actionable tests or "
