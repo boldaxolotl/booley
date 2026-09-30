@@ -146,3 +146,32 @@ def test_logical_source_safety_trigger_covers_literal_and_macro_constructions(da
 
 def test_comment_module_decoys_do_not_trigger_location_safety():
     assert not possible_logical_locations(b'// module decoy;\nstring s = "module decoy";')
+
+
+def test_decoder_limits_and_compiler_identity_fail_advisory(tmp_path, monkeypatch):
+    paths = _evidence(tmp_path)
+    wrong = decode_declarations(
+        *paths, compiler=("v5.050", "wrong"), sources=(_source(),), build_identity="build:1"
+    )
+    assert wrong.status == "incomplete"
+    assert "compiler identity" in wrong.diagnostics[0].message
+    monkeypatch.setattr("booley.flows.sim.verilator_declarations.MAX_DECLARATIONS", 1)
+    assert _decode(paths, (_source(),)).status == "incomplete"
+    monkeypatch.setattr("booley.flows.sim.verilator_declarations.MAX_EVIDENCE_BYTES", 16)
+    assert _decode(paths, (_source(),)).status == "incomplete"
+
+
+def test_dump_pair_uses_custom_prefix_and_rejects_ambiguous_evidence(tmp_path):
+    from booley.flows.sim.verilator_declaration_build import _dump_pair
+
+    tree, meta = _evidence(tmp_path)
+    assert _dump_pair(tmp_path) == (tree, meta)
+    other = tmp_path / "Other_005_cells.tree.json"
+    other.write_text("{}")
+    with pytest.raises(ValueError, match="exactly one"):
+        _dump_pair(tmp_path)
+    other.unlink()
+    original = meta.rename(tmp_path / "metadata")
+    meta.symlink_to(original)
+    inventory = _decode((tree, meta), (_source(),))
+    assert inventory.status == "incomplete"

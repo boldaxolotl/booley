@@ -10,9 +10,9 @@ from pathlib import Path
 
 import yaml
 
-from booley.core.boundary import require_dict
+from booley.core.boundary import require_dict, require_str
 from booley.fusesoc.fusesoc_registry import ResolvedFile
-from booley.targets.domain import TargetHandle, TargetInspection
+from booley.targets.domain import TargetInspection
 
 from .build import PreparedSimulationBuild
 from .coverage_provenance import content_digest, coverage_digest
@@ -40,7 +40,7 @@ def _mapped_source(
     parts = Path(item.name).parts
     core = require_dict(cores.get(item.core, {}), field="EDAM core")
     if len(parts) >= 3 and parts[0] == "src" and core.get("core_file"):
-        core_file = (prepared.build_root / core["core_file"]).resolve()
+        core_file = (prepared.build_root / require_str(core, "core_file")).resolve()
         authored = core_file.parent.joinpath(*parts[2:]).resolve()
     if not authored.is_relative_to(root) or not (
         physical.is_relative_to(root) or physical.is_relative_to(prepared.work_root.resolve())
@@ -161,7 +161,6 @@ def _unenumerated_inputs(
 
 
 def capture_build_declarations(
-    handle: TargetHandle,
     prepared: PreparedSimulationBuild,
     inspection: TargetInspection,
     *,
