@@ -216,7 +216,9 @@ Scope limits:
   resolved; it does not make historical rebuilds reproducible.
 - Images built before this contract lack the file and fail the image contract.
 
-Extract the file from a local image without starting it:
+Extract the file from a local image without starting it on a POSIX host. The
+exporter is a Linux CI utility; its executable launch and pipe selection are
+not supported on native Windows:
 
 ```bash
 python .github/scripts/image_package_inventory.py --image IMAGE \

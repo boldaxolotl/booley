@@ -11,6 +11,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tarfile
 from collections.abc import Callable
@@ -28,6 +29,11 @@ inventory = exporter.inventory
 
 IMAGE_ID = "sha256:" + "a" * 64
 BASENAME = "base-package-inventory.json"
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Linux CI exporter requires POSIX executable launch and selectable subprocess pipes",
+)
 
 _FAKE_DOCKER = r"""#!{python}
 import json, os, sys, time
@@ -221,6 +227,36 @@ def test_stalled_copy_is_killed_and_cleaned_up(
     assert status == 1
     assert "exceeded" in evidence["errors"][0]
     _assert_cleaned_up(docker)
+
+
+@pytest.mark.parametrize("cleanup_error", ["timeout", "missing", "nonzero"])
+def test_cleanup_failure_preserves_copy_error_and_evidence(
+    docker: FakeDocker,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_error: str,
+) -> None:
+    docker.set("cp-mode", "fail")
+    run = subprocess.run
+
+    def fail_cleanup(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        if argv[:2] == ["docker", "rm"]:
+            if cleanup_error == "timeout":
+                raise subprocess.TimeoutExpired(argv, 120)
+            if cleanup_error == "missing":
+                raise FileNotFoundError("docker disappeared during cleanup")
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="daemon unavailable")
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_cleanup)
+
+    status, evidence, output = _run(tmp_path)
+
+    assert status == 1
+    assert evidence["status"] == "failed"
+    assert "docker cp exited 1" in evidence["errors"][0]
+    assert "cleanup failed" in evidence["errors"][0]
+    assert not output.exists()
 
 
 def test_parent_inventory_mismatch_fails(docker: FakeDocker, tmp_path: Path) -> None:

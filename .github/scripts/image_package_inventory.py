@@ -7,6 +7,8 @@ bounded ``docker cp`` tar stream that is parsed in memory: exactly one regular
 file member is accepted and nothing is extracted to, or read from, host paths
 named by the archive. The accepted bytes are exported unchanged beside an
 evidence record that binds them to the image identity.
+
+This is a Linux CI utility: executable launch and pipe selection require POSIX.
 """
 
 from __future__ import annotations
@@ -164,14 +166,15 @@ def copy_inventory(image_id: str) -> bytes:
     try:
         archive = copy_archive(container, inventory.INVENTORY_PATH)
         data = inventory_from_archive(archive, PurePosixPath(inventory.INVENTORY_PATH).name)
-    except BaseException:
+    except BaseException as error:
         # Clean up without masking the copy failure that is already in flight.
-        subprocess.run(
-            ["docker", "rm", "--force", container],
-            capture_output=True,
-            check=False,
-            timeout=DOCKER_TIMEOUT_SECONDS,
-        )
+        try:
+            _docker(["rm", "--force", container])
+        except (ExportError, OSError) as cleanup_error:
+            detail = f"container {container} cleanup failed: {cleanup_error}"
+            if isinstance(error, Exception):
+                raise ExportError(f"{error}; {detail}") from error
+            error.add_note(detail)
         raise
     _docker(["rm", "--force", container])
     return data
