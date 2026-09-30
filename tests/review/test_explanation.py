@@ -91,3 +91,36 @@ def test_markup_and_forbidden_control_content_are_rejected(text: str) -> None:
 
     with pytest.raises(ExplanationError):
         StructuredExplanation.parse(value)
+
+
+def test_review_audit_is_inert_and_links_only_evidence() -> None:
+    package = {
+        "slug": "audit",
+        "review_audit": [
+            {
+                "criterion": "review_rtl_bugs_clean",
+                "reason": "source_scope",
+                "file": "[click](https://invalid)/<img>.sv",
+                "summary": "<script>unsafe</script>",
+                "phase": "discovery",
+                "attempt_id": "one",
+                "ordinal": 1,
+                "evidence": "/tmp/evidence [one].json",
+            },
+            {
+                "criterion": "review_rtl_bugs_clean",
+                "errors": ["<img src=x>invalid"],
+                "raw": "<script>raw-only</script>",
+                "phase": "verification",
+                "attempt_id": "two",
+                "ordinal": 1,
+                "evidence": "/tmp/evidence [two].json",
+            },
+        ],
+    }
+    rendered = render_explanation_html(StructuredExplanation.parse(_value()), package)
+    assert "Filtered proposals and parsing rejections — do not affect Criteria" in rendered
+    assert "&lt;script&gt;unsafe&lt;/script&gt;" in rendered
+    assert '<a href="/tmp/evidence%20%5Bone%5D.json">Immutable reviewer evidence</a>' in rendered
+    assert 'href="https://invalid' not in rendered
+    assert "raw-only" not in rendered

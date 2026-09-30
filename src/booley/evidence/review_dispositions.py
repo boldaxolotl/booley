@@ -108,6 +108,9 @@ def _deduplicate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             anonymous += 1
             key = (row["criterion"], f"legacy-{anonymous}")
+        active = deduplicated.get(key)
+        if active and active["disposition"] == "open":
+            continue
         deduplicated[key] = row
     return list(deduplicated.values())
 
@@ -132,3 +135,27 @@ def review_report_required(criteria: Mapping[str, Any]) -> bool:
     if any(key.startswith("review_") and key.endswith("_done") for key in criteria):
         return True
     return any(row["disposition"] == "waived" for row in collect_review_dispositions(criteria))
+
+
+def collect_review_audit(criteria: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Collect non-gating diagnostics without deduplicating proposals or attempts."""
+    rows: list[dict[str, Any]] = []
+    for criterion, entry in criteria.items():
+        if not criterion.startswith("review_"):
+            continue
+        detail = _entry_detail(entry)
+        for collection in ("filtered", "rejected"):
+            values = detail.get(collection, [])
+            if not isinstance(values, list):
+                continue
+            rows.extend(
+                {
+                    **value,
+                    "criterion": criterion,
+                    "collection": collection,
+                    "evidence": value.get("evidence", detail.get("audit_evidence", "")),
+                }
+                for value in values
+                if isinstance(value, Mapping)
+            )
+    return rows

@@ -13,6 +13,7 @@ from typing import Any
 _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
 REVIEW_DETAIL_VERSION = 4
+FILTERING_SEMANTICS_REVISION = 1
 _FRESHNESS_ONLY_CONTRACT_FIELDS = frozenset({"scope_hashes"})
 
 
@@ -95,6 +96,7 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
     scope = tuple(sorted(path.replace("\\", "/").removeprefix("./") for path in invocation.scope))
     return {
         "version": REVIEW_DETAIL_VERSION,
+        "filtering_semantics_revision": FILTERING_SEMANTICS_REVISION,
         "category": invocation.category,
         "focus": invocation.focus,
         "scope": list(scope),
@@ -168,6 +170,12 @@ def review_receipt_drift(
     tb_policy_digest: str | None = None,
 ) -> list[str]:
     """Return changed dimensions for a persisted source-scoped receipt."""
+    contract = detail.get("contract")
+    if (
+        not isinstance(contract, Mapping)
+        or contract.get("filtering_semantics_revision") != FILTERING_SEMANTICS_REVISION
+    ):
+        return ["filtering_semantics"]
     if detail.get("review_detail_version") != REVIEW_DETAIL_VERSION:
         # Pre-v4 receipts continue through the legacy source-fingerprint path
         # in criteria_acceptance. Upgrading Booley must not discard otherwise
@@ -228,6 +236,7 @@ def current_review_receipt_identity(
         documents[name] = _document_digest(path)
     return {
         "version": contract.get("version"),
+        "filtering_semantics_revision": FILTERING_SEMANTICS_REVISION,
         "documents": documents,
         "scope_hashes": _scope_hashes(work_dir, scope),
         "tb_policy_digest": tb_policy_digest,

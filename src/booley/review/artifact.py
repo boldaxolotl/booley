@@ -8,7 +8,14 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict, require_str, require_str_value
+from booley.core.boundary import (
+    BoundaryError,
+    is_str_list,
+    require_dict,
+    require_int,
+    require_str,
+    require_str_value,
+)
 from booley.review.explanation import ExplanationError, StructuredExplanation
 
 PACKAGE_VERSION = 2
@@ -400,6 +407,41 @@ class SemanticAssessment:
 
 
 @dataclass(frozen=True)
+class ReviewAuditRow:
+    """Strict audit envelope; parsed raw JSON remains uninterpreted evidence."""
+
+    payload: Mapping[str, Any]
+
+    @classmethod
+    def parse(cls, value: Any) -> ReviewAuditRow:
+        row = require_dict(value, field="review audit")
+        require_str(row, "criterion")
+        collection = _enum(row, "collection", {"filtered", "rejected"})
+        require_str(row, "attempt_id")
+        require_str(row, "phase")
+        evidence = require_str(row, "evidence")
+        if not (
+            PurePosixPath(evidence).is_absolute() or PureWindowsPath(evidence).is_absolute()
+        ) or not evidence.endswith(".json"):
+            raise ReviewArtifactError("review audit evidence must name a local JSON artifact")
+        ordinal = require_int(row.get("ordinal"), field="review audit ordinal")
+        if ordinal < 1:
+            raise ReviewArtifactError("review audit ordinal must be positive")
+        if collection == "filtered":
+            _enum(row, "reason", {"source_scope"})
+            for name in ("finding_id", "file", "summary", "explanation"):
+                require_str(row, name)
+        else:
+            require_str(row, "channel")
+            if "raw" not in row or not is_str_list(row.get("errors")):
+                raise ReviewArtifactError("rejected audit needs raw JSON and error strings")
+        return cls(_freeze(row))
+
+    def to_dict(self) -> dict[str, Any]:
+        return _thaw(self.payload)
+
+
+@dataclass(frozen=True)
 class ReviewPackage(Mapping[str, Any]):
     """Composed immutable review package consumed by every presentation."""
 
@@ -419,6 +461,7 @@ class ReviewPackage(Mapping[str, Any]):
     run_economics: str
     health: Mapping[str, Any]
     feature_branch: str
+    review_audit: tuple[ReviewAuditRow, ...] = ()
     inspection: Mapping[str, Any] | None = None
     kind: str = "review"
     version: int = PACKAGE_VERSION
@@ -452,6 +495,10 @@ class ReviewPackage(Mapping[str, Any]):
                 ):
                     raise ReviewArtifactError("unaccepted inspection cannot recommend approval")
             return cls(
+                review_audit=tuple(
+                    ReviewAuditRow.parse(item)
+                    for item in _rows(row.get("review_audit", []), "review_audit")
+                ),
                 inspection=_freeze(inspection) if inspection is not None else None,
                 slug=require_str(row, "slug"),
                 repositories=repositories,
@@ -512,6 +559,7 @@ class ReviewPackage(Mapping[str, Any]):
             "repositories": [row.to_dict() for row in self.repositories],
             "criteria": [row.to_dict() for row in self.criteria],
             "review_dispositions": [row.to_dict() for row in self.review_dispositions],
+            "review_audit": [row.to_dict() for row in self.review_audit],
             "recipe_comparisons": [_thaw(row) for row in self.recipe_comparisons],
             "cycle_comparisons": [_thaw(row) for row in self.cycle_comparisons],
             "scope": _thaw(self.scope),
