@@ -203,7 +203,6 @@ class AgentArtifactPaths:
 
 
 ArtifactPathResolver = Callable[[Path | None], AgentArtifactPaths]
-RateLimitNotifier = Callable[[str | None, float, int | None], None]
 
 
 @dataclass
@@ -224,7 +223,6 @@ class AgentCallParams:
     transcript_path: Path | None = None
     # Composition resolves paths after the backend selects its attempt transcript.
     artifact_paths: ArtifactPathResolver | None = None
-    notify_rate_limit: RateLimitNotifier | None = None
     label: str | None = None
     reasoning_effort: str | None = None
     session_id: str | None = None

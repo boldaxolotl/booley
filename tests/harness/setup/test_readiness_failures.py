@@ -144,3 +144,25 @@ def test_stealth_inspection_reports_stale_projection_then_reconcile_repairs_it(t
     repeated = readiness.check_stealth_cores(project, mode=readiness.ReadinessMode.RECONCILE)
     assert repeated == inspected
     assert (projected.read_bytes(), projected.stat().st_mtime_ns) == before
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        '[notifications]\nntfy_topic = "probe"\nevents = ["done"]',
+        "[notifications]\nntfy_topic = 42\nevents = false",
+    ],
+)
+def test_legacy_notifications_do_not_block_project_readiness(tmp_path, settings):
+    project_dir = _write_project(tmp_path)
+    config = project_dir / "booley.toml"
+    baseline = readiness.load_project(tmp_path)
+    config.write_text(config.read_text() + "\n" + settings)
+    result = readiness.load_project(tmp_path)
+    assert result.project is not None
+    assert [f for f in result.report.findings if f.severity is Severity.FAIL] == [
+        f for f in baseline.report.findings if f.severity is Severity.FAIL
+    ]
+    warning = next(f for f in result.report.findings if f.subject == "notifications")
+    assert warning.severity is Severity.WARN
+    assert "ignored" in warning.message

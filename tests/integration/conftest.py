@@ -240,18 +240,14 @@ def _env_isolation(project_root: Path):
     """Set env vars so ticket_board subprocesses use the isolated tickets dir."""
     old_td = os.environ.get("TICKETS_DIR")
     old_pr = os.environ.get("PROJECT_ROOT")
-    old_nd = os.environ.get("NTFY_DISABLE")
 
     os.environ["TICKETS_DIR"] = str(project_root / ".booley" / "project" / "tickets")
     os.environ["PROJECT_ROOT"] = str(project_root)
-    # Silence real ntfy.sh pushes: e2e tests drive state transitions that
-    # would otherwise fire curl to the user's real topic.
-    os.environ["NTFY_DISABLE"] = "1"
 
     yield
 
     # Restore
-    for key, old in [("TICKETS_DIR", old_td), ("PROJECT_ROOT", old_pr), ("NTFY_DISABLE", old_nd)]:
+    for key, old in [("TICKETS_DIR", old_td), ("PROJECT_ROOT", old_pr)]:
         if old is None:
             os.environ.pop(key, None)
         else:

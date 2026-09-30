@@ -27,7 +27,6 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 - [Windows Support](#windows-support)
 - [Firmware-in-the-Loop Debug](#firmware-in-the-loop-debug)
 - [Stealth Mode](#stealth-mode)
-- [Push Notifications](#push-notifications)
 
 ## One Interface Over Every EDA Tool and Agent
 
@@ -201,10 +200,6 @@ integration files or source symlinks. Customize history sanitation with
 set `ignore_native_cores = true` to resolve only through the stealth-authored
 cores. Disable the feature with
 `[stealth] enabled = false`. Everything stays on your machine.
-
-## Push Notifications
-
-Push notifications via [ntfy.sh](https://ntfy.sh) tell you when a ticket completes or blocks, so you don't have to watch the terminal. See [USAGE.md: Push Notifications](USAGE.md#push-notifications).
 
 ### Native coverage collection and analysis
 

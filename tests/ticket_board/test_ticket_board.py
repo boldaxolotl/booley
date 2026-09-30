@@ -133,17 +133,6 @@ def _persistent_file(logs_dir, slug, filename):
     return logs_dir / slug / filename
 
 
-# ---------------------------------------------------------------------------
-# Auto-mock notifications — prevent real pushes during tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _no_ntfy(monkeypatch):
-    """Silence all ntfy.sh notifications during tests."""
-    monkeypatch.setattr("booley.ticket_board.operations.ntfy_send", lambda *a, **kw: None)
-
-
 @pytest.fixture(autouse=True)
 def _synthetic_non_git_ticket_view(monkeypatch):
     """Resolve v2 filesystem fixtures without creating Git baselines."""
