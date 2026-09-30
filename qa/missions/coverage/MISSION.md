@@ -64,7 +64,7 @@ Try:
   `sim_cocotb` (one process/database per test, verdicts from XML). Reverse the Target/test order → stable
   order, no cross-Target merge.
 - Suite choice: no Criterion/selection → full registered suite minus default-skipped; explicit skipped test
-  runs; sealed policy suite wins when no filter; explicit different suite → collected but gated result
+  runs; sealed policy suite never selects: no filter → registered suite minus skips, and a sealed list that differs is a gated suite mismatch, rc2; explicit different suite → collected but gated result
   blocked, rc2; skipping a required test → visible mismatch, not a smaller denominator.
 - Rejections before any build/report dir: `sim_icarus` with coverage; Verilator + Icarus together (valid
   Target rejected too); elab-only and elab-only-standalone; a process-local `verilator` wrapper reporting
@@ -106,11 +106,11 @@ Depends on: baseline.native, baseline.custom.
 Intent: sealed coverage Criteria must gate on exact rationals and keep simulation and coverage truths
 separate.
 Try:
-- Seal each `policies.json` case through public Ticket authoring and collect: line 5/7 @70, branch 2/4 @50,
+- Seal each `policies.json` case through public Ticket authoring and collect with the case's exact `--test` suite: line 5/7 @70, branch 2/4 @50,
   expression 2/3 @66 (three short-circuit points, not four), toggle 4/8 @50, cover_property 2/3 @66; AND of
   line 70 + branch 51 → fail; 2/3 @66.67 → fail, @66 → pass; one record naming two Targets → two
   Target-bound Criteria.
-- Verdicts on `sim_custom` `[gap]`/`[fail]` at 66/100: pass/pass rc0, fail/pass, pass/fail, fail/fail rc1;
+- Verdicts on `sim_custom` `[gap]`/`[fail]` at 66/100: pass/pass and pass/fail rc0 (pass/fail records the Criterion unmet and names the missed metric), fail/pass and fail/fail rc1;
   invalid collector → sim pass, gated blocked, rc2; ungated → `not_requested` rc0. Multi-Target `sim_pass`,
   `sim_miss`, `sim_collector_error` → rc2 with each Target's truths distinct.
 - Eligibility: only RTL-closure points count. TB points unscored; `sim_custom` tests `native-generated` /

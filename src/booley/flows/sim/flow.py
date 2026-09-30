@@ -959,13 +959,12 @@ def _coverage_campaign_exit_code(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
 ) -> int:
-    """Preserve native collection/evaluation exit policy for wrapped aggregates."""
+    """Untrusted coverage forces exit 2; a threshold miss never changes the exit code."""
     resolved = (
         coverage_campaigns
         if coverage_campaigns is not None
         else _resolved_coverage_campaigns(outcomes)
     )
-    saw_failure = False
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
@@ -976,8 +975,14 @@ def _coverage_campaign_exit_code(
             or campaign.evaluation["status"] == "blocked"
         ):
             return EXIT_ERROR
-        saw_failure |= campaign.evaluation["status"] == "fail"
-    return EXIT_FAILURE if saw_failure else 0
+    return 0
+
+
+def _grade_exit_code(grade: str) -> int:
+    """Map an aggregate Simulation grade to an exit code (error 2, any non-pass 1)."""
+    if grade == "error":
+        return EXIT_ERROR
+    return EXIT_SUCCESS if grade == "pass" else EXIT_FAILURE
 
 
 def _checkpoint_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutcome) -> None:
@@ -992,7 +997,8 @@ def _retain_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutco
     progress.outcomes.append(
         CoverageTargetOutcome(
             str(outcome.target["selector"]),
-            _coverage_campaign_exit_code([outcome], {str(outcome.target["selector"]): campaign}),
+            _coverage_campaign_exit_code([outcome], {str(outcome.target["selector"]): campaign})
+            or _grade_exit_code(outcome.aggregate_grade),
             public,
             public.with_name("simulation.json"),
             campaign.evaluation,
@@ -4000,12 +4006,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self.context._simulation_campaign_outcomes = tuple(outcomes)
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
-        exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or (
-            EXIT_ERROR
-            if "error" in grades
-            else EXIT_FAILURE
-            if any(grade != "pass" for grade in grades)
-            else EXIT_SUCCESS
+        exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or max(
+            (_grade_exit_code(grade) for grade in grades), default=EXIT_SUCCESS
+        )
+        threshold_missed = any(
+            campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
         )
         lines = _campaign_report_lines(outcomes, coverage_campaigns)
         campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
@@ -4023,7 +4028,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         return EndpointOutcome(
             exit_code=exit_code,
-            criterion_met=exit_code == EXIT_SUCCESS,
+            criterion_met=exit_code == EXIT_SUCCESS and not threshold_missed,
             detail=detail,
             report_text="\n".join(lines),
             display_label=self._campaign_completed_display_label(outcomes),

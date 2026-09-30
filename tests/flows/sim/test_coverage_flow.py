@@ -134,7 +134,7 @@ def _prepare_console_scope_project(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     return state_path
 
 
-def test_console_lifecycle_uses_criterion_selected_coverage_scope(
+def test_console_lifecycle_reports_executed_suite_not_criterion_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_console_scope_project(tmp_path, monkeypatch)
@@ -154,16 +154,21 @@ def test_console_lifecycle_uses_criterion_selected_coverage_scope(
     )
 
     lifecycle = [event for event in events if event["type"] in {"endpoint_start", "endpoint_end"}]
-    assert result.exit_code == 0, result.outcome
+    assert result.exit_code == 2, result.outcome
     assert [event["display_label"] for event in lifecycle] == [
-        "2 targets · 2 tests",
-        "2 targets · 2 tests",
+        "2 targets · 9 tests",
+        "2 targets · 9 tests",
     ]
     assert {
         observation["test"]
         for campaign in result.outcome.detail["campaigns"].values()
         for observation in campaign["observations"]
-    } == {"half", "gap"}
+    } == {"half", "reset", "wrap", "carry", "zero", "gap", "overflow", "underflow", "saturate"}
+    for campaign in result.outcome.detail["campaigns"].values():
+        path = tmp_path / "reports/sim/1" / campaign["artifacts"]["coverage"]["path"]
+        evaluation = resolve_coverage_campaign_reference(path).loaded.campaign.evaluation
+        assert evaluation["status"] == "blocked"
+        assert evaluation["suite"]["status"] == "mismatch"
 
 
 def test_pre_outcome_coverage_failure_keeps_prepared_console_scope(
@@ -190,8 +195,8 @@ def test_pre_outcome_coverage_failure_keeps_prepared_console_scope(
     lifecycle = [event for event in events if event["type"] in {"endpoint_start", "endpoint_end"}]
     assert result.exit_code == 2
     assert [event["display_label"] for event in lifecycle] == [
-        "2 targets · 2 tests",
-        "2 targets · 2 tests",
+        "2 targets · 9 tests",
+        "2 targets · 9 tests",
     ]
 
 
@@ -1016,7 +1021,10 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
         adapter=adapter,
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 0
+    assert result.outcome.criterion_met is False
+    progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
+    assert progress["detail"]["sim_custom"]["exit_code"] == 0
     campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
     headline = _target_headline(result.outcome.report_text, "sim_custom")
     assert headline == (
@@ -2219,7 +2227,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     [
         ("pass", 2, False, "pass", 0),
         ("fail", 2, False, "pass", 1),
-        ("pass", 0, False, "fail", 1),
+        ("pass", 0, False, "fail", 0),
         ("fail", 0, False, "fail", 1),
         ("pass", 2, True, "blocked", 2),
     ],
@@ -2260,3 +2268,124 @@ def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
     saved = DevelopmentState.load(state_path)
     assert saved.criteria["coverage_sim_0"].met is False
     assert saved.criteria["sim_pass_sim_0"].met is False
+
+
+def _run_gap_ticket_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    registered: tuple[str, ...],
+    skip: tuple[str, ...] = (),
+    criterion_tests: tuple[str, ...] = ("gap",),
+    tests: tuple[str, ...] = (),
+    ticket: bool = True,
+):
+    """Run sim_custom coverage against a Criterion listing *criterion_tests*."""
+    state_path, _initial = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    listing = ", ".join(f'"{name}"' for name in registered)
+    skipped = ", ".join(f'"{name}"' for name in skip)
+    skipping = f"skip = [{skipped}]\n" if skip else ""
+    (tmp_path / ".booley_project/tests.toml").write_text(
+        f"[sim_custom]\ntests = [{listing}]\n{skipping}"
+    )
+    state = DevelopmentState.load(state_path)
+    for entry in state.criteria.values():
+        if "tests" in entry.params:
+            entry.params["tests"] = list(criterion_tests)
+    state.save()
+    if not ticket:
+        monkeypatch.delenv("BOOLEY_STATE_FILE")
+    execution = NativeExecution()
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: execution
+    ).execute(
+        SimRequest(
+            target="sim_custom",
+            work_dir=tmp_path,
+            coverage=True,
+            test=tests or None,
+            report_dir=tmp_path / "reports",
+        )
+    )
+    return result, [run.test.name for run in execution.runs]
+
+
+def _coverage_evaluation(tmp_path: Path) -> dict[str, object]:
+    campaign = next(tmp_path.rglob("targets/sim_custom/coverage.json"))
+    return resolve_coverage_campaign_reference(campaign).loaded.campaign.evaluation
+
+
+def test_criterion_test_list_does_not_select_coverage_tests(tmp_path, monkeypatch):
+    result, ran = _run_gap_ticket_coverage(tmp_path, monkeypatch, registered=("gap", "other"))
+
+    assert sorted(ran) == ["gap", "other"]
+    assert result.exit_code == 2
+    evaluation = _coverage_evaluation(tmp_path)
+    assert evaluation["status"] == "blocked"
+    assert evaluation["suite"]["status"] == "mismatch"
+    assert list(evaluation["suite"]["required"]) == ["gap"]
+
+
+def test_criterion_test_list_is_satisfied_by_explicit_tests(tmp_path, monkeypatch):
+    result, ran = _run_gap_ticket_coverage(
+        tmp_path, monkeypatch, registered=("gap", "other"), tests=("gap",)
+    )
+
+    assert ran == ["gap"]
+    evaluation = _coverage_evaluation(tmp_path)
+    assert evaluation["suite"]["status"] == "match"
+    # Blocked only by the plain execution's missing branch/expression support.
+    assert "COV_EVAL_SUITE_MISMATCH" not in {item["code"] for item in evaluation["diagnostics"]}
+    assert result.exit_code == 2
+
+
+def test_default_coverage_selection_applies_skips_with_a_criterion(tmp_path, monkeypatch):
+    result, ran = _run_gap_ticket_coverage(
+        tmp_path,
+        monkeypatch,
+        registered=("gap", "other"),
+        skip=("other",),
+        criterion_tests=("gap", "other"),
+    )
+
+    assert ran == ["gap"]
+    assert result.exit_code == 2
+    evaluation = _coverage_evaluation(tmp_path)
+    assert evaluation["status"] == "blocked"
+    assert evaluation["suite"]["status"] == "mismatch"
+
+
+def test_ticket_and_interactive_coverage_select_the_same_tests(tmp_path_factory, monkeypatch):
+    ticket = tmp_path_factory.mktemp("ticket")
+    interactive = tmp_path_factory.mktemp("interactive")
+
+    _result, ticket_ran = _run_gap_ticket_coverage(
+        ticket, monkeypatch, registered=("gap", "other")
+    )
+    _result, interactive_ran = _run_gap_ticket_coverage(
+        interactive, monkeypatch, registered=("gap", "other"), ticket=False
+    )
+
+    assert sorted(ticket_ran) == sorted(interactive_ran) == ["gap", "other"]
+
+
+def test_failed_test_exit_code_is_recorded_per_target_in_progress(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution(
+            verdict="fail"
+        )
+    ).execute(
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        )
+    )
+
+    assert result.exit_code == 1
+    progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
+    assert progress["detail"]["sim_0"]["exit_code"] == 1

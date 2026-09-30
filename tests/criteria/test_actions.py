@@ -72,3 +72,33 @@ def test_tb_reviewer_action_uses_source_scope_without_target() -> None:
         planned_invocation("review_tb_quality_clean", entry, _ENDPOINTS)
         == "reviewer --category tb --focus quality --scope tb/test_uart.py,tb/uart_tb.sv"
     )
+
+
+def _coverage_entry(tests: object) -> CriterionEntry:
+    return CriterionEntry(
+        met=False,
+        mandatory=True,
+        params={
+            "target": "sim_counter",
+            "tests": tests,
+            "metrics": {"line": {"min_pct": 90}},
+        },
+    )
+
+
+def test_coverage_action_passes_listed_tests() -> None:
+    entry = _coverage_entry(["reset", "wrap"])
+
+    assert (
+        planned_invocation("coverage_sim_counter", entry, _ENDPOINTS)
+        == "sim --coverage --target sim_counter --test reset --test wrap"
+    )
+
+
+def test_coverage_action_all_tests_adds_no_selector() -> None:
+    entry = _coverage_entry("all")
+
+    assert (
+        planned_invocation("coverage_sim_counter", entry, _ENDPOINTS)
+        == "sim --coverage --target sim_counter"
+    )

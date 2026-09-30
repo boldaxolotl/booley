@@ -303,9 +303,12 @@ and testbench improvements (advisory only). The verdict card prints the exact
   approved waivers and checks the thresholds. Only a persisted `pass` satisfies
   the Criterion.
 
-Which tests run: tests named on the command line win, then the Criterion's test
-list, then the full registered suite. If the tests you name differ from the
-Criterion's list, coverage is still collected but gated evaluation is blocked.
+Which tests run: the tests you name with `--test`/`--tests-file`, otherwise the
+Target's registered suite minus `tests.toml` skips, the same as any `sim` run. A
+Criterion's `tests` list never picks tests; it says which tests the evidence
+must come from. If what ran differs from that list, coverage is still collected
+but gated evaluation is blocked (suite mismatch), so pass the listed tests
+explicitly.
 
 #### Coverage Criteria and waivers
 
@@ -331,13 +334,13 @@ full syntax.
 
 Simulation, collection, and threshold evaluation are reported independently: a
 failing test can still yield valid, passing coverage, and a fully passing suite
-can miss a threshold. The exit code combines them:
+can miss a threshold. The exit code reflects simulation and collection:
 
 | Exit | When |
 |---:|---|
 | `2` | Coverage could not be trusted: preflight rejection, collection or infrastructure failure, incompatible data, or blocked evaluation (e.g. an invalid waiver or a suite mismatch). |
-| `1` | A test failed, or valid coverage missed a threshold. |
-| `0` | Everything passed, including ungated collection. |
+| `1` | A test failed. |
+| `0` | No test failed and coverage can be trusted. A missed threshold also exits `0`: the Coverage Criterion is recorded as not met and the verdict card names the missed metric. |
 
 With several Targets, each keeps its own simulation, collection, and evaluation
 results in the report even when another Target decides the exit code.

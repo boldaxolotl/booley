@@ -982,11 +982,12 @@ A Coverage Criterion never activates collection.
 Targets without EDA, build setup, report allocation, or state mutation. It
 aggregates invalid selections, rejects any non-Verilator Target, validates hook
 contracts, and freezes exact suites and source/build fingerprints. Suite
-selection has four cases: an explicit invocation suite and an exact Coverage
-Criterion suite each retain every registered name, overriding configured skips;
-the legacy internal substring filter and an unfiltered suite apply configured
-skips. A Criterion with `tests: all` uses the unfiltered case, so any names
-excluded by configuration remain visible as a suite mismatch during evaluation.
+selection has two cases: an explicit invocation suite keeps every named
+registered test, overriding configured skips; otherwise the registered suite
+minus configured skips runs. The Coverage Criterion never selects tests. Its
+`tests` list (or, for `tests: all`, the full registered suite) is the required
+suite, so any difference, including configured skips, is a suite mismatch
+during evaluation.
 Execution is sorted and sequential.
 
 `run_coverage_target(plan, execution, progress)` collects through
@@ -995,7 +996,7 @@ loads approved waivers only when gated, evaluates, and publishes in order:
 Campaign, Simulation projection, Criterion evidence, saved Criteria state,
 terminal progress. Source/Target drift is rejected. Ungated evaluation remains
 `not_requested`, including incompatible input; collection errors still exit 2.
-Valid threshold misses or simulation failures exit 1. Blocking evaluation,
+Simulation failures exit 1. A valid threshold miss exits 0; the Criterion records it. Blocking evaluation,
 collector, infrastructure, or persistence errors take precedence with exit 2.
 Target-local collector failures permit later Targets; shared execution or
 publication failures abort with earlier Target results and pending Targets
