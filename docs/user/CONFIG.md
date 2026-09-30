@@ -77,7 +77,7 @@ Project identity, Flow selection, and agent configuration live in
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about ticket file-existence checks rather than identity. `[notifications]`
 is retired and ignored; delete the table and see
-[notification removal](USAGE.md#push-notifications) for manual host egress
+[Troubleshooting](TROUBLESHOOTING.md#push-notifications-stopped-arriving) for manual host egress
 cleanup. Everything else is detailed below, starting with the shared `enabled`
 flow setting.
 

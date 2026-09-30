@@ -10,7 +10,7 @@ with AI coding agents to follow it.
 3. [Two ways to work](#choose-a-mode)
 4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
 5. [Ticket Mode](#ticket-driven-workflow): [creating Tickets](#creating-tickets), [acceptance criteria](#acceptance-criteria), [Scope](#scope), [when a Ticket finishes](#where-the-work-lands-on_success), [reviewing results](#ticket-board-lifecycle)
-6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [push notification removal](#push-notifications), [without VS Code](#entering-the-sandbox-without-vs-code)
+6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [without VS Code](#entering-the-sandbox-without-vs-code)
 7. [Auth & billing](#auth--billing)
 8. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 9. Reference: [Flows & Specialists](#booley-flows--specialists), [Criteria catalog](#criteria-catalog), [CLI](#cli-reference)
@@ -505,21 +505,6 @@ interrupted. The agent can cancel a Job if you ask it to.
 > of the code automatically, but chat sessions share one. To keep two chat
 > agents from overwriting each other, see
 > [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-interactive-agents-keep-clobbering-each-others-edits).
-
-### Push Notifications
-
-Booley no longer sends ntfy push notifications. Local Ticket status, transition
-logs, review briefings, Doctor reports, and provider rate-limit wait/retry
-behavior remain available.
-
-Legacy `[notifications]` settings in `.booley_project/booley.toml` are ignored
-and may be deleted. Doctor reports a nonblocking warning for the obsolete table.
-
-If you manually added `ntfy.sh` to `egress_allowlist` in your
-[host configuration](CONFIG.md#host-configuration-configtoml) solely for this
-feature, remove that entry while preserving entries needed for other authorized
-purposes. Booley does not edit your host settings. Stop your Project containers,
-run `booley bootstrap` on the host, and restart them to apply the policy change.
 
 ### Entering the Sandbox without VS Code
 
