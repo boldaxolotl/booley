@@ -147,10 +147,19 @@ def possible_logical_locations(data: bytes) -> bool:
     """A conservative safety trigger, not RTL interpretation or attribution.
 
     The pinned lexer accepts literal `line; macros can construct it by joining
-    tokens or continued macro text. Reject those constructions conservatively,
-    including occurrences in comments/strings and disabled branches.
+    tokens or continued macro text. Join continued lines before checking for
+    directives, and reject continuations that construct the identifier ``line``.
+    Ordinary multiline macros remain usable. Token joins and directive-like
+    text in comments/strings or disabled branches remain conservative triggers.
     """
-    return bool(re.search(rb"`\s*line\b|``|\\\r?\n", data))
+    continuation = rb"\\\r?\n"
+    joined = re.sub(continuation, b"", data)
+    if re.search(rb"`\s*line\b|``", joined):
+        return True
+    continued_identifiers = re.finditer(
+        rb"[a-zA-Z_$][a-zA-Z0-9_$]*(?:\\\r?\n[a-zA-Z0-9_$]+)+", data
+    )
+    return any(re.sub(continuation, b"", match[0]) == b"line" for match in continued_identifiers)
 
 
 def _bounded_json(data: bytes) -> dict:

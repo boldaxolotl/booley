@@ -138,6 +138,9 @@ def test_expected_evidence_failures_are_advisory(tmp_path, failure):
         b'`define LOC `line 100 "used.sv" 0',
         b"`define JOIN li``ne",
         b"`define NAME li\\\nne",
+        b"`define NAME l\\\ni\\\nne",
+        b'`li\\\r\nne 100 "used.sv" 0',
+        b'`\\\nline 100 "used.sv" 0',
         b"// `line decoy",
         b'"`line decoy"',
     ],
@@ -190,3 +193,15 @@ def test_builtin_unit_locations_do_not_require_authored_source_coordinates(tmp_p
     inventory = _decode((tree, meta), (_source(),))
     assert inventory.status == "complete"
     assert [d.name for d in inventory.declarations] == ["unused"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"`define ADD_ONE(x) \\\n ((x) + 1)\nmodule unused; endmodule",
+        b"`define CHECK(x) \\\r\n assert(x)\n",
+        b"// ordinary continued comment \\\n without remapping\n",
+    ],
+)
+def test_ordinary_continuations_do_not_disable_source_discovery(data):
+    assert not possible_logical_locations(data)

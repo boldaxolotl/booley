@@ -187,7 +187,7 @@ class VerilatorCoverageExecution:
         prepared: PreparedSimulationBuild,
         inspection: TargetInspection,
         identity: VerilatorCollectorIdentity,
-        inputs: dict[str, str],
+        inputs: Mapping[str, str],
     ) -> DeclarationInventory:
         return capture_build_declarations(
             prepared,

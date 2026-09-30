@@ -1201,9 +1201,11 @@ IDs to 100,000; the dump search also limits entries to 100,000.
 
 No authoritative physical map exists for authored `line locations. The pinned
 preprocessor lexer recognizes literal `line; token joins and continued macros can
-construct tokens. A conservative byte trigger rejects possible `line text,
-backtick token joins, and continued source lines in every mapped physical HDL
-input/include and compiler options, including decoys or inactive text. Compiler
+construct tokens. A conservative byte trigger joins continued source lines and
+rejects possible `line text, backtick token joins, and continuations that form
+the identifier `line` in every mapped physical HDL input/include and compiler
+options, including decoys or inactive text. Ordinary multiline macros do not
+disable discovery. Compiler
 file IDs not accounted for by these inputs make discovery incomplete as well.
 This trigger never interprets RTL or assigns physical locations. This trades
 potential false incomplete status for avoiding incorrect file-level accusations.

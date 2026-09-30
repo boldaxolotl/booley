@@ -530,7 +530,7 @@ def _add_declaration_sources(root: Path) -> None:
         "pkg.sv": 'package decoys; string s = "module fake;"; endpackage // module comment;\n',
         "iface.sv": "interface bus_if; logic value; endinterface\n",
         "header.svh": "module included_module; endmodule\n",
-        "conditional.sv": '`include "header.svh"\n`define DECL module macro_module; endmodule\n`DECL\n`ifdef VERILATOR\nmodule active; endmodule\n`else\nmodule inactive; endmodule\n`endif\n',
+        "conditional.sv": '`include "header.svh"\n`define DECL \\\nmodule macro_module; endmodule\n`DECL\n`ifdef VERILATOR\nmodule active; endmodule\n`else\nmodule inactive; endmodule\n`endif\n',
     }
     for name, text in files.items():
         (root / "rtl" / name).write_text(text)

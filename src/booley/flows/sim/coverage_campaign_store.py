@@ -790,7 +790,12 @@ def _load_current(
         )
     from .coverage_declaration_artifact import load_declaration_artifact
 
-    load_declaration_artifact(path.parent, campaign)
+    try:
+        load_declaration_artifact(path.parent, campaign)
+    except (OSError, ValueError) as exc:
+        raise CoverageCampaignStoreError(
+            "COV_DECLARATION_INTEGRITY", f"Cannot authenticate declaration evidence: {exc}"
+        ) from exc
     return LoadedCoverageCampaign(summary, campaign)
 
 

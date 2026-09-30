@@ -124,7 +124,7 @@ def _dump_pair(root: Path) -> tuple[Path, Path]:
 def _unenumerated_inputs(
     inventory: DeclarationInventory,
     prepared: PreparedSimulationBuild,
-    build_inputs: dict[str, str],
+    build_inputs: Mapping[str, str],
 ) -> tuple[DeclarationDiagnostic, ...]:
     if not inventory.raw_evidence:
         return ()
@@ -164,7 +164,7 @@ def capture_build_declarations(
     inspection: TargetInspection,
     *,
     compiler: tuple[str, str],
-    build_inputs: dict[str, str],
+    build_inputs: Mapping[str, str],
 ) -> DeclarationInventory:
     """Reduce one authenticated producing generation to immutable declaration facts."""
     identity = coverage_digest(

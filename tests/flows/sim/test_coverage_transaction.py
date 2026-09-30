@@ -8,7 +8,11 @@ import pytest
 
 from booley.flows.sim.campaign_retention import _coverage_owned_files
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, freeze_coverage_mapping
-from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+from booley.flows.sim.coverage_campaign_store import (
+    CoverageCampaignStoreError,
+    load_coverage_campaign,
+    load_coverage_campaign_bytes,
+)
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
@@ -933,14 +937,23 @@ def test_direct_publication_preserves_source_gaps_and_card_preview(tmp_path):
     assert (outcome.campaign_path.parent / "declarations/inventory.json").absolute() in owned
 
 
-def test_compact_inventory_tampering_is_an_integrity_failure(tmp_path):
+@pytest.mark.parametrize("from_bytes", [False, True])
+@pytest.mark.parametrize("damage", ["tampered", "missing"])
+def test_compact_inventory_tampering_is_an_integrity_failure(tmp_path, from_bytes, damage):
     plan, execution = _gap_plan(tmp_path)
     outcome = run_coverage_target(plan, execution, Progress())
     assert outcome.exit_code == 0
     inventory = outcome.campaign_path.parent / "declarations/inventory.json"
-    inventory.write_text("{}")
-    with pytest.raises(ValueError, match="digest mismatch"):
-        load_coverage_campaign(outcome.campaign_path)
+    if damage == "tampered":
+        inventory.write_text("{}")
+    else:
+        inventory.unlink()
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        if from_bytes:
+            load_coverage_campaign_bytes(outcome.campaign_path, outcome.campaign_path.read_bytes())
+        else:
+            load_coverage_campaign(outcome.campaign_path)
+    assert error.value.code == "COV_DECLARATION_INTEGRITY"
 
 
 def test_incomplete_collection_never_accuses_module_sources(tmp_path):
