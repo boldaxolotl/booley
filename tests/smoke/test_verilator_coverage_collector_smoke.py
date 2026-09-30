@@ -372,7 +372,14 @@ def test_real_coverage_flow_publishes_canonical_campaign(
             report_dir=tmp_path / "reports",
         )
     )
-    assert result.exit_code == 0, result.outcome
+    if trace and harness == "generated":
+        # The auto-main fixture builds no waveform writer, so the requested
+        # trace is honestly inconclusive (#884); the Coverage Campaign still
+        # publishes complete evidence below.
+        assert result.exit_code == 1, result.outcome
+        assert result.outcome.detail["targets"]["sim"]["simulation"] == "inconclusive"
+    else:
+        assert result.exit_code == 0, result.outcome
     path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
     resolved = resolve_coverage_campaign_reference(path)
     campaign = resolved.loaded.campaign
@@ -512,7 +519,10 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
                 report_dir=root / "reports",
             )
         )
-        assert result.exit_code == 0, result.outcome
+        # This generated harness never writes the requested waveform, so a
+        # traced run is honestly inconclusive (#884) rather than a false pass;
+        # each variant must still build its own binary.
+        assert result.exit_code == (1 if trace else 0), result.outcome
         binaries = {
             hashlib.sha256(path.read_bytes()).hexdigest()
             for path in root.rglob("Vtop")

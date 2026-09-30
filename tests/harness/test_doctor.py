@@ -7620,9 +7620,12 @@ targets:
         assert len(c.warned) == 1
 
     def test_relative_pattern_covers_absolute_literal_under_run_cwd(self, tmp_path: Path):
-        literal = (tmp_path / "sim.vcd").as_posix()
+        # A POSIX-absolute run_cwd keeps the literal absolute on every platform.
         c = self._check(
-            tmp_path, f'tfp->open("{literal}");', trace_config='trace_files = ["sim.vcd"]\n'
+            tmp_path,
+            'tfp->open("/sim_home/sim.vcd");',
+            trace_config='trace_files = ["sim.vcd"]\n',
+            run_cwd="/sim_home",
         )
         assert not c.warned and len(c.passed) == 1
 
