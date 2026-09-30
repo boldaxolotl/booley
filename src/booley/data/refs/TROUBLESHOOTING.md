@@ -17,6 +17,17 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [CONTEXT.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTEXT.md).
 
+## Push notifications stopped arriving
+
+Booley no longer sends ntfy push notifications. Legacy `[notifications]` settings
+in `.booley_project/booley.toml` are ignored and can be deleted; Doctor reports a
+nonblocking warning for the obsolete table. If you manually added `ntfy.sh` to
+the host `egress_allowlist` solely for this feature, remove that entry while
+preserving entries needed for other authorized purposes. Stop your Project
+containers, run `booley bootstrap` on the host, and restart them to apply the
+policy change. Local Ticket status, logs, review briefings, Doctor reports, and
+provider rate-limit wait/retry behavior remain available.
+
 ## VS Code says “A mount config is invalid” while reopening the container
 
 Booley validates every host bind in the current generated spec before Docker

@@ -18,9 +18,9 @@ def tio(tmp_path, monkeypatch):
     return board
 
 
-def make_ticket_file(tio, state, slug, extra=None):
+def _make_ticket(tio, state, slug, *, destination="review"):
     document = _draft_document()
-    if extra:
+    if destination == "done":
         document = document.replace("on_success: [review]", "on_success: []")
     created = tio.create_ticket_document(slug, document)
     prepare_converted_ticket_baseline(tio._project_root, created, slug)
@@ -38,7 +38,9 @@ def legacy_config(tio, monkeypatch):
     calls = []
 
     def record_delivery(*args, **kwargs):
-        calls.append(str(args))
+        command = str(args)
+        calls.append(command)
+        assert "ntfy.sh" not in command, "retired notification delivery attempted"
         return popen(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", record_delivery)
@@ -55,14 +57,14 @@ def legacy_config(tio, monkeypatch):
 def test_bad_config_does_not_fail_block(tio, tmp_path, monkeypatch, setting):
     text = setting if setting.startswith("notifications") else "[notifications]\n" + setting
     (tio._project_root / ".booley_project" / "booley.toml").write_text(text)
-    make_ticket_file(tio, "active", "probe")
+    _make_ticket(tio, "active", "probe")
     assert operations.op_block(tio, "probe", "need input", "planning") is True
     assert tio.find_ticket("probe")["status"] == "blocked"
 
 
 @pytest.mark.parametrize("content", [b'{"status": []}', b"\xff"])
 def test_malformed_triage_manifest_does_not_fail_review(tio, monkeypatch, content):
-    make_ticket_file(tio, "active", "probe")
+    _make_ticket(tio, "active", "probe")
     log = tio.logs_dir / "probe" / ".runtime"
     (log / "triage-prep").mkdir(parents=True)
     (log / "booley_state.json").write_text("{}")
@@ -75,7 +77,7 @@ def test_malformed_triage_manifest_does_not_fail_review(tio, monkeypatch, conten
 
 @pytest.mark.parametrize("merge", [False, True])
 def test_successful_completion(tio, monkeypatch, merge):
-    make_ticket_file(tio, "review", "probe")
+    _make_ticket(tio, "review", "probe")
     policy = Mock(merge=merge, cleanup=False)
     monkeypatch.setattr(
         operations, "_prepare_completion_request", lambda *_a: ("probe", policy, None)
@@ -91,13 +93,13 @@ def test_successful_completion(tio, monkeypatch, merge):
 
 
 def test_failed_completion_preserves_state(tio, monkeypatch):
-    make_ticket_file(tio, "review", "probe")
+    _make_ticket(tio, "review", "probe")
     monkeypatch.setattr(operations, "_prepare_completion_request", lambda *_a: None)
     assert not operations.op_complete(tio, "probe")
 
 
 def test_completion_retry_preserves_done(tio, monkeypatch):
-    make_ticket_file(tio, "done", "probe")
+    _make_ticket(tio, "done", "probe")
     monkeypatch.setattr(
         operations, "_prepare_completion_request", lambda *_a: ("probe", Mock(merge=True), None)
     )
@@ -106,7 +108,7 @@ def test_completion_retry_preserves_done(tio, monkeypatch):
 
 
 def test_failed_merge_preserves_state(tio, monkeypatch):
-    make_ticket_file(tio, "review", "probe")
+    _make_ticket(tio, "review", "probe")
     monkeypatch.setattr(
         operations, "_prepare_completion_request", lambda *_a: ("probe", Mock(merge=True), None)
     )
@@ -116,7 +118,7 @@ def test_failed_merge_preserves_state(tio, monkeypatch):
 
 
 def test_automatic_done_handoff(tio, monkeypatch):
-    make_ticket_file(tio, "active", "probe", {"on_success": {"destination": "done"}})
+    _make_ticket(tio, "active", "probe", destination="done")
     log = tio.logs_dir / "probe" / "human-logs"
     log.mkdir(parents=True, exist_ok=True)
     (log / "run.log").write_text("Developer finished\n")
