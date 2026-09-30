@@ -149,6 +149,31 @@ hard_link_groups = [
 ]
 
 [[common.probe]]
+name = "GNU coreutils defaults and shell compatibility"
+command = '''
+check="$(cat <<'COREUTILS'
+set -eu
+for command in stat date sort cp readlink ls install mktemp sha256sum; do
+  "$command" --version | grep -F "GNU coreutils"
+done
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+printf "%s\n" sample > "$work/input"
+cp "$work/input" "$work/copy"
+test "$(stat -c "%h %n" "$work/copy")" = "1 $work/copy"
+date -d "1 day ago" +%s >/dev/null
+test "$(printf "%s\n" v10 v2 | sort -V)" = "$(printf "%s\n" v2 v10)"
+ln -s input "$work/link"
+test "$(readlink -f "$work/link")" = "$work/input"
+COREUTILS
+)"
+bash -euo pipefail -c "$check"
+bash -lc "$check"
+bash -lic "$check"
+sh -ec "$check"
+'''
+
+[[common.probe]]
 name = "unprivileged runtime identity"
 command = '''
 test "$(id -u)" -eq 1000
