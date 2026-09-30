@@ -10,7 +10,7 @@ with AI coding agents to follow it.
 3. [Two ways to work](#choose-a-mode)
 4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
 5. [Ticket Mode](#ticket-driven-workflow): [creating Tickets](#creating-tickets), [acceptance criteria](#acceptance-criteria), [Scope](#scope), [when a Ticket finishes](#where-the-work-lands-on_success), [reviewing results](#ticket-board-lifecycle)
-6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [push notifications](#push-notifications), [without VS Code](#entering-the-sandbox-without-vs-code)
+6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [without VS Code](#entering-the-sandbox-without-vs-code)
 7. [Auth & billing](#auth--billing)
 8. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 9. Reference: [Flows & Specialists](#booley-flows--specialists), [Criteria catalog](#criteria-catalog), [CLI](#cli-reference)
@@ -505,41 +505,6 @@ interrupted. The agent can cancel a Job if you ask it to.
 > of the code automatically, but chat sessions share one. To keep two chat
 > agents from overwriting each other, see
 > [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-interactive-agents-keep-clobbering-each-others-edits).
-
-### Push Notifications
-
-Booley can send a notification to your phone when a Ticket needs you. Pick a
-private topic name on [ntfy.sh](https://ntfy.sh), subscribe to it in the ntfy
-app, and add it to your project's `booley.toml`:
-
-```toml
-[notifications]
-ntfy_topic = "your-private-topic"
-# Optional: leave out events to get all of them, or use [] for none.
-events = ["blocked", "review", "done", "doctor", "rate_limit"]
-```
-
-| Event | Sent when |
-| --- | --- |
-| `blocked` | a Ticket needs your input |
-| `review` | a Ticket is ready for review |
-| `done` | a Ticket is done |
-| `doctor` | the automatic health check found something new |
-| `rate_limit` | an agent Booley started (the Developer Agent or a Specialist, not your chat) hit a Claude usage limit, and Booley is waiting for it to reset. Not sent for Codex. |
-
-The container blocks ntfy.sh by default. To allow it, add it to your
-[host configuration](CONFIG.md#host-configuration-configtoml), keeping any
-entries already there:
-
-```toml
-[interactive]
-egress_allowlist = ["ntfy.sh"]
-```
-
-Then stop the containers of all your projects, run `booley bootstrap` on the
-host, and start them again. This applies to every project on the machine.
-Notifications are best-effort: a lost one is not retried and never affects a
-Ticket. Set `NTFY_DISABLE=1` to turn them off in tests.
 
 ### Entering the Sandbox without VS Code
 

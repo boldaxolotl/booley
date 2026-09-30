@@ -66,10 +66,8 @@ functions. D14 has no waiver or composition exception.
   callers bind `ticket_board.agent_execution` to preserve fallback prompt names
   and the `.runtime`/`human-logs` layout. Runtime writers and renderers accept
   resolved locations; standalone calls use adjacent transcript sidecars.
-- The per-call rate-limit callback is supplied by execution composition, including
-  Developer, Specialist, review, blocked-report and probe callers. Claude retains
-  detection, wait/retry and budget pause/resume; `ticket_board.notifications` owns
-  preferences and delivery. Notification failure cannot abort provider backoff.
+- Claude Runtime owns provider rate-limit detection, wait/retry, and budget
+  pause/resume without importing Ticket Board policy.
 - `ticket_board.ticket_repositories` owns Ticket Workspace requests, Scope routing,
   branch handoff, Board-change protection and cleanup. Authoring callers invoke
   `ticket_board.workspace_ops` directly, without a reverse workspace import.
@@ -257,7 +255,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
 | D12 | Exact modules `booley.targets.domain` and `booley.targets.selection`; prefix `booley.fusesoc` | For the exact target modules: prefix `booley.fusesoc`, prefixes `booley.flows.{sim,synth,fpga,lint}`, and exact modules `booley.targets.catalog` and `booley.targets.target_surface`. For FuseSoC: the exact catalog and target-surface modules. | Forbid | Target domain values and selector policy stay independent of FuseSoC, concrete Flows, catalog orchestration, and presentation; FuseSoC adapters do not depend back on catalog orchestration or presentation. |
 | D13 | Prefix `booley.fusesoc` | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | FuseSoC mechanics remain reusable beneath concrete Flow implementations. |
-| D14 | Prefix `booley.runtime` | Prefix `booley.ticket_board` | Forbid | Shared Runtime accepts artifact locations and notification behavior from execution callers; Ticket Board owns Ticket Workspace handoff policy. |
+| D14 | Prefix `booley.runtime` | Prefix `booley.ticket_board` | Forbid | Shared Runtime accepts artifact locations from execution callers; Ticket Board owns Ticket Workspace handoff policy. |
 | D15 | Prefix `booley.flows` | Prefix `booley.mcp` | Forbid | Deterministic Flow execution and its shared services are independent of MCP exposure; schemas and compatibility adaptation belong to MCP. |
 | D16 | Prefix `booley.criteria` | Prefix `booley.flows` | Forbid | Criteria evaluates shared evidence without depending on Flow production, source scanning, or execution. |
 | D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |

@@ -1,4 +1,4 @@
-"""Compose agent artifact layout and notification policy for Booley execution."""
+"""Compose agent artifact layout for Booley execution."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pathlib import Path
 from booley.core.models import AgentArtifactPaths, AgentCallParams
 from booley.runtime.prompt_artifacts import adjacent_artifact_paths
 from booley.runtime.timefmt import compact_utc_now
-from booley.ticket_board.notifications import notify_rate_limit
 from booley.ticket_board.paths import HUMAN_LOGS_DIR, RUNTIME_DIR, ticket_runtime_dir
 
 
@@ -73,5 +72,4 @@ def configure_agent_call(params: AgentCallParams) -> AgentCallParams:
     return replace(
         params,
         artifact_paths=partial(resolve_agent_artifacts, label=params.label),
-        notify_rate_limit=notify_rate_limit,
     )

@@ -76,10 +76,10 @@ Project identity, Flow selection, and agent configuration live in
 `[project]` carries the project `name` and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about ticket file-existence checks rather than identity. `[notifications]`
-configures the ntfy.sh topic and event selection; see
-[Push Notifications](USAGE.md#push-notifications) for setup and the required
-host egress permission. Everything else is
-detailed below, starting with the shared `enabled` flow setting.
+is retired and ignored; delete the table and see
+[Troubleshooting](TROUBLESHOOTING.md#push-notifications-stopped-arriving) for manual host egress
+cleanup. Everything else is detailed below, starting with the shared `enabled`
+flow setting.
 
 ### Booley Flow execution: `enabled`
 

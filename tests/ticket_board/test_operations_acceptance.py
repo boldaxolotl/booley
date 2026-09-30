@@ -49,7 +49,6 @@ def _handoff_tio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
     )
     monkeypatch.setattr(operations, "existing_human_log_file", lambda *_args: run_log)
     monkeypatch.setattr(operations, "_validate_transitions_for_handoff", lambda *_args: True)
-    monkeypatch.setattr(operations, "is_event_enabled", lambda *_args: False)
     monkeypatch.setattr(
         operations,
         "_op_move_and_log",
