@@ -18,19 +18,15 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import require_dict, require_list, require_str
-from booley.flows.sim.coverage_waiver_application import WaiverPromotionPlan
 
 from . import review_preparation as prep
 from .board_layout import waiver_candidates_path
 from .helpers import tickets_dir_from_project_root
 from .persistence import atomic_replace_bytes, atomic_write_once
-from .provisional_coverage import TicketCoverageContext
 from .review_records import ReviewEntryError, digest, read_json
 from .waiver_approval import (
     WaiverDecisionError,
     WaiverDecisions,
-    _ApprovalInputs,
-    _validate_resumed_plan,
     promotion_plan_path,
 )
 
@@ -128,43 +124,14 @@ def _validated_patches(ctx: prep.ReviewPrepContext, record: Mapping[str, Any]) -
     original = prep._source_fingerprint(ctx, source_overrides=_overrides(patches, before=True))
     if original != ctx.inspection["capture_sha"]:
         raise ReviewEntryError("selected review inputs changed outside waiver approval")
-    _validate_plan(ctx, record, patches)
+    _validate_semantics(ctx, record, patches)
     return patches
 
 
-def _validate_plan(
-    ctx: prep.ReviewPrepContext, record: Mapping[str, Any], patches: list[_Patch]
-) -> None:
-    """A recovered plan is checked against the original candidates and current RTL."""
-    plan_patch = next((p for p in patches if p.label == "acceptance/waiver-promotion.json"), None)
-    if plan_patch is None:
-        return
-    plan = WaiverPromotionPlan.from_json(json.loads(plan_patch.after))
-    answers = require_dict(record.get("answers"), field="waiver answers")
-    decisions = WaiverDecisions(
-        frozenset(require_list(answers.get("accepted"), field="accepted candidates")),
-        frozenset(require_list(answers.get("rejected"), field="rejected candidates")),
-        answers.get("approval_ref"),
-    )
-    assert ctx.inspection is not None
-    with tempfile.TemporaryDirectory(prefix="booley-waiver-recovery-") as directory:
-        tickets_dir = Path(directory)
-        candidate = next((p for p in patches if p.label == "waiver-candidates"), None)
-        original = candidate.before if candidate is not None else _read(_candidate_path(ctx))
-        if original is not None:
-            path = waiver_candidates_path(tickets_dir, ctx.slug)
-            path.parent.mkdir(parents=True)
-            path.write_bytes(original)
-        inputs = _ApprovalInputs(
-            ctx.slug,
-            ctx.log_dir,
-            ctx.log_dir / ".runtime" / "booley_state.json",
-            ctx.worktree,
-            ctx.project_root,
-            TicketCoverageContext(ctx.slug, tickets_dir, ctx.log_dir, ctx.worktree),
-            ctx.inspection,
-        )
-        _validate_resumed_plan(inputs, plan, decisions)
+def _validate_semantics(ctx, record, patches) -> None:
+    from .waiver_approval_validation import validate_transaction_outputs
+
+    validate_transaction_outputs(ctx, record, patches)
 
 
 def retry_capture(ctx: prep.ReviewPrepContext) -> str | None:

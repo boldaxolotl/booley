@@ -8,6 +8,7 @@ makes it 1/1 provisionally. The candidate record is checked, not trusted.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,6 +31,48 @@ from tests.flows.sim.test_coverage_flow import (
 )
 
 _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("case", ["current", "missing_context", "stale", "other_unmet"])
+def test_report_gate_allows_only_verified_provisional_coverage(ticket, monkeypatch, case):
+    from booley.mcp.submit_run_report import SubmitRunReportMcpTool
+    from booley.ticket_board.helpers import tickets_dir_from_project_root
+
+    state_path, context = ticket
+    monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", str(context.worktree))
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(context.log_dir / ".runtime"))
+    monkeypatch.setenv("BOOLEY_SLUG", context.slug)
+    context = replace(context, tickets_dir=tickets_dir_from_project_root(context.worktree))
+    _record_uncovered_line(context, state_path)
+    state = DevelopmentState.load(state_path)
+    state.set_criterion("_report_submitted", False)
+    if case == "missing_context":
+        monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT")
+    elif case == "stale":
+        (context.worktree / "rtl" / "counter.sv").write_bytes(b"module changed; endmodule\n")
+    elif case == "other_unmet":
+        state.criteria["implementation_done"] = CriterionEntry(met=False, mandatory=True)
+    endpoint = SubmitRunReportMcpTool()
+    endpoint.parse_args(
+        [
+            "--work-dir",
+            str(context.worktree),
+            "--summary",
+            "Coverage needs human review",
+            "--uncertainties",
+            "Candidate justification needs approval",
+            "--design-decisions",
+            "Kept unreachable logic",
+            "--file-justifications",
+            "{}",
+        ]
+    )
+    endpoint._state = state
+
+    result = endpoint._criteria_freshness_gate()
+
+    assert (result is None) == (case == "current")
+    assert not state.criteria[_metric_key(state, "line")].met
 
 
 class _LineGapExecution(_SplitMetricsExecution):

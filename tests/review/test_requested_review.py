@@ -1498,6 +1498,11 @@ def test_board_approve_freezes_selected_package_without_agent(
 
     monkeypatch.setattr(prep, "_invoke_agent", unexpected_agent)
     if waiver_writes:
+        from booley.ticket_board import waiver_approval_transaction
+
+        # This lifecycle fixture replaces the approval producer. Real Campaign
+        # tests exercise transaction output validation independently.
+        monkeypatch.setattr(waiver_approval_transaction, "_validate_semantics", lambda *_: None)
         monkeypatch.setattr(lifecycle, "_apply_waiver_decisions", _approval_with_rejection)
     frozen = _interrupt_public_approval(root, tio, monkeypatch, interrupt)
     assert approve_review_command(root, "demo")
