@@ -19,8 +19,9 @@ no longer matches the config on disk.
 The fingerprint deliberately contains only inputs both launch contexts hash to the
 same bytes (``booley.toml``, ``doctor-waivers.toml``, and
 ``devcontainer.json`` ride the bind mounts). The package version is recorded
-separately and must match across contexts; image digests remain Doctor's own
-job because they legitimately read differently host-side and in-container.
+separately and must match across contexts. Immutable image identity and deep
+completeness belong to the independent evidence policy in ``doctor_deep``; plain
+stamp writes never replace that record.
 
 Everything here is advisory and fail-soft by contract: a missing, corrupt, or
 unwritable stamp must never block doctor, a session, or a ticket run.
