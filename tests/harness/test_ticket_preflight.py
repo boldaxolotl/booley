@@ -298,3 +298,15 @@ class TestCheckGit:
         mock_run.side_effect = side_effect
         errors = _check_git(tmp_path)
         assert errors == []
+
+
+def test_deep_due_does_not_gate_ticket_preflight(project_root, monkeypatch):
+    from booley.harness import doctor_deep, ticket_preflight
+
+    due = doctor_deep.evaluate_deep_status(doctor_deep.DeepState(), version="1.0", image_id=None)
+    assert not due.current
+    monkeypatch.setattr(doctor_deep, "observe_deep_status", lambda *_args, **_kw: due)
+    monkeypatch.setattr(ticket_preflight, "_check_inside_container", lambda: None)
+    monkeypatch.setattr(ticket_preflight, "_check_git", lambda _: [])
+    monkeypatch.setattr(ticket_preflight, "_check_ticket_board", lambda _: [])
+    ticket_preflight.run_ticket_preflight(project_root)

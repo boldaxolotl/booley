@@ -29,8 +29,10 @@ from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_
 
 @pytest.fixture(autouse=True)
 def _isolate_session_admission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from booley.runtime import session_admission
+    from booley.runtime import sandbox_artifact, session_admission
 
+    monkeypatch.setattr(sandbox_artifact, "launch_vscode_observer", lambda *_args: None)
+    monkeypatch.setattr(sandbox_artifact, "publish_receipt", lambda *_args: True)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(session_admission, "claim_vscode_start", lambda *_args, **_kwargs: False)
