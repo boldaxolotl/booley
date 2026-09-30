@@ -972,6 +972,12 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
     output = capsys.readouterr().out
     assert rc == 0
     assert "WARN  synth deep check [synth_fast] returned a WARN verdict" in output
+    # Issue #885: a flushed RUN line precedes the long check, and the summary
+    # states agent spend (the probe SKIPs host-side, so none).
+    run_line = "RUN   synth deep check [synth_fast] (real EDA run; timeout"
+    assert run_line in output
+    assert output.index(run_line) < output.index("WARN  synth deep check [synth_fast]")
+    assert "Agent-backed checks: no agent call ran (0 tokens, $0.00)." in output
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
@@ -1003,6 +1009,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     assert "agent credential checks skipped by --skip-agent-checks" in output
     assert "worker backend health check skipped by --skip-agent-checks" in output
     assert "developer authorization probe skipped by --skip-agent-checks" in output
+    assert "no agent call ran" in output
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
@@ -1336,6 +1343,44 @@ def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
         ("second#smoke", "smoke", "acme:ip:second:1"),
     ]
     assert rec.kinds() == {"pass"}
+
+
+def test_core_resolve_announces_before_container_run(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (tmp_path / "first.core").write_text(
+        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
+        "  smoke:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    printed_before_run: list[str] = []
+
+    def fake_run(cmd, **_kwargs):
+        printed_before_run.append(capsys.readouterr().out)
+        payload = json.loads(cmd[-1])
+        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n", stderr=""
+        )
+
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
+    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
+
+    assert (
+        "RUN   .core resolvability of 1 Target(s) in the Sandbox "
+        "(FuseSoC configure; timeout 10 min)" in printed_before_run[0]
+    )
 
 
 def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
@@ -5363,6 +5408,29 @@ class TestFailPathSelfTest:
         assert not rec.fails()
         assert any("correctly graded a failure" in m for _, m in rec.events)
 
+    def test_selftest_announces_each_case_before_running_it(self, tmp_path, monkeypatch, capsys):
+        # The RUN line must be flushed before the (long) EDA subprocess starts.
+        printed_before_run: list[str] = []
+        _set_venue(monkeypatch, False)
+
+        def fake_run(cmd, **kwargs):
+            printed_before_run.append(capsys.readouterr().out)
+            kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            return subprocess.CompletedProcess(cmd, {"good": 0, "bad": 1}[kind], "", "")
+
+        monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+        monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
+        project = self._audit(tmp_path)
+        rec = _Rec()
+        runtime = doctor._DoctorFlowRuntime(project.project_root, "docker")
+
+        doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
+
+        assert len(printed_before_run) == 2
+        assert "RUN   sim self-test good case" in printed_before_run[0]
+        assert "real EDA run; timeout" in printed_before_run[0]
+        assert "RUN   sim self-test bad case" in printed_before_run[1]
+
     def test_selftests_cannot_inherit_ticket_acceptance_context(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
         ticket_vars = {
@@ -5546,7 +5614,9 @@ class TestDeveloperProbe:
         monkeypatch.setattr(
             developer_probe,
             "measure_developer_rss",
-            lambda root: (2 * _GIB, True),
+            lambda root: developer_probe.ProbeMeasurement(
+                2 * _GIB, True, developer_probe.ProbeUsage(0, 0, 0, 0.0)
+            ),
         )
         project = _adr28_project(tmp_path)
         rec = _Rec()
@@ -5593,6 +5663,155 @@ class TestDeveloperProbe:
         assert rec.kinds() == {"fail"}
         assert "every ticket agent will fail" in rec.events[0][1]
 
+    def test_deep_phase_announces_probe_and_reports_usage(self, tmp_path, monkeypatch, capsys):
+        """Issue #885: RUN line precedes the agent call; summary reports spend."""
+        _set_venue(monkeypatch, True)
+        monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
+        monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+        seen_before_call: list[str] = []
+
+        def fake_measure(_root):
+            seen_before_call.append(capsys.readouterr().out)
+            return developer_probe.ProbeMeasurement(
+                2 * _GIB, True, developer_probe.ProbeUsage(1234, 1000, 56, 0.0031)
+            )
+
+        monkeypatch.setattr(developer_probe, "measure_developer_rss", fake_measure)
+        project = _adr28_project(tmp_path)
+        reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
+
+        doctor._run_deep_phase(
+            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), False, reporter
+        )
+        reporter.finish()
+
+        assert (
+            "RUN   agent-backed check: developer memory and authorization probe"
+            in seen_before_call[0]
+        )
+        assert (
+            "Agent-backed checks: 1 agent call, 1,234 input tokens (1,000 cached), "
+            "56 output tokens, cost $0.0031." in capsys.readouterr().out
+        )
+
+    def test_long_check_announcement_flushes_stdout(self, monkeypatch):
+        events: list[str] = []
+
+        class _Writer:
+            def write(self, text):
+                events.append("write")
+                return len(text)
+
+            def flush(self):
+                events.append("flush")
+
+        monkeypatch.setattr(sys, "stdout", _Writer())
+        doctor._announce_long_check("x", "y")
+        assert "write" in events
+        assert events[-1] == "flush"
+
+    @pytest.mark.parametrize("site", ["call", "rusage", "timeout", "no_rss"])
+    def test_measure_post_call_errors_carry_usage(self, tmp_path, monkeypatch, site):
+        from booley.harness.models import AgentResult
+        from booley.runtime import agent as agent_mod
+        from booley.runtime import agent_config as config_mod
+
+        monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
+
+        class _Cfg:
+            def __init__(self):
+                self.settings = self
+
+            def model_for_tier(self, tier):
+                return "test-model"
+
+        monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
+
+        async def fake_call(params, **_kw):
+            if site == "call":
+                raise RuntimeError("dead backend")
+            return AgentResult(output="OK", input_tokens=10, timed_out=site == "timeout")
+
+        monkeypatch.setattr(agent_mod, "call_agent", fake_call)
+
+        class _RU:
+            def __init__(self, kib):
+                self.ru_maxrss = kib
+
+        calls = {"n": 0}
+
+        def getrusage(_who):
+            calls["n"] += 1
+            if calls["n"] == 2 and site == "rusage":
+                raise OSError("no accounting")
+            return _RU(0 if site == "no_rss" else 100_000)
+
+        with pytest.raises(developer_probe.ProbeError) as excinfo:
+            developer_probe.measure_developer_rss(tmp_path, getrusage=getrusage)
+        assert excinfo.value.agent_called is True
+        if site == "call":
+            assert excinfo.value.usage is None
+        else:
+            assert excinfo.value.usage.input_tokens == 10
+
+    def test_measure_pre_call_error_reports_no_agent_call(self, tmp_path, monkeypatch):
+        from booley.runtime import agent_config as config_mod
+
+        def boom(_root):
+            raise RuntimeError("no backend configured")
+
+        monkeypatch.setattr(config_mod, "load_backend_config", boom)
+        with pytest.raises(developer_probe.ProbeError) as excinfo:
+            developer_probe.measure_developer_rss(tmp_path)
+        assert excinfo.value.agent_called is False
+
+    def test_probe_record_failure_still_accounts_usage(self, tmp_path, monkeypatch):
+        _set_venue(monkeypatch, True)
+        usage = developer_probe.ProbeUsage(5, 0, 2, 0.001)
+        monkeypatch.setattr(
+            developer_probe,
+            "measure_developer_rss",
+            lambda root: developer_probe.ProbeMeasurement(_GIB, True, usage),
+        )
+
+        def boom(*_args):
+            raise OSError("read-only")
+
+        monkeypatch.setattr(developer_probe, "record_measurement", boom)
+        rec = _Rec()
+        record = doctor._run_developer_probe(_adr28_project(tmp_path), rec.p, rec.s, rec.f)
+        assert rec.kinds() == {"skip"}
+        assert record is not None
+        assert record.usage == usage
+
+    def test_probe_agent_failure_reports_unknown_usage(self, tmp_path, monkeypatch, capsys):
+        _set_venue(monkeypatch, True)
+
+        def boom(_root):
+            raise developer_probe.ProbeError("dead", agent_failure=True, agent_called=True)
+
+        monkeypatch.setattr(developer_probe, "measure_developer_rss", boom)
+        rec = _Rec()
+        record = doctor._run_developer_probe(_adr28_project(tmp_path), rec.p, rec.s, rec.f)
+        assert rec.kinds() == {"fail"}
+        assert record is not None
+        assert record.usage is None
+        reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
+        reporter.record_agent_call(record)
+        capsys.readouterr()
+        reporter.finish()
+        assert "usage unknown for 1 failed call" in capsys.readouterr().out
+
+    def test_probe_without_agent_call_returns_no_record(self, tmp_path, monkeypatch):
+        _set_venue(monkeypatch, True)
+
+        def boom(_root):
+            raise developer_probe.ProbeError("probe agent failed: no backend")
+
+        monkeypatch.setattr(developer_probe, "measure_developer_rss", boom)
+        rec = _Rec()
+        assert doctor._run_developer_probe(_adr28_project(tmp_path), rec.p, rec.s, rec.f) is None
+
     def test_measure_uses_child_rusage(self, tmp_path, monkeypatch):
         from booley.harness.models import AgentResult
         from booley.runtime import agent as agent_mod
@@ -5614,7 +5833,9 @@ class TestDeveloperProbe:
 
         async def fake_call(params, **_kw):
             seen.append(params)
-            return AgentResult(output="OK")
+            return AgentResult(
+                output="OK", input_tokens=120, cached_tokens=30, output_tokens=7, cost_usd=0.0031
+            )
 
         monkeypatch.setattr(agent_mod, "call_agent", fake_call)
 
@@ -5623,12 +5844,13 @@ class TestDeveloperProbe:
                 self.ru_maxrss = kib
 
         readings = iter([_RU(100_000), _RU(300_000)])
-        peak, exact = developer_probe.measure_developer_rss(
+        measurement = developer_probe.measure_developer_rss(
             tmp_path,
             getrusage=lambda _who: next(readings),
         )
-        assert peak == 300_000 * 1024
-        assert exact is True
+        assert measurement.peak_rss_bytes == 300_000 * 1024
+        assert measurement.exact is True
+        assert measurement.usage == developer_probe.ProbeUsage(120, 30, 7, 0.0031)
         assert seen[0].max_turns == 1  # a 1-turn trivial probe, no tools
         assert seen[0].allowed_agent_capabilities == []
 
@@ -5658,12 +5880,12 @@ class TestDeveloperProbe:
                 self.ru_maxrss = kib
 
         readings = iter([_RU(400_000), _RU(400_000)])  # earlier child was bigger
-        peak, exact = developer_probe.measure_developer_rss(
+        measurement = developer_probe.measure_developer_rss(
             tmp_path,
             getrusage=lambda _who: next(readings),
         )
-        assert peak == 400_000 * 1024  # safe upper bound
-        assert exact is False
+        assert measurement.peak_rss_bytes == 400_000 * 1024  # safe upper bound
+        assert measurement.exact is False
 
     def test_measure_wraps_agent_failure_in_probe_error(self, tmp_path, monkeypatch):
         from booley.runtime import agent_config as config_mod
@@ -7236,3 +7458,44 @@ def test_ticket_board_layout_probe_fails_when_git_cannot_be_asked(tmp_path, monk
     assert [f.severity for f in findings] == ["fail"]
     assert "Ticket Board cannot be checked" in findings[0].message
     assert "fatal: bad index" in findings[0].message
+
+
+@pytest.mark.parametrize(
+    ("calls", "expected"),
+    [
+        (
+            [doctor._AgentCallRecord("p", developer_probe.ProbeUsage(100, 0, 5, 0.0))],
+            "Agent-backed checks: 1 agent call, 100 input tokens (0 cached), "
+            "5 output tokens, cost not reported by the agent backend.",
+        ),
+        (
+            [doctor._AgentCallRecord("p", None), doctor._AgentCallRecord("p", None)],
+            "Agent-backed checks: 2 agent calls, 0 input tokens (0 cached), "
+            "0 output tokens, cost $0.0000; usage unknown for 2 failed calls.",
+        ),
+    ],
+)
+def test_agent_usage_summary_edge_cases(calls, expected) -> None:
+    assert doctor._agent_usage_summary(calls) == expected
+
+
+def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (tmp_path / "first.core").write_text(
+        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
+        "  smoke:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
+
+    assert (
+        "RUN   .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
+        in capsys.readouterr().out
+    )

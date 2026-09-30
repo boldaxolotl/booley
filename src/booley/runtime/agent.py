@@ -31,6 +31,9 @@ def announce_agent_dispatch(params: AgentCallParams) -> None:
         "developer": "execute the Ticket",
         "triage-report": "prepare a review package",
         "blocked-triage-report": "diagnose a blocked Ticket",
+        "doctor-developer-probe": (
+            "measure the Developer Agent's memory and check its authorization for Doctor"
+        ),
     }.get(role, "perform the requested Specialist analysis")
     print(f"Booley is starting the {role} agent to {purpose}.", file=sys.stderr)
 

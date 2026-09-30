@@ -525,7 +525,30 @@ def test_setup_reserves_deep_doctor_for_one_final_gate():
     assert "a failed attempt does not count as the one successful final run" in doctor
     assert "booley doctor --deep" not in greenfield
     assert "does not schedule an additional run" in " ".join(greenfield.split())
-    assert "Reuse a successful setup/heal deep result" in agents
+    assert "belongs to Project Setup" in " ".join(agents.split())
+
+
+def test_agents_template_limits_doctor_during_task_work():
+    """Issue #885: task agents get Flows plus plain Doctor, never deep or fix-everything."""
+    agents = " ".join(_skill_text("booley-setup", "AGENTS_TEMPLATE.md").split())
+
+    for forbidden in (
+        "fix every finding",
+        "over the final files before handoff",
+        "leave no active warnings or errors",
+    ):
+        assert forbidden not in agents
+    for required in (
+        "at most, plain `booley doctor`",
+        "`booley doctor --deep` belongs to Project Setup, `/booley-heal`, "
+        "and Booley version changes",
+        "do not run it for task work or handoffs",
+        "in the handoff instead of fixing them",
+        "Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, "
+        "or Ticket Board directories to silence such a finding",
+        "deep verification (`/booley-heal`) is due",
+    ):
+        assert required in agents
 
 
 def test_setup_agents_template_advertises_supported_specialists():
