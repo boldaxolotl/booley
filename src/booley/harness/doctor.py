@@ -64,12 +64,14 @@ from booley.fusesoc import (
 )
 from booley.harness import (
     doctor_deep,
-    doctor_sim_dump as sim_dump,
     doctor_stamp,
     host_diagnostics,
     nangate_pdk,
     upgrade_cli,
     upgrade_review,
+)
+from booley.harness import (
+    doctor_sim_dump as sim_dump,
 )
 from booley.harness.colors import green, red, yellow
 from booley.harness.doctor_waivers import (
