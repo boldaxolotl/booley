@@ -58,3 +58,11 @@ Confidence:
 - **Reset domain crossings**: Async reset deassertion not synchronized to the destination clock domain
 - **Async external inputs**: Even in single-clock modules, external asynchronous inputs (interrupts, test pins, external status signals) require synchronization before use in sequential logic
 - **Generated clocks**: Combinational logic used to generate clock signals (clock gating without proper cells, divided clocks from counters used as clock inputs)
+
+## Ticket dispositions
+
+Cite a relevant Ticket or accepted-decision clause and explain its relation to
+this finding. Choose `current`, `advisory`, `deferred`, or `out_of_scope`
+deliberately. Project sentinel/trace guidance remains review context. The
+Specialist validates the schema and explicit source membership; it does not
+match clauses literally or rewrite dispositions from headings or phrases.

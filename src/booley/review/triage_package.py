@@ -884,7 +884,10 @@ def build_review_facts(
                 "worktree": str(project.worktree),
             }
         )
-    from booley.evidence.review_dispositions import collect_review_dispositions
+    from booley.evidence.review_dispositions import (
+        collect_review_audit,
+        collect_review_dispositions,
+    )
 
     return {
         "version": TRIAGE_PACKAGE_VERSION,
@@ -921,6 +924,7 @@ def build_review_facts(
             freshness_evaluator=freshness_evaluator,
         ),
         "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
+        "review_audit": collect_review_audit(state.get("criteria", {})),
         "recipe_comparisons": _recipe_comparisons(state),
         "cycle_comparisons": _cycle_comparisons(state, changes),
         "scope": scope,
@@ -1206,6 +1210,23 @@ def _render_review_dispositions(lines: list[str], package: Mapping[str, Any]) ->
             f"`{_markdown_text(location)}` | "
             f"{_markdown_text(row.get('disposition', ''))} | "
             f"{_markdown_text(explanation)} |"
+        )
+
+
+def _render_review_audit(lines: list[str], package: Mapping[str, Any]) -> None:
+    rows = package.get("review_audit", [])
+    if not rows:
+        return
+    lines.extend(
+        ["", "#### Filtered proposals and parsing rejections — do not affect Criteria", ""]
+    )
+    for row in rows:
+        reason = row.get("reason") or "; ".join(row.get("errors", []))
+        location = f"{row.get('file', '')}:{row.get('line', '')}" if row.get("file") else ""
+        description = f"{reason} — {location} {row.get('summary', '')}"
+        identity = f"{row['phase']} / {row['attempt_id']} / #{row['ordinal']}"
+        lines.append(
+            f"- {_markdown_text(description)} ({_markdown_text(identity)}). Evidence: {_markdown_link('Immutable reviewer evidence', str(row.get('evidence', '')))}"
         )
 
 
@@ -1540,6 +1561,7 @@ def render_review_briefing(
     _render_changes(lines, package, set(diff_failures))
     _render_criteria(lines, package)
     _render_review_dispositions(lines, package)
+    _render_review_audit(lines, package)
     _render_cycle_comparisons(lines, package)
     _render_recipe_comparisons(lines, package)
     _render_commits(lines, package)

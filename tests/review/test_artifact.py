@@ -219,3 +219,72 @@ def test_cycle_comparison_round_trips_as_typed_package_data() -> None:
     package = ReviewPackage.parse(value)
 
     assert package.to_dict()["cycle_comparisons"][0]["delta_cycles"] == -10
+
+
+def test_audit_round_trips_hostile_raw_json_and_legacy_absence() -> None:
+    value = _package()
+    assert ReviewPackage.parse(value).review_audit == ()
+    raw = {"nested": [None, True, 17, "<script>[click](https://invalid)</script>"]}
+    row = {
+        "criterion": "review_rtl_bugs_clean",
+        "collection": "rejected",
+        "attempt_id": "attempt-1",
+        "phase": "discovery",
+        "ordinal": 2,
+        "channel": "canonical",
+        "raw": raw,
+        "errors": ["invalid line"],
+        "evidence": "/tmp/evidence.json",
+    }
+    value["review_audit"] = [row]
+    package = ReviewPackage.parse(value)
+    assert package.to_dict()["review_audit"] == [row]
+    assert ReviewPackage.parse(package.to_dict()).to_dict() == package.to_dict()
+
+
+@pytest.mark.parametrize(
+    "updates", [{"ordinal": True}, {"raw": None, "errors": "bad"}, {"collection": "pending"}]
+)
+def test_audit_envelope_rejects_invalid_metadata(updates: dict) -> None:
+    value = _package()
+    value["review_audit"] = [
+        {
+            "criterion": "review_rtl_bugs_clean",
+            "collection": "rejected",
+            "attempt_id": "one",
+            "phase": "discovery",
+            "ordinal": 1,
+            "channel": "canonical",
+            "raw": None,
+            "errors": ["bad"],
+            **updates,
+        }
+    ]
+    with pytest.raises(ReviewArtifactError):
+        ReviewPackage.parse(value)
+
+
+def test_review_briefing_keeps_audit_text_inert() -> None:
+    from booley.review.triage_package import render_review_briefing
+
+    value = _package()
+    value["review_audit"] = [
+        {
+            "criterion": "review_rtl_bugs_clean",
+            "collection": "filtered",
+            "finding_id": "one",
+            "reason": "source_scope",
+            "explanation": "outside",
+            "file": "[click](https://invalid)/<img>.sv",
+            "summary": "<script>unsafe</script>",
+            "phase": "discovery",
+            "attempt_id": "one",
+            "ordinal": 1,
+            "evidence": "/tmp/evidence [one].json",
+        }
+    ]
+    rendered = render_review_briefing(ReviewPackage.parse(value), [])
+    assert "Filtered proposals and parsing rejections — do not affect Criteria" in rendered
+    assert "\\[click\\]" in rendered
+    assert "\\<script>unsafe\\<" in rendered
+    assert "[Immutable reviewer evidence](/tmp/evidence%20%5Bone%5D.json)" in rendered

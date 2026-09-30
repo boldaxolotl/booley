@@ -95,3 +95,11 @@ higher-confidence findings — never CRITICAL/MAJOR with LOW confidence.
 | 14 | **Assertion messages lack context** | Bare `assert got == want` with no message naming the operand values, iteration, or scenario — the failure text is the developer's only per-test evidence |
 | 15 | **Deep hierarchy pokes** | Tests reaching deep into `dut.<a>.<b>.<c>` internals instead of the port interface — couples the TB to implementation detail and breaks on refactor |
 | 16 | **Waveform writes from Python** | The TB opens VCD/trace files itself — the harness owns the trace lifecycle (`--trace`); TB-authored dumps collide with it |
+
+## Ticket dispositions
+
+Cite a relevant Ticket or accepted-decision clause and explain its relation to
+this finding. Choose `current`, `advisory`, `deferred`, or `out_of_scope`
+deliberately. Project sentinel/trace guidance remains review context. The
+Specialist validates the schema and explicit source membership; it does not
+match clauses literally or rewrite dispositions from headings or phrases.
