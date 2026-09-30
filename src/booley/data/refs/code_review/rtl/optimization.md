@@ -27,11 +27,3 @@ MAJOR means a likely critical-path or Fmax improvement, a large area saving, or 
 - Wide registers whose values are needed at different times may share the same storage. Check every pipeline stage and operating mode. Two values can share a register if one is no longer needed whenever the other is stored or used. Reading the old value and replacing it on the same clock edge is safe because downstream logic sees the value from before the edge. Moving a load by one cycle may also prevent the lifetimes from overlapping. Ignore small counters, flags, and other control registers. Show when each value is stored, used, and no longer needed; include the bits saved, schedule or throughput changes, and any cycle where both values would need to be written. `[area, power, possible timing or latency cost]`
 
 - Multipliers and wide adders used only in non-overlapping FSM states or mutually exclusive modes. One shared unit is a win when its input mux is much smaller than the removed unit, adds no cycle, and has only a small timing or power cost. `[area, possible small timing or power cost]`
-
-## Ticket dispositions
-
-Cite a relevant Ticket or accepted-decision clause and explain its relation to
-this finding. Choose `current`, `advisory`, `deferred`, or `out_of_scope`
-deliberately. Project sentinel/trace guidance remains review context. The
-Specialist validates the schema and explicit source membership; it does not
-match clauses literally or rewrite dispositions from headings or phrases.

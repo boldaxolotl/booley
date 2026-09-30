@@ -1509,6 +1509,12 @@ match the strength of the evidence.
         return f"""\
 ## Output Format (STRICT SCHEMA — malformed entries are rejected)
 
+In Ticket Mode, anchor each finding in a relevant Ticket or accepted-decision
+clause and explain its relation to the finding. In Interactive Mode without a
+Ticket, use the supplied specification, steering, or concrete code behavior as
+the anchor; do not invent a Ticket or accepted decision. Choose the disposition
+deliberately. Ticket headings and Project-policy phrases do not override it.
+
 Emit one JSON object with an ``issues`` array; entries that violate the
 schema are dropped upstream. Fields (all required unless noted):
   - severity:       "CRITICAL" | "MAJOR" | "MINOR"   (uppercase)
@@ -1516,7 +1522,7 @@ schema are dropped upstream. Fields (all required unless noted):
   - category:       "{focus}"                        (active focus)
   - kind:           "code_defect" | "proof_gap" | "spec_ambiguity"
   - disposition:    "current" | "advisory" | "deferred" | "out_of_scope"
-  - ticket_clause:  relevant clause from the staged Ticket or accepted decisions
+  - ticket_clause:  non-empty scope anchor appropriate to the review mode above
   - file:           non-empty path string
   - line:           non-negative integer
   - summary:        non-empty one-line description
@@ -1531,7 +1537,7 @@ schema are dropped upstream. Fields (all required unless noted):
       "category": "{focus}",
       "kind": "code_defect",
       "disposition": "current",
-      "ticket_clause": "Relevant current requirement from the staged Ticket",
+      "ticket_clause": "Relevant requirement or code behavior being reviewed",
       "file": "{example_file}",
       "line": 42,
       "summary": "Description of the issue",
@@ -1687,6 +1693,11 @@ object, even after calling the capability.
             {**row, "channel": channel, "phase": self._audit_phase, "attempt_id": self._attempt_id}
             for row in rows
         )
+
+    def _audit_detail(self) -> dict[str, Any]:
+        """Attach active audit history and archived receipt references to an outcome."""
+        prior = self._get_prior_detail(self._criterion_key()) or {}
+        return {**self._audit, "receipt_history": prior.get("receipt_history", [])}
 
     def _prepare_review_run(self) -> str | McpToolResult:
         """Validate source, criterion, and specification inputs."""
@@ -2724,10 +2735,7 @@ Schema enforcement (applied upstream by the harness):
     ) -> dict[str, Any]:
         return {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            **self._audit,
-            "receipt_history": (self._get_prior_detail(self._criterion_key()) or {}).get(
-                "receipt_history", []
-            ),
+            **self._audit_detail(),
             "issues": len(outcome.issues),
             "observation_count": len(outcome.records),
             "issue_list": outcome.records,
@@ -2846,10 +2854,7 @@ Schema enforcement (applied upstream by the harness):
 
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            **self._audit,
-            "receipt_history": (self._get_prior_detail(self._criterion_key()) or {}).get(
-                "receipt_history", []
-            ),
+            **self._audit_detail(),
             "issues": len(issues),
             "pending": [_finding_record(iss) for iss in issues],
             "resolved": list(prior.get("resolved", [])),
@@ -2986,10 +2991,7 @@ Schema enforcement (applied upstream by the harness):
         verify_attempts = context.existing_detail.get("verify_attempts", 0) + 1
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            **self._audit,
-            "receipt_history": (self._get_prior_detail(self._criterion_key()) or {}).get(
-                "receipt_history", []
-            ),
+            **self._audit_detail(),
             "issues": len(context.remaining),
             "pending": context.pending,
             "resolved": context.resolved,

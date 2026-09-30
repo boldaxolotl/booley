@@ -109,7 +109,7 @@ def _deduplicate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             anonymous += 1
             key = (row["criterion"], f"legacy-{anonymous}")
         active = deduplicated.get(key)
-        if active and active["disposition"] == "open" and row["actor"] == "harness_policy":
+        if active and active["disposition"] == "open":
             continue
         deduplicated[key] = row
     return list(deduplicated.values())

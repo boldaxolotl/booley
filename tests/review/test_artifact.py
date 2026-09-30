@@ -243,7 +243,15 @@ def test_audit_round_trips_hostile_raw_json_and_legacy_absence() -> None:
 
 
 @pytest.mark.parametrize(
-    "updates", [{"ordinal": True}, {"raw": None, "errors": "bad"}, {"collection": "pending"}]
+    "updates",
+    [
+        {"ordinal": True},
+        {"ordinal": 0},
+        {"ordinal": "1"},
+        {"raw": None, "errors": "bad"},
+        {"errors": ["bad", 1]},
+        {"collection": "pending"},
+    ],
 )
 def test_audit_envelope_rejects_invalid_metadata(updates: dict) -> None:
     value = _package()
@@ -257,6 +265,7 @@ def test_audit_envelope_rejects_invalid_metadata(updates: dict) -> None:
             "channel": "canonical",
             "raw": None,
             "errors": ["bad"],
+            "evidence": "/tmp/evidence.json",
             **updates,
         }
     ]

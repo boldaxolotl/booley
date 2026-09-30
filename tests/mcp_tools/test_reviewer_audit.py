@@ -371,6 +371,46 @@ def test_historical_policy_exclusion_does_not_suppress_fresh_finding(reviewer, m
     assert normalized[0]["finding_id"] == result.detail["pending"][0]["finding_id"]
 
 
+@pytest.mark.parametrize("status", ["FIXED", "WAIVED"])
+def test_rediscovered_pending_finding_overrides_historical_resolution(
+    reviewer, monkeypatch, status
+):
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    reviewer._run()
+    monkeypatch.setattr(
+        reviewer,
+        "_invoke_agent_with_resume",
+        lambda _params: MagicMock(
+            output=json.dumps(
+                {
+                    "findings": [
+                        {
+                            "index": 1,
+                            "status": status,
+                            "evidence": "rtl/dut.sv:1 — previously corrected",
+                            "justification": "Previously accepted by the user",
+                        }
+                    ]
+                }
+            )
+        ),
+    )
+    assert reviewer._run().criterion_met is True
+    entry = reviewer.state.criteria["review_rtl_bugs_clean"]
+    entry.detail["contract"].pop("filtering_semantics_revision")
+    reviewer.state.save()
+
+    result = reviewer._run()
+
+    assert result.criterion_met is False
+    assert len(result.detail["pending"]) == 1
+    assert result.detail["resolved"][0]["status"] == status.lower()
+    normalized = collect_review_dispositions(reviewer.state.criteria)
+    assert len(normalized) == 1
+    assert normalized[0]["disposition"] == "open"
+    assert normalized[0]["finding_id"] == result.detail["pending"][0]["finding_id"]
+
+
 @pytest.mark.parametrize(
     "clause", ["Required behavior paraphrased", "Unmatched", "- Bullet text", "Multi\nline clause"]
 )

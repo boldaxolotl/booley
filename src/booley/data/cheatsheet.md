@@ -113,12 +113,9 @@ Call the `coverage_analyst` Specialist from your connected agent session with `c
 
 #### `reviewer`
 
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. `_done` records advisory observations; a current corrective finding requires `_clean`. `_clean` requires current findings to be verified fixed or explicitly waived with user-visible justification.
-Reviewer validates the schema and explicit source membership. Ticket clauses and Project policy inform the agent; phrase matching and Ticket headings never discard or rewrite valid dispositions. In-scope `current` findings can make the Criterion unmet; `advisory`, `deferred`, and `out_of_scope` remain observations.
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` records advisory observations; corrective findings require `_clean`, where they must be verified fixed or explicitly waived with user-visible justification.
 
-Filtered source proposals and malformed canonical, mirror, and verification rows are separate non-gating audit evidence. Mixed valid/invalid initial output keeps valid findings; all-invalid output or missing JSON is a Specialist error. Invalid verification dispositions keep findings pending; `FIXED` requires evidence and `WAIVED` requires justification.
-
-Every review result has immutable JSON evidence under the resolved Project directory's `reviewer-evidence/`, including Interactive Mode and failures. Results include its path in `audit_evidence` and `artifacts.reviewer_evidence`. Audit rows retain attempts within one contract; a contract change archives the previous receipt and starts new audit history while preserving open obligations and explicit disposition provenance. Old automatic policy exclusions are historical only. Live receipts predating the filtering revision require fresh discovery. Historical accepted packages stay readable; previously discarded proposals cannot be recovered.
+The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
 Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
 

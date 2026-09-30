@@ -8,7 +8,14 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict, require_str, require_str_value
+from booley.core.boundary import (
+    BoundaryError,
+    is_str_list,
+    require_dict,
+    require_int,
+    require_str,
+    require_str_value,
+)
 from booley.review.explanation import ExplanationError, StructuredExplanation
 
 PACKAGE_VERSION = 2
@@ -417,8 +424,8 @@ class ReviewAuditRow:
             PurePosixPath(evidence).is_absolute() or PureWindowsPath(evidence).is_absolute()
         ) or not evidence.endswith(".json"):
             raise ReviewArtifactError("review audit evidence must name a local JSON artifact")
-        ordinal = row.get("ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+        ordinal = require_int(row.get("ordinal"), field="review audit ordinal")
+        if ordinal < 1:
             raise ReviewArtifactError("review audit ordinal must be positive")
         if collection == "filtered":
             _enum(row, "reason", {"source_scope"})
@@ -426,11 +433,7 @@ class ReviewAuditRow:
                 require_str(row, name)
         else:
             require_str(row, "channel")
-            if (
-                "raw" not in row
-                or not isinstance(row.get("errors"), list)
-                or not all(isinstance(item, str) for item in row["errors"])
-            ):
+            if "raw" not in row or not is_str_list(row.get("errors")):
                 raise ReviewArtifactError("rejected audit needs raw JSON and error strings")
         return cls(_freeze(row))
 

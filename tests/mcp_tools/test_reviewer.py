@@ -1993,6 +1993,11 @@ class TestFullRtlReview:
         )
         endpoint.read_state()
 
+        system = endpoint._build_system_prompt("bugs")
+        assert "In Interactive Mode without a\nTicket" in system
+        assert "supplied specification, steering, or concrete code behavior" in system
+        assert "Cite a relevant Ticket or accepted-decision clause" not in system
+
         result = endpoint._run()
 
         assert result.exit_code == 0

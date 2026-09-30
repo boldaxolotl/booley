@@ -87,11 +87,3 @@ Severity/confidence definitions same as RTL review agents. Prefer fewer, higher-
 | 22 | **Insufficient `$display`** | Missing config/test name/iteration in pass/fail messages |
 | 23 | **No stall re-run** | DUT has backpressure interface but tests run once without stall injection |
 | 24 | **Hardcoded magic numbers** | Literal constants instead of package parameters; literal array sizes; config-dependent counts that break with different parallelism |
-
-## Ticket dispositions
-
-Cite a relevant Ticket or accepted-decision clause and explain its relation to
-this finding. Choose `current`, `advisory`, `deferred`, or `out_of_scope`
-deliberately. Project sentinel/trace guidance remains review context. The
-Specialist validates the schema and explicit source membership; it does not
-match clauses literally or rewrite dispositions from headings or phrases.
