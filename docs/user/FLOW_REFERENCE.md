@@ -136,6 +136,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
 | `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |
+| `--no-waivers` | With `--coverage`, report raw coverage without applying approved waivers. With a Coverage Criterion it also needs `--diagnostic` (see [Collecting vs. gating](#collecting-vs-gating)). |
 | `--resume-from <manifest.json>` | Resume an interrupted run (see [Resuming](#resuming-an-interrupted-run)). |
 | `--result-verbosity <compact\|full>` | cocotb console detail. `full` prints every testcase; the complete XML/JSON is always kept. |
 | `--no-kill` | Skip the pre-run cleanup of stale simulator processes. Diagnostic use only. |
@@ -246,8 +247,10 @@ booley flow sim --resume-from \
 booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
 ```
 
-- Target, tests, mode, coverage, and trace come from the manifest and cannot be
-  given again. Timeout and output options may change.
+- Target, tests, mode, coverage, trace, and `--no-waivers` come from the
+  manifest and cannot be given again. Resuming a `--no-waivers` run for a
+  Target with a Coverage Criterion also needs `--diagnostic`. Timeout and
+  output options may change.
 - One resume continues one Target. For a multi-Target run, resume each
   unfinished Target's manifest separately.
 - Within a Target, the retry unit is a work item:
@@ -347,6 +350,11 @@ and testbench improvements (advisory only). The verdict card prints the exact
 - **Gated** (Ticket with a `coverage_<target>` Criterion): Booley also applies
   approved waivers and checks the thresholds. Only a persisted `pass` satisfies
   the Criterion.
+- **Raw numbers** (`--no-waivers`): applies no approved waivers. Ungated runs
+  currently never apply waivers, so the flag changes nothing there yet. With a
+  Coverage Criterion it needs `--diagnostic`; otherwise Booley exits 2 before
+  anything builds. The thresholds are then evaluated on raw numbers, and no
+  Criteria are recorded.
 
 Which tests run: the tests you name with `--test`/`--tests-file`, otherwise the
 Target's registered suite minus `tests.toml` skips, the same as any `sim` run. A

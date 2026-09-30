@@ -108,6 +108,11 @@
         "type": "boolean",
         "default": false,
         "description": "Collect a native Verilator Coverage Campaign for each selected Target"
+      },
+      "no_waivers": {
+        "type": "boolean",
+        "default": false,
+        "description": "With --coverage, report raw coverage without applying approved waivers; with a Coverage Criterion also requires --diagnostic"
       }
     },
     "additionalProperties": false

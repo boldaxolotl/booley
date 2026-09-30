@@ -219,3 +219,50 @@ def test_coverage_selection_sorts_input_and_registry_order(tmp_path: Path) -> No
         assert prepared.findings == ()
         assert prepared.plan is not None
         assert prepared.plan.targets[0].selected_tests == ("full", "gap")
+
+
+def _gated_context(tmp_path: Path) -> CoverageProjectContext:
+    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
+
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        None,
+    )
+    return replace(
+        project(tmp_path),
+        criteria={"coverage_sim_0": criterion},
+        waiver_config=CoverageWaiverConfig("rtl_repository", "waivers"),
+    )
+
+
+def test_no_waivers_with_criterion_is_refused_without_diagnostic(tmp_path: Path) -> None:
+    result = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), no_waivers=True), _gated_context(tmp_path)
+    )
+    assert result.plan is None
+    assert [finding.code for finding in result.findings] == ["COV_NO_WAIVERS_CRITERION"]
+
+
+def test_no_waivers_diagnostic_keeps_criterion_and_drops_waiver_config(tmp_path: Path) -> None:
+    context = _gated_context(tmp_path)
+    result = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), no_waivers=True, diagnostic=True), context
+    )
+    target = result.plan.targets[0]
+    assert target.criterion is not None
+    assert target.waiver_config is None
+
+
+def test_no_waivers_ungated_drops_waiver_config(tmp_path: Path) -> None:
+    context = replace(_gated_context(tmp_path), criteria={})
+    result = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), no_waivers=True), context
+    )
+    assert result.plan.targets[0].waiver_config is None
+
+
+def test_default_request_keeps_context_waiver_config(tmp_path: Path) -> None:
+    context = _gated_context(tmp_path)
+    result = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert result.plan.targets[0].waiver_config == context.waiver_config

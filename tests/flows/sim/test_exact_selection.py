@@ -63,14 +63,34 @@ def test_resume_preserves_omitted_mode_and_requires_no_target(tmp_path) -> None:
         ["--mode", "simulate"],
         ["--coverage"],
         ["--trace"],
+        ["--no-waivers"],
     ],
 )
-def test_resume_rejects_selection_conflicts(tmp_path, conflict) -> None:
+def test_resume_rejects_selection_conflicts(tmp_path, conflict, capsys) -> None:
     with pytest.raises(SystemExit):
         parse_request(
             SimulateFlow(),
             ["--resume-from", str(tmp_path / "manifest.json"), *conflict],
         )
+    assert conflict[0] in capsys.readouterr().err
+
+
+def test_typed_resume_rejects_no_waivers(tmp_path) -> None:
+    with pytest.raises(ValueError, match="no_waivers"):
+        SimRequest(resume_from=tmp_path / "manifest.json", no_waivers=True)
+
+
+def test_no_waivers_requires_coverage_and_is_recorded_on_request(capsys) -> None:
+    request = parse_request(SimulateFlow(), ["--target", "sim", "--coverage", "--no-waivers"])
+    assert request.no_waivers is True
+    assert parse_request(SimulateFlow(), ["--target", "sim", "--coverage"]).no_waivers is False
+    with pytest.raises(SystemExit):
+        parse_request(SimulateFlow(), ["--target", "sim", "--no-waivers"])
+    assert "--no-waivers requires --coverage" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="no_waivers requires coverage"):
+        SimRequest(target="sim", no_waivers=True)
+    with pytest.raises(ValueError, match="no_waivers must be boolean"):
+        SimRequest(target="sim", coverage=True, no_waivers="yes")
 
 
 @pytest.mark.parametrize(

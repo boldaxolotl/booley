@@ -378,6 +378,7 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     _assert_projection_tamper_rejected(campaign_path)
     assert not (tmp_path / "reports/sim_sim_0.json").exists()
     assert flow_schema(flow)["properties"]["coverage"]["type"] == "boolean"
+    assert flow_schema(flow)["properties"]["no_waivers"]["type"] == "boolean"
 
 
 def test_coverage_simulation_projection_error_tail_is_text(tmp_path, monkeypatch):
@@ -1228,7 +1229,7 @@ def _prepare_coverage_origin(tmp_path, monkeypatch, *, skipped=()):
 
 
 def _interrupt_coverage_collection(
-    tmp_path, monkeypatch, *, selected=None, skipped=(), boundary=None
+    tmp_path, monkeypatch, *, selected=None, skipped=(), boundary=None, no_waivers=False
 ):
     """Interrupt a coverage run before its collection records a result.
 
@@ -1252,6 +1253,7 @@ def _interrupt_coverage_collection(
         test=selected,
         work_dir=tmp_path,
         coverage=True,
+        no_waivers=no_waivers,
         report_dir=reports,
     )
     with pytest.raises(KeyboardInterrupt):
@@ -1823,6 +1825,26 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
     assert result.outcome.detail[state] == list(getattr(observed, state))
 
 
+@pytest.mark.parametrize("no_waivers", [False, True])
+def test_resume_refusal_hint_repeats_no_waivers(tmp_path, monkeypatch, no_waivers):
+    reports, _request = _interrupt_coverage_collection(
+        tmp_path, monkeypatch, no_waivers=no_waivers
+    )
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(
+            resume_from=reports / "sim/1/targets/sim_0/campaign/manifest.json",
+            work_dir=tmp_path,
+            report_dir=reports,
+        )
+    )
+
+    assert result.exit_code == 2
+    hint = next(
+        line for line in result.outcome.report_text.splitlines() if "booley flow sim" in line
+    )
+    assert hint.endswith("--coverage --no-waivers --diagnostic" if no_waivers else "--coverage")
+
+
 def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monkeypatch):
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     campaign = reports / "sim/1/targets/sim_0/campaign"
@@ -1839,7 +1861,7 @@ def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monke
     assert result.outcome.report_text.startswith("Simulation Campaign integrity failure:")
 
 
-def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
+def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=False):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "b" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
@@ -1867,7 +1889,13 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
             armed = False
             raise OSError(f"injected crash at {boundary}")
 
-    request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    request = SimRequest(
+        target="sim_0",
+        work_dir=tmp_path,
+        coverage=True,
+        no_waivers=no_waivers,
+        report_dir=reports,
+    )
     interrupted = SimulateFlow(
         coverage_execution=execution_factory,
         campaign_publication_checkpoint=checkpoint,
@@ -2397,3 +2425,174 @@ def test_failed_test_exit_code_is_recorded_per_target_in_progress(tmp_path, monk
     assert result.exit_code == 1
     progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
     assert progress["detail"]["sim_0"]["exit_code"] == 1
+
+
+# --- #992: --no-waivers -----------------------------------------------------------
+
+
+def _configure_missing_waiver_directory(root: Path) -> None:
+    """Configure waivers whose directory is absent: a load-time error for gated runs."""
+    (root / ".booley_project" / "booley.toml").write_text(
+        '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
+    )
+
+
+def _coverage_evaluation_status(reports: Path, selector: str) -> str:
+    campaign = next(reports.rglob(f"targets/{selector}/coverage.json"))
+    return resolve_coverage_campaign_reference(campaign).loaded.campaign.evaluation["status"]
+
+
+def _finding_codes(outcome) -> list[str]:
+    return [item["code"] for item in outcome.detail["findings"]]
+
+
+def _workload(reports: Path, selector: str) -> dict[str, object]:
+    manifest = next(reports.rglob(f"targets/{selector}/campaign/manifest.json"))
+    return json.loads(manifest.read_text())["workload"]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_gated_no_waivers_is_refused_before_any_build(tmp_path, monkeypatch, dry_run):
+    state_path, initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    _configure_missing_waiver_directory(tmp_path)
+    factory_calls = []
+
+    def execution_factory(*_args):
+        factory_calls.append(_args)
+        return _PassingSplitMetricsExecution()
+
+    result = SimulateFlow(coverage_execution=execution_factory).execute(
+        SimRequest(
+            target="sim_custom",
+            work_dir=tmp_path,
+            coverage=True,
+            no_waivers=True,
+            dry_run=dry_run,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == 2
+    assert _finding_codes(result.outcome) == ["COV_NO_WAIVERS_CRITERION"]
+    assert "--diagnostic" in result.outcome.report_text
+    assert factory_calls == []
+    assert not (tmp_path / "reports/sim/1").exists()
+    assert state_path.read_bytes() == initial_state
+
+
+def test_gated_no_waivers_diagnostic_reports_raw_and_records_nothing(tmp_path, monkeypatch):
+    state_path, _initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    _configure_missing_waiver_directory(tmp_path)
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
+
+    def run(name: str, **options):
+        SimulateFlow(coverage_execution=lambda *_args: _PassingSplitMetricsExecution()).execute(
+            SimRequest(
+                target="sim_custom",
+                work_dir=tmp_path,
+                coverage=True,
+                diagnostic=True,
+                report_dir=tmp_path / name,
+                **options,
+            ),
+            adapter=adapter,
+        )
+
+    # Control: the same run with waivers applied is blocked by the missing directory.
+    run("control")
+    assert _coverage_evaluation_status(tmp_path / "control", "sim_custom") == "blocked"
+    run("raw", no_waivers=True)
+    assert _coverage_evaluation_status(tmp_path / "raw", "sim_custom") != "blocked"
+    assert _workload(tmp_path / "raw", "sim_custom")["no_waivers"] is True
+    assert "no_waivers" not in _workload(tmp_path / "control", "sim_custom")
+    # Run history (timeline) may change; Criteria and acceptance must not.
+    recorded = DevelopmentState.load(state_path)
+    assert all(entry.met is False for entry in recorded.criteria.values())
+    assert recorded.acceptance_transactions == []
+    assert _ledger_json(tmp_path / "logs") == {}
+
+
+def test_default_coverage_manifest_omits_no_waivers(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    def run(name: str, **options):
+        result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+            SimRequest(
+                target="sim_0",
+                work_dir=tmp_path,
+                coverage=True,
+                report_dir=tmp_path / name,
+                **options,
+            )
+        )
+        assert result.exit_code == 0, result.outcome
+        return _workload(tmp_path / name, "sim_0")
+
+    assert "no_waivers" not in run("default")
+    assert run("raw", no_waivers=True)["no_waivers"] is True
+
+
+def _install_coverage_criterion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Install a ``coverage_sim_0`` Criterion whose suite (``all``) matches reset/wrap."""
+    from booley.criteria.state import CriterionEntry
+
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.strict_criteria = True
+    state.criteria = {
+        "coverage_sim_0": CriterionEntry(
+            params={"target": "sim_0", "tests": "all", "metrics": {"line": {"min_pct": 1}}}
+        )
+    }
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    return state_path
+
+
+def test_no_waivers_resume_of_ungated_manifest_does_not_rerun_tests(tmp_path, monkeypatch):
+    reports, runs, public, execution_factory, _interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, "after:simulation_result", no_waivers=True
+    )
+    completed_runs = tuple(runs)
+
+    resumed = SimulateFlow(coverage_execution=execution_factory).execute(
+        SimRequest(
+            resume_from=public.parent / "campaign/manifest.json",
+            work_dir=tmp_path,
+            report_dir=reports,
+        )
+    )
+
+    assert resumed.exit_code == 0, resumed.outcome
+    assert tuple(runs) == completed_runs
+
+
+def test_no_waivers_resume_with_criterion_needs_diagnostic(tmp_path, monkeypatch):
+    reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, "after:simulation_result", no_waivers=True
+    )
+    state_path = _install_coverage_criterion(tmp_path, monkeypatch)
+    before = state_path.read_bytes()
+    manifest = public.parent / "campaign/manifest.json"
+    flow = SimulateFlow(coverage_execution=execution_factory)
+
+    refused = flow.execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
+
+    assert refused.exit_code == 2
+    assert _finding_codes(refused.outcome) == ["COV_NO_WAIVERS_CRITERION"]
+    assert "--diagnostic" in refused.outcome.report_text
+    assert sorted(path.name for path in (reports / "sim").iterdir() if path.is_dir()) == ["1"]
+    assert state_path.read_bytes() == before
+
+    diagnostic = SimulateFlow(coverage_execution=execution_factory).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, diagnostic=True)
+    )
+
+    assert diagnostic.exit_code == 0, diagnostic.outcome
+    assert state_path.read_bytes() == before

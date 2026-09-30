@@ -26,6 +26,8 @@ class SimRequest(FlowRequest):
     resume_from: Path | None = None
     trace: bool = False
     coverage: bool = False
+    # Raw coverage: apply no approved waivers (requires ``coverage``).
+    no_waivers: bool = False
     result_verbosity: str = "compact"
     no_kill: bool = False
     _legacy_standalone_without_elab: bool = False
@@ -34,6 +36,8 @@ class SimRequest(FlowRequest):
         super().__post_init__()
         if not isinstance(self.coverage, bool):
             raise ValueError("coverage must be boolean")
+        if not isinstance(self.no_waivers, bool):
+            raise ValueError("no_waivers must be boolean")
         self._normalize_campaign_paths()
         self._normalize_test_selection()
         self._validate_resume_shape()
@@ -94,11 +98,14 @@ class SimRequest(FlowRequest):
                     (self.tests_file is not None, "tests_file"),
                     (self.mode is not None, "mode"),
                     (self.coverage, "coverage"),
+                    (self.no_waivers, "no_waivers"),
                     (self.trace, "trace"),
                 )
                 if present
             ]
             if conflicts:
                 raise ValueError("resume_from cannot be combined with " + ", ".join(conflicts))
+        elif self.no_waivers and not self.coverage:
+            raise ValueError("no_waivers requires coverage")
         if self.mode is not None and self.mode.elaborates_only and self.resume_from is not None:
             raise ValueError("elaboration modes cannot resume a Simulation Campaign")

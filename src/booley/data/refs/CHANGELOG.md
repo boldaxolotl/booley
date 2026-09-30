@@ -49,6 +49,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   admission or mutation. Structured CLI/MCP results retain bounded manifest,
   summary, simulation, coverage, and independent observation pointers.
 
+- `sim --coverage --no-waivers` (MCP `no_waivers`) reports raw coverage without
+  approved waivers; with a Coverage Criterion it requires `--diagnostic` and
+  records no Criteria. The choice is frozen for `--resume-from` in a
+  `booley.simulation-campaign-manifest/v2` manifest; default runs still write
+  v1. ([#992](https://github.com/boldaxolotl/Booley/issues/992))
+
 ### Upgrade notes
 
 - The Project `AGENTS.md` template now limits Doctor during task work: Flows
@@ -113,8 +119,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   callers must migrate `test` from a scalar string to a nonempty unique array.
 - Scripts must save the printed `campaign/manifest.json` path and pass that
   exact file to `--resume-from`; Booley does not infer a latest Campaign.
-  Resume conflicts with Target, test, explicit mode, coverage, and trace
-  selection because those values come from the immutable manifest.
+  Resume conflicts with Target, test, explicit mode, coverage, trace, and
+  `--no-waivers` selection because those values come from the immutable manifest.
 - The default `pre_sim_build_access = "immutable"` shares authenticated build
   outputs without exposing the build path to Pre-Sim Commands. Select
   `"legacy-per-test"` only when a hook must modify a private compile surface.

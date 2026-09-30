@@ -559,6 +559,26 @@ def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str
     )
 
 
+def _manifest_no_waivers(manifest: SimulationCampaignManifest) -> bool:
+    """Whether the frozen workload asked for raw coverage; absent (legacy) means waivers apply."""
+    workload = cast(Mapping[str, object], manifest.document["workload"])
+    return workload.get("no_waivers") is True
+
+
+def _coverage_preflight_findings_outcome(findings: Sequence[Any]) -> EndpointOutcome:
+    """Exit-2 outcome that reports every atomic coverage preflight finding."""
+    return EndpointOutcome(
+        exit_code=2,
+        report_text="\n".join(item.message for item in findings),
+        detail={
+            "findings": [
+                {"code": item.code, "pointer": item.pointer, "message": item.message}
+                for item in findings
+            ]
+        },
+    )
+
+
 def _campaign_structured_details(
     outcomes: Sequence[CampaignOutcome],
     report_invocation: Path | None = None,
@@ -1951,6 +1971,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 if selection_error is not None:
                     return selection_error
+            else:
+                resume_error = self._resume_coverage_preflight_if_coverage(resume)
+                if resume_error is not None:
+                    return resume_error
             self._effective_build_timeout_ms()
             if resume is None and getattr(self.args, "coverage", False):
                 coverage_error = self._prepare_coverage()
@@ -1993,6 +2017,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         selector = cast(Mapping[str, str], manifest.document["target"])["selector"]
         workload = cast(Mapping[str, object], manifest.document["workload"])
         trace = " --trace" if workload["trace"] is True else ""
+        # A raw-coverage run of a gated Target is refused without --diagnostic.
+        no_waivers = " --no-waivers --diagnostic" if _manifest_no_waivers(manifest) else ""
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
@@ -2000,7 +2026,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 f"its coverage collection has no recorded result (work item {item_id} is "
                 f"{state}; the run was interrupted or is still running). Resuming would "
                 "rebuild and re-run every test, so start a new run instead:\n"
-                f"  booley flow sim --target {shlex.quote(selector)} --coverage{trace}\n"
+                f"  booley flow sim --target {shlex.quote(selector)} --coverage{trace}{no_waivers}\n"
                 "Add the original --test/--tests-file selection if you used one."
             ),
             detail=_campaign_recovery_detail(status),
@@ -2783,6 +2809,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 kind=kind,
                 planning_disclosures=disclosures if kind == "cocotb_batch" else (),
                 required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
+                no_waivers=_manifest_no_waivers(manifest),
             )
         return self._ordinary_resume_plan(
             handle,
@@ -2859,10 +2886,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     mismatches.append("/required_suite: required suite changed")
         return mismatches
 
-    def _resume_coverage_target_plan(
-        self, validated: ValidatedResumeManifest
-    ) -> CoverageTargetPlan:
-        """Reconstruct the exact native coverage plan bound by the manifest."""
+    def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> tuple[Any, Any]:
+        """Run the shared coverage preflight for the manifest's frozen coverage choice."""
         from booley.criteria.state import DevelopmentState
         from booley.flows.sim.coverage_flow_context import coverage_project_context
         from booley.flows.sim.coverage_invocation import (
@@ -2886,9 +2911,47 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 (target["selector"],),
                 tests=names,
                 trace=cast(bool, workload["trace"]),
+                no_waivers=_manifest_no_waivers(manifest),
+                diagnostic=self.args.diagnostic,
             ),
             context,
         )
+        return context, prepared
+
+    def _resume_coverage_preflight_if_coverage(
+        self, validated: ValidatedResumeManifest
+    ) -> EndpointOutcome | None:
+        items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
+        if items and items[0]["kind"] == "coverage_aggregate":
+            return self._resume_coverage_preflight(validated)
+        return None
+
+    def _resume_coverage_preflight(
+        self, validated: ValidatedResumeManifest
+    ) -> EndpointOutcome | None:
+        """Refuse an unresumable raw-coverage aggregate before admission or reservation.
+
+        Manifests without ``no_waivers`` (all legacy ones) keep their original
+        lifecycle: the plan is rebuilt during resume, not at preflight.
+        """
+        if not _manifest_no_waivers(validated.manifest):
+            return None
+        context, prepared = self._resume_coverage_prepared(validated)
+        if prepared.plan is None:
+            return _coverage_preflight_findings_outcome(prepared.findings)
+        if len(prepared.plan.targets) == 1:
+            self._resume_coverage_plan = prepared.plan.targets[0]
+            self._coverage_context = context
+        return None
+
+    def _resume_coverage_target_plan(
+        self, validated: ValidatedResumeManifest
+    ) -> CoverageTargetPlan:
+        """Reconstruct the exact native coverage plan bound by the manifest."""
+        cached = self.__dict__.get("_resume_coverage_plan")
+        if cached is not None:
+            return cached
+        context, prepared = self._resume_coverage_prepared(validated)
         if prepared.plan is None or len(prepared.plan.targets) != 1:
             detail = "; ".join(item.message for item in prepared.findings)
             raise SimulationCampaignIntegrityError(
@@ -2927,6 +2990,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     tuple(self._requested_targets()),
                     tests=self.args.test or None,
                     trace=self.args.trace,
+                    no_waivers=self.args.no_waivers,
+                    diagnostic=self.args.diagnostic,
                 ),
                 context,
                 selection=selection,
@@ -2934,16 +2999,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except (ValueError, OSError, fusesoc_registry.FuseSocError) as exc:
             return EndpointOutcome(exit_code=2, report_text=f"Coverage Preflight: {exc}")
         if prepared.plan is None:
-            return EndpointOutcome(
-                exit_code=2,
-                report_text="\n".join(item.message for item in prepared.findings),
-                detail={
-                    "findings": [
-                        {"code": item.code, "pointer": item.pointer, "message": item.message}
-                        for item in prepared.findings
-                    ]
-                },
-            )
+            return _coverage_preflight_findings_outcome(prepared.findings)
         self._coverage_prepared = prepared.plan
         self._coverage_context = context
         return None
@@ -3189,6 +3245,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             trace=self.args.trace,
             kind="coverage_aggregate",
             required_suite_catalog_backed=True,
+            no_waivers=self.args.no_waivers,
         )
 
     def _run_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
