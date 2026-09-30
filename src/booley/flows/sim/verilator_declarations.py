@@ -199,12 +199,12 @@ def _decode_records(tree: dict, metadata: dict, sources: tuple[DeclarationSource
         match = _LOCATION.fullmatch(location)
         if match is None:
             raise ValueError("malformed declaration location")
-        if int(match[2]) < 1 or int(match[3]) < 1:
-            raise ValueError("invalid declaration location")
         file = require_dict(files.get(match[1]), field="declaration file")
         filename = require_str(file, "filename")
-        if filename in BUILTIN_LOCATIONS:
+        if filename in BUILTIN_LOCATIONS or (kind == "PACKAGE" and name == "$unit"):
             continue
+        if int(match[2]) < 1 or int(match[3]) < 1:
+            raise ValueError("invalid declaration location")
         source = aliases.get(filename.replace("\\", "/"))
         if source is None:
             raise ValueError(f"unresolved or ambiguous declaration source: {filename}")
@@ -231,7 +231,7 @@ def decode_declarations(
         raw = []
         for name, path in (("cells.tree.json", tree_path), ("tree.meta.json", metadata_path)):
             raw.append((name, _read_evidence_bytes(path)))
-        inventory = replace(inventory, raw_evidence=tuple(raw))
+            inventory = replace(inventory, raw_evidence=tuple(raw))
         declarations = _decode_records(_bounded_json(raw[0][1]), _bounded_json(raw[1][1]), sources)
         return replace(inventory, declarations=declarations)
     except (OSError, ValueError, RecursionError) as exc:

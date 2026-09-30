@@ -139,7 +139,7 @@ def load_declaration_artifact(
 def _decode_inventory(value: object) -> DeclarationInventory:
     from booley.core.boundary import require_dict, require_list, require_str
 
-    from .verilator_declarations import MAX_DECLARATIONS, Declaration
+    from .verilator_declarations import MAX_DECLARATIONS
 
     document = require_dict(value, field="inventory")
     if document.get("$schema") != DECLARATION_CONTRACT or document.get("status") not in {
@@ -154,21 +154,10 @@ def _decode_inventory(value: object) -> DeclarationInventory:
     if len(sources) > MAX_DECLARATIONS or len({s.path for s in sources}) != len(sources):
         raise ValueError("Invalid inventory source count or duplicate paths")
     paths = {s.path for s in sources}
-    declarations = []
-    for record in require_list(document.get("declarations"), field="declarations"):
-        d = require_dict(record, field="declaration")
-        if d.get("kind") not in {"MODULE", "IFACE", "PACKAGE"} or d.get("source") not in paths:
-            raise ValueError("Invalid inventory declaration")
-        declarations.append(
-            Declaration(
-                require_str(d, "kind"),
-                require_str(d, "name"),
-                require_str(d, "source"),
-                require_str(d, "compiler_location"),
-                _location_number(d, "line"),
-                _location_number(d, "column"),
-            )
-        )
+    declarations = [
+        _decode_declaration(record, paths)
+        for record in require_list(document.get("declarations"), field="declarations")
+    ]
     if len(declarations) > MAX_DECLARATIONS or declarations != sorted(set(declarations)):
         raise ValueError("Invalid inventory declaration ordering or count")
     diagnostics = tuple(
@@ -185,7 +174,29 @@ def _decode_inventory(value: object) -> DeclarationInventory:
     if inventory.status != document["status"]:
         raise ValueError("Invalid inventory completeness")
     _validate_presence(document.get("native_source_presence"), paths)
+    _validate_raw_references(document.get("raw_evidence"))
     return inventory
+
+
+def _decode_declaration(value: object, sources: set[str]):
+    from booley.core.boundary import require_dict, require_str
+
+    from .verilator_declarations import Declaration
+
+    record = require_dict(value, field="declaration")
+    if (
+        record.get("kind") not in {"MODULE", "IFACE", "PACKAGE"}
+        or record.get("source") not in sources
+    ):
+        raise ValueError("Invalid inventory declaration")
+    return Declaration(
+        require_str(record, "kind"),
+        require_str(record, "name"),
+        require_str(record, "source"),
+        require_str(record, "compiler_location"),
+        _location_number(record, "line"),
+        _location_number(record, "column"),
+    )
 
 
 def _location_number(value: dict, key: str) -> int:
@@ -251,3 +262,24 @@ def _validate_presence(value: object, sources: set[str]) -> None:
         raise ValueError("Invalid native source presence")
     if any(not isinstance(p, str) for p in unresolved):
         raise ValueError("Invalid unresolved native source presence")
+
+
+def _validate_raw_references(value: object) -> None:
+    import re
+
+    from booley.core.boundary import require_dict, require_list, require_str
+
+    records = require_list(value, field="raw_evidence")
+    if len(records) > 2:
+        raise ValueError("Too many raw declaration references")
+    paths = set()
+    for item in records:
+        record = require_dict(item, field="raw reference")
+        path, digest = require_str(record, "path"), require_str(record, "sha256")
+        if (
+            path not in {"build-evidence/cells.tree.json", "build-evidence/tree.meta.json"}
+            or path in paths
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        ):
+            raise ValueError("Invalid raw declaration reference")
+        paths.add(path)

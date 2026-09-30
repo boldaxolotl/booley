@@ -526,6 +526,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
 def _add_declaration_sources(root: Path) -> None:
     files = {
         "unused.sv": "module unused; logic x; assign x = 1'b0; endmodule\nmodule sibling; endmodule\n",
+        "parameters.sv": "parameter int VALUE = 1;\n",
         "pkg.sv": 'package decoys; string s = "module fake;"; endpackage // module comment;\n',
         "iface.sv": "interface bus_if; logic value; endinterface\n",
         "header.svh": "module included_module; endmodule\n",
@@ -617,7 +618,14 @@ def test_real_declaration_dump_preserves_native_measurement_bytes(tmp_path):
     outputs = []
     inputs = [
         tmp_path / "rtl" / name
-        for name in ("counter.sv", "unused.sv", "pkg.sv", "iface.sv", "conditional.sv")
+        for name in (
+            "counter.sv",
+            "unused.sv",
+            "pkg.sv",
+            "iface.sv",
+            "conditional.sv",
+            "parameters.sv",
+        )
     ]
     for name, dump in (("baseline", ()), ("discovery", DECLARATION_OPTIONS)):
         build = tmp_path / name

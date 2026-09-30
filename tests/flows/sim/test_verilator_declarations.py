@@ -126,6 +126,8 @@ def test_expected_evidence_failures_are_advisory(tmp_path, failure):
     inventory = _decode(paths, (_source(),))
     assert inventory.status == "incomplete"
     assert inventory.diagnostics
+    if failure == "missing":
+        assert [name for name, _data in inventory.raw_evidence] == ["cells.tree.json"]
 
 
 @pytest.mark.parametrize(
@@ -175,3 +177,16 @@ def test_dump_pair_uses_custom_prefix_and_rejects_ambiguous_evidence(tmp_path):
     meta.symlink_to(original)
     inventory = _decode((tree, meta), (_source(),))
     assert inventory.status == "incomplete"
+
+
+def test_builtin_unit_locations_do_not_require_authored_source_coordinates(tmp_path):
+    tree, meta = _evidence(tmp_path)
+    document = json.loads(tree.read_text())
+    document["modulesp"].append({"type": "PACKAGE", "name": "$unit", "loc": "a,0:0,0:0"})
+    tree.write_text(json.dumps(document))
+    metadata = json.loads(meta.read_text())
+    metadata["files"]["a"] = {"filename": "<built-in>", "realpath": "<built-in>"}
+    meta.write_text(json.dumps(metadata))
+    inventory = _decode((tree, meta), (_source(),))
+    assert inventory.status == "complete"
+    assert [d.name for d in inventory.declarations] == ["unused"]

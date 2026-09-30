@@ -18,7 +18,6 @@ from .build import PreparedSimulationBuild
 from .coverage_provenance import content_digest, coverage_digest
 from .verilator_declarations import (
     BUILTIN_LOCATIONS,
-    MAX_EVIDENCE_BYTES,
     DeclarationDiagnostic,
     DeclarationInventory,
     DeclarationSource,
@@ -115,7 +114,7 @@ def _dump_pair(root: Path) -> tuple[Path, Path]:
     if match is None:
         raise ValueError("unsupported cells dump filename")
     metadata = tree.with_name(match[1] + ".tree.meta.json")
-    if not metadata.is_file() or not tree.resolve().is_relative_to(root.resolve()):
+    if not tree.resolve().is_relative_to(root.resolve()):
         raise ValueError("missing or unsafe cells metadata")
     if not metadata.resolve().is_relative_to(root.resolve()):
         raise ValueError("metadata escapes the producing build")
@@ -183,8 +182,6 @@ def capture_build_declarations(
             )
         inventory = replace(inventory, sources=sources, diagnostics=diagnostics)
         tree, metadata = _dump_pair(prepared.build_root)
-        if metadata.stat().st_size > MAX_EVIDENCE_BYTES:
-            raise ValueError("declaration metadata exceeds the byte limit")
         inventory = decode_declarations(
             tree,
             metadata,
