@@ -192,8 +192,8 @@ For an unblock retry:
   tightening. Then run:
 
   ```bash
-  booley board amend "$SLUG" --changes-file "$FILE" --preview
-  booley board amend "$SLUG" --changes-file "$FILE" --apply --expected-preview "$DIGEST"
+  python -m booley.ticket_board amend "$SLUG" --changes-file "$FILE" --preview
+  python -m booley.ticket_board amend "$SLUG" --changes-file "$FILE" --apply --expected-preview "$DIGEST"
   ```
 
   Show the preview before apply, including the zero-mandatory outcome when

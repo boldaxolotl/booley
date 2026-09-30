@@ -266,7 +266,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   Mutation callers must select one Target instead of supplying DUT or testbench
   topology separately.
 - When Acceptance Basis inputs must change, run
-  `booley board return-to-draft <slug>`. Booley archives the previous run and
+  `python -m booley.ticket_board return-to-draft <slug>`. Booley archives the previous run and
   starts a new authoring generation. Deinitialize native Git submodules first
   if the command reports them.
 - After upgrading, run `booley bootstrap`. Refresh a headless runtime with
@@ -389,7 +389,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   pre-push hook receives the corrected project-state guard.
 - Booley rejects legacy Target Contract tickets. Recreate them with the current
   Ticket workflow. Enqueue now publishes the Acceptance Basis without a separate
-  seal step; use `booley board return-to-draft <slug>` when a blocked Ticket
+  seal step; use `python -m booley.ticket_board return-to-draft <slug>` when a blocked Ticket
   needs different authored inputs.
 
 [Full changes from v0.2.12](https://github.com/boldaxolotl/booley/compare/v0.2.12...v0.2.13)
