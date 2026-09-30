@@ -205,3 +205,14 @@ def test_legacy_filter_applies_configured_skips(tmp_path: Path) -> None:
         CoverageInvocationRequest(("sim_0",), test_filter="r"), context
     )
     assert filtered.plan.targets[0].selected_tests == ("reset",)
+
+
+def test_coverage_selection_sorts_input_and_registry_order(tmp_path: Path) -> None:
+    context = replace(project(tmp_path), test_names={"sim_0": ("gap", "full")})
+    for tests in (("gap", "full"), ("full", "gap"), None):
+        prepared = prepare_coverage_invocation(
+            CoverageInvocationRequest(("sim_0",), tests), context
+        )
+        assert prepared.findings == ()
+        assert prepared.plan is not None
+        assert prepared.plan.targets[0].selected_tests == ("full", "gap")
