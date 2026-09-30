@@ -191,6 +191,7 @@ def _recipes(
     inspection: TargetInspection,
     sources: list[dict[str, object]],
     trace: bool,
+    coverage: bool,
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Build the frozen source and build recipes of a Target workload."""
     root = handle.project_root.resolve()
@@ -240,7 +241,7 @@ def _workload_document(
     no_waivers: bool = False,
 ) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
     root = handle.project_root.resolve()
-    source_recipe, build_recipe = _recipes(handle, inspection, sources, trace)
+    source_recipe, build_recipe = _recipes(handle, inspection, sources, trace, coverage)
     configured_cwd = resolve_run_cwd(root)
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"
