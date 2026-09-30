@@ -1,11 +1,9 @@
 # Booley standard tool substrate.  This image intentionally contains no Booley
 # Python distribution: the checkout-specific wheel is installed only by the
-# final Dockerfile.wheel overlay.
-FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS bwave-builder
-COPY crates/bwave/ /build/bwave/
-RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
-        --manifest-path /build/bwave/Cargo.toml
-
+# final Dockerfile.wheel overlay.  It also carries no native B-Wave binary: the
+# binary and its package-data hard link must be created in one layer (an
+# exported layer diff cannot express a link to a lower layer), and the link
+# needs the wheel's install path, so Dockerfile.wheel owns both.
 # BuildKit resolves this name to the exact runtime-base image via
 # --build-context.  A mutable ARG ... FROM reference is never ancestry proof.
 FROM booley-runtime-base
@@ -15,14 +13,6 @@ USER root
 COPY src/booley/data/edalize/verible.py /tmp/booley-build/verible.py
 RUN python -c 'import pathlib, shutil, edalize.tools; src = pathlib.Path("/tmp/booley-build/verible.py"); dst = pathlib.Path(list(edalize.tools.__path__)[0]) / "verible.py"; shutil.copyfile(src, dst)' \
     && rm -f /tmp/booley-build/verible.py
-
-# Native B-Wave belongs below the wheel.  The package-data compatibility link
-# is added by the wheel overlay once its installation path exists.
-RUN --mount=type=bind,from=bwave-builder,source=/build/target/release,target=/tmp/bwave,readonly \
-    mkdir -p /usr/local/libexec/booley \
-    && install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave \
-    && /usr/local/libexec/booley/bwave --version
-ENV BOOLEY_BWAVE_BIN=/usr/local/libexec/booley/bwave
 
 RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \
     > /usr/local/bin/bwave && chmod +x /usr/local/bin/bwave

@@ -1389,12 +1389,15 @@ jobs:
 
       # Normal published-base runs historically measured 5m10s-7m56s. The
       # path-gated RISC-V contract lane measured 14m56s-16m50s when exercised.
+      # Issue 828 builds B-Wave in the wheel overlay and audits exported layers:
+      # its RISC-V lane measured 1075s (17m55s) against the old 1080s budget, so
+      # the budget is the measurement plus 10%, rounded up to 1190s.
       # Stable-base changes deliberately retain the 180-minute safety cap.
       - name: Enforce duration budget
         if: always() && steps.runtime-base.outputs.build != 'true'
         env:
           DURATION_BUDGET_SECONDS: >-
-            ${{ needs.changes.outputs.riscv_image == 'true' && 1080 || 600 }}
+            ${{ needs.changes.outputs.riscv_image == 'true' && 1190 || 600 }}
         run: >-
           PYTHONPATH=src python .github/scripts/ci_duration_budget.py
           --label bwave-smoke

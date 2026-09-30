@@ -269,7 +269,7 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
     assert canary["env"]["DURATION_BUDGET_SECONDS"] == (
-        "${{ needs.changes.outputs.riscv_image == 'true' && 1080 || 600 }}"
+        "${{ needs.changes.outputs.riscv_image == 'true' && 1190 || 600 }}"
     )
     assert '--budget-seconds "${DURATION_BUDGET_SECONDS}"' in canary["run"]
     assert steps.index(canary) > next(
