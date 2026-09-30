@@ -687,7 +687,8 @@ to compensate for an incorrect project-data path or for native-only pruning.
 
 ### Coverage Analyst input and model availability
 
-Pass `coverage_analyst --campaign <reports>/sim/<number>/targets/<target>/coverage.json`.
+Call the `coverage_analyst` Specialist from your connected agent session with
+`campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
 Target names, `latest`, the point-store path, waveforms, and legacy
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
 point store makes a V3 Campaign unusable for analysis. V1 and V2 Campaigns are
