@@ -794,6 +794,78 @@ def _crlf_project_data(project_dir: Path) -> list[str]:
 _IDENTITY = ("-c", "user.name=t", "-c", "user.email=t@t")
 
 
+def _crlf_checkout_project_data(project_dir: Path, files: dict[str, bytes]) -> None:
+    """Commit LF Project data, then re-check it out as Git for Windows would.
+
+    Git for Windows defaults to ``core.autocrlf=true``: every tracked file
+    lands with CRLF while ``git status`` stays clean.
+    """
+    project_dir.mkdir()
+    _git(project_dir, "init", "-q")
+    for name, data in files.items():
+        (project_dir / name).write_bytes(data)
+    _git(project_dir, "add", "-A")
+    _git(project_dir, *_IDENTITY, "commit", "-qm", "project data")
+    _git(project_dir, "config", "core.autocrlf", "true")
+    for name in files:
+        (project_dir / name).unlink()
+    _git(project_dir, "checkout", "--", ".")
+    assert _crlf_project_data(project_dir)
+    assert _git(project_dir, "status", "--porcelain", "--untracked-files=no") == ""
+
+
+def _stub_current_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report the image and auth as current so init reaches every file step."""
+    current_image = LifecycleResult(
+        selected_reference="booley-sandbox",
+        selected_id="sha256:test-image",
+        status=ImageLifecycleStatus.CURRENT,
+    )
+
+    def current_image_step(ctx: InitContext, _bootstrap: object = None) -> LifecycleResult:
+        ctx.record("docker_image", "skip", "current")
+        return current_image
+
+    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image_step)
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_auth",
+        lambda ctx, *_args, **_kwargs: ctx.record("auth", "skip", "current"),
+    )
+
+
+def _check_only(root: Path) -> int:
+    args = _init_args()
+    args.check_only = True
+    reset_cache()
+    return init_cmd.run_init(args, root)
+
+
+_GUIDANCE = b"# Guidance\n\nUse LF.\n"
+_AGENT_TABLE = b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
+_CONFIG_WITHOUT_AGENT = b"# user config\n[flows.sim]\nenabled = true\n"
+
+
+def test_agent_selection_write_does_not_block_line_ending_repair(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Init's own [agent] write to CRLF project data must not look like user work."""
+    _stub_current_host(monkeypatch)
+    project_dir = repo / ".booley_project"
+    _crlf_checkout_project_data(
+        project_dir, {"AGENTS.md": _GUIDANCE, "booley.toml": _CONFIG_WITHOUT_AGENT}
+    )
+
+    assert _run_full_init(repo) == 0
+    assert "refusing to normalize" not in capsys.readouterr().out
+
+    config = (project_dir / "booley.toml").read_bytes()
+    assert config.startswith(_CONFIG_WITHOUT_AGENT)
+    assert config.endswith(_AGENT_TABLE)
+    assert _crlf_project_data(project_dir) == []
+    assert _check_only(repo) == 0
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="real Windows link and text-mode semantics")
 class TestWindowsProjectDataLineEndings:
     """Real Project Initialization on the Windows filesystem (#609).
@@ -825,30 +897,8 @@ class TestWindowsProjectDataLineEndings:
 
             monkeypatch.setattr(Path, "symlink_to", no_developer_mode)
 
-        current_image = LifecycleResult(
-            selected_reference="booley-sandbox",
-            selected_id="sha256:test-image",
-            status=ImageLifecycleStatus.CURRENT,
-        )
-
-        def current_image_step(ctx: InitContext, _bootstrap: object = None) -> LifecycleResult:
-            ctx.record("docker_image", "skip", "current")
-            return current_image
-
-        monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image_step)
-        monkeypatch.setattr(
-            init_cmd,
-            "_step_auth",
-            lambda ctx, *_args, **_kwargs: ctx.record("auth", "skip", "current"),
-        )
+        _stub_current_host(monkeypatch)
         return request.param
-
-    @staticmethod
-    def _check_only(root: Path) -> int:
-        args = _init_args()
-        args.check_only = True
-        reset_cache()
-        return init_cmd.run_init(args, root)
 
     def _assert_safe_and_linked(self, repo: Path, *, hardlink: bool) -> None:
         project_dir = repo / ".booley_project"
@@ -862,7 +912,7 @@ class TestWindowsProjectDataLineEndings:
                 assert not entry.is_symlink(), name
         if hardlink:
             assert canonical.stat().st_nlink == 3
-        assert self._check_only(repo) == 0
+        assert _check_only(repo) == 0
 
     def test_clean_windows_init_writes_lf_project_data_and_passes_check_only(
         self, repo: Path, force_hardlink_fallback: bool
@@ -870,7 +920,7 @@ class TestWindowsProjectDataLineEndings:
         project_dir = repo / ".booley_project"
         project_dir.mkdir()
         # booley-setup Step 3 authors the canonical guidance; init links it.
-        (project_dir / "AGENTS.md").write_bytes(b"# Guidance\n\nUse LF.\n")
+        (project_dir / "AGENTS.md").write_bytes(_GUIDANCE)
 
         assert _run_full_init(repo) == 0
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
@@ -890,23 +940,12 @@ class TestWindowsProjectDataLineEndings:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         project_dir = repo / ".booley_project"
-        project_dir.mkdir()
-        _git(project_dir, "init", "-q")
-        (project_dir / "AGENTS.md").write_bytes(b"# Guidance\n\nUse LF.\n")
-        (project_dir / "booley.toml").write_bytes(
-            b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
-        )
-        (project_dir / "notes.md").write_bytes(b"# Notes\n")
-        _git(project_dir, "add", "-A")
-        _git(project_dir, *_IDENTITY, "commit", "-qm", "project data")
-
         # 1. A Windows checkout with Git for Windows' default autocrlf=true:
         #    every tracked Project data file lands with CRLF, index clean.
-        _git(project_dir, "config", "core.autocrlf", "true")
-        for name in _git(project_dir, "ls-files").splitlines():
-            (project_dir / name).unlink()
-        _git(project_dir, "checkout", "--", ".")
-        assert b"\r\n" in (project_dir / "AGENTS.md").read_bytes()
+        _crlf_checkout_project_data(
+            project_dir,
+            {"AGENTS.md": _GUIDANCE, "booley.toml": _AGENT_TABLE, "notes.md": b"# Notes\n"},
+        )
 
         # 2. An uncommitted user edit makes the line-ending repair refuse, so
         #    init reports setup incomplete (#611) -- yet the guidance step still
@@ -921,7 +960,7 @@ class TestWindowsProjectDataLineEndings:
         if force_hardlink_fallback:
             assert not (repo / "AGENTS.md").is_symlink()
             assert canonical.stat().st_nlink == 3
-        assert self._check_only(repo) != 0
+        assert _check_only(repo) != 0
 
         # 3. The user commits the edit and re-runs init, as init instructs. The
         #    Booley-created hardlinks no longer block the repair (#609).
@@ -933,4 +972,21 @@ class TestWindowsProjectDataLineEndings:
         if force_hardlink_fallback:
             assert "released guidance hardlink AGENTS.md" in output
         assert _git(project_dir, "config", "--local", "core.autocrlf").strip() == "false"
+        self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
+
+    def test_agent_selection_write_on_crlf_project_data_passes_check_only(
+        self,
+        repo: Path,
+        force_hardlink_fallback: bool,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A tracked booley.toml without [agent]: init edits it, then repairs."""
+        project_dir = repo / ".booley_project"
+        _crlf_checkout_project_data(
+            project_dir, {"AGENTS.md": _GUIDANCE, "booley.toml": _CONFIG_WITHOUT_AGENT}
+        )
+
+        assert _run_full_init(repo) == 0
+        assert "refusing to normalize" not in capsys.readouterr().out
+        assert (project_dir / "booley.toml").read_bytes().endswith(_AGENT_TABLE)
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)

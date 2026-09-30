@@ -2243,6 +2243,78 @@ class TestLineEndingsAutoFix:
         assert "could not release guidance hardlinks" in capsys.readouterr().out
         assert (tmp_path / "AGENTS.md").samefile(project_dir / "AGENTS.md")
 
+    @staticmethod
+    def _crlf_config_project(tmp_path: Path) -> Path:
+        """Project data checked out CRLF (autocrlf=true) with no [agent] table."""
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        _run_git(project_dir, "config", "core.autocrlf", "true")
+        TestLineEndingsStep._add_file(project_dir, "booley.toml", b"[flows.sim]\nenabled = true\n")
+        TestLineEndingsStep._add_file(project_dir, "notes.md", b"notes\n")
+        _git_commit(project_dir)
+        for name in ("booley.toml", "notes.md"):
+            (project_dir / name).unlink()
+        _run_git(project_dir, "checkout", "--", ".")
+        assert (project_dir / "notes.md").read_bytes() == b"notes\r\n"
+        return project_dir
+
+    @staticmethod
+    def _write_agent_selection(tmp_path: Path, project_dir: Path) -> None:
+        from booley.harness.init_cmd import AgentSelection, _step_agent_config
+
+        selection = AgentSelection("claude", "auto", True, True)
+        assert _step_agent_config(_ctx(tmp_path), selection, project_dir / "booley.toml")
+
+    def test_baseline_lets_repair_ignore_booleys_own_config_edit(self, tmp_path: Path) -> None:
+        from booley.harness.setup.git_hooks import _step_line_endings
+        from booley.harness.setup.line_endings import sample_worktree_cleanliness
+
+        project_dir = self._crlf_config_project(tmp_path)
+        baseline = sample_worktree_cleanliness(tmp_path, project_dir)
+        assert baseline[project_dir] is True
+        self._write_agent_selection(tmp_path, project_dir)
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, project_dir, clean_baseline=baseline)
+
+        assert ctx.results[-1].status == "ok"
+        assert (project_dir / "notes.md").read_bytes() == b"notes\n"
+        config = (project_dir / "booley.toml").read_bytes()
+        assert b"\r" not in config
+        assert config.endswith(b'[agent]\nprovider = "claude"\nauth = "auto"\n')
+
+    def test_without_baseline_booleys_config_edit_blocks_repair(self, tmp_path: Path) -> None:
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        project_dir = self._crlf_config_project(tmp_path)
+        self._write_agent_selection(tmp_path, project_dir)
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, project_dir)
+
+        assert ctx.results[-1].status == "err"
+        assert ctx.results[-1].detail == "project-data: dirty tree"
+
+    def test_baseline_still_refuses_a_tree_the_user_left_dirty(self, tmp_path: Path) -> None:
+        """#611: user work present before init keeps the repair refused."""
+        from booley.harness.setup.git_hooks import _step_line_endings
+        from booley.harness.setup.line_endings import sample_worktree_cleanliness
+
+        project_dir = self._crlf_config_project(tmp_path)
+        with (project_dir / "notes.md").open("ab") as notes:
+            notes.write(b"user work\r\n")
+        baseline = sample_worktree_cleanliness(tmp_path, project_dir)
+        assert baseline[project_dir] is False
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, project_dir, clean_baseline=baseline)
+
+        assert ctx.results[-1].status == "err"
+        assert ctx.results[-1].detail == "project-data: dirty tree"
+        assert (project_dir / "notes.md").read_bytes() == b"notes\r\nuser work\r\n"
+
 
 class TestDetachGuidanceHardlinks:
     """Only Booley's untracked root hardlinks to the canonical file are released."""

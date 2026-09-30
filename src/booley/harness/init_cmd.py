@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,7 +132,10 @@ from booley.harness.setup.guidance_links import (
     ensure_guidance_links,
     plan_guidance_links,
 )
-from booley.harness.setup.line_endings import pending_normalization_paths
+from booley.harness.setup.line_endings import (
+    pending_normalization_paths,
+    sample_worktree_cleanliness,
+)
 from booley.harness.setup.plan import InitPlan, InitPreconditionError
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
@@ -2113,12 +2117,33 @@ def _release_guidance_for_line_endings(ctx: InitContext, project_dir: Path | Non
     return bool(detached)
 
 
-def _step_line_endings_and_guidance(ctx: InitContext, guidance_plan: InitPlan | None) -> None:
-    """Normalize line endings, then recreate the root guidance links."""
+def _sample_line_ending_baseline(ctx: InitContext) -> dict[Path, bool | None] | None:
+    """Record Project repository cleanliness before init writes Project data.
+
+    Check-only never repairs, so it needs no baseline.
+    """
+    if ctx.check_only:
+        return None
+    return sample_worktree_cleanliness(
+        ctx.project_root, _line_ending_project_dir(ctx.project_root)
+    )
+
+
+def _step_line_endings_and_guidance(
+    ctx: InitContext,
+    guidance_plan: InitPlan | None,
+    clean_baseline: Mapping[Path, bool | None] | None = None,
+) -> None:
+    """Normalize line endings, then recreate the root guidance links.
+
+    ``clean_baseline`` (from :func:`_sample_line_ending_baseline`) lets the
+    repair ignore Booley's own earlier LF edits to tracked Project data while
+    still refusing a tree the user had left dirty.
+    """
     project_dir = _line_ending_project_dir(ctx.project_root)
     if _release_guidance_for_line_endings(ctx, project_dir):
         guidance_plan = None  # the preflight plan observed the detached links
-    _step_line_endings(ctx, project_dir)
+    _step_line_endings(ctx, project_dir, clean_baseline=clean_baseline)
     _step_guidance_links(ctx, guidance_plan)
 
 
@@ -2245,6 +2270,8 @@ def _run_project_init_steps(
             return _print_summary(ctx)
         return _run_seed(ctx, selection)
 
+    line_ending_baseline = _sample_line_ending_baseline(ctx)  # before any Project write
+
     # A refusal to scaffold aborts the run — the user asked
     # for a fresh scaffold and must decide, not get a half-initialized mix.
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
@@ -2266,7 +2293,7 @@ def _run_project_init_steps(
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_policies(ctx, runtime_image_id)
-    _step_line_endings_and_guidance(ctx, guidance_plan)
+    _step_line_endings_and_guidance(ctx, guidance_plan, line_ending_baseline)
     _step_interactive(
         ctx,
         nangate_pdk_root=pdk_root,
