@@ -127,7 +127,7 @@ RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-cl
 # the audited runtime closure for OpenROAD, Yosys, Icarus, Python, and Booley.
 RUN echo ">>> Installing minimal runtime dependencies and Python 3.14..." \
     && apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates ccache curl file g++ gcc git jq locales make \
+        build-essential ca-certificates ccache curl file g++ gcc git gnu-coreutils jq locales make \
         ripgrep time unzip xz-utils zlib1g-dev \
         libbz2-1.0 libffi8 libgomp1 liblz4-dev libpixman-1-0 libpython3.14 \
         libreadline8t64 libtcl8.6 libudev1 libyaml-cpp0.8 tcl tcllib zlib1g \
@@ -138,6 +138,16 @@ RUN echo ">>> Installing minimal runtime dependencies and Python 3.14..." \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.14 /usr/bin/python3 \
     && ln -sf /usr/bin/python3 /usr/bin/python
+
+# Ubuntu's build-essential requires coreutils-from-uutils. Keep that selector
+# installed, but expose every packaged GNU command through the standard
+# /usr/local/bin precedence used by login shells and direct subprocesses.
+# Package updates replace the GNU payloads without invalidating these links.
+RUN dpkg-query -L gnu-coreutils | while IFS= read -r executable; do \
+        case "$executable" in \
+            /usr/bin/gnu*) ln -s "$executable" "/usr/local/bin/${executable#/usr/bin/gnu}" ;; \
+        esac; \
+    done
 
 # Copy only installed EDA payloads out of the throwaway dependency/build stage.
 COPY --from=eda-artifacts /usr/local/bin/yosys* /usr/local/bin/

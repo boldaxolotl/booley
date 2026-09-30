@@ -232,3 +232,29 @@ def test_validate_keeps_probe_and_layer_failures_in_evidence(
         "missing command",
         "derived image RootFS layers do not prefix-match the standard image",
     ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Sandbox Image probe requires Linux bash")
+@pytest.mark.parametrize("command", ["stat", "date", "sort", "cp"])
+def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str) -> None:
+    replacement = tmp_path / command
+    replacement.write_text(
+        "#!/bin/sh\nprintf '%s\\n' 'uutils coreutils 0.8.0'\n", encoding="utf-8"
+    )
+    replacement.chmod(0o755)
+    contract = image_contract.load_contract(CONTRACT, "standard")
+    probe = next(
+        probe
+        for probe in contract["probes"]
+        if probe["name"] == "GNU coreutils defaults and shell compatibility"
+    )
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", probe["command"]],
+        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode != 0, result.stdout
