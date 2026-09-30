@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from html import escape
 from typing import Any
+from urllib.parse import quote
 
 from booley.core.boundary import BoundaryError, require_bool, require_dict, require_str
 
@@ -248,6 +249,31 @@ def _review_dispositions_table(package: Mapping[str, Any]) -> str:
     )
 
 
+def _review_audit_table(package: Mapping[str, Any]) -> str:
+    rows = package.get("review_audit", [])
+    if not rows:
+        return ""
+    body = ""
+    for row in rows:
+        reason = row.get("reason") or "; ".join(row.get("errors", []))
+        values = (
+            row["criterion"],
+            reason,
+            row.get("file", ""),
+            row.get("summary", ""),
+            f"{row['phase']} / {row['attempt_id']} / #{row['ordinal']}",
+            row.get("evidence", ""),
+        )
+        body += "<tr>" + "".join(f"<td>{escape(str(value))}</td>" for value in values[:-1])
+        href = escape(quote(str(values[-1]), safe="/:"), quote=True)
+        body += f'<td><a href="{href}">Immutable reviewer evidence</a></td></tr>'
+    return (
+        "<section><h2>Filtered proposals and parsing rejections — do not affect Criteria</h2><table>"
+        "<tr><th>Criterion</th><th>Reason / errors</th><th>Location</th><th>Summary</th>"
+        "<th>Phase / attempt / ordinal</th><th>Evidence</th></tr>" + body + "</table></section>"
+    )
+
+
 def _changed_files(package: Mapping[str, Any]) -> str:
     rows = "".join(
         f"<li><code>{escape(str(row['path']))}</code> — "
@@ -316,6 +342,7 @@ def render_explanation_html(
         + _changed_files(package)
         + _criteria_table(package)
         + _review_dispositions_table(package)
+        + _review_audit_table(package)
         + "<section><h2>Findings</h2>"
         + explanation_findings
         + f"<ul>{package_findings}</ul></section>"
