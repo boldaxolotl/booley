@@ -15,7 +15,7 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
     - Project directory (.booley_project/ with config skeletons)
-    - Tickets directory tree (board states + logs)
+    - Tickets directory tree (board, state records, logs)
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
     - Pinned Nangate45 download into the per-user cache
@@ -146,18 +146,18 @@ from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
     resolve_project_dir,
 )
+from booley.runtime.project_gitignore import (
+    PROJECT_GITIGNORE,
+    PROJECT_GITIGNORE_PATTERNS,
+    missing_gitignore_patterns,
+)
 from booley.runtime.session_issuance import SessionSpecInputs
 from booley.runtime.timefmt import detect_host_timezone
-from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
+from booley.ticket_board.board_layout import required_board_directories
 
 # ---------------------------------------------------------------------------
 # Layout constants
 # ---------------------------------------------------------------------------
-
-# Ticket Board directories that `booley init` creates — derived from the canonical
-# lifecycle (excludes archived, created on demand) so it can't drift from
-# doctor's required-dirs check, which reads the same source.
-BOARD_STATES = REQUIRED_BOARD_DIRS
 
 MIN_PY = (3, 11)
 
@@ -208,51 +208,6 @@ def _ticket_creation_skeleton() -> str:
     """Read the free-form Ticket Creation Guidance template shipped with the skill."""
     template = skills_dir() / "booley-ticket-create" / "TICKET_CREATION_TEMPLATE.md"
     return template.read_text(encoding="utf-8")
-
-
-# Inside ``.booley_project/`` we ignore transient state that should never be
-# committed (tmp scratch, runtime logs, lockfiles).  ``.interactive_logs/`` is
-# new in ADR 0012 — per-session transcripts written by the MCP server when an
-# outer Claude Code / Codex tab calls Booley Flows and Specialists.
-#
-# Only *fixed-name*, Booley-owned transient dirs belong here — patterns that are
-# correct for every project. ``flow-reports/`` is durable Flow evidence that is
-# transient to Git. ``/logs/`` holds root-level pre-intake diagnostics, while
-# ``/.baseline-wt-*/`` covers root-level temporary baseline worktrees whose
-# best-effort cleanup may be interrupted. ``.runtime/`` (dotted) is the
-# scratch/EDA build root (``resolve_project_dir()/".runtime"``, holds the multi-GB
-# edalize tree);
-# ``runtime/`` (no dot) is the container-lifetime bookkeeping dir — the doctor
-# stamp (``runtime/doctor_stamp.json``), the developer probe, and the job-slot
-# store all live there (F-6: it is a distinct dir from ``.runtime/``, not a
-# typo — do not "dedupe" the two away).  ``worktrees/`` holds per-run git
-# worktrees.  Project-configurable output dirs (``[flows.sim].output_dir``
-# etc.) are deliberately NOT listed — they vary per project and often live
-# outside ``.booley_project/``.
-#
-# ``__pycache__/`` + ``*.pyc``: Project-authored Python lifecycle hooks may
-# still run in ``.booley_project/hooks/``. The managed Git policy bundle is
-# isolated under ``.booley_project/.managed/`` and runs from its zip archive.
-PROJECT_GITIGNORE_PATTERNS = (
-    "tmp/",
-    "flow-reports/",
-    "/logs/",
-    "/.baseline-wt-*/",
-    "tickets/logs/",
-    "tickets/locks/",
-    ".interactive_logs/",
-    ".runtime/",
-    "runtime/",
-    "worktrees/",
-    "__pycache__/",
-    "*.pyc",
-    "SETUP-REPORT.md",
-    "FEEDBACK-REPORT.md",
-)
-
-PROJECT_GITIGNORE = "# Transient Booley state — do not commit.\n" + "".join(
-    f"{pattern}\n" for pattern in PROJECT_GITIGNORE_PATTERNS
-)
 
 
 # ---------------------------------------------------------------------------
@@ -309,11 +264,10 @@ def _backfill_project_gitignore(project_dir: Path, ctx: InitContext) -> None:
         return
 
     # File present — append only the patterns it's missing.  Compare against
-    # stripped lines so trailing whitespace or a missing final newline doesn't
-    # cause a spurious duplicate.
+    # normalized lines so trailing whitespace, a missing final newline, or an
+    # anchored spelling doesn't cause a spurious duplicate.
     existing = gitignore.read_text(encoding="utf-8")
-    present = {line.strip() for line in existing.splitlines()}
-    missing = [p for p in PROJECT_GITIGNORE_PATTERNS if p not in present]
+    missing = missing_gitignore_patterns(existing)
     if not missing:
         return
 
@@ -521,7 +475,9 @@ def _step_tickets(ctx: InitContext) -> None:
 
     tickets_dir = resolve_project_dir(ctx.project_root) / "tickets"
 
-    required = [tickets_dir / "board" / state for state in BOARD_STATES]
+    # Board directories come from the lifecycle's board layout, the same source
+    # doctor's required-dirs check reads, so the two cannot drift.
+    required = required_board_directories(tickets_dir)
     required.append(tickets_dir / "logs")
     required.append(tickets_dir / "locks")
 

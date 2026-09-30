@@ -32,7 +32,7 @@ from .amendment_proposal import AmendmentProposal
 from .amendment_v2 import build_v2_amendment_proposal
 from .basis_publication import load_basis_publication
 from .git_status import GitStatusEntry, parse_porcelain_v1_z
-from .logs import PROGRESS_DEFAULTS, load_progress, save_progress
+from .lifecycle import TicketState
 from .paths import existing_runtime_file, human_log_file, ticket_log_dir
 from .persistence import atomic_replace_bytes, atomic_write_once
 from .scanner import find_ticket_file
@@ -986,7 +986,7 @@ def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: TicketB
     if marker not in content:
         addition = _amendment_summary(journal, record)
         atomic_replace_bytes(blocked, (content + addition).encode(), mode=0o644)
-    progress = load_progress(tio.logs_dir, slug) or dict(PROGRESS_DEFAULTS)
+    progress = tio.read_progress(slug)
     progress.update(
         {
             "workspace_intent": "resume",
@@ -996,16 +996,11 @@ def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: TicketB
             "failed_step": None,
         }
     )
-    save_progress(tio.logs_dir, slug, progress)
     ticket, status = find_ticket_file(tio.tickets_dir, slug)
-    if status == "blocked" and ticket is not None:
-        queue = tio.tickets_dir / "board" / "queue" / ticket.name
-        queue.parent.mkdir(parents=True, exist_ok=True)
-        if queue.exists():
-            raise AmendmentError("queue destination is occupied")
-        ticket.replace(queue)
-    elif status != "queued":
+    if ticket is None or status not in {"blocked", "queued"}:
         raise AmendmentError("Ticket moved unexpectedly before resume queue")
+    # One record replace publishes the resume intent and the queued state.
+    tio.commit_state(ticket.stem, TicketState.QUEUED, progress)
     transition = human_log_file(tio.logs_dir, slug, "transitions.log")
     if not transition.exists() or marker not in transition.read_text(encoding="utf-8"):
         tio._append_transition_unlocked(slug, "blocked", "queued", "ticket-triage", marker)

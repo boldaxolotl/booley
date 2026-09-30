@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.criteria.templates import PER_TARGET_CRITERIA, TARGET_CAMPAIGN_CRITERIA
 
+from .board_layout import document_state
 from .constants import (
     CRITERION_FLOW_MAP,
     DEPRECATED_FIELDS,
@@ -21,6 +22,7 @@ from .constants import (
     VALID_TYPES,
 )
 from .git_status import parse_porcelain_v1_z
+from .lifecycle import TicketState
 from .validation_logs import (  # noqa: F401  # re-exported for backward compatibility
     _validate_state_file,
     append_authored_drift_diagnostic,
@@ -1118,8 +1120,7 @@ def _check_branch_exists(branch, git_cwd):
 def owned_draft_dirty_paths(ticket_path: str | Path, tickets_dir: str | Path) -> tuple[Path, ...]:
     """Return the exact dirty path exemption for a canonical draft Ticket."""
     candidate = Path(ticket_path).resolve()
-    drafts_dir = (Path(tickets_dir) / "board" / "drafts").resolve()
-    if candidate.parent != drafts_dir or candidate.suffix.casefold() != ".md":
+    if document_state(Path(tickets_dir), candidate) is not TicketState.DRAFT:
         return ()
     return (candidate,)
 

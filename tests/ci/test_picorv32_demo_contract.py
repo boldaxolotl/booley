@@ -28,7 +28,14 @@ from booley.dev_support.demo_contract import (
     _validate_generated_input,
     load_contract,
 )
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    read_state_record,
+    ticket_document_path,
+    write_state_record,
+)
 from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.ticket_document import (
     TicketAuthoringView,
     TicketConversionContext,
@@ -413,7 +420,7 @@ def _demo_git_project(tmp_path: Path) -> Path:
     _git(project, "config", "user.email", "test@example.invalid")
     (project / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
     (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
-    (project / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project / "tickets" / "board").mkdir(parents=True)
     _git(project, "add", "-A")
     _git(project, "commit", "-m", "initial project")
 
@@ -469,10 +476,11 @@ def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
 
 def test_ticket_installer_requires_ticket_free_checkout(tmp_path: Path) -> None:
     project = _demo_project(tmp_path)
-    queue = project / "tickets" / "board" / "queue"
-    queue.mkdir(parents=True)
-    existing = queue / "existing.md"
+    tickets = project / "tickets"
+    existing = ticket_document_path(tickets, "existing")
+    existing.parent.mkdir(parents=True)
     existing.write_text("existing\n", encoding="utf-8")
+    write_state_record(tickets, "existing", StateRecord.fresh(TicketState.QUEUED))
     fixture = tmp_path / "fixture.md"
     fixture.write_text("fixture\n", encoding="utf-8")
 
@@ -481,7 +489,7 @@ def test_ticket_installer_requires_ticket_free_checkout(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "already contains queued Tickets: existing.md" in result.stderr
     assert existing.read_text(encoding="utf-8") == "existing\n"
-    assert not (queue / "demo.md").exists()
+    assert not ticket_document_path(tickets, "demo").exists()
 
 
 def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -> None:
@@ -503,8 +511,10 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
 
     result = _run_installer(project, fixture, "demo")
 
-    destination = project / "tickets" / "board" / "queue" / "demo.md"
+    destination = ticket_document_path(project / "tickets", "demo")
     assert result.returncode == 0
+    record = read_state_record(project / "tickets", "demo")
+    assert record is not None and record.state is TicketState.QUEUED
     fields, body = parse_frontmatter(destination.read_text(encoding="utf-8"))
     assert fields["summary"] == "Demo"
     assert fields["machine"]["schema"] == 1
@@ -516,7 +526,7 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
         assert destination.stat().st_mode & 0o777 == 0o644
     exclude = project / ".git" / "info" / "exclude"
     assert exclude.read_text(encoding="utf-8") == (
-        "/tickets/board/drafts/demo.md\n/tickets/board/queue/demo.md\n"
+        "/tickets/board/demo.md\n/tickets/state/demo.json\n"
     )
 
 
@@ -848,10 +858,11 @@ def test_checkout_ticket_and_fixture_helpers(
     assert demo_contract_module._status(tmp_path) == "abc"
 
     project = tmp_path / "project"
-    (project / "tickets" / "board" / "queue").mkdir(parents=True)
+    (project / "tickets" / "board").mkdir(parents=True)
     with pytest.raises(DemoContractError, match="ticket 'demo' is missing"):
         demo_contract_module._ticket_fields(tmp_path, project, "demo")
-    ticket = project / "tickets" / "board" / "queue" / "demo.md"
+    write_state_record(project / "tickets", "demo", StateRecord.fresh(TicketState.QUEUED))
+    ticket = ticket_document_path(project / "tickets", "demo")
     ticket.write_text(
         _SIMPLE_TICKET.replace("on_success: []\n", "on_success: []\nmachine: {schema: 1}\n"),
         encoding="utf-8",

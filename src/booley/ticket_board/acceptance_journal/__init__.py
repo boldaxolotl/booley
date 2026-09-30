@@ -24,8 +24,10 @@ if TYPE_CHECKING:
         AcceptanceProgress,
         AcceptanceRecoveryBlockedError,
         AcceptanceRequest,
+        acceptance_finished,
         advance_acceptance,
         cleanup_finished,
+        publication_idle,
     )
 
 _ADVANCE_EXPORTS = frozenset(
@@ -35,8 +37,10 @@ _ADVANCE_EXPORTS = frozenset(
         "AcceptanceProgress",
         "AcceptanceRecoveryBlockedError",
         "AcceptanceRequest",
+        "acceptance_finished",
         "advance_acceptance",
         "cleanup_finished",
+        "publication_idle",
     }
 )
 
@@ -95,9 +99,11 @@ __all__ = [
     "AcceptanceRecoveryBlockedError",
     "AcceptanceRequest",
     "JournalState",
+    "acceptance_finished",
     "acceptance_state",
     "advance_acceptance",
     "cleanup_finished",
     "completion_basis_sources",
     "initial_journal",
+    "publication_idle",
 ]

@@ -61,7 +61,6 @@ def _single_repository_acceptance(
         basis=contract,
         cleanup=False,
         ticket_status="review",
-        allowed_board_rename=None,
     )
     return root, tio, request, base
 
@@ -181,7 +180,6 @@ def test_advance_requests_approval_then_finishes_from_same_interface(tmp_path: P
             basis=request.basis,
             cleanup=request.cleanup,
             ticket_status="done",
-            allowed_board_rename=None,
         )
     )
 
@@ -205,7 +203,6 @@ def test_advance_rejects_ticket_head_changed_after_acceptance_freeze(tmp_path: P
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status=request.ticket_status,
-        allowed_board_rename=request.allowed_board_rename,
         expected_sources={"outer": frozen_head},
     )
 
@@ -223,7 +220,6 @@ def test_done_ticket_cannot_start_unpublished_acceptance(tmp_path: Path) -> None
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="done",
-        allowed_board_rename=None,
     )
 
     with pytest.raises(AcceptanceOperationError, match="done before acceptance publication"):
@@ -242,7 +238,6 @@ def test_invalid_ticket_status_cannot_create_or_publish_acceptance(tmp_path: Pat
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="bogus",  # type: ignore[arg-type] - exercise the runtime boundary
-        allowed_board_rename=None,
     )
 
     with pytest.raises(AcceptanceOperationError, match="invalid Ticket status"):
@@ -259,7 +254,7 @@ def test_completion_reports_premature_done_as_blocked(tmp_path: Path) -> None:
     root, tio, _request, base = _single_repository_acceptance(tmp_path)
     tio.entry["status"] = "done"
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     assert _git(root, "rev-parse", "main") == base
 
@@ -274,7 +269,6 @@ def test_destination_rewrite_after_approval_requires_inspection(tmp_path: Path) 
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="done",
-        allowed_board_rename=None,
     )
 
     with pytest.raises(AcceptanceRecoveryBlockedError, match="no longer contains"):
@@ -323,7 +317,6 @@ def test_source_keepalive_preserves_pinned_commit_before_preparation(
             basis=request.basis,
             cleanup=request.cleanup,
             ticket_status="done",
-            allowed_board_rename=None,
         )
     )
     assert finished.outcome is AcceptanceOutcome.COMPLETE

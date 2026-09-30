@@ -42,6 +42,7 @@ _PROBE_NAME_RE = re.compile(
 # root; the _run_* entries are the phase groupings it delegates to.
 ORCHESTRATORS = (
     "_run_container_checks",
+    "_run_container_tool_checks",
     "_run_mcp_checks",
     "_run_ticket_preflight_parity_checks",
     "_run_deep_checks",
@@ -63,7 +64,6 @@ ORCHESTRATORS = (
 EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     "_run_container_checks": frozenset(
         {
-            "_check_container_runtime_payload",
             "_check_container_uid",
             "_check_custom_image_freshness",
             "_check_current_runtime_web_isolation",
@@ -71,14 +71,15 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_image_bakes_current_booley",
             "_check_image_freshness",
             "_check_riscv_toolchain",
+            "_run_container_tool_checks",
         }
     ),
+    "_run_container_tool_checks": frozenset({"_check_container_runtime_payload"}),
     "_run_mcp_checks": frozenset(
         {
             "inspect_runtime",
             "inspect_retained_resources",
             "_check_devcontainer_excludes",
-            "_check_interactive_logs_gitignore",
             "_check_interactive_logs_tracked",
             "_check_wcp_server",
             "_run_agent_credential_checks",
@@ -90,8 +91,11 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_agent_backend_health",
             "_check_custom_endpoints_and_criteria",
             "_check_git_state",
+            "_check_project_gitignore",
             "_check_repo_footprint",
             "_check_ticket_board_import",
+            "_check_ticket_board_layout",
+            "_check_ticket_history_committed",
             "_check_tickets_tree",
         }
     ),

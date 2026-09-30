@@ -25,8 +25,15 @@ from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import enqueue_publication
+from booley.ticket_board.board_layout import (
+    read_state_record,
+    required_board_directories,
+    ticket_document_path,
+    ticket_state,
+)
 from booley.ticket_board.helpers import detect_tickets_dir
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState, parse_board_target
 from booley.ticket_board.paths import session_jobs_dir
 
 pytestmark = pytest.mark.skipif(
@@ -49,10 +56,9 @@ def _run_git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def _initialize_project_at(project: Path) -> Path:
     shutil.copytree(_FIXTURE, project, dirs_exist_ok=True)
     project_dir = project / ".booley_project"
-    board = project_dir / "tickets" / "board"
-    for state in ("queue", "active", "blocked", "waiting", "archived", "review", "done"):
-        (board / state).mkdir(parents=True)
-    (project_dir / "tickets" / "logs").mkdir(parents=True)
+    tickets = project_dir / "tickets"
+    for directory in (*required_board_directories(tickets), tickets / "logs"):
+        directory.mkdir(parents=True, exist_ok=True)
     _run_git(project_dir, "init", "-b", "main")
     _run_git(project_dir, "config", "user.name", "Booley Smoke")
     _run_git(project_dir, "config", "user.email", "smoke@example.invalid")
@@ -146,9 +152,8 @@ def _write_ticket_file(
         + "---\n\n## Description\nExercise real Ticket Mode boundaries.\n"
     )
     tickets = project / ".booley_project" / "tickets"
-    draft = tickets / "board" / "drafts"
-    draft.mkdir(exist_ok=True)
-    ticket = draft / f"{slug}.md"
+    ticket = ticket_document_path(tickets, slug)
+    ticket.parent.mkdir(exist_ok=True)
     ticket.write_text(content, encoding="utf-8")
 
 
@@ -166,18 +171,11 @@ def _interrupt_enqueue(
         [Path, enqueue_publication.EnqueueJournal], enqueue_publication.EnqueueJournal
     ],
 ) -> None:
-    if checkpoint in {"source-preserved", "candidate-published"}:
-        enqueue_publication._preserve_source(
-            Path(journal.source),
-            Path(journal.backup),
-            Path(journal.destination),
-            journal,
-        )
-    if checkpoint == "candidate-published":
-        enqueue_publication._publish_candidate(
-            Path(journal.candidate),
-            Path(journal.destination),
-            journal.candidate_sha256,
+    if checkpoint in {"source-preserved", "record-published"}:
+        enqueue_publication._preserve_source(Path(journal.document), Path(journal.backup), journal)
+    if checkpoint == "record-published":
+        enqueue_publication._publish_record(
+            enqueue_publication._transaction_tickets_dir(project_root), journal
         )
     elif checkpoint == "published":
         publish(project_root, journal)
@@ -204,7 +202,7 @@ def test_enqueue_recovers_across_session_runtime_project_aliases(
     assert tio.tickets_dir == active_project_dir / "tickets"
     publish = enqueue_publication.publish_enqueue
 
-    for checkpoint in ("prepared", "source-preserved", "candidate-published", "published"):
+    for checkpoint in ("prepared", "source-preserved", "record-published", "published"):
         slug = f"enqueue-alias-{checkpoint}"
         _write_ticket_file(project, slug, _success_criteria(), ["rtl/dut.sv", "tb/tb_dut.sv"])
         with monkeypatch.context() as interruption:
@@ -219,8 +217,9 @@ def test_enqueue_recovers_across_session_runtime_project_aliases(
                 tio.enqueue_ticket(slug)
 
         assert tio.enqueue_ticket(slug)
-        assert not (checkout_project_dir / f"tickets/board/drafts/{slug}.md").exists()
-        assert (active_project_dir / f"tickets/board/queue/{slug}.md").is_file()
+        assert (active_project_dir / f"tickets/board/{slug}.md").is_file()
+        record = read_state_record(active_project_dir / "tickets", slug)
+        assert record is not None and record.state is TicketState.QUEUED
         transitions = active_project_dir / f"tickets/logs/{slug}/human-logs/transitions.log"
         assert transitions.read_text(encoding="utf-8").count("enqueue operation ") == 1
         assert not (active_project_dir / f".runtime/acceptance/enqueue/{slug}.json").exists()
@@ -497,11 +496,9 @@ def _assert_retained_worktree(project: Path, slug: str, expected_diff: list[str]
 
 
 def _assert_board_state(project: Path, slug: str, expected: str) -> None:
-    board = project / ".booley_project" / "tickets" / "board"
-    assert (board / expected / f"{slug}.md").is_file()
-    for state in ("queue", "active", "blocked", "review", "done"):
-        if state != expected:
-            assert not (board / state / f"{slug}.md").exists()
+    tickets = project / ".booley_project" / "tickets"
+    assert ticket_document_path(tickets, slug).is_file()
+    assert ticket_state(tickets, slug) is parse_board_target(expected)
 
 
 def _assert_openroad_criterion(state: DevelopmentState) -> None:

@@ -104,9 +104,8 @@ def project_root(tmp_path: Path) -> Path:
     """Create a minimal project structure for testing."""
     # Create tickets directory structure (canonical layout)
     tickets = tmp_path / TICKETS_REL
-    for subdir in ["queue", "active", "blocked", "waiting", "archived", "review", "done"]:
-        (tickets / "board" / subdir).mkdir(parents=True)
-    (tickets / "logs").mkdir(parents=True)
+    for subdir in ["board", "state", "logs"]:
+        (tickets / subdir).mkdir(parents=True)
     # Create .booley scripts dir
     (tmp_path / ".booley" / "src").mkdir(parents=True, exist_ok=True)
     # Create .git marker
@@ -116,8 +115,14 @@ def project_root(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def sample_ticket(project_root: Path) -> Path:
-    """Create a sample ticket .md file in queue/."""
-    ticket_path = project_root / TICKETS_REL / "board" / "queue" / "fix-fsm-counter.md"
+    """Create a sample queued ticket .md file with its state record."""
+    from booley.ticket_board.board_layout import StateRecord, write_state_record
+    from booley.ticket_board.lifecycle import TicketState
+
+    write_state_record(
+        project_root / TICKETS_REL, "fix-fsm-counter", StateRecord.fresh(TicketState.QUEUED)
+    )
+    ticket_path = project_root / TICKETS_REL / "board" / "fix-fsm-counter.md"
     ticket_path.write_text(
         "---\n"
         "summary: Fix FSM counter overflow\n"
@@ -149,7 +154,7 @@ def sample_ctx(project_root: Path) -> TicketContext:
     """Create a sample TicketContext."""
     return TicketContext(
         slug="fix-fsm-counter",
-        ticket_path=project_root / TICKETS_REL / "board" / "queue" / "fix-fsm-counter.md",
+        ticket_path=project_root / TICKETS_REL / "board" / "fix-fsm-counter.md",
         ticket_type="bugfix",
         branch="master",
         summary="Fix FSM counter overflow",

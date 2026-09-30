@@ -115,11 +115,10 @@ def project_root(tmp_path: Path) -> Path:
         timeout=10,
     )
 
-    # Create tickets tree (ticket_board uses board/ prefix for ticket dirs)
+    # Create tickets tree: documents in board/, state records in state/
     tickets = root / ".booley" / "project" / "tickets"
-    for subdir in ("queue", "active", "blocked", "waiting", "archived", "review", "done"):
-        (tickets / "board" / subdir).mkdir(parents=True)
-    (tickets / "logs").mkdir(parents=True)
+    for subdir in ("board", "state", "logs"):
+        (tickets / subdir).mkdir(parents=True)
 
     # Stub .booley/src (not used directly -- patched via _scripts_dir)
     (root / ".booley" / "src").mkdir(parents=True, exist_ok=True)

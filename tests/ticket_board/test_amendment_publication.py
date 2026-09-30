@@ -21,6 +21,9 @@ from booley.ticket_board.amendment import (
     preview_amendment,
 )
 from booley.ticket_board.amendment_proposal import AmendmentProposal, CriterionChange
+from booley.ticket_board.board_layout import read_state_record, write_state_record
+from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import human_log_file, runtime_file
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
@@ -33,6 +36,19 @@ from booley.ticket_board.ticket_document import TicketAuthoringView, TicketConve
 from booley.ticket_board.validation import validate_ticket_spec
 
 from .test_ticket_baseline import _blocked_ticket, _create_v2_ticket, _git, _paired_basis_project
+
+
+def _state(tio: TicketIO, slug: str) -> TicketState | None:
+    """Return *slug*'s recorded lifecycle state, or None for a draft."""
+    record = read_state_record(tio.tickets_dir, slug)
+    return None if record is None else record.state
+
+
+def _set_state(tio: TicketIO, slug: str, state: TicketState) -> None:
+    """Move *slug* to *state* by rewriting its state record, as a test shortcut."""
+    record = read_state_record(tio.tickets_dir, slug)
+    assert record is not None
+    write_state_record(tio.tickets_dir, slug, record.with_state(state))
 
 
 def _v2_fields(source: str) -> tuple[dict, str]:
@@ -85,8 +101,8 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
     result = apply_amendment(tio, "blocked-again", request, preview["digest"])
 
     assert result["status"] == "queued"
-    queued = blocked.parent.parent / "queue" / blocked.name
-    _fields, body = _v2_fields(queued.read_text(encoding="utf-8"))
+    assert _state(tio, "blocked-again") is TicketState.QUEUED
+    _fields, body = _v2_fields(blocked.read_text(encoding="utf-8"))
     assert body == old_body
     assert body == authored_body
     basis = tio.load_basis("blocked-again")
@@ -131,10 +147,11 @@ def test_amendment_created_stamp_survives_execution_init(tmp_path: Path) -> None
     request = _optional_request()
     preview = preview_amendment(tio, "blocked-again", request)
     apply_amendment(tio, "blocked-again", request, preview["digest"])
-    queued = blocked.parent.parent / "queue" / blocked.name
+    assert _state(tio, "blocked-again") is TicketState.QUEUED
 
-    assert tio.init_ticket(queued) is not None
-    active = tio.tickets_dir / "board/active/blocked-again.md"
+    assert tio.init_ticket(blocked) is not None
+    assert _state(tio, "blocked-again") is TicketState.RUNNING
+    active = tio.tickets_dir / "board/blocked-again.md"
     active_fields, _active_body = _v2_fields(active.read_text(encoding="utf-8"))
     assert active_fields["created"] == created
     assert active_fields["feature_branch"] == "blocked-again"
@@ -218,11 +235,11 @@ def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> N
     first_request = _optional_request()
     first_preview = preview_amendment(tio, "blocked-again", first_request)
     apply_amendment(tio, "blocked-again", first_request, first_preview["digest"])
-    queued = blocked.parent.parent / "queue" / blocked.name
-    first_fields, _first_body = _v2_fields(queued.read_text(encoding="utf-8"))
+    assert _state(tio, "blocked-again") is TicketState.QUEUED
+    first_fields, _first_body = _v2_fields(blocked.read_text(encoding="utf-8"))
     first_basis = tio.load_basis("blocked-again")
 
-    queued.replace(blocked)
+    _set_state(tio, "blocked-again", TicketState.BLOCKED)
     second_request = {
         "actor": "QA Human",
         "reason": "Include the additional source",
@@ -230,7 +247,7 @@ def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> N
     }
     second_preview = preview_amendment(tio, "blocked-again", second_request)
     apply_amendment(tio, "blocked-again", second_request, second_preview["digest"])
-    fields, _body = _v2_fields(queued.read_text(encoding="utf-8"))
+    fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
     basis = tio.load_basis("blocked-again")
 
     assert basis.outer_sha != first_basis.outer_sha
@@ -398,9 +415,8 @@ def test_apply_requires_exact_current_preview_digest(tmp_path: Path) -> None:
 
 
 def test_preview_rejects_unblocked_ticket(tmp_path: Path) -> None:
-    _, blocked, tio = _blocked_ticket(tmp_path)
-    queued = blocked.parent.parent / "queue" / blocked.name
-    blocked.replace(queued)
+    _, _blocked, tio = _blocked_ticket(tmp_path)
+    _set_state(tio, "blocked-again", TicketState.QUEUED)
     with pytest.raises(AmendmentError, match="must be blocked"):
         preview_amendment(tio, "blocked-again", _optional_request())
 
@@ -535,10 +551,8 @@ def test_paired_publication_retains_both_implementation_participants(tmp_path: P
     assert created is not None
     assert tio.enqueue_ticket(slug)
     (tio.logs_dir / slug / ".runtime/ticket.lock").unlink(missing_ok=True)
-    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
-    blocked = project_dir / "tickets/board/blocked" / queued.name
-    blocked.parent.mkdir(parents=True, exist_ok=True)
-    queued.replace(blocked)
+    blocked = project_dir / "tickets/board" / f"{slug}.md"
+    _set_state(tio, slug, TicketState.BLOCKED)
     state = DevelopmentState.load(runtime_file(tio.logs_dir, slug, "booley_state.json"))
     state.init_criteria({"review_rtl_bugs_clean": True})
     state.save()
@@ -551,7 +565,8 @@ def test_paired_publication_retains_both_implementation_participants(tmp_path: P
     preview = preview_amendment(tio, slug, _optional_request())
     result = apply_amendment(tio, slug, _optional_request(), preview["digest"])
     assert result["status"] == "queued"
-    _current_fields, _current_body = _v2_fields(queued.read_text(encoding="utf-8"))
+    assert _state(tio, slug) is TicketState.QUEUED
+    _current_fields, _current_body = _v2_fields(blocked.read_text(encoding="utf-8"))
     basis = tio.load_basis(slug)
     assert tio.load_basis(slug).basis_id == basis.basis_id
     assert basis.outer_sha != old_basis.outer_sha
@@ -591,8 +606,8 @@ def test_publication_interruption_rolls_forward_once(
     with pytest.raises(Exception, match="amendment publication is pending"):
         tio._load_basis_unlocked("blocked-again")
     result = apply_amendment(tio, "blocked-again", request, preview["digest"])
-    queued = blocked.parent.parent / "queue" / blocked.name
-    assert result["status"] == "queued" and queued.exists()
+    assert _state(tio, "blocked-again") is TicketState.QUEUED
+    assert result["status"] == "queued" and blocked.exists()
     history = tio.logs_dir / "blocked-again/amendments" / f"{result['operation_id']}.json"
     assert history.exists()
     assert amendment.pending_amendment(root, "blocked-again") is None
@@ -629,17 +644,18 @@ def test_pre_generated_identity_journal_recovers(
 
 
 def test_return_to_draft_clears_amendment_marker(tmp_path: Path) -> None:
-    _root, blocked, tio = _blocked_ticket(tmp_path)
+    _root, _blocked, tio = _blocked_ticket(tmp_path)
     state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
     state.init_criteria({"review_rtl_bugs_clean": True})
     state.save()
     request = _optional_request()
     preview = preview_amendment(tio, "blocked-again", request)
     apply_amendment(tio, "blocked-again", request, preview["digest"])
-    queued = blocked.parent.parent / "queue" / blocked.name
-    queued.replace(blocked)
+    assert _state(tio, "blocked-again") is TicketState.QUEUED
+    _set_state(tio, "blocked-again", TicketState.BLOCKED)
     tio.return_to_draft("blocked-again")
-    draft = tio.tickets_dir / "board/drafts/blocked-again.md"
+    assert _state(tio, "blocked-again") is None
+    draft = tio.tickets_dir / "board/blocked-again.md"
     fields, _body = _v2_fields(draft.read_text(encoding="utf-8"))
     assert "machine" not in fields
 
@@ -659,10 +675,10 @@ def test_reset_uses_latest_requirements_and_original_authoring_source(tmp_path: 
     request = _optional_request()
     preview = preview_amendment(tio, "blocked-again", request)
     apply_amendment(tio, "blocked-again", request, preview["digest"])
-    queued = blocked.parent.parent / "queue" / blocked.name
-    queued.replace(blocked)
+    assert _state(tio, "blocked-again") is TicketState.QUEUED
+    _set_state(tio, "blocked-again", TicketState.BLOCKED)
     assert op_reset(tio, "blocked-again", reason="Start clean with revised criteria")
-    fields, _body = _v2_fields(queued.read_text(encoding="utf-8"))
+    fields, _body = _v2_fields(blocked.read_text(encoding="utf-8"))
     basis = tio.load_basis("blocked-again")
     restored = worktree_for_ref(root, basis.participant("outer").ticket_ref)
     assert restored is not None

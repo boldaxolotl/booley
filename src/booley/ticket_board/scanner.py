@@ -9,15 +9,23 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .acceptance_journal import AcceptanceJournalError, acceptance_state
-from .constants import DIR_STATUS_MAP, TICKET_DIRS
+from .board_layout import (
+    StateRecord,
+    history_documents,
+    iter_board_documents,
+    iter_board_records,
+    locate_document,
+)
 from .execution import next_from_planned
-from .logs import load_progress
+from .lifecycle import TicketState
 from .paths import existing_runtime_file
 from .ticket_document import convert_ticket_document, ticket_conversion_context
+from .ticket_history import TicketHistoryError, read_history_record
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +36,7 @@ def find_ticket_file(
     *,
     project_root: Path | None = None,
 ) -> tuple[Path | None, str | None]:
-    """Scan all TICKET_DIRS for .md files matching slug by filename stem,
+    """Scan the Ticket Board for a document matching slug by filename stem,
     or by feature_branch field in frontmatter.
 
     Returns (Path, status_str) or (None, None).
@@ -40,35 +48,24 @@ def find_ticket_file(
     if slug.endswith(".md"):
         slug = slug[:-3]
     # First pass: exact filename match (fast)
-    for d in TICKET_DIRS:
-        dir_path = tickets_dir / d
-        if not dir_path.is_dir():
-            continue
-        for md_file in dir_path.glob("*.md"):
-            if md_file.stem == slug:
-                return md_file, DIR_STATUS_MAP.get(d, d)
+    located = locate_document(tickets_dir, slug)
+    if located is not None:
+        return located[0], located[1].status
     # Second pass: match only a generated feature branch on a converted Ticket.
     root = project_root or tickets_dir.parent.parent
-    for d in TICKET_DIRS:
-        dir_path = tickets_dir / d
-        if not dir_path.is_dir():
+    for md_file, state in iter_board_documents(tickets_dir):
+        try:
+            with ticket_conversion_context(root, md_file.stem, state.conversion_stage) as context:
+                converted = convert_ticket_document(md_file.read_text(encoding="utf-8"), context)
+            feature_branch = (
+                converted.document.generated.get("feature_branch", "")
+                if converted.document is not None
+                else ""
+            )
+            if feature_branch and feature_branch == slug:
+                return md_file, state.status
+        except OSError:
             continue
-        for md_file in dir_path.glob("*.md"):
-            try:
-                stage = "draft" if d == "drafts" else "executable"
-                with ticket_conversion_context(root, md_file.stem, stage) as context:
-                    converted = convert_ticket_document(
-                        md_file.read_text(encoding="utf-8"), context
-                    )
-                feature_branch = (
-                    converted.document.generated.get("feature_branch", "")
-                    if converted.document is not None
-                    else ""
-                )
-                if feature_branch and feature_branch == slug:
-                    return md_file, DIR_STATUS_MAP.get(d, d)
-            except OSError:
-                continue
     return None, None
 
 
@@ -144,7 +141,7 @@ def _enrich_from_state(entry: dict[str, Any], logs_dir: Path, slug: str) -> None
     if cr is not None:
         entry["criteria_passed"], entry["criteria_total"] = cr
 
-    # Override stale progress.json fields with authoritative timeline data
+    # Override stale state-record runtime fields with authoritative timeline data
     tl = _load_timeline_summary(state_data)
     if tl is not None:
         entry["step"] = tl["last_endpoint"]
@@ -179,11 +176,11 @@ def _derive_step(rt):
     return rt.get("step", "")
 
 
-def _build_ticket_entry(md_file, d, dir_status, fields, rt):
+def _build_ticket_entry(md_file, file, dir_status, fields, rt):
     """Build a ticket entry dict from parsed frontmatter and runtime state."""
     completed = rt.get("steps_completed", [])
     entry = {
-        "file": f"{d}/{md_file.name}",
+        "file": file,
         "summary": fields.get("summary", md_file.stem),
         "type": fields.get("type", "feature"),
         "status": dir_status,
@@ -212,62 +209,106 @@ def _build_ticket_entry(md_file, d, dir_status, fields, rt):
     return entry
 
 
+@dataclass(frozen=True)
+class _ScanRoots:
+    """Where one board scan resolves Tickets, their runtime logs, and the Project."""
+
+    project_root: Path
+    tickets_dir: Path
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.tickets_dir / "logs"
+
+
 def scan_all_tickets(
     tickets_dir: str | Path,
     *,
     project_root: Path | None = None,
+    include_closed: bool = False,
 ) -> list[dict[str, Any]]:
-    """Scan Tickets through the document converter, retaining invalid entries."""
+    """Scan Tickets through the document converter, retaining invalid entries.
+
+    Live Tickets only, unless *include_closed* also asks for Ticket History.
+    A malformed history document, including an unreadable one or one without a
+    ``closed:`` block, is retained too, with status ``closed`` and a
+    ``ticket_error``, so it never fails the whole listing. Dependency checks
+    read history separately and fail closed.
+    """
     tickets_dir = Path(tickets_dir)
-    root = project_root or tickets_dir.parent.parent
-    logs_dir = tickets_dir / "logs"
+    roots = _ScanRoots(project_root or tickets_dir.parent.parent, tickets_dir)
     result = []
 
-    for d in TICKET_DIRS:
-        dir_path = tickets_dir / d
-        if not dir_path.is_dir():
-            continue
-        dir_status = DIR_STATUS_MAP.get(d, d)
-        for md_file in sorted(dir_path.glob("*.md")):
-            entry = _scan_ticket(md_file, d, dir_status, root, tickets_dir, logs_dir)
-            if entry is not None:
-                result.append(entry)
+    for md_file, record in iter_board_records(tickets_dir):
+        entry = _scan_ticket(md_file, record, roots)
+        if entry is not None:
+            result.append(entry)
+    if include_closed:
+        result.extend(_scan_closed(path, roots) for path in history_documents(tickets_dir))
 
     return result
 
 
+def _scan_closed(path: Path, roots: _ScanRoots) -> dict[str, Any]:
+    """Scan one Closed Ticket under its outcome, dated by its closing."""
+    try:
+        closed = read_history_record(path)
+    except TicketHistoryError as exc:
+        return {
+            "file": path.relative_to(roots.tickets_dir).as_posix(),
+            "summary": path.stem,
+            "status": "closed",
+            "ticket_error": str(exc),
+        }
+    entry = _scan_document(closed.path, closed.document, closed.block.outcome, None, roots)
+    entry["closed"] = closed.block.date
+    # The board sorts and dates rows by last_update; a closed row's is its closing.
+    entry["last_update"] = closed.block.date
+    return entry
+
+
 def _scan_ticket(
     path: Path,
-    directory: str,
-    status: str,
-    root: Path,
-    tickets_dir: Path,
-    logs_dir: Path,
+    record: StateRecord | None,
+    roots: _ScanRoots,
 ) -> dict[str, Any] | None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    stage = "draft" if directory == "drafts" else "executable"
-    with ticket_conversion_context(root, path.stem, stage) as context:
+    state = TicketState.DRAFT if record is None else record.state
+    return _scan_document(path, text, state, record, roots)
+
+
+def _scan_document(
+    path: Path,
+    text: str,
+    state: TicketState,
+    record: StateRecord | None,
+    roots: _ScanRoots,
+) -> dict[str, Any]:
+    """Build the board entry of the Ticket document *text* in *state*."""
+    file = path.relative_to(roots.tickets_dir).as_posix()
+    with ticket_conversion_context(
+        roots.project_root, path.stem, state.conversion_stage
+    ) as context:
         converted = convert_ticket_document(text, context)
     if converted.document is None:
         preview = converted.preview
         return {
-            "file": f"{directory}/{path.name}",
+            "file": file,
             "summary": preview.summary if preview else path.stem,
-            "status": status,
+            "status": state.status,
             "ticket_error": "; ".join(
                 f"{item.line}:{item.column}: {item.message}" for item in converted.diagnostics
             ),
         }
     spec = converted.document.spec
     fields = {**spec.fields, **converted.document.generated}
-    progress = load_progress(logs_dir, path.stem)
-    runtime_fields = progress if progress is not None else fields
-    entry = _build_ticket_entry(path, directory, status, fields, runtime_fields)
+    runtime_fields = record.progress() if record is not None else fields
+    entry = _build_ticket_entry(path, file, state.status, fields, runtime_fields)
     entry["criteria"] = spec.semantic_record()["criteria"]
     entry["target_plan"] = spec.target_plan.as_list() if spec.target_plan else []
-    _enrich_from_acceptance(entry, tickets_dir, path.stem)
-    _enrich_from_state(entry, logs_dir, path.stem)
+    _enrich_from_acceptance(entry, roots.tickets_dir, path.stem)
+    _enrich_from_state(entry, roots.logs_dir, path.stem)
     return entry

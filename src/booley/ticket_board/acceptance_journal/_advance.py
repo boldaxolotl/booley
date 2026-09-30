@@ -11,7 +11,8 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -90,7 +91,6 @@ class AcceptanceRequest:
     basis: TicketBaseline
     cleanup: bool
     ticket_status: Literal["review", "done"]
-    allowed_board_rename: tuple[Path, Path] | None
     expected_sources: Mapping[str, str] | None = None
 
 
@@ -473,7 +473,6 @@ def _validate_publish_checkout(
     participant: BasisParticipant,
     checkout: Path,
     candidate: Candidate,
-    allowed_board_rename: tuple[Path, Path] | None,
 ) -> None:
     expected = candidate.expected_destination_sha
     desired = _required_finalized_sha(candidate)
@@ -496,7 +495,6 @@ def _validate_publish_checkout(
     candidate_paths = tuple(path for path in changed_paths_result.stdout.split("\0") if path)
     blockers = worktree_blocking_changes(
         str(checkout),
-        allowed_unstaged_rename=allowed_board_rename,
         candidate_paths=candidate_paths,
     )
     if blockers is None:
@@ -516,7 +514,6 @@ def _publish_candidate(
     repository: Path,
     participant: BasisParticipant,
     candidate: Candidate,
-    allowed_board_rename: tuple[Path, Path] | None,
 ) -> None:
     desired = _required_finalized_sha(candidate)
     staging_ref = candidate.staging_ref
@@ -537,13 +534,7 @@ def _publish_candidate(
         )
     checkout = _checked_out_at(repository, participant.destination_ref)
     if checkout is not None:
-        _validate_publish_checkout(
-            repository,
-            participant,
-            checkout,
-            candidate,
-            allowed_board_rename,
-        )
+        _validate_publish_checkout(repository, participant, checkout, candidate)
         _require_git(checkout, "merge", "--ff-only", desired)
         return
     _require_git(
@@ -1136,10 +1127,7 @@ def _finalize_all(
             )
 
 
-def _publish_all(
-    transaction: _AcceptanceTransaction,
-    allowed_board_rename: tuple[Path, Path] | None,
-) -> None:
+def _publish_all(transaction: _AcceptanceTransaction) -> None:
     by_role = transaction.participants
     # Publish the hidden control repository first.  The user-visible outer ref
     # moves last, after every candidate is known to be conflict-free.
@@ -1156,7 +1144,6 @@ def _publish_all(
                 repository,
                 participant,
                 transaction.journal.candidates[role],
-                allowed_board_rename,
             ),
         )
         checkpoint = (
@@ -1483,10 +1470,7 @@ def _prepare_pending_publication(
         )
 
 
-def _publish_pending_candidates(
-    transaction: _AcceptanceTransaction,
-    allowed_board_rename: tuple[Path, Path] | None,
-) -> None:
+def _publish_pending_candidates(transaction: _AcceptanceTransaction) -> None:
     _validate_recorded_destinations(
         transaction.root,
         transaction.project_repository,
@@ -1494,7 +1478,7 @@ def _publish_pending_candidates(
         transaction.journal,
         after_approval=False,
     )
-    _publish_all(transaction, allowed_board_rename)
+    _publish_all(transaction)
     _update_finalized_refs(transaction)
     _validate_published_destinations(
         transaction.root,
@@ -1579,7 +1563,7 @@ def _advance_publication(
             cleanup=request.cleanup,
             expected_sources=request.expected_sources,
         )
-        _publish_pending_candidates(transaction, request.allowed_board_rename)
+        _publish_pending_candidates(transaction)
     if request.ticket_status == "review":
         return AcceptanceProgress(AcceptanceOutcome.APPROVAL_REQUIRED)
     return None
@@ -1714,6 +1698,60 @@ def cleanup_finished(root: Path, slug: str) -> bool:
     except AcceptanceJournalError as exc:
         raise AcceptanceOperationError(str(exc)) from exc
     return bool(journal.cleanup and journal.state is JournalState.DONE)
+
+
+@contextmanager
+def publication_idle(root: Path) -> Iterator[None]:
+    """Hold the acceptance publication lock while no publication is in flight.
+
+    Other writers of the destination branches (the Ticket History commit) run
+    inside this block, so they can never move a branch between an acceptance's
+    preparation and its publication. Raises ``LockContentionError`` while an
+    acceptance is running and :class:`AcceptanceOperationError` while a journal
+    has unfinished publication.
+    """
+    store = FileAcceptanceStore()
+    anchor = store.path(root.resolve(), "publication")
+    with store.locked(anchor):
+        for candidate in store.journals(anchor.parent):
+            try:
+                journal = store.load_persisted(candidate)
+            except AcceptanceJournalError as exc:
+                raise AcceptanceOperationError(
+                    f"cannot inspect acceptance journal {candidate}: {exc}"
+                ) from exc
+            if JournalState(journal["state"]).publication_pending:
+                raise AcceptanceOperationError(
+                    f"Ticket {candidate.stem!r} has unfinished acceptance publication"
+                )
+        yield
+
+
+def acceptance_finished(root: Path, slug: str) -> bool | None:
+    """Return whether *slug*'s acceptance fully finished, or ``None`` without a journal.
+
+    Finished means the journal reached done and every keepalive ref of its
+    transaction was retired, which is what a COMPLETE outcome reports.
+    """
+    store = FileAcceptanceStore()
+    path = store.path(root.resolve(), slug)
+    if not path.exists():
+        return None
+    try:
+        journal = store.load_persisted(path)
+    except AcceptanceJournalError as exc:
+        raise AcceptanceOperationError(str(exc)) from exc
+    if journal.state is not JournalState.DONE:
+        return False
+    prefix = f"refs/booley/acceptance/{journal['transaction']}/"
+    repositories = [root.resolve()]
+    project = LocalAcceptanceRepositories().project_repository(root.resolve())
+    if project is not None:
+        repositories.append(project)
+    return not any(
+        _require_git(repository, "for-each-ref", "--format=%(refname)", prefix)
+        for repository in repositories
+    )
 
 
 @dataclass(frozen=True)

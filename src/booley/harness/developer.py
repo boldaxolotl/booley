@@ -2059,16 +2059,8 @@ def _build_hook_env(
     logs_dir: Path,
 ) -> dict[str, str]:
     """Build environment dict for hook subprocess."""
-    # Resolve current ticket location (may have moved between statuses)
+    # The Ticket document path is stable across states (ADR 0065).
     ticket_file = str(ctx.ticket_path)
-    if not ctx.ticket_path.exists():
-        board_dir = ctx.ticket_path.parent.parent
-        for status in ("active", "queue", "waiting", "blocked", "review", "done", "archived"):
-            candidate_path = board_dir / status / f"{ctx.slug}.md"
-            if candidate_path.exists():
-                ticket_file = str(candidate_path)
-                break
-
     project_dir = _ticket_project_dir(ctx)
 
     return {

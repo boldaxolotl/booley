@@ -138,10 +138,17 @@ def test_op_complete_routes_authored_cleanup_without_merge(
         "_approve_transition",
         lambda *_args, **_kwargs: state.update(status="done") or True,
     )
-    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_args, **_kwargs: None)
+    finished: list[dict[str, bool]] = []
+    monkeypatch.setattr(
+        operations,
+        "_finish_completed_ticket",
+        lambda *_args, **kwargs: finished.append(kwargs) or True,
+    )
 
-    assert operations.op_complete(tio, "test-cleanup")
+    assert operations.op_complete(tio, "test-cleanup") is True
     assert state["status"] == "done"
+    # Cleanup-only completion closes the Ticket right after its cleanup.
+    assert finished == [{"cleanup": True, "close": True}]
     assert cleanup_only._ref_sha(root, basis.participants[0].ticket_ref) is None
     assert cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources) == sources
 

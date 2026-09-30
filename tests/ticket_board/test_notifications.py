@@ -75,7 +75,7 @@ def test_successful_completion_notifies(tio, monkeypatch, merge):
     monkeypatch.setattr(
         operations, "_prepare_completion_request", lambda *_a: ("probe", policy, None)
     )
-    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: None)
+    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: True)
     monkeypatch.setattr(
         operations,
         "_complete_with_merge",
@@ -107,7 +107,7 @@ def test_completion_respects_event_filter(tio, tmp_path, monkeypatch, setting):
         "_prepare_completion_request",
         lambda *_a: ("probe", Mock(merge=False, cleanup=False), None),
     )
-    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: None)
+    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: True)
     send = Mock()
     monkeypatch.setattr(operations, "ntfy_send", send)
     assert operations.op_complete(tio, "probe")
@@ -185,7 +185,7 @@ def test_automatic_done_handoff_notifies(tio, monkeypatch):
         "_prepare_completion_request",
         lambda *_a: ("probe", Mock(merge=False, cleanup=False), None),
     )
-    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: None)
+    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_a, **_kw: True)
     send = Mock()
     monkeypatch.setattr(operations, "ntfy_send", send)
     assert operations.op_handoff(tio, "probe")

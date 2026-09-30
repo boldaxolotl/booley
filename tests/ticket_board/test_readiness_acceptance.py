@@ -17,6 +17,7 @@ from booley.ticket_board.ticket_baseline import (
     TicketBaseline,
     TicketBaselineError,
 )
+from tests.ticket_board.conftest import place_ticket
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -52,7 +53,7 @@ def test_prepared_validator_materializes_submodule_checkout(
     sha = _git(root, "rev-parse", "HEAD")
     ticket_ref = "refs/heads/booley-generation/0123456789abcdef/outer"
     _git(root, "branch", ticket_ref.removeprefix("refs/heads/"), sha)
-    ticket = root / ".booley_project/tickets/board/queue/ticket.md"
+    ticket = root / ".booley_project/tickets/board/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
     basis = TicketBaseline((BasisParticipant("outer", sha, ticket_ref, "refs/heads/main", sha),))
@@ -82,14 +83,14 @@ def test_executable_validator_reports_conversion_baseline_and_prepare_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "project"
-    ticket = root / ".booley_project/tickets/board/queue/ticket.md"
+    ticket = root / ".booley_project/tickets/board/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
     monkeypatch.setattr(
         ticket_validation, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
     monkeypatch.setattr(
-        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queue")
+        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queued")
     )
 
     def fail_conversion(*_args: object) -> None:
@@ -172,14 +173,14 @@ def test_executable_validator_formats_conversion_diagnostics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "project"
-    ticket = root / ".booley_project/tickets/board/queue/ticket.md"
+    ticket = root / ".booley_project/tickets/board/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
     monkeypatch.setattr(
         ticket_validation, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
     monkeypatch.setattr(
-        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queue")
+        ticket_validation, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "queued")
     )
     monkeypatch.setattr(
         ticket_validation,
@@ -202,7 +203,7 @@ def test_executable_validator_rejects_missing_and_nonoperational_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "project"
-    ticket = root / ".booley_project/tickets/board/review/ticket.md"
+    ticket = root / ".booley_project/tickets/board/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -226,9 +227,7 @@ def test_readiness_delegates_prepared_validation(
 ) -> None:
     root = tmp_path / "project"
     project_dir = root / ".booley_project"
-    ticket = project_dir / "tickets/board/queue/ticket.md"
-    ticket.parent.mkdir(parents=True)
-    ticket.write_text("ticket\n", encoding="utf-8")
+    place_ticket(project_dir / "tickets", "ticket", "queue", "ticket\n")
     (root / ".git").mkdir()
     calls: list[tuple[Path, str]] = []
     monkeypatch.setattr(
@@ -245,7 +244,7 @@ def test_readiness_rejects_nonoperational_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "project"
-    ticket = root / ".booley_project/tickets/board/review/ticket.md"
+    ticket = root / ".booley_project/tickets/board/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
     (root / ".git").mkdir()
@@ -264,13 +263,13 @@ def test_readiness_checkout_boundary_and_preparation_failures(
 ) -> None:
     root = tmp_path / "project"
     tickets = root / ".booley_project/tickets"
-    ticket = tickets / "board/queue/ticket.md"
+    ticket = tickets / "board/ticket.md"
     ticket.parent.mkdir(parents=True)
     (root / ".git").mkdir(parents=True)
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queued"))
     ticket.write_text("---\ntarget_contract: {}\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(
         readiness,
@@ -292,7 +291,7 @@ def test_non_git_readiness_reports_preparation_failure_and_checkout_mutation(
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
     monkeypatch.setattr(readiness, "resolve_checkout_project_dir", lambda _root: tmp_path)
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queued"))
     monkeypatch.setattr(readiness, "_checkout_statuses", lambda _root: ("clean",))
     monkeypatch.setattr("booley.flows.execution.flow_enabled", lambda *_args: False)
     monkeypatch.setattr(
@@ -320,13 +319,13 @@ def test_checkout_readiness_reports_missing_project_repository_and_ticket(
     root = tmp_path / "root"
     tickets = root / ".booley_project/tickets"
     (root / ".git").mkdir(parents=True)
-    ticket = tickets / "board/queue/ticket.md"
+    ticket = tickets / "board/ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
     monkeypatch.setattr(
         readiness, "resolve_checkout_project_dir", lambda _root: root / ".booley_project"
     )
-    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queue"))
+    monkeypatch.setattr(readiness, "find_ticket_file", lambda *_args: (ticket, "queued"))
     monkeypatch.setattr(
         readiness,
         "validate_executable_ticket",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 import uuid
 from dataclasses import replace
@@ -27,11 +28,11 @@ from booley.ticket_board.acceptance_ledger import (
 )
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
-from booley.ticket_board.logs import load_progress
 from booley.ticket_board.persistence import atomic_replace_bytes
 from booley.ticket_board.ticket_jobs import active_ticket_jobs, wait_for_ticket_jobs
 
 from . import review_preparation as prep
+from .lifecycle import TicketState
 from .review_records import (
     ReviewEntryError,
     ReviewInspection,
@@ -68,7 +69,7 @@ def _write(path: Path, value: dict[str, Any]) -> None:
 
 
 def _quiescent(tio: TicketIO, slug: str) -> None:
-    progress = load_progress(tio.logs_dir, slug) or {}
+    progress = tio.read_progress(slug)
     owner = progress.get("execution_owner_pid")
     if isinstance(owner, int) and owner != os.getpid() and is_pid_alive(owner):
         raise ReviewEntryError("ticket execution owner is still running")
@@ -324,11 +325,7 @@ def _abandon_publication(tio, slug, operation):
     board = tio.inspect_ticket(slug)
     if board and board["status"] == "review" and operation["entry"]["source_status"] == "blocked":
         source = tio.tickets_dir / board["file"]
-        target = tio.tickets_dir / "board" / "blocked" / source.name
-        if target.exists():
-            raise ReviewEntryError("blocked recovery destination already exists")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        source.replace(target)
+        tio.commit_state(source.stem, TicketState.BLOCKED, tio.read_progress(source.stem))
     if prior is None:
         entry_path(log_dir).unlink(missing_ok=True)
     else:
@@ -549,18 +546,12 @@ def _require_selected_package(tio: TicketIO, ctx: prep.ReviewPrepContext) -> Non
 
 def _approve_done_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
     """Retry terminal actions for a previously accepted Ticket."""
-    from booley.core.models import OnSuccess
-
     from .operations import _completion_acceptance_valid, op_complete
 
     if _completion_acceptance_valid(tio, slug) is None:
         return False
-    entry = tio.find_ticket(slug)
-    assert entry is not None
-    policy = OnSuccess.from_dict(entry.get("on_success"))
-    if policy.merge and not no_merge:
-        return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
-    return True
+    # A done Ticket is still live: completion must finish and close it.
+    return op_complete(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)
 
 
 def _recover_for_approval(tio: TicketIO, slug: str) -> None:
@@ -707,6 +698,21 @@ def _accepted_unselected_handoff_for_ticket(
     return _accepted_unselected_handoff(project_root, canonical, tio)
 
 
+def _approve_closed_ticket(tio: TicketIO, slug: str) -> bool:
+    """Treat a repeated approve of a Ticket that already closed done as a no-op."""
+    from .ticket_history import read_closed_ticket
+
+    closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+    if closed is None:
+        raise ReviewEntryError(f"ticket {slug!r} not found")
+    if closed.block.outcome is not TicketState.DONE:
+        raise ReviewEntryError(
+            f"ticket {slug!r} is already closed ({closed.block.outcome.status})"
+        )
+    print(f"Ticket '{slug}' is already closed (done); nothing to approve.", file=sys.stderr)
+    return True
+
+
 def approve_review_command(
     project_root: Path, slug: str, *, no_merge: bool = False, no_cleanup: bool = False
 ) -> bool:
@@ -714,7 +720,7 @@ def approve_review_command(
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
     board = tio.find_ticket(slug)
     if board is None:
-        raise ReviewEntryError(f"ticket {slug!r} not found")
+        return _approve_closed_ticket(tio, slug)
     slug = Path(board["file"]).stem
     if board["status"] == "done":
         return _approve_done_ticket(tio, slug, no_merge=no_merge, no_cleanup=no_cleanup)

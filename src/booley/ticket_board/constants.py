@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from .lifecycle import TicketState
-
 # ---------------------------------------------------------------------------
 # Booley Flow steps (ordered by canonical execution sequence)
 # ---------------------------------------------------------------------------
@@ -44,30 +42,6 @@ FLOW_STEP_MAP = {
     "synth": "synthesis",
     "fpga": "synthesis",
 }
-
-# ---------------------------------------------------------------------------
-# Directory & status mappings
-# ---------------------------------------------------------------------------
-
-# Directories tickets can live in (relative to tickets_dir) and their status
-# strings — both DERIVED from the single TicketState source of truth so the
-# dir↔status pairing can never drift. Values are identical to the former
-# hand-written literals (member order matches, dict values unchanged).
-TICKET_DIRS = [s.board_dir for s in TicketState]
-
-# Directory name → status string (keys use board/ prefix)
-DIR_STATUS_MAP = {s.board_dir: s.status for s in TicketState}
-
-
-def normalize_dir(d: str) -> str:
-    """Normalize a bare status dir name to board/-prefixed form.
-
-    Accepts both 'queue' and 'board/queue'; always returns 'board/queue'.
-    """
-    if d.startswith("board/"):
-        return d
-    return f"board/{d}"
-
 
 # Required ticket fields
 REQUIRED_FIELDS = {"summary", "type", "branch", "scope", "criteria"}

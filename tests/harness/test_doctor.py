@@ -32,6 +32,7 @@ from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
     issuance_invalidation,
+    project_gitignore,
     runtime_context,
     session_issuance,
     session_runtime,
@@ -39,6 +40,14 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    read_state_record,
+    required_board_directories,
+    ticket_document_path,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import TicketState
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
@@ -126,7 +135,7 @@ tests = ["full"]
 """.lstrip(),
         encoding="utf-8",
     )
-    (project_dir / ".gitignore").write_text(".interactive_logs/\n", encoding="utf-8")
+    (project_dir / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
     # ADR 0039: a resolvable .core Target is mandatory — without one the core
     # audit hard-FAILs and every doctor E2E fixture here would go red.
     (root / "unit.core").write_text(
@@ -172,8 +181,8 @@ tests = ["full"]
 
 def _write_tickets_tree(project_dir: Path) -> None:
     tickets_dir = project_dir / "tickets"
-    for state in ("drafts", "queue", "active", "review", "done", "blocked", "waiting"):
-        (tickets_dir / "board" / state).mkdir(parents=True, exist_ok=True)
+    for directory in required_board_directories(tickets_dir):
+        directory.mkdir(parents=True, exist_ok=True)
     (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
     (tickets_dir / "locks").mkdir(parents=True, exist_ok=True)
 
@@ -655,6 +664,218 @@ def test_doctor_fails_without_tickets_tree(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert rc == 1
     assert "tickets tree missing" in output
+
+
+def test_tickets_tree_requires_state_record_directory(tmp_path):
+    """A pre-ADR-0065 board (per-state dirs, no state/) is not a healthy tree."""
+    tickets_dir = tmp_path / "tickets"
+    for legacy in ("queue", "active"):
+        (tickets_dir / "board" / legacy).mkdir(parents=True)
+    (tickets_dir / "logs").mkdir()
+    (tickets_dir / "locks").mkdir()
+    rec = _Rec()
+
+    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
+
+    assert rec.events == [("fail", "tickets tree missing 1 directories")]
+    assert rec.fix_hints == ["booley init"]
+
+    (tickets_dir / "state").mkdir()
+    rec = _Rec()
+    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
+    assert rec.events == [("pass", "tickets tree present")]
+
+
+def _gitignore_probe(project_dir: Path) -> list[doctor.DoctorFinding]:
+    """Run the Project ``.gitignore`` probe against *project_dir* and return its findings."""
+    reporter = doctor._Reporter.create()
+    doctor._check_project_gitignore(project_dir, reporter.pass_, reporter.warn_)
+    assert reporter.findings is not None
+    return reporter.findings
+
+
+def test_project_gitignore_passes_with_every_init_pattern(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
+
+    assert [(f.severity, f.message) for f in _gitignore_probe(tmp_path)] == [
+        ("pass", "transient Booley state is gitignored")
+    ]
+
+
+def test_project_gitignore_names_each_missing_pattern(tmp_path: Path) -> None:
+    kept = [
+        p for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS if not p.startswith("tickets/")
+    ]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in kept), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert findings[0].check_id == "project.gitignore"
+    for pattern in ("tickets/board/", "tickets/state/", "tickets/logs/", "tickets/locks/"):
+        assert pattern in findings[0].message
+    assert findings[0].fix == "booley init"
+
+
+def test_project_gitignore_accepts_anchored_spelling_of_nested_pattern(tmp_path: Path) -> None:
+    anchored = {"tickets/board/": "/tickets/board/", "tickets/state/": "/tickets/state/"}
+    lines = [anchored.get(p, p) for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in lines), encoding="utf-8")
+
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
+
+
+def test_project_gitignore_anchored_spelling_of_top_level_pattern_differs(
+    tmp_path: Path,
+) -> None:
+    # ``worktrees/`` matches at any depth; ``/worktrees/`` only at the top.
+    lines = [
+        "/worktrees/" if p == "worktrees/" else p
+        for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS
+    ]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in lines), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "worktrees/" in findings[0].message
+
+
+def test_project_gitignore_missing_file_warns(tmp_path: Path) -> None:
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "missing" in findings[0].message
+    assert findings[0].fix == "booley init"
+
+
+def _history_probe(project_dir: Path) -> doctor._Reporter:
+    """Run the Ticket History commit probe against *project_dir* and return its reporter."""
+    reporter = doctor._Reporter.create()
+    doctor._check_ticket_history_committed(project_dir, reporter.pass_, reporter.warn_)
+    return reporter
+
+
+def _history_git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _history_repo(tmp_path: Path, monkeypatch) -> Path:
+    """Return a project dir inside a fresh Git repository with one initial commit."""
+    for key, value in {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }.items():
+        monkeypatch.setenv(key, value)
+    _history_git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "README").write_text("x\n", encoding="utf-8")
+    _history_git(tmp_path, "add", "README")
+    _history_git(tmp_path, "commit", "-q", "-m", "init")
+    # The default Stealth policy bans "ticket"; this repository opts out.
+    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley_project" / "booley.toml").write_text(
+        "[stealth]\nenabled = false\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_ticket_history_probe_passes_without_history(tmp_path, monkeypatch):
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    (project_dir / "tickets").mkdir()
+
+    reporter = _history_probe(project_dir)
+
+    assert reporter.findings is not None
+    assert [(f.severity, f.message) for f in reporter.findings] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_warns_until_records_are_committed(tmp_path, monkeypatch):
+    """An uncommitted record WARNs with its slug; Booley's commit clears it (ADR 0065)."""
+    from booley.ticket_board.history_publication import commit_history_record
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    tickets_dir = project_dir / "tickets"
+    place_closed_ticket(tickets_dir, "alpha", "---\nsummary: a\n---\n")
+    place_closed_ticket(tickets_dir, "beta", "---\nsummary: b\n---\n", outcome="archived")
+
+    reporter = _history_probe(project_dir)
+
+    assert reporter.findings is not None
+    warnings = [f for f in reporter.findings if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert warnings[0].check_id == "tickets.history-uncommitted"
+    assert "2 Closed Ticket history record(s) not committed yet (alpha, beta)" in (
+        warnings[0].message
+    )
+    assert not any(f.severity == "pass" for f in reporter.findings)
+
+    assert commit_history_record(tickets_dir, "alpha", policy_root=tmp_path)
+    reporter = _history_probe(project_dir)
+    warnings = [f for f in reporter.findings or [] if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert "(beta)" in warnings[0].message
+    assert "alpha" not in warnings[0].message
+
+    assert commit_history_record(tickets_dir, "beta", policy_root=tmp_path)
+    reporter = _history_probe(project_dir)
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_passes_for_records_committed_by_hand(tmp_path, monkeypatch):
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
+    _history_git(project_dir, "add", "tickets")
+    _history_git(project_dir, "commit", "-q", "-m", "history")
+
+    reporter = _history_probe(project_dir)
+
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_has_nothing_to_warn_outside_a_repository(tmp_path, monkeypatch):
+    """No repository tracks history, so an uncommitted record is not a finding."""
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    place_closed_ticket(tmp_path / "tickets", "alpha", "---\nsummary: a\n---\n")
+
+    reporter = _history_probe(tmp_path)
+
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_warns_when_history_is_gitignored(tmp_path, monkeypatch):
+    """An ignored history/ is never committed, so Doctor must not report it committed."""
+    from booley.ticket_board.history_publication import publish_history_record
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    (project_dir / ".gitignore").write_text("tickets/history/\n", encoding="utf-8")
+    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
+
+    reporter = _history_probe(project_dir)
+
+    assert [(f.severity, f.check_id) for f in reporter.findings or []] == [
+        ("warn", "tickets.history-uncommitted")
+    ]
+    warning = (reporter.findings or [])[0]
+    assert "gitignored" in warning.message
+    assert "un-ignore tickets/history" in warning.fix
+    # Publication itself stays non-failing: nothing tracks the record.
+    assert publish_history_record(project_dir / "tickets", "alpha", policy_root=tmp_path)
 
 
 def test_doctor_reports_ticket_board_import_failure(tmp_path, monkeypatch, capsys):
@@ -4616,17 +4837,19 @@ class TestWorktreeCoreShadowGuard:
 def _seed_board(tmp_path: Path) -> Path:
     """Create a minimal tickets tree; return the tickets dir."""
     tickets = tmp_path / "tickets"
-    for state in ("queue", "active", "blocked"):
-        (tickets / "board" / state).mkdir(parents=True, exist_ok=True)
+    for directory in required_board_directories(tickets):
+        directory.mkdir(parents=True, exist_ok=True)
     (tickets / "logs").mkdir(parents=True, exist_ok=True)
     return tickets
 
 
 def _seed_active_ticket(tickets: Path, slug: str = "stuck") -> None:
-    (tickets / "board" / "active" / f"{slug}.md").write_text(
+    """Place a running Ticket (board document + running state record) with a lock."""
+    ticket_document_path(tickets, slug).write_text(
         "---\nsummary: Stuck ticket\n---\n",
         encoding="utf-8",
     )
+    write_state_record(tickets, slug, StateRecord.fresh(TicketState.RUNNING))
     lock_dir = tickets / "logs" / slug
     lock_dir.mkdir(parents=True, exist_ok=True)
     (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
@@ -4707,6 +4930,9 @@ class TestBoardOrphanSelfHeal:
         assert rec.kinds() == {"warn"}
         assert "found 1 orphaned" in rec.events[0][1]
         assert board_calls == []
+        record = read_state_record(tickets, "stuck")
+        assert record is not None
+        assert record.state is TicketState.RUNNING
 
 
 # ---------------------------------------------------------------------------
@@ -6684,6 +6910,25 @@ class TestNoDockerSkipReason:
             "provider-side web access disabled" in m for lvl, m in rec.events if lvl == "pass"
         )
 
+    def test_host_without_runtime_skips_instead_of_running_none(self, monkeypatch):
+        # A non-canonical host run leaves docker_exe unset even with Docker on PATH;
+        # the checks used to go on and run [None, "run", ...].
+        _set_venue(monkeypatch, False)
+        monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
+        monkeypatch.setattr(
+            doctor.subprocess,
+            "run",
+            lambda *a, **k: pytest.fail(f"ran a container check without a runtime: {a}"),
+        )
+        rec = _Rec()
+
+        doctor._run_container_checks(
+            None, None, "booley-sandbox", False, rec.p, rec.w, rec.s, rec.f
+        )
+
+        assert any("no Docker/Podman runtime found" in m for lvl, m in rec.events if lvl == "skip")
+        assert not [m for lvl, m in rec.events if lvl == "fail"]
+
 
 class TestSynthHeavyTargetCalibration:
     def _project(self, tmp_path, *, marked=("asic_small", "asic_full"), booley_toml=None):
@@ -6972,3 +7217,22 @@ def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
 
     assert not c.warned
     assert any("is committed" in m for m in c.passed)
+
+
+def test_ticket_board_layout_probe_fails_when_git_cannot_be_asked(tmp_path, monkeypatch):
+    """Doctor FAILs a board whose tracked-state check Git could not answer."""
+    from booley.ticket_board import legacy_layout
+
+    tickets = tmp_path / "tickets"
+    for name in ("board", "state", "history"):
+        (tickets / name).mkdir(parents=True)
+    failed = subprocess.CompletedProcess([], 129, stdout="", stderr="fatal: bad index")
+    monkeypatch.setattr(legacy_layout.subprocess, "run", lambda *_a, **_k: failed)
+    reporter = doctor._Reporter.create()
+
+    doctor._check_ticket_board_layout(tmp_path, reporter.pass_, reporter.fail_)
+
+    findings = reporter.findings or []
+    assert [f.severity for f in findings] == ["fail"]
+    assert "Ticket Board cannot be checked" in findings[0].message
+    assert "fatal: bad index" in findings[0].message

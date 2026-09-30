@@ -14,6 +14,7 @@ from booley.runtime.execution_lease import (
     ExecutionLeaseAbsentPath,
     ExecutionLeaseEnvironment,
     ExecutionLeaseFile,
+    ExecutionLeaseJsonField,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.timefmt import rfc3339_from_epoch
@@ -21,6 +22,7 @@ from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.ticket_jobs import active_ticket_jobs, jobs_root
 
+from .board_layout import state_record_path
 from .review_lifecycle import _quiescent, _write
 from .review_records import ReviewEntryError, assert_idle, operation_path, read_entry
 
@@ -39,6 +41,7 @@ def _build_execution_lease(
     state_path: Path,
     runtime_ticket: Path,
     review_ticket: Path,
+    review_state_record: Path,
 ) -> ExecutionLeaseEnvironment:
     issued_epoch = time.time()
     return ExecutionLeaseEnvironment(
@@ -60,6 +63,13 @@ def _build_execution_lease(
         required_files=(
             ExecutionLeaseFile.capture("Ticket Board review Ticket", review_ticket),
             ExecutionLeaseFile.capture("runtime Ticket", runtime_ticket),
+        ),
+        # The document path no longer changes with state (ADR 0065). Pin only the
+        # state in the record: its runtime fields may still be updated.
+        required_fields=(
+            ExecutionLeaseJsonField.capture(
+                "Ticket Board review Ticket state", review_state_record, "state"
+            ),
         ),
         absent_paths=(
             ExecutionLeaseAbsentPath(
@@ -133,6 +143,7 @@ def _environment(
         state_path=state_path,
         runtime_ticket=ticket,
         review_ticket=review_ticket,
+        review_state_record=state_record_path(tio.tickets_dir, slug),
     )
     env = _interactive_environment()
     env.update(_child_environment(tio, ctx, state, ticket, lease))

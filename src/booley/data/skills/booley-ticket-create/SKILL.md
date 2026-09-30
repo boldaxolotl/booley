@@ -194,7 +194,7 @@ to make validation or enqueue pass.
 
 ## Step 5: Report
 
-- **Human**: print the enqueued path (`board/queue/`, or `board/waiting/` when it declares unmet dependencies — Step 4's `enqueue` already moved it there), then suggest `booley run`
+- **Human**: print the Ticket path (`tickets/board/<slug>.md`, unchanged by enqueue) and its state from `python -m booley.ticket_board show <slug>` (`queued`, or `waiting` when it declares unmet dependencies), then suggest `booley run`
 - **Agent**: return path
 
 ---

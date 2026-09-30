@@ -20,6 +20,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 from .acceptance_targets import deferable_rtl_or_tb_input, scope_allows_new_path
+from .board_layout import document_stage
 from .persistence import atomic_replace_bytes
 from .scanner import find_ticket_file, scan_all_tickets
 from .target_surface_edit import (
@@ -177,7 +178,8 @@ def _provider(root: Path, tickets_dir: Path, slug: str) -> _Provider | None:
 
 
 def _ticket_preview(root: Path, ticket_path: Path, slug: str) -> TicketPreview:
-    stage = "draft" if ticket_path.parent.name == "drafts" else "executable"
+    tickets_dir = resolve_checkout_project_dir(root) / "tickets"
+    stage = document_stage(tickets_dir, ticket_path, off_board="executable")
     with ticket_conversion_context(root, slug, stage) as context:
         converted = convert_ticket_document(ticket_path.read_text(encoding="utf-8"), context)
     if converted.preview is None:

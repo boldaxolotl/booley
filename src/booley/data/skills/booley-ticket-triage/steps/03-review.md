@@ -114,12 +114,12 @@ Flow or Specialist and prepare a new review package first.
   retire the Ticket worktree and branch, archive the current runtime artifacts
   as prior-run history, clear the active state, and return the Ticket to
   `queued`. Do not selectively retain reviewed work.
-- **Archive**: `booley board archive $SLUG --force`
+- **Archive**: `booley board archive $SLUG`
 - **Skip**: leave as-is
 
-Review never resumes through an ordinary move to `queued`. It finishes in
-`done` or `archived`, stays in `review` while the reviewer fixes it, or uses the
-explicit full reset above.
+Review never resumes through an ordinary move to `queued`. It closes into
+Ticket History with outcome `done` or `archived`, stays in `review` while the
+reviewer fixes it, or uses the explicit full reset above.
 
 After the decision, invoke `/booley-feedback` for every confirmed Booley defect.
 The skill never submits externally; the user controls any manual sharing.
