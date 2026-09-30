@@ -50,9 +50,11 @@ _PAYLOAD_FILES = (
 _PAYLOAD_EXCLUDED = frozenset({STAMP_RELPATH, DEVELOPMENT_CONTEXT_RELPATH})
 
 # Inputs which determine the Python wheel.  Native B-Wave sources and image
-# recipes deliberately live in substrate fingerprints instead: changing either
-# must not make a Python-only overlay look incompatible, and changing Python
-# must not invalidate the EDA/toolchain substrates below it.
+# recipes deliberately live in substrate fingerprints instead.  The overlay
+# compiles B-Wave, but a crate edit still invalidates it through the parent
+# substrate's compatibility key; a Python-only change leaves the substrate
+# intact, and changing Python must not invalidate the EDA/toolchain substrates
+# below it.
 _WHEEL_SOURCE_TREES = ("src/booley",)
 _WHEEL_SOURCE_FILES = ("pyproject.toml", "VERSION")
 

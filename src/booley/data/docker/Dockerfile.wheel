@@ -1,5 +1,14 @@
 # Generic checkout-specific wheel overlay.  BuildKit maps the symbolic parent
 # to a verified standard, RISC-V, or Project substrate.
+# The native B-Wave binary is compiled on a bookworm builder on purpose: its
+# glibc (2.36) is older than the final image's Ubuntu 24.04 (2.39), so the
+# binary's symbol requirements resolve there.  Identical to the legacy
+# Dockerfile stage so BuildKit shares the cache between the two recipes.
+FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS bwave-builder
+COPY crates/bwave/ /build/bwave/
+RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
+        --manifest-path /build/bwave/Cargo.toml
+
 FROM booley-substrate
 USER root
 
@@ -16,11 +25,20 @@ RUN --mount=type=bind,source=dist,target=/tmp/booley-dist,readonly \
         --inventory /tmp/booley-installed-files.txt \
         --forbid-root /work \
         --wheel "$WHEEL" \
-    && BWAVE_BIN_DIR="$(python3 -c 'from booley.runtime.paths import package_data_dir; print(package_data_dir())')/bin" \
-    && mkdir -p "$BWAVE_BIN_DIR" \
-    && ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave" \
     && rm -f /tmp/booley-installed-files.txt \
     && test "$(python3 -m pip list --format=json | python3 -c 'import json,sys; print(sum(p["name"].lower().replace("_", "-") == "booley-rtl" for p in json.load(sys.stdin)))')" -eq 1
+
+# Install the native binary and create its package-data hard link in this ONE
+# RUN.  An exported layer diff cannot record a hard link whose other name lives
+# in a lower layer, so splitting them (issue #828) stores the bytes twice or
+# breaks the link outright depending on the image store.
+RUN --mount=type=bind,from=bwave-builder,source=/build/target/release,target=/tmp/bwave,readonly \
+    BWAVE_BIN_DIR="$(python3 -c 'from booley.runtime.paths import package_data_dir; print(package_data_dir())')/bin" \
+    && mkdir -p /usr/local/libexec/booley "$BWAVE_BIN_DIR" \
+    && install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave \
+    && ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave" \
+    && /usr/local/libexec/booley/bwave --version
+ENV BOOLEY_BWAVE_BIN=/usr/local/libexec/booley/bwave
 
 ARG BOOLEY_VERSION=unknown
 ARG BOOLEY_SOURCE_REVISION=unknown
