@@ -29,8 +29,13 @@ metrics, recipe, provenance, and baseline comparison (see
 
 ## Invocation report
 
-Every run writes one `report.json` for the whole invocation. MCP attaches the
-same file to its result.
+Every persisted run writes `<report-root>/<name>/<N>/report.json` for the whole
+invocation. MCP attaches the same file to its result. Endpoint reporting also
+writes `<report-root>/<name>.json` (for example `sim.json`), a mutable
+last-writer-wins copy of the newest invocation report kept for backward
+compatibility. This copy may contain Campaign pointers but is not a stable
+Campaign pointer; a later failed run can overwrite it with empty `detail`.
+Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 
 | Field | Contents |
 |---|---|
@@ -97,7 +102,7 @@ whether or not it collects coverage. Each run takes the next number `N` under
       build-variants/.../              simulator builds and their results
       work-items/.../                  one directory per test or batch, with its attempts
     simulation.json                    the Target's results (see below)
-    coverage.json                      coverage runs only
+    coverage.json                      coverage runs only: v1 Campaign reference
 ```
 
 Qualified Target selectors (such as `vendor:ip:core:1.0#sim`) are
@@ -105,8 +110,9 @@ percent-encoded into one directory name.
 
 Three cases add to this layout:
 
-- **Coverage** adds `coverage.json`, the point store, and `native/` to the same
-  Target directory (see [Coverage Campaign files](#coverage-campaign-files)).
+- **Coverage** adds a Target-level reference selecting one attempt's nested
+  Coverage Campaign, whose own directory holds its manifest, point store, native
+  databases, and hook evidence (see [Coverage Campaign files](#coverage-campaign-files)).
 - **Resume** takes a new run number for its own `report.json` and
   `progress.json`, but writes Campaign results into the *original* run's
   `campaign/` directory, so one Campaign stays in one place.
@@ -122,7 +128,8 @@ no longer be resumed.
 
 - `simulation.json` uses `booley.simulation-projection/v2`.
 - `report.json` uses `booley.simulation-report/v2`.
-- `coverage.json` uses `booley.coverage-campaign/v4`.
+- Target-level `coverage.json` uses `booley.coverage-campaign-reference/v1`.
+- The selected nested `coverage.json` is the current Coverage Campaign manifest.
 
 To find a Target's results, follow `artifacts[target].report` in the run's
 `report.json`. Every path inside these files is relative, and each reference
@@ -176,27 +183,46 @@ modules, and the log path.
 
 ### Coverage Campaign files
 
-A coverage run adds these files to each Target directory:
+A coverage run publishes this reference and nested evidence:
 
 ```text
 <report-root>/sim/<N>/targets/<target>/
-  coverage.json              the Campaign: rollups, per-file rollups, evaluation
-  coverage-points.jsonl.gz   every coverage point and which runs hit it
-  native/raw/                one Verilator database per test
-  native/merged/             the merged database
+  coverage.json              booley.coverage-campaign-reference/v1
+  simulation.json            the completed Target projection
+  campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/
+    coverage.json            current Coverage Campaign manifest
+    coverage-points.jsonl.gz  every coverage point and which runs hit it
+    native/raw/              one Verilator database per test
+    native/merged/           the merged database
+    hooks/                   hook evidence, when collected
 ```
 
-`coverage.json` is the entry point; always read points through it rather than
-opening the point store directly. It holds fingerprints, capabilities, the
-evaluation against any Coverage Criterion, and rollups per metric and per
-source file (line, branch, expression, toggle). Its `scoring` field says
-whether the numbers can be trusted: `valid` when collection completed
-normally, otherwise `invalid` with the reason, and empty rollups.
+The Target reference's `coverage_campaign` object contains `path`, `path_base`,
+`schema`, `campaign_id`, `bytes`, and `sha256`. Its `path_base: origin_target`
+resolves `path` against the origin Target directory to the exact nested manifest;
+size, digest, and identities authenticate the selection. Native artifact paths
+in the nested manifest resolve from its **Coverage Campaign directory**, not
+from the Target directory.
+
+Pass the canonical numbered Target-level `coverage.json` to the Coverage Analyst.
+It resolves the reference and authenticates the enclosing Simulation Campaign
+and completed Target projection; the nested path alone is not an Analyst input.
+Manifest summary/deep readers in
+`booley.flows.sim.coverage_campaign_store` accept the resolved Campaign manifest,
+not the V1 reference. Always read points through the manifest rather than opening
+the point store directly.
+
+The nested manifest holds fingerprints, capabilities, the evaluation against
+any Coverage Criterion, and rollups per metric and per source file (line,
+branch, expression, toggle). Its `scoring` field says whether the numbers can
+be trusted: `valid` when collection completed normally, otherwise `invalid`
+with the reason, and empty rollups. Keep the Target reference, selected attempt,
+and enclosing Simulation Campaign together.
 
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
-exit code. `coverage_campaign` points to `coverage.json` once it has been
-written.
+exit code. `coverage_campaign` points to the Target-level reference once it
+has been written.
 
 ### Coverage retention
 

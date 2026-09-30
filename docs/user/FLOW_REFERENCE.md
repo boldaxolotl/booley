@@ -344,19 +344,40 @@ results in the report even when another Target decides the exit code.
 
 #### Where the evidence lives
 
-Each Target gets its own Campaign under the run's numbered report directory:
+Each Target gets its own reference and nested Coverage Campaign under the run's
+numbered report directory (qualified Target selectors are percent-encoded):
 
 ```text
 <reports>/sim/<N>/targets/<target>/
-  coverage.json              the Campaign: rollups, per-file rollups, verdicts
-  coverage-points.jsonl.gz   every coverage point (read through coverage.json)
-  simulation.json            the matching simulation results
-  native/                    raw and merged Verilator databases
+  coverage.json              booley.coverage-campaign-reference/v1 pointer
+  simulation.json            the matching Target simulation results
+  campaign/
+    manifest.json            the enclosing Simulation Campaign
+    work-items/<item>/attempts/<attempt>/coverage-campaign/
+      coverage.json          current Coverage Campaign manifest
+      coverage-points.jsonl.gz
+      native/raw/            per-test Verilator databases
+      native/merged/         merged Verilator database
+      hooks/                 hook evidence, when collected
 ```
 
-Always pass the exact `coverage.json` path to consumers; never edit or pass the
-point store directly. There is no "latest Campaign" and no merging across Targets
-or runs.
+The Target reference's `coverage_campaign.path` resolves from the origin Target
+directory, as declared by `coverage_campaign.path_base: origin_target`. The
+nested manifest binds the point store and contains rollups and verdicts; its
+native artifact paths are relative to the **Coverage Campaign directory**.
+
+Pass the numbered Target-level `coverage.json` reference to the Coverage Analyst.
+It authenticates the nested Campaign and matching completed Simulation evidence;
+it does not accept the nested manifest directly. Manifest summary/deep readers
+in `booley.flows.sim.coverage_campaign_store` take the resolved Campaign manifest,
+not the reference. Never edit or pass the point store directly, and keep the
+reference and enclosing Simulation Campaign together.
+
+`<reports>/sim.json` is a mutable, last-writer-wins compatibility copy of the
+newest invocation's `report.json`. It may contain Campaign pointers, but it is
+not a stable Campaign selection: a later failed run can replace it with empty
+`detail`. Use the numbered `<reports>/sim/<N>/...` paths for consumers. Booley
+never infers a latest Campaign or merges coverage across Targets or runs.
 
 #### Analyzing a Campaign
 
