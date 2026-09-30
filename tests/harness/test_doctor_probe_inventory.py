@@ -110,7 +110,6 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
         {
             "_run_core_resolve_checks",
             "_run_deep_checks",
-            "_run_developer_probe",
         }
     ),
     "_run_project_phase": frozenset(

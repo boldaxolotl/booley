@@ -20,7 +20,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -37,7 +37,15 @@ from booley.audit import (
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.config.jobs import parse_caps
 from booley.config.project_config import normalize_tests_toml
-from booley.core.boundary import BoundaryError, is_str_list, require_int
+from booley.core.boundary import (
+    BoundaryError,
+    is_str_list,
+    require_bool,
+    require_dict,
+    require_int,
+    require_list,
+    require_str,
+)
 from booley.flows import execution
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.config import (
@@ -53,6 +61,7 @@ from booley.fusesoc import (
     selftest_overlay,
 )
 from booley.harness import (
+    doctor_deep,
     doctor_stamp,
     host_diagnostics,
     nangate_pdk,
@@ -87,6 +96,7 @@ from booley.runtime import (
     inspection,
     project_repositories,
     runtime_context,
+    sandbox_artifact,
     session_runtime,
     vaporview,
 )
@@ -213,6 +223,7 @@ class _DoctorFlowRuntime:
     docker_exe: str | None
     container_name: str | None = None
     startup_error: session_runtime.SessionError | None = None
+    deep_artifact: sandbox_artifact.SandboxArtifact | None = None
 
     @property
     def inside(self) -> bool:
@@ -235,7 +246,16 @@ class _DoctorFlowRuntime:
             except session_runtime.SessionError as exc:
                 self.startup_error = exc
                 raise
-        argv = session_runtime.exec_argv(self.container_name, inner, tty=False, env=env)
+        container = self.container_name
+        if self.deep_artifact is not None and self.deep_artifact.image_id is not None:
+            observed = sandbox_artifact.observe(self.project_root, container=container)
+            if (observed.image_id, observed.container_id) != (
+                self.deep_artifact.image_id,
+                self.deep_artifact.container_id,
+            ):
+                raise session_runtime.SessionError("Sandbox artifact changed during deep Doctor")
+            container = self.deep_artifact.container_id
+        argv = session_runtime.exec_argv(container, inner, tty=False, env=env)
         argv[0] = self.docker_exe
         return argv
 
@@ -319,6 +339,7 @@ class DoctorRunResult:
     findings: tuple[DoctorFinding, ...]
     exit_code: int
     health_evidence: bool = True
+    deep_status: doctor_deep.DeepStatus | None = None
 
     @property
     def clean(self) -> bool:
@@ -642,13 +663,62 @@ def run_doctor_result(
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
     _run_flow_and_core_phase(project, flow_runtime, verbose, reporter, report_progress)
 
+    summary = None
     if deep:
-        _run_deep_phase(project, docker_exe, flow_runtime, verbose, reporter)
+        summary = _run_deep_phase(project, docker_exe, flow_runtime, verbose, reporter)
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
         doctor_stamp.record_clean_run(project.project_dir, project_root, deep=deep)
-    return result
+    return _report_deep_currency(project_root, project, result, summary, record_clean)
+
+
+def _report_deep_currency(
+    project_root: Path,
+    project: ProjectAudit | None,
+    result: DoctorRunResult,
+    summary: doctor_deep.DeepAttemptSummary | None,
+    persist: bool,
+) -> DoctorRunResult:
+    """Save completed deep evidence, then report the persisted policy result."""
+    storage_failed = False
+    attempt = None
+    if summary is not None and persist:
+        try:
+            project_dir = (
+                project.project_dir if project else resolve_checkout_project_dir(project_root)
+            )
+        except (FileNotFoundError, OSError):
+            project_dir = None
+        if project_dir is not None:
+            attempt = summary.attempt(version=booley.__version__, clean=result.clean)
+            storage_failed = not doctor_deep.record_deep_attempt(project_dir, attempt)
+    status = observe_deep_status(project_root, unsaved_attempt=attempt if storage_failed else None)
+    if storage_failed:
+        status = replace(status, storage_failed=True)
+    info(status.render())
+    return replace(result, deep_status=status)
+
+
+def observe_deep_status(
+    project_root: Path,
+    *,
+    container: str | None = None,
+    unsaved_attempt: doctor_deep.DeepAttempt | None = None,
+) -> doctor_deep.DeepStatus:
+    """Read and report currency without starting checks or modifying evidence."""
+    state = doctor_deep.DeepState()
+    with contextlib.suppress(FileNotFoundError, OSError):
+        state = doctor_deep.load_deep_state(resolve_checkout_project_dir(project_root))
+    identity = sandbox_artifact.observe_execution(project_root, container=container)
+    return doctor_deep.evaluate_deep_status(
+        state,
+        version=booley.__version__
+        if runtime_context.inside_session_runtime()
+        else identity.booley_version,
+        image_id=identity.image_id,
+        unsaved_attempt=unsaved_attempt,
+    )
 
 
 def _run_project_phase(
@@ -917,19 +987,19 @@ def _run_deep_phase(
     flow_runtime: _DoctorFlowRuntime | None,
     verbose: bool,
     reporter: _Reporter,
-) -> None:
+) -> doctor_deep.DeepAttemptSummary:
     banner("Deep checks")
     if project is None:
         reporter.skip_("deep checks skipped - project config invalid")
-        return
+        return doctor_deep.DeepAttemptSummary(("project-config",))
     assert flow_runtime is not None
-    # First, before the EDA smoke checks: the probe's RUSAGE_CHILDREN reading
-    # is exact only while no bigger child (a real sim/synth run) has been
-    # reaped yet.
-    if reporter.agent_check_enabled("developer authorization probe"):
-        record = _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
-        if record is not None:
-            reporter.record_agent_call(record)
+    tracker = doctor_deep.DeepCheckTracker()
+    before = sandbox_artifact.observe_execution(
+        project.project_root, container=flow_runtime.container_name
+    )
+    flow_runtime.deep_artifact = before
+    version = booley.__version__
+    _track_developer_probe(project, reporter, tracker)
     _run_deep_checks(
         project,
         flow_runtime,
@@ -938,6 +1008,7 @@ def _run_deep_phase(
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        completeness=tracker,
     )
     _run_core_resolve_checks(
         project,
@@ -945,7 +1016,50 @@ def _run_deep_phase(
         reporter.pass_,
         reporter.skip_,
         reporter.fail_,
+        flow_runtime=flow_runtime,
+        completeness=tracker,
     )
+    after = sandbox_artifact.observe_execution(
+        project.project_root, container=flow_runtime.container_name
+    )
+    issues = _deep_identity_reasons(before, after, version)
+    if not reporter.profile.records_health_evidence:
+        tracker.require("agent-checks")
+    return doctor_deep.DeepAttemptSummary(tracker.missing, issues, before.image_id)
+
+
+def _track_developer_probe(
+    project: ProjectAudit,
+    reporter: _Reporter,
+    tracker: doctor_deep.DeepCheckTracker,
+) -> None:
+    """Measure the agent before EDA children can contaminate its RSS observation."""
+    tracker.require("developer-probe")
+    if reporter.agent_check_enabled("developer authorization probe"):
+        record = _run_developer_probe(
+            project, reporter.pass_, reporter.skip_, reporter.fail_, completeness=tracker
+        )
+        if record is not None:
+            reporter.record_agent_call(record)
+
+
+def _deep_identity_reasons(
+    before: sandbox_artifact.SandboxArtifact,
+    after: sandbox_artifact.SandboxArtifact,
+    version: str,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if before.image_id is None or after.image_id is None:
+        reasons.append("image-identity-unavailable")
+    elif (before.image_id, before.container_id) != (after.image_id, after.container_id):
+        reasons.append("sandbox-artifact-drift")
+    if before.booley_version is None or after.booley_version is None:
+        reasons.append("sandbox-version-unavailable")
+    elif before.booley_version != version or after.booley_version != version:
+        reasons.append("booley-version-mismatch")
+    if booley.__version__ != version:
+        reasons.append("booley-version-drift")
+    return tuple(reasons)
 
 
 #: ``.core`` security violations whose verdict depends on the agent's write
@@ -1549,6 +1663,8 @@ def _run_developer_probe(
     _pass: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> _AgentCallRecord | None:
     """ADR 0028 Decision 12: measure the invariant's developer term.
 
@@ -1610,6 +1726,8 @@ def _run_developer_probe(
         f"recorded to {path}"
     )
     _pass("developer backend live authorization check completed successfully")
+    if completeness is not None:
+        completeness.completed("developer-probe", measurement.peak_rss_bytes > 0)
     return record
 
 
@@ -5123,6 +5241,9 @@ def _run_core_resolve_checks(
     _pass: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    flow_runtime: _DoctorFlowRuntime | None = None,
+    completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> None:
     """Deep: resolve each Doctor-selected Target through ``fusesoc``.
 
@@ -5136,6 +5257,10 @@ def _run_core_resolve_checks(
     dependency closure of every selected Target. Unselected vendored Targets
     are not configured merely to produce advisory notes.
     """
+    if flow_runtime is not None:
+        assert completeness is not None
+        _resolve_deep_core_targets(project, flow_runtime, completeness, _pass, _skip, _fail)
+        return
     matrix = _project_target_matrix(project)
     catalog = TargetCatalog.build(project.project_root)
     refs: dict[str, TargetHandle] = {}
@@ -5181,7 +5306,7 @@ def _run_core_resolve_checks(
     )
     for selector, ref in sorted(refs.items()):
         build_key = hashlib.sha256(selector.encode()).hexdigest()[:16]
-        build_root = project.project_root / ".booley_project" / ".runtime" / "doctor" / build_key
+        build_root = project.project_dir / "runtime" / "doctor" / "core-resolve" / build_key
         try:
             fusesoc_registry.resolve_target_handle(
                 ref,
@@ -5198,20 +5323,116 @@ def _run_core_resolve_checks(
             )
 
 
+def _resolve_deep_core_targets(
+    project: ProjectAudit,
+    flow_runtime: _DoctorFlowRuntime,
+    tracker: doctor_deep.DeepCheckTracker,
+    _pass: Check,
+    _skip: Check,
+    _fail: Fail,
+) -> None:
+    """Resolve in the same pinned runtime as the smoke and self-test checks."""
+    selected = _project_target_matrix(project).seed_targets
+    if not selected:
+        return
+    identifiers = {
+        selector: f"core.resolve.{hashlib.sha256(selector.encode()).hexdigest()[:16]}"
+        for selector in selected
+    }
+    for identifier in identifiers.values():
+        tracker.require(identifier)
+    if not flow_runtime.available:
+        _skip(".core resolvability skipped - Sandbox runtime unavailable")
+        return
+    catalog = TargetCatalog.build(project.project_root)
+    refs = {}
+    for selector in selected:
+        try:
+            refs[selector] = catalog.select(selector)
+        except FuseSocError as exc:
+            _report_core_resolve(selector, False, str(exc), _pass, _fail)
+    if not refs:
+        return
+    completed = _execute_core_resolution(project, flow_runtime, refs, _pass, _fail)
+    for selector in completed:
+        tracker.completed(identifiers[selector], True)
+
+
+def _execute_core_resolution(
+    project: ProjectAudit,
+    flow_runtime: _DoctorFlowRuntime,
+    refs: Mapping[str, TargetHandle],
+    _pass: Check,
+    _fail: Fail,
+) -> tuple[str, ...]:
+    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
+    try:
+        command = flow_runtime.command(["python3", "-c", _CORE_RESOLVE_SNIPPET, payload])
+        proc = subprocess.run(
+            command,
+            cwd=project.project_root,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, session_runtime.SessionError) as exc:
+        _fail(f".core resolvability could not complete in the Sandbox: {exc}", "check the Sandbox")
+        return ()
+    return _grade_core_resolution(proc, refs, _pass, _fail)
+
+
+def _grade_core_resolution(
+    proc: subprocess.CompletedProcess[str],
+    refs: Mapping[str, TargetHandle],
+    _pass: Check,
+    _fail: Fail,
+) -> tuple[str, ...]:
+    """Require exactly one bounded verdict for every selected Target."""
+    marker = "[[CORE_RESOLVE_JSON]]"
+    line = next(
+        (line for line in reversed(proc.stdout.splitlines()) if line.startswith(marker)), None
+    )
+    try:
+        if line is None or proc.returncode != 0:
+            raise BoundaryError("missing completed Sandbox resolution verdict")
+        entries = require_list(json.loads(line[len(marker) :]), field="core resolution verdicts")
+        if len(entries) != len(refs):
+            raise BoundaryError("incomplete Target resolution verdicts")
+        seen: set[str] = set()
+        for raw in entries:
+            entry = require_dict(raw, field="core resolution")
+            selector = require_str(entry, "selector")
+            ok = require_bool(entry, "ok")
+            if selector not in refs or selector in seen:
+                raise BoundaryError("invalid Target resolution verdict")
+            seen.add(selector)
+            _report_core_resolve(selector, ok, str(entry.get("err", "")), _pass, _fail)
+        return tuple(sorted(seen))
+    except (ValueError, BoundaryError):
+        _fail(
+            ".core resolvability produced incomplete Sandbox evidence",
+            "check the Sandbox / FuseSoC",
+        )
+        return ()
+
+
 # Container-side resolver: resolve the host-selected Targets in one docker run
 # and emit a machine-readable JSON verdict line the host parses back into checks.
 # Kept as a module constant so the quoting is auditable in one place.
 _CORE_RESOLVE_SNIPPET = (
-    "import json, sys\n"
+    "import json, os, sys\n"
+    "from pathlib import Path\n"
+    "from booley.runtime.project_dir import resolve_project_dir\n"
     "from booley.fusesoc import fusesoc_registry as fr\n"
     "from booley.targets.catalog import TargetCatalog\n"
-    "root = '/work'\n"
+    "root = os.getcwd()\n"
     "catalog = TargetCatalog.build(root)\n"
     "targets = json.loads(sys.argv[1])\n"
     "out = []\n"
     "for target in targets:\n"
     "    selector = target['selector']\n"
-    "    br = '/work/.booley_project/.runtime/doctor/' + target['build_key']\n"
+    "    br = resolve_project_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
     "    try:\n"
     "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
     "        out.append({'selector': selector, 'ok': True})\n"
@@ -5309,14 +5530,18 @@ def _run_deep_checks(
     _warn: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> None:
     """Run the real EDA smoke matrix selected by ``.core`` metadata."""
+    tracker = completeness or doctor_deep.DeepCheckTracker()
     for flow_name in _DEEP_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
             continue
         targets = _doctor_targets(project, flow_name)
         if not targets:
+            tracker.require(f"{flow_name}.doctor-targets")
             _skip(f"{flow_name} deep check skipped - no Doctor Target selected")
             continue
         timeout_s = _deep_timeout_s(project, flow_name)
@@ -5325,7 +5550,9 @@ def _run_deep_checks(
                 f"{flow_name} deep check [{target}]",
                 f"real EDA run; timeout {_format_minutes(timeout_s)}",
             )
-            _run_flow_check(
+            identifier = f"{flow_name}.smoke.{hashlib.sha256(target.encode()).hexdigest()[:16]}"
+            tracker.require(identifier)
+            completed = _run_flow_check(
                 project,
                 flow_name,
                 target=target,
@@ -5338,8 +5565,9 @@ def _run_deep_checks(
                 _skip=_skip,
                 _fail=_fail,
             )
+            tracker.completed(identifier, completed)
     _run_fpga_impl_deep_notice(project, _skip)
-    _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail)
+    _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
 
 
 def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
@@ -5442,22 +5670,27 @@ def _run_selftest_checks(
     _warn: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> None:
     """Prove enabled verification Flows pass good and reject known-bad fixtures.
 
     The project supplies conventional fixtures. Exit 0 is required for the good
     case and graded-design-failure exit 1 for the bad case; absent fixtures WARN.
     """
+    tracker = completeness or doctor_deep.DeepCheckTracker()
     for flow_name in _SELFTEST_FLOWS:
         if not _flow_enabled(project, flow_name):
             continue  # disabled Flow — nothing to prove
         # Backend-agnostic since ADR 0039: the fixture mechanism proves the
         # fail path of the BUILT-IN flow exactly as it did the adapters'
         # (the C910 re-port gate found this check silently skipping builtin).
+        tracker.require(f"{flow_name}.selftest.good")
+        tracker.require(f"{flow_name}.selftest.bad")
         plan = _selftest_plan(project, flow_name, _warn)
         if plan is None:
             continue
-        _run_one_selftest(
+        completed = _run_one_selftest(
             project,
             flow_name,
             plan.good,
@@ -5467,7 +5700,8 @@ def _run_selftest_checks(
             _skip=_skip,
             _fail=_fail,
         )
-        _run_one_selftest(
+        tracker.completed(f"{flow_name}.selftest.good", completed)
+        completed = _run_one_selftest(
             project,
             flow_name,
             plan.bad,
@@ -5477,6 +5711,8 @@ def _run_selftest_checks(
             _skip=_skip,
             _fail=_fail,
         )
+
+        tracker.completed(f"{flow_name}.selftest.bad", completed)
 
 
 def _sandbox_failure_remedy(exc: session_runtime.SessionError) -> str:
@@ -5627,7 +5863,7 @@ def _run_one_selftest(
     _pass: Check,
     _skip: Check,
     _fail: Fail,
-) -> None:
+) -> bool:
     kind = "good" if expect_pass else "bad"
     label = f"{flow_name} self-test {kind} case '{case.display}'"
     prepared = _prepare_selftest_invocation(
@@ -5641,13 +5877,15 @@ def _run_one_selftest(
         _fail=_fail,
     )
     if prepared is None:
-        return
+        return False
     cmd, env, timeout_s = prepared
     _announce_long_check(label, f"real EDA run; timeout {_format_minutes(timeout_s)}")
     result = _execute_selftest(project, cmd, env, timeout_s, label, flow_name, _fail=_fail)
     if result is None:
-        return
+        return False
     _grade_selftest_result(result, label, expect_pass=expect_pass, _pass=_pass, _fail=_fail)
+
+    return True
 
 
 def _flow_enabled(project: ProjectAudit, flow_name: str) -> bool:
@@ -5987,13 +6225,13 @@ def _run_flow_check(
     _warn: Check,
     _skip: Check,
     _fail: Fail,
-) -> None:
+) -> bool:
     label = f"{flow_name} {'dry-run' if dry_run else 'deep check'} [{target}]"
     cmd = _doctor_flow_command(
         project, flow_runtime, flow_name, target, dry_run, label, _skip, _fail
     )
     if cmd is None:
-        return
+        return False
     report_dir = _prepare_flow_report_dir(project, flow_name, target, dry_run)
     result = _run_flow_check_subprocess(
         project,
@@ -6004,7 +6242,7 @@ def _run_flow_check(
         _fail=_fail,
     )
     if result is None:
-        return
+        return False
     _interpret_flow_check_result(
         project,
         flow_name,
@@ -6021,6 +6259,8 @@ def _run_flow_check(
     )
     if flow_name == "synth" and not dry_run:
         _record_synth_memory_calibration(project, target, report_dir, _pass, _warn)
+
+    return not _is_simulate_tb_top_skip(project, flow_name, dry_run, result)
 
 
 def _record_synth_memory_calibration(

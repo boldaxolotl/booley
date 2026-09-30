@@ -798,5 +798,12 @@ whenever the configuration changes. It never blocks work. New problems show up
 in `booley session up`, `booley run`, and the next Flow result. The last result
 is in `.booley_project/runtime/doctor/last.log`.
 
+Plain Doctor and `booley session up` also report whether prior deep validation is
+current or due. Deep evidence has no expiry; automatic change triggers are only
+the Booley version and active immutable Sandbox Image. Project/Target/RTL edits
+leave that evidence intact. Deep due is advisory and never launches deep checks.
+See [Doctor health and deep validation](DOCTOR.md) for qualification, failed and
+cancelled attempts, and image identity handling.
+
 Each Ticket run ends with one `BOOLEY_RUN_RESULT` line of JSON for scripts;
 `booley cheat --board` describes it.
