@@ -191,6 +191,7 @@ def _run_cocotb(
             _execute_returning(stdout, returncode, timed_out),
         ),
         patch("booley.flows.sim.flow.new_attempt_token", return_value=token),
+        flow.context.publication_resources,
     ):
         return flow._run()
 
@@ -507,6 +508,7 @@ class TestCocotbBatching:
                 "booley.flows.sim.flow._get_test_names",
                 return_value=dict(_TESTS),
             ),
+            flow.context.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -524,13 +526,15 @@ class TestCocotbBatching:
             tmp_path,
             extra_args=["--dry-run", "--result-verbosity", "full"],
         )
-        result = flow._run()
+        with flow.context.publication_resources:
+            result = flow._run()
         command = result.detail["work_units"][0]["commands"][0]["argv"]
         assert "--result-verbosity full" in command[-1]
 
     def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run", "--trace"])
-        result = flow._run()
+        with flow.context.publication_resources:
+            result = flow._run()
         command = result.detail["work_units"][0]["commands"][0]["argv"]
         assert "--expected-trace-scope counter" in command[-1]
 
@@ -561,6 +565,7 @@ class TestCocotbBatching:
                 "booley.flows.sim.flow._get_test_names",
                 return_value=dict(_TESTS),
             ),
+            flow.context.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -605,6 +610,7 @@ class TestCocotbBatching:
                 "booley.flows.sim.flow._get_test_skips",
                 return_value={"ccfg": ["test_fail_assert"]},
             ),
+            flow.context.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -627,7 +633,8 @@ class TestCocotbSelectRejection:
             _TESTS["ccfg"],
             select="+test_id={index}",
         )
-        result = flow._run()
+        with flow.context.publication_resources:
+            result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "COCOTB_TEST_FILTER" in result.report_text
         assert "remove the `select` key" in result.report_text
@@ -644,6 +651,7 @@ class TestCocotbSelectRejection:
                     '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',
                 ),
             ),
+            flow.context.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -684,6 +692,7 @@ class TestCocotbDryRun:
                 "booley.fusesoc.fusesoc_registry._resolve_target",
                 side_effect=AssertionError("dry-run must not resolve"),
             ),
+            flow.context.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -700,7 +709,10 @@ class TestCocotbDryRun:
     def test_dry_run_sv_target_unchanged(self, tmp_path: Path):
         """G6 guard: a non-cocotb Target's dry-run command carries no cocotb."""
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with patch("booley.flows.sim.flow._get_test_names", return_value={}):
+        with (
+            patch("booley.flows.sim.flow._get_test_names", return_value={}),
+            flow.context.publication_resources,
+        ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         script = result.detail["work_units"][0]["commands"][0]["argv"][-1]
@@ -797,9 +809,12 @@ class TestCocotbBuildFailureShape:
 def test_run_cmd_forwards_the_sim_time_grace(tmp_path: Path):
     """F-25: the frozen-clock watchdog knob crosses into the sandbox."""
     flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
-    with patch(
-        "booley.flows.sim.execution.engine.resolve_sim_time_grace_s",
-        return_value=42.0,
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.resolve_sim_time_grace_s",
+            return_value=42.0,
+        ),
+        flow.context.publication_resources,
     ):
         result = flow._run()
     command = result.detail["work_units"][0]["commands"][0]["argv"]

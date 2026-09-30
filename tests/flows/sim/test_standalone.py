@@ -165,7 +165,8 @@ class TestStandaloneSweep:
         flow._record_eda_tool("sim_dut", "icarus")
         commands = _stub_probes(monkeypatch, flow)
 
-        outcome = flow._run_standalone_check(["sim_dut"])
+        with flow.context.publication_resources:
+            outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.passed
         assert flow.state.criteria["elaborate_standalone"].met is True
@@ -297,7 +298,8 @@ class TestStandaloneSweep:
             },
         )
 
-        outcome = flow._run_standalone_check(["sim_dut"])
+        with flow.context.publication_resources:
+            outcome = flow._run_standalone_check(["sim_dut"])
 
         assert not outcome.passed
         assert not outcome.eda_tool_failed
@@ -330,7 +332,8 @@ class TestStandaloneSweep:
         flow._record_eda_tool("sim_dut", "icarus")
         commands = _stub_probes(monkeypatch, flow)
 
-        outcome = flow._run_standalone_check(["sim_dut"])
+        with flow.context.publication_resources:
+            outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.passed
         assert len(commands) == 1
@@ -365,7 +368,8 @@ class TestStandaloneSweep:
         flow._record_eda_tool("sim_dut", "icarus")
         _stub_probes(monkeypatch, flow, {"alu": probe} if probe else None)
 
-        outcome = flow._run_standalone_check(["sim_dut"])
+        with flow.context.publication_resources:
+            outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.eda_tool_failed
         assert message in "\n".join(outcome.lines)
@@ -386,7 +390,8 @@ class TestStandaloneSweep:
             {"alu": SubprocessResult(returncode=1, stderr="rtl/alu.sv:1: syntax error\n")},
         )
 
-        outcome = flow._run_standalone_check(["sim_dut"])
+        with flow.context.publication_resources:
+            outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.eda_tool_failed
         assert outcome.detail["unparsed"][0]["module"] == "alu"
@@ -423,7 +428,8 @@ class TestStandaloneSweep:
             },
         )
 
-        outcome = flow._run_standalone_check(["sim_dut"])
+        with flow.context.publication_resources:
+            outcome = flow._run_standalone_check(["sim_dut"])
 
         assert [item["module"] for item in outcome.detail["failures"]] == ["broken"]
         assert [item["module"] for item in outcome.detail["unparsed"]] == ["gapped"]
