@@ -51,6 +51,7 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.core.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
+from booley.flows.sim.coverage_provisional import ProvisionalCandidate
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, rfc3339_from_datetime
 
 from .board_layout import waiver_candidates_lock_path, waiver_candidates_path
@@ -249,6 +250,18 @@ class WaiverCandidate:
     @property
     def key(self) -> CandidateKey:
         return (self.binding.target_identity, self.proposal.point_id)
+
+    def as_provisional(self) -> ProvisionalCandidate:
+        """Project the binding used by both recording and review evaluation."""
+        return ProvisionalCandidate(
+            candidate_id=self.candidate_id,
+            campaign_id=self.binding.campaign_id,
+            target_identity=self.binding.target_identity,
+            point_id=self.proposal.point_id,
+            source=self.proposal.source,
+            source_sha256=self.proposal.source_sha256,
+            reason=self.proposal.reason,
+        )
 
     def to_json(self) -> dict[str, Any]:
         proposal = self.proposal

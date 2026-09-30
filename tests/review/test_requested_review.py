@@ -1406,12 +1406,12 @@ def _finish_interactive_fixture(root, tio, interrupt, monkeypatch):
     _assert_closed_done(tio, "demo")
 
 
-def _approval_with_rejection(tio, ctx, _decisions, *, merge):
+def _approval_with_rejection(tio, ctx, _decisions, *, merge, staging=None):
     """Exercise the public approval lifecycle with an approval-owned input change."""
     from booley.ticket_board import waiver_candidates as store
 
     store.record_rejections(
-        tio.tickets_dir,
+        staging / "tickets" if staging is not None else tio.tickets_dir,
         ctx.slug,
         [
             store.Rejection(
@@ -1427,6 +1427,17 @@ def _interrupt_public_approval(root, tio, monkeypatch, interrupt):
     from booley.ticket_board import review_lifecycle as lifecycle
 
     if not interrupt:
+        return None
+    if interrupt == "capture":
+        capture = lifecycle._record_approval_capture
+
+        def interrupted(*_args, **_kwargs):
+            raise OSError("interrupted before approval capture")
+
+        monkeypatch.setattr(lifecycle, "_record_approval_capture", interrupted)
+        with pytest.raises(OSError, match="before approval capture"):
+            lifecycle.approve_review_command(root, "demo")
+        monkeypatch.setattr(lifecycle, "_record_approval_capture", capture)
         return None
     if interrupt == "completion":
         complete = operations.op_complete
@@ -1448,7 +1459,7 @@ def _interrupt_public_approval(root, tio, monkeypatch, interrupt):
 
 
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
-@pytest.mark.parametrize("interrupt", [False, True, "completion"])
+@pytest.mark.parametrize("interrupt", [False, True, "completion", "capture"])
 @pytest.mark.parametrize("waiver_writes", [False, True])
 @pytest.mark.timeout(180)
 def test_board_approve_freezes_selected_package_without_agent(

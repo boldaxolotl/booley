@@ -9,6 +9,7 @@
 # sandbox Dockerfile before the wheel cache boundary.
 !pyproject.toml
 !src/booley/data/docker/export_project_dependencies.py
+!src/booley/data/docker/base_package_inventory.py
 !src/booley/data/edalize/verible.py
 !.github/scripts/validate_installed_artifact.py
 

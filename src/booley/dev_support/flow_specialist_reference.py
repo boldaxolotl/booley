@@ -299,6 +299,9 @@ def _render_coverage_analyst_reference() -> list[str]:
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "
         "In Ticket Mode, Booley records its screened Waiver Candidates for a human "
         "to accept or reject at Ticket review. "
+        "When every mandatory Criterion is met strictly or by a verified Provisional "
+        "Coverage Verdict, submit your run report and finish for human review without "
+        "blocking or marking strict coverage met. "
         "Verified Target sources are optional; stale sources give report-only analysis.",
     ]
 

@@ -504,3 +504,111 @@ def test_runtime_authorities_reject_ranges_and_duplicates() -> None:
 
     assert "expected one exact version" in _errors(ranged, "Cocotb authority")
     assert "expected one exact version" in _errors(duplicated, "Node authority")
+
+
+# --- #829 runtime-base package inventory --------------------------------------
+
+_INVENTORY_LABEL_LINE = (
+    "io.booley.runtime-base.package-inventory=/usr/local/share/booley/base-package-inventory.json"
+)
+
+
+def test_base_must_label_its_package_inventory() -> None:
+    sources = replace(
+        _sources(),
+        base_dockerfile=_sources().base_dockerfile.replace(_INVENTORY_LABEL_LINE, ""),
+    )
+
+    assert "must label" in _errors(sources, "package inventory")
+
+
+@pytest.mark.parametrize(
+    "field", ["candidate_dockerfile", "overlay_dockerfile", "riscv_dockerfile"]
+)
+def test_derived_recipes_must_not_relabel_the_inventory(field: str) -> None:
+    sources = _sources()
+    sources = replace(
+        sources, **{field: getattr(sources, field) + f"\nLABEL {_INVENTORY_LABEL_LINE}\n"}
+    )
+
+    assert "must inherit" in _errors(sources, "package inventory")
+
+
+def test_base_inventory_must_be_verified_before_promotion() -> None:
+    sources = _sources()
+    steps = sources.base_workflow["jobs"]["build-publish-smoke"]["steps"]
+    names = [step.get("name") for step in steps]
+    export = names.index("Export and verify exact base package inventory")
+    promote = names.index("Promote verified base to main consumption tag")
+    steps[export], steps[promote] = steps[promote], steps[export]
+
+    assert "before promotion" in _errors(sources, "stable-base publish")
+
+
+def test_base_inventory_must_consume_the_build_digest_and_verify_state() -> None:
+    sources = _sources()
+    export = _step(
+        sources,
+        "base_workflow",
+        "docker-base-publish.yml",
+        "build-publish-smoke",
+        "Export and verify exact base package inventory",
+    )
+    export["env"]["BASE_IMAGE"] = "ghcr.io/acme/base:main"
+    export["run"] = export["run"].replace("--verify-current-state", "")
+
+    errors = _errors(sources, "stable-base publish")
+    assert "build digest" in errors
+    assert "current state" in errors
+
+
+def test_test_lane_standard_inventory_must_precede_evidence_upload() -> None:
+    sources = _sources()
+    steps = sources.test_workflow["jobs"]["bwave-smoke"]["steps"]
+    names = [step.get("name") for step in steps]
+    standard = steps.pop(names.index("Export standard package inventory"))
+    steps.append(standard)
+
+    assert "before evidence upload" in _errors(sources, "test package inventory")
+
+
+def test_test_lane_local_base_must_verify_current_state() -> None:
+    sources = _sources()
+    local = _step(
+        sources,
+        "test_workflow",
+        "test.yml",
+        "bwave-smoke",
+        "Verify and export local runtime-base package inventory",
+    )
+    local["run"] = local["run"].replace("--verify-current-state", "")
+
+    assert "must verify" in _errors(sources, "test package inventory")
+
+
+def test_release_standard_inventory_must_use_selected_base_digest() -> None:
+    sources = _sources()
+    step = _step(
+        sources,
+        "release_workflow",
+        "docker-publish.yml",
+        "standard-image-contract",
+        "Export standard and runtime-base package inventories",
+    )
+    step["env"]["RUNTIME_BASE"] = "ghcr.io/acme/base:main"
+
+    assert "selected base digest" in _errors(sources, "release package inventory")
+
+
+def test_release_riscv_inventory_must_compare_with_standard() -> None:
+    sources = _sources()
+    step = _step(
+        sources,
+        "release_workflow",
+        "docker-publish.yml",
+        "riscv-image-contract",
+        "Validate exact RISC-V candidate",
+    )
+    step["run"] = step["run"].replace("--expected-inventory", "--no-comparison")
+
+    assert "riscv-image-contract" in _errors(sources, "release package inventory")

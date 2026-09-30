@@ -169,3 +169,30 @@ def test_strict_reevaluation_replaces_previously_applied_waivers(tmp_path) -> No
 
     assert evaluated.evaluation["status"] == "pass"
     assert evaluated.evaluation["diagnostics"] == ()
+
+
+@pytest.mark.parametrize("link_kind", ["directory", "document", "proof"])
+def test_prediction_rejects_symlinks_without_changing_their_targets(tmp_path, link_kind):
+    roots = _roots(tmp_path)
+    document = _write_valid_approval(roots)
+    directory = roots.project_data_repository / _DIRECTORY
+    (directory / "proofs").mkdir()
+    (directory / "proofs" / "existing.md").write_bytes(b"Existing proof.\n")
+    linked = {"directory": directory, "document": document, "proof": directory / "proofs"}[
+        link_kind
+    ]
+    external = tmp_path / "external"
+    linked.rename(external)
+    try:
+        linked.symlink_to(external, target_is_directory=external.is_dir())
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    files = list(external.rglob("*")) if external.is_dir() else [external]
+    before = {path: path.read_bytes() for path in files if path.is_file()}
+
+    with pytest.raises(WaiverPlanError, match="symlink"):
+        load_promoted_waiver_set(
+            _plan(point_id=_other_line_point()), roots, tmp_path / "overlay", (_TARGET,)
+        )
+
+    assert {path: path.read_bytes() for path in before} == before

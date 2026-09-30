@@ -513,9 +513,7 @@ def validate_journal(
     stored_promotion = _validated_promotion(journal, promotion_digest)
     if journal.get("schema") != 5:
         raise BoundaryError("acceptance journal schema must be 5")
-    transaction = require_str(journal, "transaction")
-    if not re.fullmatch(r"[0-9a-f]{32}", transaction):
-        raise BoundaryError("acceptance journal transaction is invalid")
+    transaction = _validated_transaction(journal)
     state = _validated_state(journal)
     actual_cleanup = _validated_policy(journal.get("policy"), cleanup=cleanup)
     stored_removals = _validated_removals(journal, removal_targets)
@@ -547,6 +545,13 @@ def validate_journal(
         ),
         promotion_digest=stored_promotion,
     )
+
+
+def _validated_transaction(journal: dict[str, Any]) -> str:
+    transaction = require_str(journal, "transaction")
+    if not re.fullmatch(r"[0-9a-f]{32}", transaction):
+        raise BoundaryError("acceptance journal transaction is invalid")
+    return transaction
 
 
 def _validated_promotion(journal: dict[str, Any], expected: str | None) -> str | None:

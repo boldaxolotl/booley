@@ -28,7 +28,6 @@ from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.sim.coverage_policy import _json_value
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_provisional import (
-    ProvisionalCandidate,
     ProvisionalCoverageError,
     ProvisionalVerdict,
     criterion_from_evaluation,
@@ -108,18 +107,6 @@ def _bound_candidates(
     ]
 
 
-def _as_provisional(item: store.WaiverCandidate) -> ProvisionalCandidate:
-    return ProvisionalCandidate(
-        candidate_id=item.candidate_id,
-        campaign_id=item.binding.campaign_id,
-        target_identity=item.binding.target_identity,
-        point_id=item.proposal.point_id,
-        source=item.proposal.source,
-        source_sha256=item.proposal.source_sha256,
-        reason=item.proposal.reason,
-    )
-
-
 @dataclass(frozen=True)
 class _Judgement:
     """One Criterion's provisional evaluation over its bound candidates."""
@@ -150,14 +137,7 @@ def _judge_criterion(
     if _plain(campaign.evaluation) != _plain(detail.get("evaluation")):
         raise ProvisionalCoverageError("Campaign evaluation disagrees with acceptance evidence")
     bound = _bound_candidates(record, resolved, str(reference["path"]))
-    if "criterion_metric" in detail:
-        # An atomic Criterion projects one metric; other metrics' candidates are not its concern.
-        metrics = {point.id: point.identity.metric for point in campaign.points}
-        bound = [
-            item
-            for item in bound
-            if metrics.get(item.proposal.point_id) == detail["criterion_metric"]
-        ]
+    bound = _for_metric(bound, campaign, detail.get("criterion_metric"))
     if not bound:
         return None
     sources = {item.proposal.source for item in bound}
@@ -169,7 +149,7 @@ def _judge_criterion(
     verdict = evaluate_provisional_coverage(
         campaign,
         criterion_from_evaluation(campaign),
-        [_as_provisional(item) for item in bound],
+        [item.as_provisional() for item in bound],
         current_sources=current,
     )
     met, _ = project_coverage_criterion(
@@ -185,6 +165,14 @@ def _judge_criterion(
         tuple(bound),
         detail.get("criterion_metric"),
     )
+
+
+def _for_metric(bound, campaign, metric) -> list[store.WaiverCandidate]:
+    """An atomic Criterion considers only candidates for its own metric."""
+    if metric is None:
+        return bound
+    metrics = {point.id: point.identity.metric for point in campaign.points}
+    return [item for item in bound if metrics.get(item.proposal.point_id) == metric]
 
 
 def _judgements(

@@ -2106,8 +2106,10 @@ Campaign. An unmatched or otherwise invalid point approval blocks evaluation for
 that Target and none of that Target's approvals apply. Approvals naming a known
 Target outside the current invocation are not checked against points by that run.
 The immutable digest binds bytes, configuration, sources, approvals, proof, and
-provenance. Ungated collection does not load this directory. Analyst Waiver
-Candidates have no approval authority of their own and cannot be copied here by
-hand; they become approval files only through `booley board approve
---accept-waivers`, which writes them here in the Ticket's merge (see
-[Coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review)).
+provenance. Every `--coverage` run loads this directory, with or without a Coverage
+Criterion. Without one, an invalid set, or an unmatched approval in a completely
+collected Campaign, still blocks evaluation and exits 2. `--no-waivers` skips
+loading. Analyst Waiver Candidates have no approval authority of their own and
+cannot be copied here by hand; they become approval files only through
+`booley board approve --accept-waivers`, which writes them here in the Ticket's
+merge (see [Coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review)).

@@ -191,6 +191,7 @@ def apply_promotion_plan(plan: WaiverPromotionPlan, anchor_root: Path) -> tuple[
     :class:`WaiverPromotionError` when the existing directory cannot take them.
     """
     approval_dir = anchor_root / plan.directory
+    _reject_symlinks(anchor_root, approval_dir)
     written: list[str] = []
     for source, items in sorted(_by_source(plan).items()):
         promotions = [build_promotion(item, plan.stamps) for item in items]
@@ -214,6 +215,19 @@ def apply_promotion_plan(plan: WaiverPromotionPlan, anchor_root: Path) -> tuple[
     return tuple(written)
 
 
+def _reject_symlinks(anchor_root: Path, approval_dir: Path) -> None:
+    """Never traverse writable links while predicting or promoting approvals."""
+    for path in (approval_dir, *approval_dir.parents):
+        if path.is_symlink():
+            raise WaiverPlanError(f"approval directory contains a symlink: {path}")
+        if path == anchor_root:
+            break
+    if approval_dir.is_dir():
+        for path in approval_dir.rglob("*"):
+            if path.is_symlink():
+                raise WaiverPlanError(f"approval directory contains a symlink: {path}")
+
+
 def _named_sources(approval_dir: Path) -> set[str]:
     """Every RTL source an approval document in the directory names."""
     sources: set[str] = set()
@@ -233,8 +247,9 @@ def _overlay_roots(
     """Copy the approval directory (and, for an RTL anchor, its sources) to *overlay*."""
     anchor_root = Path(getattr(roots, plan.anchor))
     source_dir = anchor_root / plan.directory
+    _reject_symlinks(anchor_root, source_dir)
     if source_dir.is_dir():
-        shutil.copytree(source_dir, overlay / plan.directory, symlinks=True)
+        shutil.copytree(source_dir, overlay / plan.directory, symlinks=False)
     if plan.anchor == "project_data_repository":
         return replace(roots, project_data_repository=overlay)
     for source in _named_sources(overlay / plan.directory) | {i.source for i in plan.candidates}:

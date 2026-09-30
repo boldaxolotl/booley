@@ -36,12 +36,14 @@ def _ticket(
     """A Ticket branch adding rtl/counter.sv (plus *extra* files) onto main."""
     root = tmp_path / "rtl"
     base = _repository(root)
+    _git(root, "config", "core.autocrlf", "false")
+    _git(root, "config", "core.eol", "lf")
     (root / ".booley_project").mkdir()
     _git(root, "switch", "-c", "change-target")
     files = {"rtl/counter.sv": "module counter; endmodule\n", **(extra or {})}
     for relative, content in files.items():
         (root / relative).parent.mkdir(parents=True, exist_ok=True)
-        (root / relative).write_text(content, encoding="utf-8")
+        (root / relative).write_bytes(content.encode("utf-8"))
     _git(root, "add", *files)
     _git(root, "commit", "-m", "implement change-target")
     head = _git(root, "rev-parse", "HEAD")

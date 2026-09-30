@@ -24,7 +24,6 @@ from booley.flows.sim.coverage_campaign_store import (
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_provisional import (
-    ProvisionalCandidate,
     ProvisionalCoverageError,
     criterion_from_evaluation,
     evaluate_provisional_coverage,
@@ -108,17 +107,7 @@ def _provisional_block(
 ) -> dict[str, object]:
     """Strict and provisional verdicts over every candidate recorded for this Campaign."""
     candidates = [
-        ProvisionalCandidate(
-            candidate_id=item.candidate_id,
-            campaign_id=item.binding.campaign_id,
-            target_identity=item.binding.target_identity,
-            point_id=item.proposal.point_id,
-            source=item.proposal.source,
-            source_sha256=item.proposal.source_sha256,
-            reason=item.proposal.reason,
-        )
-        for item in record.candidates.values()
-        if item.binding == binding
+        item.as_provisional() for item in record.candidates.values() if item.binding == binding
     ]
     strict = str(campaign.evaluation.get("status"))
     if strict not in {"pass", "fail"}:

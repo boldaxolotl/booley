@@ -994,10 +994,11 @@ Execution is sorted and sequential.
 
 `run_coverage_target(plan, execution, progress)` collects through
 `SimulationExecutionPort`, assembles and validates the canonical Campaign,
-loads approved waivers only when gated, evaluates, and publishes in order:
+loads approved waivers unless `--no-waivers` is given, evaluates, and publishes in order:
 Campaign, Simulation projection, Criterion evidence, saved Criteria state,
-terminal progress. Source/Target drift is rejected. Ungated evaluation remains
-`not_requested`, including incompatible input; collection errors still exit 2.
+terminal progress. Source/Target drift is rejected. Ungated evaluation is
+`not_requested`, including incompatible input, unless the Approved Waiver Set
+fails to load or match, which blocks it (exit 2); collection errors still exit 2.
 Simulation failures exit 1. A valid threshold miss exits 0; the Criterion
 records it. Blocking evaluation, collector, infrastructure, or persistence
 errors take precedence with exit 2.

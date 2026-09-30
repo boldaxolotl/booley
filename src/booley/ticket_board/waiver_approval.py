@@ -13,7 +13,9 @@ For a Ticket that reached review on a Provisional Coverage Verdict, approval:
    unchanged Ticket heads, and the Acceptance Journal commits the plan in the
    merge candidate, so the waivers reach the destination with their RTL.
 
-A retry after a crash finds the plan and resumes from it with the same stamps.
+A retry before frozen acceptance requires the same explicit Human decisions,
+re-derives the candidates, and resumes with the same stamps. A plan alone is
+never approval authority.
 """
 
 from __future__ import annotations
@@ -343,16 +345,39 @@ def _resume(
     inputs: _ApprovalInputs, plan: WaiverPromotionPlan, decisions: WaiverDecisions
 ) -> None:
     """Finish an approval interrupted after its plan became durable."""
-    if decisions.given and decisions.accepted != set(plan.waiver_ids):
+    if not decisions.given:
+        raise WaiverDecisionError("retry unfinished approval with explicit --accept-waivers")
+    if decisions.accepted != set(plan.waiver_ids) or decisions.rejected:
         raise WaiverDecisionError(
             "waivers were already approved as "
-            f"{', '.join(plan.waiver_ids)}; retry `board approve` without new decisions"
+            f"{', '.join(plan.waiver_ids)}; repeat those explicit --accept-waivers decisions"
         )
+    _validate_resumed_plan(inputs, plan, decisions)
     state = DevelopmentState.load(inputs.state_path)
     if _already_published(state, plan):
         return
     changes = _strict_changes(inputs, state, plan)
     _publish(inputs, state, changes, plan.sha256())
+
+
+def _validate_resumed_plan(
+    inputs: _ApprovalInputs, plan: WaiverPromotionPlan, decisions: WaiverDecisions
+) -> None:
+    """Re-derive a Sandbox-writable plan from the reviewed state and current sources."""
+    raw = inputs.inspection.get("state", {}).get("criteria")
+    if not isinstance(raw, Mapping):
+        raise WaiverDecisionError("reviewed Criteria are required to retry waiver approval")
+    criteria = {key: CriterionEntry.from_dict(value) for key, value in raw.items()}
+    views, _ = describe_waiver_candidates(criteria, inputs.context)
+    _validate_decisions(decisions, views)
+    derived = _build_plan(inputs, views, decisions)
+    if (
+        derived.candidates != plan.candidates
+        or derived.config != plan.config
+        or derived.stamps.approved_by != plan.stamps.approved_by
+        or derived.stamps.approval_ref != plan.stamps.approval_ref
+    ):
+        raise WaiverDecisionError("waiver promotion plan disagrees with the reviewed candidates")
 
 
 def apply_waiver_decisions(
@@ -377,6 +402,7 @@ def apply_waiver_decisions(
         plan = _build_plan(inputs, views, decisions)
         changes = _strict_changes(inputs, state, plan)
     except (WaiverPlanError, WaiverPromotionError, CoverageWaiverValidationError) as exc:
+        store.record_rejections(inputs.context.tickets_dir, inputs.slug, rejections)
         raise WaiverDecisionError(f"accepted waivers cannot be promoted: {exc}") from exc
     unmet = _unmet_mandatory(state)
     store.record_rejections(inputs.context.tickets_dir, inputs.slug, rejections)

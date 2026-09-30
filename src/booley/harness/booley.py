@@ -595,6 +595,20 @@ def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
     approve_p.add_argument("slug")
     approve_p.add_argument("--no-merge", action="store_true", help="Skip configured merge")
     approve_p.add_argument("--no-cleanup", action="store_true", help="Skip configured cleanup")
+    _add_waiver_approval_options(approve_p)
+
+    validate_p = board_sub.add_parser(
+        "validate",
+        help="Run ticket-bound validation (agent use depends on child command)",
+        parents=[root_opt],
+        description="Run a validation command in the ticket's worktree and record evidence through participating Booley endpoints. Agent use depends on the supplied command.",
+    )
+    validate_p.add_argument("slug")
+    validate_p.add_argument("endpoint_command", nargs=argparse.REMAINDER)
+
+
+def _add_waiver_approval_options(approve_p) -> None:
+    """Register explicit Human decisions for provisionally met coverage."""
     approve_p.add_argument(
         "--accept-waivers",
         action="append",
@@ -614,15 +628,6 @@ def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
         default=None,
         help="Override approval_ref for promoted waivers (default ticket:<slug>@<capture>)",
     )
-
-    validate_p = board_sub.add_parser(
-        "validate",
-        help="Run ticket-bound validation (agent use depends on child command)",
-        parents=[root_opt],
-        description="Run a validation command in the ticket's worktree and record evidence through participating Booley endpoints. Agent use depends on the supplied command.",
-    )
-    validate_p.add_argument("slug")
-    validate_p.add_argument("endpoint_command", nargs=argparse.REMAINDER)
 
 
 def _add_legacy_board_review_subparsers(board_sub, root_opt) -> None:

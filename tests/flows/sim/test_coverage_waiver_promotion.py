@@ -166,7 +166,7 @@ def test_append_keeps_existing_bytes_verbatim_and_loads(
     roots = _roots(tmp_path)
     waiver_file = _write_valid_approval(roots)
     original = b"# hand-written comment kept as is\n" + waiver_file.read_bytes()
-    original = original if trailing_newline else original.rstrip(b"\n")
+    original = original if trailing_newline else original.rstrip(b"\r\n")
     candidate = _candidate(point_id=_OTHER_POINT_ID, reason="excluded")
     record = build_promotion(candidate, _STAMPS).record
 

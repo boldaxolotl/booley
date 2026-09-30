@@ -420,6 +420,32 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
     }
 
 
+@pytest.mark.parametrize(
+    ("path", "stable_base"),
+    [
+        # #829: the base inventory helper's bytes are a base compatibility input.
+        ("src/booley/data/docker/base_package_inventory.py", True),
+        # The host exporter and the contract gate every image lane but not the base.
+        (".github/scripts/image_package_inventory.py", False),
+        (".github/contracts/session-runtime.toml", False),
+    ],
+)
+def test_package_inventory_inputs_select_their_image_gates(
+    tmp_path: Path, path: str, stable_base: bool
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "package inventory input")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["stable_base"] == str(stable_base).lower()
+    assert outputs["build_stable_base"] == str(stable_base).lower()
+    assert outputs["standard_image"] == "true"
+    assert outputs["riscv_image"] == "true"
+    assert "bwave-smoke" in _required(outputs)
+
+
 def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, "docs/architecture.md")

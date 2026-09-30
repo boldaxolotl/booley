@@ -594,7 +594,9 @@ def _selected_approval_context(tio: TicketIO, slug: str) -> prep.ReviewPrepConte
         ctx = _selected_context(tio, slug)
     except StaleAcceptanceError as exc:
         raise ReviewEntryError(format_stale_acceptance(slug, exc.drift, status="review")) from exc
-    _require_selected_package(tio, ctx, _approval_capture(ctx))
+    from .waiver_approval_transaction import retry_capture
+
+    _require_selected_package(tio, ctx, _approval_capture(ctx) or retry_capture(ctx))
     return ctx
 
 
@@ -629,6 +631,7 @@ def _apply_waiver_decisions(
     decisions: WaiverDecisions,
     *,
     merge: bool,
+    staging: Path | None = None,
 ) -> str | None:
     """Apply decisions for a provisional review; return the post-approval capture."""
     from .provisional_handoff import read_provisional_marker
@@ -646,8 +649,48 @@ def _apply_waiver_decisions(
         return None
     assert ctx.inspection is not None
     inputs = approval_inputs(tio, ctx.slug, ctx.inspection, ctx.worktree)
+    if staging is not None:
+        inputs = replace(
+            inputs,
+            log_dir=staging / "log",
+            state_path=staging / "log" / ".runtime" / "booley_state.json",
+            context=replace(inputs.context, tickets_dir=staging / "tickets"),
+        )
     apply_waiver_decisions(inputs, decisions, merge=merge)
-    return prep._source_fingerprint(ctx)
+    return prep._source_fingerprint(ctx) if staging is None else None
+
+
+def _publish_selected_approval(
+    tio: TicketIO, ctx: prep.ReviewPrepContext, decisions: WaiverDecisions, *, merge: bool
+) -> None:
+    """Recover decision writes before freezing the selected review's acceptance."""
+    from .waiver_approval import WaiverDecisionError
+    from .waiver_approval_transaction import apply_transaction, raise_transaction_error
+
+    if decisions.accepted and not merge:
+        raise WaiverDecisionError("accepting Waiver Candidates requires merge (drop --no-merge)")
+    live_capture = apply_transaction(
+        ctx,
+        decisions,
+        lambda staging: _apply_waiver_decisions(tio, ctx, decisions, merge=merge, staging=staging),
+    )
+    _record_approval_capture(ctx, live_capture)
+    raise_transaction_error(ctx)
+    _acceptance_ready(tio, ctx)
+    _require_selected_package(tio, ctx, live_capture)
+    assert ctx.inspection is not None
+    operation = {
+        "pid": os.getpid(),
+        "phase": "accepting",
+        "action": "approve",
+        "reason": ctx.inspection["reason"],
+        "entry": ctx.inspection,
+        "source_sha": ctx.inspection["capture_sha"],
+        "live_source_sha": live_capture or ctx.inspection["capture_sha"],
+        "accepted_at": utc_now_rfc3339(),
+    }
+    _write(operation_path(ctx.log_dir), operation)
+    _commit(tio, ctx, operation)
 
 
 def _approve_review_ticket(
@@ -683,24 +726,9 @@ def _approve_review_ticket(
         if selected is not None or accepted.kind != "accepted":
             ctx = _selected_approval_context(tio, slug)
         if accepted.kind == "unavailable":
-            live_capture = _apply_waiver_decisions(
+            _publish_selected_approval(
                 tio, ctx, decisions or WaiverDecisions(), merge=completion[1].merge
             )
-            _record_approval_capture(ctx, live_capture)
-            _acceptance_ready(tio, ctx)
-            _require_selected_package(tio, ctx, live_capture)
-            operation = {
-                "pid": os.getpid(),
-                "phase": "accepting",
-                "action": "approve",
-                "reason": ctx.inspection["reason"],
-                "entry": ctx.inspection,
-                "source_sha": ctx.inspection["capture_sha"],
-                "live_source_sha": live_capture or ctx.inspection["capture_sha"],
-                "accepted_at": utc_now_rfc3339(),
-            }
-            _write(operation_path(ctx.log_dir), operation)
-            _commit(tio, ctx, operation)
     return op_complete(
         tio,
         slug,

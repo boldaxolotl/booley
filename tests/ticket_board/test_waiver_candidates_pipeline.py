@@ -10,8 +10,11 @@ Waiver Set then passes the persisted Campaign strictly.
 
 from __future__ import annotations
 
+import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +27,7 @@ from booley.specialists.coverage_candidate_recording import (
     TicketCandidateContext,
     record_ticket_candidates,
 )
+from booley.ticket_board import review_preparation as prep
 from booley.ticket_board import waiver_approval as approval
 from booley.ticket_board.acceptance_journal import (
     AcceptanceOutcome,
@@ -32,6 +36,7 @@ from booley.ticket_board.acceptance_journal import (
 )
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
+from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.provisional_coverage import (
     describe_waiver_candidates,
     evaluate_ticket_provisional_coverage,
@@ -41,7 +46,9 @@ from booley.ticket_board.waiver_approval import (
     WaiverDecisions,
     apply_waiver_decisions,
     promotion_plan_for_completion,
+    read_promotion_plan,
 )
+from booley.ticket_board.waiver_approval_transaction import apply_transaction
 from tests.ticket_board.test_completion import _contract
 from tests.ticket_board.test_provisional_coverage import (
     _line_reference,
@@ -63,7 +70,11 @@ def _commit_project(root: Path) -> str:
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "user.email", "test@example.invalid")
-    (root / ".git" / "info" / "exclude").write_text("logs/\ntickets/\nstate.json\n.runtime/\n")
+    _git(root, "config", "core.autocrlf", "false")
+    _git(root, "config", "core.eol", "lf")
+    (root / ".git" / "info" / "exclude").write_text(
+        "logs/\ntickets/\nstate.json\n.runtime/\n.booley_project/tickets/\n"
+    )
     (root / ".booley_project" / "booley.toml").write_text(
         '[coverage.waivers]\nanchor = "rtl_repository"\ndirectory = "coverage-waivers"\n'
     )
@@ -112,46 +123,94 @@ def _record_analyst_candidate(state_path: Path, context) -> None:
 
 @pytest.fixture
 def campaign_ticket(ticket):  # noqa: F811 — wraps the imported fixture
-    return ticket
+    state_path, context = ticket
+    runtime_state = context.log_dir / ".runtime" / "booley_state.json"
+    runtime_state.parent.mkdir(parents=True, exist_ok=True)
+    runtime_state.write_bytes(state_path.read_bytes())
+    return runtime_state, context
 
 
 def test_candidate_to_approved_waiver_on_the_destination(
     campaign_ticket, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state_path, context = campaign_ticket
-    root = context.worktree
-    base = _commit_project(root)
+    context = replace(context, tickets_dir=tickets_dir_from_project_root(context.worktree))
+    base = _commit_project(context.worktree)
     _record_analyst_candidate(state_path, context)
 
-    # 1. Strictly the Ticket fails; provisionally it goes to review.
     def judge(state, unmet):
         return evaluate_ticket_provisional_coverage(state, unmet, context).met_keys
 
-    assert check_criteria_acceptance(state_path, work_dir=root).disposition == "failed"
-    provisional = check_criteria_acceptance(state_path, work_dir=root, provisional=judge)
+    assert check_criteria_acceptance(state_path, work_dir=context.worktree).disposition == "failed"
+    provisional = check_criteria_acceptance(
+        state_path, work_dir=context.worktree, provisional=judge
+    )
     assert provisional.disposition == "review" and provisional.provisional
+    plan = _approve_candidate(state_path, context, monkeypatch)
+    _freeze_and_promote(state_path, context, base, plan)
+    _assert_destination_coverage(state_path, context, plan)
 
-    # 2. The Human accepts the one offered candidate.
+
+def _approve_candidate(state_path, context, monkeypatch):
     views, _ = describe_waiver_candidates(DevelopmentState.load(state_path).criteria, context)
     (offered,) = [view.candidate.candidate_id for view in views if view.status == "offered"]
     monkeypatch.setattr(approval, "approver_identity", lambda _root: _APPROVER)
+    review = _review_context(state_path, context)
     inputs = approval._ApprovalInputs(
         slug=context.slug,
         log_dir=context.log_dir,
         state_path=state_path,
-        worktree=root,
-        project_root=root,
+        worktree=context.worktree,
+        project_root=context.worktree,
         context=context,
-        inspection={
-            "execution_id": "exec-1",
-            "ticket_identity": _IDENTITY,
-            "capture_sha": "c" * 64,
-        },
+        inspection=review.inspection,
     )
-    plan = apply_waiver_decisions(inputs, WaiverDecisions(frozenset({offered})), merge=True)
-    assert plan is not None
+    decisions = WaiverDecisions(frozenset({offered}))
 
-    # 3. Strict acceptance now passes and freezes against the unchanged heads.
+    def stage(staging):
+        staged = replace(
+            inputs,
+            state_path=staging / "log" / ".runtime" / "booley_state.json",
+            log_dir=staging / "log",
+            context=replace(context, tickets_dir=staging / "tickets"),
+        )
+        return apply_waiver_decisions(staged, decisions, merge=True)
+
+    assert apply_transaction(review, decisions, stage)
+    plan = read_promotion_plan(context.log_dir)
+    assert plan is not None
+    return plan
+
+
+def _review_context(state_path, context):
+    ticket_path = context.worktree / "tickets" / "ticket.md"
+    ticket_path.parent.mkdir(parents=True, exist_ok=True)
+    ticket_path.write_bytes(b"Synthetic coverage Ticket.\n")
+    inspection = {
+        "generation": "f" * 32,
+        "ticket_generation": _IDENTITY["generation"],
+        "execution_id": "exec-1",
+        "ticket_identity": _IDENTITY,
+        "heads": {"outer": _git(context.worktree, "rev-parse", "HEAD")},
+        "disposition": "unaccepted",
+        "reason": "provisional coverage",
+        "state": json.loads(state_path.read_text()),
+    }
+    review = SimpleNamespace(
+        worktree=context.worktree,
+        project_root=context.worktree,
+        project_repository=None,
+        log_dir=context.log_dir,
+        slug=context.slug,
+        ticket_path=ticket_path,
+        inspection=inspection,
+    )
+    inspection["capture_sha"] = prep._source_fingerprint(review)
+    return review
+
+
+def _freeze_and_promote(state_path, context, base, plan):
+    root = context.worktree
     assert check_criteria_acceptance(state_path, work_dir=root).disposition == "review"
     freeze_acceptance(
         context.log_dir,
@@ -161,8 +220,6 @@ def test_candidate_to_approved_waiver_on_the_destination(
         participant_heads={"outer": base},
     )
     assert promotion_plan_for_completion(context.log_dir) == plan
-
-    # 4. The Journal promotes the waiver with the merge; the Ticket branch is untouched.
     participant = BasisParticipant(
         "outer", base, "refs/heads/ticket-branch", "refs/heads/main", base
     )
@@ -180,11 +237,12 @@ def test_candidate_to_approved_waiver_on_the_destination(
     )
     assert _git(root, "rev-parse", "ticket-branch") == base
 
-    # 5. The destination's real Approved Waiver Set passes the persisted Campaign.
+
+def _assert_destination_coverage(state_path, context, plan):
+    root = context.worktree
     _git(root, "checkout", "-q", "main")
-    config = plan.config
     waivers = load_approved_waiver_set(
-        config,
+        plan.config,
         CoverageRepositoryRoots(
             rtl_repository=root, project_data_repository=root / ".booley_project"
         ),

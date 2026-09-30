@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.sim.coverage_campaign import decode_coverage_point_id
 from booley.ticket_board import waiver_approval as approval
 from booley.ticket_board import waiver_candidates as store
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
@@ -54,6 +55,7 @@ def approving(ticket, monkeypatch):  # noqa: F811 — the imported fixture
             "execution_id": "exec-1",
             "ticket_identity": {"generation": "d" * 32, "authored_sha256": "e" * 64},
             "capture_sha": "c" * 64,
+            "state": json.loads(state_path.read_text()),
         },
     )
     return inputs
@@ -150,13 +152,61 @@ def test_a_resumed_approval_reuses_its_durable_plan(approving) -> None:
     candidate = _offered_id(inputs)
     first = apply_waiver_decisions(inputs, WaiverDecisions(frozenset({candidate})), merge=True)
 
-    again = apply_waiver_decisions(inputs, WaiverDecisions(), merge=True)
+    again = apply_waiver_decisions(inputs, WaiverDecisions(frozenset({candidate})), merge=True)
 
     assert again == first
     with pytest.raises(WaiverDecisionError, match="already approved"):
         apply_waiver_decisions(
             inputs, WaiverDecisions(rejected=frozenset({candidate})), merge=True
         )
+
+
+def test_a_preexisting_plan_does_not_supply_human_decisions(approving) -> None:
+    inputs = approving
+    _record_uncovered_line(inputs.context, inputs.state_path)
+    views, _ = describe_waiver_candidates(
+        DevelopmentState.load(inputs.state_path).criteria, inputs.context
+    )
+    plan = approval._build_plan(inputs, views, WaiverDecisions(frozenset({_offered_id(inputs)})))
+    path = promotion_plan_path(inputs.log_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(plan.to_bytes())
+    before = inputs.state_path.read_bytes()
+
+    with pytest.raises(WaiverDecisionError, match="explicit"):
+        apply_waiver_decisions(inputs, WaiverDecisions(), merge=True)
+
+    assert inputs.state_path.read_bytes() == before
+    assert not _line_met(inputs)
+
+
+def test_prediction_errors_still_record_explicit_rejections(approving) -> None:
+    inputs = approving
+    _record_uncovered_line(inputs.context, inputs.state_path)
+    _record_uncovered_line(inputs.context, inputs.state_path, metric="branch")
+    views, _ = describe_waiver_candidates(
+        DevelopmentState.load(inputs.state_path).criteria, inputs.context
+    )
+    ids = {
+        decode_coverage_point_id(view.candidate.proposal.point_id)[
+            "metric"
+        ]: view.candidate.candidate_id
+        for view in views
+    }
+    (inputs.worktree / "coverage-waivers" / "malformed.toml").write_text("schema = [")
+
+    with pytest.raises(WaiverDecisionError, match="cannot be promoted"):
+        apply_waiver_decisions(
+            inputs,
+            WaiverDecisions(frozenset({ids["line"]}), frozenset({ids["branch"]})),
+            merge=True,
+        )
+
+    record = store.load(inputs.context.tickets_dir, inputs.slug)
+    assert len(record.rejections) == 1
+    assert {item.candidate_id for item in record.candidates.values()} == {ids["line"]}
+    assert not promotion_plan_path(inputs.log_dir).exists()
+    assert not _line_met(inputs)
 
 
 def test_completion_reads_only_the_plan_the_frozen_record_names(approving) -> None:

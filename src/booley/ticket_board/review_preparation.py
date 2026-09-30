@@ -730,7 +730,9 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
     return paths
 
 
-def _source_fingerprint(ctx: ReviewPrepContext) -> str:
+def _source_fingerprint(
+    ctx: ReviewPrepContext, *, source_overrides: Mapping[str, bytes | None] | None = None
+) -> str:
     """Hash stable review inputs and the live Git status.
 
     Human logs are deliberately excluded: review preparation writes its own
@@ -739,6 +741,17 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
     source change. The agent still receives a copied pre-call ``run.log``.
     """
     digest = hashlib.sha256()
+    _hash_repository_inputs(ctx, digest)
+    for label, content_hash in _source_content_hashes(ctx, source_overrides):
+        digest.update(label.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content_hash.encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _hash_repository_inputs(ctx: ReviewPrepContext, digest: Any) -> None:
+    """Bind semantic review identity, participant heads, status, and verification."""
     if ctx.inspection is not None:
         from .review_records import require_clean
 
@@ -771,12 +784,33 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
                 "--untracked-files=all",
             ).encode("utf-8")
         )
-    for label, path in _source_paths(ctx):
-        digest.update(label.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(_file_sha256(path).encode("ascii"))
-        digest.update(b"\0")
-    return digest.hexdigest()
+
+
+def _source_content_hashes(
+    ctx: ReviewPrepContext, overrides: Mapping[str, bytes | None] | None
+) -> list[tuple[str, str]]:
+    """Hash a staged approval without writing any of its inputs to the live store."""
+    overrides = overrides or {}
+    paths = dict(_source_paths(ctx))
+    labels = [label for label in paths if not label.startswith("acceptance/evidence/")]
+    if "waiver-candidates" in overrides and "waiver-candidates" not in labels:
+        labels.append("waiver-candidates")
+    labels.extend(
+        sorted(
+            label
+            for label in paths.keys() | overrides.keys()
+            if label.startswith("acceptance/evidence/")
+        )
+    )
+    result = []
+    for label in labels:
+        if label in overrides:
+            content = overrides[label]
+            if content is not None:
+                result.append((label, hashlib.sha256(content).hexdigest()))
+        else:
+            result.append((label, _file_sha256(paths[label])))
+    return result
 
 
 def _verification_evidence_identity(ctx: ReviewPrepContext) -> bytes:
