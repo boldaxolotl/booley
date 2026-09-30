@@ -1574,6 +1574,9 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
             file=sys.stderr,
         )
     _report_session_health(project_root, startup_due_reason=startup_due_reason)
+    from booley.harness.doctor import observe_deep_status
+
+    print(observe_deep_status(project_root, container=name).render())
     print(f"Sandbox ready: {name}")
     print("  enter it with: booley session enter")
     return 0

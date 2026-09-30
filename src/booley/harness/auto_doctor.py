@@ -243,6 +243,7 @@ def _execute(
 
     output = io.StringIO()
     started = time.monotonic()
+    deep_status = None
     try:
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             result = run_doctor_result(
@@ -255,6 +256,7 @@ def _execute(
         counts = result.counts
         findings = [asdict(finding) for finding in result.findings]
         exit_code = result.exit_code
+        deep_status = result.deep_status.to_document() if result.deep_status else None
     except Exception as exc:  # noqa: BLE001 — automatic health must record crashes, never break startup
         counts, findings, exit_code = _exception_report(exc)
         output.write(f"\n{findings[0]['message']}\n")
@@ -268,6 +270,7 @@ def _execute(
         findings=findings,
         exit_code=exit_code,
         transcript=output.getvalue(),
+        deep_status=deep_status,
     )
     (progress or _ignore_progress)(
         f"completed in {duration_s:.1f}s; transcript: {transcript_path(project_dir)}"
@@ -285,6 +288,7 @@ def _persist_report(
     findings: list[dict[str, Any]],
     exit_code: int,
     transcript: str,
+    deep_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically persist one already-completed structured Doctor result."""
     from booley.runtime import runtime_context
@@ -300,6 +304,7 @@ def _persist_report(
         "findings": findings,
         "exit_code": exit_code,
         "clean": counts["fail"] == 0 and counts["warn"] == 0,
+        "deep_status": deep_status,
     }
     payload["finding_hash"] = _finding_hash(payload)
     _atomic_write(transcript_path(project_dir), transcript)
@@ -326,6 +331,7 @@ def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[st
             findings=findings,
             exit_code=int(result.exit_code),
             transcript=transcript + "\n",
+            deep_status=result.deep_status.to_document() if result.deep_status else None,
         )
     except (AttributeError, OSError, TypeError, ValueError):
         return None
