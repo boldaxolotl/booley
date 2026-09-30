@@ -21,6 +21,10 @@ constrains agent traffic, and system policy disables provider-hosted web tools.
 The following command families are required:
 
 - Shell and project compilation: Bash, POSIX `sh`, Git, Make, GCC, and G++.
+- External core utilities: GNU coreutils are the default for unprefixed commands
+  in login and non-login shells, Flow subprocesses, Make runs, and hooks.
+  Project-derived and RISC-V images inherit this default; Projects may
+  deliberately override commands or `PATH`. Shell builtins retain shell semantics.
 - Python: Python 3.14, pip, Booley, `booley-mcp`, FuseSoC/Edalize, cocotb, and
   the curated Python dependencies installed by the image recipe.
 - Simulation and waveform work: Icarus (`iverilog`, `iverilog-vpi`, `vvp`),
@@ -30,6 +34,12 @@ The following command families are required:
   shipped Verible command suite until a later contract review narrows it.
 - Agent clients: Node.js, npm, Claude Code, and Codex in their publisher-provided
   launch form.
+
+Ubuntu's uutils selector remains installed because `build-essential` requires it.
+The image installs `gnu-coreutils` explicitly and links its packaged executables
+under `/usr/local/bin`, ahead of `/usr/bin` in the default shell and subprocess
+environments. The common image probe verifies GNU identity and compatibility
+in non-login Bash, login Bash, interactive login Bash, and POSIX `sh`.
 
 The image must compile, link, and execute native C and C++ source. It must compile
 Verilator-generated C++ with the installed runtime headers. Icarus must retain
@@ -46,6 +56,16 @@ probe checks publisher package integrity and policy behavior.
 The image-level assertions require stripped Yosys, ABC, and sv2v binaries and one
 hard-linked inode for the two installed B-Wave paths. Dockerfile text alone does
 not satisfy them.
+
+### GNU default size evidence
+
+A paired `linux/amd64` build on 2026-09-30 used the pinned Ubuntu 26.04 parent
+and this Dockerfile's complete runtime apt install steps, with and without the
+GNU default links. Docker `.Size` was 1,301,249,803 bytes for the control and
+1,301,268,870 bytes for GNU defaults: +19,067 bytes. GNU binaries were already
+present as a dependency of the uutils selector. This measures the runtime
+installation change, not a rebuilt complete Sandbox Image; existing complete
+image size gates remain authoritative and their budgets are unchanged.
 
 ## Rust is not included
 
