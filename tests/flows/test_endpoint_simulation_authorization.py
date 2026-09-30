@@ -249,7 +249,8 @@ def test_campaign_preflight_orders_candidate_before_historical_baseline(
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", historical_worktree)
     monkeypatch.setattr(TargetCatalog, "build", lambda root: Catalog())
 
-    prepared = flow.prepare_simulation_endpoint()
+    with flow.context.publication_resources:
+        prepared = flow.prepare_simulation_endpoint()
 
     assert isinstance(prepared, PreparedSimulationEndpoint)
     assert prepared.targets == (candidate, baseline)
