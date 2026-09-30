@@ -32,6 +32,10 @@ class CoverageInvocationRequest:
     targets: tuple[str, ...]
     tests: tuple[str, ...] | None = None
     trace: bool = False
+    # Raw coverage: evaluate with no approved waivers.
+    no_waivers: bool = False
+    # The caller records no Criteria (a non-acceptance run).
+    diagnostic: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,14 @@ def _prepare_target(
         declared, selected, key, criterion = _suite(handle, request, context)
     except ValueError as exc:
         return None, _finding("COV_SUITE_INVALID", f"{handle.selector}: {exc}")
+    if request.no_waivers and criterion is not None and not request.diagnostic:
+        return None, _finding(
+            "COV_NO_WAIVERS_CRITERION",
+            f"{handle.selector}: --no-waivers skips the approved waivers that "
+            f"Coverage Criterion {key} is evaluated with; add --diagnostic for a "
+            "non-acceptance run with raw numbers, or drop --no-waivers",
+            "/no_waivers",
+        )
     inspection = catalog.inspect(handle)
     collection = prepare_coverage_collection(
         handle, selected_tests=selected, artifact_root=Path(), trace=request.trace
@@ -174,7 +186,7 @@ def _prepare_target(
         request.trace,
         criterion=criterion,
         criterion_key=key,
-        waiver_config=context.waiver_config,
+        waiver_config=None if request.no_waivers else context.waiver_config,
         roots=CoverageRepositoryRoots(context.rtl_repository, context.project_data_repository),
         known_targets=tuple(DurableTargetIdentity(item.identity) for item in catalog.list()),
         collection_request=collection,

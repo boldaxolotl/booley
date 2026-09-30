@@ -310,6 +310,74 @@ def _baseline_manifest():
     return finalize_manifest(document)
 
 
+_V1 = "booley.simulation-campaign-manifest/v1"
+_V2 = "booley.simulation-campaign-manifest/v2"
+
+
+def _refinalized(schema: str, **workload_members: object):
+    """Re-finalize the fixture so fingerprints stay valid and only the workload rule varies."""
+    document = _manifest()
+    document.pop("fingerprints")
+    document["$schema"] = schema
+    workload = document["workload"]
+    workload.update(workload_members)  # type: ignore[union-attr]
+    # The build variant recipe binds ``workload.coverage``; keep it consistent.
+    variant = document["build_variants"][0]  # type: ignore[index]
+    variant["source_closure"] = []
+    recipe_sha = _sha(
+        {
+            "kind": variant["kind"],
+            "source_closure": variant["source_closure"],
+            "source_recipe": workload["source_recipe"],  # type: ignore[index]
+            "build_recipe": workload["build_recipe"],  # type: ignore[index]
+            "eda": workload["eda"],  # type: ignore[index]
+            "trace": workload["trace"],  # type: ignore[index]
+            "coverage": workload["coverage"],  # type: ignore[index]
+        }
+    )
+    variant["recipe_sha256"] = recipe_sha
+    variant["build_variant_id"] = "variant:" + recipe_sha.removeprefix("sha256:")
+    item = document["work_items"][0]  # type: ignore[index]
+    item["build_variant_id"] = variant["build_variant_id"]
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"fingerprint_sha256", "work_item_id"}
+    }
+    item["fingerprint_sha256"] = _sha(identity)
+    item["work_item_id"] = "item:0000:" + item["fingerprint_sha256"][7:23]
+    return finalize_manifest(document)
+
+
+def test_no_waivers_v2_manifest_decodes_and_keeps_its_schema() -> None:
+    manifest = _refinalized(_V2, coverage=True, no_waivers=True)
+    assert manifest.document["$schema"] == _V2
+    assert manifest.document["workload"]["no_waivers"] is True  # type: ignore[index]
+    decoded = decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
+    assert decoded.document == manifest.document
+
+
+@pytest.mark.parametrize(
+    ("schema", "members"),
+    [
+        (_V2, {"coverage": True}),
+        (_V2, {"coverage": True, "no_waivers": False}),
+        (_V2, {"coverage": True, "no_waivers": "yes"}),
+        (_V2, {"coverage": False, "no_waivers": True}),
+        (_V1, {"coverage": True, "no_waivers": True}),
+    ],
+)
+def test_no_waivers_manifest_grammar_is_exact(schema: str, members: dict[str, object]) -> None:
+    with pytest.raises(SimulationCampaignIntegrityError):
+        _refinalized(schema, **members)
+
+
+def test_v1_manifest_grammar_is_unchanged_by_no_waivers_support() -> None:
+    manifest = _refinalized(_V1, coverage=True)
+    assert manifest.document["$schema"] == _V1
+    assert "no_waivers" not in manifest.document["workload"]  # type: ignore[operator]
+
+
 def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
     document = _manifest()
     document.pop("fingerprints")

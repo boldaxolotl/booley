@@ -188,6 +188,7 @@ def _plan(
     kind: str,
     names: tuple[str, ...] = ("count", "reset"),
     cocotb: bool,
+    no_waivers: bool = False,
 ):
     handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names)
     return plan_coarse_simulation_campaign(
@@ -201,7 +202,29 @@ def _plan(
         execution_id="7" * 32,
         trace=False,
         kind=kind,
+        no_waivers=no_waivers,
     )
+
+
+def test_no_waivers_plan_writes_v2_only_when_requested(tmp_path: Path) -> None:
+    (tmp_path / "default").mkdir()
+    (tmp_path / "raw").mkdir()
+    default = _plan(
+        tmp_path / "default", kind="coverage_aggregate", cocotb=False
+    ).manifest.document
+    assert default["$schema"] == "booley.simulation-campaign-manifest/v1"
+    assert "no_waivers" not in default["workload"]  # type: ignore[operator]
+    raw = _plan(tmp_path / "raw", kind="coverage_aggregate", cocotb=False, no_waivers=True)
+    document = raw.manifest.document
+    assert document["$schema"] == "booley.simulation-campaign-manifest/v2"
+    assert document["workload"]["no_waivers"] is True  # type: ignore[index]
+    # Waivers never change the build, so the variant identity must not move.
+    assert document["build_variants"] == default["build_variants"]
+
+
+def test_no_waivers_plan_rejects_non_coverage_kind(tmp_path: Path) -> None:
+    with pytest.raises(SimulationCampaignIntegrityError, match="no_waivers"):
+        _plan(tmp_path, kind="cocotb_batch", cocotb=True, no_waivers=True)
 
 
 def test_cocotb_named_selection_is_one_ordered_batch_work_item(tmp_path: Path) -> None:

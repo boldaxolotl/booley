@@ -97,6 +97,12 @@ def canonical_json_bytes(value: object) -> bytes:
     return text.encode("utf-8") + b"\n"
 
 
+_MANIFEST_V1_SCHEMA = "booley.simulation-campaign-manifest/v1"
+# v2 = v1 plus the required ``workload.no_waivers: true`` (raw coverage, #992).  v1 is
+# immutable, so the new member lives behind a new version; default runs still write v1.
+_MANIFEST_V2_SCHEMA = "booley.simulation-campaign-manifest/v2"
+_MANIFEST_SCHEMAS = frozenset({_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA})
+
 _MANIFEST_FIELDS = frozenset(
     {
         "$schema",
@@ -228,7 +234,7 @@ T = TypeVar("T", bound=SimulationCampaignDocument)
 def _decode(
     raw: bytes,
     *,
-    schema: str,
+    schema: str | frozenset[str],
     fields: frozenset[str],
     limit: int,
     value_type: type[T],
@@ -249,14 +255,15 @@ def _decode(
         raise SimulationCampaignIntegrityError(
             f"document must have exact fields; missing={missing}, unknown={unknown}"
         )
-    if document.get("$schema") != schema:
+    allowed = frozenset({schema}) if isinstance(schema, str) else schema
+    if document.get("$schema") not in allowed:
         raise SimulationCampaignIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
     try:
         _validate_json(document)
         _validate_common(document)
         if canonical_json_bytes(document) != raw:
             raise SimulationCampaignIntegrityError("document is not canonical JSON")
-        _validate_document(schema, document)
+        _validate_document(cast(str, document["$schema"]), document)
     except BoundaryError as exc:
         raise SimulationCampaignIntegrityError(str(exc)) from exc
     return value_type(cast(Mapping[str, FrozenJson], document))
@@ -954,6 +961,7 @@ def _validate_diagnostics(value: object) -> None:
 
 
 def _validate_manifest(value: Mapping[str, object]) -> None:
+    schema = cast(str, value["$schema"])
     origin = _exact_object(value["origin"], {"execution_id", "invocation_id"}, "origin")
     execution_id = origin["execution_id"]
     parsed_execution_id = _bounded_string(execution_id, "origin.execution_id", allow_empty=True)
@@ -963,7 +971,7 @@ def _validate_manifest(value: Mapping[str, object]) -> None:
         )
     _require_positive_int(origin["invocation_id"], "origin.invocation_id")
     target = _validate_target(value["target"], "target")
-    workload = _validate_workload(value["workload"])
+    workload = _validate_workload(value["workload"], schema)
     suite = _validate_required_suite(value["required_suite"])
     variants = _validate_variants(value["build_variants"], workload)
     disclosures = _validate_disclosures(value["planning_disclosures"])
@@ -988,10 +996,13 @@ def _validate_target(value: object, field: str) -> Mapping[str, object]:
     return target
 
 
-def _validate_workload(value: object) -> Mapping[str, object]:
+def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
+    # v2 adds exactly one member, ``no_waivers``; the v1 grammar never changes.
+    extra = {"no_waivers"} if schema == _MANIFEST_V2_SCHEMA else set()
     workload = _exact_object(
         value,
-        {
+        extra
+        | {
             "mode",
             "trace",
             "coverage",
@@ -1010,6 +1021,8 @@ def _validate_workload(value: object) -> Mapping[str, object]:
         raise SimulationCampaignIntegrityError("workload mode/trace/coverage is invalid")
     require_bool_value(workload["trace"], field="workload.trace")
     require_bool_value(workload["coverage"], field="workload.coverage")
+    if extra and (workload["no_waivers"] is not True or workload["coverage"] is not True):
+        raise SimulationCampaignIntegrityError("workload no_waivers is invalid")
     _validate_eda(workload["eda"])
     _bounded_string(workload["planner_contract_version"], "planner_contract_version")
     _bounded_string(workload["adapter_contract_version"], "adapter_contract_version")
@@ -1543,7 +1556,7 @@ _DOCUMENT_SPECS: dict[
     tuple[str, frozenset[str], int, Callable[[Mapping[str, object]], None]],
 ] = {
     SimulationCampaignManifest: (
-        "booley.simulation-campaign-manifest/v1",
+        _MANIFEST_V1_SCHEMA,
         _MANIFEST_FIELDS,
         MANIFEST_MAX_BYTES,
         _validate_manifest,
@@ -1586,11 +1599,13 @@ _DOCUMENT_SPECS: dict[
     ),
 }
 _DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
+_DOCUMENT_VALIDATORS[_MANIFEST_V2_SCHEMA] = _validate_manifest
 
 
 def _decode_registered(raw: bytes, value_type: type[T]) -> T:
     schema, fields, limit, _ = _DOCUMENT_SPECS[value_type]
-    return _decode(raw, schema=schema, fields=fields, limit=limit, value_type=value_type)
+    allowed = _MANIFEST_SCHEMAS if value_type is SimulationCampaignManifest else schema
+    return _decode(raw, schema=allowed, fields=fields, limit=limit, value_type=value_type)
 
 
 def decode_simulation_campaign_manifest(raw: bytes) -> SimulationCampaignManifest:

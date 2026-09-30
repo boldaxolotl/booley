@@ -92,13 +92,25 @@ def plan_coarse_simulation_campaign(
     kind: str,
     planning_disclosures: Sequence[Mapping[str, object]] = (),
     required_suite_catalog_backed: bool | None = None,
+    no_waivers: bool = False,
 ) -> SimulationCampaignPlan:
-    """Plan one honest coarse Cocotb batch or native coverage aggregate."""
+    """Plan one honest coarse Cocotb batch or native coverage aggregate.
+
+    ``no_waivers`` freezes the raw-coverage choice into the workload; only coverage
+    aggregates may carry it.
+    """
+    if no_waivers and kind != "coverage_aggregate":
+        raise SimulationCampaignIntegrityError("no_waivers requires a coverage aggregate")
     names = _validate_coarse_inputs(handle, inspection, preview, selected_tests, kind)
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
     workload, configured_cwd, run_kind, sources = _workload_document(
-        handle, inspection, sources, trace, coverage=kind == "coverage_aggregate"
+        handle,
+        inspection,
+        sources,
+        trace,
+        coverage=kind == "coverage_aggregate",
+        no_waivers=no_waivers,
     )
     target = _target_document(handle, root, revision, "candidate")
     suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
@@ -155,9 +167,11 @@ def _manifest_document(
     prerequisite_documents,
     work_items,
 ):
+    # Default runs keep writing v1; only the raw-coverage member needs v2.
+    schema_version = "v2" if workload.get("no_waivers") is True else "v1"
     return finalize_manifest(
         {
-            "$schema": "booley.simulation-campaign-manifest/v1",
+            "$schema": f"booley.simulation-campaign-manifest/{schema_version}",
             "campaign_id": str(uuid.uuid4()),
             "created_at": utc_now_rfc3339(),
             "origin": {"execution_id": execution_id, "invocation_id": invocation_id},
@@ -179,6 +193,7 @@ def _workload_document(
     trace: bool,
     *,
     coverage: bool,
+    no_waivers: bool = False,
 ) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
     root = handle.project_root.resolve()
     parameters = [
@@ -217,31 +232,30 @@ def _workload_document(
     configured_cwd = resolve_run_cwd(root)
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"
-    return (
-        {
-            "mode": "simulate",
-            "trace": trace,
-            "coverage": coverage,
-            "eda": {
-                "kind": inspection.eda_tool or "",
-                "version": _eda_identity(inspection.eda_tool),
-            },
-            "planner_contract_version": "1",
-            "adapter_contract_version": "1",
-            "pre_sim_build_access": resolve_pre_sim_build_access(root),
-            "run_cwd": {
-                "configured": configured_cwd,
-                "kind": run_kind,
-                "placeholders": list(placeholders),
-            },
-            "runtime_inputs": list(derive_runtime_input_declarations(inspection.inputs)),
-            "source_recipe": source_recipe,
-            "build_recipe": build_recipe,
+    workload = {
+        "mode": "simulate",
+        "trace": trace,
+        "coverage": coverage,
+        "eda": {
+            "kind": inspection.eda_tool or "",
+            "version": _eda_identity(inspection.eda_tool),
         },
-        configured_cwd,
-        run_kind,
-        sources,
-    )
+        "planner_contract_version": "1",
+        "adapter_contract_version": "1",
+        "pre_sim_build_access": resolve_pre_sim_build_access(root),
+        "run_cwd": {
+            "configured": configured_cwd,
+            "kind": run_kind,
+            "placeholders": list(placeholders),
+        },
+        "runtime_inputs": list(derive_runtime_input_declarations(inspection.inputs)),
+        "source_recipe": source_recipe,
+        "build_recipe": build_recipe,
+    }
+    if no_waivers:
+        # Written only when requested and never as ``false``: absence means waivers apply.
+        workload["no_waivers"] = True
+    return workload, configured_cwd, run_kind, sources
 
 
 def _target_document(

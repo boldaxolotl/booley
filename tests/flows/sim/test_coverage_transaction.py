@@ -488,6 +488,35 @@ def test_invalid_waivers_block_only_requested_evaluation(tmp_path, gated):
     assert document["collection"]["status"] == "complete"
 
 
+def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):
+    from fractions import Fraction
+
+    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig, load_approved_waiver_set
+
+    context = project(tmp_path)
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        None,
+    )
+    context = replace(
+        context,
+        criteria={"coverage_sim_0": criterion},
+        waiver_config=CoverageWaiverConfig("rtl_repository", "../unsafe"),
+    )
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), no_waivers=True, diagnostic=True), context
+    )
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    outcome = run_coverage_target(plan, NativeExecution(), Progress())
+    evaluation = json.loads(outcome.campaign_path.read_text())["evaluation"]
+    assert evaluation["status"] != "blocked"
+    assert evaluation["approved_waiver_set_digest"] == (
+        load_approved_waiver_set(None, tmp_path, ()).digest
+    )
+
+
 def test_ticket_publishes_campaign_before_independent_acceptance_evidence(tmp_path):
     from fractions import Fraction
 

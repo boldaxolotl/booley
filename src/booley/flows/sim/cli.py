@@ -26,6 +26,12 @@ class SimArguments(BuiltinArguments):
             action="store_true",
             help="Collect a native Verilator Coverage Campaign for each selected Target",
         )
+        parser.add_argument(
+            "--no-waivers",
+            action="store_true",
+            help="With --coverage, report raw coverage without applying approved waivers; "
+            "with a Coverage Criterion also requires --diagnostic",
+        )
         SimArguments._add_elaboration_args(parser)
         parser.add_argument(
             "--test",
@@ -100,6 +106,8 @@ class SimArguments(BuiltinArguments):
             if conflicts:
                 parser.error("--resume-from cannot be combined with " + ", ".join(conflicts))
             args.target = ""
+        elif args.no_waivers and not args.coverage:
+            parser.error("--no-waivers requires --coverage")
         if args.tests_file is not None:
             args.test = SimArguments._read_tests_file(args.tests_file, parser)
             args.tests_file = None
@@ -121,6 +129,7 @@ class SimArguments(BuiltinArguments):
                 (args.tests_file is not None, "--tests-file"),
                 (args.mode is not None, "--mode"),
                 (args.coverage, "--coverage"),
+                (args.no_waivers, "--no-waivers"),
                 (args.trace, "--trace"),
             )
             if present
