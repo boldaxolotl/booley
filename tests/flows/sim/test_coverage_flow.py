@@ -1842,7 +1842,7 @@ def test_resume_refusal_hint_repeats_no_waivers(tmp_path, monkeypatch, no_waiver
     hint = next(
         line for line in result.outcome.report_text.splitlines() if "booley flow sim" in line
     )
-    assert hint.endswith("--coverage --no-waivers" if no_waivers else "--coverage")
+    assert hint.endswith("--coverage --no-waivers --diagnostic" if no_waivers else "--coverage")
 
 
 def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monkeypatch):

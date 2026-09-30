@@ -565,7 +565,7 @@ def _manifest_no_waivers(manifest: SimulationCampaignManifest) -> bool:
     return workload.get("no_waivers") is True
 
 
-def _coverage_preflight_findings_outcome(findings) -> EndpointOutcome:
+def _coverage_preflight_findings_outcome(findings: Sequence[Any]) -> EndpointOutcome:
     """Exit-2 outcome that reports every atomic coverage preflight finding."""
     return EndpointOutcome(
         exit_code=2,
@@ -2017,7 +2017,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         selector = cast(Mapping[str, str], manifest.document["target"])["selector"]
         workload = cast(Mapping[str, object], manifest.document["workload"])
         trace = " --trace" if workload["trace"] is True else ""
-        no_waivers = " --no-waivers" if _manifest_no_waivers(manifest) else ""
+        # A raw-coverage run of a gated Target is refused without --diagnostic.
+        no_waivers = " --no-waivers --diagnostic" if _manifest_no_waivers(manifest) else ""
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
@@ -2885,7 +2886,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     mismatches.append("/required_suite: required suite changed")
         return mismatches
 
-    def _resume_coverage_prepared(self, validated: ValidatedResumeManifest):
+    def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> tuple[Any, Any]:
         """Run the shared coverage preflight for the manifest's frozen coverage choice."""
         from booley.criteria.state import DevelopmentState
         from booley.flows.sim.coverage_flow_context import coverage_project_context
@@ -2928,7 +2929,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _resume_coverage_preflight(
         self, validated: ValidatedResumeManifest
     ) -> EndpointOutcome | None:
-        """Refuse an unresumable coverage aggregate before admission or reservation."""
+        """Refuse an unresumable raw-coverage aggregate before admission or reservation.
+
+        Manifests without ``no_waivers`` (all legacy ones) keep their original
+        lifecycle: the plan is rebuilt during resume, not at preflight.
+        """
+        if not _manifest_no_waivers(validated.manifest):
+            return None
         context, prepared = self._resume_coverage_prepared(validated)
         if prepared.plan is None:
             return _coverage_preflight_findings_outcome(prepared.findings)

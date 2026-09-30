@@ -186,15 +186,13 @@ def _manifest_document(
     )
 
 
-def _workload_document(
+def _recipes(
     handle: TargetHandle,
     inspection: TargetInspection,
     sources: list[dict[str, object]],
     trace: bool,
-    *,
-    coverage: bool,
-    no_waivers: bool = False,
-) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Build the frozen source and build recipes of a Target workload."""
     root = handle.project_root.resolve()
     parameters = [
         {"name": name, "value": value} for name, value in sorted(inspection.parameters.items())
@@ -229,6 +227,20 @@ def _workload_document(
         "arguments": [],
         "command_model_sha256": canonical_sha256(command_model),
     }
+    return source_recipe, build_recipe
+
+
+def _workload_document(
+    handle: TargetHandle,
+    inspection: TargetInspection,
+    sources: list[dict[str, object]],
+    trace: bool,
+    *,
+    coverage: bool,
+    no_waivers: bool = False,
+) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
+    root = handle.project_root.resolve()
+    source_recipe, build_recipe = _recipes(handle, inspection, sources, trace)
     configured_cwd = resolve_run_cwd(root)
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"
