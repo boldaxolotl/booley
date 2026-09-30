@@ -60,6 +60,10 @@ _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
 _Avoid_: Runtime Attachment, remote, tunnel, app bridge
 
+**Doctor**:
+The diagnostic command for Booley's build and execution machinery in a **Project**'s environment, including integration with Project build configuration. Its intended scope treats correctly executed and interpreted design failures as compatible with healthy machinery and leaves design correctness to normal **Booley Flows**; current classification limits and deep validation policy are described in the [Doctor reference](user/DOCTOR.md).
+_Avoid_: design verification, Ticket Preflight, acceptance gate
+
 **Ticket Preflight**:
 The fast-fail validation Booley runs before Ticket intake. It checks the execution environment, Ticket Board and Git state, Custom Flow metadata, Criteria structure, and configured agent backend. Blocking failures stop the run before Ticket work begins; non-blocking findings are warnings. `booley doctor` provides related diagnostics without starting a Ticket run, but it does not reproduce every Ticket Preflight result.
 _Avoid_: bare Preflight, Flow validation, doctor, startup test
