@@ -126,7 +126,7 @@ def render_criteria_reference(
         for c in rows:
             binding = endpoint_catalog.binding_for(c.name)
             endpoint_command = binding.command if binding is not None else None
-            set_by = f"`{endpoint_command}`" if endpoint_command else "—"
+            set_by = f"MCP tool `{endpoint_command}`" if endpoint_command else "—"
             region = _REGION_LABEL.get(c.workflow_region, c.workflow_region)
             lines.append(f"| {_display_name(c)} | {_clean(c.description)} | {set_by} | {region} |")
         blocks.append("\n".join(lines))
