@@ -420,3 +420,41 @@ def test_passing_criterion_already_references_durable_evidence(reviewer, monkeyp
     result = reviewer._run()
     assert result.criterion_met is True
     assert published == ["review_rtl_bugs_clean"]
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Missing [SIM_RESULT] sentinel; must emit it",
+        "Remove all user-authored $dumpfile/$dumpvars calls; forbidden",
+    ],
+)
+def test_configured_tb_policy_does_not_discard_valid_current_finding(
+    reviewer, monkeypatch, summary
+):
+    root = Path(reviewer.args.work_dir)
+    source = root / "tb/dut_tb.sv"
+    source.parent.mkdir()
+    source.write_text("module dut_tb; endmodule\n")
+    config_dir = root / ".booley_project"
+    config_dir.mkdir()
+    (config_dir / "booley.toml").write_text(
+        '[flows.sim]\npass_sentinels = ["CUSTOM PASS"]\ntrace_files = ["custom.vcd"]\n'
+    )
+    reviewer.args.scope = "tb/dut_tb.sv"
+    reviewer.args.category = "tb"
+    reviewer.args.focus = "quality"
+    reviewer.state.init_criteria({"review_tb_quality_clean": True})
+    reviewer.state.save()
+    output(
+        reviewer,
+        monkeypatch,
+        {"issues": [proposal(category="quality", file="tb/dut_tb.sv", summary=summary)]},
+    )
+    result = reviewer._run()
+    assert result.criterion_met is False
+    assert result.detail["pending"][0]["summary"] == summary
+    assert result.detail["filtered"] == []
+    prompt = reviewer._build_prompt()
+    assert "CUSTOM PASS" in prompt
+    assert "custom.vcd" in prompt
