@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Iterator
+from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -146,32 +147,46 @@ def _track_flow_sessions(request: pytest.FixtureRequest) -> Iterator[None]:
         yield
 
 
+def _publication_leaks(item: pytest.Item, sessions: list[Any]) -> list[str]:
+    """Observe callbacks and locks before emergency cleanup can hide a leak."""
+    # ExitStack has no public callback-count API; this is test-only introspection.
+    leaks = [
+        f"Flow session {session.name!r} ({id(session):#x}) has publication callbacks"
+        for session in sessions
+        if session.publication_resources._exit_callbacks
+    ]
+    tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
+    if sys.platform != "win32" and isinstance(tmp_path, Path):
+        from tests.file_lock_probe import invocation_lock_paths, lock_is_held
+
+        leaks.extend(
+            f"Simulation invocation lock still held: {path}"
+            for path in sorted(invocation_lock_paths(tmp_path))
+            if lock_is_held(path)
+        )
+    return leaks
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
-    """Close every Flow session's publication scope, then fail on a still-held lock.
+    """Detect leaked publication resources, then close every tracked session.
 
-    Unit tests drive ``flow._run()`` and report writers directly, bypassing the
-    ``execute_prepared()`` scope that releases Simulation invocation locks.
-    Without this a lock lives until the garbage collector finalizes it, possibly
-    inside a later test that has faked ``fcntl`` (issue #938). It runs after all
-    fixture finalizers, so no test patch of ``Path`` or ``fcntl`` is active.
-    The close runs even when an earlier finalizer failed, so a teardown error
-    cannot hand the lock back to the garbage collector.
+    Direct Flow calls must own their publication scope. Observe leaks after all
+    fixture finalizers so test patches of Path or fcntl are no longer active.
+    Emergency cleanup still runs when a finalizer or the leak probe fails.
     """
     try:
-        result = yield
+        return (yield)
     finally:
-        for session in item.stash.get(_FLOW_SESSIONS, []):
-            session.publication_resources.close()
-    tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
-    if sys.platform == "win32" or not isinstance(tmp_path, Path):
-        return result
-    from tests.file_lock_probe import invocation_lock_paths, lock_is_held
-
-    held = sorted(path for path in invocation_lock_paths(tmp_path) if lock_is_held(path))
-    if held:
-        pytest.fail(f"Simulation invocation locks leaked past the test: {held}")
-    return result
+        sessions = item.stash.get(_FLOW_SESSIONS, [])
+        try:
+            leaks = _publication_leaks(item, sessions)
+        finally:
+            with ExitStack() as cleanup:
+                for session in sessions:
+                    cleanup.callback(session.publication_resources.close)
+        if leaks:
+            pytest.fail("Publication resources leaked past the test:\n" + "\n".join(leaks))
 
 
 @pytest.fixture(autouse=True)

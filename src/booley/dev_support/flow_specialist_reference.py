@@ -249,7 +249,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "revision require fresh discovery. Historical accepted packages stay "
         "readable; previously discarded proposals cannot be recovered.",
         "",
-        "Call `reviewer --scope <file,...> --category <category> --focus <focus>`.",
+        'Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.',
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -265,18 +265,18 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
     lines.extend(
         [
             "",
-            "Controls: required `--scope <file,...>` selects files; repeatable "
-            "`--steer` adds review context; `--dry-run` validates and previews "
+            'Arguments: required `scope="<file,...>"` selects files; '
+            '`steer=["<context>"]` adds review context; `dry_run=true` validates and previews '
             "without invoking an agent. The `spec` focus needs specification text: "
             "Ticket Mode resolves its mounted ticket or linked spec automatically, "
-            "while standalone mode uses `--spec <path>`.",
+            'while Interactive Mode uses `spec="<path>"`.',
         ]
     )
     return lines
 
 
 def _render_mutation_tester_reference() -> list[str]:
-    """Render mutation goals and controls from the specialist's CLI contract."""
+    """Render mutation goals and controls from the Specialist's MCP contract."""
     return [
         "#### `mutation_tester`",
         "",
@@ -287,20 +287,20 @@ def _render_mutation_tester_reference() -> list[str]:
         "",
         "**Mutation campaign modes:**",
         "",
-        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Standalone CLI options |",
+        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |",
         "|----------|-----------------------------------------|------------------------|",
-        "| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal options)_ — the same 10-of-10 campaign |",
-        "| Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |",
-        "| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |",
+        "| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |",
+        '| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |',
+        '| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |',
         "",
-        "`--dry-run` validates Target metadata and prints the source-size breakdown "
+        "`dry_run=true` validates Target metadata and prints the source-size breakdown "
         "and proposed auto count without invoking an agent or simulator.",
         "",
-        "Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; "
-        "`--target <sim-target>` chooses exactly one complete runnable Target suite; "
-        "`--steer <context>` biases mutation selection. A valid lock "
+        'Call the `mutation_tester` Specialist from your connected agent session: `scope="<rtl-file,...>"` chooses mutation sites; '
+        '`target="<sim-target>"` chooses exactly one complete runnable Target suite; '
+        '`steer=["<context>"]` biases mutation selection. A valid lock '
         "is reused on later runs, so new steering takes effect only with "
-        "`--regen-lock`. The Target supplies the testbench top and complete RTL "
+        "`regen_lock=true`. The Target supplies the testbench top and complete RTL "
         "closure; they are not separate caller inputs.",
     ]
 
@@ -310,8 +310,8 @@ def _render_coverage_analyst_reference() -> list[str]:
     return [
         "#### `coverage_analyst`",
         "",
-        "Call `coverage_analyst --campaign <exact-coverage.json> "
-        "[--instruction <question>]`. The read-only Analyst explains retained "
+        'Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` '
+        'and optional `instruction="<question>"`. The read-only Analyst explains retained '
         "native evidence and proposes advisory next steps. It does not run "
         "Simulation, read waveforms, evaluate Criteria, or approve waivers. "
         "Verified Target sources are optional; stale sources give report-only analysis.",
@@ -330,6 +330,11 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
     )
     lines = [
         "LLM-backed sub-agents running in scoped, isolated workspaces:",
+        "",
+        "Ask your connected agent session to invoke a Specialist by name with the arguments below. "
+        "Specialists currently have no public CLI; "
+        "[public Specialist CLI support is tracked in #783]"
+        "(https://github.com/boldaxolotl/booley/issues/783).",
         "",
         "| Specialist | Purpose | Sets | Modifies code |",
         "|------------|---------|------|:-------------:|",
