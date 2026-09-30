@@ -174,8 +174,8 @@ checked and exit `2` takes precedence over `1`.
 
 ### Resuming an interrupted run
 
-Resume is for long, heavy runs, such as a multi-hour regression or a large
-coverage collection, where re-running tests that already finished is expensive.
+Resume is for long, heavy runs, such as a multi-hour regression, where
+re-running tests that already finished is expensive.
 For a short run, just start it again.
 
 Every simulation run records its plan and results in a durable Simulation
@@ -199,11 +199,13 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
   |---|---|---|
   | HDL | one test | Only tests without a recorded result run again. |
   | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
-  | `--coverage` | the whole collection | Rebuilds and re-runs every test into a distinct nested Coverage Campaign. |
+  | `--coverage` | the whole collection | Refused (exit `2`) until the collection has a recorded result; then only publication is finished. |
 
-- Resuming a coverage run saves time only when the collection already finished
-  and the interruption hit while results were being published. Otherwise it
-  costs the same as a new run.
+- Resuming a coverage run whose collection never finished is refused with exit
+  `2`, before anything builds or runs, and `--dry-run` reports the same
+  refusal. Start a new `booley flow sim --coverage` run instead. Resume
+  finishes a coverage run only when the interruption hit while results were
+  being published.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources or suite changed since the original

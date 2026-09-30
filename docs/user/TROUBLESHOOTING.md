@@ -612,9 +612,11 @@ Simulation starts a new numbered invocation when rerun without an exact
 named manifest; Booley never guesses a “latest” Simulation Campaign. A resume
 still creates a new compatibility invocation while authoritative results remain
 beside the original manifest. Ordinary HDL retries only interrupted work items;
-Cocotb retries the whole interrupted batch; native coverage retries the whole
-serial collection/merge aggregate into a distinct nested Coverage Campaign.
-Neither Cocotb nor coverage resumes or overwrites an interrupted native result
+Cocotb retries the whole interrupted batch; native coverage never retries its
+collection: a resume, or its `--dry-run` preview, of a coverage Campaign whose
+collection has no recorded result exits `2`; start a new
+`booley flow sim --coverage` run. A coverage resume only finishes an
+interrupted publication. Neither Cocotb nor coverage resumes or overwrites an interrupted native result
 database. Legacy and elaboration-only invocations are not resumable. Empty
 `.pruned-N` directories reserve historical invocation numbers and should be
 retained.

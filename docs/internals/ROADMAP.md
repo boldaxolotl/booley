@@ -28,8 +28,9 @@ measurement](#native-coverage-campaigns), regression management, and failure
 triage. Durable single-Target Simulation Campaigns now retain an immutable
 exact suite, authenticated shared Simulator Bundles, isolated append-only
 attempts, strict resume, and bounded Project-local parallel execution. Cocotb
-is one resumable batch work item and native coverage is one resumable aggregate
-with an attempt-scoped nested Coverage Campaign. This delivers local durable
+is one resumable batch work item and native coverage is one aggregate work item
+with an attempt-scoped nested Coverage Campaign; resume finishes its publication
+but refuses an unfinished collection. This delivers local durable
 regression management and bounded campaign parallelism; multi-Target/seed
 matrices, named/nightly scheduling, and cross-Campaign result exploration remain
 planned. Failure triage should cluster related failures, distinguish

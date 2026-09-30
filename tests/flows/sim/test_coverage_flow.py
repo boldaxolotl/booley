@@ -1204,7 +1204,8 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     assert progress["pending_targets"] == ["sim_0", "sim_1"]
 
 
-def _interrupt_coverage_invocation(tmp_path, monkeypatch, *, selected=None, skipped=()):
+def _prepare_coverage_origin(tmp_path, monkeypatch, *, skipped=()):
+    """Create the two-test coverage Project shared by the interruption fixtures."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
@@ -1215,12 +1216,28 @@ def _interrupt_coverage_invocation(tmp_path, monkeypatch, *, selected=None, skip
     (data / "tests.toml").write_text(
         f'[sim_0]\ntests = ["reset", "wrap"]\nskip = {json.dumps(list(skipped))}\n'
     )
-    reports = tmp_path / "reports"
+    return tmp_path / "reports"
+
+
+def _interrupt_coverage_collection(
+    tmp_path, monkeypatch, *, selected=None, skipped=(), boundary=None
+):
+    """Interrupt a coverage run before its collection records a result.
+
+    Without ``boundary`` the interrupt lands inside the executor, leaving the
+    aggregate work item ``interrupted``.  With ``"after:manifest_commit"`` it
+    lands right after the Manifest is published, leaving the item ``pending``.
+    """
+    reports = _prepare_coverage_origin(tmp_path, monkeypatch, skipped=skipped)
 
     class Interrupted(NativeExecution):
         def run(self, request):
             super().run(request)
             raise KeyboardInterrupt("simulated process interruption")
+
+    def checkpoint(actual):
+        if actual == boundary:
+            raise KeyboardInterrupt(f"simulated interruption at {boundary}")
 
     request = SimRequest(
         target="sim_0",
@@ -1231,15 +1248,49 @@ def _interrupt_coverage_invocation(tmp_path, monkeypatch, *, selected=None, skip
     )
     with pytest.raises(KeyboardInterrupt):
         SimulateFlow(
-            coverage_execution=lambda handle, options, _commands, _access: Interrupted()
+            coverage_execution=lambda handle, options, _commands, _access: Interrupted(),
+            campaign_publication_checkpoint=checkpoint if boundary else None,
         ).execute(request)
     return reports, request
+
+
+def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, skipped=()):
+    """Interrupt a coverage run after its collection result committed.
+
+    The aggregate work item is complete, so the origin is a legitimate
+    publication-only resume source.  Returns ``(reports, request, runs)``.
+    """
+    reports = _prepare_coverage_origin(tmp_path, monkeypatch, skipped=skipped)
+    runs: list[str | None] = []
+
+    class Counted(NativeExecution):
+        def run(self, request):
+            runs.append(request.test)
+            return super().run(request)
+
+    def checkpoint(actual):
+        if actual == "before:summary_replace":
+            raise KeyboardInterrupt("simulated publication interruption")
+
+    request = SimRequest(
+        target="sim_0",
+        test=selected,
+        work_dir=tmp_path,
+        coverage=True,
+        report_dir=reports,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        SimulateFlow(
+            coverage_execution=lambda handle, options, _commands, _access: Counted(),
+            campaign_publication_checkpoint=checkpoint,
+        ).execute(request)
+    return reports, request, runs
 
 
 def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypatch):
     from booley.flows.sim.campaign_retention import prune_invocation
 
-    reports, request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     original_path = next(
         (reports / "sim/1/targets/sim_0/campaign").glob(
             "work-items/*/attempts/*/coverage-campaign/native/raw/001-reset.dat"
@@ -1261,7 +1312,7 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     assert (reports / "sim/1/targets/sim_0/coverage.json").is_file()
     assert original_path.read_bytes() == original
     attempts = list((reports / "sim/1/targets/sim_0/campaign").glob("work-items/*/attempts/*"))
-    assert len(attempts) == 2
+    assert len(attempts) == 1
     projection = reports / "sim/1/targets/sim_0/simulation.json"
     document = json.loads(projection.read_text())
     assert document["campaign_manifest"]["path"] == "campaign/manifest.json"
@@ -1295,7 +1346,7 @@ def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_pa
         prune_invocation,
     )
 
-    reports, request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     result = SimulateFlow(
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
@@ -1336,7 +1387,7 @@ def test_dependent_pruning_retries_after_dependent_cleanup_interruption(
 ):
     from booley.flows.sim.campaign_retention import prune_invocation
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     result = SimulateFlow(
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
@@ -1371,7 +1422,7 @@ def test_dependent_pruning_retries_after_dependent_cleanup_interruption(
 def test_dependent_pruning_retries_after_origin_cleanup_interruption(tmp_path, monkeypatch):
     from booley.flows.sim.campaign_retention import prune_invocation
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     result = SimulateFlow(
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
@@ -1404,7 +1455,7 @@ def test_dependent_pruning_preflights_all_members_before_mutation(tmp_path, monk
         prune_invocation,
     )
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     origin = reports / "sim/1"
     manifest = origin / "targets/sim_0/campaign/manifest.json"
     result = SimulateFlow(
@@ -1436,7 +1487,7 @@ def test_dependent_pruning_refuses_locked_member_before_mutation(tmp_path, monke
         prune_invocation,
     )
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     origin = reports / "sim/1"
     manifest = origin / "targets/sim_0/campaign/manifest.json"
     result = SimulateFlow(
@@ -1460,7 +1511,7 @@ def test_dependent_pruning_refuses_locked_member_before_mutation(tmp_path, monke
 def test_dependent_pruning_removes_multiple_dependents(tmp_path, monkeypatch):
     from booley.flows.sim.campaign_retention import prune_invocation
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     for _expected in (2, 3):
         result = SimulateFlow(
@@ -1481,7 +1532,7 @@ def test_cross_root_resume_dependency_is_registered_and_pruned(tmp_path, monkeyp
         prune_invocation,
     )
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     resumed = tmp_path / "resumed"
     result = SimulateFlow(
@@ -1505,7 +1556,7 @@ def test_native_pruning_preserves_live_resume_dependency(tmp_path, monkeypatch):
     )
     from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     result = SimulateFlow(
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
@@ -1528,7 +1579,7 @@ def test_cross_root_dependent_pruning_rejects_forged_report_reference(tmp_path, 
         prune_invocation,
     )
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     resumed = tmp_path / "resumed"
     result = SimulateFlow(
@@ -1554,7 +1605,7 @@ def test_cross_root_dependent_pruning_rejects_matching_forged_digests(tmp_path, 
         prune_invocation,
     )
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     resumed = tmp_path / "resumed"
     result = SimulateFlow(
@@ -1585,7 +1636,7 @@ def test_same_root_legacy_resume_without_receipt_is_still_detected(tmp_path, mon
         prune_invocation,
     )
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     result = SimulateFlow(
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
@@ -1605,7 +1656,7 @@ def test_same_root_legacy_resume_without_receipt_is_still_detected(tmp_path, mon
 
 
 def test_resume_reports_dependency_registration_failure(tmp_path, monkeypatch):
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
 
     def fail_registration(*_args, **_kwargs):
@@ -1627,7 +1678,7 @@ def test_resume_reports_dependency_registration_failure(tmp_path, monkeypatch):
 def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
     from booley.flows.sim.campaign_reports import campaign_invocation_lock
 
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
 
     with campaign_invocation_lock(reports / "sim/1"):
@@ -1640,7 +1691,7 @@ def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
 
 
 def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
-    reports, _request = _interrupt_coverage_invocation(
+    reports, _request, _runs = _interrupt_coverage_publication(
         tmp_path, monkeypatch, selected=("wrap",), skipped=("wrap",)
     )
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
@@ -1651,7 +1702,8 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=tmp_path / "resumed"))
 
     assert result.exit_code == 0
-    assert [request.test.name for request in execution.runs] == ["wrap"]
+    # The origin collected "wrap"; a publication-only resume never re-runs it.
+    assert execution.runs == []
     report_path = tmp_path / "resumed/sim/1/report.json"
     report = json.loads(report_path.read_text())
     detail = report["detail"]
@@ -1678,7 +1730,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
 
 
 def test_coverage_resume_uses_manifest_when_origin_progress_is_missing(tmp_path, monkeypatch):
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     (reports / "sim/1/progress.json").unlink()
     resumed_reports = tmp_path / "resumed"
@@ -1695,24 +1747,80 @@ def test_coverage_resume_uses_manifest_when_origin_progress_is_missing(tmp_path,
 
 
 def test_interrupted_coverage_resume_publishes_terminal_progress(tmp_path, monkeypatch):
-    reports, _request = _interrupt_coverage_invocation(tmp_path, monkeypatch)
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     resumed_reports = tmp_path / "resumed"
 
-    class InterruptedAgain(NativeExecution):
-        def run(self, request):
-            super().run(request)
+    def interrupt_again(boundary):
+        if boundary == "before:summary_replace":
             raise KeyboardInterrupt("resume interrupted")
 
     with pytest.raises(KeyboardInterrupt, match="resume interrupted"):
-        SimulateFlow(coverage_execution=lambda *_args: InterruptedAgain()).execute(
-            SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed_reports)
-        )
+        SimulateFlow(
+            coverage_execution=lambda *_args: NativeExecution(),
+            campaign_publication_checkpoint=interrupt_again,
+        ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed_reports))
 
     progress = json.loads((resumed_reports / "sim/1/progress.json").read_text())
     assert progress["phase"] == "aborted"
     assert progress["completed_targets"] == []
     assert progress["pending_targets"] == ["sim_0"]
+
+
+def _campaign_bytes(root):
+    return {path: path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("state", ["interrupted", "pending"])
+def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, state, dry_run):
+    from booley.flows.sim.campaign.store import CampaignStore
+
+    reports, _request = _interrupt_coverage_collection(
+        tmp_path,
+        monkeypatch,
+        boundary="after:manifest_commit" if state == "pending" else None,
+    )
+    campaign = reports / "sim/1/targets/sim_0/campaign"
+    manifest = campaign / "manifest.json"
+    observed = CampaignStore(manifest.parent).scan()
+    assert len(getattr(observed, state)) == 1
+    tree_before = set(reports.rglob("*"))
+    bytes_before = _campaign_bytes(campaign)
+    factory_calls = []
+
+    def factory(*_args):
+        factory_calls.append(_args)
+        return NativeExecution()
+
+    result = SimulateFlow(coverage_execution=factory).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, dry_run=dry_run)
+    )
+
+    assert result.exit_code == 2
+    text = result.outcome.report_text
+    assert "booley flow sim --target sim_0 --coverage" in text
+    assert "no recorded result" in text
+    assert factory_calls == []
+    assert set(reports.rglob("*")) == tree_before
+    assert _campaign_bytes(campaign) == bytes_before
+    assert result.outcome.detail[state] == list(getattr(observed, state))
+
+
+def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monkeypatch):
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    campaign = reports / "sim/1/targets/sim_0/campaign"
+    result_path = next(campaign.glob("work-items/*/result.json"))
+    raw = bytearray(result_path.read_bytes())
+    raw[len(raw) // 2] ^= 0x01
+    result_path.write_bytes(bytes(raw))
+
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(resume_from=campaign / "manifest.json", work_dir=tmp_path, report_dir=reports)
+    )
+
+    assert result.exit_code == 2
+    assert result.outcome.report_text.startswith("Simulation Campaign integrity failure:")
 
 
 def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
@@ -1754,21 +1862,19 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
 
 
 @pytest.mark.parametrize(
-    ("boundary", "published", "reruns"),
+    ("boundary", "published"),
     [
-        ("before:coverage_campaign", False, True),
-        ("after:coverage_campaign", False, True),
-        ("before:simulation_result", False, True),
-        ("after:simulation_result", False, False),
-        ("before:summary_replace", False, False),
-        ("after:summary_replace", False, False),
-        ("before:coverage_reference", False, False),
-        ("after:coverage_reference", True, False),
+        ("after:simulation_result", False),
+        ("before:summary_replace", False),
+        ("after:summary_replace", False),
+        ("before:coverage_reference", False),
+        ("after:coverage_reference", True),
     ],
 )
 def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
-    tmp_path, monkeypatch, boundary, published, reruns
+    tmp_path, monkeypatch, boundary, published
 ):
+    """A finished collection with unfinished publication resumes without re-running."""
     from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 
     reports, runs, public, execution_factory, interrupted = _crash_coverage_publication(
@@ -1778,9 +1884,7 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
     failed = interrupted.outcome.detail["targets"]["sim_0"]
     assert failed["passed"] is True
     assert failed["simulation"] == "pass"
-    assert failed["collection"] == (
-        "infrastructure_error" if boundary == "before:coverage_campaign" else "complete"
-    )
+    assert failed["collection"] == "complete"
     assert failed["evaluation"] == "not_requested"
     assert ("coverage_campaign" in failed) is (boundary == "after:coverage_reference")
     completed_runs = tuple(runs)
@@ -1791,14 +1895,37 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
     )
 
     assert resumed.exit_code == 0
-    assert tuple(runs) == completed_runs * (2 if reruns else 1)
+    assert tuple(runs) == completed_runs
     assert resolve_coverage_campaign_reference(public).campaign_path.is_file()
     nested_campaigns = list(
         public.parent.glob("campaign/work-items/*/attempts/*/coverage-campaign/coverage.json")
     )
-    expected_campaigns = 2 if reruns and boundary != "before:coverage_campaign" else 1
-    assert len(nested_campaigns) == expected_campaigns
+    assert len(nested_campaigns) == 1
     assert all(load_coverage_campaign(path).campaign.campaign_id for path in nested_campaigns)
+
+
+@pytest.mark.parametrize(
+    "boundary", ["before:coverage_campaign", "after:coverage_campaign", "before:simulation_result"]
+)
+def test_coverage_collection_crash_refuses_resume(tmp_path, monkeypatch, boundary):
+    """A collection without a recorded result is refused, never silently re-run."""
+    reports, runs, public, execution_factory, _interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, boundary
+    )
+    manifest = public.parent / "campaign/manifest.json"
+    completed_runs = tuple(runs)
+    nested_before = list(public.parent.glob("campaign/work-items/*/attempts/*/coverage-campaign"))
+
+    resumed = SimulateFlow(coverage_execution=execution_factory).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+
+    assert resumed.exit_code == 2
+    assert "booley flow sim --target sim_0 --coverage" in resumed.outcome.report_text
+    assert "no recorded result" in resumed.outcome.report_text
+    assert tuple(runs) == completed_runs
+    nested_after = list(public.parent.glob("campaign/work-items/*/attempts/*/coverage-campaign"))
+    assert nested_after == nested_before
 
 
 def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
@@ -1834,38 +1961,6 @@ def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
     assert detail["evaluation"] == "not_requested"
 
 
-def test_resumed_nested_publication_failure_preserves_current_attempt_truth(tmp_path, monkeypatch):
-    reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "before:simulation_result"
-    )
-    armed = True
-
-    def checkpoint(boundary):
-        nonlocal armed
-        if armed and boundary == "before:coverage_campaign":
-            armed = False
-            raise OSError("injected resumed nested publication failure")
-
-    resumed = SimulateFlow(
-        coverage_execution=execution_factory,
-        campaign_publication_checkpoint=checkpoint,
-    ).execute(
-        SimRequest(
-            resume_from=public.parent / "campaign/manifest.json",
-            work_dir=tmp_path,
-            report_dir=reports,
-        )
-    )
-
-    assert resumed.exit_code == 2
-    detail = resumed.outcome.detail["targets"]["sim_0"]
-    assert detail["passed"] is True
-    assert detail["simulation"] == "pass"
-    assert detail["collection"] == "infrastructure_error"
-    assert detail["evaluation"] == "not_requested"
-    assert detail["error"] == "injected resumed nested publication failure"
-
-
 def test_reference_authentication_failure_drops_only_reference(tmp_path, monkeypatch):
     def reject_owner(_resolved):
         raise ValueError("injected owner authentication failure")
@@ -1888,7 +1983,7 @@ def test_reference_authentication_failure_drops_only_reference(tmp_path, monkeyp
 
 def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeypatch):
     reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "before:simulation_result"
+        tmp_path, monkeypatch, "after:simulation_result"
     )
     armed = True
 

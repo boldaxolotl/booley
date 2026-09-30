@@ -106,6 +106,39 @@ def test_selection_rejection_precedes_target_authorization(
     assert build_timeout_resolutions == []
 
 
+def test_unfinished_coverage_refusal_precedes_target_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _handle("sim", "acme:lib:dut:1#sim", tmp_path)
+    flow = SimulateFlow()
+    flow._state = DevelopmentState()
+    flow._args = SimpleNamespace(mode=SimulationMode.SIMULATE)
+    monkeypatch.setattr(flow.context, "_criterion_binding_gate", lambda: None)
+    resume = SimpleNamespace()
+    monkeypatch.setattr(
+        flow,
+        "_prepare_campaign_targets",
+        lambda: ((handle,), resume, ("sim",), {"sim": ["smoke"]}),
+    )
+    refused = EndpointOutcome(exit_code=2, report_text="coverage collection never finished")
+    monkeypatch.setattr(flow, "_refuse_unfinished_coverage_resume", lambda _resume: refused)
+    build_timeout_resolutions: list[object] = []
+    monkeypatch.setattr(
+        flow,
+        "_effective_build_timeout_ms",
+        lambda: build_timeout_resolutions.append(object()),
+    )
+    authorized: list[tuple[TargetHandle, ...]] = []
+    monkeypatch.setattr(
+        "booley.flows.endpoint_admission.authorize_simulation_targets",
+        lambda _context, targets: authorized.append(targets),
+    )
+
+    assert flow.prepare_simulation_endpoint() is refused
+    assert authorized == []
+    assert build_timeout_resolutions == []
+
+
 def test_state_backed_simulation_preflight_rejection_reaches_stderr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
