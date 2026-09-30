@@ -65,6 +65,9 @@ def owned_main_dump_literals(root: Path, inspection: TargetInspection) -> tuple[
     return tuple(dict.fromkeys(found))
 
 
+_TEMPLATE_FIELD = re.compile(r"\{[^{}]*\}")
+
+
 def _segments_match(pattern: tuple[str, ...], parts: tuple[str, ...]) -> bool:
     """Match glob *pattern* segments to path *parts* like ``Path.glob``.
 
@@ -103,19 +106,20 @@ def literal_is_declared(
     templated one (undecidable statically, and Doctor must never cry wolf).
     """
     literal_absolute = posixpath.isabs(literal)
-    base = "" if run_cwd_is_template else _absolute_form(run_cwd, project_root.as_posix())
+    # A templated run_cwd component (``{attempt}``) becomes one placeholder
+    # segment: template expansion yields exactly one path component, so
+    # ``..`` and sibling comparisons stay decidable.
+    base = _absolute_form(
+        _TEMPLATE_FIELD.sub("_tpl_", run_cwd) if run_cwd_is_template else run_cwd,
+        project_root.as_posix(),
+    )
     for pattern in patterns:
         pattern_absolute = posixpath.isabs(pattern)
         if literal_absolute and pattern_absolute:
             if _glob_covers(pattern, literal):
                 return True
-        elif literal_absolute:
-            continue
-        elif not pattern_absolute and _glob_covers(pattern, literal):
-            return True
-        elif run_cwd_is_template:
-            if pattern_absolute or ".." in PurePosixPath(pattern).parts:
-                return True
+        elif run_cwd_is_template and (pattern_absolute or literal_absolute):
+            return True  # only an expanded run_cwd could decide this
         elif _glob_covers(_absolute_form(pattern, base), _absolute_form(literal, base)):
             return True
     return False

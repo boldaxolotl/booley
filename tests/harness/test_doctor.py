@@ -7533,6 +7533,7 @@ int main(int argc, char** argv) {{
         options: str = "[--timing, --exe]",
         tool: str = "verilator",
         cpp: str | None = None,
+        run_cwd: str = ".",
     ) -> _FixCollector:
         from booley.runtime.project_dir import reset_cache
 
@@ -7546,7 +7547,7 @@ int main(int argc, char** argv) {{
         project = tmp_path / ".booley_project"
         project.mkdir(exist_ok=True)
         (project / "booley.toml").write_text(
-            f'[flows.sim]\nrun_cwd = "."\n{trace_config}', encoding="utf-8"
+            f'[flows.sim]\nrun_cwd = "{run_cwd}"\n{trace_config}', encoding="utf-8"
         )
         core = _write_core(
             tmp_path,
@@ -7617,6 +7618,28 @@ targets:
             trace_config='trace_files = ["/unrelated/sim.vcd"]\n',
         )
         assert len(c.warned) == 1
+
+    def test_relative_pattern_covers_absolute_literal_under_run_cwd(self, tmp_path: Path):
+        literal = (tmp_path / "sim.vcd").as_posix()
+        c = self._check(
+            tmp_path, f'tfp->open("{literal}");', trace_config='trace_files = ["sim.vcd"]\n'
+        )
+        assert not c.warned and len(c.passed) == 1
+
+    @pytest.mark.parametrize(
+        ("pattern", "covered"), [("sim.vcd", True), ("../sim.vcd", False), ("*.vcd", True)]
+    )
+    def test_templated_run_cwd_is_decided_with_one_placeholder_segment(
+        self, tmp_path: Path, pattern: str, covered: bool
+    ):
+        c = self._check(
+            tmp_path,
+            'tfp->open("sim.vcd");',
+            trace_config=f'trace_files = ["{pattern}"]\n',
+            run_cwd="runs/{attempt}",
+        )
+        assert bool(c.passed) is covered
+        assert bool(c.warned) is not covered
 
     def test_auto_main_target_is_left_to_trace_unavailable(self, tmp_path: Path):
         c = self._check(tmp_path, 'tfp->open("sim.vcd");', options="[--main, --timing]")

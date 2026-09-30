@@ -96,6 +96,23 @@ def test_fresh_candidates_list_new_and_changed_but_not_unchanged(tmp_path: Path)
     assert omitted == 0
 
 
+def test_fresh_candidates_drop_declared_and_empty_files(tmp_path: Path) -> None:
+    run_cwd, build_root = tmp_path / "run", tmp_path / "build"
+    run_cwd.mkdir()
+    build_root.mkdir()
+    policy = TraceArtifactPolicy.capture(
+        run_cwd=run_cwd, build_root=build_root, patterns=("declared.fst",)
+    )
+    (run_cwd / "declared.fst").write_bytes(b"x")
+    (run_cwd / "empty.vcd").write_bytes(b"")
+    (run_cwd / "real.vcd").write_bytes(b"x")
+
+    listed, omitted = policy.fresh_candidates(owned=frozenset(), ignored_dirs=(), limit=10)
+
+    assert listed == (run_cwd.resolve() / "real.vcd",)
+    assert omitted == 0
+
+
 def test_fresh_candidates_drop_owned_paths_and_apply_limit(tmp_path: Path) -> None:
     run_cwd, _build_root, policy = _policy_with_old(tmp_path)
     for name in ("a.vcd", "b.vcd", "c.vcd", "own.vcd"):
