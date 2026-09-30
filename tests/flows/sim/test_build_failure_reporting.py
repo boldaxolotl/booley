@@ -342,6 +342,40 @@ def test_coverage_build_timeout_is_infrastructure_with_reason_first(
     assert build.output.splitlines()[0] == TIMEOUT_REASON
 
 
+def test_coverage_build_timeout_reports_not_run_infrastructure_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from booley.flows.sim.coverage_invocation import (
+        CoverageInvocationRequest,
+        prepare_coverage_invocation,
+    )
+    from booley.flows.sim.coverage_transaction import run_coverage_target
+    from tests.flows.sim.test_coverage_invocation import project
+    from tests.flows.sim.test_coverage_transaction import NativeExecution, Progress
+
+    # Separate roots: both fixtures write the same FuseSoC core.
+    (tmp_path / "adapter").mkdir()
+    (tmp_path / "coverage_project").mkdir()
+    timed_out = _timed_out_coverage_build(tmp_path / "adapter", monkeypatch)
+    tmp_path = tmp_path / "coverage_project"
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class TimedOut(NativeExecution):
+        def build(self, request):
+            return timed_out
+
+    outcome = run_coverage_target(plan, TimedOut(), Progress())
+
+    assert outcome.exit_code == 2
+    assert outcome.detail["passed"] is None
+    assert outcome.detail["simulation"] == "not_run"
+    assert outcome.detail["collection"] == "infrastructure_error"
+
+
 def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> None:
     failing = _FailedCoverageBuild(infrastructure=True)
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
@@ -422,3 +456,63 @@ def test_build_report_fits_codec_detail_ceiling() -> None:
     assert "\x1b" not in report
     assert "\x00" not in report
     assert "BOOLEY_BUILD_STAGE" not in report
+
+
+def test_ansi_prefixed_marker_line_is_dropped_from_tail() -> None:
+    tail = build_module.build_output_tail(
+        "compiling\n\x1b[31mBOOLEY_BUILD_STAGE token=abc rc=1\x1b[0m\nlast\n"
+    )
+
+    assert "BOOLEY_BUILD_STAGE" not in tail
+    assert tail == "compiling\nlast"
+
+
+def test_hostile_oom_build_output_publishes_and_decodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hostile = (
+        '\\"\t漢字' * 200
+        + "\x1b[31mred\x1b[0m\x00\n"
+        + "y" * 10_000
+        + "\nBOOLEY_BUILD_STAGE token=abc123 rc=137\n"
+    )
+    handle = _handle(tmp_path / "engine")
+    outcome = _run_execution(
+        handle,
+        _prepared(handle, cocotb=False),
+        lambda _command, timeout: SubprocessResult(
+            returncode=137, stdout=hostile, oom_kill_delta=1, peak_rss_mb=31744.4
+        ),
+        ("smoke",),
+        cocotb=False,
+    )
+    executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
+
+    with pytest.raises(build_module.SimulationBuildInfrastructureError):
+        SimulationCampaign(executor).run(request)
+
+    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    result = _first_build_result(store)
+    text = result["observation"]["detail"]["text"]
+    assert result["state"] == "infrastructure_error"
+    assert "OOM kill" in text.splitlines()[0]
+    assert "\x1b" not in text
+    assert "BOOLEY_BUILD_STAGE" not in text
+    assert len(canonical_json_bytes({"text": text})) <= MAX_DETAIL_BYTES
+    assert store.scan().interrupted
+
+
+def test_campaign_resume_failure_reports_build_timeout_first() -> None:
+    error = build_module.SimulationBuildInfrastructureError("sim", _timeout_outcome())
+
+    with patch("booley.flows.sim.flow._fresh_campaign_recovery_detail", return_value={}):
+        endpoint = SimulateFlow()._campaign_resume_failure(
+            SimpleNamespace(), SimpleNamespace(), Path(), error
+        )
+
+    assert endpoint.exit_code == EXIT_ERROR
+    assert TIMEOUT_REASON in endpoint.report_text.splitlines()[0]
+    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
+    assert endpoint.detail["build_stage"]["timed_out"] is True
+    assert LAST_LINE in endpoint.report_text
+    assert HEAD_LINE not in endpoint.report_text

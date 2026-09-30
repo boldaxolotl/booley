@@ -495,11 +495,11 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 def build_output_tail(output: str) -> str:
     """Return a bounded, marker-free, control-free excerpt of build output."""
-    lines = [
-        _CONTROL_CHARS_RE.sub("", _ANSI_CSI_RE.sub("", line))
-        for line in output.splitlines()
-        if not _BUILD_MARKER_LINE_RE.match(line)
-    ]
+    # Sanitize before the marker test so an ANSI-prefixed marker cannot slip by.
+    sanitized = (
+        _CONTROL_CHARS_RE.sub("", _ANSI_CSI_RE.sub("", line)) for line in output.splitlines()
+    )
+    lines = [line for line in sanitized if not _BUILD_MARKER_LINE_RE.match(line)]
     tail = "\n".join(lines[-BUILD_REPORT_TAIL_LINES:]).strip()
     encoded = tail.encode("utf-8")
     if len(encoded) <= BUILD_REPORT_TAIL_BYTES:
