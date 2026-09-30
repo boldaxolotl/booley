@@ -120,6 +120,38 @@ def _apply_guidance_action(action: InitAction) -> None:
     _link_file(target.path, target.desired_identity, target.link_target)
 
 
+def detach_guidance_hardlinks(project_root: Path, project_dir: Path) -> tuple[Path, ...]:
+    """Remove Booley's root hardlinks to the canonical guidance file.
+
+    On Windows without Developer Mode the root links are hardlinks, which make
+    the canonical file ineligible for line-ending normalization: rewriting one
+    name of a hardlinked file would silently split it from the others, so the
+    line-ending repair refuses. Only untracked root entries sharing the
+    canonical file's identity are removed; their content lives on in the
+    canonical file, and :func:`ensure_guidance_links` recreates them. Tracked
+    files, symlinks, and copies are left alone.
+    """
+    canon = project_dir / CANON_NAME
+    try:
+        if not canon.is_file() or canon.stat().st_nlink < 2:
+            return ()
+    except OSError:
+        return ()
+    detached: list[Path] = []
+    for name in LINK_NAMES:
+        link = project_root / name
+        try:
+            if link.is_symlink() or not link.is_file() or not link.samefile(canon):
+                continue
+        except OSError:
+            continue
+        if _is_git_tracked(project_root, link):
+            continue
+        link.unlink()
+        detached.append(link)
+    return tuple(detached)
+
+
 def guidance_entry_current(project_root: Path, entry: Path, canon: Path) -> bool:
     """Whether a root guidance entry is a live link or matching tracked file."""
     if _points_to(entry, canon):
