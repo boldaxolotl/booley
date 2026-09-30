@@ -5408,6 +5408,29 @@ class TestFailPathSelfTest:
         assert not rec.fails()
         assert any("correctly graded a failure" in m for _, m in rec.events)
 
+    def test_selftest_announces_each_case_before_running_it(self, tmp_path, monkeypatch, capsys):
+        # The RUN line must be flushed before the (long) EDA subprocess starts.
+        printed_before_run: list[str] = []
+        _set_venue(monkeypatch, False)
+
+        def fake_run(cmd, **kwargs):
+            printed_before_run.append(capsys.readouterr().out)
+            kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            return subprocess.CompletedProcess(cmd, {"good": 0, "bad": 1}[kind], "", "")
+
+        monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+        monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
+        project = self._audit(tmp_path)
+        rec = _Rec()
+        runtime = doctor._DoctorFlowRuntime(project.project_root, "docker")
+
+        doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
+
+        assert len(printed_before_run) == 2
+        assert "RUN   sim self-test good case" in printed_before_run[0]
+        assert "real EDA run; timeout" in printed_before_run[0]
+        assert "RUN   sim self-test bad case" in printed_before_run[1]
+
     def test_selftests_cannot_inherit_ticket_acceptance_context(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
         ticket_vars = {
@@ -7435,3 +7458,44 @@ def test_ticket_board_layout_probe_fails_when_git_cannot_be_asked(tmp_path, monk
     assert [f.severity for f in findings] == ["fail"]
     assert "Ticket Board cannot be checked" in findings[0].message
     assert "fatal: bad index" in findings[0].message
+
+
+@pytest.mark.parametrize(
+    ("calls", "expected"),
+    [
+        (
+            [doctor._AgentCallRecord("p", developer_probe.ProbeUsage(100, 0, 5, 0.0))],
+            "Agent-backed checks: 1 agent call, 100 input tokens (0 cached), "
+            "5 output tokens, cost not reported by the agent backend.",
+        ),
+        (
+            [doctor._AgentCallRecord("p", None), doctor._AgentCallRecord("p", None)],
+            "Agent-backed checks: 2 agent calls, 0 input tokens (0 cached), "
+            "0 output tokens, cost $0.0000; usage unknown for 2 failed calls.",
+        ),
+    ],
+)
+def test_agent_usage_summary_edge_cases(calls, expected) -> None:
+    assert doctor._agent_usage_summary(calls) == expected
+
+
+def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (tmp_path / "first.core").write_text(
+        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
+        "  smoke:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
+
+    assert (
+        "RUN   .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
+        in capsys.readouterr().out
+    )
