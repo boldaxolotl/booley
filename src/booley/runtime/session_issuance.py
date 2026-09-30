@@ -33,7 +33,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, COMPILER_CACHE_ROOT_ENV
+from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.devcontainer import (
     EGRESS_NETWORK,
     PROJECT_DIR_TARGET,
@@ -126,7 +126,7 @@ _FIXED_REMOTE_ENV = {
     "NO_PROXY": "localhost,127.0.0.1",
     "BOOLEY_MCP_MODE": "interactive",
     "BOOLEY_PROJECT_DIR": PROJECT_DIR_TARGET,
-    COMPILER_CACHE_ROOT_ENV: f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}",
+    COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
 }
 
 
@@ -594,7 +594,7 @@ def _session_spec_inputs(
             sorted(
                 {
                     **dict(requirements.container_environment),
-                    COMPILER_CACHE_ROOT_ENV: _FIXED_REMOTE_ENV[COMPILER_CACHE_ROOT_ENV],
+                    COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
                 }.items()
             )
         ),
@@ -1186,6 +1186,13 @@ def _validate_remote_environment(remote: dict[str, Any]) -> None:
 
 def _validate_environment(spec: dict[str, Any], license_environment: str | None) -> None:
     container, remote = _environment_sections(spec)
+    # Checked before the exact key set so a Sandbox issued before the shared
+    # compiler cache gets the actionable refresh hint, not a generic key diff.
+    issued_roots = (container.get(COMPILER_CACHE_ROOT_ENV), remote.get(COMPILER_CACHE_ROOT_ENV))
+    if issued_roots != (ISSUED_COMPILER_CACHE_ROOT, ISSUED_COMPILER_CACHE_ROOT):
+        raise RuntimeSpecError(
+            "Compiler-cache root differs from fixed Sandbox policy; refresh the Sandbox"
+        )
     allowed_container = {COMPILER_CACHE_ROOT_ENV}
     if license_environment is not None:
         allowed_container.add("XILINXD_LICENSE_FILE")
@@ -1198,10 +1205,6 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
             )
         )
     _validate_remote_environment(remote)
-    if container.get(COMPILER_CACHE_ROOT_ENV) != _FIXED_REMOTE_ENV[COMPILER_CACHE_ROOT_ENV]:
-        raise RuntimeSpecError(
-            "Compiler-cache root differs from fixed Sandbox policy; refresh the Sandbox"
-        )
     expected = license_environment
     actual = container.get("XILINXD_LICENSE_FILE")
     if actual != expected:

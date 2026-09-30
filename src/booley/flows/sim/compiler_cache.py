@@ -10,15 +10,21 @@ import secrets
 import shlex
 import shutil
 import stat
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.core.boundary import require_dict
+from booley.core.boundary import as_str_list, require_dict
 from booley.core.config_paths import resolve_toml
-from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, COMPILER_CACHE_ROOT_ENV
-from booley.runtime.devcontainer import PROJECT_DIR_TARGET
+from booley.runtime.compiler_cache import (
+    COMPILER_CACHE_RELATIVE,
+    COMPILER_CACHE_ROOT_ENV,
+    COMPILER_CACHE_SEGMENTS,
+    ISSUED_COMPILER_CACHE_ROOT,
+    IssuedCacheIdentity,
+)
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.targets.domain import TargetInspection
 
@@ -48,27 +54,54 @@ class CompilerCacheConfigurationError(ValueError):
     """Invalid explicit compiler-cache configuration or Make override."""
 
 
+_MISSING_SANDBOX_IDENTITY = (
+    "Sandbox lacks the shared compiler-cache identity; run booley session refresh on the host"
+)
+_FOREIGN_ISSUED_ROOT = (
+    "compiler-cache root differs from the authorized Project mount; refresh the Sandbox"
+)
+
+
 @dataclass(frozen=True)
 class CompilerCachePolicy:
-    """Resolved policy; resolution does not create storage or invoke tools."""
+    """Resolved policy; resolution does not create storage or invoke tools.
+
+    ``root`` is ``None`` when no trustworthy shared location exists (for
+    example, a Sandbox issued before the cache); ``unavailable_reason`` then
+    says why, and builds compile uncached.
+    """
 
     enabled: bool
-    root: Path
+    root: Path | None
     max_size: str
+    issued_root: str = ""
+    unavailable_reason: str = ""
+
+    @property
+    def active(self) -> bool:
+        """Whether builds should compile through the Project cache."""
+        return self.enabled and self.root is not None
 
     def environment(self) -> dict[str, str]:
-        return {
-            "OBJCACHE": "ccache" if self.enabled else "",
-            "CCACHE_DIR": str(self.root),
-            "CCACHE_MAXSIZE": self.max_size,
-            "CCACHE_COMPILERCHECK": "content",
-        }
+        """Managed build variables; inactive policies only clear ``OBJCACHE``."""
+        managed = {"OBJCACHE": "", COMPILER_CACHE_ROOT_ENV: self.issued_root}
+        if self.active:
+            managed.update(
+                {
+                    "OBJCACHE": "ccache",
+                    "CCACHE_DIR": str(self.root),
+                    "CCACHE_MAXSIZE": self.max_size,
+                    "CCACHE_COMPILERCHECK": "content",
+                }
+            )
+        return managed
 
 
-def _configuration(project_root: Path) -> dict:
+def _read_compiler_cache_section(project_root: Path) -> dict:
+    """Return the selected checkout's ``[flows.sim.compiler_cache]`` table."""
     directory = resolve_checkout_project_dir(project_root)
-    modern = directory / "booley.toml"
-    if modern.is_symlink() and not modern.exists():
+    booley_toml = directory / "booley.toml"
+    if booley_toml.is_symlink() and not booley_toml.exists():
         raise CompilerCacheConfigurationError(
             "Selected booley.toml is a broken link; repair the configuration"
         )
@@ -104,9 +137,8 @@ def validate_make_assignments(
     ]
     for options in (inspection.flow_options, inspection.tool_options):
         authored = options.get("make_options", ())
-        values.extend(authored if isinstance(authored, (list, tuple)) else (authored,))
-    for value in values:
-        raw = str(value)
+        values.extend(as_str_list(list(authored) if isinstance(authored, tuple) else authored))
+    for raw in values:
         try:
             tokens = shlex.split(raw)
         except ValueError:
@@ -138,9 +170,32 @@ def validate_make_assignments(
                 )
 
 
-def resolve_policy(project_root: Path, *, owner: Path | None = None) -> CompilerCachePolicy:
-    """Read selected-checkout settings and preserve shared operational ownership."""
-    config = _configuration(project_root)
+def resolve_policy(
+    project_root: Path, *, issued: IssuedCacheIdentity, owner: Path | None = None
+) -> CompilerCachePolicy:
+    """Read selected-checkout settings and preserve shared operational ownership.
+
+    Settings errors fail preparation. A missing or foreign issued identity
+    only makes the policy inactive: the build still runs, uncached.
+    """
+    enabled, size = _validated_settings(project_root)
+    if issued.root is None:
+        if issued.in_sandbox:
+            return CompilerCachePolicy(
+                enabled, None, size, unavailable_reason=_MISSING_SANDBOX_IDENTITY
+            )
+        owner_root = (owner or resolve_project_dir(project_root)).resolve()
+        return CompilerCachePolicy(enabled, owner_root / COMPILER_CACHE_RELATIVE, size)
+    if issued.root != ISSUED_COMPILER_CACHE_ROOT:
+        return CompilerCachePolicy(
+            enabled, None, size, issued_root=issued.root, unavailable_reason=_FOREIGN_ISSUED_ROOT
+        )
+    return CompilerCachePolicy(enabled, Path(issued.root), size, issued_root=issued.root)
+
+
+def _validated_settings(project_root: Path) -> tuple[bool, str]:
+    """Return ``(enabled, max_size)`` from strict checkout-local configuration."""
+    config = _read_compiler_cache_section(project_root)
     enabled = config.get("enabled", True)
     size = config.get("max_size", "5G")
     if type(enabled) is not bool:
@@ -149,43 +204,31 @@ def resolve_policy(project_root: Path, *, owner: Path | None = None) -> Compiler
         raise CompilerCacheConfigurationError(
             "flows.sim.compiler_cache.max_size must be a positive integer with suffix M, G, Mi, or Gi (for example 5G)"
         )
-    issued = os.environ.get(COMPILER_CACHE_ROOT_ENV)
-    if (
-        not issued
-        and Path(PROJECT_DIR_TARGET).is_dir()
-        and os.environ.get("BOOLEY_CONTAINER") == "1"
-    ):
-        raise CompilerCacheConfigurationError(
-            "Sandbox lacks shared compiler-cache identity; run booley session refresh on the host"
-        )
-    root = (
-        Path(issued)
-        if issued
-        else (owner or resolve_project_dir(project_root)).resolve() / COMPILER_CACHE_RELATIVE
-    )
-    if issued and issued != f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}":
-        raise CompilerCacheConfigurationError(
-            "Compiler-cache root differs from the authorized Project mount; refresh the Sandbox"
-        )
-    return CompilerCachePolicy(enabled, root, size)
+    return enabled, size
 
 
 def compose_environment(
-    policy: CompilerCachePolicy, target: Mapping[str, str], *, build_root: Path | None = None
+    policy: CompilerCachePolicy,
+    target: Mapping[str, str],
+    *,
+    ambient: Mapping[str, str],
+    build_root: Path | None = None,
 ) -> dict[str, str]:
-    """Managed values win over ambient and explicit Target cache values."""
-    managed = {
-        **policy.environment(),
-        COMPILER_CACHE_ROOT_ENV: os.environ.get(COMPILER_CACHE_ROOT_ENV, ""),
-    }
-    if policy.enabled and build_root is not None:
+    """Managed values win over *ambient* and explicit Target cache values.
+
+    Active builds also get ``CCACHE_BASEDIR`` and a ``-fdebug-prefix-map`` for
+    the generated build directory, so objects compiled with ``-g`` hit across
+    build generations; without ``-g`` the map has no effect.
+    """
+    managed = policy.environment()
+    if policy.active and build_root is not None:
         generated_root = str(build_root.absolute())
         managed["CCACHE_BASEDIR"] = generated_root
         prefix_map = shlex.quote(f"-fdebug-prefix-map={generated_root}=.").replace("$", "$$")
-        user_flags = target.get("USER_CPPFLAGS", os.environ.get("USER_CPPFLAGS", ""))
+        user_flags = target.get("USER_CPPFLAGS", ambient.get("USER_CPPFLAGS", ""))
         managed["USER_CPPFLAGS"] = f"{user_flags} {prefix_map}".strip()
     for name in (RESERVED - {"USER_CPPFLAGS"}) & target.keys():
-        if target[name] != managed.get(name, os.environ.get(name, "")):
+        if target[name] != managed.get(name, ambient.get(name, "")):
             logger.warning(
                 "Target compiler-cache setting %s conflicts with Booley policy; using managed setting",
                 name,
@@ -198,8 +241,8 @@ def _prepare_directory(root: Path) -> None:
     if os.name == "posix":
         _prepare_directory_posix(root)
         return
-    current = root.parents[2]
-    for name in (".runtime", "compiler-cache", "ccache"):
+    current = _cache_owner(root)
+    for name in COMPILER_CACHE_SEGMENTS:
         current = current / name
         with contextlib.suppress(FileExistsError):
             current.mkdir()
@@ -209,18 +252,21 @@ def _prepare_directory(root: Path) -> None:
             or getattr(mode, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
         ):
             raise OSError("cache storage contains a link or special file")
-    import tempfile
-
     with tempfile.TemporaryFile(dir=root):
         pass
+
+
+def _cache_owner(root: Path) -> Path:
+    """Return the Project-data owner that *root* (``owner/<segments>``) lives under."""
+    return root.parents[len(COMPILER_CACHE_SEGMENTS) - 1]
 
 
 def _prepare_directory_posix(root: Path) -> None:
     # The authorized owner may itself be a supported mount/relocation. Only
     # newly cache-owned children must be no-follow directories.
-    descriptor = os.open(root.parents[2], os.O_RDONLY | os.O_DIRECTORY)
+    descriptor = os.open(_cache_owner(root), os.O_RDONLY | os.O_DIRECTORY)
     try:
-        for name in (".runtime", "compiler-cache", "ccache"):
+        for name in COMPILER_CACHE_SEGMENTS:
             with contextlib.suppress(FileExistsError):
                 os.mkdir(name, dir_fd=descriptor)
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
@@ -240,6 +286,7 @@ def execution_environment(
     policy: CompilerCachePolicy | None,
     environment: Mapping[str, str],
     *,
+    ambient: Mapping[str, str],
     build_root: Path | None = None,
 ) -> dict[str, str]:
     """Finalize availability only when a build will execute; never use a home cache."""
@@ -249,7 +296,14 @@ def execution_environment(
     if not policy.enabled:
         logger.info("Verilator compiler cache disabled")
         return result
-    effective = {**os.environ, **result}
+    if policy.root is None:
+        logger.warning(
+            "Verilator compiler cache unavailable: %s; compiling uncached",
+            policy.unavailable_reason,
+        )
+        result["OBJCACHE"] = ""
+        return result
+    effective = {**ambient, **result}
     reason = "ccache is missing from the build PATH"
     try:
         compiler_directory = build_root or Path.cwd()

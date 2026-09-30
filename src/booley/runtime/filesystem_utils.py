@@ -11,6 +11,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from booley.runtime.compiler_cache import COMPILER_CACHE_SEGMENTS
+
 logger = logging.getLogger(__name__)
 
 
@@ -110,11 +112,15 @@ def copy_booley_tree(src: Path, dst: Path) -> None:
         # safe to remove since this is a copy, not the real repo.
         safe_rmtree(dst, protect_git_root=False)
     standard_ignore = shutil.ignore_patterns(*BOOLEY_COPY_EXCLUDES)
+    # Legacy trees nest Project data under ``project/``. Skip the shared
+    # compiler cache's top directory there, keeping its runtime neighbors.
+    cache_parent = src.joinpath("project", *COMPILER_CACHE_SEGMENTS[:-2])
+    cache_top = COMPILER_CACHE_SEGMENTS[-2]
 
     def ignore(directory: str, names: list[str]) -> set[str]:
         excluded = set(standard_ignore(directory, names))
-        if Path(directory) == src / "project" / ".runtime":
-            excluded.add("compiler-cache")
+        if Path(directory) == cache_parent:
+            excluded.add(cache_top)
         return excluded
 
     shutil.copytree(src, dst, ignore=ignore)

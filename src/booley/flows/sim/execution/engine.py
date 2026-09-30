@@ -141,7 +141,6 @@ def _prepared_source_identity(
 class _Attempt:
     prepared: PreparedSimulationBuild
     identity: AdapterTransportIdentity
-    command: tuple[str, ...]
     test_names: tuple[str, ...]
     adapter: str
     trace_requested: bool
@@ -508,14 +507,13 @@ class PreparedOrdinaryGroup:
             prepared=prepared,
             identity=identity,
             work=work,
-            command=_adapter_shell_command(replace(self._attempt, work=work, identity=identity)),
         )
 
     def _launch(
         self, attempt: _Attempt, should_materialize_runtime_inputs: bool
     ) -> AdapterAttemptOutcome:
         request = AdapterAttemptRequest(
-            attempt.command,
+            _adapter_shell_command(attempt),
             attempt.wrapper_timeout_s,
             attempt.identity,
             attempt.identity.result_path.parent,
@@ -867,7 +865,6 @@ class SimulationExecution:
                 attempt.identity,
                 attempt.work,
                 attempt.simulator_environment,
-                execute=True,
             ),
             attempt.wrapper_timeout_s,
             attempt.identity,
@@ -976,12 +973,12 @@ class SimulationExecution:
             trace_mode=trace_mode.value,
             configured_run_cwd=configured_run_cwd,
         )
+        _adapter_invocation(work)  # fail unsupported adapters before any build starts
         pre_sim_commands = tuple(resolve_pre_sim_commands(handle.project_root))
         simulator_environment = tuple(simulation_target_environment(handle).items())
         return _Attempt(
             prepared=prepared,
             identity=identity,
-            command=_adapter_command(prepared, identity, work, simulator_environment),
             test_names=test_names,
             adapter=adapter,
             trace_requested=self._options.trace,
@@ -1562,24 +1559,26 @@ def _adapter_identity(
     )
 
 
+def _adapter_invocation(work: PreparedSimulationWork) -> tuple[str, ...]:
+    """Return the adapter's run argv, reporting unsupported adapters as preparation errors."""
+    try:
+        return tuple(prepare_adapter_invocation(work))
+    except UnsupportedSimulationAdapterError as exc:
+        raise SimulationBuildPreparationError(str(exc)) from exc
+
+
 def _adapter_command(
     prepared: PreparedSimulationBuild,
     identity: AdapterTransportIdentity,
     work: PreparedSimulationWork,
     environment: tuple[tuple[str, str], ...],
-    *,
-    execute: bool = False,
 ) -> tuple[str, ...]:
-    try:
-        invocation = prepare_adapter_invocation(work)
-    except UnsupportedSimulationAdapterError as exc:
-        raise SimulationBuildPreparationError(str(exc)) from exc
+    """Render the combined build+run command; finalizes cache storage, so call at launch."""
     script = simulation_build_script(
         prepared,
         identity.attempt_token,
-        run_line=shlex.join(invocation),
+        run_line=shlex.join(_adapter_invocation(work)),
         run_environment=dict(environment),
-        execute=execute,
     )
     return ("sh", "-c", script)
 

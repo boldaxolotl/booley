@@ -21,7 +21,8 @@ from pathlib import Path, PurePosixPath
 
 from booley.config.agent import SANDBOX_IMAGE
 from booley.runtime import auth_token
-from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE
+from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
+from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
@@ -57,10 +58,8 @@ SESSION_PIDS_LIMIT = 4096
 
 # --- Container-side paths (must match the booley-sandbox image / developer) ---
 WORK_DIR = "/work"
-# ``.booley_project`` mounts here; BOOLEY_PROJECT_DIR (containerEnv, below)
-# points at it so in-container tooling — including the Ticket-Mode Runner and
-# its developer agent (ADR 0028) — resolves project config from one place.
-PROJECT_DIR_TARGET = "/booley-project"
+# PROJECT_DIR_TARGET (imported above from ``sandbox_layout``) is where
+# ``.booley_project`` mounts; it is re-exported here for existing callers.
 AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfile)
 
 # Workspace-relative basename of the project dir. ``[sandbox] mask_paths``
@@ -726,7 +725,7 @@ def _build_remote_env(
         # Container-side MCP runs in interactive mode and finds config here.
         "BOOLEY_MCP_MODE": "interactive",
         "BOOLEY_PROJECT_DIR": PROJECT_DIR_TARGET,
-        "BOOLEY_COMPILER_CACHE_ROOT": f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}",
+        COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
         # The in-container registrar (postStartCommand) configures this app.
         "BOOLEY_AGENT_APP": app,
     }
@@ -999,7 +998,7 @@ def build_devcontainer_spec(
     }
     spec["containerEnv"] = {
         **(fixed_container_env or {}),
-        "BOOLEY_COMPILER_CACHE_ROOT": f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}",
+        COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
     }
 
     seed_source = _creds_seed_target_for_app(app)

@@ -56,7 +56,11 @@ from booley.flows.sim.backends.cocotb_results import (
     CocotbResults,
     parse_results_line,
 )
-from booley.flows.sim.build import PreparedSimulationBuild, prepare_simulation_build
+from booley.flows.sim.build import (
+    PreparedSimulationBuild,
+    prepare_simulation_build,
+    simulation_build_environment,
+)
 from booley.flows.sim.config import (
     literal_run_cwd_problem,
     resolve_run_cwd,
@@ -1683,12 +1687,15 @@ replacement must differ, and every proposal must remain a single source edit.
         rel = posix_relpath(prepared.build_root, work_dir)
         (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
         (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(configured_tool, encoding="utf-8")
+        # Mutants compile through the same managed Project compiler cache as
+        # ordinary Simulation; unchanged generated C++ hits across variants.
+        build_environment = {**os.environ, **simulation_build_environment(prepared)}
         return subprocess.run(
             list(prepared.make_argv),
             cwd=work_dir,
             env=relocate_python_artifacts(
-                os.environ,
-                python_artifact_root(os.environ, build_path / "python-artifacts"),
+                build_environment,
+                python_artifact_root(build_environment, build_path / "python-artifacts"),
                 pytest_scope=f"mutation-build:{build_path.resolve()}",
             ),
             capture_output=True,

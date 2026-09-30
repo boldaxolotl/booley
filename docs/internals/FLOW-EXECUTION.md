@@ -103,7 +103,13 @@ is authoritative for compilation. `simulation_build_script` finalizes storage
 availability only for execution and scopes compiler exports to the build half;
 simulator environment and testbench fingerprints retain their existing owners.
 Ordinary, compatibility, campaign, coverage, Cocotb, and elaboration-only builds
-consume this shared interface. Icarus preparation does not resolve cache policy.
+consume this shared interface; Mutation Tester builds, which run Make directly,
+use `simulation_build_environment`. Icarus preparation does not resolve cache
+policy. The cache policy module never reads the process environment: build
+preparation passes `read_issued_identity(os.environ)` and the ambient environment in.
+A missing (pre-cache Sandbox) or foreign issued root yields an inactive policy
+that compiles uncached with a refresh warning; only malformed configuration
+fails preparation.
 
 Sandbox Issuance fixes `BOOLEY_COMPILER_CACHE_ROOT` under the existing Project
 mount in both container and remote environments. Ticket/review subprocesses

@@ -1205,11 +1205,12 @@ jobs:
               python -m pytest
               /work/tests/smoke/test_verilator_release_matrix.py
               /work/tests/smoke/test_verilator_coverage_collector_smoke.py
+              /work/tests/smoke/test_verilator_compiler_cache_smoke.py
               -q -rs --junitxml=/validation-tmp/coverage-release.xml
               -o cache_dir=/validation-tmp/pytest-cache &&
               python /work/.github/scripts/assert_junit.py
               /validation-tmp/coverage-release.xml --label coverage-release
-              --min-tests 19 --max-skips 0"
+              --min-tests 21 --max-skips 0"
 
           - name: Run native FST/Verilator cross-validation
             env:

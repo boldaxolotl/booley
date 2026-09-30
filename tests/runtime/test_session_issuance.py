@@ -1950,3 +1950,7 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
     spec[section].pop("BOOLEY_COMPILER_CACHE_ROOT")
     with pytest.raises(runtime_spec.RuntimeSpecError):
         runtime_spec.validate(project, spec, path)
+    # An old Sandbox authenticates against its own stamp; the environment
+    # check must then name the actionable fix, not a generic key diff.
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="refresh the Sandbox"):
+        runtime_spec._validate_environment(spec, None)

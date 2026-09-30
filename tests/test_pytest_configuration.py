@@ -728,8 +728,9 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     coverage = next(step for step in validations if step["name"].startswith("Run Coverage"))
     assert "test_verilator_release_matrix.py" in coverage["run"]
     assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
+    assert "test_verilator_compiler_cache_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
-    assert "--min-tests 19 --max-skips 0" in coverage["run"]
+    assert "--min-tests 21 --max-skips 0" in coverage["run"]
     ticket_mode = next(step for step in validations if step["name"].startswith("Run Ticket Mode"))
     assert "install -d -m 0777" in ticket_mode["run"]
     assert '"${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]

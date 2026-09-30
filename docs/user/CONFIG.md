@@ -188,10 +188,16 @@ settings; malformed explicit configuration fails preparation.
 The cache lives at `.runtime/compiler-cache/ccache` in the issued Project data
 mount. Ticket worktrees share it while retaining their own configuration and
 fresh build generations. Sandbox recreation, generation cleanup, and disabling
-caching preserve its entries. Older Sandboxes require `booley session refresh`
-on the host to acquire the fixed shared-cache identity. Deliberate cache eviction
-may remove this subtree when compilation is idle; it is recreated on the next
-available enabled build.
+caching preserve its entries. A Sandbox created before this cache existed keeps
+building, uncached, with a warning; run `booley session refresh` on the host to
+give it the fixed shared-cache identity. Deliberate cache eviction may remove this
+subtree when compilation is idle; it is recreated on the next available enabled
+build. To inspect or empty it, run ccache inside a Sandbox:
+
+```sh
+CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --show-stats
+CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
+```
 
 The size is a **per-build automatic eviction target**, not an instantaneous disk
 quota. Concurrent writers and partial cleanup may temporarily exceed it. A Ticket
@@ -211,15 +217,17 @@ settings retain their behavior. Native ccache diagnostic
 and disable settings remain available; user-supplied correctness-affecting
 ccache settings are outside the guarantees of the tested default policy.
 
-For debug-enabled compilation, Booley appends a `-fdebug-prefix-map` for the
-current generated build directory to `USER_CPPFLAGS`, preserving existing flags
-from the environment. Debug metadata uses `.` for that directory; debuggers can
+For every cached build, Booley appends a `-fdebug-prefix-map` for the current
+generated build directory to `USER_CPPFLAGS`, preserving existing flags from the
+environment. It only affects debug-enabled (`-g`) compilation, where it lets
+objects hit across build generations. Debug metadata uses `.` for that directory; debuggers can
 use the current generation as their source search directory. Semantic `__FILE__`
 paths, directory hashing, and compiler correctness checks remain enabled.
 Declare additional compiler flags in the Target environment or Verilator
 `-CFLAGS` options rather than a Make assignment to `USER_CPPFLAGS`.
 
-Disabled caching explicitly clears `OBJCACHE`. Missing ccache in the effective
+Disabled caching explicitly clears `OBJCACHE` and exports no cache location.
+Mutation Tester builds use the same cache. Missing ccache in the effective
 Target `PATH`, unavailable storage, and cache-owned symlink/special-file roots
 produce an availability warning and compile uncached, without a home-cache
 fallback. Preview/import operations neither create cache storage nor run ccache.
