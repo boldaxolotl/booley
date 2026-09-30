@@ -51,9 +51,10 @@ def validate(
         and "--coverage" in diagnostic,
         "refusal does not name a new coverage run",
     )
+    before = rejection.get("attempts_before")
     _need(
-        rejection.get("attempts_before") == rejection.get("attempts_after"),
-        "refused resume changed the attempt inventory",
+        isinstance(before, list) and before == rejection.get("attempts_after"),
+        "refused resume changed or omitted the attempt inventory",
     )
     _need(rejection.get("eda_launches") == 0, "refused resume launched EDA")
     _need(rejection.get("control_exit_code") == 0, "fresh coverage control did not succeed")

@@ -2,7 +2,8 @@
 
 This fixture backs three recovery cases in the coverage mission's retention
 area: unfinished-collection resume refusal, acceptance recovery, and corrupt
-terminal rejection. Unit or fixture validation says nothing about the product; only a real run does.
+terminal rejection. Unit or fixture validation says nothing about the product;
+only a real run does.
 
 Use the existing `sim_toggle` Target and exact `half` test from the shared
 coverage fixture. Start one public `booley flow sim --coverage` Simulation

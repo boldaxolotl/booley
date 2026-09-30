@@ -616,8 +616,8 @@ Cocotb retries the whole interrupted batch; native coverage never retries its
 collection: a resume, or its `--dry-run` preview, of a coverage Campaign whose
 collection has no recorded result exits `2`; start a new
 `booley flow sim --coverage` run. A coverage resume only finishes an
-interrupted publication. Neither Cocotb nor coverage resumes or overwrites an interrupted native result
-database. Legacy and elaboration-only invocations are not resumable. Empty
+interrupted publication. Neither Cocotb nor coverage resumes or overwrites an
+interrupted native result database. Legacy and elaboration-only invocations are not resumable. Empty
 `.pruned-N` directories reserve historical invocation numbers and should be
 retained.
 

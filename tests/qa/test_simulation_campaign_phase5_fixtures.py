@@ -188,6 +188,10 @@ def _coverage_refusal_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         (lambda value: value.update(exit_code=0), "did not exit 2"),
         (lambda value: value.update(dry_run_exit_code=0), "dry-run did not exit 2"),
         (lambda value: value.update(attempts_after=["first", "second"]), "attempt inventory"),
+        (
+            lambda value: (value.pop("attempts_before"), value.pop("attempts_after")),
+            "omitted the attempt inventory",
+        ),
         (lambda value: value.update(diagnostic="resume failed"), "new coverage run"),
         (lambda value: value.update(eda_launches=1), "launched EDA"),
     ],

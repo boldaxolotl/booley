@@ -1990,7 +1990,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 f"its coverage collection has no recorded result (work item {item_id} is "
                 f"{state}; the run was interrupted or is still running). Resuming would "
                 "rebuild and re-run every test, so start a new run instead:\n"
-                f"  booley flow sim --target {selector} --coverage{trace}\n"
+                f"  booley flow sim --target {shlex.quote(selector)} --coverage{trace}\n"
                 "Add the original --test/--tests-file selection if you used one."
             ),
             detail=_campaign_recovery_detail(status),
