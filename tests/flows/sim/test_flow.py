@@ -1984,7 +1984,7 @@ class TestTimeout:
         assert flow._get_timeout() == 600  # 600000ms -> 600s
 
     def test_custom_timeout(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, extra_args=["--timeout", "120000"])
+        flow = _make_flow(tmp_path, extra_args=["--timeout-ms", "120000"])
         assert flow._get_timeout() == 120
 
     def test_trace_timeout_has_cleanup_margin(self, tmp_path: Path):

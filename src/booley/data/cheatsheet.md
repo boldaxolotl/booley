@@ -36,6 +36,7 @@ For Interactive Mode, we recommend `booley` / `booley chat`, which launches
 | `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
 | `booley targets` | either | List or filter Targets and show resolved details |
 | `booley flow` | mixed | List or directly run deterministic Booley Flows |
+| `booley specialist` | mixed | List visible Specialists; run inside the Sandbox |
 | `booley cleanup` | mixed | Preview or apply manifest-owned Project Setup cleanup |
 | `booley cheat` | either | Show this reference, whole or by section |
 
@@ -99,7 +100,9 @@ Key Flow-specific controls:
 <!-- BEGIN GENERATED: specialists -->
 LLM-backed sub-agents running in scoped, isolated workspaces:
 
-Ask your connected agent session to invoke a Specialist by name with the arguments below. Specialists currently have no public CLI; [public Specialist CLI support is tracked in #783](https://github.com/boldaxolotl/booley/issues/783).
+Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout-ms` are CLI-only controls.
+
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `--work-dir`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout-ms` takes positive milliseconds for existing model-call budgets; seconds-only providers round up. The removed `--timeout` spelling exits 2. Replace old Specialist seconds with milliseconds (multiply by 1000); old built-in Flow values already used milliseconds.
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|

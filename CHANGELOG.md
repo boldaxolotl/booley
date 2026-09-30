@@ -9,6 +9,17 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+### Interface changes
+
+- Add `booley specialist <name> [args...]` for visible registered Specialists,
+  with listing and help on the host and execution inside the Sandbox.
+- Specialist MCP calls now reject `model` and `max_turns`; these remain CLI-only.
+  Built-in Flows and inherited Specialist parsers remove `--timeout` entirely.
+  Use `--timeout-ms N` for an old Flow millisecond value; multiply old Specialist
+  seconds by 1000. Project Specialists must read `args.timeout_ms` and use
+  `self.timeout_seconds()` for seconds-based provider calls. Class timeout
+  defaults and minimums remain seconds. Saved commands are not rewritten.
+
 ### New features
 
 - Simulation now has a positive-integer `[flows.sim].build_timeout_ms` setting,

@@ -72,7 +72,7 @@ def resolve_timeout_ms(
 def requested_timeout_ms(arguments: dict[str, Any]) -> Any:
     """Return the canonical MCP timeout, rejecting the CLI-only legacy alias."""
     if "timeout" in arguments:
-        raise BoundaryError("timeout is a CLI-only deprecated alias; use timeout_ms")
+        raise BoundaryError("timeout has been removed; use timeout_ms")
     return arguments.get("timeout_ms")
 
 

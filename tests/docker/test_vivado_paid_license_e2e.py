@@ -147,7 +147,7 @@ def _flow_argv(container: str, *, timeout_ms: int) -> list[str]:
         "/work",
         "--report-dir",
         "/work/report",
-        "--timeout",
+        "--timeout-ms",
         str(timeout_ms),
     ]
 

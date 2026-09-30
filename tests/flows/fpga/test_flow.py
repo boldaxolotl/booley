@@ -1440,7 +1440,7 @@ class TestVivadoFailureClassification:
 
 
 class TestTimeoutResolution:
-    """--timeout (ms) > [flows.fpga].timeout_ms > 7200000 default.
+    """--timeout-ms (ms) > [flows.fpga].timeout_ms > 7200000 default.
 
     Only the resolution *mechanism* mirrors asic; the fallback VALUE stays
     FPGA's larger 2h default (impl runs are legitimately longer than synth).
@@ -1451,7 +1451,7 @@ class TestTimeoutResolution:
             tmp_path,
             execution_lines="timeout_ms = 300000\n",
         )
-        flow = _flow(tmp_path, state_file, "--timeout", "5000")
+        flow = _flow(tmp_path, state_file, "--timeout-ms", "5000")
         assert flow._timeout_ms() == 5000
         assert flow._get_timeout() == 5  # whole seconds
 

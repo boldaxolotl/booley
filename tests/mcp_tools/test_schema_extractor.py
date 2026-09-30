@@ -15,7 +15,6 @@ from booley.mcp.schema_extractor import extract_schema
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from booley.specialists.mutation_tester import MutationTesterSpecialist
 from booley.specialists.reviewer import ReviewerSpecialist
-from booley.specialists.specialist import VALID_TIERS
 
 # --- Helpers ---
 
@@ -129,16 +128,18 @@ class TestFiltering:
         p.add_argument("--instruction")
         p.add_argument("--transcript-dir", type=Path)
         p.add_argument("--max-turns", type=int)
-        p.add_argument("--timeout", type=int)
+        p.add_argument("--timeout-ms", type=int)
         p.add_argument("--keep-me")
         schema = extract_schema(p)
-        assert {"keep_me", "model", "max_turns"} <= schema["properties"].keys()
+        assert {"keep_me"} <= schema["properties"].keys()
         assert schema["additionalProperties"] is False
         for filtered in (
             "report_dir",
             "instruction",
             "transcript_dir",
-            "timeout",
+            "timeout_ms",
+            "model",
+            "max_turns",
             "help",
         ):
             assert filtered not in schema["properties"]
@@ -218,9 +219,7 @@ def test_specialist_input_contracts_are_unified(specialist, required, removed) -
 
     assert schema["additionalProperties"] is False
     assert required <= set(schema["required"])
-    assert properties["max_turns"]["type"] == "integer"
-    assert properties["max_turns"]["minimum"] == 1
-    assert "model" in properties
+    assert {"model", "max_turns", "timeout_ms"}.isdisjoint(properties)
     assert {"scope", "steer", "dry_run"} <= set(properties)
     assert properties["steer"]["type"] == "array"
     assert properties["dry_run"]["type"] == "boolean"
@@ -248,15 +247,14 @@ def test_specialist_schemas_expose_bounded_agent_controls(
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
-    assert properties["model"] == {
-        "type": "string",
-        "enum": list(VALID_TIERS),
-        "description": properties["model"]["description"],
-    }
-    assert "default" not in properties["model"]
-    assert properties["max_turns"]["type"] == "integer"
-    assert properties["max_turns"]["minimum"] == 1
-    assert {"report_dir", "transcript_dir", "timeout"}.isdisjoint(properties)
+    assert {
+        "model",
+        "max_turns",
+        "timeout_ms",
+        "timeout",
+        "report_dir",
+        "transcript_dir",
+    }.isdisjoint(properties)
 
 
 def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
@@ -264,20 +262,30 @@ def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
         def mcp_schema(self) -> dict[str, Any]:
             return {
                 "type": "object",
-                "properties": {"custom": {"type": "string"}},
+                "properties": {
+                    "custom": {"type": "string"},
+                    "model": {"type": "string"},
+                    "max_turns": {"type": "integer"},
+                    "timeout_ms": {"type": "integer"},
+                },
+                "required": ["custom", "model", "max_turns", "timeout_ms"],
             }
 
     schema = flow_schema(CustomSchemaReviewer())
 
     assert schema["additionalProperties"] is False
-    assert {"custom", "model", "max_turns"} <= schema["properties"].keys()
+    assert set(schema["properties"]) == {"custom"}
+    assert schema["required"] == ["custom"]
 
 
 @pytest.mark.parametrize(
     "specialist",
     [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
 )
-@pytest.mark.parametrize("undeclared", ["report_dir", "transcript_dir", "timeout", "policy"])
+@pytest.mark.parametrize(
+    "undeclared",
+    ["report_dir", "transcript_dir", "timeout", "timeout_ms", "model", "max_turns", "policy"],
+)
 def test_specialist_schema_rejects_undeclared_arguments(
     specialist: type[Any],
     undeclared: str,
@@ -313,14 +321,13 @@ def test_specialist_schema_rejects_undeclared_arguments(
     "specialist",
     [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
 )
-def test_specialist_schema_accepts_public_agent_controls(specialist: type[Any]) -> None:
+def test_specialist_schema_accepts_omitted_agent_controls(specialist: type[Any]) -> None:
     schema = flow_schema(specialist())
     arguments = {
         name: prop.get("enum", ["value"])[0]
         for name in schema.get("required", [])
         if isinstance((prop := schema["properties"][name]), dict)
     }
-    arguments.update(model="light", max_turns=1)
     calls: list[dict[str, Any]] = []
 
     async def dispatch(

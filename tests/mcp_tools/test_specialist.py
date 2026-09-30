@@ -204,7 +204,7 @@ class TestModelResolution:
 
 class TestTimeoutClamping:
     def test_timeout_below_min_is_clamped(self, tmp_path: Path):
-        """Developer Agent passing too-low --timeout gets clamped to min_timeout."""
+        """Developer Agent passing too-low --timeout-ms gets clamped to min_timeout."""
         state_file = tmp_path / "state.json"
         state_file.write_text("{}")
         env = _env_with_state(state_file)
@@ -225,15 +225,15 @@ class TestTimeoutClamping:
 
         endpoint = StrictSpecialist()
         with patch.dict(os.environ, env):
-            endpoint.parse_args(["--timeout", "600"])
-        assert endpoint.args.timeout == 600  # not clamped at parse time
+            endpoint.parse_args(["--timeout-ms", "600000"])
+        assert endpoint.args.timeout_ms == 600000  # not clamped at parse time
         # Clamping happens in _run() — test via mock
         with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("skip")):
             endpoint.read_state()
             endpoint._start_time = 0
             with contextlib.suppress(RuntimeError):
                 endpoint._run()
-        assert endpoint.args.timeout == 1200
+        assert endpoint.args.timeout_ms == 1200000
 
     def test_timeout_above_min_unchanged(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
@@ -241,18 +241,21 @@ class TestTimeoutClamping:
         env = _env_with_state(state_file)
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
-            endpoint.parse_args(["--timeout", "3600"])
+            endpoint.parse_args(["--timeout-ms", "3600000"])
         endpoint.read_state()
         # Just verify parse — no clamping needed
-        assert endpoint.args.timeout == 3600
+        assert endpoint.args.timeout_ms == 3600000
 
 
 def test_provider_exception_preserves_report_and_persists_traceback(
-    tmp_path: Path, capsys, caplog
+    tmp_path: Path, capsys, caplog, monkeypatch
 ) -> None:
     state_file = tmp_path / "state.json"
     state_file.write_text("{}")
     endpoint = ReviewSpecialist()
+    monkeypatch.setattr(
+        "booley.runtime.runtime_context.container_only_error", lambda _command: None
+    )
     message = "provider failed\nsecret detail " + "x" * 2_000
     caplog.set_level("DEBUG")
 
