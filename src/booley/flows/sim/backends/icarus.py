@@ -63,6 +63,7 @@ from booley.flows.sim.adapter_transport import (
     work_transport_arguments,
 )
 from booley.flows.sim.backends.shared import (
+    BOOLEY_DUMP_VCD_NAME,
     RunLogProgress,
     RunTermination,
     adopt_declared_trace_files,
@@ -81,7 +82,7 @@ from booley.flows.sim.trace_session import TraceSession
 
 # The dump module's explicit ``$dumpfile`` name — identical to iverilog's
 # default with ``-fst`` omitted. vvp writes it into the run cwd.
-_DEFAULT_VCD_NAME = "dump.vcd"
+_DEFAULT_VCD_NAME = BOOLEY_DUMP_VCD_NAME
 
 
 @dataclass(frozen=True)
@@ -413,7 +414,12 @@ def _finalize_icarus_trace(
         print(f"TRACE_OK: {found}")
         return f"\nTRACE_OK: {found}", AdapterTraceResult("ok", path=str(found))
     reason = "trace requested but no queryable .fst store or .vcd was produced"
-    if not trace_files:
+    if trace_files:
+        reason += (
+            " (no fresh, nonempty file matching [flows.sim].trace_files "
+            f"{trace_files} was produced by the current run)"
+        )
+    else:
         reason += (
             " (a testbench writing its dump under its own name needs "
             "[flows.sim].trace_files to declare it)"

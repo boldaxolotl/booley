@@ -555,7 +555,10 @@ def _missing_trace_reason(trace_files: list[str] | None) -> str:
     """Explain why no current trace artifact could be retained."""
     reason = "trace requested but no fresh .fst store or convertible .vcd was produced"
     if trace_files:
-        return reason + " (no fresh declared artifact was produced by the current run)"
+        return reason + (
+            " (no fresh, nonempty file matching [flows.sim].trace_files "
+            f"{trace_files} was produced by the current run)"
+        )
     return reason + (
         " (a testbench with its own C++ main() writes its dump under a name "
         "Booley cannot guess — declare it in [flows.sim].trace_files)"

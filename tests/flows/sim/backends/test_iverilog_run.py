@@ -197,6 +197,37 @@ def test_icarus_marks_unqueryable_fst_as_incident(tmp_path: Path, capsys):
     assert "ERROR: trace requested" in capsys.readouterr().out
 
 
+def test_icarus_names_trace_files_when_declared_patterns_matched_nothing(tmp_path: Path):
+    class NoTrace:
+        def postprocess(self, _path):
+            return None
+
+        def find(self):
+            return None
+
+        def write_incident(self, reason, *, sim_proc):
+            incident = tmp_path / "trace_incident.txt"
+            incident.write_text(reason, encoding="utf-8")
+            return incident
+
+    run = ir._IcarusRun(
+        build_dir=tmp_path,
+        run_cwd=tmp_path,
+        work_dir=tmp_path,
+        image=tmp_path / "sim",
+        command=[],
+        trace=NoTrace(),
+    )
+
+    _output, result = ir._finalize_icarus_trace(
+        run, SimpleNamespace(returncode=0), ["missing.vcd"]
+    )
+
+    assert result is not None
+    assert result.status == "incident"
+    assert "[flows.sim].trace_files ['missing.vcd']" in result.detail
+
+
 def test_run_icarus_image_creates_missing_work_dir(tmp_path: Path):
     """The run-half owns its output dir: a caller-derived work dir that does not
     exist yet is created before any run (parity with the Verilator run-half)."""
