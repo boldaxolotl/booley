@@ -633,7 +633,7 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
 def test_coverage_infrastructure_build_failure_has_no_terminal_result(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(_CoverageAggregateError):
         _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=True))
 
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")

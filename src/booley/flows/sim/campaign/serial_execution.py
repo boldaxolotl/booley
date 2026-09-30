@@ -57,6 +57,7 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.targets.catalog import TargetCatalog
 
+from ..build import SimulationBuildInfrastructureError
 from .codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -333,9 +334,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             checkpoint=self._publication_checkpoint,
         )
         if infrastructure:
-            raise SimulationCampaignIntegrityError(
-                outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
-            )
+            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
         failure = _fresh_shared_failure(directory, result, outcome)
         self._shared_failure[key] = failure
         return _blocked_shared_result(request, failure, time.monotonic() - started)
@@ -533,14 +532,11 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             infrastructure=infrastructure,
             checkpoint=self._publication_checkpoint,
         )
-        return _blocked_result(
-            request,
-            build_directory,
-            result,
-            outcome,
-            elapsed,
-            infrastructure=infrastructure,
-        )
+        if infrastructure:
+            # No design verdict exists, so the campaign stays interrupted and
+            # resumable, exactly like the shared-build path.
+            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
+        return _blocked_result(request, build_directory, result, outcome, elapsed)
 
     def _run_ready_group(
         self,

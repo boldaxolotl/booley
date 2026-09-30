@@ -33,6 +33,7 @@ from booley.flows.sim.build import (
     BuildOutcome,
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
+    build_failure_report,
     build_stage_script,
     classify_build_outcome,
     prepare_simulation_build,
@@ -1460,7 +1461,12 @@ def _infrastructure_failure(
     pre_sim: PreSimEvidence | None,
     started: float,
 ) -> SimulationTargetOutcome:
-    failure = SimulationInfrastructureFailure("build", build.reason, detail=build.output)
+    failure = SimulationInfrastructureFailure(
+        "build",
+        build.reason,
+        missing_executable=find_missing_executable(build.output) or "",
+        detail=build_failure_report(build),
+    )
     return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 

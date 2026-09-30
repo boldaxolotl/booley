@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.build import SimulationBuildInfrastructureError
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -521,7 +522,7 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
         "simulation_result"
     )
     expected_error = (
-        SimulationCampaignIntegrityError
+        SimulationBuildInfrastructureError
         if infrastructure_stops_before_simulation
         else _InjectedProcessDeath
     )
@@ -563,7 +564,7 @@ def test_failed_build_partial_terminal_result_fails_closed(
         tmp_path, monkeypatch, failure_path, checkpoint
     )
     if failure_path == "compile_spawn":
-        with pytest.raises(SimulationCampaignIntegrityError, match="missing"):
+        with pytest.raises(SimulationBuildInfrastructureError, match="missing"):
             SimulationCampaign(executor).run(request)
         store = CampaignStore(invocation / "targets" / "sim" / "campaign")
         assert store.scan().interrupted

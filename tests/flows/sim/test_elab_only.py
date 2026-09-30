@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import booley.flows.sim.build as build_module
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import (
@@ -383,7 +384,8 @@ def test_timeout_before_terminal_record_has_no_verdict() -> None:
     assert outcome.verdict is None
     assert outcome.failure_kind == "infrastructure"
     assert outcome.reason == ("build timed out after 7 s (raise [flows.sim].build_timeout_ms)")
-    assert outcome.output.startswith(outcome.reason)
+    assert outcome.output == "still compiling"
+    assert build_module.build_failure_report(outcome).splitlines()[0] == outcome.reason
 
 
 def test_signal_style_build_exit_has_no_design_verdict() -> None:
