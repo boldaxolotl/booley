@@ -143,12 +143,28 @@ only reports its verdict and exit code; it records no Criteria.
 
 Within a Ticket, a `sim` run can satisfy these Criteria:
 
-- `sim_pass_<target>`: requires every test in the Target's Required Simulation
-  Suite to pass. Passing a hand-picked subset does not count.
+- `sim_pass_*`: declared under `SIM` for either the Target's complete Required
+  Simulation Suite (`all: pass`) or individual named tests (`smoke: pass`).
+  Passing a hand-picked subset does not satisfy an `all` Criterion.
 - `cycle_count_<target>_<test>`: checks one named test. It passes when that test
   passes and its reported Cycle Count meets every threshold the Ticket declares
   (see [Threshold parameters](USAGE.md#threshold-parameters)).
 - `elab_pass_<target>`: see [Elaboration checks](#elaboration-checks).
+
+For example, a Ticket can require two tests independently:
+
+```yaml
+CRITERIA_MANDATORY:
+  SIM:
+    sim_core:
+      smoke: pass
+      regression: pass
+```
+
+Each named test has its own Criterion, evaluated from that test's results.
+Run it with `booley flow sim --target sim_core --test smoke`, or include it in
+a full-suite run. To additionally require the complete suite, add `all: pass`
+under the same Target.
 
 ### Elaboration checks
 
