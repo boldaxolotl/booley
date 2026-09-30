@@ -264,6 +264,14 @@ Useful Specialist class attributes are:
 | `agent_tools` | Provider-native capabilities requested for the agent loop; use this to shape behavior, not to enforce workspace access |
 | `workspace_access` | `"read_write"` (default) or `"read_only"`; read-only calls use a disposable snapshot on both providers |
 
+Shared `--model`, `--max-turns`, and `--timeout-ms` controls are CLI-only and
+are excluded from strict Specialist MCP schemas, including custom schema hooks.
+Use `booley specialist <name>` or the supported `python -m booley.specialists.<name>`
+entry inside the Sandbox. Project subclasses must migrate `args.timeout` (seconds)
+to `args.timeout_ms` (milliseconds); construct seconds-based `AgentCallParams`
+with `self.timeout_seconds()`. Keep `default_timeout` and `min_timeout` class
+attributes in seconds. The accessor rounds positive milliseconds up to seconds.
+
 The shared `code_modifying` and `satisfies` attributes are explained below.
 
 #### Direct `McpTool` Subclasses

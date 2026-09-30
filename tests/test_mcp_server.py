@@ -574,7 +574,7 @@ class TestMcpToolTimeoutSeconds:
         assert timeout == 4000 + 60 + 120
 
     def test_legacy_timeout_is_rejected_for_mcp(self):
-        with pytest.raises(ValueError, match="CLI-only"):
+        with pytest.raises(ValueError, match="removed; use timeout_ms"):
             self._mcp_tool_timeout_seconds(
                 "lint",
                 {"target": "core", "timeout": 2000},

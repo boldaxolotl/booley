@@ -50,6 +50,39 @@ is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
 | `--timeout-ms <ms>` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. Simulation builds instead use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use an independent fixed budget; see [Simulation timeouts](CONFIG.md#simulation-build-pre-sim-and-run-timeouts). |
 
+## Running a Specialist
+
+Inside the Sandbox, use the public route or the supported Python module entry:
+
+```bash
+booley specialist
+booley specialist reviewer --help
+booley specialist reviewer --category rtl --focus bugs --scope rtl --timeout-ms 1800000
+booley specialist coverage_analyst --campaign reports/sim/12/targets/sim_soc/coverage.json
+python -m booley.specialists.reviewer --category rtl --focus bugs --scope rtl
+```
+
+The optional separator in `booley specialist reviewer -- --scope "rtl,ip" ...`
+forwards arguments unchanged. Listings include enabled Project Specialists and
+exclude hidden endpoints. Host listing and help work; execution requires the
+Sandbox, for example `booley session enter -- booley specialist reviewer ...`.
+
+Specialists share `--work-dir`, `--report-dir`, `--diagnostic`, and `--target`
+where supported. Reports default to `mcp-tool-reports/` under resolved Project
+data, or the runtime directory when supplied; an explicit flag takes precedence.
+`--model` selects a tier subject to the Specialist floor and configured role pin;
+`--max-turns` accepts a positive integer. These and `--timeout-ms` are CLI-only:
+MCP rejects `model`, `max_turns`, `timeout`, and `timeout_ms` for Specialists.
+
+`--timeout-ms` is a positive integer model-call budget, not a whole-invocation
+deadline. Existing defaults and minimums remain unchanged. Seconds-only providers
+round up with `(timeout_ms + 999) // 1000`, adding at most 999 ms. Flow budgets
+retain their existing work-unit scope. The removed `--timeout` spelling exits 2,
+including module entries: replace old Flow `--timeout N` with `--timeout-ms N`,
+and old Specialist seconds with `--timeout-ms (N * 1000)`. Custom Flow-owned and
+internal Simulation backend flags keep their own contracts. Saved Ticket commands
+and historical evidence are not automatically rewritten.
+
 ## Reading results
 
 Every built-in Flow uses the same exit codes:

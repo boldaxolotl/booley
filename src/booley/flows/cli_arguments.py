@@ -1,11 +1,8 @@
-"""Shared built-in CLI options and legacy alias normalization."""
+"""Shared built-in CLI options."""
 
 import argparse
-import logging
 
 from booley.core.boundary import parse_positive_int_arg
-
-logger = logging.getLogger(__name__)
 
 
 class BuiltinArguments:
@@ -29,21 +26,7 @@ class BuiltinArguments:
                 "Overrides [flows.<name>].timeout_ms."
             ),
         )
-        parser.add_argument(
-            "--timeout",
-            dest="_legacy_timeout_ms",
-            type=parse_positive_int_arg,
-            default=None,
-            help=argparse.SUPPRESS,
-        )
 
     @staticmethod
     def normalize(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-        """Parse and normalize the built-in-only compatibility aliases."""
-        legacy = args._legacy_timeout_ms
-        if args.timeout_ms is not None and legacy is not None:
-            parser.error("--timeout-ms cannot be combined with deprecated --timeout")
-        if legacy is not None:
-            logger.warning("--timeout is deprecated; use --timeout-ms")
-            args.timeout_ms = legacy
-        del args._legacy_timeout_ms
+        """Hook for concrete adapters with compatibility normalization."""

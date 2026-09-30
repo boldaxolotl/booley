@@ -1502,7 +1502,7 @@ class TestCmdFlow:
         streams = capsys.readouterr()
         assert streams.out == ""
         assert streams.err == (
-            "ERROR: 'nosuchtool' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+            "ERROR: 'nosuchtool' is not a flow for booley flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
         )
         assert not _FakeFlow.calls
 
@@ -1533,7 +1533,7 @@ class TestCmdFlow:
         streams = capsys.readouterr()
         assert streams.out == ""
         assert streams.err == (
-            "ERROR: '' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+            "ERROR: '' is not a flow for booley flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
         )
 
     def test_listing_trims_the_llm_facing_description(self, capsys):

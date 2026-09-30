@@ -4,19 +4,21 @@ from typing import Any
 
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
-from booley.mcp.schema_extractor import extract_schema
+from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS, extract_schema
 
 
 def _specialist_schema(endpoint: Any) -> dict[str, Any]:
-    """Expose supported per-call controls while keeping infrastructure private."""
+    """Keep Specialist runtime controls private, including custom schema hooks."""
     hook = getattr(endpoint, "mcp_schema", None)
     extracted = extract_schema(endpoint._parser)
     if not callable(hook):
         return extracted
     schema = hook()
     properties = schema.setdefault("properties", {})
-    for dest in ("model", "max_turns"):
-        properties[dest] = extracted["properties"][dest]
+    for dest in SPECIALIST_CLI_ONLY_DESTS:
+        properties.pop(dest, None)
+    if "required" in schema:
+        schema["required"] = [dest for dest in schema["required"] if dest in properties]
     schema["additionalProperties"] = False
     return schema
 
@@ -31,7 +33,6 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
     schema = extract_schema(build_parser(endpoint))
     schema["additionalProperties"] = False
     properties = schema["properties"]
-    properties.pop("_legacy_timeout_ms", None)
     properties["timeout_ms"].update(type="integer", minimum=1)
     if endpoint.name == "sim":
         properties.pop("_legacy_elab_only", None)

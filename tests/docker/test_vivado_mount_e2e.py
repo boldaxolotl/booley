@@ -162,7 +162,7 @@ def _run_flow(docker: str, container: str, report_dir: str) -> None:
         "/work",
         "--report-dir",
         report_dir,
-        "--timeout",
+        "--timeout-ms",
         "600000",
         timeout=660,
     )

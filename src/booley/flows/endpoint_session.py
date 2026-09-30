@@ -50,9 +50,12 @@ def _apply_pre_state_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     return result
 
 
-def _apply_default_flow_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
+def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
     """Select durable Project data after adapters can supply a runtime root."""
-    if endpoint.endpoint_kind != "flow" or endpoint.args.report_dir is not None:
+    if (
+        endpoint.endpoint_kind not in {"flow", "specialist"}
+        or endpoint.args.report_dir is not None
+    ):
         return None
     from booley.runtime.project_dir import resolve_checkout_project_dir
 
@@ -61,11 +64,13 @@ def _apply_default_flow_report_root(endpoint: EndpointState) -> EndpointOutcome 
     except (OSError, RuntimeError, ValueError) as exc:
         result = EndpointOutcome(
             exit_code=EXIT_ERROR,
-            report_text=f"Flow report directory could not be resolved: {exc}",
+            report_text=f"Endpoint report directory could not be resolved: {exc}",
         )
         endpoint._publish_console_report(result)
         return result
-    endpoint.args.report_dir = project_data / "flow-reports"
+    endpoint.args.report_dir = project_data / (
+        "flow-reports" if endpoint.endpoint_kind == "flow" else "mcp-tool-reports"
+    )
     return None
 
 
@@ -76,7 +81,7 @@ def prepare_execution(
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
         return early_outcome
-    if (early_outcome := _apply_default_flow_report_root(endpoint)) is not None:
+    if (early_outcome := _apply_default_endpoint_report_root(endpoint)) is not None:
         return early_outcome
     endpoint.read_state()
     endpoint._default_target_args()

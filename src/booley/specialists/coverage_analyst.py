@@ -158,7 +158,9 @@ class CoverageAnalystSpecialist(Specialist):
                 "specified JSON arrays. Never measure coverage, evaluate Criteria, or approve "
                 "waivers. Preserve independent simulation truth."
             ),
-            timeout_seconds=max(self.min_timeout, self.args.timeout),
+            timeout_seconds=self.timeout_seconds(
+                max(self.min_timeout * 1000, self.args.timeout_ms)
+            ),
             transcript_path=self._transcript_path(),
             label=self.name,
             reasoning_effort=self._resolve_effort(),
