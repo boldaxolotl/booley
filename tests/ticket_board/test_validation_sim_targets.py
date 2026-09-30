@@ -71,10 +71,7 @@ def test_lint_target_cannot_satisfy_structured_sim_pass(tmp_path: Path) -> None:
         project_root=project,
     )
 
-    assert any(
-        "toy_compile" in error and "cannot satisfy sim_pass" in error and "sim_toy" in error
-        for error in errors
-    )
+    assert any("toy_compile" in error and "cannot satisfy sim_pass" in error for error in errors)
 
 
 def test_sim_target_satisfies_structured_sim_pass(tmp_path: Path) -> None:
@@ -121,10 +118,8 @@ def test_unknown_sim_target_names_eligible_correction(tmp_path: Path) -> None:
         project_root=project,
     )
 
-    assert any(
-        "Unknown target 'missing'" in error and "eligible simulation Targets: sim_toy" in error
-        for error in errors
-    )
+    assert any("Unknown target 'missing'" in error for error in errors)
+    assert "eligible simulation Targets: sim_toy" in errors
 
 
 def test_old_basis_ticket_is_rejected_before_target_resolution(tmp_path: Path) -> None:
@@ -260,3 +255,34 @@ def test_future_target_does_not_allow_unscoped_new_testbench(tmp_path: Path) -> 
     )
 
     assert any("testbench source_dir" in error for error in errors)
+
+
+def test_sim_target_failures_group_causes_and_share_catalogs(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fields = _fields("missing")
+    fields["criteria"]["mandatory"]["sim_pass"].extend(
+        [
+            "tb/toy_tb.sv @ missing_also @ all @ pass -> pass",
+            "tb/toy_tb.sv @ toy_compile @ all @ pass -> pass",
+        ]
+    )
+    fields["criteria"]["optional"] = {
+        "sim_pass": ["tb/toy_tb.sv @ wrong#sim_toy @ all @ pass -> pass"]
+    }
+    errors = validate_ticket_fields(
+        fields,
+        "## Description\nExercise target validation.",
+        check_files=True,
+        check_tb_files=False,
+        project_root=project,
+    )
+    output = "\n".join(errors)
+    assert output.count("selectable Targets:") == 1
+    assert output.count("eligible simulation Targets: sim_toy") == 1
+    assert output.count("Unknown simulation Targets:") == 1
+    assert output.count("Simulation Flow mismatches:") == 1
+    for index, target in enumerate(("missing", "missing_also", "toy_compile")):
+        assert f"criteria.mandatory.sim_pass[{index}]: target '{target}'" in output
+    assert "criteria.optional.sim_pass[0]: target 'wrong#sim_toy'" in output
+    assert "no Target 'sim_toy' in a core matching 'wrong'" in output
+    assert "cannot satisfy sim_pass (flow='lint', EDA tool='verilator')" in output
