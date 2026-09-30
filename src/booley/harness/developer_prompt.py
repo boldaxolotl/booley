@@ -70,8 +70,11 @@ The following environment variables are set and propagated to MCP tool calls aut
 - `BOOLEY_STATE_FILE` — path to booley_state.json (criteria tracking)
 
 Targets are the execution boundary. Select the criterion's Target when invoking \
-a Flow or Specialist. Mutation and coverage automatically run the complete \
-runnable test suite declared for that Target; do not narrow them to one test. \
+a Flow or Specialist. Mutation runs the complete \
+runnable test suite declared for that Target; do not narrow it. Coverage runs \
+that suite too, unless the Coverage Criterion lists `tests`: then pass exactly \
+those names with repeated `--test` (MCP `test` array), or evaluation is \
+blocked by a suite mismatch. \
 The specialists derive module and hierarchy identity from the Target, scoped \
 RTL, and produced traces.
 

@@ -347,11 +347,12 @@ def _has_design_abort(result: CoverageCollectionResult) -> bool:
 def _coverage_exit_code(
     result: CoverageCollectionResult, evaluation: object, passed: bool | None
 ) -> int:
+    """Exit reflects simulation and collection trust; a threshold miss is recorded, not exited."""
     if _has_design_abort(result):
         return 1
     if result.status != "complete" or evaluation == "blocked":
         return 2
-    return 1 if not passed or evaluation == "fail" else 0
+    return 1 if not passed else 0
 
 
 def _collection_metadata(result: CoverageCollectionResult) -> Mapping[str, FrozenJson]:

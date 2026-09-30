@@ -274,6 +274,8 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
         assert "Targets are the execution boundary" in system
         assert "complete runnable test suite" in system
         assert "dut_info" not in system
+        assert "pass exactly those names with repeated `--test`" in system
+        assert "do not narrow them to one test" not in system
 
     def test_startup_instruction_points_to_ticket_snapshot(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"

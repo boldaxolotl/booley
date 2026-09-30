@@ -357,7 +357,7 @@ def _assert_invalid_hook_consumers(tmp_path: Path, outcome: CoverageTargetOutcom
     [
         ("pass", 2, None, 0, "pass"),
         ("fail", 2, None, 1, "pass"),
-        ("pass", 0, None, 1, "fail"),
+        ("pass", 0, None, 0, "fail"),
         ("fail", 0, None, 1, "fail"),
         ("pass", 2, ("reset",), 2, "blocked"),
     ],
@@ -383,6 +383,26 @@ def test_gated_verdicts_preserve_independent_truth(
     document = json.loads(outcome.campaign_path.read_text())
     assert document["evaluation"]["status"] == evaluation
     assert {run["simulation_verdict"] for run in document["tests"]["runs"]} == {verdict}
+
+
+def test_threshold_miss_exits_zero_with_valid_coverage(tmp_path):
+    from fractions import Fraction
+
+    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        None,
+    )
+    context = replace(project(tmp_path), criteria={"coverage_sim_0": criterion})
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    outcome = run_coverage_target(plan, NativeExecution(hits=0), Progress())
+
+    assert outcome.exit_code == 0
+    assert json.loads(outcome.campaign_path.read_text())["evaluation"]["status"] == "fail"
 
 
 def test_all_tests_criterion_reports_suite_mismatch_after_configured_skip(tmp_path):
