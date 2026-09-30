@@ -491,9 +491,10 @@ def _waiver_block_hint_lines(campaign: CoverageCampaign) -> list[str]:
     evaluation = campaign.evaluation
     if evaluation["status"] != "blocked":
         return []
+    diagnostics = cast(tuple[FrozenJson, ...], evaluation["diagnostics"])
     if any(
         str(item.get("code", "")).startswith("COV_WAIVER_")
-        for item in evaluation["diagnostics"]
+        for item in diagnostics
         if isinstance(item, Mapping)
     ):
         return [
