@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 
 from booley.config.agent import SANDBOX_IMAGE
 from booley.runtime import auth_token
+from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
@@ -725,6 +726,7 @@ def _build_remote_env(
         # Container-side MCP runs in interactive mode and finds config here.
         "BOOLEY_MCP_MODE": "interactive",
         "BOOLEY_PROJECT_DIR": PROJECT_DIR_TARGET,
+        "BOOLEY_COMPILER_CACHE_ROOT": f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}",
         # The in-container registrar (postStartCommand) configures this app.
         "BOOLEY_AGENT_APP": app,
     }
@@ -995,8 +997,10 @@ def build_devcontainer_spec(
         # an image that the host did not inspect or stamp.
         "updateRemoteUserUID": False,
     }
-    if fixed_container_env:
-        spec["containerEnv"] = dict(fixed_container_env)
+    spec["containerEnv"] = {
+        **(fixed_container_env or {}),
+        "BOOLEY_COMPILER_CACHE_ROOT": f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}",
+    }
 
     seed_source = _creds_seed_target_for_app(app)
     post_create = _build_post_create_command(

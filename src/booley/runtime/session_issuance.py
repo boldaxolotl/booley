@@ -33,7 +33,13 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.runtime.devcontainer import EGRESS_NETWORK, devcontainer_path, render_devcontainer_json
+from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, COMPILER_CACHE_ROOT_ENV
+from booley.runtime.devcontainer import (
+    EGRESS_NETWORK,
+    PROJECT_DIR_TARGET,
+    devcontainer_path,
+    render_devcontainer_json,
+)
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -103,6 +109,7 @@ _REQUIRED_REMOTE_ENV = frozenset(
         "NO_PROXY",
         "BOOLEY_MCP_MODE",
         "BOOLEY_PROJECT_DIR",
+        COMPILER_CACHE_ROOT_ENV,
         "BOOLEY_AGENT_APP",
     }
 )
@@ -118,7 +125,8 @@ _FIXED_REMOTE_ENV = {
     "https_proxy": "http://booley-proxy:8080",
     "NO_PROXY": "localhost,127.0.0.1",
     "BOOLEY_MCP_MODE": "interactive",
-    "BOOLEY_PROJECT_DIR": "/booley-project",
+    "BOOLEY_PROJECT_DIR": PROJECT_DIR_TARGET,
+    COMPILER_CACHE_ROOT_ENV: f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}",
 }
 
 
@@ -582,7 +590,14 @@ def _session_spec_inputs(
     return SessionSpecInputs(
         project_data_source=authorized_project_data_source(project),
         trusted_eda_mounts=requirements.trusted_mounts,
-        fixed_container_environment=requirements.container_environment,
+        fixed_container_environment=tuple(
+            sorted(
+                {
+                    **dict(requirements.container_environment),
+                    COMPILER_CACHE_ROOT_ENV: _FIXED_REMOTE_ENV[COMPILER_CACHE_ROOT_ENV],
+                }.items()
+            )
+        ),
         installation_name=requirements.installation_name,
         license_profile_name=requirements.license_profile_name,
     )
@@ -1171,7 +1186,9 @@ def _validate_remote_environment(remote: dict[str, Any]) -> None:
 
 def _validate_environment(spec: dict[str, Any], license_environment: str | None) -> None:
     container, remote = _environment_sections(spec)
-    allowed_container = {"XILINXD_LICENSE_FILE"} if license_environment is not None else set()
+    allowed_container = {COMPILER_CACHE_ROOT_ENV}
+    if license_environment is not None:
+        allowed_container.add("XILINXD_LICENSE_FILE")
     if set(container) != allowed_container:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported container environment: "
@@ -1181,6 +1198,10 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
             )
         )
     _validate_remote_environment(remote)
+    if container.get(COMPILER_CACHE_ROOT_ENV) != _FIXED_REMOTE_ENV[COMPILER_CACHE_ROOT_ENV]:
+        raise RuntimeSpecError(
+            "Compiler-cache root differs from fixed Sandbox policy; refresh the Sandbox"
+        )
     expected = license_environment
     actual = container.get("XILINXD_LICENSE_FILE")
     if actual != expected:

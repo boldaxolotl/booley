@@ -24,9 +24,9 @@ from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     build_failure_report,
-    build_stage_script,
     classify_build_outcome,
     prepare_simulation_build,
+    simulation_build_script,
 )
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
@@ -223,11 +223,7 @@ class VerilatorCoverageExecution:
         identity: VerilatorCollectorIdentity,
     ) -> SimulationBuildResult:
         token = new_attempt_token()
-        script = build_stage_script(
-            prepared.make_argv,
-            token,
-            environment=simulation_target_environment(self._handle),
-        )
+        script = simulation_build_script(prepared, token)
         script = _in_directory_script(self._handle.project_root, script)
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         timeout_s = max(1, timeout_ms // 1000)

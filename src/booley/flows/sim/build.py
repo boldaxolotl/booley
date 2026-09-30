@@ -8,6 +8,7 @@ command and turn one completed process into typed build evidence.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from collections.abc import Mapping
@@ -30,6 +31,14 @@ from .. import edam as edam_layer
 from ..base import SubprocessResult
 from . import edam as sim_edam
 from .build_parallelism import LaneKind, verilator_backend_arguments
+from .compiler_cache import (
+    CompilerCacheConfigurationError,
+    CompilerCachePolicy,
+    compose_environment,
+    execution_environment,
+    resolve_policy,
+    validate_make_assignments,
+)
 
 if TYPE_CHECKING:
     from .execution.contract import SimulationTargetOutcome
@@ -96,6 +105,7 @@ class PreparedSimulationBuild:
     make_argv: tuple[str, ...]
     environment: Mapping[str, str] = field(default_factory=dict)
     fileset: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    compiler_cache: CompilerCachePolicy | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +160,7 @@ def prepare_simulation_build(
         ParameterIntegrityError,
         selftest_overlay.SelftestOverlayError,
         OSError,
+        CompilerCacheConfigurationError,
     ) as exc:
         raise SimulationBuildPreparationError(str(exc)) from exc
 
@@ -175,6 +186,14 @@ def _prepare_simulation_build(
     )
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
+    cache_policy = None
+    build_environment = dict(environment or {})
+    if eda_tool == "verilator":
+        validate_make_assignments(inspection, {**os.environ, **build_environment})
+        cache_policy = resolve_policy(root)
+        build_environment = compose_environment(
+            cache_policy, build_environment, build_root=Path(resolved.build_root)
+        )
     _stage_doctor_overlay(root, resolved.build_root)
     fileset = {
         "rtl": tuple(inspection.rtl_files),
@@ -190,7 +209,8 @@ def _prepare_simulation_build(
         eda_tool=eda_tool,
         toplevel=str(resolved.toplevel),
         make_argv=tuple(edam_layer.make_command(rel)),
-        environment=dict(environment or {}),
+        environment=build_environment,
+        compiler_cache=cache_policy,
         fileset=fileset,
     )
 
@@ -258,15 +278,23 @@ def build_stage_script(
     *,
     run_line: str = "",
     environment: Mapping[str, str] | None = None,
+    build_environment: Mapping[str, str] | None = None,
 ) -> str:
     """Compose build and optional run halves with an authenticated boundary."""
     exports = "".join(
         f"export {name}={shlex.quote(value)}\n" for name, value in (environment or {}).items()
     )
+    build_exports = "".join(
+        f"export {name}={shlex.quote(value)}\n"
+        for name, value in (build_environment or {}).items()
+    )
+    command = shlex.join(build_argv)
+    if build_environment is not None:
+        command = f"(\n{build_exports}{command}\n)"
     build = (
         f"{exports}"
         "_booley_build_start_ns=$(date +%s%N)\n"
-        f"{shlex.join(build_argv)}\n"
+        f"{command}\n"
         "_booley_build_rc=$?\n"
         "_booley_build_end_ns=$(date +%s%N)\n"
         "_booley_build_ms=$(((_booley_build_end_ns - _booley_build_start_ns) / 1000000))\n"
@@ -288,6 +316,31 @@ def build_stage_script(
         f'echo "BOOLEY_RUN_STAGE token={token} rc=$_booley_run_rc '
         'duration_ms=$_booley_run_ms"\n'
         'exit "$_booley_run_rc"'
+    )
+
+
+def simulation_build_script(
+    prepared: PreparedSimulationBuild,
+    token: str,
+    *,
+    run_line: str = "",
+    run_environment: Mapping[str, str] | None = None,
+    execute: bool = True,
+) -> str:
+    """Render one build using its authoritative policy; previews remain pure."""
+    environment = (
+        execution_environment(
+            prepared.compiler_cache, prepared.environment, build_root=prepared.build_root
+        )
+        if execute
+        else prepared.environment
+    )
+    return build_stage_script(
+        prepared.make_argv,
+        token,
+        build_environment=environment,
+        environment=run_environment,
+        run_line=run_line,
     )
 
 

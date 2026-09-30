@@ -109,4 +109,12 @@ def copy_booley_tree(src: Path, dst: Path) -> None:
         # Worktree copies may contain a stale .git/ from prior runs;
         # safe to remove since this is a copy, not the real repo.
         safe_rmtree(dst, protect_git_root=False)
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*BOOLEY_COPY_EXCLUDES))
+    standard_ignore = shutil.ignore_patterns(*BOOLEY_COPY_EXCLUDES)
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        excluded = set(standard_ignore(directory, names))
+        if Path(directory) == src / "project" / ".runtime":
+            excluded.add("compiler-cache")
+        return excluded
+
+    shutil.copytree(src, dst, ignore=ignore)

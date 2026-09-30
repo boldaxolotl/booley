@@ -34,9 +34,9 @@ from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     build_failure_report,
-    build_stage_script,
     classify_build_outcome,
     prepare_simulation_build,
+    simulation_build_script,
     simulation_setup_command,
 )
 from booley.flows.sim.build_session import (
@@ -334,11 +334,7 @@ class PreparedOrdinaryGroup:
             )
         attempt = _with_workload_inputs(self._handle, attempt)
         inputs = self._session.capture_inputs(attempt.prepared)
-        script = build_stage_script(
-            attempt.prepared.make_argv,
-            attempt.identity.attempt_token,
-            environment=dict(attempt.simulator_environment),
-        )
+        script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
         timeout_s = self._execution._build_timeout_s()
         process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
         build = classify_build_outcome(
@@ -866,7 +862,13 @@ class SimulationExecution:
                 raise SimulationBuildSlotError("prepared build escaped its leased generation")
             return self._execute_fresh_adapter(handle, attempt)
         request = AdapterAttemptRequest(
-            attempt.command,
+            _adapter_command(
+                attempt.prepared,
+                attempt.identity,
+                attempt.work,
+                attempt.simulator_environment,
+                execute=True,
+            ),
             attempt.wrapper_timeout_s,
             attempt.identity,
             attempt.prepared.build_root,
@@ -917,11 +919,7 @@ class SimulationExecution:
             attempt.prepared.build_root, run_cwd, attempt.work.runtime_inputs
         ):
             inputs = attempt.build_inputs or session.capture_inputs(attempt.prepared)
-            script = build_stage_script(
-                attempt.prepared.make_argv,
-                attempt.identity.attempt_token,
-                environment=dict(attempt.simulator_environment),
-            )
+            script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
             timeout_s = self._build_timeout_s()
             build_process = self._invoke(["sh", "-c", script], timeout=timeout_s)
             build = classify_build_outcome(
@@ -1569,16 +1567,19 @@ def _adapter_command(
     identity: AdapterTransportIdentity,
     work: PreparedSimulationWork,
     environment: tuple[tuple[str, str], ...],
+    *,
+    execute: bool = False,
 ) -> tuple[str, ...]:
     try:
         invocation = prepare_adapter_invocation(work)
     except UnsupportedSimulationAdapterError as exc:
         raise SimulationBuildPreparationError(str(exc)) from exc
-    script = build_stage_script(
-        prepared.make_argv,
+    script = simulation_build_script(
+        prepared,
         identity.attempt_token,
         run_line=shlex.join(invocation),
-        environment=dict(environment),
+        run_environment=dict(environment),
+        execute=execute,
     )
     return ("sh", "-c", script)
 

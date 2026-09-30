@@ -171,6 +171,61 @@ warnings-only run, so a CI gate only fails on hard errors.
 
 ### Simulation build, Pre-Sim, and run timeouts
 
+Verilator C++ compilation uses a persistent, Project-scoped ccache by default:
+
+```toml
+[flows.sim.compiler_cache]
+enabled = true
+max_size = "5G"
+```
+
+`enabled` must be a boolean. `max_size` accepts a positive integer followed by
+`M`, `G` (decimal megabytes/gigabytes), or `Mi`, `Gi` (binary units). Zero,
+fractional values, and suffixes outside this grammar are configuration errors.
+The selected checkout's `booley.toml` (or legacy `pipeline.toml`) owns these
+settings; malformed explicit configuration fails preparation.
+
+The cache lives at `.runtime/compiler-cache/ccache` in the issued Project data
+mount. Ticket worktrees share it while retaining their own configuration and
+fresh build generations. Sandbox recreation, generation cleanup, and disabling
+caching preserve its entries. Older Sandboxes require `booley session refresh`
+on the host to acquire the fixed shared-cache identity. Deliberate cache eviction
+may remove this subtree when compilation is idle; it is recreated on the next
+available enabled build.
+
+The size is a **per-build automatic eviction target**, not an instantaneous disk
+quota. Concurrent writers and partial cleanup may temporarily exceed it. A Ticket
+configured for `1G` can evict entries useful to a sibling configured for `5G`; the
+shared cache is not promised to remain below the smallest Ticket's setting.
+Booley does not rewrite a shared `ccache.conf` or force cleanup after each build.
+
+Managed `OBJCACHE`, `CCACHE_DIR`, `CCACHE_MAXSIZE`,
+`CCACHE_COMPILERCHECK=content`, and `CCACHE_BASEDIR` for the generated build
+take precedence over ambient and `tests.toml` environment values; conflicting
+explicit Target settings produce a warning. Assignments to those names,
+`USER_CPPFLAGS`, or `BOOLEY_COMPILER_CACHE_ROOT` in modern/legacy
+`make_options`, `MAKEFLAGS`, `GNUMAKEFLAGS`, `MFLAGS`, or `MAKEOVERRIDES` are rejected.
+Make `--eval`/`-E` programs mentioning these managed variables are also rejected,
+including nested `eval` and `define` forms. Unrelated Make options and job
+settings retain their behavior. Native ccache diagnostic
+and disable settings remain available; user-supplied correctness-affecting
+ccache settings are outside the guarantees of the tested default policy.
+
+For debug-enabled compilation, Booley appends a `-fdebug-prefix-map` for the
+current generated build directory to `USER_CPPFLAGS`, preserving existing flags
+from the environment. Debug metadata uses `.` for that directory; debuggers can
+use the current generation as their source search directory. Semantic `__FILE__`
+paths, directory hashing, and compiler correctness checks remain enabled.
+Declare additional compiler flags in the Target environment or Verilator
+`-CFLAGS` options rather than a Make assignment to `USER_CPPFLAGS`.
+
+Disabled caching explicitly clears `OBJCACHE`. Missing ccache in the effective
+Target `PATH`, unavailable storage, and cache-owned symlink/special-file roots
+produce an availability warning and compile uncached, without a home-cache
+fallback. Preview/import operations neither create cache storage nor run ccache.
+The cache optimizes compilation within the Project trust domain; fresh simulator
+image authorization still applies independently.
+
 `[flows.sim].build_timeout_ms` is a positive-integer budget for each
 simulator-image build. It defaults to `3600000` (one hour) and applies to
 ordinary Simulation, native Coverage, and Elaboration Check builds.

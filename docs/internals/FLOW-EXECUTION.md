@@ -94,3 +94,28 @@ distinguishes acceptance failures, runs a real lint child through MCP with a fak
 EDA executable, and checks Project-local constructor/schema/loader compatibility.
 The existing Flow/backend, MCP, Ticket/Criteria and architecture suites cover the
 remaining execution and persistence behavior.
+
+### Verilator compiler cache ownership
+
+Simulation build preparation resolves strict checkout-local compiler-cache
+configuration into an immutable policy. `PreparedSimulationBuild.environment`
+is authoritative for compilation. `simulation_build_script` finalizes storage
+availability only for execution and scopes compiler exports to the build half;
+simulator environment and testbench fingerprints retain their existing owners.
+Ordinary, compatibility, campaign, coverage, Cocotb, and elaboration-only builds
+consume this shared interface. Icarus preparation does not resolve cache policy.
+
+Sandbox Issuance fixes `BOOLEY_COMPILER_CACHE_ROOT` under the existing Project
+mount in both container and remote environments. Ticket/review subprocesses
+inherit it when repointing `BOOLEY_PROJECT_DIR` to checkout-local authored data.
+Its presence/value participates in spec validation, digest/drift detection, and
+refresh; no new mount is introduced. Non-issued development resolves ownership
+through `resolve_project_dir` and selected configuration through
+`resolve_checkout_project_dir` plus `resolve_toml`.
+
+The shared subtree is outside all mutable build generations and is never
+registered as a disposable `flow-cache` artifact. Setup cleanup preserves
+unowned legacy runtime residue. Legacy `.booley/project` resynchronization
+excludes precisely `project/.runtime/compiler-cache`, preserving adjacent
+runtime/authored content. Baseline core copying only copies the core subtree;
+ordinary Project Git ignores exclude `.runtime` from Ticket snapshots.
