@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-from booley.flows.builtin_cli import parse_request
+from booley.flows.builtin_cli import build_parser, parse_request
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.mcp.flow_adapter import flow_schema
@@ -90,7 +90,7 @@ def test_mcp_schema_accepts_only_array_test_shape() -> None:
     assert schema["properties"]["test"] == {
         "type": "array",
         "items": {"type": "string", "minLength": 1},
-        "description": "Run exact registered test names in caller order (CLI: repeat; MCP: array)",
+        "description": "Select exact registered tests (coverage: deterministic sorted order; plain: input order; CLI: repeat; MCP: array)",
         "minItems": 1,
         "uniqueItems": True,
     }
@@ -112,3 +112,16 @@ def test_named_selection_requires_catalog_and_is_exact(tmp_path) -> None:
     assert flow._validate_test_selector(["sim"], {}) is not None
     assert flow._validate_test_selector(["sim"], {"sim": ["smoke_long"]}) is not None
     assert flow._validate_test_selector(["sim"], {"sim": ["smoke"]}) is None
+
+
+def test_help_distinguishes_coverage_and_plain_selection_order() -> None:
+    help_text = " ".join(build_parser(SimulateFlow()).format_help().split())
+    assert "coverage: deterministic sorted order; plain: input order" in help_text
+
+
+def test_plain_selection_preserves_input_order(tmp_path) -> None:
+    flow = SimulateFlow()
+    flow.parse_args(
+        ["--target", "sim", "--work-dir", str(tmp_path), "--test", "gap", "--test", "full"]
+    )
+    assert flow._resolve_tests_to_run("sim", {"sim": ["full", "gap"]}) == ["gap", "full"]

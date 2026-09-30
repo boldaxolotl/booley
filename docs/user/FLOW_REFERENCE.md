@@ -90,7 +90,7 @@ cocotb).
 
 ```bash
 booley flow sim --target sim_soc                          # full registered suite
-booley flow sim --target sim_soc --test reset --test irq  # exact tests, in order
+booley flow sim --target sim_soc --test reset --test irq  # exact tests (see ordering below)
 booley flow sim --target sim_soc --tests-file smoke.txt   # names from a file
 booley flow sim --target sim_soc --test irq --trace       # capture a waveform
 booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Verilator only)
@@ -109,6 +109,14 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 
 Test selection rules:
 
+- Coverage selections use deterministic sorted test-name order, regardless of
+  the `--test` or `--tests-file` input order. This stabilizes Campaign identity
+  and run numbering: `--test gap --test full --coverage` assigns
+  `run:001:full`, then `run:002:gap`.
+- Plain selections preserve explicit input order; an unfiltered suite follows
+  the registry order in `tests.toml`. HDL tests are scheduled in that order.
+  cocotb batches filter the selected set within one simulator process; cocotb
+  controls the order in which test functions execute.
 - Every named test must exist in every selected Target; unknown, duplicate, or
   empty selections fail before anything runs.
 - A plain run (no `--test`/`--tests-file`) honors the `skip` entries in
