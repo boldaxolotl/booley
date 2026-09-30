@@ -42,6 +42,15 @@ def _flow_names() -> set[str]:
     return {tool.name for tool in discover_mcp_tools() if tool.kind == "flow"}
 
 
+@cache
+def _specialist_modules() -> set[str]:
+    return {
+        "booley." + str(Path(tool.path).with_suffix("")).replace("/", ".")
+        for tool in discover_mcp_tools()
+        if tool.kind == "specialist" and not Path(tool.path).is_absolute()
+    }
+
+
 def _commands(text: str) -> list[tuple[int, list[str]]]:
     """Extract fenced shell examples, inline code, and shell substitutions."""
     examples = []
@@ -110,6 +119,8 @@ def _command_error(tokens: list[str]) -> str | None:
                 return f"unknown Flow {name}"
         return _subcommand_error(_public_parser(), tokens[1:])
     module = tokens[2]
+    if module in _specialist_modules():
+        return None
     if module == "booley.ticket_board":
         return _subcommand_error(_ticket_parser(), tokens[3:])
     if module == "booley.flows.sim.campaign_retention":
