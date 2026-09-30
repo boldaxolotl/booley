@@ -1,20 +1,19 @@
-"""Canonical ticket lifecycle: the single source of truth for board state.
+"""Canonical ticket lifecycle: states, their names, and the legal transitions.
 
 Historically the ticket board's state lived implicitly across the codebase:
-a hand-maintained ``DIR_STATUS_MAP``, two *divergent* ``BOARD_STATES`` tuples
-(``harness/init_cmd.py`` vs ``harness/doctor.py``), a partial user-move matrix
-plus a duplicated help string in ``op_board_move``, and ~11 bare ``status ==``
-literals scattered across the package. That drift already showed up as bugs
-(a fast-fail path that polled a state it could never leave; stale terminal
-results replayed) — the exact failure class an explicit lifecycle prevents.
+a hand-maintained ``DIR_STATUS_MAP``, two *divergent* ``BOARD_STATES`` tuples,
+a partial user-move matrix plus a duplicated help string in ``op_board_move``,
+and bare ``status ==`` literals scattered across the package. That drift already
+showed up as bugs (a fast-fail path that polled a state it could never leave;
+stale terminal results replayed) — the failure class an explicit lifecycle
+prevents.
 
-This module is a **read-model + transition validator**, NOT a new authoritative
-store. The filesystem — which ``board/<dir>/`` a ticket's ``.md`` lives in —
-remains the single atomic source of truth, mutated under the per-ticket lock by
-both the CLI and the harness (sometimes across the daemon/privilege boundary,
-under concurrent runners). :class:`TicketState` is *derived from* that directory;
-the directory move stays the one commit of a transition. Making the enum
-authoritative would be the risky path — this deliberately does not.
+This module is the vocabulary and the transition validator. Where state is
+*stored* is ADR 0065 (``docs/adr/0065-store-ticket-state-outside-the-ticket-document-path.md``):
+each live Ticket keeps the stable document path ``board/<slug>.md`` and its
+state lives in the per-Ticket state record ``state/<slug>.json``, which
+:mod:`booley.ticket_board.board_layout` owns. A transition is one atomic
+replace of that record under the per-ticket lock.
 
 Pure-stdlib leaf: imports nothing from ``booley`` so any layer (``constants``,
 ``harness``) can depend on it without an import cycle.
@@ -23,17 +22,21 @@ Pure-stdlib leaf: imports nothing from ``booley`` so any layer (``constants``,
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
+
+# Ticket document conversion stage: a draft or a published executable Ticket.
+ConversionStage = Literal["draft", "executable"]
 
 
 class TicketState(Enum):
-    """A ticket's lifecycle state, pairing its board directory with its status.
+    """A ticket's lifecycle state, pairing its board name with its status.
 
-    Each member carries ``(dir_name, status)`` so the historical name skew —
-    directory ``active`` maps to status ``running``, directory ``queue`` maps to
-    status ``queued`` — is encoded exactly ONCE, here, instead of in a
-    hand-kept ``DIR_STATUS_MAP`` plus two board-state tuples that had already
-    diverged. Member order matches the legacy ``TICKET_DIRS`` list so anything
-    that iterates it is byte-for-byte unchanged.
+    Each member carries ``(dir_name, status)``. ``dir_name`` is the board name
+    users type as a move destination (``move-ticket --to queue``) and was the
+    state's directory before ADR 0065; ``status`` is what state records store.
+    The historical skew — ``active`` means ``running``, ``queue`` means
+    ``queued`` — is encoded exactly ONCE, here. Member order is lifecycle
+    order, which board listings follow.
     """
 
     DRAFT = ("drafts", "draft")
@@ -50,9 +53,9 @@ class TicketState(Enum):
         self.status = status
 
     @property
-    def board_dir(self) -> str:
-        """``board/``-prefixed directory, e.g. ``TicketState.RUNNING.board_dir`` -> ``board/active``."""
-        return f"board/{self.dir_name}"
+    def conversion_stage(self) -> ConversionStage:
+        """Ticket document conversion stage: ``draft`` for drafts, else ``executable``."""
+        return "draft" if self is TicketState.DRAFT else "executable"
 
     @property
     def is_terminal(self) -> bool:
@@ -73,19 +76,27 @@ STATE_BY_STATUS: dict[str, TicketState] = {s.status: s for s in TicketState}
 STATE_BY_DIR: dict[str, TicketState] = {s.dir_name: s for s in TicketState}
 
 
+def parse_board_target(value: str) -> TicketState | None:
+    """Resolve a user-facing move destination to its state.
+
+    Accepts a bare directory name (``queue``) or its ``board/``-prefixed form
+    (``board/queue``), the spellings ``move-ticket --to`` has always taken.
+    Returns ``None`` for anything else.
+    """
+    return STATE_BY_DIR.get(value.removeprefix(f"{BOARD_DIR_NAME}/"))
+
+
+def board_target_choices() -> list[str]:
+    """Every spelling :func:`parse_board_target` accepts, prefixed forms first."""
+    prefixed = [f"{BOARD_DIR_NAME}/{s.dir_name}" for s in TicketState]
+    return prefixed + [s.dir_name for s in TicketState]
+
+
 # "Settled" = the run has ended, so end-time / timing can be closed. Unlike
 # is_terminal this INCLUDES review (awaiting the user is a resting state for
 # timing). Replaces the ("done", "review") tuple duplicated at two call sites.
 SETTLED_STATES: frozenset[TicketState] = frozenset({TicketState.REVIEW, TicketState.DONE})
 SETTLED_STATUSES: frozenset[str] = frozenset(s.status for s in SETTLED_STATES)
-
-
-# Ticket Board directories that ``booley init`` must create and ``doctor`` must find.
-# Excludes ``archived`` (created on demand), preserving the exact set both the
-# legacy init_cmd.BOARD_STATES and doctor.required_states hard-coded.
-REQUIRED_BOARD_DIRS: tuple[str, ...] = tuple(
-    s.dir_name for s in TicketState if s is not TicketState.ARCHIVED
-)
 
 
 # Legal transition graph -----------------------------------------------------
@@ -97,13 +108,13 @@ REQUIRED_BOARD_DIRS: tuple[str, ...] = tuple(
 #
 # Enforcement happens twice: ``op_board_move`` validates the narrower set of
 # human-requested moves, while ``TicketIO.move_and_update`` validates normal
-# harness moves from the source directory observed under the per-ticket lock.
+# harness moves from the source state recorded under the per-ticket lock.
 # Admin escape hatches (reset/archive) deliberately use separate primitives.
 #
-# op_archive(slug) can archive a ticket "from any status" — that admin escape
-# hatch is intentionally NOT modelled as an edge from every state (it would
-# dilute the normal-lifecycle graph); callers that archive out-of-band should
-# not route through validate_transition.
+# op_archive(slug) abandons a live ticket from any status except done — that
+# admin escape hatch is intentionally NOT modelled as an edge from every state
+# (it would dilute the normal-lifecycle graph); it closes the Ticket into
+# Ticket History instead of writing an archived state record.
 TRANSITIONS: dict[TicketState, frozenset[TicketState]] = {
     TicketState.DRAFT: frozenset(
         {TicketState.QUEUED, TicketState.WAITING}  # enqueue (deps met / unmet)
@@ -133,8 +144,10 @@ TRANSITIONS: dict[TicketState, frozenset[TicketState]] = {
         }
     ),
     TicketState.REVIEW: frozenset({TicketState.DONE}),  # approve/complete
-    TicketState.DONE: frozenset({TicketState.ARCHIVED}),  # archive
-    TicketState.ARCHIVED: frozenset(),  # terminal
+    # done and archived close the Ticket into Ticket History (ticket_history);
+    # a done Ticket stays on the board only until its completion finishes.
+    TicketState.DONE: frozenset(),
+    TicketState.ARCHIVED: frozenset(),
 }
 
 
@@ -177,3 +190,11 @@ def format_user_board_moves() -> str:
     (e.g. status ``running`` moves to directory ``queue`` -> ``running->queue``).
     """
     return ", ".join(f"{src.status}->{dst.dir_name}" for src, dst in USER_BOARD_MOVES)
+
+
+# Board layout ----------------------------------------------------------------
+#
+# The directory of live Ticket documents under ``<tickets_dir>/``. The layout
+# functions live in :mod:`booley.ticket_board.board_layout`.
+
+BOARD_DIR_NAME = "board"

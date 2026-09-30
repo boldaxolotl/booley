@@ -415,6 +415,58 @@ The same applies to `tests.toml`, `ticket_creation.md`, the legacy
 repository on this machine and those files were never version-controlled: copy
 one aside before you edit it.
 
+## `booley board` refuses to start: the Ticket Board needs migrating
+
+Booley keeps each live Ticket at `tickets/board/<slug>.md` with its status in
+`tickets/state/<slug>.json`, and closed Tickets in `tickets/history/`. Boards
+made by older versions kept Tickets in status folders (`board/queue/`,
+`board/done/`, ...) tracked by Git. Until you migrate, `booley doctor` FAILs
+and `booley board` and `booley run` refuse to start. There is no migration
+command:
+
+1. Stop every `booley run`, and create `tickets/state/`.
+2. Move each document in `board/<folder>/` (except `done/` and `archived/`) to
+   `board/<slug>.md`. Except for drafts, write `state/<slug>.json` with
+   `state` set from the folder: `queue/` → `queued`, `waiting/` → `waiting`,
+   `blocked/` → `blocked`, `review/` → `review`, and `active/` → `blocked` with
+   `"blocked_reason": "migrated while running"`. Copy any values from the
+   Ticket's old `logs/<slug>/.runtime/progress.json` (or
+   `logs/<slug>/progress.json`) over these defaults; the record holds exactly
+   these keys:
+
+   ```json
+   {"schema": 1, "state": "queued", "step": "", "steps_completed": [],
+    "workspace_intent": "fresh", "last_update": "", "failed_step": null,
+    "error": null, "blocked_reason": null, "blocked_step": null,
+    "execution_id": "", "execution_owner_pid": null}
+   ```
+
+3. Move each document in `board/done/` and `board/archived/` to
+   `history/<slug>.md`, adding a `closed:` block as the **last** frontmatter
+   key. `date` is the UTC time of the last `-> done` (or `-> archived`) line in
+   `logs/<slug>/human-logs/transitions.log`, else the file's modification time;
+   `generation` is the document's `machine.generation`, else empty:
+
+   ```yaml
+   closed:
+     outcome: done
+     date: '2026-09-30T12:00:00Z'
+     generation: ''
+   ```
+
+4. Delete the empty `board/<folder>/` directories, make sure
+   `.booley_project/.gitignore` ignores `tickets/board/` and `tickets/state/`,
+   and commit (skip `tickets/history` if no Ticket ever closed):
+
+   ```bash
+   git -C .booley_project rm -r --cached --ignore-unmatch -- tickets/board tickets/state
+   git -C .booley_project add .gitignore tickets/history
+   git -C .booley_project commit -m "Migrate the Ticket Board to state records"
+   ```
+
+5. `booley doctor` should pass its Ticket Board checks, and `booley board`
+   should list the same open Tickets as before.
+
 ## RTL simulates cleanly but `synth` rejects it under `slang`
 
 The `slang` frontend is stricter than Verilator, so RTL that simulates fine can

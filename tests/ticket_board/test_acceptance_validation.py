@@ -92,7 +92,7 @@ def _project_with_projection(
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "user.email", "test@example.invalid")
     project_dir = root / ".booley_project"
-    (project_dir / "tickets/board/drafts").mkdir(parents=True)
+    (project_dir / "tickets/board").mkdir(parents=True)
     (project_dir / "cores").mkdir()
     (root / ".gitignore").write_text("/.booley-projected-*.core\n", encoding="utf-8")
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8")
@@ -178,7 +178,7 @@ def _enqueued_projection_ticket(
 
 
 def _runtime_ticket(root: Path) -> Path:
-    return root / ".booley_project/tickets/board/queue/generated-input.md"
+    return root / ".booley_project/tickets/board/generated-input.md"
 
 
 def assert_ticket_worktree_inputs_unchanged(
@@ -212,7 +212,7 @@ def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, TicketBaselin
     _git(root, "commit", "-m", "initial outer")
 
     project_dir = root / ".booley_project"
-    (project_dir / "tickets/board/drafts").mkdir(parents=True)
+    (project_dir / "tickets/board").mkdir(parents=True)
     (project_dir / "cores").mkdir()
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text(
@@ -656,7 +656,7 @@ def test_flow_entry_accepts_matching_post_setup_marker_and_rejects_missing_marke
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, workspace, _basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
-    ticket = root / ".booley_project/tickets/board/queue/generated-input.md"
+    ticket = root / ".booley_project/tickets/board/generated-input.md"
     prepare_acceptance_checkout(
         root,
         workspace,
@@ -758,7 +758,7 @@ def test_ticket_flow_composes_admission_and_durable_evidence(
 
     root, workspace, _basis = _enqueued_projection_ticket(tmp_path)
     reconcile_projected_cores(workspace)
-    ticket = root / ".booley_project/tickets/board/queue/generated-input.md"
+    ticket = root / ".booley_project/tickets/board/generated-input.md"
     log_dir = tmp_path / "ticket-logs"
     state_path = log_dir / ".runtime/booley_state.json"
     state = DevelopmentState.load(state_path)
@@ -814,7 +814,7 @@ def test_developer_handoff_accepts_matching_post_setup_marker_and_rejects_drift(
     )
     ctx = TicketContext(
         slug="generated-input",
-        ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
+        ticket_path=root / ".booley_project/tickets/board/generated-input.md",
         ticket_type="feature",
         branch="main",
         summary="Accept generated input",
@@ -847,7 +847,7 @@ async def test_resumed_setup_path_accepts_marker_and_rejects_missing_marker(
     )
     ctx = TicketContext(
         slug="generated-input",
-        ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
+        ticket_path=root / ".booley_project/tickets/board/generated-input.md",
         ticket_type="feature",
         branch="main",
         summary="Accept generated input",

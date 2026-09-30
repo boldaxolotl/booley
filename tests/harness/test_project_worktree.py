@@ -399,23 +399,41 @@ def test_dirty_project_repo_is_not_silently_snapshotted(
         prepare_project_worktree(ctx)
 
 
-def test_unstaged_board_enqueue_and_claim_do_not_block_project_worktree(
+def _ignore_board_state(project: Path, slug: str) -> Path:
+    """Ignore the board and state records as init does, then write a live Ticket."""
+    with (project / ".gitignore").open("a", encoding="utf-8") as gitignore:
+        gitignore.write("tickets/board/\ntickets/state/\n")
+    _commit_all(project, "chore: ignore live Ticket state")
+    ticket = project / "tickets" / "board" / f"{slug}.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text(f"# {slug}\n", encoding="utf-8")
+    record = project / "tickets" / "state" / f"{slug}.json"
+    record.parent.mkdir(parents=True)
+    record.write_text('{"state": "running"}\n', encoding="utf-8")
+    return ticket
+
+
+def test_ignored_board_state_does_not_block_project_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _make_ticket(tmp_path, monkeypatch)
     project = ctx.project_root / ".booley_project"
-    draft = _commit_board_ticket(project, "drafts", ctx.slug)
+    _ignore_board_state(project, ctx.slug)
 
-    queued = _move_board_ticket(draft, "queue")
-    active = _move_board_ticket(queued, "active")
-    nested = prepare_project_worktree(ctx)
+    assert prepare_project_worktree(ctx) is not None
+    assert _git(project, "status", "--short") == ""
 
-    assert nested is not None
-    assert active.is_file()
-    assert _git(project, "status", "--short").splitlines() == [
-        f"D tickets/board/drafts/{ctx.slug}.md",
-        "?? tickets/board/active/",
-    ]
+
+def test_unstaged_tracked_board_change_blocks_project_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR 0065: a still-tracked legacy board file is ordinary dirt, not exempt.
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    project = ctx.project_root / ".booley_project"
+    _commit_board_ticket(project, "queue", ctx.slug).unlink()
+
+    with pytest.raises(ProjectWorktreeError, match="uncommitted changes"):
+        prepare_project_worktree(ctx)
 
 
 def test_staged_board_change_still_blocks_project_worktree(
@@ -485,28 +503,23 @@ def test_workspace_merge_can_preserve_paired_checkout(
     assert not nested.exists()
 
 
-def test_project_branch_merges_with_unstaged_board_state(
+def test_project_branch_merges_with_ignored_board_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _make_ticket(tmp_path, monkeypatch)
     project = ctx.project_root / ".booley_project"
-    queued = _commit_board_ticket(project, "queue", ctx.slug)
+    ticket = _ignore_board_state(project, ctx.slug)
     nested = prepare_project_worktree(ctx)
     assert nested is not None
     (nested / "cores" / "dut.core").write_text("CAPI=2:\nname: ::dut:3\n", encoding="utf-8")
     _commit_ticket_paths(ctx, [".booley_project/cores/dut.core"], "fix: update core")
-    review = _move_board_ticket(queued, "review")
+    ticket.write_text(f"# {ctx.slug}\n\nreviewed\n", encoding="utf-8")
 
     ok, error = merge_project_ticket_branch(ctx.project_root, ctx.slug, "merge project content")
 
     assert ok, error
-    assert review.is_file()
-    assert not queued.exists()
     assert "::dut:3" in (project / "cores" / "dut.core").read_text(encoding="utf-8")
-    assert _git(project, "status", "--short").splitlines() == [
-        f"D tickets/board/queue/{ctx.slug}.md",
-        "?? tickets/board/review/",
-    ]
+    assert _git(project, "status", "--short") == ""
 
 
 def test_project_branch_cannot_modify_ticket_board(

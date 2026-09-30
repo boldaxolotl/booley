@@ -43,6 +43,39 @@ Packaged release history starts at 0.2.7. For older changes, see
   Check Target build. Projects whose simulator-image builds need more than one
   hour must set `[flows.sim].build_timeout_ms` explicitly.
 
+- The Ticket Board now keeps each live Ticket at `tickets/board/<slug>.md`
+  with its status in an ignored `tickets/state/<slug>.json`, and moves done
+  and archived Tickets into the tracked `tickets/history/`. Boards made by
+  earlier versions need a one-time manual migration: until then `booley
+  doctor` FAILs and `booley board` and `booley run` refuse to start, both when
+  Tickets remain in the old `board/<status>/` folders and when Git still
+  tracks files under `tickets/board/` or `tickets/state/`. Follow
+  [the Troubleshooting entry](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
+- `booley board` now lists live Tickets only. Add `--all` (also accepted by
+  `python -m booley.ticket_board board|show|read-board`) to include done and
+  archived Tickets, dated by when they closed. `booley board show <slug>`
+  also finds a Closed Ticket.
+- `booley board archive <slug>` now abandons one live Ticket: it releases the
+  Ticket's worktrees and refs, keeps its logs, and closes it into
+  `tickets/history/` with outcome archived. Bare `booley board archive` no
+  longer sweeps done Tickets (they close by themselves); it only resumes an
+  archive a crash interrupted. `--force` and `--keep-logs` have no effect and
+  will be removed. Moving a Ticket to `archived` directly is refused; use
+  `archive` instead. Closed Tickets cannot be reopened, and their slugs cannot
+  be reused.
+- Booley commits each history record to the repository that tracks
+  `tickets/history/` (`chore(<slug>): close Ticket (<outcome>)`). In the
+  Project's own repository the `[stealth]` policy redacts banned phrases from
+  that message, so with the default word list it reads
+  `chore(<slug>): close redacted (<outcome>)`. When the commit cannot be made (for example a detached HEAD, or the Ticket's
+  `project_destination_ref` is not checked out), the Ticket still closes, and
+  the commit is retried on the next Ticket Board command. Doctor WARNs about
+  uncommitted records.
+- Doctor no longer crashes when no container runtime is installed; it skips
+  its container checks instead.
+- Doctor's `interactive.logs-gitignore` warning is now `project.gitignore`
+  and checks every ignore pattern `booley init` writes. Waivers on the old id
+  no longer match; re-waive under the new one.
 - REVIEW category/focus declarations now require exactly one scalar `done` or
   `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
   already-published Tickets. `booley board check-ready <slug>` is equivalent to

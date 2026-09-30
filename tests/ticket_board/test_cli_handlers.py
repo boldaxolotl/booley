@@ -15,10 +15,10 @@ from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import acceptance_targets, cli_handlers
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+from booley.ticket_board.board_layout import read_state_record, write_state_record
 from booley.ticket_board.cli import main
 from booley.ticket_board.cli_handlers import (
     _cmd_amend,
-    _cmd_board,
     _cmd_classify,
     _cmd_endpoint_table,
     _cmd_next_step_or_steps,
@@ -30,8 +30,10 @@ from booley.ticket_board.cli_handlers import (
     _cmd_validate_logs,
     _cmd_validate_ticket,
     _print_criteria_summary,
+    show_board_view,
 )
 from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import existing_runtime_file
 from booley.ticket_board.ticket_baseline import worktree_for_ref
 
@@ -133,10 +135,10 @@ def _paired_generated_amendment(
     assert tio.enqueue_ticket(slug)
     outer_exclude.write_text("", encoding="utf-8")
     project_exclude.write_text("", encoding="utf-8")
-    queued = project_dir / "tickets/board/queue" / f"{slug}.md"
-    blocked = project_dir / "tickets/board/blocked" / queued.name
-    blocked.parent.mkdir(parents=True, exist_ok=True)
-    queued.replace(blocked)
+    blocked = project_dir / "tickets/board" / f"{slug}.md"
+    record = read_state_record(tio.tickets_dir, slug)
+    assert record is not None and record.state is TicketState.QUEUED
+    write_state_record(tio.tickets_dir, slug, record.with_state(TicketState.BLOCKED))
     state = DevelopmentState.load(tio.logs_dir / slug / ".runtime/booley_state.json")
     state.init_criteria({"review_rtl_bugs_clean": True})
     state.save()
@@ -324,14 +326,14 @@ def test_validate_ticket_rejects_old_document_without_traceback(
 
 
 # ---------------------------------------------------------------------------
-# _cmd_board
+# show_board_view
 # ---------------------------------------------------------------------------
 
 
 class TestCmdBoard:
     def test_empty_board(self, tio, capsys):
         args = Namespace()
-        rc = _cmd_board(tio, args)
+        rc = show_board_view(tio, args)
         assert rc == 0
         out = capsys.readouterr().out
         assert "empty" in out.lower()
@@ -339,7 +341,7 @@ class TestCmdBoard:
     def test_board_with_tickets(self, tio, capsys):
         make_ticket_file(tio, "queue", "test-ticket")
         args = Namespace()
-        rc = _cmd_board(tio, args)
+        rc = show_board_view(tio, args)
         assert rc == 0
         out = capsys.readouterr().out
         assert "test-ticket" in out
@@ -506,7 +508,7 @@ class TestCmdValidateLogs:
         )
         assert ticket is not None
         assert tio.enqueue_ticket(slug)
-        queued = project_dir / "tickets/board/queue" / f"{slug}.md"
+        queued = project_dir / "tickets/board" / f"{slug}.md"
         assert tio.init_ticket(queued, execution_id="test-execution") is not None
         runtime_ticket = tio.logs_dir / slug / "ticket.md"
         assert runtime_ticket.is_file()
@@ -602,7 +604,7 @@ class TestCmdShow:
             tio,
             "inspect_ticket",
             lambda _slug: {
-                "file": "board/done/completed.md",
+                "file": "board/completed.md",
                 "status": "done",
                 "branch": "main",
                 "criteria": {"mandatory": {"sim_pass": "pass"}, "optional": {}},

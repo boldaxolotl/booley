@@ -96,17 +96,6 @@ def generate_slug(summary: str, max_len: int = 40) -> str:
     return slug[:max_len].rstrip("-")
 
 
-def compute_done_slugs(tickets: list[dict]) -> set[str]:
-    """Return set of slugs for tickets with status 'done'."""
-    done = set()
-    for t in tickets:
-        if t.get("status") == "done":
-            fb = t.get("feature_branch") or slug_from_file(t.get("file", ""))
-            if fb:
-                done.add(fb)
-    return done
-
-
 def detect_tickets_dir() -> Path:
     """Auto-detect the tickets directory.
 

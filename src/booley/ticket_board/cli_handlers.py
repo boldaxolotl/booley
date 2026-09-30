@@ -27,11 +27,9 @@ from .analytics import (
     parse_transitions_log,
     usage_entries_to_steps,
 )
-from .archive import op_archive, report_archive_outcome
-from .constants import (
-    VALID_TYPES,
-    normalize_dir,
-)
+from .archive import run_archive_command
+from .board_layout import RUNTIME_DEFAULTS, document_stage, read_state_record
+from .constants import VALID_TYPES
 from .evidence import op_collect_evidence
 from .execution import (
     classify_tickets,
@@ -41,7 +39,7 @@ from .execution import (
 )
 from .helpers import detect_project_root, generate_slug
 from .io import scan_all_tickets
-from .lifecycle import SETTLED_STATUSES
+from .lifecycle import SETTLED_STATUSES, TicketState, parse_board_target
 from .operations import (
     op_activate,
     op_approve,
@@ -61,24 +59,50 @@ from .paths import (
     ticket_runtime_dir,
 )
 from .reporting import (
+    closed_ticket_summary,
     display_board,
     format_timing_report,
     format_usage_report,
 )
 from .scanner import _load_state_data
+from .ticket_history import done_slugs, read_closed_ticket
 from .validation import (
     append_authored_drift_diagnostic,
     format_validate_logs_report,
     validate_logs,
 )
 
+ALL_TICKETS_ONLY_LISTS = "--all only applies when listing the Ticket Board, not to one Ticket"
+
 # ---------------------------------------------------------------------------
 # Pure output commands (no side effects)
 # ---------------------------------------------------------------------------
 
 
-def _cmd_board(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
+def reject_all_outside_listing(args, *, listing: bool) -> int | None:
+    """Report ``--all`` given to a one-Ticket command: exit code 2, else ``None``.
+
+    ``--all`` adds Closed Tickets to a Ticket Board listing; both board CLIs
+    share this guard so the rule and its message live in one place.
+    """
+    if listing or not getattr(args, "all", False):
+        return None
+    print(f"Error: {ALL_TICKETS_ONLY_LISTS}", file=sys.stderr)
+    return 2
+
+
+def _scan_for_view(tio, args):
+    """Scan the Ticket Board, adding Closed Tickets when the view was asked ``--all``."""
+    return scan_all_tickets(
+        tio.tickets_dir,
+        project_root=tio._project_root,
+        include_closed=getattr(args, "all", False),
+    )
+
+
+def show_board_view(tio, args) -> int:
+    """Print the Ticket Board listing (with Closed Tickets under ``--all``)."""
+    tickets = _scan_for_view(tio, args)
     display_board(tickets, tickets_dir=Path(tio.tickets_dir))
     return 0
 
@@ -89,7 +113,7 @@ def _cmd_slug(tio, args):
 
 
 def _cmd_read_board(tio, args):
-    tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
+    tickets = _scan_for_view(tio, args)
     json.dump({"tickets": tickets}, sys.stdout, indent=2, ensure_ascii=False)
     print()
     return 0
@@ -144,7 +168,10 @@ def _cmd_show(tio, args):
     """
     slug = getattr(args, "slug", None)
     if not slug:
-        return _cmd_board(tio, args)
+        return show_board_view(tio, args)
+    rejected = reject_all_outside_listing(args, listing=False)
+    if rejected is not None:
+        return rejected
 
     try:
         entry = tio.inspect_ticket(slug)
@@ -152,8 +179,7 @@ def _cmd_show(tio, args):
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     if entry is None:
-        print(f"Error: ticket '{slug}' not found", file=sys.stderr)
-        return 2
+        return _show_closed_ticket(tio, slug)
 
     # find_ticket accepts a copied-from-board ``<slug>.md``; re-derive the
     # canonical slug from the resolved file so log/worktree paths stay correct.
@@ -171,12 +197,27 @@ def _cmd_show(tio, args):
     return 0
 
 
+def _show_closed_ticket(tio, slug: str) -> int:
+    """Show a Ticket that is no longer live from its Ticket History record."""
+    closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+    if closed is None:
+        print(f"Error: ticket '{slug}' not found", file=sys.stderr)
+        return 2
+    print(f"ticket:    {closed.slug}")
+    print(f"status:    {closed.block.outcome.status}")
+    print(f"closed:    {closed.block.date}")
+    print(f"summary:   {closed_ticket_summary(closed)}")
+    print(f"file:      {closed.path}")
+    print(f"logs:      {ticket_log_dir(tio.logs_dir, closed.slug)}")
+    return 0
+
+
 def _cmd_parse_ticket(tio, args):
     path = Path(args.path)
     if not path.exists():
         print(json.dumps({"error": f"File not found: {args.path}"}))
         return 2
-    converted = _convert_cli_ticket(path, detect_project_root())
+    converted = _convert_cli_ticket(path, detect_project_root(), tio.tickets_dir)
     if converted.document is None:
         json.dump(
             {
@@ -208,15 +249,10 @@ def _cmd_parse_ticket(tio, args):
     return 0
 
 
-def _convert_cli_ticket(path: Path, project_root: Path):
+def _convert_cli_ticket(path: Path, project_root: Path, tickets_dir: Path):
     from .ticket_document import convert_ticket_document, ticket_conversion_context
 
-    stage = (
-        "executable"
-        if path.parent.name
-        in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
-        else "draft"
-    )
+    stage = document_stage(tickets_dir, path, off_board="draft")
     with ticket_conversion_context(project_root, path.stem, stage) as context:
         return convert_ticket_document(path.read_text(encoding="utf-8"), context)
 
@@ -285,7 +321,9 @@ def _cmd_next_step_or_steps(tio, args, command):
 
 def _cmd_classify(tio, args):
     tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
-    result = classify_tickets(tickets, logs_dir=tio.logs_dir)
+    result = classify_tickets(
+        tickets, logs_dir=tio.logs_dir, done_slugs=done_slugs(tio.tickets_dir)
+    )
     if args.format == "counts":
         for key in ("executable", "active", "blocked", "waiting", "review", "orphaned"):
             print(f"{key}={len(result.get(key, []))}")
@@ -297,7 +335,12 @@ def _cmd_classify(tio, args):
 
 def _cmd_detect_orphans(tio, args):
     tickets = scan_all_tickets(tio.tickets_dir, project_root=tio._project_root)
-    result = classify_tickets(tickets, orphan_threshold_min=args.threshold, logs_dir=tio.logs_dir)
+    result = classify_tickets(
+        tickets,
+        orphan_threshold_min=args.threshold,
+        logs_dir=tio.logs_dir,
+        done_slugs=done_slugs(tio.tickets_dir),
+    )
     orphaned = result.get("orphaned", [])
     if not orphaned:
         print("No orphaned tickets found.")
@@ -392,17 +435,24 @@ def _cmd_update_board(tio, args):
         return _apply_board_update(tio, canonical_slug, args, updates, old_status, old_step)
 
 
+def _runtime_changed(progress: dict) -> bool:
+    """Whether *progress* differs from the defaults beyond its update stamp."""
+    return any(
+        progress[key] != RUNTIME_DEFAULTS[key] for key in RUNTIME_DEFAULTS if key != "last_update"
+    )
+
+
 def _apply_board_update(tio, slug, args, updates, old_status, old_step):
     """Apply field updates and log transition (caller holds lock)."""
     from .io import find_ticket_file
-    from .logs import save_progress
 
     file_path, _ = find_ticket_file(tio.tickets_dir, slug)
     if file_path is None:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return 2
 
-    progress = copy.deepcopy(tio._load_or_bootstrap_progress(slug, file_path))
+    record = read_state_record(tio.tickets_dir, file_path.stem)
+    progress = record.progress() if record is not None else copy.deepcopy(RUNTIME_DEFAULTS)
     if args.reset_steps:
         progress["steps_completed"] = []
     if args.reset_steps_from:
@@ -412,13 +462,17 @@ def _apply_board_update(tio, slug, args, updates, old_status, old_step):
             progress["steps_completed"] = stages[: idx + 1]
 
     spec_updates = tio._apply_updates(progress, updates, args.append_step)
+    if record is None and _runtime_changed(progress):
+        print(f"Error: ticket '{slug}' is a draft and has no runtime state", file=sys.stderr)
+        return 1
     try:
         prepared_ticket = tio._prepare_spec_fields(file_path, spec_updates)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    save_progress(tio.logs_dir, slug, progress)
     tio._publish_spec_fields(file_path, prepared_ticket)
+    if record is not None:
+        tio.commit_state(file_path.stem, record.state, progress)
 
     if args.log:
         new_status = updates.get("status", old_status)
@@ -447,22 +501,24 @@ def _cmd_move_ticket(tio, args):
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     cur_status = entry.get("status", "") if entry else ""
-    norm_to = normalize_dir(args.to)
-    if cur_status == "review" and norm_to == "board/done":
+    # argparse restricts --to to board_target_choices(), so this always resolves.
+    destination = parse_board_target(args.to)
+    assert destination is not None, args.to
+    if cur_status == "review" and destination is TicketState.DONE:
         print(
             "Error: cannot move ticket from review to done via move-ticket. "
             "Use 'approve' command instead.",
             file=sys.stderr,
         )
         return 1
-    if cur_status == "review" and norm_to == "board/queue":
+    if cur_status == "review" and destination is TicketState.QUEUED:
         print(
             "Error: cannot move ticket from review to queue via move-ticket. "
             "Use 'reset' for a clean run.",
             file=sys.stderr,
         )
         return 1
-    success = tio.move_ticket_file(args.slug, norm_to)
+    success = tio.move_ticket_file(args.slug, destination)
     return 0 if success else 2
 
 
@@ -589,11 +645,12 @@ def _cmd_enqueue(tio, args):
 
 
 def _cmd_archive(tio, args):
-    slug = getattr(args, "slug", None)
-    outcome = op_archive(
-        tio, slug=slug, keep_logs=args.keep_logs, force=getattr(args, "force", False)
+    return run_archive_command(
+        tio,
+        getattr(args, "slug", None),
+        force=getattr(args, "force", False),
+        keep_logs=getattr(args, "keep_logs", False),
     )
-    return report_archive_outcome(outcome)
 
 
 def _cmd_log_incident(tio, args):

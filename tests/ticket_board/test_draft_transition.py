@@ -15,10 +15,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.ticket_board import (
     draft_transition,
     workspace_ops,
 )
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    read_state_record,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
@@ -55,9 +62,9 @@ def _draft_journal(tmp_path: Path) -> draft_transition.DraftTransitionJournal:
         "ticket",
         "initializing",
         machine,
-        str(tmp_path / "tickets/board/blocked/ticket.md"),
+        str(tmp_path / "tickets/board/ticket.md"),
         "1" * 64,
-        str(tmp_path / "tickets/board/drafts/ticket.md"),
+        str(tmp_path / "tickets/board/ticket.md"),
         "2" * 64,
         "0123456789abcdef",
         "3" * 64,
@@ -130,22 +137,38 @@ def test_draft_journal_validation_rejects_noncanonical_state(
 def test_draft_cutover_file_helpers_reject_conflicts_and_preserve_idempotence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    journal = _draft_journal(tmp_path)
     operation = tmp_path / "operation"
     monkeypatch.setattr(draft_transition, "_operation_dir", lambda *_args: operation)
-    blocked = Path(journal.blocked_ticket)
-    blocked.parent.mkdir(parents=True)
-    blocked.write_bytes(b"blocked")
-    journal = replace(journal, blocked_sha256=hashlib.sha256(b"blocked").hexdigest())
-    backup = operation / "blocked.md"
-    backup.parent.mkdir(parents=True)
-    backup.write_bytes(b"blocked")
-    with pytest.raises(draft_transition.DraftTransitionError, match="both exist"):
+    monkeypatch.setattr(draft_transition, "resolve_checkout_project_dir", lambda _root: tmp_path)
+    journal = replace(
+        _draft_journal(tmp_path),
+        blocked_sha256=hashlib.sha256(b"blocked").hexdigest(),
+        draft_sha256=hashlib.sha256(b"draft").hexdigest(),
+    )
+    document = Path(journal.draft_ticket)
+    document.parent.mkdir(parents=True)
+    document.write_bytes(b"foreign")
+    with pytest.raises(draft_transition.DraftTransitionError, match="changed unexpectedly"):
         draft_transition._publish_board(tmp_path, journal)
-    blocked.unlink()
-    backup.unlink()
+    document.unlink()
     with pytest.raises(draft_transition.DraftTransitionError, match="disappeared"):
         draft_transition._publish_board(tmp_path, journal)
+
+    # Cutover publishes the draft document first, then retires the state record
+    # beside the archived logs; a replay after publication changes nothing.
+    tickets = tmp_path / "tickets"
+    document.write_bytes(b"blocked")
+    operation.mkdir(parents=True)
+    (operation / "draft.md").write_bytes(b"draft")
+    record = StateRecord.fresh(TicketState.BLOCKED, execution_id="retired")
+    write_state_record(tickets, "ticket", record)
+    for _attempt in range(2):
+        draft_transition._publish_board(tmp_path, journal)
+        assert document.read_bytes() == b"draft"
+        assert (operation / "blocked.md").read_bytes() == b"blocked"
+        assert read_state_record(tickets, "ticket") is None
+        archived = json.loads((Path(journal.archive_dir) / "state.json").read_text())
+        assert archived == record.to_json()
 
     source = tmp_path / "source"
     destination = tmp_path / "destination"
@@ -162,9 +185,16 @@ def test_draft_journal_reads_schema_one_and_validates_schema_two_drift(
 ) -> None:
     schema_one = asdict(_draft_journal(tmp_path))
     schema_one.pop("authored_drift")
+    schema_one.pop("blocked_execution_id")
     parsed = draft_transition._parse_journal(schema_one)
     assert parsed.schema == 1
     assert parsed.authored_drift == {}
+    assert parsed.blocked_execution_id is None
+
+    schema_three = {**schema_one, "schema": 3, "authored_drift": {}, "blocked_execution_id": "e1"}
+    assert draft_transition._parse_journal(schema_three).blocked_execution_id == "e1"
+    with pytest.raises(BoundaryError):
+        draft_transition._parse_journal({**schema_three, "blocked_execution_id": None})
 
     schema_two = {**schema_one, "schema": 2, "authored_drift": {"reason": "wrong"}}
     parsed_two = draft_transition._parse_journal(schema_two)
@@ -218,9 +248,11 @@ def test_draft_cutover_uses_recovery_identity_for_persisted_authored_drift(
     )
     operation = tmp_path / "operation"
     monkeypatch.setattr(draft_transition, "_operation_dir", lambda *_args: operation)
+    monkeypatch.setattr(draft_transition, "resolve_checkout_project_dir", lambda _root: tmp_path)
     blocked = Path(journal.blocked_ticket)
     blocked.parent.mkdir(parents=True)
     blocked.write_bytes(b"blocked")
+    write_state_record(tmp_path / "tickets", "ticket", StateRecord.fresh(TicketState.BLOCKED))
     operation.mkdir(parents=True)
     (operation / "draft.md").write_bytes(b"draft")
     journal = replace(

@@ -53,6 +53,25 @@ from .archive import (
 )
 
 # ---------------------------------------------------------------------------
+# board layout and state records (ADR 0065)
+# ---------------------------------------------------------------------------
+from .board_layout import (
+    RUNTIME_DEFAULTS as RUNTIME_DEFAULTS,
+)
+from .board_layout import (
+    StateRecord as StateRecord,
+)
+from .board_layout import (
+    StateRecordError as StateRecordError,
+)
+from .board_layout import (
+    read_state_record as read_state_record,
+)
+from .board_layout import (
+    write_state_record as write_state_record,
+)
+
+# ---------------------------------------------------------------------------
 # cli
 # ---------------------------------------------------------------------------
 from .cli import build_parser as build_parser
@@ -61,9 +80,6 @@ from .cli import main as main
 # ---------------------------------------------------------------------------
 # constants
 # ---------------------------------------------------------------------------
-from .constants import (
-    DIR_STATUS_MAP as DIR_STATUS_MAP,
-)
 from .constants import (
     PRIORITY_ORDER as PRIORITY_ORDER,
 )
@@ -77,16 +93,10 @@ from .constants import (
     STEP_ORDER as STEP_ORDER,
 )
 from .constants import (
-    TICKET_DIRS as TICKET_DIRS,
-)
-from .constants import (
     VALID_PRIORITIES as VALID_PRIORITIES,
 )
 from .constants import (
     VALID_TYPES as VALID_TYPES,
-)
-from .constants import (
-    normalize_dir as normalize_dir,
 )
 from .evidence import (
     op_collect_evidence as op_collect_evidence,
@@ -168,25 +178,10 @@ from .io import (
 # logs
 # ---------------------------------------------------------------------------
 from .logs import (
-    PROGRESS_DEFAULTS as PROGRESS_DEFAULTS,
-)
-from .logs import (
     append_incident as append_incident,
 )
 from .logs import (
     clear_from_step as clear_from_step,
-)
-from .logs import (
-    load_progress as load_progress,
-)
-from .logs import (
-    progress_default as progress_default,
-)
-from .logs import (
-    reset_progress as reset_progress,
-)
-from .logs import (
-    save_progress as save_progress,
 )
 
 # ---------------------------------------------------------------------------

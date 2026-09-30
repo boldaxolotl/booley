@@ -84,73 +84,9 @@ def find_worktree_for_branch(branch: str) -> str | None:
     return None
 
 
-def _worktree_relative_path(wt_path: str, path: str | Path) -> str | None:
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        return candidate.as_posix().removeprefix("./")
-    root = Path(wt_path)
-    try:
-        return candidate.resolve().relative_to(root.resolve()).as_posix()
-    except (OSError, RuntimeError, ValueError):
-        return _bind_mount_relative_path(root, candidate)
-
-
-def _bind_mount_relative_path(root: Path, candidate: Path) -> str | None:
-    """Translate an absolute path through one proven bind-mount identity."""
-    matches: list[Path] = []
-    ancestor = candidate
-    while True:
-        if ancestor.is_dir():
-            try:
-                if ancestor.samefile(root):
-                    matches.append(ancestor)
-            except OSError:
-                pass
-        parent = ancestor.parent
-        if parent == ancestor:
-            break
-        ancestor = parent
-    if len(matches) != 1:
-        return None
-    return candidate.relative_to(matches[0]).as_posix()
-
-
-def _is_allowed_unstaged_rename(
-    wt_path: str,
-    entry: GitStatusEntry,
-    allowed: tuple[str | Path, str | Path] | None,
-) -> bool:
-    if allowed is None or entry.staged or not entry.unstaged:
-        return False
-    source = _worktree_relative_path(wt_path, allowed[0])
-    destination = _worktree_relative_path(wt_path, allowed[1])
-    if source is None or destination is None:
-        return False
-    if entry.status[1] == "R":
-        return entry.path == destination and entry.source_path == source
-    source_deleted = entry.status == " D" and entry.path == source
-    destination_untracked = entry.status == "??" and entry.path == destination
-    if not (source_deleted or destination_untracked):
-        return False
-    root = Path(wt_path)
-    return not (root / source).exists() and (root / destination).is_file()
-
-
-def worktree_is_clean(
-    wt_path: str,
-    *,
-    allowed_unstaged_rename: tuple[str | Path, str | Path] | None = None,
-) -> bool:
-    """True when no blocking changes exist in *wt_path*.
-
-    Callers may exempt one Harness-owned, unstaged Ticket Board rename. Staged
-    paths and every unrelated change remain blocking.
-    """
-    blockers = worktree_blocking_changes(
-        wt_path,
-        allowed_unstaged_rename=allowed_unstaged_rename,
-    )
-    return blockers == ()
+def worktree_is_clean(wt_path: str) -> bool:
+    """True when no blocking changes exist in *wt_path*."""
+    return worktree_blocking_changes(wt_path) == ()
 
 
 def _path_components(path: str, *, ignore_case: bool) -> tuple[str, ...]:
@@ -181,7 +117,6 @@ def _core_ignore_case(wt_path: str) -> bool:
 def worktree_blocking_changes(
     wt_path: str,
     *,
-    allowed_unstaged_rename: tuple[str | Path, str | Path] | None = None,
     candidate_paths: Collection[str] | None = None,
 ) -> tuple[GitStatusEntry, ...] | None:
     """Return blocking checkout changes, or ``None`` when status cannot be read.
@@ -200,8 +135,6 @@ def worktree_blocking_changes(
     ignore_case = candidate_paths is not None and _core_ignore_case(wt_path)
     blockers: list[GitStatusEntry] = []
     for entry in entries:
-        if _is_allowed_unstaged_rename(wt_path, entry, allowed_unstaged_rename):
-            continue
         if (
             candidate_paths is not None
             and entry.status == "??"

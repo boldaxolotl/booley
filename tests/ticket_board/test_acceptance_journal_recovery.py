@@ -9,6 +9,7 @@ from typing import Literal
 import pytest
 
 from booley.ticket_board import completion
+from booley.ticket_board.acceptance_journal import AcceptanceOutcome
 from booley.ticket_board.acceptance_journal import _advance as acceptance_impl
 from booley.ticket_board.acceptance_journal._model import JournalState
 from booley.ticket_board.acceptance_journal._repository import (
@@ -205,7 +206,10 @@ def test_retry_survives_every_semantic_checkpoint(
     )
 
     _install_runner(monkeypatch)
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+        is AcceptanceOutcome.COMPLETE
+    )
     _assert_finished(root, project, tio, participants, cleanup=True)
 
 
@@ -253,5 +257,8 @@ def test_retry_survives_each_repository_boundary(
     )
 
     _install_runner(monkeypatch)
-    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup)) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup))
+        is AcceptanceOutcome.COMPLETE
+    )
     _assert_finished(root, project, tio, participants, cleanup=cleanup)

@@ -1,7 +1,7 @@
 """Tests for filesystem failure scenarios during critical ticket state transitions.
 
 Targets "silent state corruption" bugs where partial failures leave
-inconsistent state in progress.json or logs/.
+inconsistent state in the Ticket state record or logs/.
 """
 
 import sys
@@ -13,7 +13,16 @@ import pytest
 # Ensure ticket_board is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.ticket_board import PROGRESS_DEFAULTS, TicketIO, save_progress
+from booley.ticket_board import TicketIO
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    delete_state_record,
+    read_state_record,
+    required_board_directories,
+    ticket_document_path,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import TicketState, parse_board_target
 from booley.ticket_board.operations import op_reset
 from booley.ticket_board.paths import human_log_file
 
@@ -23,24 +32,15 @@ from booley.ticket_board.paths import human_log_file
 
 
 def make_tio(tmp_path):
-    """Create a tickets dir with subdirectories and return a TicketIO instance."""
+    """Create a tickets dir with its board layout and return a TicketIO instance."""
     tickets_dir = tmp_path / "tickets"
-    for d in [
-        "board/queue",
-        "board/waiting",
-        "board/active",
-        "board/blocked",
-        "board/review",
-        "board/done",
-        "board/archived",
-    ]:
-        (tickets_dir / d).mkdir(parents=True, exist_ok=True)
-    (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
+    for directory in [*required_board_directories(tickets_dir), tickets_dir / "logs"]:
+        directory.mkdir(parents=True, exist_ok=True)
     return TicketIO(tickets_dir, project_root=tmp_path)
 
 
-def make_ticket_file(tio, subdir, slug, extra_fields=""):
-    """Create a ticket .md file under tickets_dir/board/<subdir>/<slug>.md."""
+def make_ticket_file(tio, board_name, slug, extra_fields=""):
+    """Create board/<slug>.md in the state *board_name* names (drafts, queue, ...)."""
     content = (
         "---\n"
         f"summary: {slug.replace('-', ' ')}\n"
@@ -53,21 +53,22 @@ def make_ticket_file(tio, subdir, slug, extra_fields=""):
         "---\n"
         "## Description\nSome work.\n"
     )
-    subdir_full = f"board/{subdir}" if not subdir.startswith("board/") else subdir
-    d = tio.tickets_dir / subdir_full
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{slug}.md"
+    state = parse_board_target(board_name)
+    assert state is not None, board_name
+    p = ticket_document_path(tio.tickets_dir, slug)
     p.write_text(content, encoding="utf-8")
+    if state is TicketState.DRAFT:
+        delete_state_record(tio.tickets_dir, slug)
+    else:
+        write_state_record(tio.tickets_dir, slug, StateRecord.fresh(state))
     return p
 
 
 def set_progress(tio, slug, overrides):
-    """Write a progress.json with PROGRESS_DEFAULTS + overrides."""
-    import copy
-
-    progress = copy.deepcopy(PROGRESS_DEFAULTS)
-    progress.update(overrides)
-    save_progress(tio.logs_dir, slug, progress)
+    """Replace the runtime fields of the Ticket's state record with defaults + overrides."""
+    record = read_state_record(tio.tickets_dir, slug)
+    assert record is not None, f"{slug} is a draft; drafts carry no runtime fields"
+    write_state_record(tio.tickets_dir, slug, StateRecord.fresh(record.state, **overrides))
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +85,30 @@ class TestOpResetAuditTrail:
     transitions.log — the entire audit trail. After reset, only the
     reset entry remains."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_without_git_baseline(self, monkeypatch):
+        """Let op_reset run on a blocked Ticket that has no Git baseline.
+
+        op_reset refuses drafts (they have no run to reset), and an executable
+        Ticket normally needs machine baseline metadata backed by Git refs.
+        These tests target log preservation, so convert documents in authored
+        form and skip only the baseline validation step.
+        """
+        from booley.ticket_board import operations
+
+        convert = TicketIO._convert_ticket
+        monkeypatch.setattr(
+            TicketIO,
+            "_convert_ticket",
+            lambda tio, path, slug, _stage: convert(tio, path, slug, "draft"),
+        )
+
+        def validated(tio, slug):
+            path = operations._locked_reset_candidate(tio, slug)
+            return None if path is None else (path, tio.find_ticket(slug), None)
+
+        monkeypatch.setattr(operations, "_validated_reset_context", validated)
+
     def test_transitions_log_destroyed(self, tmp_path):
         """After op_reset, old transition entries are gone.
         Only the reset entry itself survives.
@@ -94,7 +119,7 @@ class TestOpResetAuditTrail:
         tio = make_tio(tmp_path)
         slug = "test-reset-audit"
 
-        make_ticket_file(tio, "drafts", slug)
+        make_ticket_file(tio, "blocked", slug)
         set_progress(
             tio,
             slug,
@@ -127,6 +152,13 @@ class TestOpResetAuditTrail:
             result = op_reset(tio, slug)
 
         assert result is True
+        # Reset queues the Ticket in place and clears its runtime fields.
+        record = read_state_record(tio.tickets_dir, slug)
+        assert record is not None
+        assert record.state is TicketState.QUEUED
+        assert record.runtime["step"] == ""
+        assert record.runtime["steps_completed"] == []
+        assert ticket_document_path(tio.tickets_dir, slug).is_file()
 
         # After reset, transitions.log should exist with all 3 original entries
         # PLUS the reset entry (audit trail preserved after fix)
@@ -146,7 +178,7 @@ class TestOpResetAuditTrail:
         tio = make_tio(tmp_path)
         slug = "test-reset-preserve"
 
-        make_ticket_file(tio, "drafts", slug)
+        make_ticket_file(tio, "blocked", slug)
         set_progress(tio, slug, {"step": "planning"})
 
         # Create ticket.md snapshot in logs (as init_ticket would)

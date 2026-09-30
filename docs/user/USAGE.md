@@ -416,8 +416,9 @@ in [ADR 0060](../adr/0060-model-target-changes-with-ticket-target-plans.md).
 
 ### Ticket Board lifecycle
 
-`booley board show` lists every Ticket and its status. A Ticket usually moves
-like this:
+`booley board show` lists every live Ticket and its status; add `--all` to
+include done and archived Tickets from Ticket History. `booley board show
+<slug>` finds a Ticket either way. A Ticket usually moves like this:
 
 ```text
 draft ──► queued ──► running ──► review ──► done
@@ -432,8 +433,12 @@ draft ──► queued ──► running ──► review ──► done
   it left off.
 - **review**: the criteria passed and the Ticket waits for your decision.
 
-The files live in `.booley_project/board/` folders with the same names, except
-`drafts/` (`draft`), `queue/` (`queued`), and `active/` (`running`).
+Each live Ticket is one file, `.booley_project/tickets/board/<slug>.md`, and
+its status is kept beside it in `tickets/state/<slug>.json`. Both are ignored
+by Git. When a Ticket is done or archived, its document moves to
+`tickets/history/<slug>.md`, which Booley commits. Boards made before this
+layout need a one-time manual migration; see
+[Troubleshooting](TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
 
 **Reviewing a finished Ticket.** `/booley-ticket-triage` walks you through it.
 It shows the diff, the criteria results, any files outside the scope, and, with
@@ -793,6 +798,7 @@ booley run                        # work through the whole queue
 booley run --dry-run              # check the setup without running anything
 booley run --idle-timeout 0       # keep waiting for new Tickets forever
 booley board                      # show the Ticket board
+booley board --all                # ...including done and archived Tickets
 
 # Quick reference
 booley cheat                      # the whole cheatsheet

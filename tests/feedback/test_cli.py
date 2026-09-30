@@ -14,8 +14,8 @@ import pytest
 from booley.feedback import cli
 from booley.feedback.findings import read_log
 from booley.feedback.storage import feedback_storage_dir
-from booley.harness.init_cmd import PROJECT_GITIGNORE
 from booley.runtime import project_dir as project_dir_mod
+from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 
 
 @pytest.fixture

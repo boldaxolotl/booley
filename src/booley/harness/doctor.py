@@ -99,12 +99,14 @@ from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     resolve_checkout_project_dir,
 )
+from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, TargetRef
 from booley.targets.flow_names import config_section
-from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
+from booley.ticket_board.board_layout import required_board_directories
+from booley.ticket_board.legacy_layout import legacy_layout_problems, migration_pointer
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -1891,16 +1893,17 @@ def _run_container_checks(
     _fail: Fail,
 ) -> None:
     """Run container EDA tool and runtime checks."""
-    if not docker_exe:
-        banner("Container checks")
     from booley.runtime import runtime_context
 
+    banner("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _skip(_no_docker_skip_reason())
         return
+    if not docker_exe:
+        _skip(_no_docker_skip_reason())
+        return
 
-    banner("Container checks")
     if _docker_image_exists_by_name(image):
         _pass(f"{image} image present")
     else:
@@ -1912,6 +1915,18 @@ def _run_container_checks(
     _check_custom_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_image_bakes_current_booley(project, docker_exe, image, _pass, _warn)
     _check_container_uid(project, docker_exe, image, _pass, _warn, _fail)
+    container_check = _container_command_check(docker_exe, image, verbose, _pass, _fail)
+    _run_container_tool_checks(project, container_check)
+    _check_riscv_toolchain(docker_exe, image, _pass, _skip, _fail)
+
+
+ContainerCheck = Callable[..., None]
+
+
+def _container_command_check(
+    docker_exe: str, image: str, verbose: bool, _pass: Check, _fail: Fail
+) -> ContainerCheck:
+    """Return a check that passes when *cmd* exits zero in a fresh *image* container."""
 
     def _container_check(description: str, cmd: list[str], fix: str = "") -> None:
         try:
@@ -1931,6 +1946,13 @@ def _run_container_checks(
         except (subprocess.SubprocessError, FileNotFoundError):
             _fail(f"{description} (timeout/error)", fix)
 
+    return _container_check
+
+
+def _run_container_tool_checks(
+    project: ProjectAudit | None, _container_check: ContainerCheck
+) -> None:
+    """Check the EDA tools and Booley runtime payload baked into the sandbox image."""
     _container_check("verilator", ["verilator", "--version"], "rebuild sandbox image")
     _container_check("yosys", ["yosys", "-V"], "rebuild sandbox image")
     _container_check("iverilog", ["iverilog", "-V"], "rebuild sandbox image")
@@ -1963,8 +1985,6 @@ def _run_container_checks(
             ["cocotb-config", "--version"],
             "sandbox image predates cocotb support — rebuild the sandbox image",
         )
-
-    _check_riscv_toolchain(docker_exe, image, _pass, _skip, _fail)
 
 
 # RISC-V variant checks fire only when the image bakes this flavour marker
@@ -2021,7 +2041,6 @@ def _run_mcp_checks(
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
-    _check_interactive_logs_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
     _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
@@ -2056,27 +2075,6 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         _note=reporter.note_,
     )
     _check_subscription_creds_health(provider, reporter.pass_, reporter.warn_, policy=auth_policy)
-
-
-def _check_interactive_logs_gitignore(
-    project_dir: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    _warn = _warning_sink(_warn, "interactive.logs-gitignore")
-    gitignore = project_dir / ".gitignore"
-    if not gitignore.is_file():
-        _warn(".booley_project/.gitignore missing; interactive logs may be tracked")
-        return
-    try:
-        content = gitignore.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        _warn(f"could not read {gitignore}: {exc}")
-        return
-    if ".interactive_logs/" in content:
-        _pass("interactive MCP logs are gitignored")
-    else:
-        _warn(".booley_project/.gitignore should include .interactive_logs/")
 
 
 def _check_interactive_logs_tracked(
@@ -2793,13 +2791,16 @@ def _run_ticket_preflight_parity_checks(
     project: ProjectAudit | None,
     reporter: _Reporter,
 ) -> None:
-    """Mirror cheap Ticket Preflight checks in doctor output."""
+    """Mirror cheap Ticket Preflight checks, plus the Project ignore policy they rely on."""
     banner("Run checks")
     if project is None:
         reporter.skip_("run checks skipped - project config invalid")
         return
 
     _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_ticket_board_layout(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_project_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
+    _check_ticket_history_committed(project.project_dir, reporter.pass_, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_ticket_board_import(project.project_root, reporter.pass_, reporter.fail_)
@@ -2815,7 +2816,7 @@ def _run_ticket_preflight_parity_checks(
 
 def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
     tickets_dir = project_dir / "tickets"
-    required = [tickets_dir / "board" / state for state in REQUIRED_BOARD_DIRS]
+    required = required_board_directories(tickets_dir)
     required.extend([tickets_dir / "logs", tickets_dir / "locks"])
     missing = [path for path in required if not path.is_dir()]
     if missing:
@@ -2825,6 +2826,90 @@ def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
         )
         return
     _pass("tickets tree present")
+
+
+def _check_ticket_board_layout(project_dir: Path, _pass: Check, _fail: Fail) -> None:
+    """Fail while the board keeps pre-ADR-0065 leftovers board commands refuse to run on."""
+    problems = legacy_layout_problems(project_dir / "tickets")
+    for problem in problems:
+        if not problem.migration:
+            _fail(f"Ticket Board cannot be checked: {problem.summary}", problem.fix)
+            continue
+        _fail(
+            f"Ticket Board needs a manual migration: {problem.summary}",
+            f"{problem.fix}; {migration_pointer()}",
+        )
+    if not problems:
+        _pass("Ticket Board uses state records")
+
+
+def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> None:
+    """Warn when ``.booley_project/.gitignore`` lacks a transient-state pattern ``init`` adds.
+
+    A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
+    the checkout, which blocks the next Ticket's completion.
+    """
+    _warn = _warning_sink(_warn, "project.gitignore")
+    gitignore = project_dir / ".gitignore"
+    if not gitignore.is_file():
+        _warn(
+            ".booley_project/.gitignore missing; transient Booley state may be tracked",
+            "booley init",
+        )
+        return
+    try:
+        content = gitignore.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _warn(f"could not read {gitignore}: {exc}")
+        return
+    missing = missing_gitignore_patterns(content)
+    if missing:
+        _warn(
+            f".booley_project/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
+            "booley init",
+        )
+        return
+    _pass("transient Booley state is gitignored")
+
+
+def _check_ticket_history_committed(project_dir: Path, _pass: Check, _warn: Check) -> None:
+    """Warn about Closed Tickets whose history record Booley has not committed yet.
+
+    Closing never waits for the commit (ADR 0065); the next board operation
+    retries it. A record that stays uncommitted means that retry keeps failing
+    (for example a detached HEAD or a missing Git identity).
+    """
+    from booley.ticket_board.history_publication import (
+        HistoryCommitError,
+        history_ignored,
+        pending_history_commits,
+    )
+    from booley.ticket_board.ticket_history import TicketHistoryError
+
+    _warn = _warning_sink(_warn, "tickets.history-uncommitted")
+    tickets_dir = project_dir / "tickets"
+    try:
+        if history_ignored(tickets_dir):
+            _warn(
+                "tickets/history/ is gitignored; Closed Tickets' history records won't be committed",
+                "un-ignore tickets/history in the repository's .gitignore",
+            )
+            return
+        pending = pending_history_commits(tickets_dir)
+    except (HistoryCommitError, TicketHistoryError) as exc:
+        _warn(
+            f"cannot inspect Ticket History commits: {exc}",
+            "fix the repository state, then run any `booley board` command",
+        )
+        return
+    if not pending:
+        _pass("Ticket History committed")
+        return
+    shown = ", ".join(pending[:5]) + (", …" if len(pending) > 5 else "")
+    _warn(
+        f"{len(pending)} Closed Ticket history record(s) not committed yet ({shown})",
+        "run any `booley board` command to retry the commit and read its warning",
+    )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:

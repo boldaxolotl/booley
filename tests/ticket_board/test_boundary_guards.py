@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from booley.ticket_board import analytics, execution, logs, notifications, scanner, validation
+from booley.ticket_board.board_layout import StateRecordError, state_record_path
 from booley.ticket_board.paths import runtime_file
 
 
@@ -300,23 +301,35 @@ class TestValidationSourcePrefixes:
 
 
 # ---------------------------------------------------------------------------
-# logs: _reset_progress_file
+# logs: _reset_runtime_from_step (state record replaced progress.json)
 # ---------------------------------------------------------------------------
 
 
-class TestResetProgressFile:
-    def test_non_object_json_left_untouched(self, tmp_path):
-        prog = tmp_path / "progress.json"
-        prog.write_text("[1, 2, 3]", encoding="utf-8")  # wrong shape
-        # Must not raise; file is left as-is because it is not a dict.
-        logs._reset_progress_file(prog, "rtl-implement", None)
-        assert json.loads(prog.read_text(encoding="utf-8")) == [1, 2, 3]
+class TestResetRuntimeFromStep:
+    """A state record that cannot be trusted fails closed and stays untouched."""
 
-    def test_malformed_json_left_untouched(self, tmp_path):
-        prog = tmp_path / "progress.json"
-        prog.write_text("{bad", encoding="utf-8")
-        logs._reset_progress_file(prog, "rtl-implement", None)
-        assert prog.read_text(encoding="utf-8") == "{bad"
+    @staticmethod
+    def _write_record(tmp_path: Path, text: str) -> Path:
+        record = state_record_path(tmp_path, "slug")
+        record.parent.mkdir(parents=True)
+        record.write_text(text, encoding="utf-8")
+        return record
+
+    def test_non_object_json_raises_and_is_left_untouched(self, tmp_path):
+        record = self._write_record(tmp_path, "[1, 2, 3]")  # wrong shape
+        with pytest.raises(StateRecordError, match="not a JSON object"):
+            logs._reset_runtime_from_step(tmp_path / "logs", "slug", "rtl-implement", None)
+        assert json.loads(record.read_text(encoding="utf-8")) == [1, 2, 3]
+
+    def test_malformed_json_raises_and_is_left_untouched(self, tmp_path):
+        record = self._write_record(tmp_path, "{bad")
+        with pytest.raises(StateRecordError, match="not valid JSON"):
+            logs._reset_runtime_from_step(tmp_path / "logs", "slug", "rtl-implement", None)
+        assert record.read_text(encoding="utf-8") == "{bad"
+
+    def test_missing_record_is_a_draft_noop(self, tmp_path):
+        logs._reset_runtime_from_step(tmp_path / "logs", "slug", "rtl-implement", None)
+        assert not state_record_path(tmp_path, "slug").exists()
 
 
 class TestCriteriaSummaryIgnoresInternalCriteria:

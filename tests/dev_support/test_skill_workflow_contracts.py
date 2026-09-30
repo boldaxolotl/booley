@@ -100,7 +100,7 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     ordered_steps = (
         'python -m booley.ticket_board return-to-draft "$SLUG"',
         "Correct the authoring filesets",
-        "Resolve the moved Ticket's absolute path",
+        "Resolve the draft Ticket's absolute path",
         'python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git',
         'python -m booley.ticket_board enqueue "$SLUG"',
     )

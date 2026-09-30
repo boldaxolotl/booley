@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
 import os
 import shutil
@@ -21,17 +22,19 @@ from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDi
 
 logger = logging.getLogger(__name__)
 
+from .board_layout import RUNTIME_DEFAULTS
 from .git_ops import cleanup_worktree_and_branch
-from .helpers import compute_done_slugs, parse_arrow, slug_from_file
+from .helpers import parse_arrow, slug_from_file
 from .io import scan_all_tickets
+from .legacy_layout import require_current_layout
 from .lifecycle import (
-    STATE_BY_DIR,
     STATE_BY_STATUS,
     TicketState,
     format_user_board_moves,
     is_user_board_move,
+    parse_board_target,
 )
-from .logs import RESET_BOUNDARY_PREFIX, reset_progress, save_progress
+from .logs import RESET_BOUNDARY_PREFIX
 from .notifications import is_event_enabled, ntfy_review_digest, ntfy_send
 from .paths import (
     existing_human_log_file,
@@ -53,7 +56,7 @@ if TYPE_CHECKING:  # booley.core.models is imported lazily in the bodies below
 def _op_move_and_log(
     tio,
     slug,
-    to_dir,
+    to_state: TicketState,
     updates,
     transition: tuple[str, str, str, str],
     append_step=None,
@@ -71,7 +74,7 @@ def _op_move_and_log(
     locked_status = expected_status or from_state.partition(":")[0]
     success = tio.move_and_update(
         slug,
-        to_dir,
+        to_state,
         updates,
         append_step=append_step,
         transition=transition,
@@ -87,7 +90,7 @@ def _op_move_and_log(
     # Clear stale PID from ticket.lock when leaving active/ (running state).
     # Without this, a requeued ticket can be falsely blocked if the OS
     # reuses the old PID for an unrelated process.
-    if to_dir != "active" and from_state.startswith("running"):
+    if to_state is not TicketState.RUNNING and from_state.startswith("running"):
         _clear_lock_pid(tio, slug)
 
     return True
@@ -222,7 +225,7 @@ def op_activate(
     owner_pid: int | None = None,
     execution_id: str | None = None,
 ) -> bool:
-    """Activate a ticket for execution: move to active/, log transition.
+    """Activate a ticket for execution: mark it running, log transition.
 
     When the ticket is already running, checks PID ownership to prevent
     two runners from executing the same ticket concurrently. Returns False
@@ -260,8 +263,8 @@ def op_activate(
             expected_execution_id=old_execution_id,
         )
 
-    # F-43: this is the run loop's PRE-claim (`booley run --ticket <slug>` moves
-    # the ticket to active/ before the harness starts), and the harness's own
+    # F-43: this is the run loop's PRE-claim (`booley run --ticket <slug>` marks
+    # the ticket running before the harness starts), and the harness's own
     # init_ticket logs "picked up" moments later. Calling both "picked up
     # (resume)" told a never-run ticket's transitions.log it had resumed. The
     # resume wording is only truthful when there is something to resume: prior
@@ -271,7 +274,7 @@ def op_activate(
     return _op_move_and_log(
         tio,
         slug,
-        "active",
+        TicketState.RUNNING,
         {"execution_id": execution_id, "execution_owner_pid": owner_pid},
         (
             f"{old_status}:{old_step}",
@@ -286,7 +289,7 @@ def op_claim(tio: Any, slug: str) -> bool:
     """Atomically claim a queued ticket for execution.
 
     Acquires the per-ticket lock and verifies the ticket is still
-    queued before moving to active/. Returns True on success, False
+    queued before marking it running. Returns True on success, False
     if the ticket was already claimed by another runner.
 
     Unlike init_ticket (which creates logs and copies the ticket),
@@ -297,18 +300,12 @@ def op_claim(tio: Any, slug: str) -> bool:
 
     with tio._ticket_lock(slug):
         file_path, status = find_ticket_file(tio.tickets_dir, slug)
-        if file_path is None or status != "queued":
+        if file_path is None or status != "queued" or tio._transition_refused(slug):
             return False
-        active_dir = tio.tickets_dir / "board" / "active"
-        active_dir.mkdir(parents=True, exist_ok=True)
-        dest = active_dir / file_path.name
-        if dest.exists():
-            return False
-        progress = tio._load_or_bootstrap_progress(slug, file_path)
+        progress = tio.read_progress(file_path.stem)
         progress["execution_id"] = uuid.uuid4().hex
         progress["execution_owner_pid"] = os.getpid()
-        save_progress(tio.logs_dir, slug, progress)
-        shutil.move(str(file_path), str(dest))
+        tio.commit_state(file_path.stem, TicketState.RUNNING, progress)
         tio._append_transition_unlocked(
             slug, "queued:claim", "running:claim", "ticket-execute", "claimed for execution"
         )
@@ -323,13 +320,13 @@ def op_block(
     *,
     expected_execution_id: str | None = None,
 ) -> bool:
-    """Block a ticket: move to blocked/, update frontmatter, log transition."""
+    """Block a ticket: mark it blocked, update runtime fields, log transition."""
     entry, old_status, old_step = _inspect_old_state(tio, slug, step)
 
     ok = _op_move_and_log(
         tio,
         slug,
-        "blocked",
+        TicketState.BLOCKED,
         {"blocked_reason": reason, "blocked_step": step},
         (f"{old_status}:{old_step}", f"blocked:{step}", "ticket-execute", f"blocked -- {reason}"),
         expected_status="running" if expected_execution_id is not None else None,
@@ -370,7 +367,7 @@ def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
     return _op_move_and_log(
         tio,
         slug,
-        "queue",
+        TicketState.QUEUED,
         {
             "step": "",
             "workspace_intent": "resume",
@@ -409,7 +406,7 @@ def _handoff_to_review(
     ok = _op_move_and_log(
         tio,
         slug,
-        "review",
+        TicketState.REVIEW,
         {"step": "summary"},
         (f"{old_status}:{old_step}", "review:summary", "ticket-execute", "ready for user review"),
         append_step="summary",
@@ -650,7 +647,7 @@ def op_handoff(
         ok = _op_move_and_log(
             tio,
             slug,
-            "review",
+            TicketState.REVIEW,
             {"step": "summary"},
             (
                 f"{old_status}:{old_step}",
@@ -709,7 +706,7 @@ def op_unblock(
     ok = _op_move_and_log(
         tio,
         slug,
-        "queue",
+        TicketState.QUEUED,
         {
             "workspace_intent": "resume",
             "blocked_reason": None,
@@ -807,7 +804,11 @@ def _approve_transition(
         )
         return False
     ok = _op_move_and_log(
-        tio, slug, "done", {"step": "complete"}, ("review:summary", "done:complete", actor, detail)
+        tio,
+        slug,
+        TicketState.DONE,
+        {"step": "complete"},
+        ("review:summary", "done:complete", actor, detail),
     )
     if ok and is_event_enabled("done"):
         ntfy_send(f"DONE: {entry.get('summary', slug)}", "Ticket completed")
@@ -819,52 +820,150 @@ def op_approve(tio: Any, slug: str) -> bool:
     return op_complete(tio, slug)
 
 
+def reconcile_board(tio: Any) -> None:
+    """Finish closing work a crash or a failed commit left behind (idempotent).
+
+    Closes done Tickets whose completion finished but whose close was lost,
+    finishes interrupted closings, and retries uncommitted Ticket History
+    records, which can commit to the Project repository. Board commands that
+    change the board and waiting promotion run this first.
+    """
+    from .history_publication import recover_ticket_history
+
+    _close_finished_done_tickets(tio)
+    recover_ticket_history(tio)
+
+
+# Commands that only read the Ticket Board, across both board CLIs: ``booley
+# board <command>`` (``None`` is its bare listing) and ``python -m
+# booley.ticket_board.cli <command>``. No name is read-only in one CLI and
+# mutating in the other. They never trigger Ticket History recovery, which can
+# commit to the Project repository.
+READ_ONLY_BOARD_COMMANDS: frozenset[str | None] = frozenset(
+    {
+        None,
+        "board",
+        "show",
+        "check-ready",
+        "review-briefing",
+        "blocked-briefing",
+        "slug",
+        "read-board",
+        "parse-ticket",
+        "validate-ticket",
+        "next-step",
+        "steps",
+        "classify",
+        "detect-orphans",
+        "mutation-config",
+        "resume",
+        "validate-logs",
+        "timing",
+        "usage",
+    }
+)
+
+
+def open_board(tio: Any, *, recover: bool) -> None:
+    """Check what every board command needs before it touches the board.
+
+    Refuses a board in the pre-ADR-0065 layout, which hides its Tickets, so
+    even a read-only view would show the wrong board. Then, when *recover* is
+    set (commands that change the board), finishes closing work a crash or a
+    failed commit left behind; read-only commands skip that because it can
+    commit to the Project repository.
+    """
+    require_current_layout(tio.tickets_dir)
+    if recover:
+        reconcile_board(tio)
+
+
 def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
-    """Move waiting tickets to queue/ if all their dependencies are now done.
+    """Queue waiting tickets whose dependencies all closed done.
+
+    Dependencies resolve from Ticket History. A waiting Ticket with an
+    archived dependency is blocked here, lazily: the check is idempotent, so
+    archive never fans out to its dependents and a crash cannot leave them
+    half-updated.
 
     Returns list of promoted ticket dicts: [{"slug": ..., "summary": ...}].
     """
-    tickets = scan_all_tickets(tio.tickets_dir, project_root=Path(tio._project_root))
     from .basis_refresh import recover_published_basis_refreshes
+    from .ticket_history import closed_outcomes
 
+    reconcile_board(tio)
+    tickets = scan_all_tickets(tio.tickets_dir, project_root=Path(tio._project_root))
     recover_published_basis_refreshes(Path(tio._project_root), tickets)
-
-    done_slugs = compute_done_slugs(tickets)
-
+    closed = closed_outcomes(tio.tickets_dir)
     promoted = []
-    for t in tickets:
-        if t.get("status") != "waiting":
-            continue
-        provider_error = _waiting_provider_error(tio, t, tickets)
-        if provider_error:
-            slug = t.get("feature_branch") or slug_from_file(t.get("file", ""))
-            print(
-                f"Error: cannot promote '{slug}': acceptance-input-change-required: "
-                f"{provider_error}",
-                file=sys.stderr,
-            )
-            _block_failed_basis_refresh(tio, slug)
-            continue
-        deps = t.get("dependencies", [])
-        if deps and not all(d in done_slugs for d in deps):
-            continue
-        promoted_entry = _promote_waiting_ticket(tio, t)
-        if promoted_entry is not None:
-            promoted.append(promoted_entry)
-
+    for ticket in tickets:
+        if ticket.get("status") == "waiting":
+            entry = _advance_waiting_ticket(tio, ticket, tickets, closed)
+            if entry is not None:
+                promoted.append(entry)
     return promoted
 
 
+def _advance_waiting_ticket(
+    tio: Any,
+    ticket: dict[str, Any],
+    tickets: list[dict[str, Any]],
+    closed: dict[str, TicketState],
+) -> dict[str, str] | None:
+    """Block, keep waiting, or promote one waiting Ticket; return it if promoted."""
+    slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
+    dependencies = ticket.get("dependencies", [])
+    archived = sorted(dep for dep in dependencies if closed.get(dep) is TicketState.ARCHIVED)
+    if archived:
+        _block_archived_dependency(tio, slug, archived)
+        return None
+    done = {name for name, outcome in closed.items() if outcome is TicketState.DONE}
+    provider_error = _waiting_provider_error(tio, ticket, tickets, done)
+    if provider_error:
+        print(
+            f"Error: cannot promote '{slug}': acceptance-input-change-required: {provider_error}",
+            file=sys.stderr,
+        )
+        _block_failed_basis_refresh(tio, slug)
+        return None
+    if not all(dep in done for dep in dependencies):
+        return None
+    return _promote_waiting_ticket(tio, ticket)
+
+
+def _block_archived_dependency(tio: Any, slug: str, archived: list[str]) -> None:
+    """Block a waiting Ticket whose dependency closed archived (idempotent)."""
+    blocked = _op_move_and_log(
+        tio,
+        slug,
+        TicketState.BLOCKED,
+        {"blocked_reason": "dependency-archived", "blocked_step": "setup"},
+        (
+            "waiting:init",
+            "blocked:setup",
+            "ticket-board",
+            f"dependency archived: {', '.join(archived)}",
+        ),
+        expected_status="waiting",
+    )
+    if blocked:
+        print(
+            f"Blocked '{slug}': dependency archived: {', '.join(archived)}. Edit its "
+            f"dependencies, then unblock it, or archive it too.",
+            file=sys.stderr,
+        )
+
+
 def _waiting_provider_error(
-    tio: Any, ticket: dict[str, Any], tickets: list[dict[str, Any]]
+    tio: Any,
+    ticket: dict[str, Any],
+    tickets: list[dict[str, Any]],
+    done_slugs: set[str],
 ) -> str:
     if ticket.get("machine") is None:
         return ""
-    available = {
-        slug_from_file(item.get("file", ""))
-        for item in tickets
-        if item.get("status") != "archived"
-    }
+    # A provider is available while live on the board or once closed done.
+    available = {slug_from_file(item.get("file", "")) for item in tickets} | done_slugs
     dependencies = {item for item in ticket.get("dependencies", ()) if isinstance(item, str)}
     unavailable = dependencies - available
     if not unavailable:
@@ -892,7 +991,7 @@ def _promote_waiting_ticket(tio: Any, ticket: dict[str, Any]) -> dict[str, str] 
         ok = _op_move_and_log(
             tio,
             slug,
-            "queue",
+            TicketState.QUEUED,
             updates,
             (
                 "waiting:init",
@@ -954,7 +1053,7 @@ def _block_failed_basis_refresh(tio: Any, slug: str) -> None:
     _op_move_and_log(
         tio,
         slug,
-        "blocked",
+        TicketState.BLOCKED,
         {"blocked_reason": "acceptance-input-change-required", "blocked_step": "setup"},
         (
             "waiting:init",
@@ -1194,12 +1293,13 @@ def op_complete(
         except (CleanupOnlyError, OSError, ValueError) as exc:
             print(f"Error: cleanup-only completion failed for '{slug}': {exc}", file=sys.stderr)
             return False
-        _finish_completed_ticket(tio, slug, cleanup=True)
-        return True
-    if not _approve_transition(tio, slug, actor="op-complete", detail="terminal actions"):
+        return _finish_completed_ticket(tio, slug, cleanup=True, close=True)
+    # A done Ticket here is a retry after approval succeeded but closing did not.
+    if (tio.find_ticket(slug) or {}).get("status") != TicketState.DONE.status and not (
+        _approve_transition(tio, slug, actor="op-complete", detail="terminal actions")
+    ):
         return False
-    _finish_completed_ticket(tio, slug, cleanup=False)
-    return True
+    return _finish_completed_ticket(tio, slug, cleanup=False, close=True)
 
 
 def _prepare_completion_request(
@@ -1256,7 +1356,8 @@ def _completion_context(
         return None
 
     status = entry.get("status", "")
-    if status != "review" and not (status == "done" and on_success.merge):
+    # done is a live Ticket whose completion must still finish and close it.
+    if status not in {TicketState.REVIEW.status, TicketState.DONE.status}:
         print(
             f"Error: cannot complete '{slug}' from status '{status}'; must be in review",
             file=sys.stderr,
@@ -1266,27 +1367,34 @@ def _completion_context(
 
 
 def _complete_with_merge(tio: Any, slug: str, on_success: Any, snapshot: Any) -> bool:
-    from .acceptance_journal import cleanup_finished
+    from .acceptance_journal import AcceptanceOutcome, cleanup_finished
     from .completion import complete_review_ticket
 
-    if not complete_review_ticket(
+    outcome = complete_review_ticket(
         tio,
         slug,
         on_success,
         expected_sources=snapshot.participant_heads,
-    ):
+    )
+    if outcome is None:
         detail = _acceptance_failure_detail(tio, slug)
         print(f"Error: acceptance failed for '{slug}'; {detail}", file=sys.stderr)
         return False
     finished_cleanup = on_success.cleanup and cleanup_finished(
         Path(tio._project_root).resolve(), slug
     )
-    _finish_completed_ticket(tio, slug, cleanup=finished_cleanup)
-    return True
+    # Closing is the Acceptance Journal's final step: only a complete
+    # acceptance moves the Ticket to history; a retry finishes the rest.
+    return _finish_completed_ticket(
+        tio, slug, cleanup=finished_cleanup, close=outcome is AcceptanceOutcome.COMPLETE
+    )
 
 
-def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool) -> None:
-    """Release ephemeral execution state after durable acceptance."""
+def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool, close: bool) -> bool:
+    """Release ephemeral execution state after durable acceptance, then close.
+
+    Returns whether the Ticket closed (or was left live on purpose).
+    """
     if cleanup:
         from booley.harness.setup.worktree_lock_gc import release_worktree_locks
 
@@ -1295,7 +1403,77 @@ def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool) -> None:
     from .archive import _cleanup_session_files
 
     _cleanup_session_files(tio.logs_dir / slug)
+    # Promotion commits the fresh history record (recover_ticket_history).
+    succeeded = _close_done_ticket(tio, slug) if close else True
     op_promote_waiting(tio)
+    return succeeded
+
+
+class _NotClosableError(RuntimeError):
+    """A done Ticket cannot close yet; its completion must finish first."""
+
+
+def _close_done_ticket(tio: Any, slug: str) -> bool:
+    """Move a done Ticket to Ticket History (the commit follows in recovery).
+
+    Closing never releases worktrees or refs itself: completion's cleanup
+    policy decides that, and a Ticket completed without cleanup keeps its
+    branch for inspection.
+    """
+    from .acceptance_journal import AcceptanceJournalError, JournalState, acceptance_state
+    from .ticket_history import ClosedBlock, TicketHistoryError, close_ticket, ticket_generation
+
+    try:
+        with tio._ticket_lock(slug):
+            entry = tio.find_ticket(slug)
+            if entry is not None and entry.get("status") != TicketState.DONE.status:
+                raise _NotClosableError(f"Ticket is {entry.get('status')!r}, not done")
+            journal = acceptance_state(tio.tickets_dir, slug)
+            if journal is not None and journal is not JournalState.DONE:
+                raise _NotClosableError(f"its acceptance is still {journal}")
+            generation = ticket_generation(Path(tio._project_root), slug, entry) if entry else ""
+            close_ticket(tio.tickets_dir, slug, ClosedBlock.now(TicketState.DONE, generation))
+    except (
+        _NotClosableError,
+        AcceptanceJournalError,
+        TicketHistoryError,
+        OSError,
+        TimeoutError,
+        ValueError,
+    ) as exc:
+        print(
+            f"Error: '{slug}' is done but could not close into Ticket History: {exc}; "
+            f"retry 'booley board approve {slug}'",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _close_finished_done_tickets(tio: Any) -> None:
+    """Close done Tickets whose completion finished but whose close was lost.
+
+    A crash between the end of completion and the close leaves a done Ticket
+    on the board. Its completion is finished when its Acceptance Journal is
+    done with every keepalive retired (or it has none) and no cleanup-only
+    completion is pending; then closing is safe and idempotent.
+    """
+    from .acceptance_journal import AcceptanceOperationError, acceptance_finished
+    from .board_layout import documents_in_state
+    from .cleanup_only import cleanup_only_pending
+
+    root = Path(tio._project_root)
+    for document in documents_in_state(tio.tickets_dir, TicketState.DONE):
+        slug = document.stem
+        try:
+            finished = acceptance_finished(root, slug) is not False and not (
+                cleanup_only_pending(root, slug)
+            )
+        except (AcceptanceOperationError, OSError, ValueError) as exc:
+            print(f"Warning: cannot inspect completion of '{slug}': {exc}", file=sys.stderr)
+            continue
+        if finished:
+            _close_done_ticket(tio, slug)
 
 
 def op_board_move(
@@ -1324,7 +1502,7 @@ def op_board_move(
 
     status = entry.get("status", "")
     src = STATE_BY_STATUS.get(status)
-    dst = STATE_BY_DIR.get(target)
+    dst = parse_board_target(target)
 
     if src is None or dst is None or not is_user_board_move(src, dst):
         print(f"Error: cannot move '{slug}' from '{status}' to '{target}'", file=sys.stderr)
@@ -1429,30 +1607,9 @@ def _wipe_log_dir(tio, slug, preserved):
             shutil.rmtree(str(bak_dir), ignore_errors=True)
 
 
-def _move_to_queue(tio, file_path):
-    """Move a ticket file to the queue/ directory. Returns False on conflict."""
-    from .constants import normalize_dir
-
-    new_dir = tio.tickets_dir / normalize_dir("queue")
-    new_dir.mkdir(parents=True, exist_ok=True)
-    new_path = new_dir / file_path.name
-    if new_path.exists() and new_path != file_path:
-        print(f"Error: destination already exists: {new_path}", file=sys.stderr)
-        return False
-    if file_path.exists() and file_path != new_path:
-        shutil.move(str(file_path), str(new_path))
-    return True
-
-
-def _queue_destination_available(tio: Any, file_path: Path) -> bool:
-    """Refuse a reset before destructive work if queue/ already has this ticket."""
-    from .constants import normalize_dir
-
-    new_path = tio.tickets_dir / normalize_dir("queue") / file_path.name
-    if new_path.exists() and new_path != file_path:
-        print(f"Error: destination already exists: {new_path}", file=sys.stderr)
-        return False
-    return True
+def _publish_reset(tio: Any, file_path: Path) -> None:
+    """Publish queued with an empty runtime: the one commit of a reset."""
+    tio.commit_state(file_path.stem, TicketState.QUEUED, copy.deepcopy(RUNTIME_DEFAULTS))
 
 
 def _append_reset_boundary(logs_dir: Path, slug: str) -> None:
@@ -1529,7 +1686,6 @@ def _reset_runtime_state(tio: Any, slug: str) -> None:
     # rename or delete an open file, so preserve that directory and archive
     # every other runtime entry around the live lock.
     _wipe_log_dir(tio, slug, {"ticket.md", "runs", "blocked.md", ".runtime"})
-    reset_progress(tio.logs_dir, slug)
     _append_reset_boundary(tio.logs_dir, slug)
     if transition_history:
         transitions_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1542,11 +1698,16 @@ def _locked_reset_candidate(tio: Any, slug: str) -> Path | None:
 
     if not _reset_jobs_inactive(tio, slug):
         return None
-    file_path, _ = find_ticket_file(tio.tickets_dir, slug)
+    file_path, status = find_ticket_file(tio.tickets_dir, slug)
     if file_path is None:
         print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
         return None
-    return file_path if _queue_destination_available(tio, file_path) else None
+    if status == TicketState.DRAFT.status:
+        # A draft has no run to reset, and queueing its draft-form document
+        # would publish a state without the executable document.
+        print(f"Error: ticket '{slug}' is a draft; use enqueue", file=sys.stderr)
+        return None
+    return file_path
 
 
 def _validated_reset_context(
@@ -1617,8 +1778,7 @@ def _perform_reset(tio: Any, slug: str, reason: str) -> bool:
         ):
             return False
 
-        if not _move_to_queue(tio, file_path):
-            return False
+        _publish_reset(tio, file_path)
 
         tio._append_transition_unlocked(
             slug,
@@ -1722,7 +1882,7 @@ def op_reset(
     force: bool = False,
     reason: str = "user reset ticket",
 ) -> bool:
-    """Reset a ticket's state and artifacts, then move it to queue/.
+    """Reset a ticket's state and artifacts, then queue it.
 
     The queue move is the final publication step: a queued ticket therefore
     never advertises stale active-run evidence, even if cleanup fails.

@@ -13,7 +13,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from booley.runtime.agent_errors import LIMIT_PATTERNS
+from booley.ticket_board.board_layout import documents_in_state
 from booley.ticket_board.helpers import tickets_dir_from_project_root
+from booley.ticket_board.lifecycle import TicketState
 
 logger = logging.getLogger("booley")
 
@@ -29,12 +31,8 @@ def detect_subscription_limit(project_root: Path) -> int:
     Returns wait seconds (>0 if limit detected, 0 otherwise).
     """
     tickets_dir = tickets_dir_from_project_root(project_root)
-    blocked_dir = tickets_dir / "board" / "blocked"
-    if not blocked_dir.exists():
-        return 0
-
     cutoff = time.time() - 120
-    for md in blocked_dir.glob("*.md"):
+    for md in documents_in_state(tickets_dir, TicketState.BLOCKED):
         slug = md.stem
         text = _read_recent_blocked_text(tickets_dir, slug, cutoff)
         if text is None:

@@ -17,8 +17,10 @@ from booley.ticket_board.acceptance_targets import (
     criterion_targets_from_spec,
     validate_ticket_spec_targets,
 )
+from booley.ticket_board.board_layout import read_state_record, ticket_document_path
 from booley.ticket_board.cli import main
 from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import scan_all_tickets
 from booley.ticket_board.ticket_baseline import TicketBaselineError
@@ -33,6 +35,8 @@ from booley.ticket_board.ticket_document import (
 )
 from booley.ticket_board.validation import validate_ticket_spec
 from booley.ticket_board.workspace_ops import prepare_converted_ticket_baseline
+
+from .conftest import place_ticket
 
 
 def _context() -> TicketConversionContext:
@@ -929,7 +933,7 @@ def test_create_document_rejects_old_ticket_shape(tmp_path: Path) -> None:
     board = TicketIO(tmp_path / "tickets", project_root=tmp_path)
 
     assert board.create_ticket_document("old-format", ticket) is None
-    assert not (tmp_path / "tickets" / "board" / "drafts" / "old-format.md").exists()
+    assert not ticket_document_path(tmp_path / "tickets", "old-format").exists()
 
 
 def test_create_document_rejects_invalid_slug_and_duplicate_without_overwrite(
@@ -957,19 +961,18 @@ def test_create_document_reports_atomic_file_creation_race(
     board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
     monkeypatch.setattr(io, "atomic_write_once", lambda *_args, **_kwargs: False)
     assert board.create_ticket_document("race", _ticket("  REVIEW: {rtl: {bugs: done}}\n")) is None
-    assert not (board.tickets_dir / "board" / "drafts" / "race.md").exists()
+    assert not ticket_document_path(board.tickets_dir, "race").exists()
 
 
 def test_execution_start_rejects_unbound_ticket_without_moving_it(tmp_path: Path) -> None:
     (tmp_path / ".booley_project").mkdir()
     board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
-    queue = board.tickets_dir / "board" / "queue"
-    queue.mkdir(parents=True)
-    ticket = queue / "unbound.md"
-    ticket.write_text(_ticket("  REVIEW: {rtl: {bugs: done}}\n"))
+    ticket = place_ticket(
+        board.tickets_dir, "unbound", "queue", _ticket("  REVIEW: {rtl: {bugs: done}}\n")
+    )
     assert board.init_ticket(ticket) is None
     assert ticket.exists()
-    assert not (board.tickets_dir / "board" / "active" / "unbound.md").exists()
+    assert read_state_record(board.tickets_dir, "unbound").state is TicketState.QUEUED
 
 
 def test_create_file_cli_accepts_complete_document(tmp_path: Path, monkeypatch) -> None:
@@ -982,7 +985,8 @@ def test_create_file_cli_accepts_complete_document(tmp_path: Path, monkeypatch) 
     monkeypatch.setenv("TICKETS_DIR", str(project / ".booley_project" / "tickets"))
 
     assert main(["create-file", "v2-example", "--document-file", str(source)]) == 0
-    saved = project / ".booley_project" / "tickets" / "board" / "drafts" / "v2-example.md"
+    saved = ticket_document_path(project / ".booley_project" / "tickets", "v2-example")
+    assert read_state_record(saved.parent.parent, "v2-example") is None
     assert saved.read_text(encoding="utf-8") == ticket
 
 
@@ -1034,8 +1038,9 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     assert basis.outer_sha
 
     assert board.enqueue_ticket("basis-v2")
-    queued = board.tickets_dir / "board" / "queue" / "basis-v2.md"
+    queued = ticket_document_path(board.tickets_dir, "basis-v2")
     assert queued.is_file()
+    assert read_state_record(board.tickets_dir, "basis-v2").state is TicketState.QUEUED
     with ticket_conversion_context(project, "basis-v2", "executable") as context:
         conversion = convert_ticket_document(queued.read_text(encoding="utf-8"), context)
     assert conversion.document is not None
@@ -1053,8 +1058,12 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     assert entry["status"] == "queued"
     assert entry["criteria"][0]["capability"] == "REVIEW"
 
-    old = board.tickets_dir / "board" / "drafts" / "old-format.md"
-    old.write_text("---\ncriteria: {mandatory: {lint_clean: [core]}}\n---\n")
+    place_ticket(
+        board.tickets_dir,
+        "old-format",
+        "drafts",
+        "---\ncriteria: {mandatory: {lint_clean: [core]}}\n---\n",
+    )
     entries = scan_all_tickets(board.tickets_dir, project_root=project)
     assert len(entries) == 2
     assert any("Old Ticket format" in item.get("ticket_error", "") for item in entries)

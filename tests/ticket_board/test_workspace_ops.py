@@ -796,7 +796,7 @@ def test_draft_generation_rejects_invalid_and_conflicting_descriptors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
-    ticket = tmp_path / "board" / "drafts" / "ticket.md"
+    ticket = tmp_path / "board" / "ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text(
         "---\nsummary: Ticket\ntype: feature\nbranch: main\nscope: []\n"
