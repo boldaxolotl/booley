@@ -831,65 +831,85 @@ def _ticket_declares_future_target(fields: dict[str, Any], body: str, target: st
     )
 
 
+def _sim_target_error(catalog: Any, target: str) -> tuple[str, str] | None:
+    """Describe one selector failure without repeating the shared catalog."""
+    from booley.targets.domain import FuseSocError, UnknownTargetError
+
+    try:
+        handle = catalog.select(target)
+    except UnknownTargetError as exc:
+        message = str(exc).partition("; selectable Targets:")[0]
+        return "Unknown simulation Targets", f"{message}; select an eligible Target"
+    except FuseSocError as exc:
+        return "Unresolved simulation Targets", str(exc)
+    if "sim" not in handle.drivable_by:
+        return (
+            "Simulation Flow mismatches",
+            f"target {target!r} cannot satisfy sim_pass "
+            f"(flow={handle.flow!r}, EDA tool={handle.eda_tool!r}); select an eligible Target",
+        )
+    return None
+
+
 def _validate_sim_targets(
     criteria: dict[str, Any],
     fields: dict[str, Any],
     body: str,
     project_root: str | Path,
 ) -> list[str]:
-    """Reject structured ``sim_pass`` entries aimed at non-simulation Targets."""
+    """Group simulation selector failures with shared correction catalogs."""
     from booley.criteria.templates import parse_sim_criterion
     from booley.targets.catalog import TargetCatalog
-    from booley.targets.domain import FuseSocError, UnknownTargetError
+    from booley.targets.domain import FuseSocError
 
-    root = Path(project_root)
     try:
-        catalog = TargetCatalog.build(root)
+        catalog = TargetCatalog.build(Path(project_root))
         handles = catalog.list()
     except FuseSocError as exc:
         return [f"criteria: cannot inspect simulation Targets: {exc}"]
     if not handles:
         return []  # No authored .core surface yet; preserve pre-migration validation.
 
-    eligible = _eligible_sim_target_selectors(handles)
-    eligible_hint = ", ".join(eligible) if eligible else "none"
-    errors: list[str] = []
+    groups: dict[str, list[str]] = {}
     for section_name in ("mandatory", "optional"):
         section = criteria.get(section_name, {})
-        if not isinstance(section, dict):
-            continue
-        value = section.get("sim_pass")
+        value = section.get("sim_pass") if isinstance(section, dict) else None
         if not isinstance(value, list):
             continue
-        for item in value:
+        for index, item in enumerate(value):
             if not isinstance(item, str) or "->" not in item:
                 continue
             try:
                 target = parse_sim_criterion(item).target
-                handle = catalog.select(target)
             except ValueError:
                 continue  # _validate_sim_entries owns malformed-entry errors.
-            except UnknownTargetError as exc:
-                if _ticket_declares_future_target(fields, body, target):
-                    continue
-                errors.append(
-                    f"criteria.{section_name}.sim_pass: target {target!r}: {exc}; "
-                    f"eligible simulation Targets: {eligible_hint}"
-                )
+            failure = _sim_target_error(catalog, target)
+            if failure is None:
                 continue
-            except FuseSocError as exc:
-                errors.append(
-                    f"criteria.{section_name}.sim_pass: target {target!r}: {exc}; "
-                    f"eligible simulation Targets: {eligible_hint}"
-                )
+            cause, message = failure
+            if cause == "Unknown simulation Targets" and _ticket_declares_future_target(
+                fields, body, target
+            ):
                 continue
-            if "sim" not in handle.drivable_by:
-                errors.append(
-                    f"criteria.{section_name}.sim_pass: target {target!r} cannot satisfy "
-                    f"sim_pass (flow={handle.flow!r}, EDA tool={handle.eda_tool!r}); eligible simulation "
-                    f"Targets: {eligible_hint}"
-                )
-    return errors
+            groups.setdefault(cause, []).append(
+                f"  criteria.{section_name}.sim_pass[{index}]: target {target!r}: {message}"
+            )
+    return _render_sim_target_errors(groups, handles)
+
+
+def _render_sim_target_errors(groups: dict[str, list[str]], handles: tuple[Any, ...]) -> list[str]:
+    """Render each correction catalog once, then each cause and criterion."""
+    if not groups:
+        return []
+    selectable = ", ".join(sorted(handle.selector for handle in handles)) or "none"
+    eligible = ", ".join(_eligible_sim_target_selectors(handles)) or "none"
+    lines = [
+        f"selectable Targets: {selectable}",
+        f"eligible simulation Targets: {eligible}",
+    ]
+    for cause, corrections in groups.items():
+        lines.extend([f"{cause}:", *corrections])
+    return lines
 
 
 def _validate_retired_criteria(criteria: dict[str, Any]) -> list[str]:

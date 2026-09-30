@@ -1788,7 +1788,18 @@ def _perform_reset(tio: Any, slug: str, reason: str) -> bool:
             reason,
         )
 
+    _print_reset_result(slug, baseline_restored=basis is not None)
     return True
+
+
+def _print_reset_result(slug: str, *, baseline_restored: bool) -> None:
+    """Confirm the semantic result only after successful reset publication."""
+    disposition = (
+        "Ticket baseline worktrees restored"
+        if baseline_restored
+        else "unsealed workspace discarded"
+    )
+    print(f"Reset Ticket {slug}: state=queued; {disposition}.")
 
 
 def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) -> bool:
