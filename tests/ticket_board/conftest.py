@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Collection
@@ -178,6 +179,18 @@ def make_closed_ticket(
     fields = {"summary": slug.replace("-", " "), "type": "feature", "branch": "master"}
     fields.update(extra_fields or {})
     return place_closed_ticket(tio.tickets_dir, slug, format_frontmatter(fields, body), outcome)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_host_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide the developer's global Git config, which CI runners do not have.
+
+    A host-global ``core.excludesFile`` ignoring ``.booley_project/`` silently
+    turns Ticket History commits into no-ops, masking failures CI then reports.
+    Tests that need an identity configure it in their repositories. System
+    config stays visible: Git for Windows keeps its platform defaults there.
+    """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
 
 @pytest.fixture(autouse=True)

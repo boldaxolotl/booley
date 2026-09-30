@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.commit_policy.policy import find_banned
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import history_publication
 from booley.ticket_board.board_layout import (
@@ -475,14 +476,28 @@ class TestHistoryCommit:
         assert pending_history_commits(tio.tickets_dir) == []
         assert _commit(tio, "feat") is False
 
-    def test_commit_policy_banned_phrase_refuses_the_commit(self, tmp_path):
+    def test_default_stealth_policy_commits_a_redacted_message(self, tmp_path):
+        """The default word list bans "ticket"; the record still lands (PR #1000 CI)."""
+        root, tio = _repository(tmp_path)
+        _policy(root, "")
+        _close(tio, "feat")
+
+        assert _commit(tio, "feat") is True
+        subject = _git(root, "log", "--format=%s", "-1")
+        assert subject == "chore(feat): close redacted (done)"
+        assert find_banned(subject, root) == []
+        assert pending_history_commits(tio.tickets_dir) == []
+
+    def test_commit_policy_banned_phrase_in_the_slug_is_redacted(self, tmp_path):
         root, tio = _repository(tmp_path)
         _policy(root, 'banned_words = ["forbidden"]')
         _close(tio, "forbidden-work")
 
-        with pytest.raises(HistoryCommitError, match="commit policy"):
-            _commit(tio, "forbidden-work")
-        assert pending_history_commits(tio.tickets_dir) == ["forbidden-work"]
+        assert _commit(tio, "forbidden-work") is True
+        subject = _git(root, "log", "--format=%s", "-1")
+        assert "forbidden" not in subject
+        assert find_banned(subject, root) == []
+        assert pending_history_commits(tio.tickets_dir) == []
 
     def test_commit_policy_identity_allowlist_refuses_the_commit(self, tmp_path):
         root, tio = _repository(tmp_path)

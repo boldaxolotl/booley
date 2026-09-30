@@ -488,9 +488,10 @@ def test_bare_archive_resumes_crash_at_each_checkpoint(
 ) -> None:
     tio, outer, project, branch = _draft(tmp_path, monkeypatch, paired=False)
     assert project is None
-    # Track Ticket History regardless of the host's global ignore rules, and
-    # opt out of the default Stealth policy, which bans "ticket" in commits.
-    _git(outer, "config", "core.excludesFile", os.devnull)
+    # The conftest hides host-global ignore rules, so Git tracks Ticket History.
+    # Opting out of the Stealth policy keeps the unredacted subject asserted below.
+    # (Do not set ``core.excludesFile`` to ``os.devnull`` here: with ``nul`` as
+    # the excludes file, ``git status`` exited 128 on the Windows CI runner.)
     config = outer / ".booley_project" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
     config.write_text("[stealth]\nenabled = false\n", encoding="utf-8")

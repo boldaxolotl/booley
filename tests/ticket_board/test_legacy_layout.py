@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,19 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=repo, check=True, capture_output=True, text=True
     ).stdout
+
+
+def _run_printed_fix(command: str, cwd: Path) -> None:
+    """Run a printed POSIX-shell fix command as a user would.
+
+    POSIX hosts run it through ``/bin/sh``. Windows has no POSIX shell
+    (``cmd`` ignores single quotes), so there the command is split with
+    POSIX shell rules instead, which still proves its quoting is sound.
+    """
+    if sys.platform == "win32":
+        subprocess.run(shlex.split(command), cwd=cwd, check=True, capture_output=True, timeout=30)
+    else:
+        subprocess.run(command, shell=True, cwd=cwd, check=True, capture_output=True, timeout=30)
 
 
 def _current_tree(tickets_dir: Path) -> Path:
@@ -161,7 +176,10 @@ def test_tracked_files_raise_with_git_rm_cached_fix(tmp_path: Path) -> None:
 
     message = str(caught.value)
     assert "Git tracks 1 file(s)" in message
-    assert f"git -C {tickets_dir} rm -r --cached --ignore-unmatch -- board state" in message
+    # The fix targets a POSIX shell (board commands run in the Linux container),
+    # so the path is quoted for one; a Windows path always needs quoting.
+    quoted = shlex.quote(str(tickets_dir))
+    assert f"git -C {quoted} rm -r --cached --ignore-unmatch -- board state" in message
     assert MIGRATION_GUIDE in message
 
 
@@ -174,7 +192,7 @@ def test_printed_fix_untracks_an_old_board_that_never_tracked_state(tmp_path: Pa
     (problem,) = legacy_layout_problems(tickets_dir)
     command = problem.fix.removesuffix(" && commit the removal")
 
-    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
+    _run_printed_fix(command, root)
 
     assert tracked_live_state_files(tickets_dir) == []
     assert (tickets_dir / "board" / "a.md").is_file()
@@ -194,7 +212,7 @@ def test_printed_fix_untracks_in_a_stealth_project_data_repository(tmp_path: Pat
     (problem,) = legacy_layout_problems(tickets_dir)
     command = problem.fix.removesuffix(" && commit the removal")
 
-    subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True)
+    _run_printed_fix(command, root)
 
     assert tracked_live_state_files(tickets_dir) == []
     assert (tickets_dir / "board" / "a.md").is_file()
@@ -213,10 +231,7 @@ def test_missing_git_executable_does_not_block(
     """Without a git executable no index can track anything; legacy directories still block."""
     tickets_dir = _current_tree(tmp_path / "tickets")
 
-    def missing_git(*_args: object, **_kwargs: object) -> None:
-        raise FileNotFoundError("git")
-
-    monkeypatch.setattr(legacy_layout.subprocess, "run", missing_git)
+    monkeypatch.setattr(legacy_layout.shutil, "which", lambda _name: None)
 
     assert tracked_live_state_files(tickets_dir) == []
     assert "Cannot check tracked Ticket state" in caplog.text
@@ -231,8 +246,15 @@ def test_not_a_repository_is_quiet(tmp_path: Path, caplog: pytest.LogCaptureFixt
 
 @pytest.mark.parametrize(
     "failure",
-    [None, PermissionError("permission denied"), subprocess.TimeoutExpired("git", 10)],
-    ids=["exit-status", "os-error", "timeout"],
+    [
+        None,
+        PermissionError("permission denied"),
+        # With git on PATH, this means the working directory is unusable,
+        # not that git is missing (issue on PR #1000: it once passed quietly).
+        FileNotFoundError("No such file or directory"),
+        subprocess.TimeoutExpired("git", 10),
+    ],
+    ids=["exit-status", "os-error", "unusable-cwd", "timeout"],
 )
 def test_git_failure_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception | None

@@ -171,4 +171,5 @@ def test_ticket_board_show_finds_a_closed_ticket(board, monkeypatch, capsys, slu
     out = capsys.readouterr().out
     assert "status:    done" in out
     assert f"closed:    {_closed_date(board, 'shipped')}" in out
-    assert "history/shipped.md" in out
+    # Like a live Ticket's, the path is the host's native absolute path.
+    assert f"file:      {history_document_path(board.tickets_dir, 'shipped')}" in out

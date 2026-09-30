@@ -13,7 +13,8 @@ The history file on disk is the intent, and a record is pending while the
 checked-out commit does not contain it:
 
 1. check the Project's ``[stealth]`` commit policy (message and identity) when
-   history lands in the Project's own repository, the one its Git hooks guard;
+   history lands in the Project's own repository, the one its Git hooks guard,
+   redacting banned phrases from the message first;
    the inner project repository is Booley's state repository, which Booley
    already commits to directly;
 2. hash the history file and stage that one path in the user's index, so a
@@ -45,7 +46,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from booley.commit_policy.policy import identity_allowed, stealth_policy
+from booley.commit_policy.policy import identity_allowed, redact_banned, stealth_policy
 from booley.commit_policy.validation import validate_message
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.project_repositories import resolve_inner_project_repo
@@ -231,10 +232,19 @@ def pending_history_commits(tickets_dir: Path) -> list[str]:
 # Commit --------------------------------------------------------------------------
 
 
-def _check_policy(repository: Path, message: str, policy_root: Path) -> None:
-    """Refuse a commit the Project's commit policy would reject."""
-    errors = validate_message(message, project_root=policy_root)
+def _policy_message(repository: Path, message: str, policy_root: Path) -> str:
+    """Return *message* made clean for the Project's commit policy, or refuse.
+
+    Under the Stealth policy every banned phrase (the default list bans
+    "ticket") becomes the redaction placeholder, as the ``commit-msg`` hook
+    does for subjects; otherwise a Project whose repository tracks history
+    could never commit a record. Other policy errors (identity, body length)
+    still refuse the commit.
+    """
     policy = stealth_policy(policy_root)
+    if policy.enabled:
+        message = redact_banned(message, policy_root)
+    errors = validate_message(message, project_root=policy_root)
     if policy.enabled and policy.allowed_authors:
         for role in ("AUTHOR", "COMMITTER"):
             ident = _require_git(repository, "var", f"GIT_{role}_IDENT")
@@ -244,6 +254,7 @@ def _check_policy(repository: Path, message: str, policy_root: Path) -> None:
                 errors.append(f"{role.lower()} not in [stealth] allowed_authors: {name} <{email}>")
     if errors:
         raise HistoryCommitError("commit policy refuses the history commit: " + "; ".join(errors))
+    return message
 
 
 def commit_history_record(tickets_dir: Path, slug: str, *, policy_root: Path) -> bool:
@@ -265,7 +276,7 @@ def commit_history_record(tickets_dir: Path, slug: str, *, policy_root: Path) ->
         raise HistoryCommitError(f"Ticket {slug!r} has no history record to commit")
     message = f"chore({slug}): close Ticket ({closed.block.outcome.status})"
     if repository.worktree == Path(policy_root).resolve():
-        _check_policy(repository.worktree, message, policy_root)
+        message = _policy_message(repository.worktree, message, policy_root)
     destination = _destination_ref(closed, repository, Path(policy_root))
     from .acceptance_journal import AcceptanceOperationError, publication_idle
 

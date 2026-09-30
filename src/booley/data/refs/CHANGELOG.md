@@ -64,8 +64,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   `archive` instead. Closed Tickets cannot be reopened, and their slugs cannot
   be reused.
 - Booley commits each history record to the repository that tracks
-  `tickets/history/` (`chore(<slug>): close Ticket (<outcome>)`). When the
-  commit cannot be made (for example a detached HEAD, or the Ticket's
+  `tickets/history/` (`chore(<slug>): close Ticket (<outcome>)`). In the
+  Project's own repository the `[stealth]` policy redacts banned phrases from
+  that message, so with the default word list it reads
+  `chore(<slug>): close redacted (<outcome>)`. When the commit cannot be made (for example a detached HEAD, or the Ticket's
   `project_destination_ref` is not checked out), the Ticket still closes, and
   the commit is retried on the next Ticket Board command. Doctor WARNs about
   uncommitted records.

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,18 +91,22 @@ def tracked_live_state_files(tickets_dir: Path) -> list[str]:
     """
     if not tickets_dir.is_dir():
         return []
+    # Resolve git up front: a FileNotFoundError from subprocess cannot tell a
+    # missing executable from an unusable working directory, and only the
+    # former may pass quietly.
+    git = shutil.which("git")
+    if git is None:
+        logger.warning("Cannot check tracked Ticket state in %s: git is not on PATH", tickets_dir)
+        return []
     try:
         result = subprocess.run(
-            ["git", "ls-files", "-z", "--", *live_state_directory_names()],
+            [git, "ls-files", "-z", "--", *live_state_directory_names()],
             cwd=tickets_dir,
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
-    except FileNotFoundError as exc:
-        logger.warning("Cannot check tracked Ticket state in %s: %s", tickets_dir, exc)
-        return []
     except (OSError, subprocess.SubprocessError) as exc:
         raise TrackedStateCheckError(f"git ls-files failed in {tickets_dir}: {exc}") from exc
     if result.returncode != 0:
