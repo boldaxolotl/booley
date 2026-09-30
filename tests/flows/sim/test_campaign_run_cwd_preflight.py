@@ -315,6 +315,52 @@ def test_owner_missing_run_cwd_fails_before_prerequisite_build(
     assert harness.counters["compile"] == 0
 
 
+def _prerequisite_entry(harness, manifest, slug: str) -> dict:
+    """Publish ``manifest`` under the invocation and return the entry that references it."""
+    store = CampaignStore(harness.invocation / "targets" / slug / "campaign")
+    store.publish_manifest(manifest)
+    raw = encode_simulation_campaign_manifest(manifest)
+    document = json.loads(raw)
+    return {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": store.manifest_path.relative_to(harness.invocation).as_posix(),
+            "bytes": len(raw),
+            "sha256": manifest_digest(manifest),
+            "kind": "simulation_campaign_manifest",
+            "owner": document["campaign_id"],
+        },
+        "campaign_id": document["campaign_id"],
+        "target": document["target"],
+        "required_observation": "cycle_count",
+        "work_item_id": document["work_items"][0]["work_item_id"],
+    }
+
+
+def test_nested_prerequisite_missing_run_cwd_fails_before_deeper_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A -> B -> C: B's missing directory must stop C's build, not only A's or B's own run."""
+    harness = _Harness(tmp_path, monkeypatch, "immutable")
+    (harness.project / "run").mkdir()  # owner A and leaf C use the literal "run"
+    leaf = _prerequisite_entry(harness, _baseline_manifest(), "leaf-revision")
+    middle_document = json.loads(encode_simulation_campaign_manifest(_baseline_manifest()))
+    middle_document.pop("fingerprints")
+    middle_document["campaign_id"] = "550e8400-e29b-41d4-a716-446655440001"
+    middle_document["workload"]["run_cwd"]["configured"] = "middle-run"
+    middle_document["prerequisites"] = [leaf]
+    middle = _prerequisite_entry(harness, finalize_manifest(middle_document), "middle-revision")
+    owner_document = literal_document("immutable")
+    owner_document["prerequisites"] = [middle]
+
+    with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING) as caught:
+        harness.run(finalize_manifest(owner_document))
+
+    assert "middle-run" in str(caught.value)
+    assert harness.counters["compile"] == 0
+
+
 def test_missing_literal_run_cwd_fails_coverage_before_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

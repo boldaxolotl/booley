@@ -6848,6 +6848,36 @@ def _committed_repo(root: Path) -> None:
     _git_commit_all(root)
 
 
+def test_flow_audit_wires_sim_run_cwd_check_only_for_enabled_sim(tmp_path, monkeypatch):
+    checked: list[str] = []
+    monkeypatch.setattr(
+        doctor, "_check_sim_run_cwd", lambda project, *_: checked.append(str(project.project_root))
+    )
+    monkeypatch.setattr(doctor, "_check_doctor_targets", lambda *args, **kwargs: [])
+    project = _run_cwd_project(tmp_path, "run")
+    enabled = doctor.ProjectAudit(
+        project.project_root,
+        project.project_dir,
+        {"flows": {"sim": {"run_cwd": "run"}, "lint": {"enabled": False}}},
+        {},
+        "sim",
+    )
+
+    _run_isolated_flow_audit(enabled, monkeypatch)
+    assert checked == [str(tmp_path)]
+
+    checked.clear()
+    disabled = doctor.ProjectAudit(
+        project.project_root,
+        project.project_dir,
+        {"flows": {"sim": {"enabled": False}}},
+        {},
+        "sim",
+    )
+    _run_isolated_flow_audit(disabled, monkeypatch)
+    assert checked == []
+
+
 def test_sim_run_cwd_missing_warns(tmp_path: Path) -> None:
     _committed_repo(tmp_path)
 

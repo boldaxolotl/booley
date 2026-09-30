@@ -422,17 +422,27 @@ class SimulationCampaign:
         store.publish_manifest(manifest)
         self._publication_checkpoint("after:manifest_commit")
 
-    @staticmethod
     def _preflight_owner(
+        self,
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
         authenticated_sha256: str | None,
         request: CampaignRunRequest,
     ) -> None:
-        """Reject a missing owner run_cwd before any prerequisite (baseline) build."""
+        """Reject a missing run_cwd anywhere in the prerequisite tree before any build."""
         if not manifest.document["prerequisites"]:
             return  # _run_pending performs the same check for the sole campaign.
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
+        self._preflight_incomplete(manifest, recovery, request)
+        self._preflight_prerequisites(store, manifest, request, set())
+
+    @staticmethod
+    def _preflight_incomplete(
+        manifest: SimulationCampaignManifest,
+        recovery: CampaignRecovery,
+        request: CampaignRunRequest,
+    ) -> None:
+        """Preflight one campaign's run_cwd when it still has work to run."""
         if all(item.state == "complete" for item in recovery.items):
             return
         binding = (
@@ -443,6 +453,33 @@ class SimulationCampaign:
         _preflight_run_directory(
             manifest, binding.project_root if binding is not None else request.project_root
         )
+
+    def _preflight_prerequisites(
+        self,
+        owner_store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        request: CampaignRunRequest,
+        visited: set[str],
+    ) -> None:
+        """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``."""
+        entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
+        invocation = owner_store.root.parents[2]
+        for entry in entries:
+            campaign_id = cast(str, entry["campaign_id"])
+            if campaign_id in visited:
+                return  # cycles are rejected by _run_prerequisites itself
+            visited.add(campaign_id)
+            reference = cast(Mapping[str, object], entry["manifest"])
+            node = (
+                request.validated.prerequisite_for(reference)
+                if isinstance(request, ResumeCampaignRunRequest)
+                else None
+            )
+            path = node.path if node is not None else invocation / cast(str, reference["path"])
+            store = CampaignStore(path.parent)
+            prerequisite = node.manifest if node is not None else store.load_manifest()
+            self._preflight_incomplete(prerequisite, store.scan(), request)
+            self._preflight_prerequisites(store, prerequisite, request, visited)
 
     def _run_prerequisites(
         self,

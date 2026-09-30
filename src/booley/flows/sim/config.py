@@ -92,6 +92,21 @@ def literal_run_cwd_error(path: Path) -> str | None:
     return None
 
 
+def literal_run_cwd_problem(project_root: Path | str) -> str | None:
+    """Explain why the configured literal ``run_cwd`` is unusable; templated values pass.
+
+    An invalid template is reported as the problem, since planning rejects it too.
+    """
+    configured = resolve_run_cwd(project_root)
+    try:
+        placeholders = parse_run_cwd_template(configured)
+    except ValueError as exc:
+        return str(exc)
+    if placeholders:
+        return None
+    return literal_run_cwd_error((Path(project_root) / configured).absolute())
+
+
 def resolve_trace_args(work_dir: Path | str | None = None) -> list[str]:
     """Return project-owned arguments that enable its trace harness."""
     return [str(argument) for argument in (_sim_config(work_dir).get("trace_args") or [])]
