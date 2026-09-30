@@ -13,7 +13,7 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import classify_eda_failure
@@ -30,6 +30,9 @@ from .. import edam as edam_layer
 from ..base import SubprocessResult
 from . import edam as sim_edam
 from .build_parallelism import LaneKind, verilator_backend_arguments
+
+if TYPE_CHECKING:
+    from .execution.contract import SimulationTargetOutcome
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
@@ -300,15 +303,12 @@ def classify_build_outcome(
         match for match in _TERMINAL_RECORD_RE.finditer(result.stdout) if match["token"] == token
     ]
     if len(records) != 1:
-        reason = (
-            _build_timeout_reason(timeout_s)
-            if result.timed_out
-            else "missing or duplicate authenticated terminal build record"
+        reason = _abnormal_build_reason(
+            result, timeout_s, "missing or duplicate authenticated terminal build record"
         )
-        detail = f"{reason}\n{output}" if result.timed_out and output else output
         return _infrastructure_outcome(
             result,
-            detail,
+            output,
             ran=bool(records),
             reason=reason,
             terminal_record=False,
@@ -336,6 +336,36 @@ def classify_build_outcome(
 def _build_timeout_reason(timeout_s: int | None) -> str:
     limit = f" after {timeout_s} s" if timeout_s is not None else ""
     return f"build timed out{limit} (raise [flows.sim].build_timeout_ms)"
+
+
+# Remedy named in an OOM reason. ``-j<N>`` in ``flow_options.make_options``
+# disables Booley's automatic Verilator ``-j`` (see ``build_parallelism``);
+# ``[sandbox].memory`` only applies to a newly created Sandbox container.
+_OOM_REMEDY = (
+    "for Verilator, lower build parallelism with -j<N> in the Target's "
+    "flow_options.make_options, or raise [sandbox].memory and recreate the Sandbox"
+)
+
+
+def _build_oom_reason(peak_rss_mb: float | None) -> str:
+    """Name the OOM evidence without claiming the build process itself was killed.
+
+    The Sandbox OOM counter is cgroup-wide, so a sibling process may have
+    raised it; the wording states only what was observed.
+    """
+    peak = (
+        "build peak RSS unknown" if peak_rss_mb is None else f"build peak RSS {peak_rss_mb:.0f} MB"
+    )
+    return f"build failed while the Sandbox recorded an OOM kill ({peak}; {_OOM_REMEDY})"
+
+
+def _abnormal_build_reason(result: SubprocessResult, timeout_s: int | None, generic: str) -> str:
+    """Pick the most specific reason: Booley's own timeout kill, then OOM, then *generic*."""
+    if result.timed_out:
+        return _build_timeout_reason(timeout_s)
+    if result.oom_kill_delta > 0:
+        return _build_oom_reason(result.peak_rss_mb)
+    return generic
 
 
 def _successful_build_outcome(
@@ -368,12 +398,10 @@ def _failed_build_outcome(
 ) -> BuildOutcome:
     """Classify one authenticated nonzero build result."""
     if result.timed_out or result.oom_kill_delta > 0 or build_rc < 0 or build_rc >= 128:
-        reason = (
-            _build_timeout_reason(timeout_s) if result.timed_out else "abnormal build termination"
-        )
+        reason = _abnormal_build_reason(result, timeout_s, "abnormal build termination")
         return _infrastructure_outcome(
             result,
-            f"{reason}\n{output}" if result.timed_out and output else output,
+            output,
             ran=True,
             returncode=build_rc,
             reason=reason,
@@ -452,3 +480,60 @@ def _infrastructure_outcome(
         terminal_record=terminal_record,
         reason=reason,
     )
+
+
+# Bounds for the agent-visible excerpt of a failed build's output. Sized so the
+# canonical JSON of ``{"text": report}`` (worst case: every byte escaped to two
+# characters) stays under the campaign codec's 2 KiB detail ceiling.
+BUILD_REPORT_TAIL_LINES = 15
+BUILD_REPORT_TAIL_BYTES = 800
+
+_BUILD_MARKER_LINE_RE = re.compile(r"^\s*BOOLEY_(?:BUILD|RUN)_\w+")
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def build_output_tail(output: str) -> str:
+    """Return a bounded, marker-free, control-free excerpt of build output."""
+    lines = [
+        _CONTROL_CHARS_RE.sub("", _ANSI_CSI_RE.sub("", line))
+        for line in output.splitlines()
+        if not _BUILD_MARKER_LINE_RE.match(line)
+    ]
+    tail = "\n".join(lines[-BUILD_REPORT_TAIL_LINES:]).strip()
+    encoded = tail.encode("utf-8")
+    if len(encoded) <= BUILD_REPORT_TAIL_BYTES:
+        return tail
+    # Dropping undecodable leading bytes discards a partially cut character.
+    cut = encoded[-BUILD_REPORT_TAIL_BYTES:].decode("utf-8", errors="ignore")
+    return "..." + cut
+
+
+def build_failure_report(outcome: BuildOutcome) -> str:
+    """Return the reason first, then a bounded tail of the build output."""
+    tail = build_output_tail(outcome.output)
+    if not tail:
+        return outcome.reason
+    return f"{outcome.reason}\n--- output tail ---\n{tail}"
+
+
+class SimulationBuildInfrastructureError(RuntimeError):
+    """An authenticated build attempt ended without a design verdict."""
+
+    def __init__(self, target: str, outcome: BuildOutcome) -> None:
+        super().__init__(build_failure_report(outcome))
+        self.target = target
+        self.outcome = outcome
+
+    @classmethod
+    def from_target_outcome(
+        cls, outcome: SimulationTargetOutcome
+    ) -> SimulationBuildInfrastructureError:
+        """Normalize an engine infrastructure outcome that ran no tests."""
+        failure = outcome.infrastructure_failure
+        assert failure is not None
+        detail = failure.detail or failure.message
+        build = outcome.builds[-1] if outcome.builds else setup_failure_outcome(detail)
+        if not build.reason:
+            build = replace(build, reason=detail, output=detail)
+        return cls(outcome.target, build)

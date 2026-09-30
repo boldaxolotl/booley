@@ -77,7 +77,7 @@ class _NoProgress:
         del outcome
 
 
-class _CoverageAggregateError(SimulationCampaignIntegrityError):
+class _CoverageAggregateError(RuntimeError):
     """A nested Coverage Campaign failed with validated Target facts."""
 
     def __init__(self, message: str, detail: Mapping[str, object]) -> None:
@@ -457,7 +457,9 @@ def _publish_coverage_build_failure(
         tests=tests,
         infrastructure_failure=(
             SimulationInfrastructureFailure(
-                "build_transport", build.output or "coverage build failed"
+                "build_transport",
+                build.reason or build.output or "coverage build failed",
+                detail=build.output,
             )
             if infrastructure
             else None

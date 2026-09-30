@@ -111,7 +111,9 @@ from ..invocation import default_timeout_ms, resolve_timeout_ms
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
+    SimulationBuildInfrastructureError,
     SimulationBuildPreparationError,
+    build_output_tail,
     build_stage_script,
     classify_build_outcome,
     prepare_simulation_build,
@@ -224,15 +226,6 @@ class MissingExecutableError(RuntimeError):
         super().__init__(f"required executable not found: {binary}")
         self.binary = binary
         self.context = context
-
-
-class SimulationBuildInfrastructureError(RuntimeError):
-    """An authenticated build attempt ended without a design verdict."""
-
-    def __init__(self, target: str, outcome: BuildOutcome) -> None:
-        super().__init__(outcome.reason)
-        self.target = target
-        self.outcome = outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -1004,6 +997,15 @@ def _build_outcome_entry(outcome: BuildOutcome | None) -> dict[str, Any] | None:
         "terminal_record": outcome.terminal_record,
         "reason": outcome.reason,
         "cache_decision": outcome.cache_decision,
+    }
+
+
+def _build_infrastructure_detail(error: SimulationBuildInfrastructureError) -> dict[str, Any]:
+    """Structured endpoint detail for a build that ended without a design verdict."""
+    return {
+        "eda_tool_error": "build_infrastructure",
+        "target": error.target,
+        "build_stage": _build_outcome_entry(error.outcome),
     }
 
 
@@ -2544,6 +2546,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         detail = _fresh_campaign_recovery_detail(validated, observed)
         if isinstance(error, ProgressPublicationError):
             detail["progress_error"] = str(error)
+        if isinstance(error, SimulationBuildInfrastructureError):
+            detail.update(_build_infrastructure_detail(error))
         target = None
         selector = None
         if isinstance(error, _CoverageAggregateError):
@@ -3443,6 +3447,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
             if isinstance(exc, ProgressPublicationError):
                 detail["progress_error"] = str(exc)
+            if isinstance(exc, SimulationBuildInfrastructureError):
+                detail.update(_build_infrastructure_detail(exc))
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 detail=detail,
@@ -4766,17 +4772,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             f"{outcome.reason}. No simulation ran, so there is no pass/fail "
             "verdict about the design. Inspect the build log and re-run."
         )
-        tail = "\n".join(outcome.output.strip().splitlines()[-15:])
+        tail = build_output_tail(outcome.output)
         report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
         print(report_text)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             display_lines=[f"Flow error: {exc.target} build infrastructure failed"],
-            detail={
-                "eda_tool_error": "build_infrastructure",
-                "target": exc.target,
-                "build_stage": _build_outcome_entry(outcome),
-            },
+            detail=_build_infrastructure_detail(exc),
             report_text=report_text,
         )
 
@@ -5331,10 +5333,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
             if missing:
                 raise MissingExecutableError(missing, detail)
-            build = outcome.builds[-1] if outcome.builds else setup_failure_outcome(detail)
-            if not build.reason:
-                build = replace(build, reason=detail, output=detail)
-            raise SimulationBuildInfrastructureError(outcome.target, build)
+            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
         tests = [self._project_execution_test(test) for test in outcome.tests]
         self._record_execution_artifacts(outcome)
         return TargetResult(

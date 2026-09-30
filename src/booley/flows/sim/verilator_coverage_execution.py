@@ -23,6 +23,7 @@ from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportId
 from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
+    build_failure_report,
     build_stage_script,
     classify_build_outcome,
     prepare_simulation_build,
@@ -232,6 +233,14 @@ class VerilatorCoverageExecution:
         timeout_s = max(1, timeout_ms // 1000)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
         outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
+        if outcome.failure_kind == "infrastructure":
+            return SimulationBuildResult(
+                False,
+                build_failure_report(outcome),
+                identity,
+                infrastructure_error=True,
+                reason=outcome.reason,
+            )
         if not outcome.passed:
             return SimulationBuildResult(False, outcome.output or outcome.reason, identity)
         self._prepared = prepared

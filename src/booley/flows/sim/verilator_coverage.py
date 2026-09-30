@@ -179,6 +179,7 @@ class SimulationBuildResult:
     output: str = ""
     collector: VerilatorCollectorIdentity | None = None
     infrastructure_error: bool = False
+    reason: str = ""
 
 
 @dataclass(frozen=True)
