@@ -129,8 +129,7 @@ no longer be resumed.
 - `simulation.json` uses `booley.simulation-projection/v2`.
 - `report.json` uses `booley.simulation-report/v2`.
 - Target-level `coverage.json` uses `booley.coverage-campaign-reference/v1`.
-- The selected nested `coverage.json` uses `booley.coverage-campaign/v4`;
-  readers also accept valid retained V3 Campaign manifests.
+- The selected nested `coverage.json` is the current Coverage Campaign manifest.
 
 To find a Target's results, follow `artifacts[target].report` in the run's
 `report.json`. Every path inside these files is relative, and each reference
@@ -191,7 +190,7 @@ A coverage run publishes this reference and nested evidence:
   coverage.json              booley.coverage-campaign-reference/v1
   simulation.json            the completed Target projection
   campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/
-    coverage.json            booley.coverage-campaign/v4 (retained V3 readable)
+    coverage.json            current Coverage Campaign manifest
     coverage-points.jsonl.gz  every coverage point and which runs hit it
     native/raw/              one Verilator database per test
     native/merged/           the merged database
@@ -208,9 +207,8 @@ from the Target directory.
 Pass the canonical numbered Target-level `coverage.json` to the Coverage Analyst.
 It resolves the reference and authenticates the enclosing Simulation Campaign
 and completed Target projection; the nested path alone is not an Analyst input.
-Retained direct V3/V4 manifests at the canonical Target path with matching
-projections are also supported. Manifest summary/deep readers in
-`booley.flows.sim.coverage_campaign_store` accept the resolved V3/V4 manifest,
+Manifest summary/deep readers in
+`booley.flows.sim.coverage_campaign_store` accept the resolved Campaign manifest,
 not the V1 reference. Always read points through the manifest rather than opening
 the point store directly.
 

@@ -1014,7 +1014,7 @@ The canonical Target directory holds `simulation.json` and a
 manifest or point store. Its `coverage_campaign.path_base` is `origin_target`;
 resolve `coverage_campaign.path` against that directory to
 `campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
-The nested Coverage Campaign directory holds the V4 manifest, required
+The nested Coverage Campaign directory holds the current manifest, required
 `coverage-points.jsonl.gz`, `native/raw/`,
 `native/merged/`, and `hooks/` sidecars when collected. Native paths in the
 manifest are relative to that **Coverage Campaign directory**.
@@ -1026,14 +1026,11 @@ without inline Coverage Points. The
 scoring and retained diagnostic evidence. Source rollups cover line, branch,
 expression, and toggle with overall eligibility and waiver policy;
 they never aggregate by instance hierarchy. The manifest integrity-binds the
-compressed JSON Lines point store. Manifest summary/deep readers accept valid
-V3/V4 at the resolved nested path and reject score-bearing invalid V3 and all
-V1/V2 Campaign manifests (the V1 reference is a separate schema). The Coverage
+compressed JSON Lines point store. Manifest summary/deep readers validate the current Campaign manifest at the
+resolved nested path; the Target reference is a separate schema. The Coverage
 Analyst requires the canonical Target-level reference and matching completed
 `simulation.json`; it resolves and authenticates the nested manifest internally
-and does not accept the nested path as its input. It also supports retained
-direct V3/V4 manifests at the canonical Target path with matching simulation
-projections.
+and does not accept the nested path as its input.
 `booley.simulation-report/v2` artifact
 references use `report_invocation` or `reports_root`, resolved from the containing
 `report.json`; cross-root resume references instead use `external_origin_target`,
@@ -1174,7 +1171,7 @@ rewritten by retention, and a Campaign lock never recreates a renamed Campaign r
 ### Coverage Analysis after Simulation
 
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its V3/V4 integrity-linked point store, rejects collector-error or incompatible
+its integrity-linked point store, rejects collector-error or incompatible
 collection before provider invocation, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native

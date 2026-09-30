@@ -346,7 +346,7 @@ numbered report directory (qualified Target selectors are percent-encoded):
   campaign/
     manifest.json            the enclosing Simulation Campaign
     work-items/<item>/attempts/<attempt>/coverage-campaign/
-      coverage.json          booley.coverage-campaign/v4 manifest
+      coverage.json          current Coverage Campaign manifest
       coverage-points.jsonl.gz
       native/raw/            per-test Verilator databases
       native/merged/         merged Verilator database
@@ -357,13 +357,11 @@ The Target reference's `coverage_campaign.path` resolves from the origin Target
 directory, as declared by `coverage_campaign.path_base: origin_target`. The
 nested manifest binds the point store and contains rollups and verdicts; its
 native artifact paths are relative to the **Coverage Campaign directory**.
-Current runs write V4; readers also accept valid retained V3 manifests at the
-same nested location.
 
 Pass the numbered Target-level `coverage.json` reference to the Coverage Analyst.
 It authenticates the nested Campaign and matching completed Simulation evidence;
 it does not accept the nested manifest directly. Manifest summary/deep readers
-in `booley.flows.sim.coverage_campaign_store` take the resolved V3/V4 manifest,
+in `booley.flows.sim.coverage_campaign_store` take the resolved Campaign manifest,
 not the reference. Never edit or pass the point store directly, and keep the
 reference and enclosing Simulation Campaign together.
 
