@@ -65,3 +65,13 @@ def atomic_write_once(path: Path, content: bytes, *, mode: int = 0o600) -> bool:
         return True
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def durable_unlink(path: Path) -> bool:
+    """Remove *path* and persist the removal; return whether it existed."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    _fsync_directory(path.parent)
+    return True

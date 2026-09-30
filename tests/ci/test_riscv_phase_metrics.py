@@ -26,6 +26,54 @@ def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value) + "\n", encoding="utf-8")
 
 
+def _rawjson(
+    path: Path,
+    *vertices: dict[str, object],
+    statuses: tuple[dict[str, object], ...] = (),
+) -> Path:
+    """Write BuildKit `--progress rawjson` snapshots: one `{"vertexes": [...]}` per line.
+
+    Each vertex is emitted twice, first as a bare start and then complete, the
+    way BuildKit repeats a vertex as its state advances.
+    """
+    lines = []
+    for vertex in vertices:
+        started = {key: vertex[key] for key in ("digest", "name", "started") if key in vertex}
+        lines.append(json.dumps({"vertexes": [started]}))
+        lines.append(json.dumps({"vertexes": [vertex], "statuses": [], "logs": []}))
+    for status in statuses:
+        started = {
+            key: status[key] for key in ("id", "vertex", "started", "timestamp") if key in status
+        }
+        lines.append(json.dumps({"statuses": [started]}))
+        lines.append(json.dumps({"vertexes": [], "statuses": [status], "logs": []}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _vertex(digest: str, name: str, started: str, completed: str, **extra: object) -> dict:
+    return {"digest": digest, "name": name, "started": started, "completed": completed, **extra}
+
+
+def _status(identifier: str, vertex: str, started: str, completed: str, **extra: object) -> dict:
+    return {
+        "id": identifier,
+        "vertex": vertex,
+        "started": started,
+        "completed": completed,
+        **extra,
+    }
+
+
+_CONTEXT = _vertex(
+    "sha256:context",
+    "[context booley-standard-substrate] booley-standard-substrate:ci",
+    "2026-09-24T12:00:00.000000001Z",
+    "2026-09-24T12:00:00.000000002Z",
+    cached=True,
+)
+
+
 def _completed_record(path: Path, name: str, topology: str) -> None:
     start_record(path, name, topology)
     finish_record(path, 0)
@@ -98,27 +146,18 @@ def test_buildkit_import_boundary_and_cache_metadata_are_attributed(tmp_path: Pa
     image = tmp_path / "image.json"
     parent = tmp_path / "parent.json"
     start_record(record, "wheel_overlay", "nested")
-    progress.write_text(
-        "\n".join(
-            json.dumps(value)
-            for value in (
-                {
-                    "id": "compile",
-                    "name": "RUN build",
-                    "started": "2026-09-24T12:00:00Z",
-                    "completed": "2026-09-24T12:00:04Z",
-                    "cached": True,
-                },
-                {
-                    "id": "load",
-                    "name": "importing to docker",
-                    "started": "2026-09-24T12:00:04Z",
-                    "completed": "2026-09-24T12:00:06Z",
-                },
-            )
-        )
-        + "\n",
-        encoding="utf-8",
+    _rawjson(
+        progress,
+        _vertex(
+            "sha256:compile",
+            "[stage-0 1/1] RUN build",
+            "2026-09-24T12:00:00Z",
+            "2026-09-24T12:00:04Z",
+            cached=True,
+        ),
+        _vertex(
+            "sha256:load", "importing to docker", "2026-09-24T12:00:04Z", "2026-09-24T12:00:06Z"
+        ),
     )
     _write(metadata, {"containerimage.digest": "sha256:candidate"})
     _write(image, [{"Id": "sha256:candidate"}])
@@ -142,10 +181,9 @@ def test_buildkit_missing_import_boundary_is_explicitly_unavailable(tmp_path: Pa
     record = tmp_path / "build.json"
     progress = tmp_path / "progress.jsonl"
     start_record(record, "riscv_tool_substrate", "nested")
-    progress.write_text(
-        '{"id":"export","name":"exporting layers","started":"2026-09-24T12:00:00Z",'
-        '"completed":"2026-09-24T12:00:02Z"}\n',
-        encoding="utf-8",
+    _rawjson(
+        progress,
+        _vertex("sha256:run", "[1/1] RUN make", "2026-09-24T12:00:00Z", "2026-09-24T12:00:02Z"),
     )
 
     finish_build_record(
@@ -171,11 +209,9 @@ def test_buildkit_missing_import_boundary_is_explicitly_unavailable(tmp_path: Pa
 def test_unavailable_transfer_prevents_complete_sample(tmp_path: Path) -> None:
     record = tmp_path / "records" / "build.json"
     start_record(record, "riscv_tool_substrate", "nested")
-    progress = tmp_path / "progress.jsonl"
-    progress.write_text(
-        '{"id":"export","name":"exporting layers",'
-        '"started":"2026-09-24T12:00:00Z","completed":"2026-09-24T12:00:02Z"}\n',
-        encoding="utf-8",
+    progress = _rawjson(
+        tmp_path / "progress.jsonl",
+        _vertex("sha256:run", "[1/1] RUN make", "2026-09-24T12:00:00Z", "2026-09-24T12:00:02Z"),
     )
     finish_build_record(
         record,
@@ -222,12 +258,19 @@ def test_warm_cache_miss_is_not_a_representative_sample(tmp_path: Path) -> None:
     record = tmp_path / "records" / "build.json"
     progress = tmp_path / "progress.jsonl"
     start_record(record, "riscv_tool_substrate", "nested")
-    progress.write_text(
-        '{"id":"compile","name":"RUN build","cached":true,'
-        '"started":"2026-09-24T12:00:00Z","completed":"2026-09-24T12:00:01Z"}\n'
-        '{"id":"load","name":"importing to docker",'
-        '"started":"2026-09-24T12:00:01Z","completed":"2026-09-24T12:00:02Z"}\n',
-        encoding="utf-8",
+    _rawjson(
+        progress,
+        _CONTEXT,
+        _vertex(
+            "sha256:compile",
+            "[1/1] RUN build",
+            "2026-09-24T12:00:00Z",
+            "2026-09-24T12:00:01Z",
+            cached=True,
+        ),
+        _vertex(
+            "sha256:load", "exporting to image", "2026-09-24T12:00:01Z", "2026-09-24T12:00:02Z"
+        ),
     )
     finish_build_record(
         record,
@@ -283,3 +326,123 @@ def test_start_record_rejects_boolean_epoch(tmp_path: Path) -> None:
 
     with pytest.raises(TimingError, match="must be an integer"):
         finish_record(record, 0)
+
+
+def test_docker_driver_export_without_import_boundary_is_unavailable(tmp_path: Path) -> None:
+    """Image export is construction work, not evidence of a distinct daemon import."""
+    record = tmp_path / "build.json"
+    start_record(record, "riscv_tool_substrate", "nested")
+    progress = _rawjson(
+        tmp_path / "progress.jsonl",
+        _CONTEXT,
+        _vertex(
+            "sha256:spike",
+            "[4/7] RUN build spike",
+            "2026-09-24T12:00:00.123456789Z",
+            "2026-09-24T12:08:00.123456789Z",
+        ),
+        _vertex(
+            "sha256:export",
+            "exporting to image",
+            "2026-09-24T12:08:00.2Z",
+            "2026-09-24T12:08:07.2Z",
+        ),
+    )
+
+    finish_build_record(
+        record, 0, progress, tmp_path / "m.json", tmp_path / "i.json", tmp_path / "p.json"
+    )
+
+    construction, load = json.loads(record.read_text(encoding="utf-8"))["phases"]
+    assert construction["attribution"] == "combined_construction_export_transfer_load"
+    assert load["outcome"] == "unavailable"
+    summary = summarize_records([record], 1, 1, "sha", "2026-09-24T12:09:00Z")
+    assert summary["complete"] is False
+
+
+def test_docker_driver_unpack_status_is_the_transfer_load_boundary(tmp_path: Path) -> None:
+    """A distinct unpack status separates completed image export from daemon import."""
+    record = tmp_path / "build.json"
+    start_record(record, "riscv_tool_substrate", "nested")
+    progress = _rawjson(
+        tmp_path / "progress.jsonl",
+        _CONTEXT,
+        _vertex(
+            "sha256:spike",
+            "[4/7] RUN build spike",
+            "2026-09-24T12:00:00.123456789Z",
+            "2026-09-24T12:08:00.123456789Z",
+        ),
+        _vertex(
+            "sha256:export",
+            "exporting to image",
+            "2026-09-24T12:08:00.2Z",
+            "2026-09-24T12:08:07.2Z",
+        ),
+        statuses=(
+            _status(
+                "exporting layers",
+                "sha256:export",
+                "2026-09-24T12:08:00.2Z",
+                "2026-09-24T12:08:06.2Z",
+            ),
+            _status(
+                "unpacking to docker.io/library/booley-riscv-substrate:ci",
+                "sha256:export",
+                "2026-09-24T12:08:06.2Z",
+                "2026-09-24T12:08:07.2Z",
+            ),
+        ),
+    )
+
+    finish_build_record(
+        record, 0, progress, tmp_path / "m.json", tmp_path / "i.json", tmp_path / "p.json"
+    )
+
+    construction, load = json.loads(record.read_text(encoding="utf-8"))["phases"]
+    assert "attribution" not in construction
+    assert construction["elapsed_seconds"] == 486.2
+    assert load["outcome"] == "success"
+    assert load["elapsed_seconds"] == 1
+
+
+@pytest.mark.parametrize(
+    ("cached_steps", "expected_hit"),
+    [((), False), (("sha256:gcc",), False), (("sha256:gcc", "sha256:spike"), True)],
+)
+def test_tooling_cache_hit_requires_every_build_step_cached(
+    tmp_path: Path, cached_steps: tuple[str, ...], expected_hit: bool
+) -> None:
+    """The named parent context is always reported cached and must not count."""
+    record = tmp_path / "build.json"
+    start_record(record, "riscv_tool_substrate", "nested")
+    steps = [
+        _vertex(
+            digest,
+            f"[{index}/2] RUN {digest}",
+            "2026-09-24T12:00:00Z",
+            "2026-09-24T12:00:01Z",
+            **({"cached": True} if digest in cached_steps else {}),
+        )
+        for index, digest in enumerate(("sha256:gcc", "sha256:spike"), start=1)
+    ]
+    progress = _rawjson(tmp_path / "progress.jsonl", _CONTEXT, *steps)
+
+    finish_build_record(
+        record, 0, progress, tmp_path / "m.json", tmp_path / "i.json", tmp_path / "p.json"
+    )
+
+    buildkit = json.loads(record.read_text(encoding="utf-8"))["phases"][0]["buildkit"]
+    assert buildkit["build_step_count"] == 2
+    assert buildkit["cached_build_step_count"] == len(cached_steps)
+    assert buildkit["cache_hit"] is expected_hit
+
+
+def test_baseline_arm_is_a_representative_sample(tmp_path: Path) -> None:
+    record = tmp_path / "records" / "lane.json"
+    _completed_record(record, "riscv_candidate", "parallel")
+
+    summary = summarize_records([record], 1, 1, "sha", "2026-09-24T12:00:00Z", "baseline")
+
+    assert summary["run"]["measurement_arm"] == "baseline"
+    assert summary["representative"] is True

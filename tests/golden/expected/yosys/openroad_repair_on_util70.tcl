@@ -7,10 +7,11 @@ read_sdc {<WORK>/target.sdc}
 if {[llength [all_clocks]] == 0} { error "BOOLEY_INPUT_ERROR: synth Target 'synth_dut' SDC files \[<WORK>/target.sdc\] created no clocks; add create_clock to the Target-owned SDC" }
 foreach _clk [all_clocks] { puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }
 puts "BOOLEY_STAGE: floorplan"
-initialize_floorplan -utilization 70.000 -aspect_ratio 1.0 -core_space 2.0 \
+initialize_floorplan -utilization 70.000 -aspect_ratio 1.0 \
+  -core_space {2.8 2.8 2.09 2.09} \
   -site FreePDK45_38x28_10R_NP_162NW_34O
 make_tracks
-remove_buffers [get_cells *]
+remove_buffers
 source {/opt/pdk/nangate45/Nangate45.rc}
 set_wire_rc -signal -layer metal3
 set_wire_rc -clock -layer metal6

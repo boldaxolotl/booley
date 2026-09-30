@@ -18,6 +18,7 @@ from booley.runtime.execution_lease import (
     ExecutionLeaseEnvironment,
     ExecutionLeaseError,
     ExecutionLeaseFile,
+    ExecutionLeaseJsonField,
     validate_recording,
 )
 from booley.runtime.pid import DEAD, REUSED, UNKNOWN, ProcessIdentity, ProcessObservation
@@ -30,7 +31,10 @@ def _lease_environment(
     worktree = tmp_path / "worktree"
     state = tmp_path / "state.json"
     lease_path = tmp_path / "operation.json"
-    review_ticket = tmp_path / "tickets" / "board" / "review" / "demo.md"
+    review_ticket = tmp_path / "tickets" / "board" / "demo.md"
+    review_record = tmp_path / "tickets" / "state" / "demo.json"
+    review_record.parent.mkdir(parents=True)
+    review_record.write_text('{"state": "review", "step": ""}\n', encoding="utf-8")
     worktree.mkdir()
     state.write_text("{}\n", encoding="utf-8")
     review_ticket.parent.mkdir(parents=True)
@@ -63,6 +67,11 @@ def _lease_environment(
             ExecutionLeaseAbsentPath(
                 "accepted Criteria Satisfaction Record",
                 log_dir / "acceptance" / "accepted.json",
+            ),
+        ),
+        required_fields=(
+            ExecutionLeaseJsonField.capture(
+                "Ticket Board review Ticket state", review_record, "state"
             ),
         ),
     )
@@ -174,6 +183,24 @@ def test_review_status_and_acceptance_are_fenced(tmp_path: Path, monkeypatch) ->
     acceptance_record.parent.mkdir(parents=True)
     acceptance_record.write_text("{}\n", encoding="utf-8")
     with pytest.raises(ExecutionLeaseError, match="accepted Criteria Satisfaction Record"):
+        validate_recording(worktree)
+
+
+def test_pinned_json_field_ignores_other_fields_but_rejects_its_own(
+    tmp_path: Path, monkeypatch
+) -> None:
+    worktree, _lease, environment = _lease_environment(tmp_path, monkeypatch)
+    record = environment.required_fields[0].path
+
+    record.write_text('{"state": "review", "step": "lint"}\n', encoding="utf-8")
+    validate_recording(worktree)
+
+    record.write_text('{"state": "blocked", "step": "lint"}\n', encoding="utf-8")
+    with pytest.raises(ExecutionLeaseError, match="state is no longer current"):
+        validate_recording(worktree)
+
+    record.write_text("{", encoding="utf-8")
+    with pytest.raises(ExecutionLeaseError, match="state is no longer available"):
         validate_recording(worktree)
 
 

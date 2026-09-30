@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -56,12 +55,16 @@ from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
+    assess_native_verdict,
+    first_native_failure,
+    native_verdict_message,
     publish_native_adapter_result,
     transport_identity_from_args,
     work_transport_arguments,
 )
 from booley.flows.sim.backends.shared import (
     RunLogProgress,
+    RunTermination,
     adopt_declared_trace_files,
     append_child_cpu_marker,
     child_cpu_snapshot,
@@ -69,7 +72,6 @@ from booley.flows.sim.backends.shared import (
     format_idle_note,
 )
 from booley.flows.sim.result import (
-    count_sva_errors,
     extract_vrfc_warnings,
     format_summary,
     parse_sim_verdict,
@@ -119,6 +121,7 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     if work.trace:
         cmd += [f"--trace-arg={value}" for value in work.trace_args]
         cmd += [f"--trace-file={value}" for value in work.trace_files]
+    cmd += [f"--runtime-input={value}" for value in work.runtime_inputs]
     cmd += work_transport_arguments(work)
     return cmd
 
@@ -172,7 +175,8 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     timeout: int,
     max_rundir_bytes: int = 0,
     work_dir: Path | None = None,
-) -> tuple[deque[str], subprocess.Popen]:
+    runtime_inputs: tuple[str, ...] = (),
+) -> tuple[deque[str], subprocess.Popen, RunTermination]:
     """Run vvp from *run_cwd*, stream stdout live, enforce *timeout* (seconds).
 
     Uses a watchdog timer rather than stdout-activity polling so a silent hung
@@ -189,7 +193,8 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     from booley.flows.sim.run_guard import (
         DiskBudgetGuard,
         child_death_kwargs,
-        readmemh_fatal_line,
+        classify_readmemh_termination,
+        parse_readmemh_fatal,
         snapshot_dir_baseline,
         supervise_child,
     )
@@ -237,9 +242,10 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
             progress.observe(lines)  # F-18: run.log shows a live tail mid-run
             # SETUP-23: a missing $readmemh init file warns once then vvp spins
             # forever on uninitialised RAM — treat that warning as fatal.
-            fatal = readmemh_fatal_line(line)
-            if fatal:
-                readmemh_error = f"missing $readmemh memory-init file — {fatal}"
+            missing = parse_readmemh_fatal(line)
+            if missing and proc.poll() is None:
+                fatal = classify_readmemh_termination(missing, run_cwd, runtime_inputs)
+                readmemh_error = fatal.detail
                 kill_process_tree(proc)
                 break
         proc.wait()
@@ -253,13 +259,16 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
 
     # Precedence: an explicit fatal (readmemh) over the disk runaway over the
     # wall-clock timeout — the first is the most specific cause of death.
+    termination = RunTermination()
     if readmemh_error:
         msg = f"ERROR: {readmemh_error}"
         print(msg)
         lines.append(msg + "\n")
+        termination = fatal
     elif guard.tripped:
         print(guard.message)
         lines.append(guard.message + "\n")
+        termination = RunTermination("disk_budget", guard.message, "infrastructure")
     elif timed_out["hit"]:
         # F-21: name the silence, so "slow" and "wedged with no sentinel" read
         # differently in the verdict tail.
@@ -268,7 +277,8 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
         )
         print(msg)
         lines.append(msg + "\n")
-    return lines, proc
+        termination = RunTermination("timeout", msg, "timeout")
+    return lines, proc, termination
 
 
 def _evaluate_verdict(
@@ -278,48 +288,35 @@ def _evaluate_verdict(
     *,
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
+    termination: RunTermination | None = None,
 ) -> None:
     """Print the ``[SIM_SUMMARY]`` verdict + write result JSON (legacy parity)."""
-    verdict = parse_sim_verdict(
+    termination = termination or RunTermination()
+    assessment = assess_native_verdict(
         output,
+        returncode,
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
+        termination=termination,
     )
-    sva_errors = count_sva_errors(output)
     vrfc = extract_vrfc_warnings(output)
-
-    inconclusive = False
-    if verdict is True:
-        passed = sva_errors == 0
-    elif verdict is False or returncode != 0 or sva_errors > 0:
-        passed = False
-    else:
-        passed, inconclusive = False, True
-
-    print(format_summary(passed, sva_errors, vrfc, inconclusive=inconclusive))
-    if inconclusive:
-        print("\niverilog sim INCONCLUSIVE (rc=0, no sentinel)")
-    elif passed:
-        print(f"\niverilog sim PASSED (rc={returncode})")
-    elif verdict is False:
-        # A FAIL sentinel matched. vvp can still exit 0 (e.g. an SVA/$error
-        # that reports but doesn't $fatal), so cite rc only when it is
-        # actually nonzero — never print the maximally-confusing "(rc=0)".
-        reason = f"rc={returncode}" if returncode else "fail sentinel matched"
-        print(f"\niverilog sim FAILED ({reason})")
-    elif sva_errors > 0:
-        print(f"\niverilog sim FAILED ({sva_errors} SVA assertion errors)")
-    else:
-        print(f"\niverilog sim FAILED (rc={returncode})")
-
-    first_err = ""
-    if not passed:
-        for ln in output.splitlines():
-            if re.search(r"(?:failed|fatal|error|mismatch)", ln, re.IGNORECASE):
-                first_err = ln.strip()
-                break
+    print(
+        format_summary(
+            assessment.passed,
+            assessment.sva_errors,
+            vrfc,
+            inconclusive=assessment.inconclusive,
+        )
+    )
+    print(native_verdict_message("iverilog", assessment, returncode, termination))
+    first_err = first_native_failure(output, termination.detail) if not assessment.passed else ""
     write_result_json(
-        work_dir, passed, sva_errors, first_err, returncode, inconclusive=inconclusive
+        work_dir,
+        assessment.passed,
+        assessment.sva_errors,
+        first_err,
+        returncode,
+        inconclusive=assessment.inconclusive,
     )
     # Persist the raw output next to result.json on pass AND fail:
     # result.json only carries a 500-char first_error, so run.log is what
@@ -351,7 +348,12 @@ def _prepare_icarus_run(
     return _IcarusRun(build, run, work, image, command, trace)
 
 
-def _execute_icarus_run(run: _IcarusRun, timeout: int, max_rundir_bytes: int):
+def _execute_icarus_run(
+    run: _IcarusRun,
+    timeout: int,
+    max_rundir_bytes: int,
+    runtime_inputs: tuple[str, ...],
+):
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
@@ -369,6 +371,7 @@ def _execute_icarus_run(run: _IcarusRun, timeout: int, max_rundir_bytes: int):
             timeout,
             max_rundir_bytes=max_rundir_bytes,
             work_dir=run.work_dir,
+            runtime_inputs=runtime_inputs,
         )
     finally:
         heartbeat.stop()
@@ -452,6 +455,7 @@ def run_icarus_image(
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
     max_rundir_bytes: int = 0,
+    runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
 ) -> str:
     """Run an edalize-built vvp image once and return its captured output."""
@@ -465,7 +469,7 @@ def run_icarus_image(
     )
     if isinstance(run, str):
         return _icarus_setup_failure(run, transport)
-    lines, proc = _execute_icarus_run(run, timeout, max_rundir_bytes)
+    lines, proc, termination = _execute_icarus_run(run, timeout, max_rundir_bytes, runtime_inputs)
     output = "".join(lines)
     _evaluate_verdict(
         output,
@@ -473,6 +477,7 @@ def run_icarus_image(
         run.work_dir,
         pass_sentinels=pass_sentinels,
         fail_sentinels=fail_sentinels,
+        termination=termination,
     )
     trace_output, trace_result = _finalize_icarus_trace(run, proc, list(trace_files or []))
     output += trace_output
@@ -484,6 +489,7 @@ def run_icarus_image(
         fail_sentinels=fail_sentinels,
         trace_required=vcd,
         trace=trace_result,
+        termination=termination,
     )
     return output
 
@@ -505,6 +511,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--build-dir", required=True, help="dir holding the vvp image + .scr (edalize build dir)"
     )
+    p.add_argument("--runtime-input", action="append", default=[])
     p.add_argument("--run-cwd", default=None, help="cwd to run vvp from (TB vector/firmware base)")
     p.add_argument("--work-dir", default=None, help="trace/result output dir")
     p.add_argument("--timeout", type=_positive_int, default=600, help="run timeout (seconds)")
@@ -573,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
         pass_sentinels=args.pass_sentinels or None,
         fail_sentinels=args.fail_sentinels or None,
         max_rundir_bytes=args.max_rundir_bytes,
+        runtime_inputs=tuple(args.runtime_input),
         transport=transport,
     )
     # Non-zero exit on a parsed FAIL so a shipped `&&` chain reflects the verdict.

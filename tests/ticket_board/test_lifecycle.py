@@ -13,7 +13,6 @@ from __future__ import annotations
 import pytest
 
 from booley.ticket_board.lifecycle import (
-    REQUIRED_BOARD_DIRS,
     SETTLED_STATES,
     SETTLED_STATUSES,
     STATE_BY_DIR,
@@ -21,10 +20,12 @@ from booley.ticket_board.lifecycle import (
     TRANSITIONS,
     USER_BOARD_MOVES,
     TicketState,
+    board_target_choices,
     can_transition,
     format_transition_error,
     format_user_board_moves,
     is_user_board_move,
+    parse_board_target,
 )
 
 
@@ -36,9 +37,11 @@ class TestTicketStateEnum:
         assert TicketState.QUEUED.dir_name == "queue"
         assert TicketState.QUEUED.status == "queued"
 
-    def test_board_dir_prefix(self):
-        assert TicketState.RUNNING.board_dir == "board/active"
-        assert TicketState.DRAFT.board_dir == "board/drafts"
+    def test_conversion_stage(self):
+        assert TicketState.DRAFT.conversion_stage == "draft"
+        for state in TicketState:
+            if state is not TicketState.DRAFT:
+                assert state.conversion_stage == "executable"
 
     def test_status_values_unique(self):
         statuses = [s.status for s in TicketState]
@@ -71,56 +74,9 @@ class TestTicketStateEnum:
 class TestDerivedConstantsMatchLegacy:
     """The refactor must not change any observable value."""
 
-    def test_dir_status_map_matches_legacy(self):
-        from booley.ticket_board.constants import DIR_STATUS_MAP
-
-        assert DIR_STATUS_MAP == {
-            "board/drafts": "draft",
-            "board/queue": "queued",
-            "board/waiting": "waiting",
-            "board/active": "running",
-            "board/blocked": "blocked",
-            "board/review": "review",
-            "board/done": "done",
-            "board/archived": "archived",
-        }
-
-    def test_ticket_dirs_matches_legacy(self):
-        from booley.ticket_board.constants import TICKET_DIRS
-
-        assert TICKET_DIRS == [
-            "board/drafts",
-            "board/queue",
-            "board/waiting",
-            "board/active",
-            "board/blocked",
-            "board/review",
-            "board/done",
-            "board/archived",
-        ]
-
-    def test_required_board_dirs_matches_legacy(self):
-        # Legacy init_cmd.BOARD_STATES / doctor.required_states (set-equal;
-        # order was never load-bearing — both were used only to build dirs).
-        assert set(REQUIRED_BOARD_DIRS) == {
-            "drafts",
-            "queue",
-            "active",
-            "review",
-            "done",
-            "blocked",
-            "waiting",
-        }
-        assert "archived" not in REQUIRED_BOARD_DIRS
-
     def test_settled_statuses_matches_legacy(self):
         assert frozenset({"done", "review"}) == SETTLED_STATUSES
         assert frozenset({TicketState.DONE, TicketState.REVIEW}) == SETTLED_STATES
-
-    def test_board_states_alias_is_required_dirs(self):
-        from booley.harness.init_cmd import BOARD_STATES
-
-        assert BOARD_STATES == REQUIRED_BOARD_DIRS
 
 
 class TestTransitions:
@@ -133,13 +89,14 @@ class TestTransitions:
         assert can_transition(TicketState.BLOCKED, TicketState.RUNNING)
         assert can_transition(TicketState.REVIEW, TicketState.DONE)
         assert can_transition(TicketState.WAITING, TicketState.QUEUED)
-        assert can_transition(TicketState.DONE, TicketState.ARCHIVED)
         assert can_transition(TicketState.RUNNING, TicketState.RUNNING)  # resume
 
     def test_known_illegal_edges(self):
         assert not can_transition(TicketState.DONE, TicketState.QUEUED)
         assert not can_transition(TicketState.DRAFT, TicketState.RUNNING)
         assert not can_transition(TicketState.ARCHIVED, TicketState.DONE)
+        # Done closes into Ticket History; there is no done -> archived edge.
+        assert not can_transition(TicketState.DONE, TicketState.ARCHIVED)
         assert not can_transition(TicketState.BLOCKED, TicketState.DONE)
         assert not can_transition(TicketState.REVIEW, TicketState.QUEUED)
 
@@ -154,6 +111,9 @@ class TestTransitions:
 
     def test_archived_is_a_sink(self):
         assert TRANSITIONS[TicketState.ARCHIVED] == frozenset()
+
+    def test_done_is_a_sink(self):
+        assert TRANSITIONS[TicketState.DONE] == frozenset()
 
     def test_every_state_has_an_entry(self):
         assert set(TRANSITIONS) == set(TicketState)
@@ -182,3 +142,18 @@ class TestUserBoardMoves:
             format_user_board_moves()
             == "draft->queue, blocked->queue, review->done, running->queue"
         )
+
+
+class TestBoardTargets:
+    @pytest.mark.parametrize("state", list(TicketState))
+    def test_parse_both_spellings(self, state):
+        assert parse_board_target(state.dir_name) is state
+        assert parse_board_target(f"board/{state.dir_name}") is state
+
+    @pytest.mark.parametrize("value", ["", "running", "board/", "board/running", "x/queue"])
+    def test_parse_rejects_unknown(self, value):
+        assert parse_board_target(value) is None
+
+    def test_choices_match_legacy_cli(self):
+        dirs = [s.dir_name for s in TicketState]
+        assert board_target_choices() == [f"board/{d}" for d in dirs] + dirs

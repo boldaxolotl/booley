@@ -14,6 +14,7 @@ from booley.runtime import runtime_context
 from booley.runtime.host_install import (
     HostInstallationError,
     current_host_installation,
+    host_identity_differences,
     load_host_installation,
 )
 from booley.runtime.paths import skills_dir
@@ -71,7 +72,7 @@ def _inspect_host_installation(report: Findings) -> None:
     if actual != identity:
         report.fail(
             "current Booley process does not match the canonical host installation "
-            f"({actual.distribution_root} != {identity.distribution_root})",
+            f"({host_identity_differences(identity, actual)})",
             "booley bootstrap --update",
         )
         return
@@ -116,6 +117,12 @@ def _add_bootstrap(result: bootstrap.BootstrapResult, report: Findings) -> None:
             report.warn(
                 f"{message} — run booley bootstrap",
                 check_id="host.bootstrap-pending",
+                subject=finding.resource,
+            )
+        elif finding.state is bootstrap.BootstrapState.WARNING:
+            report.warn(
+                message,
+                check_id="host.bootstrap-warning",
                 subject=finding.resource,
             )
         else:

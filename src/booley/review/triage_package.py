@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -30,6 +30,17 @@ _GIT_STATUS_ACTIONS = {
 
 class TriagePackageError(RuntimeError):
     """A triage package is incomplete, malformed, or cannot be prepared."""
+
+
+class CriterionPresentation(Protocol):
+    """Structured presentation returned by the Criteria-owned formatter."""
+
+    label: str
+    detail: str
+
+
+CriterionPresenter = Callable[[str, object, bool], CriterionPresentation]
+CoverageReportResolver = Callable[[Path, object], Path | None]
 
 
 @dataclass(frozen=True)
@@ -115,6 +126,7 @@ def _category(name: str) -> str:
         (("elab_",), "Elaboration"),
         (("sim_",), "Simulation"),
         (("cycle_count_",), "Simulation"),
+        (("coverage_",), "Coverage"),
         (("synthesis_", "synth_"), "Synthesis"),
         (("fpga_",), "FPGA"),
         (("mutation",), "Mutation"),
@@ -129,16 +141,32 @@ def _category(name: str) -> str:
 _CATEGORY_ORDER = {
     name: index
     for index, name in enumerate(
-        ("Lint", "Elaboration", "Simulation", "Synthesis", "FPGA", "Mutation", "Review", "Other")
+        (
+            "Lint",
+            "Elaboration",
+            "Simulation",
+            "Coverage",
+            "Synthesis",
+            "FPGA",
+            "Mutation",
+            "Review",
+            "Other",
+        )
     )
 }
 
 
-def _criterion_status(entry: Mapping[str, Any]) -> str:
+def _criterion_status(
+    entry: Mapping[str, Any],
+    *,
+    freshness: str | None = None,
+    changed_categories: list[str] | None = None,
+) -> str:
+    if freshness == "stale" or entry.get("stale") is True:
+        categories = changed_categories or []
+        return f"STALE ({', '.join(categories)})" if categories else "STALE"
     if entry.get("met") is True:
         return "met"
-    if entry.get("stale") is True:
-        return "STALE"
     if entry.get("ever_failed") is True:
         return "unmet"
     return "not run"
@@ -158,6 +186,14 @@ def _criterion_freshness(entry: Mapping[str, Any]) -> str:
     if entry.get("met") is True or entry.get("ever_failed") is True:
         return "current"
     return "unknown"
+
+
+def _persisted_changed_categories(entry: Mapping[str, Any]) -> list[str]:
+    detail = entry.get("detail")
+    raw = detail.get("stale_source_categories") if isinstance(detail, Mapping) else None
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        return []
+    return sorted(set(raw))
 
 
 def _short_value(value: Any) -> str:
@@ -206,9 +242,13 @@ def _criterion_report_path(
     *,
     worktree: Path,
     project_root: Path,
+    log_dir: Path,
+    coverage_report_resolver: CoverageReportResolver,
 ) -> str | None:
     """Resolve a trusted ticket artifact that should open from a criterion."""
-    if name != "mutation_score":
+    if name.startswith("coverage_"):
+        return _coverage_report_path(entry, log_dir, coverage_report_resolver)
+    if not (name == "mutation_score" or name.startswith("mutation_score_")):
         return None
     detail = entry.get("detail")
     artifacts = detail.get("artifacts") if isinstance(detail, Mapping) else None
@@ -224,38 +264,168 @@ def _criterion_report_path(
     return str(resolved) if resolved.is_file() else None
 
 
+def _coverage_report_path(
+    entry: Mapping[str, Any],
+    log_dir: Path,
+    coverage_report_resolver: CoverageReportResolver,
+) -> str | None:
+    detail = entry.get("detail")
+    reference = detail.get("coverage_campaign_reference") if isinstance(detail, Mapping) else None
+    if reference is None:
+        return None
+    root = (log_dir / ".runtime" / "flow-reports").absolute()
+    resolved = coverage_report_resolver(root, reference)
+    return str(resolved) if resolved is not None else None
+
+
+def _criterion_evidence(
+    presentation: CriterionPresentation,
+    value: Mapping[str, Any],
+    *,
+    freshness: str,
+) -> str:
+    parts = [presentation.detail] if presentation.detail else []
+    if freshness == "stale":
+        return " · ".join(parts) or "persisted criterion state · booley_state.json"
+    generic = _criterion_metric(value)
+    if generic != "persisted criterion state · booley_state.json" or not parts:
+        parts.append(generic)
+    return " · ".join(parts)
+
+
+def _live_criterion_freshness(
+    name: str,
+    value: Mapping[str, Any],
+    *,
+    worktree: Path,
+    freshness_eligible: Callable[..., bool],
+    freshness_evaluator: Callable[..., Any],
+    fingerprints: dict[str | None, dict],
+) -> tuple[str, list[str], bool]:
+    freshness = _criterion_freshness(value)
+    changed_categories = _persisted_changed_categories(value)
+    if not freshness_eligible(
+        name,
+        value,
+        include_unobserved_review=False,
+    ):
+        return freshness, changed_categories, False
+    result = freshness_evaluator(
+        name,
+        value,
+        work_dir=worktree,
+        fingerprints=fingerprints,
+    )
+    if result is None or not result.stale:
+        return freshness, changed_categories, False
+    return "stale", list(result.changed_categories), True
+
+
+def _criterion_row(
+    name: str,
+    value: Mapping[str, Any],
+    *,
+    worktree: Path,
+    project_root: Path,
+    log_dir: Path,
+    criterion_presenter: CriterionPresenter,
+    coverage_report_resolver: CoverageReportResolver,
+    freshness: str,
+    changed_categories: list[str],
+) -> dict[str, Any]:
+    presentation = criterion_presenter(name, value, freshness == "stale")
+    return {
+        "category": _category(name),
+        "criterion": name,
+        "label": presentation.label,
+        "detail": presentation.detail,
+        "required": "mandatory" if value.get("mandatory", True) else "optional",
+        "status": _criterion_status(
+            value,
+            freshness=freshness,
+            changed_categories=changed_categories,
+        ),
+        "outcome": _criterion_outcome(value),
+        "freshness": freshness,
+        "changed_categories": changed_categories,
+        "metric": _criterion_evidence(presentation, value, freshness=freshness),
+        "availability": value.get("availability", "available"),
+        "report_path": _criterion_report_path(
+            name,
+            value,
+            worktree=worktree,
+            project_root=project_root,
+            log_dir=log_dir,
+            coverage_report_resolver=coverage_report_resolver,
+        ),
+    }
+
+
+def _project_submitted_report_staleness(
+    rows: list[dict[str, Any]],
+    raw: Mapping[str, Any],
+    changed_categories: set[str],
+) -> None:
+    report = raw.get("_report_submitted")
+    if not changed_categories or not isinstance(report, Mapping) or report.get("locked") is True:
+        return
+    for row in rows:
+        if row["criterion"] != "_report_submitted" or row["outcome"] != "met":
+            continue
+        row["freshness"] = "stale"
+        row["changed_categories"] = sorted(changed_categories)
+        row["metric"] = "Verification evidence became stale after this report was submitted."
+        row["status"] = _criterion_status(
+            {"met": True},
+            freshness="stale",
+            changed_categories=row["changed_categories"],
+        )
+
+
 def _criteria(
     state: Mapping[str, Any],
     *,
     worktree: Path,
     project_root: Path,
+    log_dir: Path,
+    criterion_presenter: CriterionPresenter,
+    coverage_report_resolver: CoverageReportResolver,
+    freshness_eligible: Callable[..., bool],
+    freshness_evaluator: Callable[..., Any],
 ) -> list[dict[str, Any]]:
     raw = state.get("criteria")
     if not isinstance(raw, dict):
         return []
-    rows = []
+    rows: list[dict[str, Any]] = []
+    fingerprints: dict[str | None, dict] = {}
+    newly_stale_categories: set[str] = set()
     for name, value in raw.items():
         if (name.startswith("_") and name != "_report_submitted") or not isinstance(value, dict):
             continue
-        category = _category(name)
-        rows.append(
-            {
-                "category": category,
-                "criterion": name,
-                "required": "mandatory" if value.get("mandatory", True) else "optional",
-                "status": _criterion_status(value),
-                "outcome": _criterion_outcome(value),
-                "freshness": _criterion_freshness(value),
-                "metric": _criterion_metric(value),
-                "availability": value.get("availability", "available"),
-                "report_path": _criterion_report_path(
-                    name,
-                    value,
-                    worktree=worktree,
-                    project_root=project_root,
-                ),
-            }
+        freshness, changed_categories, newly_stale = _live_criterion_freshness(
+            name,
+            value,
+            worktree=worktree,
+            freshness_eligible=freshness_eligible,
+            freshness_evaluator=freshness_evaluator,
+            fingerprints=fingerprints,
         )
+        if newly_stale:
+            newly_stale_categories.update(changed_categories)
+        rows.append(
+            _criterion_row(
+                name,
+                value,
+                worktree=worktree,
+                project_root=project_root,
+                log_dir=log_dir,
+                criterion_presenter=criterion_presenter,
+                coverage_report_resolver=coverage_report_resolver,
+                freshness=freshness,
+                changed_categories=changed_categories,
+            )
+        )
+    _project_submitted_report_staleness(rows, raw, newly_stale_categories)
     return sorted(rows, key=lambda row: (_CATEGORY_ORDER[row["category"]], row["criterion"]))
 
 
@@ -616,6 +786,7 @@ def _health(
     evidence: ResolvedReviewEvidence,
     state: Mapping[str, Any],
     scope: Mapping[str, Any],
+    criterion_presenter: CriterionPresenter,
 ) -> dict[str, Any]:
     timeline = state.get("timeline") if isinstance(state.get("timeline"), list) else []
     exit_2 = [
@@ -630,11 +801,13 @@ def _health(
         "missing_evidence": list(evidence.missing_evidence),
         "harness_paths": scope.get("harness_paths", []),
         "scope_undecidable": scope.get("decidable") is False,
-        "unverified_transitions": _unverified_transitions(state),
+        "unverified_transitions": _unverified_transitions(state, criterion_presenter),
     }
 
 
-def _unverified_transitions(state: Mapping[str, Any]) -> list[str]:
+def _unverified_transitions(
+    state: Mapping[str, Any], criterion_presenter: CriterionPresenter
+) -> list[str]:
     """Return passing fail->pass criteria whose failing leg was not observed."""
     criteria = state.get("criteria")
     if not isinstance(criteria, Mapping):
@@ -650,7 +823,7 @@ def _unverified_transitions(state: Mapping[str, Any]) -> list[str]:
             and params.get("from_state") == "fail"
             and value.get("ever_failed") is not True
         ):
-            names.append(name)
+            names.append(criterion_presenter(name, value, value.get("stale") is True).label)
     return sorted(names)
 
 
@@ -678,6 +851,10 @@ def build_review_facts(
     ctx: TriageContext,
     evidence: ResolvedReviewEvidence,
     *,
+    freshness_eligible: Callable[..., bool],
+    freshness_evaluator: Callable[..., Any],
+    criterion_presenter: CriterionPresenter,
+    coverage_report_resolver: CoverageReportResolver,
     run_economics: str = "unavailable",
 ) -> dict[str, Any]:
     """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
@@ -737,6 +914,11 @@ def build_review_facts(
             state,
             worktree=ctx.worktree,
             project_root=ctx.project_root,
+            log_dir=ctx.log_dir,
+            criterion_presenter=criterion_presenter,
+            coverage_report_resolver=coverage_report_resolver,
+            freshness_eligible=freshness_eligible,
+            freshness_evaluator=freshness_evaluator,
         ),
         "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
         "recipe_comparisons": _recipe_comparisons(state),
@@ -746,7 +928,7 @@ def build_review_facts(
         "changed_files": changes,
         "developer_report_path": str(ctx.log_dir / "REPORT.md"),
         "run_economics": run_economics,
-        "health": _health(evidence, state, scope),
+        "health": _health(evidence, state, scope, criterion_presenter),
     }
 
 
@@ -778,7 +960,30 @@ def validate_assessment(value: Any, facts: Mapping[str, Any]) -> dict[str, Any]:
         scope_rows,
         deviations,
     )
+    _enforce_stale_criteria_blocker(assessment, facts)
     return assessment
+
+
+def _enforce_stale_criteria_blocker(assessment: dict[str, Any], facts: Mapping[str, Any]) -> None:
+    labels = []
+    for row in facts.get("criteria", []):
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("required") != "mandatory" or row.get("freshness") != "stale":
+            continue
+        categories = row.get("changed_categories")
+        suffix = (
+            f" ({', '.join(categories)})" if isinstance(categories, list) and categories else ""
+        )
+        labels.append(f"{row.get('label', row.get('criterion', 'unknown'))}{suffix}")
+    if not labels:
+        return
+    blocker = "Stale mandatory verification evidence: " + ", ".join(labels) + "."
+    assessment["recommendation"] = "hold"
+    if blocker not in assessment["decision_blockers"]:
+        assessment["decision_blockers"].append(blocker)
+    if blocker not in assessment["findings"]:
+        assessment["findings"].append(blocker)
 
 
 def _normalize_scope_assessments(
@@ -835,6 +1040,7 @@ def write_triage_package(
     explanation: StructuredExplanation | None = None,
 ) -> Path:
     """Persist one machine-readable package consumed by interactive triage."""
+    _enforce_stale_criteria_blocker(assessment, facts)
     inspection = facts.get("inspection")
     if inspection and inspection["disposition"] == "unaccepted":
         assessment = {
@@ -964,9 +1170,10 @@ def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
         ]
     )
     for row in package.get("criteria", []):
-        criterion = f"`{_markdown_text(row['criterion'])}`"
+        label = row.get("label", row["criterion"])
+        criterion = f"`{_markdown_text(label)}`"
         if isinstance(row.get("report_path"), str):
-            criterion = _markdown_link(row["criterion"], row["report_path"])
+            criterion = _markdown_link(label, row["report_path"])
         lines.append(
             f"| {_markdown_text(row['category'])} | {criterion} | "
             f"{_markdown_text(row['required'])} | {_markdown_text(row['status'])} | "
@@ -1307,7 +1514,12 @@ def _render_economics(lines: list[str], package: Mapping[str, Any]) -> None:
     )
 
 
-def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str]) -> str:
+def render_review_briefing(
+    package: Mapping[str, Any],
+    diff_failures: list[str],
+    *,
+    accepted_actions: str | None = None,
+) -> str:
     """Render the fixed interactive review template from a validated package."""
     lines = [f"### {_markdown_text(package['slug'])}"]
     inspection = package.get("inspection")
@@ -1332,7 +1544,7 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     _render_recipe_comparisons(lines, package)
     _render_commits(lines, package)
     _render_economics(lines, package)
-    actions = "**approve** / **fix here** / **reset** / **archive** / **skip**"
+    actions = accepted_actions or "**approve** / **reset** / **archive** / **skip**"
     if inspection and inspection["disposition"] == "unaccepted":
         actions = "**fix here** / **review** / **hold** / **reset** / **archive**"
         if _mandatory_criteria_met(package):

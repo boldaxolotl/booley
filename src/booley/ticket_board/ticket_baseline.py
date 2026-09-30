@@ -24,7 +24,9 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.core.differences import format_differences
 from booley.core.models import TargetPlan, TargetPlanError, TargetPlanRole
+from booley.fusesoc.core_projection import is_generated_projection
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     checkout_project_dir_relative_to,
@@ -35,11 +37,13 @@ from booley.ticket_board.ticket_repositories import (
     resolve_inner_project_repo,
 )
 
-from .acceptance_path_policy import is_static_acceptance_path
+from .acceptance_path_policy import is_protected_acceptance_path
 from .acceptance_targets import AcceptanceTargetBinding, validate_binding_selectors
 
 SCHEMA_VERSION = 1
 BLOCK_REASON = "acceptance-input-change-required"
+AUTHORED_DRIFT_REASON = f"{BLOCK_REASON}: authored Ticket changed"
+AUTHORED_DRIFT_GUIDANCE = f"{AUTHORED_DRIFT_REASON}; use return-to-draft"
 TICKET_REF_PREFIX = "refs/heads/booley-generation"
 
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -184,7 +188,7 @@ def ticket_baseline_from_fields(fields: Mapping[str, Any], body: str) -> TicketB
     except BoundaryError as exc:
         raise TicketBaselineError(str(exc)) from exc
     if machine["authored_sha256"] != authored_ticket_digest(fields, body):
-        raise TicketBaselineError(f"{BLOCK_REASON}: authored Ticket changed")
+        raise TicketBaselineError(AUTHORED_DRIFT_REASON)
     return basis
 
 
@@ -322,7 +326,13 @@ def validate_ticket_commit_trailers(
         "Booley-Machine-SHA256": ticket_machine_digest(machine),
     }
     if any(trailers.get(key) != value for key, value in expected.items()):
-        raise TicketBaselineError(f"{BLOCK_REASON}: Ticket commit identity changed")
+        raise TicketBaselineError(
+            f"{BLOCK_REASON}: Ticket commit identity changed: "
+            + format_differences(
+                expected,
+                {key: trailers.get(key) for key in expected},
+            )
+        )
 
 
 def requires_return_to_draft(fields: Mapping[str, Any]) -> bool:
@@ -711,8 +721,8 @@ def load_ticket_baseline_from_document(
     spec = document.spec
     machine = document.generated.get("machine")
     basis = ticket_baseline_from_machine(machine)
-    if machine["authored_sha256"] != spec.semantic_digest():
-        raise TicketBaselineError(f"{BLOCK_REASON}: authored Ticket changed")
+    if authored_drift_reason(document) is not None:
+        raise TicketBaselineError(AUTHORED_DRIFT_REASON)
     amendment = machine.get("amendment")
     if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
         raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
@@ -736,6 +746,30 @@ def load_ticket_baseline_from_document(
         basis.providers,
         machine=dict(machine),
     )
+
+
+def authored_drift_reason(document: TicketDocument) -> str | None:
+    """Return the canonical reason when valid machine metadata no longer seals the spec."""
+    basis = ticket_baseline_from_machine(document.generated.get("machine"))
+    machine = basis.machine
+    if machine["authored_sha256"] == document.spec.semantic_digest():
+        return None
+    return AUTHORED_DRIFT_REASON
+
+
+def load_ticket_recovery_baseline_from_document(
+    project_root: Path | str,
+    slug: str,
+    document: TicketDocument,
+) -> TicketBaseline:
+    """Load immutable Ticket identity without trusting drifted authored meaning."""
+    basis = ticket_baseline_from_machine(document.generated.get("machine"))
+    machine = basis.machine
+    amendment = machine.get("amendment")
+    if isinstance(amendment, Mapping) and amendment.get("slug") != slug:
+        raise TicketBaselineError(f"{BLOCK_REASON}: amendment names another Ticket")
+    validate_ticket_commit_trailers(project_root, slug, basis, machine)
+    return basis
 
 
 def _canonical_document_bindings(
@@ -1423,12 +1457,12 @@ def _assert_repository_inputs_unchanged(
     violations = sorted(
         path
         for path in changed
-        if path in protected
-        or any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in protected)
-        or any(prefix.startswith(path.rstrip("/") + "/") for prefix in protected)
-        or is_static_acceptance_path(f"{ticket_prefix}{path}")
-        or path.endswith("/FUSESOC_IGNORE")
-        or path == "FUSESOC_IGNORE"
+        if is_protected_acceptance_path(
+            path,
+            protected,
+            include_protected_parent=True,
+        )
+        or is_protected_acceptance_path(f"{ticket_prefix}{path}", ())
     )
     if violations:
         raise TicketBaselineError(
@@ -1455,31 +1489,16 @@ def _repository_changed_paths(
         ("diff", "--name-only", "-z", authoring_sha, *pathspec),
         ("diff", "--cached", "--name-only", "-z", authoring_sha, *pathspec),
     )
-    generated_commands = (
-        ("ls-files", "--others", "--exclude-standard", "-z"),
-        ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
-    )
     changed = _collect_repository_paths(repository, tracked_commands, git_owner)
-    generated = _collect_repository_paths(repository, generated_commands, git_owner)
-    if generated_reference is not None:
-        reference_generated = _collect_repository_paths(
-            generated_reference,
-            generated_commands,
-            None,
+    changed.update(
+        _generated_changed_paths(
+            repository,
+            git_owner=git_owner,
+            generated_reference=generated_reference,
+            generated_checkout_root=generated_checkout_root,
+            include_reference_only_generated=include_reference_only_generated,
         )
-        candidates = (
-            generated | reference_generated if include_reference_only_generated else generated
-        )
-        generated = {
-            path
-            for path in candidates
-            if not _same_generated_path(
-                repository / path,
-                generated_reference / path,
-                live_checkout_root=generated_checkout_root,
-            )
-        }
-    changed.update(generated)
+    )
     return {
         path
         for path in changed
@@ -1488,6 +1507,51 @@ def _repository_changed_paths(
             for prefix in excluded_prefixes
         )
     }
+
+
+def _generated_changed_paths(
+    repository: Path,
+    *,
+    git_owner: Path | None,
+    generated_reference: Path | None,
+    generated_checkout_root: Path | None,
+    include_reference_only_generated: bool,
+) -> set[str]:
+    commands = (
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+        ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
+    )
+    generated = _collect_repository_paths(repository, commands, git_owner)
+    if generated_reference is None:
+        return {
+            path
+            for path in generated
+            if not is_generated_projection(repository, repository / path)
+        }
+    reference_generated = _collect_repository_paths(generated_reference, commands, None)
+    candidates = generated | reference_generated if include_reference_only_generated else generated
+    return {
+        path
+        for path in candidates
+        if not _strict_projection_pair(repository, generated_reference, path)
+        and not _same_generated_path(
+            repository / path,
+            generated_reference / path,
+            live_checkout_root=generated_checkout_root,
+        )
+    }
+
+
+def _strict_projection_pair(live_root: Path, reference_root: Path, relative: str) -> bool:
+    live = live_root / relative
+    reference = reference_root / relative
+    live_exists = live.exists() or live.is_symlink()
+    reference_exists = reference.exists() or reference.is_symlink()
+    if live_exists and not is_generated_projection(live_root, live):
+        return False
+    if reference_exists and not is_generated_projection(reference_root, reference):
+        return False
+    return live_exists or reference_exists
 
 
 def _collect_repository_paths(

@@ -21,7 +21,15 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.core.differences import format_differences
 from booley.runtime import interactive_docker as legacy
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+    DockerCacheEvidence,
+    ensure_docker_build_capacity,
+)
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.platform_paths import host_path_from_docker_mount
 
@@ -160,6 +168,7 @@ def reconcile_sidecars(
     intent: Intent,
     *,
     booley_root: Path | None = None,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> SidecarResult:
     """Inspect or converge all global Docker objects in dependency order."""
     docker = _docker_adapter()
@@ -167,16 +176,23 @@ def reconcile_sidecars(
         specs = _image_specs(booley_root)
     except SidecarError as exc:
         return SidecarResult((SidecarFinding("sidecar-images", SidecarState.ERROR, str(exc)),))
-    findings: list[SidecarFinding] = []
-    for spec in specs:
-        finding = _reconcile_image(spec, intent, docker)
-        findings.append(finding)
-        if finding.state is SidecarState.ERROR:
-            return SidecarResult(tuple(findings))
+    findings = list(_reconcile_images(specs, intent, docker, capacity_plan))
+    if findings and findings[-1].state is SidecarState.ERROR:
+        return SidecarResult(tuple(findings))
     network = _reconcile_network(intent, docker)
     findings.append(network)
     if network.state is SidecarState.ERROR:
         return SidecarResult(tuple(findings))
+    findings.extend(_reconcile_containers(policy, intent, docker))
+    return SidecarResult(tuple(findings))
+
+
+def _reconcile_containers(
+    policy: InteractiveHostPolicy,
+    intent: Intent,
+    docker: _DockerPort,
+) -> tuple[SidecarFinding, ...]:
+    """Reconcile the proxy/reaper container suffix after images and network."""
     fingerprint = policy_fingerprint(policy)
     proxy_spec = _ContainerSpec(
         "proxy",
@@ -192,24 +208,65 @@ def reconcile_sidecars(
         intent,
         docker,
     )
-    findings.append(proxy)
     if proxy.state is SidecarState.ERROR:
-        return SidecarResult(tuple(findings))
-    findings.append(
-        _reconcile_container(
-            _ContainerSpec(
-                "reaper",
-                legacy.REAPER_CONTAINER,
-                legacy.REAPER_IMAGE,
-                "reaper",
-                tuple(_reaper_run_args(policy, fingerprint)),
-            ),
-            fingerprint,
-            intent,
-            docker,
-        )
+        return (proxy,)
+    reaper = _reconcile_container(
+        _ContainerSpec(
+            "reaper",
+            legacy.REAPER_CONTAINER,
+            legacy.REAPER_IMAGE,
+            "reaper",
+            tuple(_reaper_run_args(policy, fingerprint)),
+        ),
+        fingerprint,
+        intent,
+        docker,
     )
-    return SidecarResult(tuple(findings))
+    return proxy, reaper
+
+
+def _reconcile_images(
+    specs: tuple[_ImageSpec, ...],
+    intent: Intent,
+    docker: _DockerPort,
+    capacity_plan: DockerBuildPlan | None,
+) -> tuple[SidecarFinding, ...]:
+    """Reconcile the ordered sidecar image prefix, stopping on its first error."""
+    findings = []
+    for spec in specs:
+        finding = _reconcile_image(spec, intent, docker, capacity_plan=capacity_plan)
+        findings.append(finding)
+        if finding.state is SidecarState.ERROR:
+            break
+    return tuple(findings)
+
+
+def plan_image_builds(
+    intent: Intent,
+    *,
+    booley_root: Path | None = None,
+    docker: _DockerPort | None = None,
+) -> tuple[DockerBuildRequest, ...]:
+    """Inspect sidecar images and return the ordered builds without mutation."""
+    resolved_docker = docker or _docker_adapter()
+    requests = []
+    for spec in _image_specs(booley_root):
+        current = _inspect_image(spec.reference, resolved_docker)
+        _verify_image_ownership(spec, current)
+        labels = _image_labels(spec)
+        is_current = current is not None and all(
+            current[1].get(key) == value for key, value in labels.items()
+        )
+        if not is_current or intent is Intent.REFRESH:
+            requests.append(
+                DockerBuildRequest(
+                    spec.reference,
+                    spec.reference,
+                    BuildEstimateClass.THIN_OVERLAY,
+                    DockerCacheEvidence(spec.reference, tuple(labels.items())),
+                )
+            )
+    return tuple(requests)
 
 
 def _image_specs(booley_root: Path | None) -> tuple[_ImageSpec, _ImageSpec]:
@@ -256,7 +313,13 @@ def _image_labels(spec: _ImageSpec) -> dict[str, str]:
     }
 
 
-def _reconcile_image(spec: _ImageSpec, intent: Intent, docker: _DockerPort) -> SidecarFinding:
+def _reconcile_image(
+    spec: _ImageSpec,
+    intent: Intent,
+    docker: _DockerPort,
+    *,
+    capacity_plan: DockerBuildPlan | None = None,
+) -> SidecarFinding:
     try:
         current = _inspect_image(spec.reference, docker)
         _verify_image_ownership(spec, current)
@@ -269,19 +332,30 @@ def _reconcile_image(spec: _ImageSpec, intent: Intent, docker: _DockerPort) -> S
             return SidecarFinding(
                 spec.resource, SidecarState.CURRENT, f"{spec.reference} is current"
             )
-        detail = f"{spec.reference} is missing or stale"
+        if current is None:
+            detail = f"{spec.reference} is missing"
+        elif not is_current:
+            actual = {key: current[1].get(key) for key in expected}
+            detail = f"{spec.reference} is stale: {format_differences(expected, actual)}"
+        else:
+            detail = f"{spec.reference} refresh requested"
         if intent is Intent.CHECK:
             return SidecarFinding(spec.resource, SidecarState.PENDING, detail)
-        _build_image(spec, expected, docker)
+        tail = capacity_plan
+        if tail is not None:
+            tail = tail.tail_from_output(spec.reference)
+        _build_image(spec, expected, docker, capacity_plan=tail)
         verified = _inspect_image(spec.reference, docker)
-        if verified is None or any(
-            verified[1].get(key) != value for key, value in expected.items()
-        ):
+        if verified is None:
+            raise SidecarError(f"{spec.reference} build completed but the image is missing")
+        actual = {key: verified[1].get(key) for key in expected}
+        if actual != expected:
             raise SidecarError(
-                f"{spec.reference} build completed without expected provenance labels"
+                f"{spec.reference} build completed without expected provenance labels: "
+                + format_differences(expected, actual)
             )
         return SidecarFinding(spec.resource, SidecarState.CHANGED, f"reconciled {spec.reference}")
-    except SidecarError as exc:
+    except (OSError, SidecarError, ValueError) as exc:
         return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
 
 
@@ -293,26 +367,42 @@ def _verify_image_ownership(
     if current is None:
         return
     labels = current[1]
-    required = {
-        LABEL_SIDECAR_SCHEMA,
-        LABEL_SIDECAR_KIND,
-        LABEL_SOURCE_FINGERPRINT,
-        LABEL_BOOLEY_VERSION,
-    }
-    missing = sorted(required - labels.keys())
-    if missing or labels.get(LABEL_SIDECAR_KIND) != spec.kind:
-        detail = f"missing {', '.join(missing)}" if missing else "sidecar kind does not match"
+    expected = _image_labels(spec)
+    actual = {key: labels[key] for key in expected if key in labels}
+    if set(actual) != set(expected) or labels.get(LABEL_SIDECAR_KIND) != spec.kind:
         raise SidecarError(
             f"foreign image collision: {spec.reference} lacks expected Booley ownership "
-            f"provenance ({detail}); it was not modified"
+            f"provenance ({format_differences(expected, actual)}); it was not modified"
         )
 
 
-def _build_image(spec: _ImageSpec, labels: dict[str, str], docker: _DockerPort) -> None:
+def _build_image(
+    spec: _ImageSpec,
+    labels: dict[str, str],
+    docker: _DockerPort,
+    *,
+    capacity_plan: DockerBuildPlan | None = None,
+) -> None:
     args = ["build", "-t", spec.reference, "-f", str(spec.dockerfile)]
     for key, value in labels.items():
         args += ["--label", f"{key}={value}"]
     args.append(str(spec.context))
+    request = (
+        capacity_plan.current
+        if capacity_plan is not None
+        else DockerBuildRequest(
+            spec.reference,
+            spec.reference,
+            BuildEstimateClass.THIN_OVERLAY,
+            DockerCacheEvidence(spec.reference, tuple(labels.items())),
+        )
+    )
+    ensure_docker_build_capacity(
+        ("docker", "build"),
+        image=spec.reference,
+        current_request=request,
+        remaining_plan=capacity_plan or DockerBuildPlan((request,)),
+    )
     result = docker.run(args, timeout=600)
     if result.returncode:
         raise SidecarError(f"failed to build {spec.reference}: {_failure_detail(result)}")
@@ -465,10 +555,25 @@ def _reconcile_container(
         if current and state.running and not network_missing:
             return SidecarFinding(spec.resource, SidecarState.CURRENT, f"{spec.name} is current")
         if intent is Intent.CHECK:
+            expected_state = {
+                "exists": True,
+                "image_identity": image_state[0],
+                "source_fingerprint": fingerprint,
+                "running": True,
+                "required_network_present": True,
+            }
+            actual_state = {
+                "exists": state.exists,
+                "image_identity": state.image_id if state.exists else None,
+                "source_fingerprint": (state.labels or {}).get(LABEL_POLICY_FINGERPRINT),
+                "running": state.running,
+                "required_network_present": not network_missing,
+            }
             return SidecarFinding(
                 spec.resource,
                 SidecarState.PENDING,
-                f"{spec.name} is missing, stopped, or stale",
+                f"{spec.name} is missing, stopped, or stale: "
+                + format_differences(expected_state, actual_state),
             )
         _apply_container(spec.name, state, current, list(spec.run_args), docker)
         _ensure_container_network(spec.name, spec.required_network, docker)
@@ -654,8 +759,6 @@ def _reaper_run_args(policy: InteractiveHostPolicy, fingerprint: str) -> list[st
         f"{legacy.DOCKER_SOCK}:{legacy.DOCKER_SOCK}",
         "-e",
         f"BOOLEY_IDLE_TIMEOUT_SECONDS={policy.idle_timeout_seconds}",
-        "-e",
-        f"BOOLEY_MAX_SESSIONS={policy.max_sessions}",
         legacy.REAPER_IMAGE,
     ]
     return args

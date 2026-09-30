@@ -11,11 +11,14 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.criteria.state import DevelopmentState
+from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import acceptance_targets, cli_handlers
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
+from booley.ticket_board.acceptance_validation import prepare_acceptance_checkout
+from booley.ticket_board.board_layout import read_state_record, write_state_record
+from booley.ticket_board.cli import main
 from booley.ticket_board.cli_handlers import (
     _cmd_amend,
-    _cmd_board,
     _cmd_classify,
     _cmd_endpoint_table,
     _cmd_next_step_or_steps,
@@ -26,11 +29,21 @@ from booley.ticket_board.cli_handlers import (
     _cmd_timing,
     _cmd_validate_logs,
     _cmd_validate_ticket,
+    _print_criteria_summary,
+    show_board_view,
 )
+from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import existing_runtime_file
+from booley.ticket_board.ticket_baseline import worktree_for_ref
 
 from .conftest import make_ticket_file
-from .test_ticket_baseline import _blocked_ticket
+from .test_ticket_baseline import (
+    _blocked_ticket,
+    _create_v2_ticket,
+    _git,
+    _paired_basis_project,
+)
 
 # ---------------------------------------------------------------------------
 # _cmd_amend
@@ -65,6 +78,158 @@ def test_amend_preview_and_apply_commands(tmp_path, capsys):
     args.expected_preview = digest
     assert _cmd_amend(tio, args) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "queued"
+
+
+def _configure_generated_project(project_dir: Path) -> None:
+    (project_dir / "cores").mkdir()
+    (project_dir / "cores/demo.core").write_text(
+        "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n",
+        encoding="utf-8",
+    )
+    (project_dir / "booley.toml").write_text(
+        "[flows]\n[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    hooks = project_dir / "hooks"
+    hooks.mkdir()
+    hook = hooks / "post-setup.sh"
+    hook.write_text(
+        "#!/bin/sh\n"
+        'mkdir -p "$BOOLEY_WORKTREE/picosoc"\n'
+        'printf stable > "$BOOLEY_WORKTREE/picosoc/FUSESOC_IGNORE"\n',
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    _git(project_dir, "add", "-A")
+    _git(project_dir, "commit", "-m", "configure stealth preparation")
+
+
+def _paired_generated_amendment(
+    tmp_path: Path,
+) -> tuple[Path, TicketIO, str, Path, Path]:
+    root, project_dir, tio = _paired_basis_project(tmp_path)
+    _configure_generated_project(project_dir)
+    outer_exclude = root / ".git/info/exclude"
+    project_exclude = project_dir / ".git/info/exclude"
+    outer_exclude.write_text(
+        "/.booley-projected-*.core\n/picosoc/FUSESOC_IGNORE\n",
+        encoding="utf-8",
+    )
+    project_exclude.write_text(
+        "/tmp/fusesoc-isolated-cores/\n",
+        encoding="utf-8",
+    )
+    slug = "generated-amendment"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Amend generated artifacts",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+            criteria={"mandatory": {"review_rtl_bugs": True}},
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    outer_exclude.write_text("", encoding="utf-8")
+    project_exclude.write_text("", encoding="utf-8")
+    blocked = project_dir / "tickets/board" / f"{slug}.md"
+    record = read_state_record(tio.tickets_dir, slug)
+    assert record is not None and record.state is TicketState.QUEUED
+    write_state_record(tio.tickets_dir, slug, record.with_state(TicketState.BLOCKED))
+    state = DevelopmentState.load(tio.logs_dir / slug / ".runtime/booley_state.json")
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.save()
+    basis = tio.load_basis(slug)
+    workspace = worktree_for_ref(root, basis.participant("outer").ticket_ref)
+    assert workspace is not None
+    return root, tio, slug, blocked, workspace
+
+
+def test_amend_preview_and_apply_ignore_owned_generated_artifacts(tmp_path, capsys):
+    root, tio, slug, blocked, workspace = _paired_generated_amendment(tmp_path)
+    prepare_acceptance_checkout(root, workspace, slug=slug, ticket_path=blocked)
+    assert list(workspace.glob(".booley-projected-*.core"))
+    assert list(workspace.glob(".booley_project/tmp/fusesoc-isolated-cores/*.core"))
+    assert (workspace / "picosoc/FUSESOC_IGNORE").is_file()
+    capsys.readouterr()
+    changes_file = tmp_path / "generated-amendment.json"
+    changes_file.write_text(
+        json.dumps(
+            {
+                "actor": "QA Human",
+                "reason": "Accept residual review risk",
+                "criteria": [{"criterion": "review_rtl_bugs_clean", "make_optional": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        slug=slug,
+        changes_file=str(changes_file),
+        preview=True,
+        expected_preview=None,
+    )
+
+    assert _cmd_amend(tio, args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert all(
+        "booley-projected" not in entry["path"]
+        and "fusesoc-isolated-cores" not in entry["path"]
+        and not entry["path"].endswith("FUSESOC_IGNORE")
+        for role in preview["source_state"].values()
+        for entry in role["entries"]
+    )
+    assert all(
+        role["ignored_generated"]
+        and all("sha256" in identity for identity in role["ignored_generated"].values())
+        for role in preview["source_state"].values()
+    )
+    args.preview = False
+    args.expected_preview = preview["digest"]
+    assert _cmd_amend(tio, args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "queued"
+    basis = tio.load_basis(slug)
+    for participant in basis.participants:
+        owner = root if participant.role == "outer" else root / ".booley_project"
+        committed = _git(owner, "ls-tree", "-r", "--name-only", participant.authoring_sha)
+        assert ".booley-projected-" not in committed
+        assert "fusesoc-isolated-cores" not in committed
+        assert "picosoc/FUSESOC_IGNORE" not in committed
+
+
+def test_amend_apply_rejects_changed_generated_projection(tmp_path, capsys):
+    root, tio, slug, blocked, workspace = _paired_generated_amendment(tmp_path)
+    prepare_acceptance_checkout(root, workspace, slug=slug, ticket_path=blocked)
+    capsys.readouterr()
+    changes_file = tmp_path / "generated-amendment.json"
+    changes_file.write_text(
+        json.dumps(
+            {
+                "actor": "QA Human",
+                "reason": "Accept residual review risk",
+                "criteria": [{"criterion": "review_rtl_bugs_clean", "make_optional": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = Namespace(
+        slug=slug,
+        changes_file=str(changes_file),
+        preview=True,
+        expected_preview=None,
+    )
+    assert _cmd_amend(tio, args) == 0
+    preview = json.loads(capsys.readouterr().out)
+    projection = next(workspace.glob(".booley-projected-*.core"))
+    projection.write_text(projection.read_text(encoding="utf-8") + "# changed\n")
+    args.preview = False
+    args.expected_preview = preview["digest"]
+
+    assert _cmd_amend(tio, args) == 2
+    assert "preview is stale" in capsys.readouterr().err
 
 
 def test_amend_command_reports_invalid_request(tmp_path, tio, capsys):
@@ -161,14 +326,14 @@ def test_validate_ticket_rejects_old_document_without_traceback(
 
 
 # ---------------------------------------------------------------------------
-# _cmd_board
+# show_board_view
 # ---------------------------------------------------------------------------
 
 
 class TestCmdBoard:
     def test_empty_board(self, tio, capsys):
         args = Namespace()
-        rc = _cmd_board(tio, args)
+        rc = show_board_view(tio, args)
         assert rc == 0
         out = capsys.readouterr().out
         assert "empty" in out.lower()
@@ -176,7 +341,7 @@ class TestCmdBoard:
     def test_board_with_tickets(self, tio, capsys):
         make_ticket_file(tio, "queue", "test-ticket")
         args = Namespace()
-        rc = _cmd_board(tio, args)
+        rc = show_board_view(tio, args)
         assert rc == 0
         out = capsys.readouterr().out
         assert "test-ticket" in out
@@ -265,6 +430,27 @@ class TestCmdClassify:
 
 
 class TestCmdNextStage:
+    def test_ticket_slug_reports_authored_drift(self, tio, capsys, monkeypatch):
+        reason = "acceptance-input-change-required: authored Ticket changed"
+        monkeypatch.setattr(
+            tio,
+            "inspect_ticket",
+            lambda _slug: {
+                "type": "bugfix",
+                "authored_drift": True,
+                "authored_drift_reason": reason,
+            },
+        )
+
+        rc = _cmd_next_step_or_steps(
+            tio,
+            Namespace(type_or_slug="drifted", current="planning", skip=""),
+            "next-step",
+        )
+
+        assert rc == 0
+        assert f"{reason}; use return-to-draft" in capsys.readouterr().err
+
     def test_next_stage_returns_next(self, tio, capsys):
         args = Namespace(type_or_slug="feature", current="planning", skip="")
         rc = _cmd_next_step_or_steps(tio, args, "next-step")
@@ -306,6 +492,52 @@ class TestCmdNextStage:
 
 
 class TestCmdValidateLogs:
+    def test_validate_logs_executable_runtime_ticket(self, tmp_path, monkeypatch, capsys, request):
+        root, project_dir, tio = _paired_basis_project(tmp_path)
+        slug = "validate-runtime-ticket"
+        ticket = _create_v2_ticket(
+            tio,
+            slug,
+            TicketFileSpec(
+                summary="Validate runtime Ticket logs",
+                ticket_type="feature",
+                branch="main",
+                scope=["README.md"],
+                criteria={"mandatory": {"review_rtl_bugs": True}},
+            ),
+        )
+        assert ticket is not None
+        assert tio.enqueue_ticket(slug)
+        queued = project_dir / "tickets/board" / f"{slug}.md"
+        assert tio.init_ticket(queued, execution_id="test-execution") is not None
+        runtime_ticket = tio.logs_dir / slug / "ticket.md"
+        assert runtime_ticket.is_file()
+        assert tio.inspect_ticket(slug)["status"] == "running"
+        capsys.readouterr()
+
+        monkeypatch.setenv("TICKETS_DIR", str(project_dir / "tickets"))
+        monkeypatch.setenv("PROJECT_ROOT", str(root))
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        reset_cache()
+        request.addfinalizer(reset_cache)
+
+        assert main(["validate-logs", slug]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == (
+            f"# Log Validation -- {slug}\n\n"
+            "## Missing Files\n"
+            "- **developer**: `booley_state.json` not found\n\n"
+            "**1 issue(s) found.**\n"
+        )
+        assert json.loads(captured.err) == {
+            "missing_files": [{"step": "developer", "file": "booley_state.json"}],
+            "missing_meta": [],
+            "skipped_steps": [],
+            "warnings": [],
+            "gate_failures": [],
+            "gate_warnings": [],
+        }
+
     def test_ticket_not_found(self, tio, capsys):
         args = Namespace(slug="nonexistent")
         rc = _cmd_validate_logs(tio, args)
@@ -320,6 +552,18 @@ class TestCmdValidateLogs:
 
 
 class TestCmdShow:
+    def test_criteria_summary_handles_unavailable_and_invalid_rows(self, capsys):
+        _print_criteria_summary(
+            {"met": True, "unknown": True},
+            {"unmet": True},
+            {"met": {"met": True}, "unknown": "unavailable", "unmet": {"met": False}},
+            None,
+        )
+        assert "mandatory 1/2 met, optional 0/1 met" in capsys.readouterr().out
+
+        _print_criteria_summary({"met": True}, {}, {}, "acceptance unavailable")
+        assert "mandatory ?/1, optional ?/0" in capsys.readouterr().out
+
     def test_no_slug_aliases_board(self, tio, capsys):
         # With no slug, show is a plain alias for board (empty here).
         rc = _cmd_show(tio, Namespace(slug=None))
@@ -358,9 +602,9 @@ class TestCmdShow:
         make_ticket_file(tio, "done", "completed")
         monkeypatch.setattr(
             tio,
-            "find_ticket",
+            "inspect_ticket",
             lambda _slug: {
-                "file": "board/done/completed.md",
+                "file": "board/completed.md",
                 "status": "done",
                 "branch": "main",
                 "criteria": {"mandatory": {"sim_pass": "pass"}, "optional": {}},
@@ -449,3 +693,25 @@ class TestCmdEndpointTable:
         rc = _cmd_timing(tio, Namespace(slug="routed", by_endpoint=True, save=False))
         assert rc == 0
         assert "sim" in capsys.readouterr().out
+
+
+def test_reset_prints_canonical_slug_state_and_baseline_disposition(tmp_path, capsys):
+    _, _, tio = _blocked_ticket(tmp_path)
+    before = tio.load_basis("blocked-again")
+    capsys.readouterr()
+    assert cli_handlers._cmd_reset(tio, Namespace(slug="blocked-again.md")) == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "Reset Ticket blocked-again: state=queued; Ticket baseline worktrees restored.\n"
+    )
+    assert captured.err == ""
+    assert tio.inspect_ticket("blocked-again")["status"] == "queued"
+    assert tio.load_basis("blocked-again") == before
+
+
+def test_reset_failure_preserves_error_and_exit_status(tmp_path, capsys):
+    tio = TicketIO(tickets_dir=tmp_path / "tickets")
+    assert cli_handlers._cmd_reset(tio, Namespace(slug="missing")) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: ticket 'missing' not found\n"

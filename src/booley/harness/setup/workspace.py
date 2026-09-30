@@ -35,7 +35,7 @@ from .worktree_lock_gc import _prune_stale_worktree_locks
 logger = logging.getLogger(__name__)
 
 
-def _set_worktree_hooks_path(worktree_path: Path, hooks_posix: str) -> None:
+def _set_worktree_hooks_path(worktree_path: Path, hooks_dir: Path) -> None:
     """Point a worktree at its own hooks dir via core.hooksPath.
 
     Enables extensions.worktreeConfig in the shared repo config (required for
@@ -50,15 +50,16 @@ def _set_worktree_hooks_path(worktree_path: Path, hooks_posix: str) -> None:
         text=True,
         check=False,
     )
+    hooks_path = Path(os.path.relpath(hooks_dir, worktree_path)).as_posix()
     result = subprocess.run(
-        ["git", "config", "--worktree", "core.hooksPath", hooks_posix],
+        ["git", "config", "--worktree", "core.hooksPath", hooks_path],
         cwd=str(worktree_path),
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode == 0:
-        logger.debug("Set core.hooksPath=%s for worktree", hooks_posix)
+        logger.debug("Set core.hooksPath=%s for worktree", hooks_path)
     else:
         logger.warning(
             "Failed to set core.hooksPath for worktree (rc=%d): %s",
@@ -119,7 +120,7 @@ def _install_scope_hook(
     # Point worktree at its own hooks dir
     git_pointer = worktree_path / ".git"
     if git_pointer.is_file():
-        _set_worktree_hooks_path(worktree_path, hooks_dir.as_posix())
+        _set_worktree_hooks_path(worktree_path, hooks_dir)
 
 
 def _hook_acceptance_controls(worktree_path: Path, surface_root: Path | None) -> list[str]:

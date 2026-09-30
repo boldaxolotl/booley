@@ -8,6 +8,7 @@ rather than a hand-written dict.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -20,9 +21,22 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.runtime import devcontainer as dc
+from booley.runtime import issuance_invalidation, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
-from booley.runtime import session_spec
+from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_admission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from booley.runtime import session_admission
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(session_admission, "claim_vscode_start", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "has_pending_claim", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: ())
 
 
 @pytest.fixture
@@ -30,6 +44,36 @@ def workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "i2c"
     ws.mkdir()
     return ws
+
+
+def test_session_up_waits_for_lifecycle_lock(
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
+    waiting = observe_lifecycle_contention(monkeypatch)
+    invoked: list[str] = []
+    monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_args: None)
+    monkeypatch.setattr(
+        sr,
+        "_up_unlocked",
+        lambda *_args, **_kwargs: invoked.append("up") or "sandbox",
+    )
+
+    with (
+        held_lifecycle_lock(lock_path) as holder,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        result = executor.submit(sr.up, workspace)
+        assert waiting.wait(2)
+        assert not result.done()
+        holder.release()
+        assert result.result(timeout=5) == "sandbox"
+
+    assert invoked == ["up"]
+    assert "host Docker lifecycle is busy" in caplog.text
 
 
 def _spec(**kwargs) -> dict:
@@ -1688,6 +1732,26 @@ class TestRefreshContainerTransactions:
 
 
 class TestUp:
+    def test_new_sandbox_refusal_happens_before_relay_or_docker_mutation(self, wired):
+        workspace, run = wired
+        from booley.runtime import session_admission
+
+        run.reset_mock()
+        with (
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(
+                session_admission,
+                "admit_start",
+                side_effect=session_admission.AdmissionError("host is at max_sessions=1"),
+            ),
+            patch.object(sr, "_prepare_license_relay") as relay,
+            pytest.raises(sr.SessionError, match="max_sessions=1"),
+        ):
+            sr.up(workspace)
+
+        relay.assert_not_called()
+        run.assert_not_called()
+
     @pytest.mark.parametrize(
         "wired",
         ["real-image-lifecycle"],
@@ -2580,7 +2644,7 @@ class TestLicensedRelayLifecycle:
             patch.object(sr.idk, "container_exists", side_effect=[False, True]),
             patch.object(sr, "_remove_license_relay") as remove,
         ):
-            assert sr.down(workspace) is True
+            assert sr.down(workspace).relay is True
         remove.assert_called_once_with(relay)
 
 
@@ -2689,23 +2753,69 @@ class TestImageDriftWarning:
 
         assert "[sandbox].image" not in caplog.text
 
-    def test_pinned_digest_different_from_configured_tag_warns(
+    def test_same_source_tag_move_is_silent(self, workspace: Path, caplog, monkeypatch):
+
+        digest = "sha256:" + "a" * 64
+        monkeypatch.setattr(
+            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+        )
+        fingerprint = "f" * 64
+
+        def inspect(reference: str, *, executable: str = "docker"):
+            del executable
+            return sr.image_identity.ImageMetadata(
+                reference,
+                digest if reference == digest else "sha256:" + "b" * 64,
+                {
+                    "io.booley.provenance.schema": "3",
+                    "io.booley.artifact.role": "wheel-overlay",
+                    "io.booley.build.recipe-fingerprint": "wheel-recipe",
+                    "io.booley.sandbox.selection-fingerprint": fingerprint,
+                },
+                {},
+            )
+
+        monkeypatch.setattr(sr.idk, "inspect_image_metadata", inspect)
+
+        with caplog.at_level("DEBUG"):
+            sr._warn_on_image_drift({"image": digest}, workspace)
+
+        assert not any(record.levelname == "WARNING" for record in caplog.records)
+        assert "moved to an equivalent Sandbox Image" in caplog.text
+
+    def test_logically_different_configured_image_warns(
         self, workspace: Path, caplog, monkeypatch
     ):
-
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
             sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
         )
         monkeypatch.setattr(
             sr.idk,
-            "image_id",
-            lambda image: digest if image == digest else "sha256:" + "b" * 64,
+            "compare_issued_selection",
+            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
 
         assert "!= [sandbox].image 'booley-sandbox-riscv'" in caplog.text
+
+    def test_rebuilt_external_image_warns_despite_inherited_labels(
+        self, workspace: Path, caplog, monkeypatch
+    ):
+        digest = "sha256:" + "a" * 64
+        monkeypatch.setattr(
+            sr.project_image, "project_sandbox_image", lambda _root: "custom-sandbox"
+        )
+        monkeypatch.setattr(
+            sr.idk,
+            "compare_issued_reference",
+            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
+        )
+
+        sr._warn_on_image_drift({"image": digest}, workspace)
+
+        assert "!= [sandbox].image 'custom-sandbox'" in caplog.text
 
     def test_no_project_config_is_silent(self, wired, caplog):
         # No .booley_project at all: the resolver falls back to the base image,
@@ -2734,40 +2844,38 @@ class TestStaleBooleyBakeWarning:
     Booley code. Advisory only — no verdict (pip install, unlabeled image) must
     stay silent."""
 
-    def test_mismatch_warns_and_names_the_fix(self, workspace, caplog):
-        from booley.runtime import image_lifecycle
-
-        result = image_lifecycle.LifecycleResult(
-            "booley-sandbox", "sha256:old", image_lifecycle.Status.STALE
+    def test_mismatch_warns_names_fields_and_fix(self, caplog, monkeypatch):
+        expected = sr.image_identity.BooleyBuildIdentity("1.0", "abc123", None, "current")
+        observed = sr.image_identity.ImageMetadata(
+            "sha256:issued",
+            "sha256:issued",
+            {
+                "org.opencontainers.image.version": "1.0",
+                "org.opencontainers.image.revision": "def456",
+                "io.booley.wheel.source-fingerprint": "stale",
+            },
+            {},
         )
-        with patch.object(image_lifecycle, "reconcile", return_value=result) as reconcile:
-            sr._warn_on_stale_booley_bake(workspace)
+        monkeypatch.setattr(sr.image_identity, "current_host_build_identity", lambda: expected)
+        monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_args, **_kwargs: observed)
 
-        reconcile.assert_called_once_with(
-            image_lifecycle.ProjectImageScope(workspace),
-            image_lifecycle.Intent.CHECK,
-        )
+        sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
+
         assert "stale Booley code" in caplog.text
+        assert "revision abc123 -> def456" in caplog.text
+        assert "wheel_source_fingerprint current -> stale" in caplog.text
         assert "booley session refresh" in caplog.text
 
-    def test_external_image_is_silent(self, workspace, caplog):
-        from booley.runtime import image_lifecycle
-
-        result = image_lifecycle.LifecycleResult(
-            "custom/image", None, image_lifecycle.Status.EXTERNAL
-        )
-        with patch.object(image_lifecycle, "reconcile", return_value=result):
-            sr._warn_on_stale_booley_bake(workspace)
+    def test_unknown_identity_is_silent(self, caplog):
+        result = sr.image_identity.Comparison(sr.image_identity.Status.UNKNOWN)
+        with patch.object(sr.idk, "compare_issued_build", return_value=result):
+            sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
         assert "stale Booley code" not in caplog.text
 
-    def test_match_is_silent(self, workspace, caplog):
-        from booley.runtime import image_lifecycle
-
-        result = image_lifecycle.LifecycleResult(
-            "booley-sandbox", "sha256:new", image_lifecycle.Status.CURRENT
-        )
-        with patch.object(image_lifecycle, "reconcile", return_value=result):
-            sr._warn_on_stale_booley_bake(workspace)
+    def test_match_is_silent(self, caplog):
+        result = sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
+        with patch.object(sr.idk, "compare_issued_build", return_value=result):
+            sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
         assert "stale Booley code" not in caplog.text
 
 
@@ -2804,7 +2912,7 @@ class TestStaleSessionContainerWarning:
 class TestDownAndStatus:
     def test_down_on_absent_container_is_false(self, workspace: Path):
         with patch.object(sr.idk, "container_exists", return_value=False):
-            assert sr.down(workspace) is False
+            assert not sr.down(workspace)
 
     def test_down_never_removes_the_issuance_image_keeper(self, workspace: Path):
         relay = SimpleNamespace(relay_container="relay")
@@ -2815,10 +2923,124 @@ class TestDownAndStatus:
             patch.object(sr, "_run") as run,
         ):
             run.return_value = subprocess.CompletedProcess([], 0)
-            assert sr.down(workspace) is True
+            assert sr.down(workspace).headless is True
         commands = [_argv_of(call) for call in run.call_args_list]
         assert ["docker", "stop", sr.session_container_name(workspace)] in commands
         assert not any(command[:3] == ["docker", "image", "rm"] for command in commands)
+
+    def test_down_rejects_unproven_vscode_identity_before_mutation(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        run = Mock()
+        monkeypatch.setattr(sr, "_run", run)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            session_admission,
+            "vscode_sandboxes",
+            Mock(side_effect=session_admission.AdmissionError("identity disagrees")),
+        )
+
+        with pytest.raises(sr.SessionError, match="identity disagrees"):
+            sr.down(workspace)
+
+        run.assert_not_called()
+
+    def test_down_stops_revalidated_vscode_and_clears_claim(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        discovered = Mock(side_effect=[(item,), (item,)])
+        monkeypatch.setattr(session_admission, "vscode_sandboxes", discovered)
+        monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda _root: True)
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+        monkeypatch.setattr(sr, "_run", run)
+
+        result = sr.down(workspace)
+
+        assert result.vscode_stopped == ("editor",)
+        assert result.claim_cleared
+        assert ["docker", "stop", "editor-id"] in [_argv_of(call) for call in run.call_args_list]
+
+    def test_down_rejects_vscode_that_disappears_before_stop(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        monkeypatch.setattr(session_admission, "vscode_sandboxes", Mock(side_effect=[(item,), ()]))
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+
+        with pytest.raises(sr.SessionError, match="cannot prove VS Code Sandbox"):
+            sr.down(workspace)
+
+    @pytest.mark.parametrize("failure", ["stop", "rm"])
+    def test_down_reports_headless_docker_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+
+        def run(argv: list[str], **_kwargs):
+            failed = argv[1] == failure
+            return subprocess.CompletedProcess(
+                argv, 1 if failed else 0, "", "denied" if failed else ""
+            )
+
+        monkeypatch.setattr(sr, "_run", run)
+
+        message = "cannot remove" if failure == "rm" else "cannot stop"
+        with pytest.raises(sr.SessionError, match=message):
+            sr.down(workspace)
+
+    def test_down_reports_vscode_stop_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        monkeypatch.setattr(
+            session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: (item,)
+        )
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "denied"),
+        )
+
+        with pytest.raises(sr.SessionError, match="cannot stop VS Code Sandbox"):
+            sr.down(workspace)
+
+    def test_status_reports_pending_editor_start(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        monkeypatch.setattr(session_admission, "has_pending_claim", lambda _root: True)
+
+        assert sr.status(workspace) == "start-pending"
+
+    def test_status_reports_claim_inspection_failure(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import session_admission
+
+        def fail(_root: Path) -> bool:
+            raise session_admission.AdmissionError("claim unavailable")
+
+        monkeypatch.setattr(session_admission, "has_pending_claim", fail)
+
+        with pytest.raises(sr.SessionError, match="claim unavailable"):
+            sr.status(workspace)
 
     def test_status_reports_three_states(self, workspace: Path):
         with patch.object(sr.idk, "container_exists", return_value=False):
@@ -3390,6 +3612,50 @@ class TestSessionRefresh:
         assert args.command == "session"
         assert args.session_command == "refresh"
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+    @pytest.mark.parametrize(
+        "command",
+        ["up", "enter", "down", "status", "validate", "prepare", "refresh"],
+    )
+    def test_public_session_commands_report_unsafe_private_store(
+        self,
+        command: str,
+        workspace: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from booley.harness import auto_doctor, booley
+        from booley.harness.booley import _build_parser
+        from booley.runtime import session_refresh
+
+        pending = issuance_invalidation.prepare(
+            str(workspace.resolve()),
+            cleanup_resources=False,
+        )
+        issuance_invalidation.cancel(pending)
+        booley_config = tmp_path / "xdg" / "booley"
+        booley_config.chmod(0o755)
+        monkeypatch.setattr(booley, "_report_upgrade_before_session", lambda _root: None)
+        monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
+        monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+        monkeypatch.setattr(session_refresh, "has_pending_refresh", lambda _root: False)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda *_a, **_kw: pytest.fail("unsafe recovery must precede Docker mutation"),
+        )
+        args = _build_parser().parse_args(["session", command])
+
+        assert booley._cmd_session(args, workspace) == 2
+
+        captured = capsys.readouterr()
+        assert str(booley_config) in captured.err
+        assert "0755" in captured.err
+        assert f"chmod 700 {booley_config}" in captured.err
+        assert "Traceback" not in captured.out
+        assert "Traceback" not in captured.err
+
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import auto_doctor, booley, session_refresh
         from booley.harness.booley import _build_parser
@@ -3434,7 +3700,7 @@ class TestSessionRefresh:
         enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True)
 
         with (
-            patch.object(sr, "down", return_value=False),
+            patch.object(sr, "down", return_value=sr.DownResult()),
             patch.object(sr, "status", return_value="stopped"),
             patch.object(sr, "validate", return_value="valid"),
             patch.object(sr, "prepare", return_value="prepared"),
@@ -3735,7 +4001,7 @@ class TestSessionRefresh:
                 "_run",
                 return_value=subprocess.CompletedProcess([], 0, identity, ""),
             ),
-            pytest.raises(sr.SessionError, match="wheel identity"),
+            pytest.raises(sr.SessionError, match="wheel identity") as caught,
         ):
             sr.verify_refreshed_session(
                 tmp_path,
@@ -3744,6 +4010,9 @@ class TestSessionRefresh:
                 expected_wheel_source_fingerprint="wheel-source",
                 expected_wheel_sha256="b" * 64,
             )
+
+        assert "source_fingerprint wheel-source -> other-source" in str(caught.value)
+        assert "wheel_sha256" not in str(caught.value)
 
     def test_down_up_never_announces_persisted_stale_doctor_findings(
         self,
@@ -3754,7 +4023,7 @@ class TestSessionRefresh:
         from booley.harness import auto_doctor, booley
         from booley.harness.booley import _build_parser
 
-        monkeypatch.setattr(sr, "down", lambda _root: True)
+        monkeypatch.setattr(sr, "down", lambda _root: sr.DownResult(headless=True))
         monkeypatch.setattr(sr, "session_container_name", lambda _root: "session")
         down_args = _build_parser().parse_args(["session", "down"])
         assert booley._cmd_session(down_args, tmp_path) == 0

@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.differences import format_differences
+
 from ._model import AcceptanceJournalError, JournalState, acceptance_state, initial_journal
 
 if TYPE_CHECKING:
@@ -22,8 +24,10 @@ if TYPE_CHECKING:
         AcceptanceProgress,
         AcceptanceRecoveryBlockedError,
         AcceptanceRequest,
+        acceptance_finished,
         advance_acceptance,
         cleanup_finished,
+        publication_idle,
     )
 
 _ADVANCE_EXPORTS = frozenset(
@@ -33,8 +37,10 @@ _ADVANCE_EXPORTS = frozenset(
         "AcceptanceProgress",
         "AcceptanceRecoveryBlockedError",
         "AcceptanceRequest",
+        "acceptance_finished",
         "advance_acceptance",
         "cleanup_finished",
+        "publication_idle",
     }
 )
 
@@ -59,7 +65,8 @@ def completion_basis_sources(
         return None
     if dict(journal.sources) != expected_sources:
         raise AcceptanceJournalError(
-            "Acceptance Journal sources differ from the accepted Ticket heads"
+            "Acceptance Journal sources differ from the accepted Ticket heads: "
+            + format_differences(expected_sources, journal.sources)
         )
     destinations = {
         participant.role: participant.destination_sha for participant in basis.participants
@@ -92,9 +99,11 @@ __all__ = [
     "AcceptanceRecoveryBlockedError",
     "AcceptanceRequest",
     "JournalState",
+    "acceptance_finished",
     "acceptance_state",
     "advance_acceptance",
     "cleanup_finished",
     "completion_basis_sources",
     "initial_journal",
+    "publication_idle",
 ]

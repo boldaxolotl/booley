@@ -100,7 +100,7 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     ordered_steps = (
         'python -m booley.ticket_board return-to-draft "$SLUG"',
         "Correct the authoring filesets",
-        "Resolve the moved Ticket's absolute path",
+        "Resolve the draft Ticket's absolute path",
         'python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git',
         'python -m booley.ticket_board enqueue "$SLUG"',
     )
@@ -190,16 +190,22 @@ def test_triage_review_distinguishes_direct_fix_from_clean_reset():
     contract = " ".join(review.split())
 
     for required in (
-        "For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**",
+        "For current accepted review, ask: **approve** / **reset** / **archive** / **skip**",
+        "For stale accepted review, ask: **restore exact accepted heads** / **reset** / **archive** / **skip**",
+        "STALE ACCEPTANCE — Ticket heads changed after acceptance.",
         "For a briefing marked **unaccepted**",
         "Criteria Satisfaction Records are immutable",
+        "save every post-acceptance commit on a separate safety branch",
+        "A new `git revert` commit does not restore an accepted head",
         "publishes first acceptance, and completes the Ticket",
         "This is a clean start",
         "Do not selectively retain reviewed work",
         "never resumes through an ordinary move to `queued`",
+        "booley board reset $SLUG",
         '--reason "<correction reason>"',
     ):
         assert required in contract
+    assert "acceptance recovery" not in contract
 
 
 def test_ticket_create_defaults_every_review_to_corrective_mode():
@@ -211,7 +217,11 @@ def test_ticket_create_defaults_every_review_to_corrective_mode():
     assert "TB quality REVIEW" in skill
     assert "rtl: {bugs: clean}" in template
     assert "tb: {quality: clean}" in template
-    assert "`REVIEW.done` and `REVIEW.clean` are separate outcomes" in contract
+    assert "Choose exactly one `REVIEW` outcome" in contract
+    assert (
+        "`clean` when completion plus no open findings is required because it implies `done`"
+        in contract
+    )
 
 
 def test_ticket_create_hands_human_off_to_booley_run():
@@ -709,3 +719,16 @@ def test_setup_plan_template_records_tech_cell_evidence_not_cell_names_only():
     ):
         assert required in template
     assert "cell-name list alone" in template
+
+
+def test_triage_reset_retains_baseline_and_routes_contract_changes_to_reauthoring():
+    reference = _compact_skill_text("booley-ticket-triage", "flow-specialist-reference.md")
+    blocked = _compact_skill_text("booley-ticket-triage", "steps/02-blocked.md")
+    assert "restores all participant worktrees at the same immutable Ticket baseline" in reference
+    assert "it preserves that baseline" in reference
+    assert (
+        "To change Target definitions or source baselines, return the Ticket to draft" in reference
+    )
+    assert "validate, and enqueue a new generation" in reference
+    assert "Current lifecycle commands reject unsupported legacy Tickets" in reference
+    assert "discards implementation state and restores all participant worktrees" in blocked

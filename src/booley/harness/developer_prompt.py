@@ -538,8 +538,8 @@ def build_ticket_section(ticket_path: Path, logs_dir: Path | None = None) -> str
     """Build a concise pointer to the mounted ticket markdown snapshot.
 
     The warning tracks the *snapshot* the agent actually reads, not the
-    host-side board path: the board file moves between queue/active/blocked as
-    the run progresses, so checking it printed "missing" on every healthy run
+    host-side board path: the board file was historically renamed as the run
+    progressed, so checking it printed "missing" on every healthy run
     while the mounted copy sat there fine. Warn only when the agent genuinely
     has nothing to read, and name the path it can act on.
     """

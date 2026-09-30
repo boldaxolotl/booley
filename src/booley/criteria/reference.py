@@ -26,6 +26,7 @@ Regenerate the committed doc blocks with::
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
@@ -73,6 +74,23 @@ def _display_name(cdef) -> str:
 def _group_sort_key(group: str) -> tuple[int, str]:
     """Order known groups by _GROUP_ORDER; unknown groups sort last, alphabetically."""
     return (_GROUP_ORDER.get(group, len(_GROUP_ORDER)), group)
+
+
+def _format_endpoint(command: str) -> str:
+    """Show producer names and argument values without shell command syntax."""
+    name, *arguments = shlex.split(command)
+    controls: list[str] = []
+    index = 0
+    while index < len(arguments):
+        parameter = arguments[index].removeprefix("--").replace("-", "_")
+        index += 1
+        value = "true"
+        if index < len(arguments) and not arguments[index].startswith("--"):
+            value = f'"{arguments[index]}"'
+            index += 1
+        controls.append(f"`{parameter}={value}`")
+    suffix = f" ({', '.join(controls)})" if controls else ""
+    return f"`{name}`{suffix}"
 
 
 def render_criteria_reference(
@@ -126,7 +144,7 @@ def render_criteria_reference(
         for c in rows:
             binding = endpoint_catalog.binding_for(c.name)
             endpoint_command = binding.command if binding is not None else None
-            set_by = f"`{endpoint_command}`" if endpoint_command else "—"
+            set_by = _format_endpoint(endpoint_command) if endpoint_command else "—"
             region = _REGION_LABEL.get(c.workflow_region, c.workflow_region)
             lines.append(f"| {_display_name(c)} | {_clean(c.description)} | {set_by} | {region} |")
         blocks.append("\n".join(lines))

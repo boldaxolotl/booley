@@ -5,12 +5,29 @@ import json
 from pathlib import Path
 
 import pytest
+from claude_agent_sdk import ClaudeSDKError
+
+try:
+    from claude_agent_sdk._errors import ResultError
+except ModuleNotFoundError:
+    # The harness tests install a minimal SDK stub during combined collection.
+    from claude_agent_sdk import ResultError
+
 
 from booley.core.models import AgentResult
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
 from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
+from booley.runtime.agent_errors import (
+    AgentProviderError,
+    AgentTimeoutError,
+    TransientAPIError,
+    UsageLimitError,
+)
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
+from tests.flows.sim.coverage_campaign_test_support import (
+    corrupt_v3_campaign_with_duplicate_negative_point,
+)
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
@@ -48,6 +65,49 @@ class Model:
         )
 
 
+def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    corrupt_v3_campaign_with_duplicate_negative_point(path)
+    model = Model()
+
+    outcome = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert outcome.exit_code == 2
+    assert model.calls == []
+    assert "COV_POINT_ID_DUPLICATE at /points/1/id" in outcome.outcome.report_text
+    assert (
+        "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset"
+        in outcome.outcome.report_text
+    )
+    assert outcome.outcome.detail == {}
+
+
+def test_cli_invalid_v3_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    run_id = "run:bad\n\t\x1b[31m" + "x" * 2_000
+    corrupt_v3_campaign_with_duplicate_negative_point(path, run_id=run_id)
+    model = Model()
+
+    outcome = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert outcome.exit_code == 2
+    assert model.calls == []
+    report_text = outcome.outcome.report_text
+    assert len(report_text) <= 1_100
+    assert "\\n" in report_text
+    assert "\\t" in report_text
+    assert "\\u001b" in report_text
+    assert "..." in report_text
+    assert "\n" not in report_text
+    assert "\r" not in report_text
+    assert "\t" not in report_text
+    assert "\x1b" not in report_text
+
+
 def _successful_claude_query(options_seen):
     from claude_agent_sdk import ResultMessage
 
@@ -69,7 +129,7 @@ def _successful_claude_query(options_seen):
     return query
 
 
-def persist_large_v3_campaign(root: Path, point_count: int = 2_000) -> Path:
+def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path:
     from booley.flows.sim.coverage_campaign import (
         DurableTargetIdentity,
         _point_id,
@@ -115,8 +175,8 @@ def persist_large_v3_campaign(root: Path, point_count: int = 2_000) -> Path:
     return paths.campaign
 
 
-def test_large_v3_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
-    path = persist_large_v3_campaign(tmp_path)
+def test_large_current_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tmp_path):
+    path = persist_large_current_campaign(tmp_path)
     calls = []
 
     def bounded_model(params):
@@ -143,13 +203,13 @@ def test_large_v3_campaign_uses_scoped_evidence_tool_without_oversized_prompt(tm
     assert result.outcome.detail["observed_evidence"]["point_store_sha256"].startswith("sha256:")
 
 
-def test_persisted_v3_analysis_does_not_encode_the_complete_campaign(tmp_path, monkeypatch):
+def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_path, monkeypatch):
     from booley.specialists import coverage_analysis
 
     path = persist_campaign(tmp_path)
 
     def reject_full_encode(campaign):
-        raise AssertionError("persisted V3 analysis must reuse validated summary evidence")
+        raise AssertionError("persisted analysis must reuse validated summary evidence")
 
     monkeypatch.setattr(coverage_analysis, "encode_coverage_campaign", reject_full_encode)
 
@@ -158,6 +218,47 @@ def test_persisted_v3_analysis_does_not_encode_the_complete_campaign(tmp_path, m
     )
 
     assert result.exit_code == 0
+
+
+def test_retained_v3_analysis_uses_bounded_evidence_envelope(tmp_path: Path) -> None:
+    path = persist_campaign(tmp_path)
+    manifest = json.loads(path.read_text())
+    manifest["$schema"] = "booley.coverage-campaign/v3"
+    del manifest["scoring"]
+    path.write_text(json.dumps(manifest))
+    model = Model()
+
+    result = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 0
+    assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
+    prompt = json.loads(model.calls[0].prompt)
+    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v3"
+
+
+def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
+    tmp_path: Path,
+) -> None:
+    document = _valid_document()
+    document["collection"]["status"] = "collector_error"
+    document["normalization"]["status"] = "partial"
+    document["rollups"] = []
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    target_dir = tmp_path / "reports/sim/12/targets/sim_counter"
+    path = publish_coverage_campaign(target_dir, campaign).campaign
+    model = Model()
+
+    result = CoverageAnalystSpecialist(model=model).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert model.calls == []
+    assert "collector_error" in result.outcome.report_text
 
 
 def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
@@ -493,6 +594,112 @@ def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
     result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
     assert result.exit_code == 2
     assert "model did not finish" in result.outcome.report_text
+
+
+@pytest.mark.parametrize(
+    ("output", "expected", "unexpected"),
+    [
+        ("", "provider ended without a final result", "model output is not valid JSON"),
+        ("not json", "model output is not valid JSON", "provider ended without a final result"),
+    ],
+)
+def test_cli_distinguishes_empty_and_malformed_model_output(
+    tmp_path, output, expected, unexpected
+):
+    path = persist_campaign(tmp_path)
+    analyst = CoverageAnalystSpecialist(
+        model=lambda _params: AgentResult(output=output, structured=None)
+    )
+
+    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+
+    assert result.exit_code == 2
+    assert expected in result.outcome.report_text
+    assert unexpected not in result.outcome.report_text
+
+
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        ResultError("terminal result failed"),
+        ClaudeSDKError("SDK failed"),
+        AgentTimeoutError("provider timed out"),
+        UsageLimitError("usage exhausted", provider="codex"),
+        TransientAPIError("provider unavailable"),
+        AgentProviderError("Codex exited unsuccessfully", provider="codex"),
+    ],
+    ids=["result", "claude-sdk", "timeout", "usage", "transient", "codex"],
+)
+def test_cli_reports_terminal_provider_failures_without_mutating_state(
+    tmp_path, monkeypatch, capsys, provider_error
+):
+    path = persist_campaign(tmp_path)
+    report_dir = tmp_path / "analysis-reports"
+    state = tmp_path / "state.json"
+    state.write_bytes(b"seeded state must remain byte-for-byte unchanged")
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
+
+    def fail(_params):
+        raise provider_error
+
+    result = CoverageAnalystSpecialist(model=fail).execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+            "--report-dir",
+            str(report_dir),
+        ]
+    )
+
+    assert result.exit_code == 2
+    assert "Coverage analysis failed: model provider returned an error:" in (
+        result.outcome.report_text
+    )
+    assert str(provider_error) in result.outcome.report_text
+    persisted = json.loads((report_dir / "coverage_analyst.json").read_text())
+    assert persisted["report_text"] == result.outcome.report_text
+    diagnostic = Path(result.outcome.report_text.rsplit(". Diagnostic: ", 1)[1])
+    assert "Traceback" in diagnostic.read_text(encoding="utf-8")
+    assert "Traceback" not in capsys.readouterr().err
+    assert state.read_bytes() == b"seeded state must remain byte-for-byte unchanged"
+
+
+def test_cli_reports_result_error_terminal_text(tmp_path):
+    path = persist_campaign(tmp_path)
+    provider_error = ResultError("Command failed with exit code 1")
+    provider_error.result = "API Error: overloaded"
+    provider_error.errors = []
+
+    def fail(_params):
+        raise provider_error
+
+    result = CoverageAnalystSpecialist(model=fail).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert "model provider returned an error: API Error: overloaded" in (
+        result.outcome.report_text
+    )
+
+
+def test_cli_does_not_misclassify_internal_runtime_error_as_provider_failure(tmp_path):
+    path = persist_campaign(tmp_path)
+
+    def fail(_params):
+        raise RuntimeError("internal bug")
+
+    result = CoverageAnalystSpecialist(model=fail).execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+    )
+
+    assert result.exit_code == 2
+    assert result.outcome.report_text.startswith(
+        "coverage_analyst failed: RuntimeError: internal bug"
+    )
+    assert "model provider returned an error" not in result.outcome.report_text
 
 
 def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):

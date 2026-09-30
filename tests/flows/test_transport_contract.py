@@ -1,7 +1,9 @@
 """Compatibility evidence captured before separating Flow and MCP ownership."""
 
 import json
+import logging
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,6 +16,26 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
+
+
+def test_standalone_cli_wires_utc_formatter(monkeypatch):
+    from booley.flows import endpoint_cli
+
+    configured = {}
+    endpoint = MagicMock()
+    endpoint.main.return_value = 0
+    monkeypatch.setattr(
+        endpoint_cli.logging, "basicConfig", lambda **kwargs: configured.update(kwargs)
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        endpoint_cli.cli(endpoint)
+
+    assert exc.value.code == 0
+    handler = configured["handlers"][0]
+    record = logging.LogRecord("booley.flow", logging.INFO, "", 0, "event", (), None)
+    record.created = 1_790_341_637.0
+    assert handler.format(record) == "2026-09-25T13:07:17Z [booley.flow] INFO: event"
 
 
 class RecordingExecution(StandaloneFlowExecution):
@@ -327,9 +349,27 @@ def test_acceptance_failures_keep_their_distinct_persistence_semantics(
         # standalone execution no longer persists a fallback error timeline.
         assert persisted == []
     else:
-        with pytest.raises(RuntimeError, match="acceptance append failed"):
-            flow.execute(request)
+        result = flow.execute(request)
+        assert result.exit_code == 2
+        assert result.outcome.detail["completion_error"] == {
+            "operation": "record acceptance and projections",
+            "type": "RuntimeError",
+            "message": "acceptance append failed",
+        }
         assert len(persisted) == 1  # Only the successful in-run update; no final save.
+
+
+def _assert_distinct_artifact_invocations(
+    runtime: Path,
+    cli_artifacts: dict[str, str],
+    mcp_artifacts: dict[str, str],
+) -> None:
+    assert mcp_artifacts.keys() == cli_artifacts.keys()
+    for name, cli_path in cli_artifacts.items():
+        mcp_path = mcp_artifacts[name]
+        assert mcp_path != cli_path
+        assert (runtime / cli_path).is_file()
+        assert (runtime / mcp_path).is_file()
 
 
 def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
@@ -382,7 +422,11 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     assert report["exit_code"] == 0
     for key in ("flow", "target", "criterion_key", "criterion_met", "passed", "eda_tool"):
         assert report[key] == cli_report[key]
-    assert report["detail"]["artifacts"] == cli_report["detail"]["artifacts"]
+    _assert_distinct_artifact_invocations(
+        runtime,
+        cli_report["detail"]["artifacts"],
+        report["detail"]["artifacts"],
+    )
 
 
 @pytest.mark.parametrize("base", ("BooleyFlow", "McpTool"))
@@ -585,3 +629,27 @@ def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, 
         assert flow.execute(request).exit_code == 2
     assert sys.stdout is stdout
     store.release.assert_called_once_with(claim)
+
+
+def test_flow_exception_produces_actionable_report_without_console_traceback(
+    runtime, monkeypatch, capsys
+):
+    flow = LintFlow()
+
+    def fail():
+        raise ValueError("boom")
+
+    monkeypatch.setattr(flow, "_run", fail)
+    result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+
+    assert result.exit_code == 2
+    assert "lint failed: ValueError: boom" in result.outcome.report_text
+    report_root = runtime / "flow-reports"
+    report = json.loads((report_root / "lint.json").read_text(encoding="utf-8"))
+    assert report["flow"] == "lint"
+    assert report["report_text"] == result.outcome.report_text
+    diagnostic = Path(report["report_text"].rsplit(". Diagnostic: ", 1)[1])
+    assert diagnostic.is_file()
+    assert report_root / "lint/1" not in diagnostic.parents
+    output = capsys.readouterr()
+    assert "Traceback" not in output.out + output.err

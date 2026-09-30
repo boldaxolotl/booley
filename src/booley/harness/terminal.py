@@ -16,10 +16,10 @@ from __future__ import annotations
 import io
 import threading
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 
 from booley.presentation.heartbeat import format_heartbeat
+from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.helpers import fmt_duration
 
 from .colors import (
@@ -107,6 +107,13 @@ def close_log() -> None:
             _log_file = None
 
 
+def flush_log() -> None:
+    """Flush buffered run-log output without emitting any new content."""
+    with _output_lock:
+        if _log_file is not None:
+            _log_file.flush()
+
+
 def _emit(*args: str, flush: bool = False) -> None:
     """Print to stdout and, if open, mirror ANSI-stripped text to run.log.
 
@@ -144,8 +151,8 @@ def raw(text: str = "", *, flush: bool = False) -> None:
 
 
 def ts() -> str:
-    """Current timestamp HH:MM:SS."""
-    return datetime.now().strftime("%H:%M:%S")
+    """Return the current instant as canonical UTC RFC 3339."""
+    return utc_now_rfc3339()
 
 
 def _ts_prefix() -> str:
@@ -159,13 +166,13 @@ def _ts_prefix() -> str:
 
 
 def status(msg: str) -> None:
-    """Print a timestamped status line: ``[HH:MM:SS] msg``."""
+    """Print a timestamped status line: ``[YYYY-MM-DDTHH:MM:SSZ] msg``."""
     with _output_lock:
         _emit(f"{_ts_prefix()} {msg}")
 
 
 def status_indent(msg: str) -> None:
-    """Print an indented timestamped status line: ``  [HH:MM:SS] msg``."""
+    """Print an indented UTC timestamped status line."""
     with _output_lock:
         _emit(f"  {_ts_prefix()} {msg}")
 

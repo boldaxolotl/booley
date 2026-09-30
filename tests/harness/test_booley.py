@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
 import threading
 import time
 from argparse import Namespace
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
@@ -19,6 +21,33 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import subscription_limit as sl
+from booley.runtime.project_dir import reset_cache
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    state_record_path,
+    ticket_document_path,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import parse_board_target
+from booley.ticket_board.ticket_document import (
+    convert_ticket_document,
+    ticket_conversion_context,
+)
+
+TICKETS_REL = Path(".booley") / "project" / "tickets"
+
+
+def _place_ticket(project_root: Path, slug: str, board_name: str, content: str) -> Path:
+    """Write a board document for *slug* plus a state record for *board_name*."""
+    tickets_dir = project_root / TICKETS_REL
+    state = parse_board_target(board_name)
+    assert state is not None, board_name
+    path = ticket_document_path(tickets_dir, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    write_state_record(tickets_dir, slug, StateRecord.fresh(state))
+    return path
+
 
 # ===========================================================================
 # ts()
@@ -26,18 +55,20 @@ from booley.harness import subscription_limit as sl
 
 
 class TestTs:
-    def test_format_hh_mm_ss(self):
+    def test_format_utc_rfc3339(self):
         from booley.harness.terminal import ts
 
         result = ts()
-        assert re.match(r"\d{2}:\d{2}:\d{2}$", result)
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", result)
 
     def test_returns_current_time(self):
         from booley.harness.terminal import ts
+        from booley.runtime.timefmt import parse_timestamp
 
-        before = datetime.now().strftime("%H:%M")
+        before = datetime.now(UTC)
         result = ts()
-        assert result.startswith(before[:4])  # at least HH:M matches
+        after = datetime.now(UTC)
+        assert before.replace(microsecond=0) <= parse_timestamp(result) <= after
 
 
 def test_doctor_parser_accepts_deep_flag():
@@ -68,9 +99,274 @@ def test_board_help_hides_deprecated_review_commands(capsys):
         parser.parse_args(["board", "--help"])
     assert exc.value.code == 0
     output = capsys.readouterr().out
-    assert "{show,review,approve,validate,create,move,reset,archive}" in output
+    assert "{show,review,approve,validate,check-ready,create,move,reset,archive}" in output
     assert "request-review" not in output
     assert "[may invoke agent]" in output
+
+
+def _board_git(repository: Path, *args: str) -> str:
+    git_env = os.environ.copy()
+    git_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    git_env["GIT_CONFIG_COUNT"] = "0"
+    git_env.pop("GIT_TEMPLATE_DIR", None)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+        env=git_env,
+    )
+    return result.stdout.strip()
+
+
+def _initialize_board_repository(
+    repository: Path,
+    branch: str,
+    commit_message: str,
+) -> str:
+    _board_git(repository, "init", "-b", branch)
+    _board_git(repository, "config", "user.name", "Test")
+    _board_git(repository, "config", "user.email", "test@example.invalid")
+    _board_git(repository, "add", "-A")
+    _board_git(repository, "commit", "-m", commit_message)
+    return _board_git(repository, "rev-parse", "HEAD")
+
+
+def _board_create_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str,
+    project_branch: str | None = None,
+    *,
+    paired: bool = True,
+) -> tuple[Path, Path, str]:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    outer_sha = _initialize_board_repository(root, branch, "initial outer")
+
+    project_dir = root / ".booley_project"
+    for board_dir in ("board", "state"):
+        (project_dir / "tickets" / board_dir).mkdir(parents=True)
+    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    if paired:
+        _initialize_board_repository(
+            project_dir,
+            project_branch or branch,
+            "initial project",
+        )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    reset_cache()
+    return root, project_dir, outer_sha
+
+
+@pytest.fixture
+def board_create_project_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[pytest.MonkeyPatch]:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    monkeypatch.delenv("GIT_TEMPLATE_DIR", raising=False)
+    for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(variable, raising=False)
+    yield monkeypatch
+    reset_cache()
+
+
+def test_board_create_uses_matching_paired_project_branch(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+) -> None:
+    branch = "release/next"
+    root, project_dir, outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        branch,
+    )
+    slug = f"generated-{branch.replace('/', '-')}"
+    args = tlr._build_parser().parse_args(["board", "create", slug])
+
+    assert tlr._cmd_board(args, root) == 0
+
+    draft = project_dir / "tickets" / "board" / f"{slug}.md"
+    assert draft.is_file()
+    # A draft has no state record.
+    assert not state_record_path(project_dir / "tickets", slug).exists()
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
+    assert converted.diagnostics == ()
+    assert converted.document is not None
+    assert converted.document.spec.fields["branch"] == branch
+    assert isinstance(converted.document.spec.fields["branch"], str)
+    assert converted.document.spec.fields["project_destination_ref"] == f"refs/heads/{branch}"
+    workspace = project_dir / "worktrees" / slug
+    workspace_sha = _board_git(workspace, "rev-parse", "HEAD")
+    assert workspace_sha == outer_sha
+
+
+def test_board_create_quotes_yaml_keyword_branch(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+) -> None:
+    branch = "true"
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        branch,
+        paired=False,
+    )
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    slug = "yaml-keyword"
+    args = tlr._build_parser().parse_args(["board", "create", slug])
+
+    assert tlr._cmd_board(args, root) == 0
+
+    draft = project_dir / "tickets" / "board" / f"{slug}.md"
+    with ticket_conversion_context(root, slug, "draft") as context:
+        converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
+    assert converted.diagnostics == ()
+    assert converted.document is not None
+    assert converted.document.spec.fields["branch"] == branch
+    assert isinstance(converted.document.spec.fields["branch"], str)
+    materialize.assert_called_once()
+
+
+def test_board_create_rejects_detached_head(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        "release/next",
+    )
+    _board_git(root, "checkout", "--detach")
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "detached-draft"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "detached HEAD" in capsys.readouterr().err
+    assert not (project_dir / "tickets" / "board" / "detached-draft.md").exists()
+    materialize.assert_not_called()
+
+
+def test_board_create_reports_branch_inspection_failure(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        "release/next",
+    )
+    inspection = MagicMock()
+    inspection.branch = None
+    inspection.detail = "git inspection timed out"
+    board_create_project_env.setattr(tlr, "inspect_symbolic_branch", lambda _root: inspection)
+    args = tlr._build_parser().parse_args(["board", "create", "inspection-failure"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "cannot inspect the Project checkout branch" in capsys.readouterr().err
+    draft = project_dir / "tickets" / "board" / "inspection-failure.md"
+    assert not draft.exists()
+
+
+def test_board_create_rejects_non_git_project(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "project"
+    project_dir = root / ".booley_project"
+    drafts = project_dir / "tickets" / "board"
+    drafts.mkdir(parents=True)
+    board_create_project_env.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    reset_cache()
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "non-git"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "root of a Git worktree" in capsys.readouterr().err
+    assert not (drafts / "non-git.md").exists()
+    materialize.assert_not_called()
+
+
+def test_board_create_rejects_uninitialized_git_repository(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _board_git(root, "init", "-b", "main")
+    board_create_project_env.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    reset_cache()
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "uninitialized"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "run 'booley init'" in capsys.readouterr().err
+    assert not (root / ".booley_project" / "tickets").exists()
+    assert not (root / ".booley" / "project" / "tickets").exists()
+    materialize.assert_not_called()
+
+
+def test_board_create_rejects_mismatched_paired_project_branch(
+    tmp_path: Path,
+    board_create_project_env: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project_dir, _outer_sha = _board_create_project(
+        tmp_path,
+        board_create_project_env,
+        "release/next",
+        project_branch="main",
+    )
+    materialize = MagicMock()
+    board_create_project_env.setattr(
+        tlr.TicketIO,
+        "_materialize_ticket_workspace",
+        materialize,
+    )
+    args = tlr._build_parser().parse_args(["board", "create", "mismatched-project"])
+
+    assert tlr._cmd_board(args, root) == 1
+
+    assert "paired project destination 'refs/heads/release/next'" in capsys.readouterr().err
+    assert not (project_dir / "tickets" / "board" / "mismatched-project.md").exists()
+    materialize.assert_not_called()
 
 
 def test_doctor_parser_accepts_concise_flag():
@@ -204,6 +500,20 @@ def test_bootstrap_parser_rejects_check_only_with_force(capsys):
     assert "not allowed with argument" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("flag", "attribute"),
+    [
+        ("--with-qa-skills", "with_qa_skills"),
+        ("--without-qa-skills", "without_qa_skills"),
+    ],
+)
+def test_bootstrap_parser_exposes_qa_selection_flags(flag, attribute):
+    args = tlr._build_parser().parse_args(["bootstrap", flag, "--force"])
+
+    assert getattr(args, attribute) is True
+    assert args.force is True
+
+
 def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
     args = tlr._build_parser().parse_args(["bootstrap"])
     monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
@@ -215,6 +525,97 @@ def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("Project discovery must not run")),
     )
     assert tlr.main() == 17
+
+
+@pytest.mark.parametrize(
+    ("argv", "command"),
+    [
+        (["bootstrap"], "bootstrap"),
+        (["init"], "init"),
+    ],
+)
+def test_main_renders_lifecycle_timeout_once_without_traceback(
+    argv, command, tmp_path, monkeypatch, capsys
+):
+    from booley.runtime.lifecycle_lock import LifecycleLockError
+
+    args = tlr._build_parser().parse_args(argv)
+    failure = LifecycleLockError(
+        "host Docker lifecycle is busy (pid=41 operation=project init); "
+        "timed out after waiting 120s"
+    )
+
+    def raise_timeout(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
+    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+    monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+    if command == "bootstrap":
+        monkeypatch.setattr(tlr, "run_bootstrap", raise_timeout)
+    else:
+        monkeypatch.setitem(tlr._EARLY_COMMANDS, command, raise_timeout)
+
+    assert tlr.main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"ERROR: {failure}\n"
+    assert "Traceback" not in captured.err
+
+
+def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None:
+    if command == "doctor":
+        from booley.harness import doctor
+        from booley.runtime import session_runtime
+
+        def exercise_runtime(*_args, **_kwargs):
+            runtime = doctor._DoctorFlowRuntime(Path("/project"), "docker")
+            runtime.command(["true"])
+
+        monkeypatch.setattr(doctor, "run_doctor_result", exercise_runtime)
+        monkeypatch.setattr(session_runtime, "up", MagicMock(side_effect=failure))
+    elif command == "auth":
+        from booley.harness import auth_cmd
+
+        monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
+    else:
+        from booley.runtime import issuance_invalidation
+
+        monkeypatch.setattr(
+            issuance_invalidation,
+            "coordinate_mutation",
+            MagicMock(side_effect=failure),
+        )
+
+
+@pytest.mark.parametrize(
+    ("argv", "command"),
+    [
+        (["doctor"], "doctor"),
+        (["auth", "--app", "claude"], "auth"),
+        (["eda", "grant", "revoke", "/project", "--kind", "vivado"], "eda"),
+    ],
+)
+def test_indirect_lifecycle_timeout_reaches_main(argv, command, tmp_path, monkeypatch, capsys):
+    from booley.runtime.lifecycle_lock import LifecycleLockError
+
+    failure = LifecycleLockError("host Docker lifecycle timed out after waiting 120s")
+    args = tlr._build_parser().parse_args(argv)
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
+    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+    monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+    _configure_indirect_lifecycle_timeout(command, monkeypatch, failure)
+
+    assert tlr.main() == 2
+    captured = capsys.readouterr()
+    assert captured.err.splitlines().count(f"ERROR: {failure}") == 1
+    assert "Traceback" not in captured.out + captured.err
 
 
 def test_projects_dispatch_precedes_active_project_discovery(monkeypatch):
@@ -702,6 +1103,7 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
 
     class FakeTio:
         board = None
+        tickets_dir = tmp_path / "tickets"  # no Ticket History: a missing slug stays missing
 
         def __init__(self, *_args, **_kwargs):
             pass
@@ -709,15 +1111,18 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
         def find_ticket(self, _slug):
             return self.board
 
+        def inspect_ticket(self, slug):
+            return self.find_ticket(slug)
+
     monkeypatch.setattr(io, "TicketIO", FakeTio)
     missing_args = tlr._build_parser().parse_args(["board", "show", "demo"])
     assert tlr._cmd_board_show(missing_args, tmp_path) == 2
 
-    FakeTio.board = {"file": "board/active/demo.md", "status": "active", "summary": "work"}
+    FakeTio.board = {"file": "board/demo.md", "status": "active", "summary": "work"}
     assert tlr._cmd_board_show(missing_args, tmp_path) == 0
     assert "demo: active — work" in capsys.readouterr().out
 
-    FakeTio.board = {"file": "board/blocked/demo.md", "status": "blocked", "summary": "work"}
+    FakeTio.board = {"file": "board/demo.md", "status": "blocked", "summary": "work"}
     monkeypatch.setattr(
         blocked_prep,
         "render_blocked_dossier",
@@ -734,20 +1139,172 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
     monkeypatch.setattr(
         review_lifecycle,
         "review_briefing_command",
-        lambda *_a, **_k: Namespace(status="ready", briefing="briefing"),
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("review briefing called")),
     )
     assert tlr._cmd_board_show(missing_args, tmp_path) == 0
     output = capsys.readouterr().out
     assert "dossier" in output
-    assert "briefing" in output
 
+
+def test_board_show_does_not_append_review_guidance_to_accepted_failure(
+    monkeypatch, tmp_path, capsys
+):
+    from booley.ticket_board import io, review_lifecycle
+
+    class FakeTio:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def find_ticket(self, _slug):
+            return {"file": "board/demo.md", "status": "review", "summary": "work"}
+
+        def inspect_ticket(self, slug):
+            return self.find_ticket(slug)
+
+    monkeypatch.setattr(io, "TicketIO", FakeTio)
     monkeypatch.setattr(
         review_lifecycle,
         "review_briefing_command",
-        lambda *_a, **_k: Namespace(status="failed", message="briefing unavailable"),
+        lambda *_a, **_k: Namespace(
+            status="failed",
+            message="Criteria Satisfaction Record is corrupt: bad binding",
+        ),
     )
-    assert tlr._cmd_board_show(missing_args, tmp_path) == 2
-    assert "briefing unavailable" in capsys.readouterr().err
+    args = tlr._build_parser().parse_args(["board", "show", "demo"])
+    assert tlr._cmd_board_show(args, tmp_path) == 2
+    error = capsys.readouterr().err
+    assert "Criteria Satisfaction Record is corrupt" in error
+    assert "board review" not in error
+
+
+def _blocked_diagnosis() -> dict:
+    return {
+        "classification": "ticket-code",
+        "board_reason": "simulation failed",
+        "blocked_stage": "developer",
+        "blockers": [{"name": "sim", "reason": "failed", "evidence": "run log"}],
+        "passing_non_blocking": [],
+        "developer_questions": [],
+        "recommended_action": "retry with feedback",
+        "findings": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_board_show_blocked_uses_dossier_without_review_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from contextlib import contextmanager
+
+    from booley.core.models import AgentResult
+    from booley.harness import blocked_prep
+    from booley.ticket_board import review_lifecycle, ticket_document
+    from booley.ticket_board.frontmatter import format_frontmatter
+    from booley.ticket_board.ticket_document import TicketConversionContext, ticket_authoring_view
+
+    monkeypatch.delenv("TICKETS_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
+    from tests.ticket_board.conftest import place_ticket
+
+    ticket = place_ticket(
+        tmp_path / ".booley_project" / "tickets",
+        "demo",
+        "blocked",
+        format_frontmatter(
+            {
+                "summary": "demo",
+                "type": "feature",
+                "branch": "main",
+                "scope": ["source.txt"],
+                "on_success": ["review"],
+                "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "done"}}},
+                "machine": {},
+            },
+            "## Description\nDemo work.\n",
+        ),
+    )
+    worktree = tmp_path / ".booley_project" / "worktrees" / "demo"
+    worktree.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=worktree, check=True)
+    (worktree / "source.txt").write_text("source\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.txt"], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=worktree, check=True)
+
+    @contextmanager
+    def conversion_context(_root, _slug, _stage):
+        yield TicketConversionContext(
+            "executable",
+            lambda _generated: ticket_authoring_view(worktree),
+            lambda: worktree,
+        )
+
+    async def invoke(_ctx, _evidence):
+        return AgentResult(structured=_blocked_diagnosis())
+
+    monkeypatch.setattr(blocked_prep, "_invoke", invoke)
+    monkeypatch.setattr(ticket_document, "ticket_conversion_context", conversion_context)
+    monkeypatch.setattr(
+        review_lifecycle,
+        "review_briefing_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected review")),
+    )
+    assert (await blocked_prep.prepare_blocked_dossier(tmp_path, "demo")).ready
+    resolved = blocked_prep._resolve_context(tmp_path, "demo")
+    assert resolved.ticket_path == ticket
+    assert resolved.worktree == worktree.resolve()
+    args = tlr._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
+
+    assert tlr._cmd_board_show(args, tmp_path) == 0
+    assert "**Blocked by:**" in capsys.readouterr().out
+    briefing_args = tlr._build_parser().parse_args(["board", "blocked-briefing", "demo"])
+    assert tlr._cmd_board_blocked_briefing(briefing_args, tmp_path) == 0
+    assert "**Blocked by:**" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_board_show_blocked_names_changed_dossier_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.core.models import AgentResult
+    from booley.harness import blocked_prep
+    from booley.ticket_board import io
+
+    ticket = tmp_path / "blocked" / "demo.md"
+    ticket.parent.mkdir()
+    ticket.write_text("ticket\n", encoding="utf-8")
+    context = blocked_prep.BlockedContext(
+        tmp_path,
+        "demo",
+        ticket,
+        tmp_path / "logs" / "demo",
+        tmp_path / "logs" / "demo" / ".runtime" / "triage-prep",
+        None,
+    )
+
+    async def invoke(_ctx, _evidence):
+        return AgentResult(structured=_blocked_diagnosis())
+
+    class FakeTio:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def inspect_ticket(self, _slug):
+            return {"file": "board/demo.md", "status": "blocked"}
+
+    monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: context)
+    monkeypatch.setattr(blocked_prep, "_invoke", invoke)
+    monkeypatch.setattr(io, "TicketIO", FakeTio)
+    assert (await blocked_prep.prepare_blocked_dossier(tmp_path, "demo")).ready
+    ticket.write_text("changed\n", encoding="utf-8")
+    args = tlr._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
+
+    assert tlr._cmd_board_show(args, tmp_path) == 2
+    error = capsys.readouterr().err
+    assert "ticket changed" in error
+    assert "run booley board review demo" in error
 
 
 def test_board_review_handler_rejects_inconsistent_options(capsys, tmp_path):
@@ -939,25 +1496,51 @@ class TestCmdFlow:
         _FakeFlow.rc = rc
         assert tlr._cmd_flow(self._args(["flow", "fakeflow"]), Path("/work")) == rc
 
-    def test_unknown_endpoint_name_lists_available_endpoints(self, capsys):
+    def test_unknown_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow", "nosuchtool"]), Path("/work"))
         assert rc == 2
-        err = capsys.readouterr().err
-        assert "not a flow" in err
+        streams = capsys.readouterr()
+        assert streams.out == ""
+        assert streams.err == (
+            "ERROR: 'nosuchtool' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+        )
         assert not _FakeFlow.calls
 
     def test_missing_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow"]), Path("/work"))
+        assert rc == 0
+        streams = capsys.readouterr()
+        assert "Available Flows:" in streams.out
+        assert "fakeflow" in streams.out
+        assert streams.err == ""
+
+    def test_bare_flow_main_lists_on_stdout(self, tmp_path, monkeypatch, capsys):
+        args = self._args(["flow"])
+        monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+        monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+        monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+        monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+
+        assert tlr.main() == 0
+        streams = capsys.readouterr()
+        assert "Available Flows:" in streams.out
+        assert "fakeflow" in streams.out
+        assert streams.err == ""
+
+    def test_empty_flow_name_is_unknown(self, capsys):
+        rc = tlr._cmd_flow(self._args(["flow", ""]), Path("/work"))
         assert rc == 2
-        err = capsys.readouterr().err
-        assert "needs a name" in err
-        assert "fakeflow" in err
+        streams = capsys.readouterr()
+        assert streams.out == ""
+        assert streams.err == (
+            "ERROR: '' is not a flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
+        )
 
     def test_listing_trims_the_llm_facing_description(self, capsys):
         tlr._cmd_flow(self._args(["flow"]), Path("/work"))
-        err = capsys.readouterr().err
-        assert "A fake Flow" in err
-        assert "must not be shown" not in err
+        out = capsys.readouterr().out
+        assert "A fake Flow" in out
+        assert "must not be shown" not in out
 
     def test_unloadable_endpoint_errors_without_running(self, monkeypatch, capsys):
         monkeypatch.setattr(tlr, "_load_mcp_tool_class", lambda _info: None)
@@ -1249,9 +1832,10 @@ class TestGetTicketCounts:
 
 class TestGetActiveSlugs:
     def test_returns_stems_of_md_files(self, project_root: Path):
-        active_dir = project_root / ".booley" / "project" / "tickets" / "board" / "active"
-        (active_dir / "fix-fsm.md").write_text("---\n---\n")
-        (active_dir / "add-sha3.md").write_text("---\n---\n")
+        _place_ticket(project_root, "fix-fsm", "active", "---\n---\n")
+        _place_ticket(project_root, "add-sha3", "active", "---\n---\n")
+        # A queued Ticket on the same board is not running.
+        _place_ticket(project_root, "queued-one", "queue", "---\n---\n")
         result = tlr.get_active_slugs(project_root)
         assert sorted(result) == ["add-sha3", "fix-fsm"]
 
@@ -1269,30 +1853,25 @@ class TestGetActiveSlugs:
 
 class TestGetTicketSummary:
     def test_extracts_summary_from_frontmatter(self, project_root: Path):
-        ticket = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "queue" / "fix-fsm.md"
-        )
-        ticket.write_text(
+        _place_ticket(
+            project_root,
+            "fix-fsm",
+            "queue",
             "---\nsummary: Fix FSM counter overflow\ntype: bugfix\n---\n",
-            encoding="utf-8",
         )
         assert tlr.get_ticket_summary(project_root, "fix-fsm") == "Fix FSM counter overflow"
 
     def test_strips_quotes(self, project_root: Path):
-        ticket = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "queue" / "fix-fsm.md"
-        )
-        ticket.write_text(
+        _place_ticket(
+            project_root,
+            "fix-fsm",
+            "queue",
             '---\nsummary: "Quoted summary"\n---\n',
-            encoding="utf-8",
         )
         assert tlr.get_ticket_summary(project_root, "fix-fsm") == "Quoted summary"
 
     def test_searches_all_directories(self, project_root: Path):
-        ticket = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "done" / "old-ticket.md"
-        )
-        ticket.write_text("---\nsummary: Old done ticket\n---\n", encoding="utf-8")
+        _place_ticket(project_root, "old-ticket", "done", "---\nsummary: Old done ticket\n---\n")
         assert tlr.get_ticket_summary(project_root, "old-ticket") == "Old done ticket"
 
     def test_returns_slug_when_not_found(self, project_root: Path):
@@ -1315,16 +1894,7 @@ class TestHandleStartupOrphans:
             stderr="",
         )
         # Create an orphaned ticket with a lock file containing a dead PID
-        active = (
-            project_root
-            / ".booley"
-            / "project"
-            / "tickets"
-            / "board"
-            / "active"
-            / "orphan-ticket.md"
-        )
-        active.write_text("---\nsummary: Orphan\n---\n", encoding="utf-8")
+        _place_ticket(project_root, "orphan-ticket", "active", "---\nsummary: Orphan\n---\n")
         lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "orphan-ticket"
         lock_dir.mkdir(parents=True, exist_ok=True)
         (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
@@ -1350,10 +1920,7 @@ class TestHandleStartupOrphans:
 
 class TestHandlePostRunOrphans:
     def _create_orphan(self, project_root: Path, slug: str = "orphan") -> None:
-        active = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "active" / f"{slug}.md"
-        )
-        active.write_text("---\nsummary: Orphan\n---\n", encoding="utf-8")
+        _place_ticket(project_root, slug, "active", "---\nsummary: Orphan\n---\n")
 
     @patch("booley.harness.booley._run_board")
     def test_requeue_on_limit_wait(self, mock_board, project_root: Path):
@@ -1417,9 +1984,7 @@ class TestHandlePostRunOrphans:
 class TestDetectSubscriptionLimit:
     def _setup_failed_ticket(self, project_root: Path, slug: str, failure_text: str) -> None:
         """Create a blocked ticket + blocked.md with recent mtime."""
-        blocked_dir = project_root / ".booley" / "project" / "tickets" / "board" / "blocked"
-        blocked_dir.mkdir(parents=True, exist_ok=True)
-        (blocked_dir / f"{slug}.md").write_text("---\n---\n")
+        _place_ticket(project_root, slug, "blocked", "---\n---\n")
 
         log_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -2031,6 +2596,16 @@ class TestSetupLogging:
         )
         assert console.level == logging.INFO
 
+    @pytest.mark.parametrize("verbose", [False, True])
+    def test_handlers_use_same_utc_timestamp(self, project_root: Path, verbose: bool):
+        tlr.setup_logging(project_root, verbose=verbose)
+        record = logging.LogRecord("booley", logging.INFO, "", 0, "event", (), None)
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
+
+        formatted = [handler.format(record) for handler in tlr.logger.handlers]
+
+        assert all(line.startswith("2026-09-25T13:07:17Z") for line in formatted)
+
     def teardown_method(self):
         # Close file handlers to avoid ResourceWarning
         for h in tlr.logger.handlers[:]:
@@ -2048,7 +2623,7 @@ class TestTerseFormatter:
     def test_info_no_level_prefix(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.INFO,
@@ -2058,14 +2633,16 @@ class TestTerseFormatter:
             (),
             None,
         )
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
         result = fmt.format(record)
+        assert result.startswith("2026-09-25T13:07:17Z")
         assert "hello world" in result
         assert "INFO" not in result
 
     def test_warning_includes_level(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.WARNING,
@@ -2075,14 +2652,16 @@ class TestTerseFormatter:
             (),
             None,
         )
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
         result = fmt.format(record)
+        assert "2026-09-25T13:07:17Z" in result
         assert "WARNING" in result
         assert "bad thing" in result
 
     def test_error_includes_level(self):
         from booley.harness.logging_utils import TerseFormatter
 
-        fmt = TerseFormatter(datefmt="%H:%M:%S")
+        fmt = TerseFormatter()
         record = logging.LogRecord(
             "test",
             logging.ERROR,
@@ -2092,8 +2671,32 @@ class TestTerseFormatter:
             (),
             None,
         )
+        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
         result = fmt.format(record)
+        assert "2026-09-25T13:07:17Z" in result
         assert "ERROR" in result
+
+
+def test_dry_run_banner_uses_aware_user_local_timestamp(monkeypatch, capsys):
+    args = Namespace(count=0, dry_run=True, check_ready=False)
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    fixed = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC)
+    with patch.object(tlr, "datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed
+
+        tlr._print_banner(args)
+
+    assert "17:07:17 · 25 SEP 2026" in capsys.readouterr().out
+
+
+def test_limit_wait_uses_aware_user_local_estimate(monkeypatch, capsys):
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    monkeypatch.setattr(tlr.time, "time", lambda: 1_790_341_637.0)
+    monkeypatch.setattr(tlr, "interruptible_sleep", lambda _seconds: True)
+
+    assert tlr._handle_limit_wait(60) == "continue"
+
+    assert "until ~17:08 · 25 SEP 2026" in capsys.readouterr().out
 
 
 # ===========================================================================
@@ -2184,9 +2787,8 @@ class TestBoardPathCorrectness:
     detect_subscription_limit use the correct board/ paths."""
 
     def test_get_active_slugs_uses_board_path(self, project_root: Path):
-        """Files in tickets/board/active/ are found."""
-        active_dir = project_root / ".booley" / "project" / "tickets" / "board" / "active"
-        (active_dir / "foo.md").write_text("---\n---\n")
+        """Running board documents in tickets/board/ are found."""
+        _place_ticket(project_root, "foo", "active", "---\n---\n")
         result = tlr.get_active_slugs(project_root)
         assert result == ["foo"]
 
@@ -2199,10 +2801,8 @@ class TestBoardPathCorrectness:
         assert result == []
 
     def test_detect_subscription_limit_uses_board_path(self, project_root: Path):
-        """detect_subscription_limit scans tickets/board/blocked/."""
-        # Create in board/blocked/ (correct path)
-        blocked_dir = project_root / ".booley" / "project" / "tickets" / "board" / "blocked"
-        (blocked_dir / "test-slug.md").write_text("---\n---\n")
+        """detect_subscription_limit scans blocked Tickets on tickets/board/."""
+        _place_ticket(project_root, "test-slug", "blocked", "---\n---\n")
         log_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "test-slug"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "blocked.md").write_text("usage limit exceeded", encoding="utf-8")
@@ -2218,10 +2818,7 @@ class TestBoardPathCorrectness:
 class TestStartupOrphansPIDAware:
     def _create_active_with_lock(self, project_root: Path, slug: str, pid: int):
         """Create an active ticket + lock file with given PID."""
-        active = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "active" / f"{slug}.md"
-        )
-        active.write_text(f"---\nsummary: {slug}\n---\n", encoding="utf-8")
+        _place_ticket(project_root, slug, "active", f"---\nsummary: {slug}\n---\n")
         lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
         lock_dir.mkdir(parents=True, exist_ok=True)
         (lock_dir / "ticket.lock").write_text(str(pid), encoding="utf-8")
@@ -2261,10 +2858,7 @@ class TestStartupOrphansPIDAware:
 
 class TestPostRunOrphansPIDAware:
     def _create_active_with_lock(self, project_root: Path, slug: str, pid: int):
-        active = (
-            project_root / ".booley" / "project" / "tickets" / "board" / "active" / f"{slug}.md"
-        )
-        active.write_text(f"---\nsummary: {slug}\n---\n", encoding="utf-8")
+        _place_ticket(project_root, slug, "active", f"---\nsummary: {slug}\n---\n")
         lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
         lock_dir.mkdir(parents=True, exist_ok=True)
         (lock_dir / "ticket.lock").write_text(str(pid), encoding="utf-8")
@@ -2575,6 +3169,11 @@ class TestCheckReady:
         assert args.check_ready is True
         assert args.ticket == "demo"
 
+    def test_parser_exposes_board_readiness_alias(self):
+        args = self._parse(["board", "check-ready", "demo"])
+        assert args.board_command == "check-ready"
+        assert args.slug == "demo"
+
     def test_readiness_reports_validation_errors(self, tmp_path, monkeypatch, capsys):
         result = MagicMock(errors=("bad criterion",), warnings=())
         check = MagicMock(return_value=result)
@@ -2583,6 +3182,18 @@ class TestCheckReady:
 
         assert tlr._check_ticket_readiness(args, tmp_path) == 2
         assert "bad criterion" in capsys.readouterr().err
+        check.assert_called_once_with(tmp_path, "demo")
+
+    def test_board_alias_renders_the_same_readiness_result(self, tmp_path, monkeypatch, capsys):
+        result = MagicMock(errors=("bad criterion",), warnings=("warning",))
+        check = MagicMock(return_value=result)
+        monkeypatch.setattr("booley.ticket_board.readiness.check_ticket_ready", check)
+        args = self._parse(["board", "check-ready", "demo"])
+
+        assert tlr._cmd_board(args, tmp_path) == 2
+        captured = capsys.readouterr()
+        assert "warning" in captured.err
+        assert "bad criterion" in captured.err
         check.assert_called_once_with(tmp_path, "demo")
 
 
@@ -2751,6 +3362,57 @@ def test_hidden_session_prepare_accepts_explicit_workspace_root():
     assert args.command == "session"
     assert args.session_command == "prepare"
     assert args.project_root == "/tmp/project"
+
+
+@pytest.mark.parametrize("command", ["up", "prepare"])
+def test_at_cap_session_start_reports_status_two_without_success(
+    command, tmp_path, monkeypatch, capsys
+):
+    from booley.harness import auto_doctor
+    from booley.runtime import session_runtime as sr
+
+    args = tlr._build_parser().parse_args(["session", command])
+    monkeypatch.setattr(tlr, "_report_upgrade_before_session", lambda _root: None)
+    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+    monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(
+        sr,
+        command,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sr.SessionError("Sandbox start refused: host is at interactive.max_sessions=1")
+        ),
+    )
+
+    assert tlr._cmd_session(args, tmp_path) == 2
+    captured = capsys.readouterr()
+    assert "interactive.max_sessions=1" in captured.err
+    assert "Sandbox ready" not in captured.out
+
+
+def test_session_lifecycle_timeout_reaches_main_boundary(tmp_path, monkeypatch):
+    from booley.runtime.lifecycle_lock import LifecycleLockError
+
+    args = tlr._build_parser().parse_args(["session", "up"])
+
+    def raise_timeout(*_args, **_kwargs):
+        raise LifecycleLockError("host Docker lifecycle timed out")
+
+    monkeypatch.setattr(tlr, "_session_up", raise_timeout)
+
+    with pytest.raises(LifecycleLockError, match="lifecycle timed out"):
+        tlr._cmd_session(args, tmp_path)
+
+
+def test_session_plain_runtime_error_remains_one_line(tmp_path, monkeypatch, capsys):
+    args = tlr._build_parser().parse_args(["session", "up"])
+
+    def raise_runtime_error(*_args, **_kwargs):
+        raise RuntimeError("image refresh failed")
+
+    monkeypatch.setattr(tlr, "_session_up", raise_runtime_error)
+
+    assert tlr._cmd_session(args, tmp_path) == 2
+    assert capsys.readouterr().err == "ERROR: image refresh failed\n"
 
 
 @pytest.mark.parametrize(

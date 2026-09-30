@@ -36,7 +36,9 @@ def observe_upgrade(project_root: Path | None = None) -> str:
 def main() -> None:
     """Start mechanisms, apply registration, and launch advisory Harness policy."""
     app = os.environ.get("BOOLEY_AGENT_APP", "none")
-    server = "skipped" if app == "none" else incontainer_setup.ensure_http_server()
+    server = (
+        "skipped" if app == "none" else incontainer_setup.ensure_http_server(mode="interactive")
+    )
     status = incontainer_setup.register(app)
     upgrade = observe_upgrade()
     health = launch_auto_doctor()

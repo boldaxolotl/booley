@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
 from booley.targets.domain import UnknownTargetError
@@ -15,8 +17,10 @@ from booley.ticket_board.acceptance_targets import (
     criterion_targets_from_spec,
     validate_ticket_spec_targets,
 )
+from booley.ticket_board.board_layout import read_state_record, ticket_document_path
 from booley.ticket_board.cli import main
 from booley.ticket_board.io import TicketFileSpec, TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.scanner import scan_all_tickets
 from booley.ticket_board.ticket_baseline import TicketBaselineError
@@ -31,6 +35,8 @@ from booley.ticket_board.ticket_document import (
 )
 from booley.ticket_board.validation import validate_ticket_spec
 from booley.ticket_board.workspace_ops import prepare_converted_ticket_baseline
+
+from .conftest import place_ticket
 
 
 def _context() -> TicketConversionContext:
@@ -76,6 +82,29 @@ def test_conversion_expands_sim_and_synth_thresholds() -> None:
     assert conversion.document.spec.target_plan.entries[0].target == "synth_core"
 
 
+def test_serialization_uses_stable_generated_field_order() -> None:
+    converted = convert_ticket_document(_ticket("  REVIEW: {rtl: {bugs: done}}\n"), _context())
+    assert converted.document is not None
+    view = TicketAuthoringView(
+        resolve_target=lambda selector, _flow: selector,
+        tests_for_target=lambda _target: (),
+    )
+    context = TicketConversionContext("executable", lambda _generated: view)
+    document = TicketDocument(
+        converted.document.spec,
+        {
+            "feature_branch": "ticket",
+            "created": "2026-09-29T00:00:00Z",
+            "machine": {},
+        },
+    )
+
+    rendered = serialize_ticket_document(document, context)
+
+    assert rendered.index("machine:") < rendered.index("created:")
+    assert rendered.index("created:") < rendered.index("feature_branch:")
+
+
 def test_registered_project_criterion_uses_flow_name_syntax() -> None:
     view = TicketAuthoringView(
         resolve_target=lambda selector, _flow: selector,
@@ -107,6 +136,174 @@ def test_coverage_rejects_zero_threshold() -> None:
 
     assert converted.document is None
     assert "greater than 0" in converted.diagnostics[0].message
+
+
+@pytest.mark.parametrize(
+    ("threshold", "rendered"),
+    [
+        ('"90"', 'string "90"'),
+        ("true", "boolean true"),
+        ("66%", 'string "66%"'),
+    ],
+)
+def test_coverage_reports_non_numeric_threshold(threshold: str, rendered: str) -> None:
+    ticket = _ticket(
+        "  COVERAGE: {sim_core: {tests: all, metrics: "
+        "{cover_property: {min_pct: " + threshold + "}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert f"cover_property.min_pct must be a number, got {rendered}" in message
+    assert "greater than 0" not in message
+
+
+def test_coverage_reports_unknown_policy_key_before_required_key() -> None:
+    ticket = _ticket(
+        "  COVERAGE: {sim_core: {tests: all, metrics: {line: {min_pct: 66, max_pct: 90}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "unexpected policy keys include 'max_pct'" in message
+    assert "only 'min_pct' is allowed" in message
+
+
+def test_coverage_reports_duplicate_test_name() -> None:
+    ticket = _ticket(
+        "  COVERAGE: {sim_core: {tests: [smoke, smoke], metrics: {line: {min_pct: 90}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "duplicate test names include 'smoke'" in message
+    assert "registered named tests" not in message
+
+
+def test_retired_coverage_criterion_reports_current_migration() -> None:
+    ticket = _ticket("  coverage_toggle: {sim_properties3: 50}\n")
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "retired Criterion 'coverage_toggle'" in message
+    assert "COVERAGE: {sim_properties3: {tests: all, metrics: {toggle: {min_pct: 50}}}}" in message
+
+
+def test_retired_coverage_migration_is_valid_yaml_for_complex_target() -> None:
+    target = "vendor:library:sim_core:1.0"
+    converted = convert_ticket_document(
+        _ticket(f'  coverage_toggle: {{"{target}": 1.0e-5}}\n'), _context()
+    )
+
+    assert converted.document is None
+    migration_repr = converted.diagnostics[0].message.split("replace it with ", 1)[1]
+    migration = ast.literal_eval(migration_repr)
+    parsed = yaml.safe_load(migration)
+    assert parsed == {
+        "COVERAGE": {target: {"tests": "all", "metrics": {"toggle": {"min_pct": 1.0e-5}}}}
+    }
+
+
+def test_retired_coverage_large_integer_falls_back_to_generic_hint() -> None:
+    converted = convert_ticket_document(
+        _ticket(f"  coverage_toggle: {{sim_properties3: {10**1000}}}\n"), _context()
+    )
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert "retired Criterion 'coverage_toggle'" in message
+    assert "<metric>: {min_pct: <number>}" in message
+
+
+@pytest.mark.parametrize(
+    ("legacy_name", "native_metric"),
+    [
+        ("coverage_branch", "branch"),
+        ("coverage_expression", "expression"),
+        ("coverage_fsm", None),
+        ("coverage_value", None),
+        ("coverage_mean", None),
+    ],
+)
+def test_all_retired_coverage_criteria_report_current_migration(
+    legacy_name: str, native_metric: str | None
+) -> None:
+    converted = convert_ticket_document(
+        _ticket(f"  {legacy_name}: {{sim_properties3: 50}}\n"), _context()
+    )
+
+    assert converted.document is None
+    message = converted.diagnostics[0].message
+    assert f"retired Criterion '{legacy_name}'" in message
+    assert "COVERAGE:" in message
+    assert "tests: all" in message
+    if native_metric is None:
+        assert "choose a supported metric" in message
+        assert "cover_property" in message
+        assert f"{{{legacy_name.removeprefix('coverage_')}:" not in message
+    else:
+        assert f"{{{native_metric}: {{min_pct: 50}}}}" in message
+
+
+@pytest.mark.parametrize(
+    ("section", "legacy_name", "declaration"),
+    [
+        ("CRITERIA_MANDATORY", "coverage_toggle", "true"),
+        ("CRITERIA_OPTIONAL", "coverage_toggle", "true"),
+        ("CRITERIA_MANDATORY", "coverage_toggle_sim", "true"),
+    ],
+)
+def test_retired_coverage_detection_is_section_and_shape_independent(
+    section: str, legacy_name: str, declaration: str
+) -> None:
+    ticket = _ticket("  LINT: {core: clean}\n")
+    if section == "CRITERIA_MANDATORY":
+        ticket = ticket.replace("  LINT: {core: clean}\n", f"  {legacy_name}: {declaration}\n")
+    else:
+        ticket = ticket.replace(
+            "---\n\n## Description",
+            f"{section}:\n  {legacy_name}: {declaration}\n---\n\n## Description",
+        )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    assert f"retired Criterion '{legacy_name}'" in converted.diagnostics[0].message
+
+
+def test_uppercase_coverage_name_remains_a_project_scalar_criterion() -> None:
+    view = TicketAuthoringView(
+        resolve_target=lambda selector, _flow: selector,
+        tests_for_target=lambda _target: (),
+        project_scalar_criteria=frozenset({"COVERAGE_TOGGLE"}),
+    )
+    context = TicketConversionContext("draft", lambda _generated: view)
+
+    converted = convert_ticket_document(_ticket("  COVERAGE_TOGGLE: true\n"), context)
+
+    assert converted.document is not None
+    [criterion] = converted.document.spec.criteria
+    assert criterion.capability == "COVERAGE_TOGGLE"
+
+
+def test_retired_coverage_error_precedes_current_coverage_validation() -> None:
+    ticket = _ticket(
+        "  coverage_toggle: true\n"
+        "  COVERAGE: {sim_core: {tests: all, metrics: {line: {min_pct: bad}}}}\n"
+    )
+
+    converted = convert_ticket_document(ticket, _context())
+
+    assert converted.document is None
+    assert "retired Criterion 'coverage_toggle'" in converted.diagnostics[0].message
 
 
 def test_v2_serializer_round_trips_nested_criteria_and_policy() -> None:
@@ -334,13 +531,16 @@ def test_document_boundary_rejects_malformed_authoring(ticket: str, message: str
         ("  COVERAGE: {core: {tests: all}}\n", "exactly tests and metrics"),
         (
             "  COVERAGE: {core: {tests: [unknown], metrics: {line: {min_pct: 90}}}}\n",
-            "registered named tests",
+            "unregistered test names include 'unknown'",
         ),
         (
             "  COVERAGE: {core: {tests: all, metrics: {mystery: {min_pct: 90}}}}\n",
             "unknown metrics",
         ),
-        ("  COVERAGE: {core: {tests: all, metrics: {line: {max_pct: 90}}}}\n", "requires min_pct"),
+        (
+            "  COVERAGE: {core: {tests: all, metrics: {line: {max_pct: 90}}}}\n",
+            "unexpected policy keys include 'max_pct'",
+        ),
         ("  SYNTH: {core (new): {area_um2_max: 100}}\n", "needs a mandatory Flow Criterion"),
     ],
 )
@@ -481,19 +681,32 @@ def test_serializer_detects_invalid_or_changed_converted_document() -> None:
         serialize_ticket_document(converted.document, changed_context)
 
 
-def test_review_done_and_clean_can_have_different_requirements() -> None:
+@pytest.mark.parametrize("outcomes", ("[done]", "[clean]", "[done, clean]"))
+def test_review_list_rejects_every_list_at_leaf(outcomes: str) -> None:
+    conversion = convert_ticket_document(
+        _ticket(f"  REVIEW:\n    rtl:\n      bugs: {outcomes}\n"), _context()
+    )
+
+    assert conversion.document is None
+    (diagnostic,) = conversion.diagnostics
+    assert (diagnostic.line, diagnostic.column) == (10, 7)
+    assert "lists are not allowed" in diagnostic.message
+    assert "clean already implies done" in diagnostic.message
+    assert "amend REVIEW outcome to clean" in diagnostic.message
+
+
+def test_review_done_and_clean_cannot_have_different_requirements() -> None:
     ticket = _ticket("  REVIEW: {rtl: {bugs: done}}\n")
     ticket = ticket.replace(
         "---\n\n## Description",
         "CRITERIA_OPTIONAL:\n  REVIEW: {rtl: {bugs: clean}}\n---\n\n## Description",
     )
     conversion = convert_ticket_document(ticket, _context())
-    assert conversion.diagnostics == ()
-    assert conversion.document is not None
-    assert {(item.parameter, item.mandatory) for item in conversion.document.spec.criteria} == {
-        ("done", True),
-        ("clean", False),
-    }
+    assert conversion.document is None
+    (diagnostic,) = conversion.diagnostics
+    assert (diagnostic.line, diagnostic.column) == (10, 18)
+    assert "clean already implies done" in diagnostic.message
+    assert "amend REVIEW outcome to clean" in diagnostic.message
 
 
 @pytest.mark.parametrize("annotation", ("new", "temp", "replaces lint_old"))
@@ -720,7 +933,7 @@ def test_create_document_rejects_old_ticket_shape(tmp_path: Path) -> None:
     board = TicketIO(tmp_path / "tickets", project_root=tmp_path)
 
     assert board.create_ticket_document("old-format", ticket) is None
-    assert not (tmp_path / "tickets" / "board" / "drafts" / "old-format.md").exists()
+    assert not ticket_document_path(tmp_path / "tickets", "old-format").exists()
 
 
 def test_create_document_rejects_invalid_slug_and_duplicate_without_overwrite(
@@ -748,19 +961,18 @@ def test_create_document_reports_atomic_file_creation_race(
     board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
     monkeypatch.setattr(io, "atomic_write_once", lambda *_args, **_kwargs: False)
     assert board.create_ticket_document("race", _ticket("  REVIEW: {rtl: {bugs: done}}\n")) is None
-    assert not (board.tickets_dir / "board" / "drafts" / "race.md").exists()
+    assert not ticket_document_path(board.tickets_dir, "race").exists()
 
 
 def test_execution_start_rejects_unbound_ticket_without_moving_it(tmp_path: Path) -> None:
     (tmp_path / ".booley_project").mkdir()
     board = TicketIO(tmp_path / ".booley_project" / "tickets", project_root=tmp_path)
-    queue = board.tickets_dir / "board" / "queue"
-    queue.mkdir(parents=True)
-    ticket = queue / "unbound.md"
-    ticket.write_text(_ticket("  REVIEW: {rtl: {bugs: done}}\n"))
+    ticket = place_ticket(
+        board.tickets_dir, "unbound", "queue", _ticket("  REVIEW: {rtl: {bugs: done}}\n")
+    )
     assert board.init_ticket(ticket) is None
     assert ticket.exists()
-    assert not (board.tickets_dir / "board" / "active" / "unbound.md").exists()
+    assert read_state_record(board.tickets_dir, "unbound").state is TicketState.QUEUED
 
 
 def test_create_file_cli_accepts_complete_document(tmp_path: Path, monkeypatch) -> None:
@@ -773,7 +985,8 @@ def test_create_file_cli_accepts_complete_document(tmp_path: Path, monkeypatch) 
     monkeypatch.setenv("TICKETS_DIR", str(project / ".booley_project" / "tickets"))
 
     assert main(["create-file", "v2-example", "--document-file", str(source)]) == 0
-    saved = project / ".booley_project" / "tickets" / "board" / "drafts" / "v2-example.md"
+    saved = ticket_document_path(project / ".booley_project" / "tickets", "v2-example")
+    assert read_state_record(saved.parent.parent, "v2-example") is None
     assert saved.read_text(encoding="utf-8") == ticket
 
 
@@ -825,8 +1038,9 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     assert basis.outer_sha
 
     assert board.enqueue_ticket("basis-v2")
-    queued = board.tickets_dir / "board" / "queue" / "basis-v2.md"
+    queued = ticket_document_path(board.tickets_dir, "basis-v2")
     assert queued.is_file()
+    assert read_state_record(board.tickets_dir, "basis-v2").state is TicketState.QUEUED
     with ticket_conversion_context(project, "basis-v2", "executable") as context:
         conversion = convert_ticket_document(queued.read_text(encoding="utf-8"), context)
     assert conversion.document is not None
@@ -844,8 +1058,12 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     assert entry["status"] == "queued"
     assert entry["criteria"][0]["capability"] == "REVIEW"
 
-    old = board.tickets_dir / "board" / "drafts" / "old-format.md"
-    old.write_text("---\ncriteria: {mandatory: {lint_clean: [core]}}\n---\n")
+    place_ticket(
+        board.tickets_dir,
+        "old-format",
+        "drafts",
+        "---\ncriteria: {mandatory: {lint_clean: [core]}}\n---\n",
+    )
     entries = scan_all_tickets(board.tickets_dir, project_root=project)
     assert len(entries) == 2
     assert any("Old Ticket format" in item.get("ticket_error", "") for item in entries)
@@ -853,6 +1071,12 @@ def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -
     queued.write_text(
         queued.read_text(encoding="utf-8").replace("- merge\n", "- review\n"),
         encoding="utf-8",
+    )
+    inspected = board.inspect_ticket("basis-v2")
+    assert inspected is not None
+    assert inspected["authored_drift"] is True
+    assert inspected["authored_drift_reason"] == (
+        "acceptance-input-change-required: authored Ticket changed"
     )
     with pytest.raises(TicketBaselineError, match="authored Ticket changed"):
         board.load_basis("basis-v2")

@@ -1,6 +1,7 @@
 """Basis Refresh reconstructs only approved consumer-authored controls."""
 
 import json
+import subprocess
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -10,7 +11,8 @@ import pytest
 import yaml
 
 from booley.core.models import TargetPlan, TargetPlanRole
-from booley.ticket_board import basis_publication, basis_refresh
+from booley.runtime.project_dir import reset_cache
+from booley.ticket_board import basis_publication, basis_refresh, operations
 from booley.ticket_board.basis_refresh import (
     BasisRefreshError,
     _reapply_placeholders,
@@ -20,14 +22,27 @@ from booley.ticket_board.basis_refresh import (
     load_basis_refresh,
     prepare_waiting_basis_refresh,
 )
+from booley.ticket_board.board_layout import read_state_record
 from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     ProviderTargetBinding,
     TicketBaseline,
+    ticket_machine_digest,
     ticket_machine_fields,
+    ticket_machine_from_spec,
+)
+from booley.ticket_board.ticket_document import (
+    TicketAuthoringView,
+    TicketConversionContext,
+    convert_ticket_document,
 )
 from booley.ticket_board.workspace_ops import AuthoringWorkspace
+from tests.ticket_board.conftest import place_closed_ticket, place_ticket
+
+from .conftest import make_paired_repository
 
 
 def _fake_document():
@@ -56,6 +71,186 @@ def _write_core(path: Path, targets: dict) -> None:
             sort_keys=False,
         ),
         encoding="utf-8",
+    )
+
+
+def _git(repository: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def _ticket_identity_commit(
+    root: Path,
+    slug: str,
+    machine: dict,
+    parent: str,
+) -> str:
+    message = (
+        f"Publish {slug}\n\n"
+        f"Booley-Ticket-Slug: {slug}\n"
+        f"Booley-Authored-SHA256: {machine['authored_sha256']}\n"
+        f"Booley-Machine-SHA256: {ticket_machine_digest(machine)}\n"
+    )
+    result = subprocess.run(
+        ["git", "commit-tree", f"{parent}^{{tree}}", "-p", parent],
+        cwd=root,
+        input=message,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def _write_published_ticket(
+    root: Path,
+    project: Path,
+    slug: str,
+    status: str,
+    fields: dict,
+    body: str,
+    generation: str,
+    *,
+    providers: tuple[ProviderTargetBinding, ...] = (),
+) -> TicketBaseline:
+    outer_destination = _git(root, "rev-parse", "main")
+    project_head = _git(project, "rev-parse", "main")
+    outer_ref = f"refs/heads/booley-generation/{generation[:16]}/{slug}"
+    project_ref = f"refs/heads/booley-generation/{generation[:16]}/{slug}-project"
+    participants = (
+        BasisParticipant("outer", "0" * 40, outer_ref, "refs/heads/main", outer_destination),
+        BasisParticipant("project", project_head, project_ref, "refs/heads/main", project_head),
+    )
+    preliminary = TicketBaseline(participants, providers=providers)
+    view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
+    converted = convert_ticket_document(
+        format_frontmatter(fields, body),
+        TicketConversionContext("draft", lambda _generated: view),
+    )
+    assert converted.document is not None
+    machine = ticket_machine_from_spec(preliminary, converted.document.spec, generation)
+    outer_head = _ticket_identity_commit(root, slug, machine, outer_destination)
+    basis = replace(
+        preliminary,
+        participants=(replace(participants[0], authoring_sha=outer_head), participants[1]),
+    )
+    machine = ticket_machine_from_spec(basis, converted.document.spec, generation)
+    _git(root, "update-ref", outer_ref, outer_head)
+    _git(project, "update-ref", project_ref, project_head)
+    content = format_frontmatter({**fields, "machine": machine}, body)
+    if status == "done":
+        place_closed_ticket(project / "tickets", slug, content, generation=generation)
+    else:
+        place_ticket(project / "tickets", slug, status, content)
+    return replace(basis, machine=machine)
+
+
+def _paired_refresh_repositories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    root = tmp_path / "project"
+    project = make_paired_repository(root)
+    (project / "tickets").mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    reset_cache()
+    return root, project
+
+
+def _publish_missing_target_refresh(root: Path, project: Path) -> TicketBaseline:
+    common = {
+        "type": "bugfix",
+        "branch": "main",
+        "project_destination_ref": "refs/heads/main",
+        "scope": ["README.md"],
+        "on_success": ["review"],
+        "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "clean"}}},
+    }
+    provider_generation = "1" * 32
+    _write_published_ticket(
+        root,
+        project,
+        "provider",
+        "done",
+        {**common, "summary": "Accepted provider"},
+        "## Description\n\nNo longer exports the Target.\n",
+        provider_generation,
+    )
+    binding = ProviderTargetBinding(
+        "provider", provider_generation, "acme:lib:toy:1.0#removed", "persistent", "2" * 64
+    )
+    return _write_published_ticket(
+        root,
+        project,
+        "consumer",
+        "waiting",
+        {**common, "summary": "Waiting consumer", "dependencies": ["provider"]},
+        "## Description\n\nRefresh after provider acceptance.\n",
+        "3" * 32,
+        providers=(binding,),
+    )
+
+
+def _remove_canonical_generation_worktree(
+    root: Path, project: Path, basis: TicketBaseline
+) -> None:
+    canonical = project / "worktrees/consumer"
+    canonical.parent.mkdir(parents=True)
+    _git(
+        root,
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        str(canonical),
+        basis.participant("outer").authoring_sha,
+    )
+    nested = canonical / ".booley_project"
+    _git(
+        project,
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        str(nested),
+        basis.participant("project").authoring_sha,
+    )
+    assert nested.is_dir()
+    _git(project, "worktree", "remove", "--force", str(nested))
+    _git(root, "worktree", "remove", "--force", str(canonical))
+    assert not canonical.exists()
+
+
+def test_promotion_reconstructs_paired_basis_before_provider_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    board = TicketIO(project / "tickets", project_root=root)
+
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == ""
+    assert operations.op_promote_waiting(board) == []
+
+    error = capsys.readouterr().err
+    assert "provider Ticket 'provider' no longer exports 'acme:lib:toy:1.0#removed'" in error
+    assert read_state_record(project / "tickets", "consumer").state is TicketState.BLOCKED
+    reconstructed = next((project / ".runtime/acceptance/refresh").glob("*/old-basis"))
+    assert "/.booley_project" not in (reconstructed / ".git" / "info" / "exclude").read_text(
+        encoding="utf-8"
+    )
+    assert _git(reconstructed, "status", "--porcelain", "--untracked-files=all") == (
+        "?? .booley_project/"
     )
 
 
@@ -206,10 +401,8 @@ def test_provider_refresh_requires_pinned_generation_even_with_same_surface(
             ]
         ),
     )
-    ticket = tmp_path / "provider.md"
-    ticket.write_text("---\n---\n", encoding="utf-8")
-    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
-    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
+    place_closed_ticket(_tickets_dir(tmp_path), "provider", "---\n---\n")
+    monkeypatch.setattr(basis_refresh, "_converted_text", lambda *_args: _fake_document())
     monkeypatch.setattr(
         basis_refresh, "load_ticket_baseline_from_document", lambda *_args: refreshed_provider
     )
@@ -220,6 +413,13 @@ def test_provider_refresh_requires_pinned_generation_even_with_same_surface(
             _verify_providers(tmp_path, tmp_path, consumer)
     else:
         assert _verify_providers(tmp_path, tmp_path, consumer) == (binding,)
+
+
+def _tickets_dir(root: Path) -> Path:
+    """Return the tickets directory _verify_providers resolves for checkout *root*."""
+    project = root / ".booley_project"
+    project.mkdir(exist_ok=True)
+    return project / "tickets"
 
 
 def _participant() -> BasisParticipant:
@@ -387,14 +587,33 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
         "provider", "a" * 32, "acme:lib:toy:1.0#future", "persistent", "b" * 64
     )
     consumer = TicketBaseline((_participant(),), providers=(binding,))
-    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (None, None))
+    tickets = _tickets_dir(tmp_path)
+    # A provider that never closed is not accepted, even with a live board document.
+    place_ticket(tickets, "provider", "done", "---\n---\n")
+    with pytest.raises(BasisRefreshError, match="is not accepted"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+    (tickets / "board" / "provider.md").unlink()
+
+    # Only outcome done accepts a provider; an archived one never does.
+    history = place_closed_ticket(tickets, "provider", "---\n---\n", outcome="archived")
     with pytest.raises(BasisRefreshError, match="is not accepted"):
         _verify_providers(tmp_path, tmp_path, consumer)
 
-    ticket = tmp_path / "provider.md"
-    ticket.write_text("---\n---\n", encoding="utf-8")
-    monkeypatch.setattr(basis_refresh, "find_ticket_file", lambda *_args: (ticket, "done"))
-    monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
+    # A malformed history record fails closed instead of reading as absent.
+    history.write_text("---\nclosed:\n  outcome: bogus\n---\n", encoding="utf-8")
+    with pytest.raises(BasisRefreshError, match="history document"):
+        _verify_providers(tmp_path, tmp_path, consumer)
+
+    authored = "---\nsummary: Provider\n---\n## Description\nProvide.\n"
+    place_closed_ticket(tickets, "provider", authored)
+    converted: list[str] = []
+
+    def convert(_root: Path, text: str, slug: str) -> SimpleNamespace:
+        assert slug == "provider"
+        converted.append(text)
+        return _fake_document()
+
+    monkeypatch.setattr(basis_refresh, "_converted_text", convert)
     monkeypatch.setattr(
         basis_refresh,
         "load_ticket_baseline_from_document",
@@ -402,6 +621,8 @@ def test_verify_providers_rejects_unaccepted_missing_export_bad_surface_and_bad_
     )
     with pytest.raises(BasisRefreshError, match="no valid accepted basis"):
         _verify_providers(tmp_path, tmp_path, consumer)
+    # The provider basis comes from the document as it closed, without the closed block.
+    assert converted == [authored]
 
     provider_basis = TicketBaseline((_participant(),))
     monkeypatch.setattr(

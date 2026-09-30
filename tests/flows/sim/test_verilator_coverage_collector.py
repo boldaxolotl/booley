@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     CoverageCollectionRequest,
@@ -198,6 +200,20 @@ class _HookFailureExecution(_GeneratedMainExecution):
         return SimulationRunResult(verdict="pass")
 
 
+class _HookAndRawFailureExecution(_HookFailureExecution):
+    def __init__(self, events: list[dict[str, object]], raw_payload: str | None) -> None:
+        super().__init__(events)
+        self.raw_payload = raw_payload
+
+    def run(self, request) -> SimulationRunResult:
+        result = super().run(request)
+        if self.raw_payload is None:
+            request.raw_path.unlink()
+        else:
+            request.raw_path.write_text(self.raw_payload, encoding="utf-8")
+        return result
+
+
 class _NoExecution:
     def build(self, request) -> SimulationBuildResult:
         raise AssertionError("invalid custom-main declaration must fail before build")
@@ -270,6 +286,137 @@ class _WrongVerilatorExecution(_NoExecution):
             success=True,
             collector=VerilatorCollectorIdentity("v5.050", "0" * 40),
         )
+
+
+class _PreSimExecution(_GeneratedMainExecution):
+    def __init__(self, status: str) -> None:
+        self.status = status
+        self.tests = []
+
+    def run(self, request) -> SimulationRunResult:
+        self.tests.append(request.test.name)
+        evidence = PreSimEvidence(
+            ("prepare-vectors",),
+            (request.test.name,),
+            self.status if len(self.tests) == 1 else "passed",
+            0.25,
+            "missing-generator" if self.status == "spawn_error" else "bad vectors",
+        )
+        if evidence.status != "passed":
+            return SimulationRunResult(
+                "elab_error",
+                evidence.detail,
+                evidence,
+                infrastructure_error=evidence.status == "spawn_error",
+            )
+        result = super().run(request)
+        return replace(result, pre_sim=evidence)
+
+    def command(self, request) -> SimulationCommandResult:
+        if self.status == "passed":
+            return super().command(request)
+        raise AssertionError("merge must not run after a Pre-Sim failure")
+
+
+def test_pre_sim_failure_is_attributed_and_later_tests_continue(tmp_path: Path) -> None:
+    request = replace(
+        _request(tmp_path, "first"),
+        selected_tests=(SelectedCoverageTest("first"), SelectedCoverageTest("second")),
+    )
+    execution = _PreSimExecution("failed")
+
+    result = collect(request, execution)
+
+    assert execution.tests == ["first", "second"]
+    assert result.status == "collector_error"
+    assert result.infrastructure_error is False
+    assert [run.simulation_verdict for run in result.runs] == ["elab_error", "pass"]
+    assert result.runs[0].attributes["pre_sim"]["status"] == "failed"
+    assert [finding.code for finding in result.findings] == ["COV_PRE_SIM_FAILED"]
+    assert all(finding.code != "COV_RAW_FILE_MISSING" for finding in result.findings)
+
+
+def test_pre_sim_spawn_error_aborts_later_tests(tmp_path: Path) -> None:
+    request = replace(
+        _request(tmp_path, "first"),
+        selected_tests=(SelectedCoverageTest("first"), SelectedCoverageTest("second")),
+    )
+    execution = _PreSimExecution("spawn_error")
+
+    result = collect(request, execution)
+
+    assert execution.tests == ["first"]
+    assert result.infrastructure_error is True
+    assert [run.simulation_verdict for run in result.runs] == [
+        "elab_error",
+        "inconclusive",
+    ]
+    assert result.runs[1].attributes == {
+        "execution": "not_run",
+        "failure_kind": "infrastructure",
+        "error_tail": "not run after an earlier infrastructure abort",
+    }
+    assert "missing-generator" in result.findings[-1].message
+
+
+def test_design_abort_retains_termination_without_reading_coverage(tmp_path: Path) -> None:
+    class MissingInputExecution(_GeneratedMainExecution):
+        def run(self, request) -> SimulationRunResult:
+            return SimulationRunResult(
+                "fail",
+                "$readmemh could not open vectors.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+            )
+
+        def command(self, request) -> SimulationCommandResult:
+            raise AssertionError("merge must not run after a Simulation abort")
+
+    result = collect(_request(tmp_path, "missing_vectors"), MissingInputExecution())
+
+    assert result.infrastructure_error is False
+    assert result.status == "collector_error"
+    assert result.runs[0].attributes["termination"] == "fatal_init"
+    assert result.runs[0].attributes["failure_kind"] == "missing_input"
+    assert result.findings[0].code == "COV_SIMULATION_ABORTED"
+
+
+def test_protected_surface_failure_takes_priority_over_failed_hook(tmp_path: Path) -> None:
+    class ChangedImage(_GeneratedMainExecution):
+        def run(self, request) -> SimulationRunResult:
+            evidence = PreSimEvidence(
+                ("mutate-and-fail",),
+                (request.test.name,),
+                "failed",
+                0.25,
+                "hook exited 1",
+            )
+            return SimulationRunResult(
+                "inconclusive",
+                "coverage image verification failed: image changed",
+                evidence,
+                infrastructure_error=True,
+            )
+
+        def command(self, request) -> SimulationCommandResult:
+            raise AssertionError("merge must not run after image verification failure")
+
+    result = collect(_request(tmp_path, "first"), ChangedImage())
+
+    assert result.infrastructure_error is True
+    assert result.findings[0].code == "COV_INFRASTRUCTURE_ERROR"
+    assert "image changed" in result.findings[0].message
+    assert result.runs[0].attributes["pre_sim"]["status"] == "failed"
+
+
+def test_successful_pre_sim_evidence_is_serialized_on_the_run(tmp_path: Path) -> None:
+    execution = _PreSimExecution("passed")
+
+    result = collect(_request(tmp_path, "reset"), execution)
+
+    assert result.status == "complete"
+    assert result.runs[0].attributes["pre_sim"]["status"] == "passed"
+    assert result.runs[0].attributes["pre_sim"]["test_names"] == ("reset",)
 
 
 def test_generated_main_collects_one_native_database_and_normalizes_line_point(
@@ -727,6 +874,147 @@ def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) 
     assert result.runs[0].collection == "included"
     assert result.coverage_window.mode == "whole_run"
     assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+
+
+@pytest.mark.parametrize("raw_payload", [None, "# SystemC::Coverage-4\n"])
+def test_failed_custom_main_write_hook_precedes_raw_database_failure(
+    tmp_path: Path, raw_payload: str | None
+) -> None:
+    request = _request(
+        tmp_path,
+        "failed_write",
+        harness="custom_main",
+        hooks=("start_hook", "write_hook"),
+        reset_included=False,
+    )
+    events = [
+        {"hook": "start", "sequence": 1, "success": True},
+        {"hook": "write", "sequence": 2, "success": False},
+    ]
+
+    result = collect(request, _HookAndRawFailureExecution(events, raw_payload))
+
+    assert result.status == "collector_error"
+    assert result.runs[0].collection == "collector_error"
+    assert [finding.code for finding in result.findings] == ["COV_WRITE_HOOK_FAILED"]
+    assert result.native_format.compatibility == "unknown"
+    assert result.merge.status == "not_run"
+    assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
+    raw_artifacts = [artifact for artifact in result.artifacts if artifact.kind == "raw_native"]
+    assert [artifact.state for artifact in raw_artifacts] == (
+        [] if raw_payload is None else ["write_failed"]
+    )
+    hook = next(
+        artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
+    )
+    document = json.loads((request.artifact_root / hook.path).read_text(encoding="utf-8"))
+    assert document["events"][-1] == {
+        "hook": "write",
+        "sequence": 2,
+        "success": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("events", "expected_code"),
+    [
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": 3, "success": True},
+            ],
+            "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": 3, "success": True},
+            ],
+            "COV_WRITE_HOOK_DUPLICATE",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": False},
+                {"hook": "start", "sequence": 2, "success": True},
+            ],
+            "COV_WRITE_HOOK_FAILED",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": False},
+            ],
+            "COV_WINDOW_HOOK_FAILED",
+        ),
+        (
+            [
+                {"hook": "write", "sequence": 2, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+            ],
+            "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": "first", "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+            ],
+            "COV_WINDOW_HOOK_INVALID",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": "first", "success": True},
+            ],
+            "COV_WINDOW_HOOK_INVALID",
+        ),
+        (
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": "later", "success": True},
+            ],
+            "COV_WRITE_HOOK_DUPLICATE",
+        ),
+    ],
+)
+def test_post_reset_custom_main_hook_event_precedence(
+    tmp_path: Path,
+    events: list[dict[str, object]],
+    expected_code: str,
+) -> None:
+    request = _request(
+        tmp_path,
+        "ordered_hooks",
+        harness="custom_main",
+        hooks=("start_hook", "write_hook"),
+        reset_included=False,
+    )
+
+    result = collect(request, _HookFailureExecution(events))
+
+    assert result.status == "collector_error"
+    assert [finding.code for finding in result.findings] == [expected_code]
+
+
+def test_reset_included_custom_main_keeps_duplicate_write_precedence(tmp_path: Path) -> None:
+    request = _request(
+        tmp_path,
+        "whole_run_hooks",
+        harness="custom_main",
+        hooks=("write_hook",),
+    )
+    events = [
+        {"hook": "write", "sequence": 1, "success": True},
+        {"hook": "start", "sequence": 2, "success": True},
+        {"hook": "write", "sequence": 3, "success": True},
+    ]
+
+    result = collect(request, _HookFailureExecution(events))
+
+    assert result.status == "collector_error"
+    assert [finding.code for finding in result.findings] == ["COV_WRITE_HOOK_DUPLICATE"]
 
 
 def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_data(

@@ -17,6 +17,12 @@ import pytest
 
 from booley.runtime import docker_build, docker_capacity
 from booley.runtime.docker_build import run_docker_build
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+    DockerCacheEvidence,
+)
 
 
 class _RecordingOutput:
@@ -186,7 +192,7 @@ def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monke
     message = str(raised.value)
     assert "12.0 GiB available" in message
     assert "35.0 GiB required" in message
-    assert "30.0 GiB cold-build headroom" in message
+    assert "30.0 GiB cold temporary peak" in message
     assert "5.0 GiB safety reserve" in message
     assert "16.8 GiB reclaimable" in message
     assert "docker builder prune" in message
@@ -194,16 +200,156 @@ def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monke
     assert not marker.exists()
 
 
+def test_sequence_capacity_refuses_before_first_build(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 39)
+    runtime = DockerBuildRequest(
+        "runtime base", "booley-runtime-base:local", BuildEstimateClass.HEAVYWEIGHT
+    )
+    sandbox = DockerBuildRequest("Sandbox Image", "booley-sandbox", BuildEstimateClass.HEAVYWEIGHT)
+    plan = DockerBuildPlan((runtime, sandbox))
+
+    with pytest.raises(OSError) as raised:
+        run_docker_build(
+            [docker, "build", "-t", runtime.output_tag, "."],
+            image=runtime.output_tag,
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+            current_request=runtime,
+            remaining_plan=plan,
+        )
+
+    message = str(raised.value)
+    assert "runtime base -> Sandbox Image" in message
+    assert "40.0 GiB required" in message
+    assert "runtime base: 30.0 GiB cold temporary peak, 5.0 GiB retained growth" in message
+    assert "Sandbox Image: 30.0 GiB cold temporary peak, 5.0 GiB retained growth" in message
+    assert message.count("5.0 GiB safety reserve") == 1
+    assert not marker.exists()
+
+
+def test_remaining_tail_does_not_charge_completed_headroom(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    observations = iter((35, 11))
+    disk_usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(
+        "shutil.disk_usage",
+        lambda _path: disk_usage(100, 0, next(observations) * 2**30),
+    )
+    base = DockerBuildRequest("runtime base", "base", BuildEstimateClass.HEAVYWEIGHT)
+    overlay = DockerBuildRequest("wheel overlay", "candidate", BuildEstimateClass.THIN_OVERLAY)
+
+    first = run_docker_build(
+        [docker, "build", "-t", base.output_tag, "."],
+        image=base.output_tag,
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+        current_request=base,
+        remaining_plan=DockerBuildPlan((base, overlay)),
+    )
+    second = run_docker_build(
+        [docker, "build", "-t", overlay.output_tag, "."],
+        image=overlay.output_tag,
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+        current_request=overlay,
+        remaining_plan=DockerBuildPlan((overlay,)),
+    )
+
+    assert first.returncode == second.returncode == 0
+    assert marker.exists()
+
+
+def test_candidate_overlay_uses_explicit_thin_estimate(tmp_path: Path, monkeypatch) -> None:
+    marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=False)
+    _set_free_space(monkeypatch, 10)
+    request = DockerBuildRequest(
+        "wheel overlay",
+        "booley-lifecycle-transaction-wheel-overlay:candidate",
+        BuildEstimateClass.THIN_OVERLAY,
+    )
+
+    result = run_docker_build(
+        [docker, "build", "-t", request.output_tag, "."],
+        image=request.output_tag,
+        verbose=False,
+        timeout=10,
+        output=_RecordingOutput(),
+        current_request=request,
+        remaining_plan=DockerBuildPlan((request,)),
+    )
+
+    assert result.returncode == 0
+    assert marker.exists()
+
+
+def test_standard_sequence_uses_one_peak_instead_of_summed_peaks() -> None:
+    plan = DockerBuildPlan(
+        (
+            DockerBuildRequest("runtime base", "base"),
+            DockerBuildRequest("standard substrate", "substrate"),
+            DockerBuildRequest("wheel overlay", "sandbox", BuildEstimateClass.THIN_OVERLAY),
+        )
+    )
+
+    assert docker_capacity.required_sequence_headroom(plan) == 40 * 2**30
+    assert docker_capacity.required_sequence_headroom(plan) < 3 * 30 * 2**30
+
+
+def test_capacity_plan_rejects_empty_and_unknown_tail() -> None:
+    with pytest.raises(ValueError, match="at least one request"):
+        DockerBuildPlan(())
+
+    plan = DockerBuildPlan((DockerBuildRequest("base", "base"),))
+    with pytest.raises(ValueError, match="no request for output tag"):
+        plan.tail_from_output("missing")
+
+
+def test_sequence_headroom_requires_one_warm_state_per_request() -> None:
+    plan = DockerBuildPlan((DockerBuildRequest("base", "base"),))
+
+    with pytest.raises(ValueError, match="warm state count"):
+        docker_capacity.required_sequence_headroom(plan, warm=())
+
+
+def test_capacity_preflight_rejects_inconsistent_request_arguments() -> None:
+    base = DockerBuildRequest("base", "base")
+    overlay = DockerBuildRequest("overlay", "overlay")
+
+    with pytest.raises(ValueError, match="image or current_request"):
+        docker_capacity.ensure_docker_build_capacity(["docker", "build"])
+    with pytest.raises(ValueError, match="must be first"):
+        docker_capacity.ensure_docker_build_capacity(
+            ["docker", "build"],
+            current_request=base,
+            remaining_plan=DockerBuildPlan((overlay,)),
+        )
+    with pytest.raises(ValueError, match="match the current request"):
+        docker_capacity.ensure_docker_build_capacity(
+            ["docker", "build"], image="other", current_request=base
+        )
+
+
 def test_cached_docker_build_uses_smaller_headroom(tmp_path: Path, monkeypatch) -> None:
     marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
     _set_free_space(monkeypatch, 16)
 
+    request = DockerBuildRequest(
+        "booley-sandbox",
+        "booley-sandbox",
+        cache_evidence=DockerCacheEvidence("booley-sandbox", (("expected", "sha256:cached"),)),
+    )
     result = run_docker_build(
         [docker, "build", "-t", "booley-sandbox", "."],
         image="booley-sandbox",
         verbose=False,
         timeout=10,
         output=_RecordingOutput(),
+        current_request=request,
+        remaining_plan=DockerBuildPlan((request,)),
     )
 
     assert result.returncode == 0
@@ -215,6 +361,11 @@ def test_cached_docker_build_preserves_five_gib_safety_reserve(
 ) -> None:
     marker, docker = _install_fake_docker(tmp_path, monkeypatch, cached=True)
     _set_free_space(monkeypatch, 14)
+    request = DockerBuildRequest(
+        "booley-sandbox",
+        "booley-sandbox",
+        cache_evidence=DockerCacheEvidence("booley-sandbox", (("expected", "sha256:cached"),)),
+    )
 
     with pytest.raises(OSError, match=r"15\.0 GiB required") as raised:
         run_docker_build(
@@ -223,9 +374,11 @@ def test_cached_docker_build_preserves_five_gib_safety_reserve(
             verbose=False,
             timeout=10,
             output=_RecordingOutput(),
+            current_request=request,
+            remaining_plan=DockerBuildPlan((request,)),
         )
 
-    assert "10.0 GiB cached-target headroom" in str(raised.value)
+    assert "10.0 GiB warm temporary peak" in str(raised.value)
     assert not marker.exists()
 
 
@@ -242,7 +395,7 @@ def test_target_without_build_cache_uses_cold_build_headroom(tmp_path: Path, mon
             output=_RecordingOutput(),
         )
 
-    assert "30.0 GiB cold-build headroom" in str(raised.value)
+    assert "30.0 GiB cold temporary peak" in str(raised.value)
     assert not marker.exists()
 
 
@@ -421,7 +574,8 @@ def test_capacity_exhaustion_after_preflight_has_cleanup_guidance() -> None:
     assert result.returncode == 1
     assert result.diagnostics[-1] == (
         "Docker storage filled during the build; free unused cache with "
-        "`docker builder prune`, then retry."
+        "`docker builder prune` only if appropriate; pruning may evict layers "
+        "the retry would otherwise reuse."
     )
 
 
@@ -442,7 +596,8 @@ def test_capacity_exhaustion_in_verbose_tty_has_cleanup_guidance() -> None:
     assert result.returncode == 1
     assert result.diagnostics == (
         "Docker storage filled during the build; free unused cache with "
-        "`docker builder prune`, then retry.",
+        "`docker builder prune` only if appropriate; pruning may evict layers "
+        "the retry would otherwise reuse.",
     )
 
 
@@ -479,14 +634,6 @@ def test_capacity_probe_rejects_invalid_storage_root(monkeypatch) -> None:
 
     with pytest.raises(docker_capacity.DockerCapacityError, match="invalid storage root"):
         docker_capacity._docker_storage("docker")
-
-
-def test_capacity_probe_rejects_unexpected_image_inspection_failure(monkeypatch) -> None:
-    result = subprocess.CompletedProcess(["docker"], 1, stdout="", stderr="permission denied")
-    monkeypatch.setattr(docker_capacity, "_run_docker_probe", lambda _command: result)
-
-    with pytest.raises(docker_capacity.DockerCapacityError, match="could not inspect target"):
-        docker_capacity._target_is_cached("docker", "booley-sandbox")
 
 
 def test_capacity_probe_rejects_malformed_external_sizes() -> None:
@@ -539,6 +686,83 @@ def test_capacity_cli_handles_success_and_failure(monkeypatch, capsys) -> None:
     monkeypatch.setattr(docker_capacity, "ensure_docker_build_capacity", fail)
     assert docker_capacity.main(["--image", "image", "--", "docker", "build"]) == 1
     assert "Docker image-build preflight failed: not enough space" in capsys.readouterr().err
+
+
+def test_capacity_cli_passes_validated_remaining_plan(tmp_path: Path, monkeypatch) -> None:
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(
+        '{"requests":['
+        '{"managed_image":"base","output_tag":"base","estimate_class":"heavyweight"},'
+        '{"managed_image":"overlay","output_tag":"overlay","estimate_class":"thin-overlay"}'
+        "]}",
+        encoding="utf-8",
+    )
+    observed = []
+    monkeypatch.setattr(
+        docker_capacity,
+        "ensure_docker_build_capacity",
+        lambda *_args, **kwargs: observed.extend(kwargs["remaining_plan"].requests),
+    )
+
+    result = docker_capacity.main(
+        [
+            "--image",
+            "overlay",
+            "--plan-file",
+            str(plan_file),
+            "--current-index",
+            "1",
+            "--",
+            "docker",
+            "build",
+        ]
+    )
+
+    assert result == 0
+    assert [request.managed_image for request in observed] == ["overlay"]
+
+
+@pytest.mark.parametrize(
+    ("contents", "index", "message"),
+    [
+        ("{", 0, "invalid Docker build plan file"),
+        ('{"requests":[]}', -1, "current index must not be negative"),
+        ('{"requests":[]}', 0, "no request at the current index"),
+    ],
+)
+def test_capacity_plan_file_rejects_invalid_documents(
+    tmp_path: Path, contents: str, index: int, message: str
+) -> None:
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(docker_capacity.DockerCapacityError, match=message):
+        docker_capacity._plan_from_file(plan_file, index)
+
+
+def test_capacity_cli_rejects_plan_output_mismatch(tmp_path: Path, capsys) -> None:
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(
+        '{"requests":['
+        '{"managed_image":"base","output_tag":"base","estimate_class":"heavyweight"}'
+        "]}",
+        encoding="utf-8",
+    )
+
+    result = docker_capacity.main(
+        [
+            "--image",
+            "different",
+            "--plan-file",
+            str(plan_file),
+            "--",
+            "docker",
+            "build",
+        ]
+    )
+
+    assert result == 1
+    assert "current plan output tag does not match" in capsys.readouterr().err
 
 
 def test_capacity_cli_requires_a_build_command() -> None:

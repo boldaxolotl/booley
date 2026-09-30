@@ -23,8 +23,8 @@ class OpenRoadPpaSettings:
 
 _PROFILES = {
     "compact": OpenRoadPpaSettings(utilization_pct=40.0, placement_density=0.65),
-    "balanced": OpenRoadPpaSettings(utilization_pct=50.0, placement_density=0.75),
-    "max_frequency": OpenRoadPpaSettings(utilization_pct=50.0, placement_density=0.75),
+    "balanced": OpenRoadPpaSettings(utilization_pct=50.0, placement_density=0.80),
+    "max_frequency": OpenRoadPpaSettings(utilization_pct=50.0, placement_density=0.80),
 }
 
 

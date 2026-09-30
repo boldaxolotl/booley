@@ -1,7 +1,9 @@
-"""Liberty-file discovery for the Yosys Synthesis Flow.
+"""Liberty-file discovery and supported-library policy for Yosys synthesis.
 
 Resolves the Liberty timing library from CLI argument / ``$PRJ_LIB_DIR`` / a
-platform default. A pure, side-effect-free leaf module.
+platform default. It also recognizes the setup-supported Nangate basenames
+whose multi-output cells require explicit ABC exclusions. A pure,
+side-effect-free leaf module.
 """
 
 from __future__ import annotations
@@ -13,6 +15,20 @@ from pathlib import Path
 from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 
 DEFAULT_LIBERTY = DEFAULT_LIB_DIR / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+_NANGATE_LIBERTY_BASENAMES = frozenset(
+    {
+        "NangateOpenCellLibrary_typical_ccs.lib",
+        "NangateOpenCellLibrary_typical.lib",
+    }
+)
+_NANGATE_ABC_DONT_USE = ("FA_X1", "HA_X1")
+
+
+def abc_dont_use_cells(liberty: Path) -> tuple[str, ...]:
+    """Return ABC exclusions for a recognized setup-supported Liberty basename."""
+    if liberty.name in _NANGATE_LIBERTY_BASENAMES:
+        return _NANGATE_ABC_DONT_USE
+    return ()
 
 
 def resolve_liberty(cli_liberty: str | None = None) -> Path:

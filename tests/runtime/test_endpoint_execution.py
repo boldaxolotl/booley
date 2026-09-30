@@ -14,6 +14,7 @@ from booley.runtime.endpoint_execution import (
     EndpointRejectedError,
     ExecutionResult,
     execute_endpoint,
+    normalize_completion_error,
 )
 
 
@@ -76,7 +77,12 @@ class _Endpoint:
         if self.fail:
             self.events.append("normalize-error")
             return EndpointOutcome(exit_code=EXIT_ERROR)
-        return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="ok")
+        return EndpointOutcome(
+            exit_code=EXIT_SUCCESS,
+            criterion_key="sim_pass_demo" if self.acceptance_failure else "",
+            criterion_met=self.acceptance_failure,
+            report_text="ok",
+        )
 
     def finish_execution(
         self,
@@ -85,12 +91,12 @@ class _Endpoint:
         *,
         started: float | None,
         acceptance_recorded: bool,
-    ) -> int:
+    ) -> ExecutionResult:
         assert prepared == "prepared"
         if outcome.report_text not in {"queue full", "unbound target"}:
             assert started is not None
         self.events.append(f"finish:{outcome.exit_code}:{acceptance_recorded}")
-        return outcome.exit_code
+        return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
 
     def record_acceptance(self, prepared: object, outcome: EndpointOutcome) -> None:
         assert prepared == "prepared"
@@ -149,6 +155,16 @@ def test_endpoint_outcome_keeps_the_existing_structured_verdict_fields() -> None
     assert outcome.summary == "lint clean"
 
 
+def test_completion_error_message_is_bounded() -> None:
+    outcome = EndpointOutcome()
+
+    normalize_completion_error(outcome, RuntimeError("x" * 600), "publish report")
+
+    message = outcome.detail["completion_error"]["message"]
+    assert len(message) == 500
+    assert message.endswith("…")
+
+
 def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
     endpoint = _Endpoint(reject_admission=True)
 
@@ -175,14 +191,25 @@ def test_unexpected_adapter_failure_propagates_and_releases_admission() -> None:
 def test_acceptance_failure_runs_non_persisting_finish_and_releases_admission() -> None:
     endpoint = _Endpoint(acceptance_failure=True)
 
-    with pytest.raises(RuntimeError, match="acceptance failed"):
-        execute_endpoint(endpoint, "prepared")
+    result = execute_endpoint(endpoint, "prepared")
 
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.criterion_key == "sim_pass_demo"
+    assert result.outcome.criterion_met is True
+    assert result.outcome.detail["completion_error"] == {
+        "operation": "record acceptance and projections",
+        "type": "RuntimeError",
+        "message": "acceptance failed",
+    }
+    assert result.outcome.report_text == (
+        "ok\nCompletion failure (record acceptance and projections): "
+        "RuntimeError: acceptance failed"
+    )
     assert endpoint.events == [
         "admit",
         "invoke",
         "acceptance:0",
-        "finish:0:False",
+        "finish:2:False",
         "release",
     ]
 

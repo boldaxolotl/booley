@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.fusesoc.core_projection import reconcile_isolated_registry
 from booley.ticket_board.acceptance_journal import (
     AcceptanceOperationError,
     AcceptanceOutcome,
@@ -23,7 +24,11 @@ from booley.ticket_board.acceptance_journal._store import (
     FileAcceptanceStore,
 )
 from booley.ticket_board.completion import complete_review_ticket
-from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
+from booley.ticket_board.ticket_baseline import (
+    BasisParticipant,
+    TicketBaseline,
+    assert_inputs_unchanged,
+)
 from tests.ticket_board.test_completion import (
     _contract,
     _git,
@@ -56,7 +61,6 @@ def _single_repository_acceptance(
         basis=contract,
         cleanup=False,
         ticket_status="review",
-        allowed_board_rename=None,
     )
     return root, tio, request, base
 
@@ -127,6 +131,40 @@ def test_candidate_surface_materializes_submodules_before_validation(
     assert events == ["clone", "clone", "materialize", "validate"]
 
 
+def test_no_reference_surface_validation_does_not_reconcile_projections(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    _repository(root)
+    cores = root / ".booley_project/cores"
+    cores.mkdir(parents=True)
+    (root / ".booley_project/booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n",
+        encoding="utf-8",
+    )
+    (cores / "demo.core").write_text(
+        "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "-f", ".booley_project/booley.toml", ".booley_project/cores/demo.core")
+    _git(root, "commit", "-m", "add stealth controls")
+    authoring = _git(root, "rev-parse", "HEAD")
+    reconcile_isolated_registry(root)
+    basis = TicketBaseline(
+        (
+            BasisParticipant(
+                "outer",
+                authoring,
+                "refs/heads/main",
+                "refs/heads/main",
+                authoring,
+            ),
+        )
+    )
+
+    assert not list(root.glob(".booley-projected-*.core"))
+    assert_inputs_unchanged(basis, root)
+    assert not list(root.glob(".booley-projected-*.core"))
+
+
 def test_advance_requests_approval_then_finishes_from_same_interface(tmp_path: Path) -> None:
     root, _tio, request, _base = _single_repository_acceptance(tmp_path)
 
@@ -142,7 +180,6 @@ def test_advance_requests_approval_then_finishes_from_same_interface(tmp_path: P
             basis=request.basis,
             cleanup=request.cleanup,
             ticket_status="done",
-            allowed_board_rename=None,
         )
     )
 
@@ -166,7 +203,6 @@ def test_advance_rejects_ticket_head_changed_after_acceptance_freeze(tmp_path: P
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status=request.ticket_status,
-        allowed_board_rename=request.allowed_board_rename,
         expected_sources={"outer": frozen_head},
     )
 
@@ -184,7 +220,6 @@ def test_done_ticket_cannot_start_unpublished_acceptance(tmp_path: Path) -> None
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="done",
-        allowed_board_rename=None,
     )
 
     with pytest.raises(AcceptanceOperationError, match="done before acceptance publication"):
@@ -203,7 +238,6 @@ def test_invalid_ticket_status_cannot_create_or_publish_acceptance(tmp_path: Pat
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="bogus",  # type: ignore[arg-type] - exercise the runtime boundary
-        allowed_board_rename=None,
     )
 
     with pytest.raises(AcceptanceOperationError, match="invalid Ticket status"):
@@ -220,7 +254,7 @@ def test_completion_reports_premature_done_as_blocked(tmp_path: Path) -> None:
     root, tio, _request, base = _single_repository_acceptance(tmp_path)
     tio.entry["status"] = "done"
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert complete_review_ticket(tio, "change-target", _Policy()) is None
 
     assert _git(root, "rev-parse", "main") == base
 
@@ -235,7 +269,6 @@ def test_destination_rewrite_after_approval_requires_inspection(tmp_path: Path) 
         basis=request.basis,
         cleanup=request.cleanup,
         ticket_status="done",
-        allowed_board_rename=None,
     )
 
     with pytest.raises(AcceptanceRecoveryBlockedError, match="no longer contains"):
@@ -284,7 +317,6 @@ def test_source_keepalive_preserves_pinned_commit_before_preparation(
             basis=request.basis,
             cleanup=request.cleanup,
             ticket_status="done",
-            allowed_board_rename=None,
         )
     )
     assert finished.outcome is AcceptanceOutcome.COMPLETE

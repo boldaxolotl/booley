@@ -112,6 +112,16 @@ def test_every_builtin_flow_has_key_controls() -> None:
         assert controls in rendered
 
 
+def test_docs_render_links_flow_reference_instead_of_controls() -> None:
+    """User docs point at FLOW_REFERENCE.md; only `booley cheat` repeats controls."""
+    rendered = render_flow_specialist_reference()
+    assert "[FLOW_REFERENCE.md](FLOW_REFERENCE.md)" in rendered
+    assert "Key Flow-specific controls" not in rendered
+    assert "Common controls" not in rendered
+    for controls in _FLOW_KEY_CONTROLS.values():
+        assert controls not in rendered
+
+
 @pytest.mark.parametrize("execution_column", [True, False])
 def test_purpose_cells_are_summarized_not_the_agent_description(
     execution_column: bool,
@@ -143,7 +153,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
         assert criterion in rendered
         assert args.split("--focus ", maxsplit=1)[1] in rendered
     assert (
-        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Standalone CLI options |"
+        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |"
         in rendered
     )
     assert "| Default fixed |" in rendered
@@ -154,7 +164,32 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     assert "Target campaign with `target` + `scope`" in rendered
     assert "`total: N` and `min_detected: K`" in rendered
     assert "`auto: true`" in rendered
-    assert "--count N" in rendered
-    assert "--count auto" in rendered
-    assert "--min-detected K" in rendered
-    assert "--regen-lock" in rendered
+    assert 'count="N"' in rendered
+    assert 'count="auto"' in rendered
+    assert "min_detected=K" in rendered
+    assert "regen_lock=true" in rendered
+
+
+def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
+    rendered = render_specialists_reference()
+    assert "Specialists currently have no public CLI" in rendered
+    assert "MCP" not in rendered
+    assert "https://github.com/boldaxolotl/booley/issues/783" in rendered
+    for name in ("coverage_analyst", "reviewer", "mutation_tester"):
+        assert f"Call the `{name}` Specialist from your connected agent session" in rendered
+    assert "--" not in "\n".join(
+        line for line in rendered.splitlines() if not line.startswith("|---")
+    )
+    assert 'steer=["<context>"]' in rendered
+    assert 'campaign="<exact-coverage.json>"' in rendered
+
+
+def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None:
+    specialists = {
+        endpoint.name for endpoint in discover_mcp_tools() if endpoint.kind == "specialist"
+    }
+    for root in (REPO_ROOT / "docs" / "user", REPO_ROOT / "src" / "booley" / "data"):
+        for document in root.rglob("*.md"):
+            text = document.read_text(encoding="utf-8")
+            for name in specialists:
+                assert f"booley flow {name}" not in text, document

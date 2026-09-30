@@ -223,6 +223,7 @@ def test_incomplete_collection_blocks_instead_of_failing_thresholds() -> None:
     campaign = replace(
         _campaign(),
         collection=MappingProxyType({"status": "incomplete"}),
+        rollups=(),
     )
 
     evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
@@ -231,6 +232,7 @@ def test_incomplete_collection_blocks_instead_of_failing_thresholds() -> None:
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
         "COV_EVAL_COLLECTION_INCOMPLETE"
     ]
+    assert evaluated.evaluation["metrics"] == ()
 
 
 def test_incompatible_normalization_blocks_with_stable_diagnostic() -> None:

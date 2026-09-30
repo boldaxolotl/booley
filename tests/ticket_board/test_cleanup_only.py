@@ -138,10 +138,17 @@ def test_op_complete_routes_authored_cleanup_without_merge(
         "_approve_transition",
         lambda *_args, **_kwargs: state.update(status="done") or True,
     )
-    monkeypatch.setattr(operations, "_finish_completed_ticket", lambda *_args, **_kwargs: None)
+    finished: list[dict[str, bool]] = []
+    monkeypatch.setattr(
+        operations,
+        "_finish_completed_ticket",
+        lambda *_args, **kwargs: finished.append(kwargs) or True,
+    )
 
-    assert operations.op_complete(tio, "test-cleanup")
+    assert operations.op_complete(tio, "test-cleanup") is True
     assert state["status"] == "done"
+    # Cleanup-only completion closes the Ticket right after its cleanup.
+    assert finished == [{"cleanup": True, "close": True}]
     assert cleanup_only._ref_sha(root, basis.participants[0].ticket_ref) is None
     assert cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources) == sources
 
@@ -158,8 +165,9 @@ def test_cleanup_only_rejects_corrupt_or_mismatched_recovery_journal(
     with pytest.raises(cleanup_only.CleanupOnlyError, match="unreadable"):
         cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, sources)
     journal.write_text(original, encoding="utf-8")
-    with pytest.raises(cleanup_only.CleanupOnlyError, match="sources differ"):
+    with pytest.raises(cleanup_only.CleanupOnlyError, match="sources differ") as caught:
         cleanup_only.cleanup_only_sources(root, "test-cleanup", basis, {"outer": "0" * 40})
+    assert f"outer {'0' * 40} -> {sources['outer']}" in str(caught.value)
     record = json.loads(original)
     record["slug"] = "other"
     journal.write_text(json.dumps(record), encoding="utf-8")

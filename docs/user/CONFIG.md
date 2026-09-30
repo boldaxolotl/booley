@@ -57,10 +57,16 @@ entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
 are rejected.
 
 This policy applies to the whole Docker daemon, not the current Project. The
-timeout and session cap cover all Booley Sandboxes, and every extra
+timeout and admission cap cover all Booley Sandboxes, and every extra
 egress hostname becomes reachable from every Project. The former Project
 `booley.toml [interactive]` policy fields are retired; init and Doctor print a
 concrete replacement for this host file and never adopt Project values.
+
+`max_sessions` is checked before a start would add a live Sandbox. At the limit,
+the command refuses, lists live Projects and ages, and explains how to stop one
+or raise the limit; it never evicts existing work. A pending VS Code start also
+holds a slot and can be cleared with the reported `session down` command after
+canceling the editor operation.
 
 ## booley.toml
 
@@ -70,10 +76,10 @@ Project identity, Flow selection, and agent configuration live in
 `[project]` carries the project `name` and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about ticket file-existence checks rather than identity. `[notifications]`
-configures the ntfy.sh topic and event selection; see
-[Push Notifications](USAGE.md#push-notifications) for setup and the required
-host egress permission. Everything else is
-detailed below, starting with the shared `enabled` flow setting.
+is retired and ignored; delete the table and see
+[Troubleshooting](TROUBLESHOOTING.md#push-notifications-stopped-arriving) for manual host egress
+cleanup. Everything else is detailed below, starting with the shared `enabled`
+flow setting.
 
 ### Booley Flow execution: `enabled`
 
@@ -162,6 +168,25 @@ warnings_as_errors = false
 
 Set `false` to keep warnings in the console/report but exit 0 on a
 warnings-only run, so a CI gate only fails on hard errors.
+
+### Simulation build, Pre-Sim, and run timeouts
+
+`[flows.sim].build_timeout_ms` is a positive-integer budget for each
+simulator-image build. It defaults to `3600000` (one hour) and applies to
+ordinary Simulation, native Coverage, and Elaboration Check builds.
+`[flows.sim].timeout_ms` and the per-call `--timeout-ms` override instead bound
+simulator execution, or the standalone module sweep in
+`elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
+budget.
+
+```toml
+[flows.sim]
+build_timeout_ms = 3600000
+timeout_ms = 600000
+```
+
+Elaboration Check previously used the run timeout for its Target build. It now
+uses `build_timeout_ms`, consistently with every other simulator-image build.
 
 ### Simulation & pass/fail sentinels (`[flows.sim]`)
 
@@ -314,10 +339,10 @@ writing to the same place under two different names. Prefer the variable.
 
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues
-with the next test, never a Flow crash. The commands share the per-test
-timeout budget (`timeout_ms` / `--timeout-ms`), `--dry-run` previews them in
-their real position, and `booley doctor` validates the shape and notes when
-they're configured.
+with the next test, never a Flow crash. The commands have an independent
+600-second budget; they do not consume `timeout_ms`, `--timeout-ms`, or
+`build_timeout_ms`. `--dry-run` previews them in their real position, and
+`booley doctor` validates the shape and notes when they're configured.
 
 Every firing is recorded in the run report — one line per invocation naming the
 Target/test, the number of command lines, the exit status and the duration
@@ -520,7 +545,7 @@ targets:
         # abc_delay_ps: 3333
       advanced_settings_openroad:
         utilization_pct: 50
-        placement_density: 0.75
+        placement_density: 0.80
     filesets: [rtl, timing_constraints, synth_memory]
     parameters: [SYNTH_MEMORY_SURROGATE]
     toplevel: top
@@ -568,8 +593,8 @@ overrides and deliberately remain backend-specific.
 | Profile | Yosys mapping | OpenROAD utilization / density |
 | --- | --- | --- |
 | `compact` | one default liberty-aware ABC pass | 40% / 0.65 |
-| `balanced` | one balanced liberty-aware ABC pass | 50% / 0.75 |
-| `max_frequency` | one fast liberty-aware ABC pass | 50% / 0.75 |
+| `balanced` | one balanced liberty-aware ABC pass | 50% / 0.80 |
+| `max_frequency` | one fast liberty-aware ABC pass | 50% / 0.80 |
 
 All profiles run `synth -noabc`, followed by `dfflibmap` and exactly one
 liberty-aware ABC pass. `--ppa-profile` and `--flatten`/`--no-flatten` override
@@ -585,9 +610,11 @@ produce migration errors rather than aliases. Replace them with `synth_mode`,
 **Upgrade note:** `balanced` is the new default and intentionally replaces the
 old implicit combination (generic ABC inside `synth`, default liberty ABC,
 40% utilization). Targets that care about stable PPA must select a profile
-explicitly. `compact` restores the old default liberty mapping and 40%/0.65
-physical settings; add `generic_abc_before_mapping = true` only when reproducing
-the old two-ABC-pass topology for a historical comparison.
+explicitly. `compact` retains the old default liberty mapping and 40%/0.65
+controls, but not pre-#816 physical results: every profile now uses grid-aligned
+core margins and working whole-design buffer removal. Use
+`generic_abc_before_mapping = true` only to restore the old two-ABC-pass mapping;
+establish a fresh physical baseline after upgrading.
 
 Target `flow_options.slang_options` is passed to `read_slang` verbatim.
 `--single-unit` is the
@@ -606,6 +633,8 @@ design as success.
 `booley flow sim --target <sim-target> --mode elab-only` compiles, elaborates, and
 links the same ordinary untraced simulator image as a full Simulation run,
 without running Pre-Sim Commands, simulator tests, Cocotb Python, or tracing.
+Its Target build uses the shared
+[`build_timeout_ms`](#simulation-build-pre-sim-and-run-timeouts) budget.
 Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
 and then sweep every RTL module from its declaring file. `--elab-only` and
 `--build-only`, optionally paired with `--standalone`, are deprecated CLI-only
@@ -707,7 +736,7 @@ garbage-collected automatically.
 ### Auto-retry on transient crashes (`[developer.auto_retry]`)
 
 When the Developer Agent dies to a server-side failure (today, an `API Error:
-Response stalled mid-stream`), the ticket lands in `blocked/` with the
+Response stalled mid-stream`), the ticket is blocked with the
 half-finished verdict (usually "exited with N unmet criteria"). No human can fix
 a stream stall, so triaging it wastes a pass. Booley requeues the ticket itself:
 
@@ -1314,6 +1343,8 @@ A few conventions worth calling out in that example:
   configured `run_cwd`; the temporary entry is removed after the run. An identical
   file already present there is preserved, while a different file at the same path
   is an input-setup error rather than being overwritten.
+  A missing declared `$readmemh` destination is a staging/infrastructure error;
+  an undeclared path is a `missing_input` design failure with a fileset hint.
 - **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley
   passes through to the toolchain. The built-in synth path drives its own
   PDK/target via the OpenROAD engine and ignores `arch`.
@@ -1405,6 +1436,10 @@ rather than configuring them. Values must be quoted
 strings, and names must be
 shell-exportable identifiers (`[A-Za-z_][A-Za-z0-9_]*`). `--dry-run` previews
 the exact `export` lines.
+
+Booley reserves `PYTHONPYCACHEPREFIX` and pytest's `cache_dir`, overriding
+Target values so Python artifacts stay under the Project runtime directory
+instead of the source checkout. Pytest cache features remain enabled.
 
 Design fields never appear in `booley.toml`, and neither do the source-category
 directory listings: RTL vs testbench source dirs are derived from the `.core`
@@ -1991,7 +2026,11 @@ approval_ref = "review:CR-1042"
 
 For `reason = "unreachable"`, add an `approval.proof` table with `kind = "formal"`,
 a safe `reference` relative to the approval directory, and exact `sha256` of the
-proof file. `excluded` cannot carry proof. Both reasons yield `waived`; only
+proof file. Lowercase `*.toml` paths below the approval directory are reserved
+for approval documents, so proof artifacts use another extension. Every non-TOML
+file below the directory must be named by a formal proof reference in a valid
+approval document; otherwise loading reports it as unreferenced. `excluded`
+cannot carry proof. Both reasons yield `waived`; only
 exact RTL points are waivable. Loading rejects unsafe paths/symlinks, malformed
 or duplicate approvals, stale sources, unknown Target identities, missing proofs,
 and candidate content. Matching is then transactional per Target: when a Target

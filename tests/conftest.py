@@ -6,7 +6,10 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 import pytest
 
@@ -113,6 +116,77 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         shutil.rmtree(_XDIST_WORKER_TEMP)
         _XDIST_WORKER_TEMP = None
         tempfile.tempdir = None
+
+
+_FLOW_SESSIONS = pytest.StashKey[list[Any]]()
+
+
+@pytest.fixture(autouse=True)
+def _track_flow_sessions(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Record each Flow session a test creates for the teardown lock check below.
+
+    Minimal CI environments (for example the production-image smoke jobs) lack
+    Flow dependencies such as PyYAML. No Flow session can exist there, so the
+    fixture tracks nothing instead of failing every test's setup.
+    """
+    try:
+        from booley.flows.flow_session import FlowSession
+    except ModuleNotFoundError:
+        yield
+        return
+
+    sessions = request.node.stash.setdefault(_FLOW_SESSIONS, [])
+    initialize = FlowSession.__init__
+
+    def tracking_init(session: FlowSession, *args: Any, **kwargs: Any) -> None:
+        initialize(session, *args, **kwargs)
+        sessions.append(session)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(FlowSession, "__init__", tracking_init)
+        yield
+
+
+def _publication_leaks(item: pytest.Item, sessions: list[Any]) -> list[str]:
+    """Observe callbacks and locks before emergency cleanup can hide a leak."""
+    # ExitStack has no public callback-count API; this is test-only introspection.
+    leaks = [
+        f"Flow session {session.name!r} ({id(session):#x}) has publication callbacks"
+        for session in sessions
+        if session.publication_resources._exit_callbacks
+    ]
+    tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
+    if sys.platform != "win32" and isinstance(tmp_path, Path):
+        from tests.file_lock_probe import invocation_lock_paths, lock_is_held
+
+        leaks.extend(
+            f"Simulation invocation lock still held: {path}"
+            for path in sorted(invocation_lock_paths(tmp_path))
+            if lock_is_held(path)
+        )
+    return leaks
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
+    """Detect leaked publication resources, then close every tracked session.
+
+    Direct Flow calls must own their publication scope. Observe leaks after all
+    fixture finalizers so test patches of Path or fcntl are no longer active.
+    Emergency cleanup still runs when a finalizer or the leak probe fails.
+    """
+    try:
+        return (yield)
+    finally:
+        sessions = item.stash.get(_FLOW_SESSIONS, [])
+        try:
+            leaks = _publication_leaks(item, sessions)
+        finally:
+            with ExitStack() as cleanup:
+                for session in sessions:
+                    cleanup.callback(session.publication_resources.close)
+        if leaks:
+            pytest.fail("Publication resources leaked past the test:\n" + "\n".join(leaks))
 
 
 @pytest.fixture(autouse=True)

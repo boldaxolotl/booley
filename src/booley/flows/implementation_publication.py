@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,7 +145,7 @@ def _published_canonical(
         "report": posix_relpath(invocation_path or stable_path, publisher.work_dir)
     }
     if isinstance(source_artifacts, dict):
-        dirs = source_artifacts.get("dirs")
+        dirs = source_artifacts.get("live_dirs", source_artifacts.get("dirs"))
         if isinstance(dirs, dict) and dirs:
             published["live_dirs"] = copy.deepcopy(dirs)
         log = source_artifacts.get("log")
@@ -156,24 +155,24 @@ def _published_canonical(
     return canonical
 
 
-def _copy_log_snapshot(
-    artifacts: dict[str, Any],
-    publisher: ImplementationPublisher,
-    destination: Path,
-) -> None:
+def _validate_numbered_log(artifacts: dict[str, Any], publisher: ImplementationPublisher) -> None:
     log = artifacts.get("log")
     if not isinstance(log, str) or not log:
         return
     source = publisher.work_dir / log
-    if not source.is_file():
+    invocation_dir = publisher.invocation_dir
+    if invocation_dir is None:
+        return
+    try:
+        source.resolve().relative_to(invocation_dir.resolve())
+    except ValueError:
         artifacts.pop("log", None)
         return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-    artifacts["log"] = posix_relpath(destination, publisher.work_dir)
+    if not source.is_file() or source.is_symlink():
+        artifacts.pop("log", None)
 
 
-def _snapshot_logs(
+def _validate_numbered_logs(
     payload: dict[str, Any],
     publisher: ImplementationPublisher,
     invocation_path: Path | None,
@@ -183,13 +182,12 @@ def _snapshot_logs(
     implementation = payload[ENVELOPE_KEY]
     artifacts = implementation.get("artifacts", {})
     if isinstance(artifacts, dict):
-        _copy_log_snapshot(artifacts, publisher, invocation_path.with_suffix("") / "run.log")
+        _validate_numbered_log(artifacts, publisher)
     comparison = implementation.get("comparison")
     baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
     baseline_artifacts = baseline.get("artifacts") if isinstance(baseline, dict) else None
     if isinstance(baseline_artifacts, dict):
-        destination = invocation_path.with_suffix("") / "baseline" / "run.log"
-        _copy_log_snapshot(baseline_artifacts, publisher, destination)
+        _validate_numbered_log(baseline_artifacts, publisher)
 
 
 @dataclass(frozen=True)
@@ -213,8 +211,13 @@ class ImplementationPublisher:
         invocation = self._invocation_path(report.target)
         canonical = _published_canonical(report, self, invocation, stable)
         payload = copy.deepcopy(dict(legacy_payload))
+        legacy_artifacts = payload.get("artifacts")
+        if isinstance(legacy_artifacts, dict):
+            legacy_artifacts["report"] = posix_relpath(invocation or stable, self.work_dir)
+            if "dirs" in legacy_artifacts:
+                legacy_artifacts["live_dirs"] = legacy_artifacts.pop("dirs")
         payload[ENVELOPE_KEY] = canonical
-        _snapshot_logs(payload, self, invocation)
+        _validate_numbered_logs(payload, self, invocation)
         if invocation is not None:
             _atomic_write_json(invocation, payload)
         _atomic_write_json(stable, payload)

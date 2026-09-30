@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -17,6 +18,7 @@ from booley.criteria.state import (
     DevelopmentState,
 )
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.endpoint_session import _transcript_diagnostic_path
 from booley.flows.source_fingerprint import as_str_list
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -103,6 +105,68 @@ def test_mcp_adapter_promotes_neutral_outcome_before_extension_hooks() -> None:
     assert endpoint.finalized_label == "target demo · 2 tests"
 
 
+def test_report_failure_is_returned_on_the_final_adapted_outcome(tmp_path: Path) -> None:
+    class RecoveringMcpTool(ConcreteMcpTool):
+        writes = 0
+
+        def _run(self) -> EndpointOutcome:
+            return EndpointOutcome(detail={"nested": {"fact": "kept"}}, report_text="PASS")
+
+        def write_report(self, result: EndpointOutcome) -> Path | None:
+            self.writes += 1
+            if self.writes == 1:
+                reserved = self.reserve_invocation_dir()
+                assert reserved is not None
+                path = reserved / "report.json"
+                raise OSError(errno.EIO, "injected publication failure", path)
+            return super().write_report(result)
+
+    endpoint = RecoveringMcpTool()
+    result = endpoint.execute_cli(["--report-dir", str(tmp_path / "reports")])
+
+    assert result.exit_code == EXIT_ERROR
+    assert type(result.outcome) is McpToolResult
+    assert result.outcome.detail["nested"] == {"fact": "kept"}
+    completion_error = result.outcome.detail["completion_error"]
+    assert {key: completion_error[key] for key in ("operation", "type", "path")} == {
+        "operation": "publish report.json",
+        "type": "OSError",
+        "path": str(tmp_path / "reports/test_endpoint/1/report.json"),
+    }
+    assert "injected publication failure" in completion_error["message"]
+    report = json.loads(
+        (tmp_path / "reports/test_endpoint/1/report.json").read_text(encoding="utf-8")
+    )
+    assert report["detail"] == result.outcome.detail
+    assert not (tmp_path / "reports/test_endpoint/2").exists()
+
+
+def test_persistent_report_failure_preserves_primary_diagnosis(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class FailingMcpTool(ConcreteMcpTool):
+        writes = 0
+
+        def _run(self) -> EndpointOutcome:
+            return EndpointOutcome(detail={"fact": "kept"}, report_text="PASS")
+
+        def write_report(self, result: EndpointOutcome) -> Path | None:
+            self.writes += 1
+            path = self.reserve_invocation_dir()
+            assert path is not None
+            raise OSError(errno.EIO, f"publication failure {self.writes}", path / "report.json")
+
+    endpoint = FailingMcpTool()
+    result = endpoint.execute_cli(["--report-dir", str(tmp_path / "reports")])
+
+    assert result.exit_code == EXIT_ERROR
+    assert endpoint.writes == 2
+    assert result.outcome.detail["fact"] == "kept"
+    assert "publication failure 1" in result.outcome.detail["completion_error"]["message"]
+    assert "publication failure 2" in result.outcome.detail["completion_errors"][0]["message"]
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_finalize_failure_propagates_without_persisting_replacement_result() -> None:
     class FinalizeFailingMcpTool(ConcreteMcpTool):
         post_run_called = False
@@ -129,10 +193,89 @@ def test_persistence_failure_does_not_hide_the_cli_diagnosis(capsys) -> None:
         def _post_run(self, result: McpToolResult, duration: float) -> None:
             raise RuntimeError("persistence failed")
 
-    with pytest.raises(RuntimeError, match="persistence failed"):
-        PersistenceFailingMcpTool().main([])
+    result = PersistenceFailingMcpTool().execute_cli([])
 
-    assert capsys.readouterr().err == "design failed\n"
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.detail["completion_error"] == {
+        "operation": "persist endpoint completion",
+        "type": "RuntimeError",
+        "message": "persistence failed",
+    }
+    assert capsys.readouterr().err == (
+        "WARN: no --report-dir — this test_endpoint verdict is printed only "
+        "(no report.json is written for this run)\n"
+        "design failed\n"
+        "Completion failure (persist endpoint completion): RuntimeError: persistence failed\n"
+    )
+
+
+def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
+    class SelfPrintingPersistenceFailure(ConcreteMcpTool):
+        def _run(self) -> McpToolResult:
+            print("design failed")
+            return McpToolResult(exit_code=EXIT_FAILURE, report_text="design failed")
+
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            raise RuntimeError("persistence failed")
+
+    result = SelfPrintingPersistenceFailure().execute_cli([])
+
+    captured = capsys.readouterr()
+    assert result.exit_code == EXIT_ERROR
+    assert captured.out == "design failed\n"
+    assert "design failed" not in captured.err
+    assert "Completion failure (persist endpoint completion)" in captured.err
+
+
+def test_console_failure_is_normalized_and_recovery_is_attempted() -> None:
+    endpoint = ConcreteMcpTool()
+    with (
+        mock.patch.object(
+            endpoint, "_publish_console_report", side_effect=OSError("console unavailable")
+        ),
+        mock.patch("booley.flows.endpoint_reporting._recover_report_publication") as recover,
+    ):
+        result = endpoint.execute_cli([])
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.detail["completion_error"]["operation"] == ("publish console diagnosis")
+    recover.assert_called_once_with(endpoint, result.outcome)
+
+
+def test_endpoint_end_failure_is_suppressed_after_completion_failure() -> None:
+    class PersistenceFailingMcpTool(ConcreteMcpTool):
+        def _post_run(self, result: McpToolResult, duration: float) -> None:
+            raise RuntimeError("persistence failed")
+
+    def fail_endpoint_end(event: dict[str, object]) -> None:
+        if event["type"] == "endpoint_end":
+            raise OSError("display unavailable")
+
+    endpoint = PersistenceFailingMcpTool()
+    with (
+        mock.patch("booley.flows.endpoint_session._write_display_event", fail_endpoint_end),
+        mock.patch("booley.flows.endpoint_reporting._write_display_event", fail_endpoint_end),
+    ):
+        result = endpoint.execute_cli([])
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.detail["completion_error"]["operation"] == (
+        "persist endpoint completion"
+    )
+
+
+def test_endpoint_end_failure_propagates_without_completion_failure() -> None:
+    def fail_endpoint_end(event: dict[str, object]) -> None:
+        if event["type"] == "endpoint_end":
+            raise OSError("display unavailable")
+
+    endpoint = ConcreteMcpTool()
+    with (
+        mock.patch("booley.flows.endpoint_session._write_display_event", fail_endpoint_end),
+        mock.patch("booley.flows.endpoint_reporting._write_display_event", fail_endpoint_end),
+        pytest.raises(OSError, match="display unavailable"),
+    ):
+        endpoint.execute_cli([])
 
 
 def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> None:
@@ -1044,6 +1187,37 @@ class TestMcpToolWriteReport:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["slug"] == ""
 
+    def test_report_retry_reuses_reserved_invocation_after_atomic_failure(
+        self, tmp_path: Path
+    ) -> None:
+        report_dir = tmp_path / "reports"
+        endpoint = ConcreteMcpTool()
+        endpoint.parse_args(["--report-dir", str(report_dir)])
+        reserved = endpoint.reserve_invocation_dir()
+        assert reserved is not None
+        report_path = reserved / "report.json"
+        original_replace = Path.replace
+        failed = False
+
+        def fail_numbered_once(source: Path, destination: Path) -> Path:
+            nonlocal failed
+            if destination == report_path and not failed:
+                failed = True
+                raise OSError("injected report publication failure")
+            return original_replace(source, destination)
+
+        with (
+            mock.patch.object(Path, "replace", fail_numbered_once),
+            pytest.raises(OSError, match="injected report publication failure"),
+        ):
+            endpoint.write_report(McpToolResult(exit_code=EXIT_SUCCESS))
+
+        path = endpoint.write_report(McpToolResult(exit_code=EXIT_ERROR))
+
+        assert path == report_path
+        assert json.loads(path.read_text(encoding="utf-8"))["exit_code"] == EXIT_ERROR
+        assert not (report_dir / endpoint.name / "2").exists()
+
 
 class TestMcpToolMain:
     @pytest.mark.parametrize(
@@ -1144,9 +1318,10 @@ class TestMcpToolMain:
             ("lint_clean_lite", "source-invalidated")
         ]
 
-    def test_exception_returns_error(self, tmp_path: Path):
+    def test_exception_returns_actionable_durable_error(self, tmp_path: Path, capsys, caplog):
         state_file = tmp_path / "state.json"
         DevelopmentState.load(state_file).save()
+        report_dir = tmp_path / "reports"
 
         class FailingMcpTool(ConcreteMcpTool):
             def _run(self):
@@ -1154,9 +1329,118 @@ class TestMcpToolMain:
 
         env = _env_with_state(state_file)
         endpoint = FailingMcpTool()
+        caplog.set_level("DEBUG")
         with mock.patch.dict(os.environ, env):
-            exit_code = endpoint.main([])
+            exit_code = endpoint.main(["--report-dir", str(report_dir)])
         assert exit_code == EXIT_ERROR
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert "Traceback" not in output.err
+        assert output.err.count("test_endpoint failed: ValueError: boom") == 1
+
+        flat = json.loads((report_dir / "test_endpoint.json").read_text())
+        numbered = json.loads((report_dir / "test_endpoint/1/report.json").read_text())
+        assert flat["report_text"] == numbered["report_text"]
+        assert "test_endpoint failed: ValueError: boom" in flat["report_text"]
+        diagnostic = Path(flat["report_text"].rsplit(". Diagnostic: ", 1)[1])
+        assert diagnostic.is_file()
+        assert report_dir / "test_endpoint/1" not in diagnostic.parents
+        assert "Traceback" in diagnostic.read_text(encoding="utf-8")
+        assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
+
+    def test_exception_report_is_bounded_and_single_line(self, tmp_path: Path):
+        report_dir = tmp_path / "reports"
+        long_message = "first line\nsecond line " + "x" * 2_000
+
+        class FailingMcpTool(ConcreteMcpTool):
+            def _run(self):
+                raise ValueError(long_message)
+
+        result = FailingMcpTool().execute_cli(["--report-dir", str(report_dir)])
+
+        assert result.exit_code == EXIT_ERROR
+        diagnosis = result.outcome.report_text.split(". Diagnostic: ", 1)[0]
+        assert "ValueError: first line second line" in diagnosis
+        assert "\n" not in diagnosis
+        assert len(diagnosis) < 1_100
+        diagnostic = Path(result.outcome.report_text.rsplit(". Diagnostic: ", 1)[1])
+        assert long_message in diagnostic.read_text(encoding="utf-8")
+
+    def test_exception_diagnostic_failure_does_not_mask_report(self):
+        class FailingMcpTool(ConcreteMcpTool):
+            def _run(self):
+                raise ValueError("boom")
+
+        with mock.patch(
+            "booley.flows.endpoint_session.write_exception_diagnostic",
+            return_value=None,
+        ):
+            result = FailingMcpTool().execute_cli([])
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.outcome.report_text == "test_endpoint failed: ValueError: boom"
+        assert "Diagnostic:" not in result.outcome.report_text
+
+    def test_non_persisting_dry_run_exception_creates_no_artifacts(self, tmp_path: Path):
+        report_dir = tmp_path / "reports"
+        transcript_dir = tmp_path / "transcripts"
+
+        class FailingDryRunMcpTool(ConcreteMcpTool):
+            non_persisting_dry_run = True
+
+            def _add_args(self, parser: argparse.ArgumentParser) -> None:
+                parser.add_argument("--dry-run", action="store_true")
+                parser.add_argument("--transcript-dir", type=Path)
+
+            def _transcript_path(self):
+                self.args.transcript_dir.mkdir(parents=True, exist_ok=True)
+                return self.args.transcript_dir / "dry-run.jsonl"
+
+            def _run(self):
+                raise ValueError("boom")
+
+        result = FailingDryRunMcpTool().execute_cli(
+            [
+                "--dry-run",
+                "--report-dir",
+                str(report_dir),
+                "--transcript-dir",
+                str(transcript_dir),
+            ]
+        )
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.outcome.report_text == "test_endpoint failed: ValueError: boom"
+        assert not report_dir.exists()
+        assert not transcript_dir.exists()
+
+    def test_transcript_diagnostic_path_uses_endpoint_resolver(self, tmp_path: Path):
+        expected = tmp_path / "endpoint.jsonl"
+
+        class Endpoint:
+            args = argparse.Namespace(transcript_dir=tmp_path)
+
+            def _transcript_path(self):
+                return expected
+
+        assert _transcript_diagnostic_path(Endpoint()) == expected
+
+    def test_transcript_diagnostic_path_ignores_missing_resolver(self, tmp_path: Path):
+        endpoint = mock.Mock(
+            args=argparse.Namespace(transcript_dir=tmp_path),
+            _transcript_path=None,
+        )
+
+        assert _transcript_diagnostic_path(endpoint) is None
+
+    def test_transcript_diagnostic_path_ignores_resolver_failure(self, tmp_path: Path):
+        class Endpoint:
+            args = argparse.Namespace(transcript_dir=tmp_path)
+
+            def _transcript_path(self):
+                raise OSError("unavailable")
+
+        assert _transcript_diagnostic_path(Endpoint()) is None
 
     def test_main_works_in_human_mode(self):
         """main() completes without BOOLEY_* env vars (no state file)."""
@@ -1400,6 +1684,11 @@ class TestMainDisplayEvents:
         # endpoint_end should report the error exit code
         end_evt = next(e for e in events if e["type"] == "endpoint_end")
         assert end_evt["exit_code"] == EXIT_ERROR
+        report = json.loads(
+            (logs_dir / ".runtime/mcp-tool-reports/test_endpoint.json").read_text(encoding="utf-8")
+        )
+        assert end_evt["report_text"] == report["report_text"]
+        assert end_evt["report_text"].startswith("test_endpoint failed: RuntimeError: kaboom")
 
     def test_acceptance_failure_emits_endpoint_end_without_mutable_persistence(
         self,
@@ -1424,13 +1713,21 @@ class TestMainDisplayEvents:
         env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
         endpoint = AcceptanceFailingMcpTool()
 
-        with (
-            mock.patch.dict(os.environ, env),
-            pytest.raises(RuntimeError, match="acceptance failed"),
-        ):
-            endpoint.main([])
+        with mock.patch.dict(os.environ, env):
+            result = endpoint.execute_cli([])
 
+        assert result.exit_code == EXIT_ERROR
+        assert result.outcome.detail["completion_error"] == {
+            "operation": "record acceptance and projections",
+            "type": "RuntimeError",
+            "message": "acceptance failed",
+        }
         assert endpoint.post_run_called is False
+        reports = list((logs_dir / ".runtime" / "mcp-tool-reports").glob("*/1/report.json"))
+        assert len(reports) == 1
+        report = json.loads(reports[0].read_text(encoding="utf-8"))
+        assert report["exit_code"] == EXIT_ERROR
+        assert report["detail"] == result.outcome.detail
         events = [
             json.loads(line)
             for line in (logs_dir / ".runtime" / "display.jsonl")
@@ -1438,6 +1735,7 @@ class TestMainDisplayEvents:
             .splitlines()
         ]
         assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
+        assert events[-1]["exit_code"] == EXIT_ERROR
 
     def test_display_tag_overrides_config(self, tmp_path: Path):
         """display_tag property overrides config_aware in display events."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -16,7 +17,7 @@ import pytest
 
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
-from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
@@ -27,11 +28,17 @@ from booley.flows.sim.campaign.codec import (
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
+    ResumeCampaignRunRequest,
     SimulationCampaign,
     SimulationCampaignCancellationError,
 )
 from booley.flows.sim.campaign.model import SimulationAttempt, create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
+from booley.flows.sim.campaign.resume import (
+    ValidatedManifestNode,
+    ValidatedResumeManifest,
+    ValidatedTargetBinding,
+)
 from booley.flows.sim.campaign.scheduler import (
     BoundedCampaignScheduler,
     CampaignSchedulingError,
@@ -40,6 +47,7 @@ from booley.flows.sim.campaign.scheduler import (
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
+from booley.runtime import execution_recovery
 from booley.runtime.execution_records import (
     ExecutionId,
     child_context_matches,
@@ -52,6 +60,8 @@ from booley.runtime.job_slots import (
     QUEUED,
     ROLE_INTERACTIVE,
     ROLE_TICKET,
+    ClaimAbortedError,
+    ClaimLostError,
     SlotStore,
 )
 from booley.runtime.supervised_execution import (
@@ -86,9 +96,10 @@ def test_cancelled_campaign_stops_before_publication() -> None:
         SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
 
 
-def _three_item_manifest():
+def _three_item_manifest(execution_id: str = ""):
     document = json.loads(canonical_json_bytes(_two_item_manifest().document))
     document.pop("fingerprints")
+    document["origin"]["execution_id"] = execution_id
     document["required_suite"]["names"] = ["alpha", "beta", "gamma"]
     identity = {
         key: value
@@ -116,6 +127,9 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("condition did not become true before the deadline")
+
+
+_PARALLEL_SYNC_TIMEOUT_S = 20.0
 
 
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -281,7 +295,8 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child() -> None:
         _unmanaged(), terminal_proof=lambda _execution_id: True, recover_child=lambda _id: True
     )
     with capacity.outer_permit() as permit:
-        assert permit.execution_id == ""
+        assert permit.execution_id is None
+        assert isinstance(capacity.parent_execution_id, ExecutionId)
         assert capacity.max_lanes == 1
         assert capacity.managed is False
     with pytest.raises(HeavyCapacityError, match="exactly once"), capacity.outer_permit():
@@ -768,6 +783,98 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     trigger.join(timeout=1)
 
 
+def test_cancel_recovery_never_rewrites_a_retired_child_terminal_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for #977: cancel recovery racing mark_terminal/retire kept a stale digest."""
+    project_data, child_id, registry, prepared, _flow = _prepared_child(tmp_path, monkeypatch)
+    recovery_parked = threading.Event()
+    release_recovery = threading.Event()
+
+    publish_recovered = execution_recovery._publish_recovered_terminal
+
+    def parked_publish(*args, **kwargs) -> None:
+        # The cancel path has already read the waiting record; hold it before it
+        # writes. Both the POSIX and Windows recovery paths end here.
+        recovery_parked.set()
+        assert release_recovery.wait(_PARALLEL_SYNC_TIMEOUT_S)
+        publish_recovered(*args, **kwargs)
+
+    monkeypatch.setattr(execution_recovery, "_wait_for_empty", lambda *_args: True)
+    monkeypatch.setattr(execution_recovery, "_publish_recovered_terminal", parked_publish)
+    canceller = threading.Thread(target=registry.cancel, args=(child_id,))
+    canceller.start()
+    assert recovery_parked.wait(_PARALLEL_SYNC_TIMEOUT_S)
+
+    worker_done = threading.Event()
+
+    def terminate_and_retire() -> None:
+        registry.mark_terminal(prepared, "campaign_error")
+        registry.retire(
+            prepared, lease_id=None, terminal_cause="campaign_error", token_absent=True
+        )
+        worker_done.set()
+
+    worker = threading.Thread(target=terminate_and_retire)
+    worker.start()
+    # Without per-execution serialization the worker finishes here, before recovery writes.
+    worker_done.wait(1.0)
+    release_recovery.set()
+    canceller.join(_PARALLEL_SYNC_TIMEOUT_S)
+    worker.join(_PARALLEL_SYNC_TIMEOUT_S)
+    assert not canceller.is_alive() and not worker.is_alive()
+
+    record = read_json(execution_paths(child_id, project_dir=project_data).record)
+    retired = json.loads(
+        (registry._campaign_root / "retired" / f"{child_id}.json").read_text(encoding="utf-8")
+    )
+    digest = "sha256:" + hashlib.sha256(canonical_json_bytes(record)).hexdigest()
+    assert retired["execution_terminal_sha256"] == digest
+
+
+class _ExitsDuringJoin:
+    """Worker stand-in that is alive when the join loop starts and exits during join."""
+
+    name = "booley-campaign-outer"
+
+    def __init__(self) -> None:
+        self._alive = True
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def join(self, timeout: float | None = None) -> None:
+        self._alive = False
+
+
+def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
+    tmp_path: Path,
+) -> None:
+    """Regression for #977: a worker that exits in the final join is a clean shutdown."""
+    manifest = _two_item_manifest()
+    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    # A zero budget means the shutdown deadline has always passed after the join.
+    capacity = SimpleNamespace(
+        shutdown_requested=True,
+        shutdown_timeout_seconds=0.0,
+        cancel_waiters=lambda: None,
+        retain_outer_until=lambda alive: pytest.fail(f"retained outer for {alive}"),
+    )
+    scheduler = BoundedCampaignScheduler(
+        capacity,  # type: ignore[arg-type]
+        registry,
+        allocate=lambda item: _scheduled_attempt(campaign_store, item),
+        execute=lambda *_args: None,
+    )
+
+    scheduler._join_workers([_ExitsDuringJoin()])  # type: ignore[list-item]
+
+
 def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
     attempt_id = os.urandom(16).hex()
     ordinal, directory = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
@@ -788,7 +895,14 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     cancelled = threading.Event()
     admission = AdmissionContext(
-        "managed", slots, outer, 2, "interactive", "a" * 32, 0.05, cancelled.is_set
+        "managed",
+        slots,
+        outer,
+        2,
+        "interactive",
+        "a" * 32,
+        _PARALLEL_SYNC_TIMEOUT_S,
+        cancelled.is_set,
     )
     capacity = HeavyCapacity(
         admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
@@ -837,7 +951,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
         registry,
         allocate=allocate,
         prepare_child=prepare,
-        execute=lambda *_args: _wait_until(cancelled.is_set),
+        execute=lambda *_args: cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S),
     )
     worker = threading.Thread(
         target=lambda: _capture_error(errors, scheduler.run, manifest.document["work_items"])
@@ -845,6 +959,10 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
     worker.start()
     try:
         _cancel_child_and_assert(slots, attempts, campaign_store, cancelled, worker)
+        # Cancelling while the second item waits for a heavy slot legitimately
+        # aborts that claim; anything else (e.g. a spurious bounded-shutdown
+        # CampaignSchedulingError, #977) is a failure.
+        assert all(isinstance(e, (ClaimAbortedError, ClaimLostError)) for e in errors), errors
     finally:
         slots.release(outer)
 
@@ -854,7 +972,7 @@ def _cancel_child_and_assert(slots, attempts, campaign_store, cancelled, worker)
     assert attempts and attempts[0].is_file()
     assert tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
     cancelled.set()
-    worker.join(timeout=4)
+    worker.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
     assert not worker.is_alive()
     entries = tuple((campaign_store.root / "child-executions/entries").glob("*.json"))
     retired = tuple((campaign_store.root / "child-executions/retired").glob("*.json"))
@@ -876,7 +994,7 @@ class _ParallelState:
         self.handle = handle
         self.first_finisher = first_finisher
         self.schedule_seed = schedule_seed
-        self.barrier = threading.Barrier(2, timeout=2)
+        self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
         self.first_finished = threading.Event()
         self.interval_gate = threading.Lock()
         self.intervals: list[tuple[str, float, float]] = []
@@ -903,9 +1021,6 @@ class _ParallelGroup:
     def compile(self):
         self.state.compile_count += 1
         return SimpleNamespace(passed=True)
-
-    def reuse_compilation_from(self, _source) -> None:
-        return None
 
     def build_recovery_document(self):
         return _build_execution()
@@ -945,7 +1060,7 @@ class _ParallelGroup:
         if name == self.state.first_finisher:
             self.state.first_finished.set()
         else:
-            assert self.state.first_finished.wait(timeout=2)
+            assert self.state.first_finished.wait(timeout=_PARALLEL_SYNC_TIMEOUT_S)
 
 
 class _ParallelExecution:
@@ -955,6 +1070,149 @@ class _ParallelExecution:
     @contextmanager
     def ordinary_group(self, _handle, names):
         yield _ParallelGroup(self.state, names)
+
+
+class _CampaignAdmissionEndpoint:
+    _invocation_id = "sim-20260925T153819Z-1"
+
+    def __init__(self, slots: SlotStore, runtime_execution_id: str | None) -> None:
+        self._slots = slots
+        self._runtime_execution_id = runtime_execution_id
+
+    def _acquire_job_slot(self):
+        execution_id = (
+            ExecutionId(self._runtime_execution_id) if self._runtime_execution_id else None
+        )
+        return self._slots, self._slots.acquire(
+            CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id
+        )
+
+
+def _validated_campaign(store, manifest, project, handle) -> ValidatedResumeManifest:
+    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
+    return ValidatedResumeManifest(
+        node,
+        (),
+        (handle,),
+        (ValidatedTargetBinding(node, project.resolve(), handle),),
+    )
+
+
+def _child_parent_ids(store: CampaignStore) -> set[str]:
+    entries = (store.root / "child-executions/entries").glob("*.json")
+    return {json.loads(path.read_text())["parent_execution_id"] for path in entries}
+
+
+@pytest.mark.parametrize("runtime_execution_id", ["b" * 32, None])
+def test_interrupted_managed_campaign_exact_resume_preserves_parent_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_execution_id: str | None,
+) -> None:
+    case = _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id)
+    assert not case.store.summary_path.exists()
+    assert len(case.state.completion_order) == 3
+    assert not tuple((case.store.root / "child-executions/retired").glob("*.json"))
+    parent_ids = _child_parent_ids(case.store)
+    if runtime_execution_id is not None:
+        assert parent_ids == {runtime_execution_id}
+    assert len(parent_ids) == 1 and _CampaignAdmissionEndpoint._invocation_id not in parent_ids
+    ExecutionId(next(iter(parent_ids)))
+
+    case.fault_enabled[0] = False
+    summaries, outcomes = _resume_campaign_twice(case, runtime_execution_id)
+    assert summaries[0] == summaries[1]
+    assert all(outcome.complete for outcome in outcomes)
+    assert len(case.state.completion_order) == 3
+    assert case.store.load_manifest().document["origin"]["execution_id"] == (
+        runtime_execution_id or ""
+    )
+    assert case.slots.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
+    manifest = _three_item_manifest(runtime_execution_id or "")
+    plan = create_simulation_campaign_plan(manifest)
+    project, state = _parallel_environment(tmp_path, "alpha", 0)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
+    )
+    invocation = tmp_path / "reports/000001"
+    invocation.mkdir(parents=True)
+    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=3))
+    _set_runtime_execution_id(monkeypatch, runtime_execution_id)
+    monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
+    fault_enabled, original_retire = [True], ChildExecutionRegistry.retire
+    work_items = invocation / "targets/sim/campaign/work-items"
+
+    def interrupted_retire(registry, prepared, **kwargs) -> None:
+        if fault_enabled[0]:
+            if len(tuple(work_items.glob("*/result.json"))) < 3:
+                return
+            raise RuntimeError("injected retirement interruption")
+        original_retire(registry, prepared, **kwargs)
+
+    monkeypatch.setattr(ChildExecutionRegistry, "retire", interrupted_retire)
+    campaign = SimulationCampaign(executor)
+    with (
+        pytest.raises(RuntimeError, match="injected retirement interruption"),
+        AdmissionGate(
+            _CampaignAdmissionEndpoint(slots, runtime_execution_id)  # type: ignore[arg-type]
+        ).enter() as admission,
+    ):
+        campaign.run(
+            NewCampaignRunRequest(
+                plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+            )
+        )
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    validated = _validated_campaign(store, manifest, project, state.handle)
+    return SimpleNamespace(
+        campaign=campaign,
+        fault_enabled=fault_enabled,
+        invocation=invocation,
+        manifest=manifest,
+        plan=plan,
+        project=project,
+        slots=slots,
+        state=state,
+        store=store,
+        validated=validated,
+    )
+
+
+def _resume_campaign_twice(case, runtime_execution_id):
+    request_args = (
+        case.validated,
+        case.plan,
+        case.project,
+        case.invocation.parent,
+        CampaignPolicy(),
+        case.invocation,
+    )
+    summaries = []
+    outcomes = []
+    for _ in range(2):
+        with AdmissionGate(
+            _CampaignAdmissionEndpoint(case.slots, runtime_execution_id)  # type: ignore[arg-type]
+        ).enter() as admission:
+            outcomes.append(case.campaign.run(ResumeCampaignRunRequest(*request_args, admission)))
+        summaries.append(case.store.summary_path.read_bytes())
+    return summaries, outcomes
+
+
+def _set_runtime_execution_id(
+    monkeypatch: pytest.MonkeyPatch, runtime_execution_id: str | None
+) -> None:
+    if runtime_execution_id is None:
+        monkeypatch.delenv("BOOLEY_RUNTIME_EXECUTION_ID", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", runtime_execution_id)
 
 
 @pytest.mark.parametrize("first_finisher", ["alpha", "beta"])

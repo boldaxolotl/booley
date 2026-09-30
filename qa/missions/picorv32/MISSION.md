@@ -32,19 +32,20 @@ at Booley, usually at handoffs: paired repos, Ticket dependencies, Grants, Sessi
 Intent: a first setup succeeds from the public docs alone, and the unchanged demo passes every Flow.
 Try:
 - Clone both pins and confirm they are clean. Make `.booley_project` a standalone Git repo, then run
-  `booley init`. Run Project Setup with no interview: sim, lint, synth (+ fpga with `[eda.vivado]`
-  `host` if Vivado is present), merge-refreshed guidance, compatible Specialists, no native parity.
+  `booley init` and follow the demo steps it prints (Sandbox, then
+  `bash .booley_project/hooks/post-setup.sh`). The demo ships preconfigured for sim, lint, and
+  synth. Configure it with the edits below, not with the `booley-setup` skill.
+- Project-data edits: set `[mcp_tools.coverage_analyst] enabled = false` in `booley.toml` (the Icarus
+  Targets can't produce Verilator Coverage Campaigns). If Vivado is present, also set
+  `[flows.fpga] enabled = true`, add `[eda.vivado]` with `provisioning = "host"`, and add
+  `booley: {doctor: [fpga]}` to `fpga_core` in `cores/picorv32_impl.core`.
 - Enable Stealth with `ignore_native_cores = true`. Only the hidden authored cores are projected,
   with no copied RTL and no symlinks. Dot-prefixed paths don't count as native.
 - Create paired run-owned destination branches (outer and Project-data). Commit the setup changes
   (Flows, EDA, FPGA Doctor Target) to the Project-data one. Both repos must be clean before area 4.
 - Build `firmware/firmware.hex` before the first Doctor run, since Doctor resolves the sim Target
-  against it. `booley doctor` should show no warnings. `--deep` should show only
-  `flow.synth-deep-warning:synth_core`, caused by upstream RTL or OpenROAD.
-- Merge `fixtures/doctor-synth-warning-waiver.toml` into `.booley_project/doctor-waivers.toml`,
-  keeping existing entries. Rerun and expect only `WAIVED`. The waiver must tolerate instance-name
-  noise but reject a changed meaning. Repeat `booley init`: no drift; the auth policy matches the
-  provider.
+  against it. `booley doctor` and `booley doctor --deep` should show no warnings. Repeat
+  `booley init`: no drift; the auth policy matches the provider.
 - Baseline: `booley targets`, Icarus sims (main, AXI, Wishbone, Dhrystone), Verilator lint, and
   physical synth all pass with fresh reports. The trees still match the setup branch and the pin.
 Look for: undocumented steps, a stale image, over- or under-matching waivers, stale reports, wrong
@@ -249,8 +250,10 @@ Look for: catalog order overriding request order, completed items rerun, subset-
 ### 13. git-stealth-security — Git safety, Stealth commits, runtime isolation (~35 min)
 Intent: the guards block unsafe history and escapes, and the Sandbox stays fenced.
 Try:
-- Stealth (`fixtures/stealth.md` on a disposable empty commit): `booley` is removed, the rationale
-  is kept, and `Co-Authored-By` is dropped. No Project state reaches outer history. A fresh outer
+- Stealth (`fixtures/stealth.md`, three cases on disposable empty commits): a `Co-Authored-By`
+  footer is rejected with the raw message unchanged. Without it, `booley` is redacted and both
+  rationale sentences are kept. A final `Generated with booley` is rejected, and `Generated with
+  care by the whole team` is accepted. No Project state reaches outer history. A fresh outer
   clone shows the documented hidden-state limit.
 - An invalid native core is ignored while authored Targets resolve. Refreshing after an
   authored-core edit updates the projection.
@@ -272,8 +275,9 @@ Try:
   symlink imports only the real roots. A moved-aside root stays listed as missing. Human and JSON
   views agree.
 - RISC-V: GCC, srec_cat, dtc, and Spike run. The PDF content covers the ISA, privileged, and debug
-  specs. Build `fixtures/riscv/spike-probe.S` with `spike-probe.ld`, check PT_LOAD fits RAM, run on
-  Spike.
+  specs. Build `fixtures/riscv/spike-probe.S` with `spike-probe.ld` (`-march=rv32imac -mabi=ilp32
+  -nostdlib`), check PT_LOAD fits RAM, then run `spike --isa=RV32IMAC -m0x80000000:0x8000000 <elf>`:
+  it exits 0.
 - Docs: log every help, cheat, MCP, and skill route you use. Flow and Specialist names agree across
   them, and the documented recovery after a seeded fault is enough to resume.
 Look for: symlinked roots imported, views that disagree, advertised names that don't exist.
@@ -295,3 +299,13 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint
   verdict.
 - B-Wave replays must use the child's defaults. Explicit sampling flags aren't equivalent.
+- `booley init` on this demo prints "the booley-setup skill does not apply". That's expected: area 1
+  configures the demo by hand.
+- Fixture testbenches must print a pass sentinel the Project configures (`ALL TESTS PASSED.` here).
+  Configured sentinels replace the built-in `[SIM_RESULT]` markers, so a clean `$finish` alone
+  grades INCONCLUSIVE.
+- Icarus has no `$system`, and SystemVerilog fixtures need `-g2012` (the campaign cores set it in
+  `flow_options.iverilog_options`). The campaign's `slow` test spins about 20 s of wall time. If it
+  finishes too fast to interrupt, pass `+slow_steps=<n>`.
+- Bare-metal Spike needs `tohost`/`fromhost` symbols to exit. A Linux `ecall` exit only works under
+  `pk`.

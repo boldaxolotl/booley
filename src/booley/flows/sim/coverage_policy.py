@@ -335,7 +335,11 @@ def evaluate_coverage_campaign(
         _diagnostic(item.code, item.pointer, item.message) for item in waiver_match.findings
     ]
     diagnostics.extend(_evidence_diagnostics(campaign, criterion, required_tests))
-    diagnostics.extend(_empty_denominator_diagnostics(campaign, criterion))
+    if (
+        campaign.collection.get("status") == "complete"
+        and campaign.normalization.get("status") != "incompatible"
+    ):
+        diagnostics.extend(_empty_denominator_diagnostics(campaign, criterion))
     if diagnostics:
         return _blocked_campaign(
             campaign,

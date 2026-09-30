@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
+from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.fields import (
@@ -25,6 +26,7 @@ from booley.evidence.fields import (
 from booley.evidence.timing import ClockTiming
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
+from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand, _vlogdefine_args
 from booley.flows.implementation_comparison import (
@@ -127,6 +129,70 @@ def _flow(tmp_path: Path, state_file: Path, *extra_args: str) -> FpgaImplFlow:
     )
     flow.read_state()
     return flow
+
+
+def test_cache_hit_omits_unauthenticated_shared_flow_log(tmp_path: Path, state_file: Path) -> None:
+    from booley.flows.fpga.backends.vivado.cache import CacheHit
+    from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
+
+    flow = _flow(tmp_path, state_file)
+    flow._project_root = tmp_path
+    work_root = work_root_for(tmp_path, "fpga", "default")
+    work_root.mkdir(parents=True)
+    (work_root / "run.log").write_text("stale unrelated output", encoding="utf-8")
+    metrics = FpgaMetrics(lut_count=1, ff_count=1, wns_ns=0.1, whs_ns=0.1)
+
+    with (
+        patch.object(
+            fpga_cache,
+            "load",
+            return_value=CacheHit("fingerprint", "authenticated reports", {}),
+        ),
+        patch.object(flow, "_metrics_from_parsed_reports", return_value=metrics),
+    ):
+        cached = flow._load_cached_metrics(
+            "default", work_root, "fingerprint", require_bitstream=False
+        )
+
+    assert cached is not None and cached.cached
+    assert cached.log_path == ""
+
+
+def test_numbered_log_publication_failure_does_not_skip_cache_store(
+    tmp_path: Path, state_file: Path
+) -> None:
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    flow._project_root = tmp_path
+    work_root = work_root_for(tmp_path, "fpga", "default")
+    prepared = _PreparedFpgaCommand(
+        ["make", "-C", str(work_root)],
+        work_root,
+        "fingerprint",
+        False,
+    )
+    process = SubprocessResult(returncode=0, stdout="route", stderr="")
+
+    with (
+        patch.object(flow, "_prepare_fpga_command", return_value=prepared),
+        patch.object(flow, "_execute_boundary", return_value=process),
+        patch.object(flow, "_collect_vivado_evidence", return_value="status: pass"),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value={"status": "pass", "lut_count": 1, "ff_count": 1},
+        ),
+        patch.object(
+            flow,
+            "_metrics_from_parsed_reports",
+            return_value=FpgaMetrics(lut_count=1, ff_count=1, wns_ns=0.1, whs_ns=0.1),
+        ),
+        patch("booley.flows.fpga.flow.artifacts.publish_bytes", side_effect=OSError("disk full")),
+        patch("booley.flows.fpga.flow.fpga_cache.store") as store,
+    ):
+        metrics = flow._run_single_target("default")
+
+    assert metrics.log_path == ""
+    store.assert_called_once()
 
 
 def test_relative_ticket_criterion_auto_applies_pinned_baseline(
@@ -264,11 +330,13 @@ def test_changed_fpga_recipe_is_evidence_not_a_rejection(
         "flow": "fpga",
         "target": "default",
         "flow_options": {"part": "old"},
+        "constraints": [],
     }
     current_snapshot = {
         "flow": "fpga",
         "target": "default",
         "flow_options": {"part": "new"},
+        "constraints": [],
     }
     flow.state.init_criteria(
         {"fpga_impl_ok_default": True},
@@ -500,7 +568,7 @@ def test_run_rejects_non_fpga_axis_before_setup(
 
     with pytest.raises(
         IncompatibleTargetError,
-        match=r"booley targets --for-flow fpga",
+        match=r"booley targets --for fpga",
     ):
         flow._run()
 
@@ -1327,6 +1395,45 @@ class TestFailureTailSurfacesStderr:
         assert "stderr tail" not in tail
 
 
+class TestVivadoFailureClassification:
+    def test_passing_route_ignores_incidental_missing_program_text(self) -> None:
+        metrics = FpgaMetrics(returncode=0, lut_count=10, ff_count=5)
+        process = SubprocessResult(
+            returncode=0,
+            stdout="/bin/sh: lsb_release: command not found\n",
+            stderr="",
+        )
+
+        FpgaImplFlow._apply_vivado_failure(
+            FpgaImplFlow(), metrics, process, "", process.stdout, process.stderr
+        )
+
+        assert metrics.returncode == 0
+        assert metrics.infra_error == ""
+
+    def test_fresh_synth_runlog_syntax_error_is_design_failure(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        flow = _flow(tmp_path, state_file)
+        work_root = tmp_path / "wr"
+        synth_dir = work_root / "dut.runs" / "synth_1"
+        synth_dir.mkdir(parents=True)
+        runlog = synth_dir / "runme.log"
+        diagnostic = "ERROR: [Synth 8-2715] syntax error near 'endmodule' [dut.sv:9]"
+        runlog.write_text(diagnostic + "\n", encoding="utf-8")
+        now = time.time()
+        os.utime(runlog, (now, now))
+
+        evidence = flow._collect_vivado_evidence(work_root, min_mtime=now - 1)
+        failure = flow._classify_vivado_failure(
+            SubprocessResult(returncode=1, stdout="", stderr=""), evidence
+        )
+
+        assert failure is not None
+        assert failure.kind == "design"
+        assert diagnostic in failure.diagnostic
+
+
 # ===========================================================================
 # Timeout resolution (unified with asic_synthesize, change #2)
 # ===========================================================================
@@ -1427,7 +1534,7 @@ class TestFailureCapture:
         assert "stderr tail" in report["metrics"]["failure_output"]
         # The impl run dir holding the route reports is named (the report points
         # at directories, not a per-file inventory).
-        assert report["metrics"]["artifacts"]["dirs"]["impl"].endswith("impl_1")
+        assert report["metrics"]["artifacts"]["live_dirs"]["impl"].endswith("impl_1")
         # A run.log was persisted for this PRIMARY run.
         assert report["metrics"]["log_path"].endswith("run.log")
         assert (tmp_path / report["metrics"]["log_path"]).is_file()
@@ -1516,7 +1623,7 @@ class TestArtifactPointers:
         current = _metrics_detail(metrics)
         baseline = _metrics_detail(metrics, baseline=True)
 
-        assert current["artifacts"]["dirs"]["impl"] == "build/proj.runs/impl_1"
+        assert current["artifacts"]["live_dirs"]["impl"] == "build/proj.runs/impl_1"
         assert "artifacts" not in baseline
         # The parsed numbers stay either way — only the pointer block goes.
         assert baseline["lut_count"] == 10
@@ -1532,7 +1639,7 @@ class TestArtifactPointers:
 
         assert detail["artifacts"] == {
             "log": "build/run.log",
-            "dirs": {"impl": "build/impl_1"},
+            "live_dirs": {"impl": "build/impl_1"},
         }
 
 

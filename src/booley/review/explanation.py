@@ -198,9 +198,9 @@ def _section_cards(title: str, sections: tuple[ExplanationSection, ...]) -> str:
 def _criteria_table(package: Mapping[str, Any]) -> str:
     rows = "".join(
         "<tr>"
-        f"<td>{escape(str(row['criterion']))}</td>"
+        f"<td>{escape(str(row.get('label', row['criterion'])))}</td>"
         f"<td>{escape(str(row['outcome']))}</td>"
-        f"<td>{escape(str(row['freshness']))}</td>"
+        f"<td>{escape(_freshness_label(row))}</td>"
         "</tr>"
         for row in package.get("criteria", [])
     )
@@ -209,6 +209,19 @@ def _criteria_table(package: Mapping[str, Any]) -> str:
         + rows
         + "</table></section>"
     )
+
+
+def _freshness_label(row: Mapping[str, Any]) -> str:
+    freshness = str(row["freshness"])
+    categories = row.get("changed_categories")
+    if freshness != "stale":
+        return freshness
+    suffix = (
+        f" ({', '.join(str(item) for item in categories)})"
+        if isinstance(categories, list) and categories
+        else ""
+    )
+    return f"STALE{suffix}"
 
 
 def _review_dispositions_table(package: Mapping[str, Any]) -> str:

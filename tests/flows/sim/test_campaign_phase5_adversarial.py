@@ -18,11 +18,15 @@ from booley.flows.sim.campaign.codec import (
 )
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
+    CampaignPublicationError,
     NewCampaignRunRequest,
     ResumeCampaignRunRequest,
     SimulationCampaign,
 )
-from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
+from booley.flows.sim.campaign.coverage_execution import (
+    CoverageAggregateExecutor,
+    _CoverageAggregateError,
+)
 from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import (
@@ -37,13 +41,19 @@ from booley.flows.sim.coverage_invocation import (
     prepare_coverage_invocation,
 )
 from booley.flows.sim.execution.contract import (
+    PreSimEvidence,
     SimulationArtifactEvidence,
     SimulationPreview,
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.flow import _campaign_report_lines, _campaign_structured_details
-from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from booley.flows.sim.flow import (
+    _campaign_report_lines,
+    _campaign_structured_details,
+    _compact_coverage_number,
+    _coverage_report_suffix,
+)
+from booley.flows.sim.verilator_coverage import SimulationBuildResult, SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.flows.sim.test_campaign_crash_matrix import (
@@ -53,6 +63,37 @@ from tests.flows.sim.test_campaign_crash_matrix import (
 )
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(50.0, "50"), (200 / 3, "66.66666666666667"), (1e-5, "0.00001")],
+)
+def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected) -> None:
+    assert _compact_coverage_number(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("collection", "evaluation", "expected"),
+    [
+        (
+            {"status": "collector_error", "diagnostics": ()},
+            {"status": "not_requested", "diagnostics": (), "metrics": ()},
+            "coverage collection COLLECTOR_ERROR · evaluation NOT_REQUESTED",
+        ),
+        (
+            {"status": "complete", "diagnostics": ()},
+            {"status": "fail", "diagnostics": (), "metrics": ()},
+            "coverage collection COMPLETE · evaluation FAIL",
+        ),
+    ],
+)
+def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
+    collection, evaluation, expected
+) -> None:
+    campaign = SimpleNamespace(collection=collection, evaluation=evaluation)
+
+    assert _coverage_report_suffix(campaign) == expected
 
 
 def _facts(
@@ -375,7 +416,7 @@ def _run_coverage_campaign(root: Path, native: NativeExecution, *, runtime_input
     plan, target = _coverage_campaign_plan(root, runtime_input=runtime_input)
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
-        execution_factory=lambda _plan, _options: native,
+        execution_factory=lambda _plan, _options, _commands, _access: native,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -386,6 +427,42 @@ def _run_coverage_campaign(root: Path, native: NativeExecution, *, runtime_input
     return outcome, CampaignStore(invocation / "targets/sim_0/campaign")
 
 
+def _rewrite_nested_coverage_v3(path: Path, *, invalid_scores: bool = False) -> None:
+    document = json.loads(path.read_text())
+    if document["$schema"] == "booley.coverage-campaign/v4":
+        document["$schema"] = "booley.coverage-campaign/v3"
+        del document["scoring"]
+    if invalid_scores:
+        document["collection"]["status"] = "collector_error"
+        document["normalization"]["status"] = "partial"
+    path.write_text(json.dumps(document))
+
+
+def _retain_v3_before_reference(monkeypatch: pytest.MonkeyPatch, *, invalid_scores=False) -> None:
+    from booley.flows.sim import coverage_transaction
+
+    original = coverage_transaction.publish_coverage_campaign
+
+    def publish_v3_campaign(target_dir, campaign):
+        paths = original(target_dir, campaign)
+        _rewrite_nested_coverage_v3(paths.campaign, invalid_scores=invalid_scores)
+        return paths
+
+    monkeypatch.setattr(coverage_transaction, "publish_coverage_campaign", publish_v3_campaign)
+
+
+def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
+    node = ValidatedManifestNode(
+        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
+    )
+    return ValidatedResumeManifest(
+        node,
+        (),
+        (target.handle,),
+        (ValidatedTargetBinding(node, root.resolve(), target.handle),),
+    )
+
+
 def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
@@ -394,6 +471,65 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
 
     assert outcome.complete is True
     assert native.executed_original is False
+
+
+def test_coverage_resume_reuses_retained_valid_v3_nested_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _retain_v3_before_reference(monkeypatch)
+    plan, target = _coverage_campaign_plan(tmp_path)
+    native = NativeExecution()
+    executor = CoverageAggregateExecutor(
+        plans={target.handle.identity: target},
+        execution_factory=lambda _plan, _options, _commands, _access: native,
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    campaign = SimulationCampaign(executor)
+    first = campaign.run(
+        NewCampaignRunRequest(
+            plan,
+            tmp_path,
+            invocation.parent,
+            CampaignPolicy(),
+            invocation,
+            _unmanaged(),
+        )
+    )
+    store = CampaignStore(invocation / "targets/sim_0/campaign")
+    validated = _validated_resume(store, plan, target, tmp_path)
+
+    resumed = campaign.run(
+        ResumeCampaignRunRequest(
+            validated,
+            plan,
+            tmp_path,
+            invocation.parent,
+            CampaignPolicy(),
+            invocation,
+            _unmanaged(),
+        )
+    )
+
+    assert first.complete is True
+    assert resumed.complete is True
+    assert len(native.runs) == 2
+    assert resumed.coverage_reference["coverage_campaign"]["schema"] == (
+        "booley.coverage-campaign/v3"
+    )
+
+
+def test_coverage_campaign_rejects_score_bearing_invalid_v3_nested_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _retain_v3_before_reference(monkeypatch, invalid_scores=True)
+
+    with pytest.raises(
+        CampaignPublicationError, match="nested Coverage Campaign cannot be authenticated"
+    ) as caught:
+        _run_coverage_campaign(tmp_path, NativeExecution())
+
+    assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
 
 
 def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(
@@ -413,6 +549,68 @@ def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_t
     )
     build = json.loads((attempt / "private-build/build-result.json").read_bytes())
     assert build["elapsed_seconds"] > 0
+
+
+def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path) -> None:
+    class PreSimFailure(NativeExecution):
+        def run(self, request):
+            self.runs.append(request)
+            evidence = PreSimEvidence(
+                ("prepare-vectors",),
+                (request.test.name,),
+                "failed",
+                0.2,
+                "vector generator rejected input",
+            )
+            return SimulationRunResult("elab_error", evidence.detail, evidence)
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a Pre-Sim failure")
+
+    outcome, store = _run_coverage_campaign(tmp_path, PreSimFailure())
+
+    assert outcome.complete is True
+    result = store.scan().items[0].result
+    assert result is not None
+    observations = result.document["observations"]
+    assert observations[0]["execution"] == "completed"
+    assert observations[0]["detail"]["reason"] == (
+        "Pre-Sim Commands failed (failed): vector generator rejected input"
+    )
+
+
+def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:
+    class PreSimSpawnError(NativeExecution):
+        def run(self, request):
+            evidence = PreSimEvidence(
+                ("missing-vector-generator",),
+                (request.test.name,),
+                "spawn_error",
+                0.2,
+                "missing-vector-generator: command not found",
+            )
+            return SimulationRunResult(
+                "elab_error", evidence.detail, evidence, infrastructure_error=True
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a Pre-Sim spawn error")
+
+    with pytest.raises(_CoverageAggregateError, match="missing-vector-generator") as raised:
+        _run_coverage_campaign(tmp_path, PreSimSpawnError())
+
+    assert raised.value.evaluation_status == "not_requested"
+    nested = next(
+        (tmp_path / "reports/1/targets/sim_0").glob(
+            "campaign/work-items/*/attempts/*/coverage-campaign/coverage.json"
+        )
+    )
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    assert document["collection"]["status"] == "collector_error"
+    never_run = document["tests"]["runs"][1]
+    assert never_run["execution"] == "not_run"
+    assert never_run["failure_kind"] == "infrastructure"
+    assert "termination" not in never_run
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:
@@ -435,7 +633,7 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
 def test_coverage_infrastructure_build_failure_has_no_terminal_result(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(_CoverageAggregateError):
         _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=True))
 
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
@@ -491,9 +689,6 @@ class _CocotbGroup:
 
     def bind_authenticated_bundle(self, evidence) -> None:
         assert evidence == _build_execution()
-
-    def reuse_compilation_from(self, source) -> None:
-        assert source is not None
 
     def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
         del snapshot_root, run_cwd
@@ -808,4 +1003,6 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
         observations=({"detail": {"reason": "intentional simulator failure"}},),
     )
 
-    assert "intentional simulator failure" in _campaign_report_lines((outcome,))[0]
+    assert _campaign_report_lines((outcome,))[0] == (
+        "sim_fail: FAIL (Simulation Campaign unavailable)\n  intentional simulator failure"
+    )

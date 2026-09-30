@@ -16,6 +16,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shlex
@@ -26,7 +27,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -67,16 +68,27 @@ from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
+from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 from booley.runtime.project_dir import PROJECT_DIR_NAME
-from booley.runtime.timefmt import format_human_datetime
+from booley.runtime.project_repositories import (
+    inspect_symbolic_branch,
+    is_git_worktree_root,
+)
+from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
+from booley.ticket_board.board_layout import documents_in_state, locate_document
+from booley.ticket_board.cli import add_all_tickets_flag
+from booley.ticket_board.cli_handlers import reject_all_outside_listing, show_board_view
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.legacy_layout import LegacyBoardLayoutError, require_current_layout
+from booley.ticket_board.lifecycle import TicketState
 
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
+    from booley.ticket_board.readiness import ReadinessResult
 
 # --- Constants ---
 LOOP_LOG_REL = Path("logs") / "booley.log"
@@ -168,17 +180,12 @@ def setup_logging(project_root: Path, verbose: bool = False) -> None:
     console = logging.StreamHandler(sys.stdout)
     if verbose:
         console.setLevel(logging.DEBUG)
-        console.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)-8s %(message)s",
-                datefmt="%H:%M:%S",
-            )
-        )
+        console.setFormatter(UtcLogFormatter("%(asctime)s %(levelname)-8s %(message)s"))
     else:
         console.setLevel(logging.INFO)
         from booley.harness.logging_utils import TerseFormatter
 
-        console.setFormatter(TerseFormatter(datefmt="%H:%M:%S"))
+        console.setFormatter(TerseFormatter())
     logger.addHandler(console)
 
     # File handler (full timestamps, always DEBUG).
@@ -189,9 +196,7 @@ def setup_logging(project_root: Path, verbose: bool = False) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
-    from booley.harness.logging_utils import HumanDateFormatter
-
-    fh.setFormatter(HumanDateFormatter("%(asctime)s %(levelname)-8s %(message)s"))
+    fh.setFormatter(UtcLogFormatter("%(asctime)s %(levelname)-8s %(message)s"))
     logger.addHandler(fh)
 
     logger.setLevel(logging.DEBUG)
@@ -290,23 +295,19 @@ def get_ticket_counts(project_root: Path) -> dict[str, int]:
 
 
 def get_active_slugs(project_root: Path) -> list[str]:
-    """Return slugs of tickets currently in active/."""
+    """Return slugs of tickets currently running."""
     tickets_dir = tickets_dir_from_project_root(project_root)
-    active_dir = tickets_dir / "board" / "active"
-    if not active_dir.exists():
-        return []
-    return [p.stem for p in active_dir.glob("*.md")]
+    return [p.stem for p in documents_in_state(tickets_dir, TicketState.RUNNING)]
 
 
 def get_ticket_summary(project_root: Path, slug: str) -> str:
     """Extract ticket summary from frontmatter."""
     tickets_dir = tickets_dir_from_project_root(project_root)
-    for d in ("drafts", "queue", "waiting", "active", "blocked", "review", "done"):
-        p = tickets_dir / "board" / d / f"{slug}.md"
-        if p.exists():
-            for line in p.read_text(encoding="utf-8").splitlines():
-                if line.startswith("summary:"):
-                    return line[len("summary:") :].strip().strip('"')
+    located = locate_document(tickets_dir, slug)
+    if located is not None:
+        for line in located[0].read_text(encoding="utf-8").splitlines():
+            if line.startswith("summary:"):
+                return line[len("summary:") :].strip().strip('"')
     return slug
 
 
@@ -491,9 +492,10 @@ def _add_board_subparsers(sub) -> None:
     # driving the board for another checkout meant cd-ing or exporting env.
     root_opt = _project_root_parent()
     board_p = sub.add_parser("board", help="Ticket board operations", parents=[root_opt])
+    add_all_tickets_flag(board_p)
     board_sub = board_p.add_subparsers(
         dest="board_command",
-        metavar="{show,review,approve,validate,create,move,reset,archive}",
+        metavar="{show,review,approve,validate,check-ready,create,move,reset,archive}",
     )
 
     _add_board_review_subparsers(board_sub, root_opt)
@@ -501,11 +503,22 @@ def _add_board_subparsers(sub) -> None:
     create_p = board_sub.add_parser("create", help="Create a new ticket draft", parents=[root_opt])
     create_p.add_argument("slug", help="Ticket slug")
 
+    ready_p = board_sub.add_parser(
+        "check-ready", help="Inspect Ticket readiness without starting work", parents=[root_opt]
+    )
+    ready_p.add_argument("slug", help="Ticket slug")
+
     move_p = board_sub.add_parser("move", help="Move ticket between states", parents=[root_opt])
     move_p.add_argument("slug", help="Ticket slug")
     move_p.add_argument("target", choices=["queue", "done"], help="Target state")
     move_p.add_argument("--feedback", default="", help="Feedback when moving blocked->queue")
 
+    _add_board_reset_subparser(board_sub, root_opt)
+    _add_board_archive_subparser(board_sub, root_opt)
+
+
+def _add_board_reset_subparser(board_sub, root_opt) -> None:
+    """Register ``booley board reset``."""
     reset_p = board_sub.add_parser(
         "reset", help="Full reset (wipe logs, worktree, branch)", parents=[root_opt]
     )
@@ -521,18 +534,22 @@ def _add_board_subparsers(sub) -> None:
         help="Why a clean run is required (recorded in transition history)",
     )
 
+
+def _add_board_archive_subparser(board_sub, root_opt) -> None:
+    """Register ``booley board archive``."""
     archive_p = board_sub.add_parser(
-        "archive", help="Archive done tickets or a specific ticket", parents=[root_opt]
+        "archive", help="Abandon a live ticket, closing it as archived", parents=[root_opt]
     )
     archive_p.add_argument(
-        "slug", nargs="?", default=None, help="Specific ticket (default: all done/)"
+        "slug",
+        nargs="?",
+        default=None,
+        help="Live ticket to abandon (default: resume interrupted archives)",
     )
-    archive_p.add_argument("--keep-logs", action="store_true", help="Keep log directories")
-    archive_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Archive a ticket that is not 'done' (discards its state)",
-    )
+    # Accepted for one release so existing scripts keep working; logs are
+    # always kept now and archiving a live ticket needs no override.
+    archive_p.add_argument("--keep-logs", action="store_true", help=argparse.SUPPRESS)
+    archive_p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
 
 
 def _add_board_review_subparsers(board_sub, root_opt) -> None:
@@ -548,6 +565,7 @@ def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
         "show", help="Display the board or a prepared ticket briefing", parents=[root_opt]
     )
     show_p.add_argument("slug", nargs="?", help="Ticket to inspect")
+    add_all_tickets_flag(show_p, keep_parent=True)
     show_p.add_argument("--no-open-diffs", action="store_true", help="Do not open prepared diffs")
 
     review_p = board_sub.add_parser(
@@ -822,6 +840,17 @@ def _add_bootstrap_subparser(sub) -> None:
         action="store_true",
         help="Update Host Bootstrap after upgrading Booley",
     )
+    qa_skills = parser.add_mutually_exclusive_group()
+    qa_skills.add_argument(
+        "--with-qa-skills",
+        action="store_true",
+        help="Persist and reconcile maintainer QA skills from this primary main checkout",
+    )
+    qa_skills.add_argument(
+        "--without-qa-skills",
+        action="store_true",
+        help="Disable QA skills and remove only Booley-managed QA links",
+    )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show detailed reconciliation output"
     )
@@ -957,7 +986,9 @@ def _add_targets_subparser(sub) -> None:
         help="Target to detail (bare name or vlnv#name), or a glob like "
         "'soc*' to filter the listing",
     )
+    # --for is the advertised spelling; --for-flow stays as a long-form alias.
     targets_p.add_argument(
+        "--for",
         "--for-flow",
         dest="for_flow",
         metavar="FLOW",
@@ -1172,67 +1203,94 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
+    if not is_git_worktree_root(project_root):
+        print(
+            "Error: Project checkout must be the root of a Git worktree",
+            file=sys.stderr,
+        )
+        return False
+    if not tio.tickets_dir.is_dir():
+        print(
+            "Error: Project Ticket storage is not initialized; run 'booley init' first",
+            file=sys.stderr,
+        )
+        return False
+
+    branch_inspection = inspect_symbolic_branch(project_root)
+    if branch_inspection.branch is None:
+        detail = branch_inspection.detail
+        if detail:
+            message = f"cannot inspect the Project checkout branch: {detail}"
+        else:
+            message = "Project checkout has a detached HEAD; attach it to a branch first"
+        print(f"Error: {message}", file=sys.stderr)
+        return False
+
+    # Keep queue-required fields visible in the authoring stub even though
+    # its TODO placeholders deliberately leave it unready to queue.
+    branch = json.dumps(branch_inspection.branch)
+    stub = (
+        "---\n"
+        f"summary: {json.dumps('TODO: one-line description')}\n"
+        "type: feature\n"
+        f"branch: {branch}\n"
+        "scope: []\n"
+        "on_success: [triage_report, review, merge, cleanup]\n"
+        "CRITERIA_MANDATORY:\n"
+        "  REVIEW:\n"
+        "    rtl: {bugs: done}\n"
+        "---\n"
+        "\n## Description\n\nTODO: describe the change and update the Criteria.\n"
+    )
+    return tio.create_ticket_document(slug, stub) is not None
+
+
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.ticket_board.board_layout import StateRecordError
+    from booley.ticket_board.ticket_history import TicketHistoryError
+
+    try:
+        return _run_board_command(args, project_root)
+    except (LegacyBoardLayoutError, StateRecordError, TicketHistoryError) as exc:
+        # A broken state record fails closed: say which one instead of a traceback.
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _run_board_command(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.ticket_board.operations import READ_ONLY_BOARD_COMMANDS, open_board
+
+    _ensure_utf8_stdout()
+    board_cmd = getattr(args, "board_command", None)
+    listing = board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None))
+    rejected = reject_all_outside_listing(args, listing=listing)
+    if rejected is not None:
+        return rejected
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    open_board(tio, recover=board_cmd not in READ_ONLY_BOARD_COMMANDS)
+
+    if listing:
+        return show_board_view(tio, args)
+    if board_cmd == "check-ready":
+        from booley.ticket_board.readiness import check_ticket_ready
+
+        return _render_ticket_readiness(args.slug, check_ticket_ready(project_root, args.slug))
+
+    edit = _board_edit_command(args, tio, project_root)
+    if edit is not None:
+        return edit
+    return _run_board_review_command(args, tio, project_root)
+
+
+def _ensure_utf8_stdout() -> None:
+    """Switch stdout to UTF-8 so board tables with non-ASCII text never crash."""
     if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 
-    board_cmd = getattr(args, "board_command", None)
 
-    if board_cmd is None or (board_cmd == "show" and not getattr(args, "slug", None)):
-        from booley.ticket_board.io import scan_all_tickets
-        from booley.ticket_board.reporting import display_board
-
-        tickets_dir = tickets_dir_from_project_root(project_root)
-        display_board(
-            scan_all_tickets(tickets_dir, project_root=project_root),
-            tickets_dir=tickets_dir,
-        )
-        return 0
-
-    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-
-    if board_cmd == "create":
-        # The stub must spell out what queueing requires (A-4): a draft with
-        # no scope/criteria and no '## Description' fails validation on the
-        # first `board move <slug> queue`, and the schema was otherwise only
-        stub = (
-            "---\n"
-            "summary: TODO: one-line description\n"
-            "type: feature\n"
-            "branch: main\n"
-            "scope: []\n"
-            "on_success: [triage_report, review, merge, cleanup]\n"
-            "CRITERIA_MANDATORY:\n"
-            "  REVIEW:\n"
-            "    rtl: {bugs: done}\n"
-            "---\n"
-            "\n## Description\n\nTODO: describe the change and update the Criteria.\n"
-        )
-        result = tio.create_ticket_document(args.slug, stub)
-        return 0 if result else 1
-
-    if board_cmd == "move":
-        from booley.ticket_board.operations import op_board_move
-
-        ok = op_board_move(
-            tio,
-            args.slug,
-            args.target,
-            feedback=args.feedback,
-        )
-        return 0 if ok else 1
-
-    if board_cmd == "reset":
-        from booley.ticket_board.operations import op_reset
-
-        ok = op_reset(
-            tio,
-            args.slug,
-            force=getattr(args, "force", False),
-            reason=getattr(args, "reason", "user reset ticket"),
-        )
-        return 0 if ok else 1
-
+def _run_board_review_command(args: argparse.Namespace, tio: TicketIO, project_root: Path) -> int:
+    """Run a show/review/archive-family board command; 1 for an unknown command."""
     special = {
         "show": lambda: _cmd_board_show(args, project_root),
         "review": lambda: _cmd_board_review(args, project_root),
@@ -1246,23 +1304,41 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         "prepare-review": lambda: _cmd_board_prepare_review(args, project_root),
         "review-briefing": lambda: _cmd_board_review_briefing(args, project_root),
         "blocked-briefing": lambda: _cmd_board_blocked_briefing(args, project_root),
-    }.get(board_cmd)
-    if special is not None:
-        return special()
+    }.get(getattr(args, "board_command", None))
+    return special() if special is not None else 1
 
-    return 1
+
+def _board_edit_command(args: argparse.Namespace, tio: TicketIO, project_root: Path) -> int | None:
+    """Run ``create``, ``move`` or ``reset``; ``None`` for any other command."""
+    board_cmd = getattr(args, "board_command", None)
+    if board_cmd == "create":
+        return 0 if _cmd_board_create(tio, args.slug, project_root) else 1
+    if board_cmd == "move":
+        from booley.ticket_board.operations import op_board_move
+
+        return 0 if op_board_move(tio, args.slug, args.target, feedback=args.feedback) else 1
+    if board_cmd == "reset":
+        from booley.ticket_board.operations import op_reset
+
+        ok = op_reset(
+            tio,
+            args.slug,
+            force=getattr(args, "force", False),
+            reason=getattr(args, "reason", "user reset ticket"),
+        )
+        return 0 if ok else 1
+    return None
 
 
 def _cmd_board_archive(args: argparse.Namespace, tio: TicketIO) -> int:
-    from booley.ticket_board.archive import op_archive, report_archive_outcome
+    from booley.ticket_board.archive import run_archive_command
 
-    outcome = op_archive(
+    return run_archive_command(
         tio,
-        slug=args.slug,
-        keep_logs=getattr(args, "keep_logs", False),
+        args.slug,
         force=getattr(args, "force", False),
+        keep_logs=getattr(args, "keep_logs", False),
     )
-    return report_archive_outcome(outcome)
 
 
 def _cmd_requested_review(args: argparse.Namespace, project_root: Path, action: str) -> int:
@@ -1333,25 +1409,32 @@ def _cmd_board_approve(args: argparse.Namespace, project_root: Path) -> int:
     return 0 if ok else 1
 
 
+def _show_blocked_dossier(project_root: Path, slug: str) -> int:
+    from booley.harness.blocked_prep import render_blocked_dossier
+
+    dossier = render_blocked_dossier(project_root, slug)
+    if not dossier.ready:
+        print(f"ERROR: {dossier.message}; run booley board review {slug}", file=sys.stderr)
+        return 2
+    print(dossier.message)
+    return 0
+
+
 def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.io import TicketIO
 
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(args.slug)
+    board = tio.inspect_ticket(args.slug)
     if board is None:
-        print(f"ERROR: ticket {args.slug!r} not found", file=sys.stderr)
-        return 2
+        return _show_closed_ticket(tio, args.slug)
     slug = Path(board["file"]).stem
     status = board["status"]
+    if board.get("authored_drift"):
+        print(f"{board['authored_drift_reason']}; use return-to-draft")
+        return 0
     if status == "blocked":
-        from booley.harness.blocked_prep import render_blocked_dossier
-
-        dossier = render_blocked_dossier(project_root, slug)
-        if not dossier.ready:
-            print(f"ERROR: {dossier.message}; run booley board review {slug}", file=sys.stderr)
-            return 2
-        print(dossier.message)
-    if status in {"blocked", "review"}:
+        return _show_blocked_dossier(project_root, slug)
+    if status == "review":
         from booley.ticket_board.review_lifecycle import review_briefing_command
 
         outcome = review_briefing_command(
@@ -1360,11 +1443,25 @@ def _cmd_board_show(args: argparse.Namespace, project_root: Path) -> int:
             open_diffs=not args.no_open_diffs,
         )
         if outcome.status != "ready":
-            print(f"ERROR: {outcome.message}; run booley board review {slug}", file=sys.stderr)
+            print(f"ERROR: {outcome.message}", file=sys.stderr)
             return 2
         print(outcome.briefing)
         return 0
     print(f"{slug}: {status} — {board.get('summary', '')}")
+    return 0
+
+
+def _show_closed_ticket(tio: TicketIO, slug: str) -> int:
+    from booley.ticket_board.reporting import closed_ticket_summary
+    from booley.ticket_board.ticket_history import read_closed_ticket
+
+    closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+    if closed is None:
+        print(f"ERROR: ticket {slug!r} not found", file=sys.stderr)
+        return 2
+    outcome = closed.block.outcome.status
+    print(f"{closed.slug}: {outcome} — {closed_ticket_summary(closed)}")
+    print(f"closed {closed.block.date}; record: {closed.path}")
     return 0
 
 
@@ -1523,8 +1620,20 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
-    if sr.down(project_root):
-        print(f"removed {sr.session_container_name(project_root)}")
+    result = sr.down(project_root)
+    if result:
+        details = []
+        if result.headless:
+            details.append(f"removed {sr.session_container_name(project_root)}")
+        if result.vscode_stopped:
+            details.append("stopped VS Code Sandbox " + ", ".join(result.vscode_stopped))
+        if result.claim_cleared:
+            details.append("cleared pending editor start claim")
+        print("; ".join(details) or "removed Sandbox resources")
+        if result.claim_cleared:
+            print(
+                "Cancel any in-progress VS Code create before clearing its claim.", file=sys.stderr
+            )
     else:
         print("no Sandbox container for this folder")
     return 0
@@ -1577,6 +1686,8 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
     except FileNotFoundError:
         print("ERROR: docker not found on PATH.", file=sys.stderr)
         return 2
+    except LifecycleLockError:
+        raise
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -1739,22 +1850,19 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     from booley.targets.flow_names import canonical
 
     raw_name = getattr(args, "endpoint_name", None)
-    name = canonical(raw_name) if raw_name else None
-    if not name:
-        print(
-            f"ERROR: `booley {args.command}` needs a name.\n\nAvailable Flows:\n"
-            + _flow_listing([item for item in mcp_tools if item.kind == "flow"]),
-            file=sys.stderr,
-        )
-        return 2
+    flows = [item for item in mcp_tools if item.kind == "flow"]
+    if raw_name is None:
+        print(f"Available Flows:\n{_flow_listing(flows)}")
+        return 0
 
+    name = canonical(raw_name)
     info = next(
-        (t for t in mcp_tools if t.name == name and t.kind == "flow"),
+        (flow for flow in flows if flow.name == name),
         None,
     )
     if info is None:
         print(
-            f"ERROR: {name!r} is not a flow.\n",
+            f"ERROR: {name!r} is not a flow.\n\nAvailable Flows:\n{_flow_listing(flows)}",
             file=sys.stderr,
         )
         return 2
@@ -1823,11 +1931,11 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     as_json: bool = getattr(args, "json", False)
 
     if selector and not target_surface.is_glob(selector):
-        # Detail view. --for-flow is a listing filter — combining it with a single
+        # Detail view. --for is a listing filter — combining it with a single
         # Target would silently answer a different question, so refuse.
         if for_flow:
             print(
-                "ERROR: --for-flow filters the listing; it cannot combine with a "
+                "ERROR: --for filters the listing; it cannot combine with a "
                 "single-Target detail view.",
                 file=sys.stderr,
             )
@@ -1847,7 +1955,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     except fusesoc_registry.FuseSocError as exc:  # e.g. cross-root VLNV collision
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    except ValueError as exc:  # --for-flow names a non-Target-aware endpoint
+    except ValueError as exc:  # --for names a non-Target-aware endpoint
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
@@ -1962,15 +2070,19 @@ def _check_ticket_readiness(args: argparse.Namespace, project_root: Path) -> int
     """Run deterministic preparation and ticket/Target validation only."""
     from booley.ticket_board.readiness import check_ticket_ready
 
-    result = check_ticket_ready(project_root, args.ticket)
+    return _render_ticket_readiness(args.ticket, check_ticket_ready(project_root, args.ticket))
+
+
+def _render_ticket_readiness(slug: str, result: ReadinessResult) -> int:
+    """Render the shared observational Ticket readiness result."""
     for warning in result.warnings:
         print(warning, file=sys.stderr)
     if result.errors:
-        print(f"Ticket {args.ticket!r} is not ready:", file=sys.stderr)
+        print(f"Ticket {slug!r} is not ready:", file=sys.stderr)
         for error in result.errors:
             print(f"  - {error}", file=sys.stderr)
         return 2
-    print(f"Ticket {args.ticket!r} is ready")
+    print(f"Ticket {slug!r} is ready")
     return 0
 
 
@@ -1993,7 +2105,8 @@ def _print_banner(args: argparse.Namespace) -> None:
     print("  ╭━━━━━━━━━╮")
     print(f"  ┃  {bold_amber('0')}   {bold_amber('0')}  ┃  {booley_name}")
     print(f"  ┃    ᴗ    ┃  {dim(mode_label)}")
-    print(f"  ╰┯┯┯┯─┯┯┯┯╯  {dim(format_human_datetime(datetime.now(), seconds=True))}")
+    banner_time = format_human_datetime(datetime.now(UTC), seconds=True)
+    print(f"  ╰┯┯┯┯─┯┯┯┯╯  {dim(banner_time)}")
 
 
 @dataclass
@@ -2164,9 +2277,9 @@ def _run_harness(
 
     try:
         if args.slug:
-            # Claim early so the ticket moves to active/ before the harness
+            # Claim early so the ticket is running before the harness
             # subprocess starts. Without this, killing booley between launch
-            # and harness's init_ticket leaves the ticket stuck in queue/.
+            # and harness's init_ticket leaves the ticket stuck queued.
             _run_board(project_root, ["activate", args.slug])
             cmd.extend(["--ticket", args.slug])
         if args.verbose:
@@ -2222,7 +2335,8 @@ def _check_fast_failure(
 
 def _handle_limit_wait(limit_wait: int) -> str:
     """Sleep through a subscription limit cooldown; returns 'continue' or 'break'."""
-    resume_time = datetime.fromtimestamp(time.time() + limit_wait).strftime("%H:%M")
+    resume_instant = datetime.fromtimestamp(time.time() + limit_wait, tz=UTC)
+    resume_time = format_human_datetime(resume_instant)
     logger.debug(
         "Subscription limit detected -- sleeping %ds (until ~%s)", limit_wait, resume_time
     )
@@ -2502,8 +2616,8 @@ def _host_install_authority_error(command: str | None) -> str | None:
     return host_install_error(skills_dir())
 
 
-def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each command's exit code
-    """Entry point: parse CLI, handle early exits, set up runtime, run ticket loop."""
+def _dispatch_main() -> int:
+    """Parse CLI, handle early exits, set up runtime, and run the ticket loop."""
     args = _parse_cli()
     command = _effective_command(args)
 
@@ -2537,8 +2651,19 @@ def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each co
     early = _handle_early_exits(args, project_root)
     if early is not None:
         return early
-
     # Only 'run' subcommand reaches here.
+    return _run_ticket_command(args, project_root)
+
+
+def _run_ticket_command(args: argparse.Namespace, project_root: Path) -> int:
+    """Run ``booley run``: layout gate, then readiness check, preview, or ticket loop."""
+    # An old-layout board looks empty, so the runner would idle on it instead
+    # of saying why.
+    try:
+        require_current_layout(tickets_dir_from_project_root(project_root))
+    except LegacyBoardLayoutError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     if args.check_ready:
         return _check_ticket_readiness(args, project_root)
     if args.dry_run:
@@ -2547,6 +2672,15 @@ def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each co
     venv_py = _setup_runtime(args, project_root)
     _print_banner(args)
     return _ticket_loop(args, project_root, venv_py)
+
+
+def main() -> int:
+    """Run the CLI with one rendering boundary for lifecycle contention."""
+    try:
+        return _dispatch_main()
+    except LifecycleLockError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

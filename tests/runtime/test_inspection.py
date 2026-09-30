@@ -589,7 +589,13 @@ class TestDevcontainerSpecStaleness:
         dc.write_devcontainer(tmp_path, spec)
         # Real temporary-directory Git inspection reports no tracked spec.
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
-        monkeypatch.setattr(idk, "image_id", lambda image: None)
+        monkeypatch.setattr(
+            inspection.idk,
+            "compare_issued_selection",
+            lambda *_args, **_kwargs: inspection.image_identity.Comparison(
+                inspection.image_identity.Status.UNKNOWN
+            ),
+        )
         rec = _Rec()
 
         _record_report(
@@ -617,16 +623,19 @@ class TestDevcontainerSpecStaleness:
             for level, message in rec.events
         )
 
-    def test_immutable_image_pin_mismatch_warns_when_resolution_succeeds(
-        self, tmp_path, monkeypatch
-    ):
+    def test_same_source_immutable_image_tag_move_passes(self, tmp_path, monkeypatch):
         old_id = "sha256:" + "a" * 64
-        current_id = "sha256:" + "b" * 64
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id)
         dc.write_devcontainer(tmp_path, spec)
         # Real temporary-directory Git inspection reports no tracked spec.
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
-        monkeypatch.setattr(idk, "image_id", lambda image: current_id)
+        monkeypatch.setattr(
+            inspection.idk,
+            "compare_issued_selection",
+            lambda *_args, **_kwargs: inspection.image_identity.Comparison(
+                inspection.image_identity.Status.MATCH
+            ),
+        )
         rec = _Rec()
 
         _record_report(
@@ -648,10 +657,64 @@ class TestDevcontainerSpecStaleness:
         )
 
         assert rec.fails() == []
-        assert any(
-            level == "warn" and old_id in message and dc.SANDBOX_IMAGE in message
-            for level, message in rec.events
+        assert not any(level == "warn" for level, _message in rec.events)
+
+    def test_logical_image_switch_warns(self, tmp_path, monkeypatch):
+        old_id = "sha256:" + "a" * 64
+        dc.write_devcontainer(
+            tmp_path,
+            dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id),
         )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
+        monkeypatch.setattr(
+            inspection.idk,
+            "compare_issued_selection",
+            lambda *_args, **_kwargs: inspection.image_identity.Comparison(
+                inspection.image_identity.Status.MISMATCH,
+                "sandbox_flavor standard -> riscv",
+            ),
+        )
+        rec = _Rec()
+
+        _record_report(
+            inspection.inspect_runtime(
+                inspection.RuntimeInspectionRequest(tmp_path, dc.SANDBOX_IMAGE, None)
+            ).configuration,
+            passed=rec.p,
+            warned=rec.w,
+            failed=rec.f,
+            noted=rec.n,
+        )
+
+        assert any(level == "warn" and "stale" in message for level, message in rec.events)
+
+    def test_rebuilt_external_image_warns_despite_inherited_labels(self, tmp_path, monkeypatch):
+        old_id = "sha256:" + "a" * 64
+        dc.write_devcontainer(
+            tmp_path,
+            dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id),
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
+        monkeypatch.setattr(
+            inspection.idk,
+            "compare_issued_reference",
+            lambda *_args, **_kwargs: inspection.image_identity.Comparison(
+                inspection.image_identity.Status.MISMATCH
+            ),
+        )
+        rec = _Rec()
+
+        _record_report(
+            inspection.inspect_runtime(
+                inspection.RuntimeInspectionRequest(tmp_path, "custom-sandbox", None)
+            ).configuration,
+            passed=rec.p,
+            warned=rec.w,
+            failed=rec.f,
+            noted=rec.n,
+        )
+
+        assert any(level == "warn" and "stale" in message for level, message in rec.events)
 
     def test_agent_app_drift_fails(self, tmp_path, monkeypatch):
         # The picorv32 shape, hit live 2026-07-27: the project switched to

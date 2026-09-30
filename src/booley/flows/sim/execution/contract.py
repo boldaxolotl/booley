@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.build import BuildOutcome
 
 SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "crash", "inconclusive"]
@@ -43,15 +44,18 @@ SimulationSelection = NamedTests | DefaultSelection
 
 @dataclass(frozen=True)
 class SimulationOptions:
-    """Root-independent invocation policy supplied by the Flow."""
+    """Root-independent policy resolved once by Flow composition."""
 
     trace: bool = False
     timeout_ms: int | None = None
+    build_timeout_ms: int | None = None
     result_verbosity: str = "compact"
 
     def __post_init__(self) -> None:
         if self.timeout_ms is not None and self.timeout_ms <= 0:
             raise InvalidSimulationRequestError("Simulation timeout must be positive")
+        if self.build_timeout_ms is not None and self.build_timeout_ms <= 0:
+            raise InvalidSimulationRequestError("Simulation build timeout must be positive")
         if self.result_verbosity not in {"compact", "full"}:
             raise InvalidSimulationRequestError(
                 "Simulation result verbosity must be 'compact' or 'full'"
@@ -67,6 +71,12 @@ class PreSimEvidence:
     status: PreSimStatus
     elapsed_s: float
     detail: str = ""
+
+
+def pre_sim_failure_message(status: PreSimStatus, detail: str = "") -> str:
+    """Render one stable diagnostic for a failed Pre-Sim Commands firing."""
+    message = f"Pre-Sim Commands failed ({status})"
+    return f"{message}: {detail}" if detail else message
 
 
 @dataclass(frozen=True)
@@ -104,6 +114,9 @@ class SimulationTestOutcome:
     cycles: int | None = None
     cycle_status: str = "missing"
     inconclusive: bool = False
+    termination: RunTerminationKind = "completed"
+    failure_kind: SimulationFailureKind = ""
+    simulator_returncode: int | None = None
     reason: str = ""
     sva_errors: int = 0
     error_tail: str = ""
@@ -168,4 +181,5 @@ __all__ = [
     "SimulationTargetOutcome",
     "SimulationTestOutcome",
     "SimulationVerdict",
+    "pre_sim_failure_message",
 ]

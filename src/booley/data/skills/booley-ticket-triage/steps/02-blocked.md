@@ -34,7 +34,7 @@ failures; do not run a new report agent while the user waits.
 
 ## 1. Gather Context
 
-- Read ticket from `blocked/<file>`.
+- Read the ticket document `tickets/board/<slug>.md`.
 - Read `logs/<slug>/human-logs/transitions.log`; the last transition line has the board-level block reason.
 - Read `logs/<slug>/blocked.md` if present; it may contain agent questions or the developer exception.
 - Run `python -m booley.ticket_board validate-logs $SLUG`.
@@ -124,7 +124,7 @@ Choose the applicable resolution from the recorded blockers. Show the exact
 before/after Criteria and Scope when proposing an amendment. An existing Human
 approval of those exact edits authorizes applying them; do not ask again.
 
-- **Unblock (default retry)**: `unblock` moves the ticket blocked→queue, **preserves** the worktree/branch/logs, and appends your feedback to `blocked.md` so the developer reads it on resume. This is the retry-with-feedback path — use it whenever you have diagnosis or answers to pass forward.
+- **Unblock (default retry)**: `unblock` changes the ticket's state from `blocked` to `queued`, **preserves** the worktree/branch/logs, and appends your feedback to `blocked.md` so the developer reads it on resume. This is the retry-with-feedback path — use it whenever you have diagnosis or answers to pass forward.
 - **Amend (approved requirement relaxation)**: `amend` can lower a declared
   floor, raise a ceiling, make an existing mandatory Criterion optional, or add
   Scope. It preserves all Criteria, existing implementation and evidence history,
@@ -135,7 +135,8 @@ approval of those exact edits authorizes applying them; do not ask again.
 - **Requested review**: `board review --request` gives the Human an unaccepted view of
   the current blocked work and unmet gates when interactive verification is wanted.
 - **Reset (clean execution retry)**: `reset` archives the current run artifacts,
-  recreates the worktree and branch from the same immutable Ticket baseline,
+  discards implementation state and restores all participant worktrees and
+  branches from the same immutable Ticket baseline,
   and re-runs from the beginning. It takes **no feedback** (any feedback you
   compose is lost). Use only when the worktree is known-bad and a fresh
   execution against the original Ticket baseline is required.
@@ -148,6 +149,18 @@ approval of those exact edits authorizes applying them; do not ask again.
   validate the draft, and enqueue it to record a new immutable Ticket baseline.
   `unblock` and `reset` retain the original baseline and are rejected for
   this block reason.
+  A legacy v2-writer defect needs narrower recovery when diagnosis proves that
+  only authored body whitespace was stripped by a metadata rewrite:
+  - If the Ticket is still queued, restore only the known original body
+    whitespace, preserving its current `machine`, `created`, and
+    `feature_branch`. Never restore an older generated section or restamp
+    `machine.authored_sha256`. Run `booley board check-ready <slug>`; only when
+    it passes may normal Ticket execution continue.
+  - If the Ticket is already blocked with `acceptance-input-change-required`,
+    recreate it as a new Ticket. `unblock` is rejected for this sentinel, and
+    `return-to-draft` cannot validate the mismatched old generation.
+  - If body-only repair does not make readiness pass, stop repairing the old
+    generation and recreate the Ticket.
 - **Archive**: give up on this ticket.
 - **Skip**: leave as-is.
 
@@ -180,8 +193,8 @@ For an unblock retry:
   tightening. Then run:
 
   ```bash
-  booley board amend "$SLUG" --changes-file "$FILE" --preview
-  booley board amend "$SLUG" --changes-file "$FILE" --apply --expected-preview "$DIGEST"
+  python -m booley.ticket_board amend "$SLUG" --changes-file "$FILE" --preview
+  python -m booley.ticket_board amend "$SLUG" --changes-file "$FILE" --apply --expected-preview "$DIGEST"
   ```
 
   Show the preview before apply, including the zero-mandatory outcome when
@@ -204,8 +217,9 @@ For an unblock retry:
   2. Correct the authoring filesets and any other Ticket baseline inputs in
      the returned `outer_worktree` and `project_worktree` (when present), and
      update the draft Ticket when its authored fields must change.
-  3. Resolve the moved Ticket's absolute path under the Project's
-     `tickets/board/drafts/` directory, then run
+  3. The draft Ticket is still at the Project's `tickets/board/$SLUG.md`
+     (return-to-draft removes only its state record).
+     Resolve the draft Ticket's absolute path, then run
      `python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git`
      and fix every error before continuing.
   4. Run `python -m booley.ticket_board enqueue "$SLUG"` to publish the new
@@ -215,7 +229,7 @@ For an unblock retry:
   Do not use the main checkout for the authoring corrections: use the worktree
   paths emitted as JSON by `return-to-draft`. This is a fresh Ticket draft,
   not an ordinary retry of the blocked execution.
-- **Archive**: Confirm first, then `python -m booley.ticket_board archive $SLUG --force` (or `booley board archive $SLUG --force`). `--force` is required because the ticket is not `done`; archive also removes the worktree and branch itself, so no manual `git branch -D` is needed.
+- **Archive**: Confirm first, then `python -m booley.ticket_board archive $SLUG` (or `booley board archive $SLUG`). Archive closes the ticket into Ticket History (`tickets/history/<slug>.md`, outcome `archived`), commits that record itself, keeps the logs, and removes the worktree and branch, so no manual `git branch -D`, file move, or commit is needed.
 - **Skip**: leave as-is.
 
 User can say "skip" to leave unchanged.

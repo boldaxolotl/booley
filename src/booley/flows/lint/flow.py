@@ -17,12 +17,18 @@ import logging
 import re
 import shlex
 import time
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.build_paths import work_root_for
 from booley.flows import eda_parsers
+from booley.flows.eda_failures import (
+    classify_eda_failure,
+    new_attempt_token,
+    render_failure_marker,
+)
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
 from booley.flows.plan import (
@@ -42,6 +48,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -74,44 +81,34 @@ def _lint_eda_tool_family(eda_tool: str | None) -> str:
 
     Mirrors :func:`booley.flows.sim.edam.normalize_eda_tool` (ADR 0022
     decision 8: the EDA tool comes from the resolved Target, not the
-    execution configuration). Everything that isn't Verible runs today's
-    Verilator path byte-for-byte — the flow default.
+    execution configuration).
     """
-    if eda_tool and "verible" in eda_tool.lower():
+    lowered = str(eda_tool or "").strip().lower()
+    if lowered == "verible":
         return "verible"
-    return "verilator"
+    if lowered == "verilator":
+        return "verilator"
+    raise ValueError(f"unknown lint EDA tool {eda_tool!r}; expected Verilator or Verible")
 
 
-# Stale-image detection (ADR 0033 decision 8): the make step failing because
-# the binary is absent must name the cause and the fix, not surface a generic
-# spawn failure. make/sh phrase it as ``verible-verilog-lint: not found`` (sh)
-# or ``No such file or directory`` (make's exec).
-_VERIBLE_MISSING_RE = re.compile(
-    r"verible-verilog-lint[^\n]*(?:not found|No such file)",
-    re.IGNORECASE,
-)
-_VERIBLE_STALE_IMAGE_MSG = (
-    "verible-verilog-lint is not installed in the Sandbox — the "
-    "sandbox image predates Verible support (ADR 0033). Rebuild the image "
-    "(booley init) and retry."
-)
-
-
-def _verible_missing_msg() -> str:
-    """Return the Sandbox rebuild hint for missing Verible."""
-    return _VERIBLE_STALE_IMAGE_MSG
+def _lint_eda_executable(family: str) -> str:
+    """Return the executable owned by one normalized lint family."""
+    return "verible-verilog-lint" if family == "verible" else "verilator"
 
 
 @dataclass
 class LintWarning:
-    """Single parsed Verilator warning."""
+    """Parsed lint warning, optionally enriched with grouped provenance."""
 
     rule: str
     file: str
     line: int
     col: int
     message: str
-    target: str  # which build Target produced it
+    target: str  # Target that supplied the retained diagnostic fields
+    # Populated by deduplication; raw parser results leave these empty.
+    targets: tuple[str, ...] = ()
+    eda_tools: tuple[tuple[str, str], ...] = ()
 
     @property
     def dedup_key(self) -> tuple[str, str, int]:
@@ -149,9 +146,9 @@ class LintConfigResult:
     Defaults True to avoid false alarms when unknown."""
     log_path: str = ""
     """Project-relative path of this Target's persisted ``run.log``. The parsed
-    report carries rule/file:line/message per warning, but the linter's raw
-    output — banner, include resolution, the lines around a diagnostic — only
-    exists there. Empty when the log could not be written."""
+    report carries rule/file:line/message and Target provenance per warning,
+    but the linter's raw output — banner, include resolution, the lines around
+    a diagnostic — only exists there. Empty when the log could not be written."""
 
 
 @dataclass
@@ -161,6 +158,16 @@ class _PreparedLintTarget:
     command: list[str]
     resolved: fusesoc_registry.ResolvedTarget
     result: LintConfigResult
+    attempt_token: str = ""
+
+
+@dataclass(frozen=True)
+class _PreparedLintCommand:
+    """A lint command plus the authentication data used to interpret it."""
+
+    command: list[str]
+    resolved: fusesoc_registry.ResolvedTarget
+    attempt_token: str
 
 
 def parse_warnings(output: str, target: str) -> list[LintWarning]:
@@ -225,6 +232,7 @@ def _classify_lint_failure(
     result: LintConfigResult,
     family: str,
     combined: str,
+    attempt_token: str | None = None,
 ) -> None:
     """Record *why* a non-zero lint run failed, and whose fault it was.
 
@@ -240,11 +248,19 @@ def _classify_lint_failure(
     missing binary or spawn/timeout failure means no verdict was reached at
     all, which stays an ERROR and names the image-rebuild fix.
     """
+    executable = _lint_eda_executable(family)
+    failure = classify_eda_failure(
+        SubprocessResult(returncode=result.returncode, stdout=combined),
+        expected_token=attempt_token,
+        expected_stage="lint",
+        expected_executable=executable,
+        boundary_executable="sh",
+    )
+    if failure is not None and failure.kind == "infrastructure":
+        result.error = failure.reason
+        result.error_is_eda_tool_failure = True
+        return
     if family == "verible":
-        if _VERIBLE_MISSING_RE.search(combined):
-            result.error = _verible_missing_msg()
-            result.error_is_eda_tool_failure = True
-            return
         result.error = (
             _verible_first_error_line(combined) or f"lint eda_tool exited {result.returncode}"
         )
@@ -262,13 +278,33 @@ def _classify_lint_failure(
     result.error = first or f"lint eda_tool exited {result.returncode}"
 
 
-def deduplicate_warnings(warnings: list[LintWarning]) -> list[LintWarning]:
-    """Deduplicate warnings across Targets: keep first occurrence per (rule, file, line)."""
+def deduplicate_warnings(
+    warnings: list[LintWarning],
+    eda_tool_by_target: Mapping[str, str] | None = None,
+) -> list[LintWarning]:
+    """Deduplicate warnings while retaining each contributing Target."""
     seen: dict[tuple[str, str, int], LintWarning] = {}
+    targets_by_key: dict[tuple[str, str, int], set[str]] = {}
     for w in warnings:
         if w.dedup_key not in seen:
             seen[w.dedup_key] = w
-    return list(seen.values())
+            targets_by_key[w.dedup_key] = set()
+        targets_by_key[w.dedup_key].add(w.target)
+
+    grouped: list[LintWarning] = []
+    for key, warning in seen.items():
+        targets = tuple(sorted(targets_by_key[key]))
+        if eda_tool_by_target is None:
+            eda_tools: tuple[tuple[str, str], ...] = ()
+        else:
+            missing_targets = [target for target in targets if target not in eda_tool_by_target]
+            assert not missing_targets, (
+                "missing EDA-tool provenance for contributing Target(s): "
+                + ", ".join(missing_targets)
+            )
+            eda_tools = tuple((target, eda_tool_by_target[target]) for target in targets)
+        grouped.append(replace(warning, targets=targets, eda_tools=eda_tools))
+    return grouped
 
 
 def filter_by_scope(warnings: list[LintWarning], scope: str) -> list[LintWarning]:
@@ -338,12 +374,13 @@ def _lint_warnings_as_errors(work_dir: Path) -> bool:
 _MAX_ECHOED_WARNINGS = 5
 
 
-def _echo_warnings(unique: list[LintWarning]) -> None:
+def _echo_warnings(unique: list[LintWarning], report_path: Path | None = None) -> None:
     """Print the first few warnings with file:line so they are actionable."""
     for w in unique[:_MAX_ECHOED_WARNINGS]:
         print(f"[lint]   %Warning-{w.rule}: {w.file}:{w.line}:{w.col} {w.message}")
     if len(unique) > _MAX_ECHOED_WARNINGS:
-        print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more (see lint_report.json)")
+        suffix = f" (see {report_path})" if report_path is not None else ""
+        print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more{suffix}")
 
 
 def _target_summary_line(result: LintConfigResult) -> str:
@@ -391,14 +428,16 @@ def _build_warning_details(
     """Build warning detail dicts for reports."""
     details: list[dict[str, Any]] = []
     for w in unique_warnings:
-        details.append(
-            {
-                "rule": w.rule,
-                "file": w.file,
-                "line": w.line,
-                "message": w.message,
-            }
-        )
+        detail = {
+            "rule": w.rule,
+            "file": w.file,
+            "line": w.line,
+            "message": w.message,
+            "targets": list(w.targets or (w.target,)),
+        }
+        if len({eda_tool for _, eda_tool in w.eda_tools}) > 1:
+            detail["eda_tools"] = dict(w.eda_tools)
+        details.append(detail)
     return details
 
 
@@ -443,8 +482,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
     def _prepare_lint_command(
         self,
         target: TargetHandle,
-    ) -> tuple[list[str], fusesoc_registry.ResolvedTarget]:
-        """Resolve the lint Target through FuseSoC; return (make command, resolved).
+    ) -> _PreparedLintCommand:
+        """Resolve a lint Target and retain its authenticated command evidence.
 
         The :class:`ResolvedTarget` rides along so the caller can report what
         the resolution already knows — the actual EDA tool, the linted file
@@ -472,8 +511,24 @@ class LintFlow(BuiltinFlow[LintRequest]):
             target,
             build_root=build_root,
         )
+        declared_family = _lint_eda_tool_family(target.eda_tool)
+        configured_family = _lint_eda_tool_family(resolved.configured_eda_tool)
+        if declared_family != configured_family:
+            raise ValueError(
+                f"lint Target {target.selector!r} declared {declared_family!r} but "
+                f"FuseSoC configured {configured_family!r}"
+            )
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
-        return edam_layer.make_command(rel), resolved
+        command = edam_layer.make_command(rel)
+        family = configured_family
+        executable = _lint_eda_executable(family)
+        token = new_attempt_token()
+        marker = render_failure_marker(token, "missing_eda_tool", "lint", executable)
+        script = (
+            f"command -v {shlex.quote(executable)} >/dev/null 2>&1 || "
+            f"{{ echo {shlex.quote(marker)}; exit 127; }}; exec {shlex.join(command)}"
+        )
+        return _PreparedLintCommand(["sh", "-c", script], resolved, token)
 
     def _dry_run_command(self, target: TargetHandle) -> list[str]:
         """Build a side-effect-free ``--dry-run`` preview for one Target.
@@ -487,7 +542,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
         deterministic lint ``make``. The previewed ``make -C`` names the outer
         build root; resolution nests the Makefile one level deeper, so the
         preview shows *what would run*, not a byte-exact runnable command. An
-        unauthored Target yields a clean ``ERROR`` entry rather than raising.
+        an unauthored Target yields a clean ``ERROR`` entry, while invalid EDA
+        metadata raises for the plan collector to record.
         """
         build_root = work_root_for(self.args.work_dir, "lint", target.selector)
         try:
@@ -498,7 +554,19 @@ class LintFlow(BuiltinFlow[LintRequest]):
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: lint dry-run: {exc}"]
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
-        script = f"{shlex.join(setup_cmd)} && {shlex.join(edam_layer.make_command(rel))}"
+        family = _lint_eda_tool_family(target.eda_tool)
+        executable = _lint_eda_executable(family)
+        marker = render_failure_marker("0" * 32, "missing_eda_tool", "lint", executable).replace(
+            "0" * 32, "<attempt-token>"
+        )
+        preflight = (
+            f"command -v {shlex.quote(executable)} >/dev/null 2>&1 || "
+            f"{{ echo {shlex.quote(marker)}; exit 127; }}"
+        )
+        script = (
+            f"{shlex.join(setup_cmd)} && {preflight} && "
+            f"exec {shlex.join(edam_layer.make_command(rel))}"
+        )
         return ["sh", "-c", script]
 
     def _dry_run(self, targets: tuple[TargetHandle, ...]) -> EndpointOutcome:
@@ -573,6 +641,28 @@ class LintFlow(BuiltinFlow[LintRequest]):
             raise ValueError(command[0])
         return command
 
+    def _persist_lint_output(self, selector: str, combined: str) -> str:
+        """Refresh the live tail and publish captured numbered evidence."""
+        try:
+            build_root = work_root_for(self.args.work_dir, "lint", selector)
+            build_root.mkdir(parents=True, exist_ok=True)
+            write_run_log(build_root, combined)
+        except OSError:
+            logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
+        invocation_dir = getattr(self, "_lint_invocation_dir", None)
+        if invocation_dir is None:
+            return ""
+        try:
+            return artifacts.publish_bytes(
+                invocation_dir,
+                ("artifacts", selector, "run.log"),
+                combined.encode(),
+                work_dir=self.args.work_dir,
+            )
+        except OSError:
+            logger.warning("could not publish lint evidence for %s", selector, exc_info=True)
+            return ""
+
     def _run_lint_target(
         self,
         target: TargetHandle,
@@ -602,16 +692,11 @@ class LintFlow(BuiltinFlow[LintRequest]):
             prepared = prepared_units[target.identity]
         result = prepared.result
         cmd = prepared.command
-        family = _lint_eda_tool_family(prepared.resolved.eda_tool)
+        family = _lint_eda_tool_family(prepared.resolved.configured_eda_tool)
         start = time.monotonic()
         proc = self._execute_boundary(cmd)
         result.duration_s = time.monotonic() - start
         result.returncode = proc.returncode
-
-        if proc.timed_out:
-            result.error = f"Timed out after {self._get_timeout()}s"
-            result.error_is_eda_tool_failure = True
-            return result
 
         # Verilator writes warnings to stderr (and sometimes stdout)
         combined = proc.stdout + "\n" + proc.stderr
@@ -619,27 +704,23 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # carries counts, but the actionable ``%Warning-...: file:line`` text
         # otherwise exists only on the transient stdout — an agent chasing a
         # lint regression had nothing on disk to act on.
-        log_path: Path | None = None
-        try:
-            build_root = work_root_for(self.args.work_dir, "lint", selector)
-            build_root.mkdir(parents=True, exist_ok=True)
-            # write_run_log, not a bare write_text: it is atomic (no torn read
-            # for a concurrent tail) and preserves the run header above.
-            log_path = write_run_log(build_root, combined)
-            result.log_path = posix_relpath(log_path, self.args.work_dir)
-        except OSError:
-            logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
+        result.log_path = self._persist_lint_output(selector, combined)
+        evidence_log = self.args.work_dir / result.log_path if result.log_path else None
+        if proc.timed_out:
+            result.error = f"Timed out after {self._get_timeout()}s"
+            result.error_is_eda_tool_failure = True
+            return result
         if family == "verible":
             result.warnings = parse_verible_warnings(combined, selector)
         else:
             result.warnings = parse_warnings(combined, selector)
         if proc.returncode != 0 and not result.error:
-            _classify_lint_failure(result, family, combined)
-            if result.error and log_path is not None:
+            _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
+            if result.error and evidence_log is not None:
                 # The classified error cites only the FIRST error line; the
                 # rest of the linter's output was already persisted above, so
                 # point at it — this-invocation-written, never a stale log.
-                pointer = posix_relpath(log_path, self.args.work_dir)
+                pointer = posix_relpath(evidence_log, self.args.work_dir)
                 result.error += f" (full log: {pointer})"
         return result
 
@@ -653,7 +734,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
         for target in targets:
             result = LintConfigResult(target=target.selector)
             try:
-                command, resolved = self._prepare_lint_command(target)
+                prepared_command: (
+                    _PreparedLintCommand | tuple[list[str], fusesoc_registry.ResolvedTarget]
+                )
+                prepared_command = self._prepare_lint_command(target)
             except Exception as exc:  # isolate and normalize a Target setup failure
                 result.error = f"lint setup failed: {exc}"
                 result.error_is_eda_tool_failure = True
@@ -664,11 +748,28 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 )
                 errors.append(result)
                 continue
-            family = _lint_eda_tool_family(resolved.eda_tool)
+            if isinstance(prepared_command, _PreparedLintCommand):
+                command = prepared_command.command
+                resolved = prepared_command.resolved
+                attempt_token = prepared_command.attempt_token
+            else:
+                # Compatibility for focused tests that replace the preparation
+                # boundary with the historical two-tuple.
+                command, resolved = prepared_command
+                attempt_token = ""
+            try:
+                family = _lint_eda_tool_family(resolved.configured_eda_tool)
+            except ValueError as exc:
+                result.error = f"lint setup failed: {exc}"
+                result.error_is_eda_tool_failure = True
+                errors.append(result)
+                continue
             if not self._record_coverage_facts(result, resolved, family):
                 errors.append(result)
                 continue
-            prepared[target.identity] = _PreparedLintTarget(command, resolved, result)
+            prepared[target.identity] = _PreparedLintTarget(
+                command, resolved, result, attempt_token
+            )
         return prepared, errors
 
     def _record_coverage_facts(
@@ -690,7 +791,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         False return the make never runs: its verdict would be untrustworthy
         by construction.
         """
-        result.eda_tool = resolved.eda_tool or family
+        result.eda_tool = resolved.configured_eda_tool or family
         hdl_files = [f for f in resolved.files if f.is_hdl and not f.is_include]
         result.files_linted = len(hdl_files)
         result.toplevel = resolved.toplevel
@@ -721,13 +822,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         errored: list[LintConfigResult] | None = None,
         target_results: list[LintConfigResult] | None = None,
     ) -> Path | None:
-        """Write lint_report.json to the report dir (plus a per-run copy).
-
-        ``report_dir/lint_report.json`` stays the stable "latest run" path the
-        console summary points at, but each run also lands a copy in the
-        numbered ``flow-reports/lint/<N>/`` invocation dir so consecutive runs
-        (e.g. a Verilator pass then a Verible pass) stop clobbering each other.
-        """
+        """Publish the numbered report, then refresh its flat latest alias."""
         report_dir = self.args.report_dir
         if report_dir is None:
             return None
@@ -763,7 +858,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 for cr in (target_results or [])
             ],
         }
-        report_path = report_dir / "lint_report.json"
+        invocation_dir = getattr(self, "_lint_invocation_dir", None)
+        if invocation_dir is None:
+            raise RuntimeError("lint invocation was not reserved before execution")
+        report_path = invocation_dir / "lint_report.json"
         # Self-locating: the console summary already names lint_report.json on
         # WARN, but a consumer reading the JSON straight off disk (triage, the
         # MCP poll path) had no way back to the raw linter output per Target.
@@ -771,11 +869,16 @@ class LintFlow(BuiltinFlow[LintRequest]):
             "report": posix_relpath(report_path, self.args.work_dir),
             **{f"log_{cr.target}": cr.log_path for cr in (target_results or []) if cr.log_path},
         }
-        payload = json.dumps(report, indent=2)
-        report_path.write_text(payload, encoding="utf-8")
-        invocation_dir = self.reserve_invocation_dir()
-        if invocation_dir is not None:
-            (invocation_dir / "lint_report.json").write_text(payload, encoding="utf-8")
+        payload = json.dumps(report, indent=2).encode()
+        artifacts.publish_bytes(
+            invocation_dir,
+            ("lint_report.json",),
+            payload,
+            work_dir=self.args.work_dir,
+        )
+        stable_report = report_dir / "lint_report.json"
+        atomic_write_json(stable_report, report)
+        stable_report.chmod(0o644)
         return report_path
 
     # --- Main execution ---
@@ -883,6 +986,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 report_text="lint planning failed: " + "; ".join(plan.aggregate_errors),
                 detail={"plan": plan.as_dict()},
             )
+        self._lint_invocation_dir = self.reserve_invocation_dir()
         for target in targets:
             self._open_run_log(
                 target.selector,
@@ -910,15 +1014,25 @@ class LintFlow(BuiltinFlow[LintRequest]):
         selectors = [target.selector for target in targets]
 
         # Deduplicate and scope-filter
-        unique = deduplicate_warnings(all_warnings)
+        eda_tool_by_target = {
+            result.target: _lint_eda_tool_family(result.eda_tool) for result in target_results
+        }
+        unique = deduplicate_warnings(all_warnings, eda_tool_by_target)
         if self.args.scope:
             unique = filter_by_scope(unique, self.args.scope)
         print(f"[lint] {len(unique)} unique in-scope warning{'s' if len(unique) != 1 else ''}")
-        _echo_warnings(unique)
+        invocation_report = (
+            self._lint_invocation_dir / "lint_report.json"
+            if self._lint_invocation_dir is not None
+            else None
+        )
+        _echo_warnings(unique, invocation_report)
 
         # Set per-Target criteria
         errored = [cr for cr in target_results if cr.error]
         for cr in target_results:
+            if cr.error_is_eda_tool_failure:
+                continue
             key = f"lint_clean_{cr.target}"
             warning_count = _scoped_warning_count(cr.warnings, self.args.scope)
             is_clean = warning_count == 0 and not cr.error

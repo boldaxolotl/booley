@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,7 +77,7 @@ class PreparedChild:
 @dataclass(frozen=True, slots=True)
 class _ChildIdentity:
     execution_id: ExecutionId
-    parent_execution_id: str
+    parent_execution_id: ExecutionId
     work_item_id: str
     attempt_id: str
     attempt_ordinal: int
@@ -116,6 +117,15 @@ class ChildExecutionRegistry:
         self._manifest = manifest
         self._project_data_root = project_data
         self._campaign_root = store.root / "child-executions"
+        # The worker (mark_terminal/retire) and the cancel path (recover_execution)
+        # both read-check-write one child's execution record. Serialize them per
+        # child so a retirement digest can never go stale (#977).
+        self._record_locks: dict[ExecutionId, threading.Lock] = {}
+        self._record_locks_gate = threading.Lock()
+
+    def _record_lock(self, execution_id: ExecutionId) -> threading.Lock:
+        with self._record_locks_gate:
+            return self._record_locks.setdefault(execution_id, threading.Lock())
 
     @property
     def _project_data(self) -> Path:
@@ -137,7 +147,7 @@ class ChildExecutionRegistry:
         attempt_id: str,
         attempt_ordinal: int,
         attempt_directory: Path,
-        parent_execution_id: str,
+        parent_execution_id: ExecutionId,
     ) -> PreparedChild:
         identity = _ChildIdentity(
             execution_id,
@@ -172,17 +182,18 @@ class ChildExecutionRegistry:
         prepared: PreparedChild,
         terminal_cause: str,
     ) -> None:
-        paths = execution_paths(prepared.execution_id, project_dir=self._project_data)
-        terminal = read_json(paths.record)
-        if terminal is None:
-            raise SimulationCampaignIntegrityError("child execution record disappeared")
-        if terminal.get("state") == "waiting" and terminal.get("leader") is None:
-            atomic_write_json(paths.record, _terminal_record(terminal_cause))
-            return
-        if terminal.get("state") != "terminal" or terminal.get("tree_terminal") is not True:
-            raise SimulationCampaignIntegrityError(
-                "child execution lacks process-tree terminal proof"
-            )
+        with self._record_lock(prepared.execution_id):
+            paths = execution_paths(prepared.execution_id, project_dir=self._project_data)
+            terminal = read_json(paths.record)
+            if terminal is None:
+                raise SimulationCampaignIntegrityError("child execution record disappeared")
+            if terminal.get("state") == "waiting" and terminal.get("leader") is None:
+                atomic_write_json(paths.record, _terminal_record(terminal_cause))
+                return
+            if terminal.get("state") != "terminal" or terminal.get("tree_terminal") is not True:
+                raise SimulationCampaignIntegrityError(
+                    "child execution lacks process-tree terminal proof"
+                )
 
     def retire(
         self,
@@ -196,13 +207,22 @@ class ChildExecutionRegistry:
             raise SimulationCampaignIntegrityError(
                 "cannot retire a child execution while its token remains"
             )
+        with self._record_lock(prepared.execution_id):
+            self._publish_retirement(prepared, lease_id, terminal_cause, token_absent)
+
+    def _publish_retirement(
+        self,
+        prepared: PreparedChild,
+        lease_id: str | None,
+        terminal_cause: str,
+        token_absent: bool,
+    ) -> None:
         paths = execution_paths(prepared.execution_id, project_dir=self._project_data)
         terminal = read_json(paths.record)
         if terminal is None or terminal.get("tree_terminal") is not True:
             raise SimulationCampaignIntegrityError(
                 "cannot retire a child execution before tree-terminal proof"
             )
-        assert terminal is not None
         terminal_raw = canonical_json_bytes(terminal)
         retirement = {
             "$schema": _RETIREMENT_SCHEMA,
@@ -233,7 +253,9 @@ class ChildExecutionRegistry:
         request_cancellation(paths, reason="campaign_cancelled")
         deadline = time.monotonic() + 5.0
         while True:
-            if recover_execution(execution_id, project_dir=self._project_data):
+            with self._record_lock(execution_id):
+                recovered = recover_execution(execution_id, project_dir=self._project_data)
+            if recovered:
                 return True
             if time.monotonic() >= deadline:
                 return False
@@ -395,7 +417,7 @@ class ChildExecutionRegistry:
     def _recover_execution(self, prepared: PreparedChild, entry: dict) -> None:
         identity = _ChildIdentity(
             prepared.execution_id,
-            entry["parent_execution_id"],
+            ExecutionId(entry["parent_execution_id"]),
             entry["work_item_id"],
             entry["attempt_id"],
             entry["attempt_ordinal"],
@@ -457,7 +479,7 @@ class ChildExecutionRegistry:
         return {
             "$schema": _CONTEXT_SCHEMA,
             "child_execution_id": str(identity.execution_id),
-            "parent_execution_id": identity.parent_execution_id,
+            "parent_execution_id": str(identity.parent_execution_id),
             "campaign_id": self._manifest.document["campaign_id"],
             "manifest_sha256": manifest_digest(self._manifest),
             "work_item_id": identity.work_item_id,
@@ -470,7 +492,7 @@ class ChildExecutionRegistry:
         return {
             "$schema": _ENTRY_SCHEMA,
             "child_execution_id": str(identity.execution_id),
-            "parent_execution_id": identity.parent_execution_id,
+            "parent_execution_id": str(identity.parent_execution_id),
             "campaign_id": self._manifest.document["campaign_id"],
             "manifest_path": str(self._store.manifest_path.resolve(strict=True)),
             "manifest_sha256": manifest_digest(self._manifest),

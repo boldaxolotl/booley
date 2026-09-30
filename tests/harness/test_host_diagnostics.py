@@ -1,7 +1,7 @@
 """Host diagnostics use Bootstrap observations without initiating preparation."""
 
 import subprocess
-from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 
@@ -9,11 +9,29 @@ from booley.audit import host_environment
 from booley.audit.diagnostic_results import Severity
 from booley.harness import host_diagnostics
 from booley.runtime import runtime_context
+from booley.runtime.host_install import HostInstallationIdentity
+
+
+def _identity() -> HostInstallationIdentity:
+    return HostInstallationIdentity(
+        schema_version=1,
+        version="1.2.3",
+        revision="abc123",
+        payload_fingerprint="f" * 64,
+        executable="/usr/local/bin/booley",
+        interpreter="/usr/local/bin/python3",
+        distribution_root="/opt/booley",
+    )
 
 
 @pytest.mark.parametrize(
     "state, severity",
-    [("CURRENT", Severity.PASS), ("PENDING", Severity.WARN), ("ERROR", Severity.FAIL)],
+    [
+        ("CURRENT", Severity.PASS),
+        ("PENDING", Severity.WARN),
+        ("WARNING", Severity.WARN),
+        ("ERROR", Severity.FAIL),
+    ],
 )
 def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, severity):
     bootstrap = host_diagnostics.bootstrap
@@ -26,14 +44,7 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, s
 
     monkeypatch.setattr(bootstrap, "reconcile_bootstrap", reconcile)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    identity = SimpleNamespace(
-        version="1.2.3",
-        revision="abc123",
-        payload_fingerprint="f" * 64,
-        executable="/usr/local/bin/booley",
-        interpreter="/usr/local/bin/python3",
-        distribution_root="/opt/booley",
-    )
+    identity = _identity()
     monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
     monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
     monkeypatch.setattr(host_diagnostics.shutil, "which", lambda _name: "/usr/bin/docker")
@@ -51,6 +62,8 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, s
     assert result.docker_exe == ("/usr/bin/docker" if state == "CURRENT" else None)
     if state == "PENDING":
         assert (finding.check_id, finding.subject) == ("host.bootstrap-pending", "docker")
+    elif state == "WARNING":
+        assert (finding.check_id, finding.subject) == ("host.bootstrap-warning", "docker")
 
 
 def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):
@@ -73,14 +86,7 @@ def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):
 
 def test_host_diagnosis_reports_canonical_installation(monkeypatch):
     report = host_diagnostics.Findings()
-    identity = SimpleNamespace(
-        version="1.2.3",
-        revision="abc123",
-        payload_fingerprint="abcdef0123456789",
-        executable="/usr/local/bin/booley",
-        interpreter="/usr/local/bin/python3",
-        distribution_root="/opt/booley",
-    )
+    identity = replace(_identity(), payload_fingerprint="abcdef0123456789")
     monkeypatch.setattr(
         host_diagnostics,
         "load_host_installation",
@@ -98,15 +104,8 @@ def test_host_diagnosis_reports_canonical_installation(monkeypatch):
 
 
 def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
-    identity = SimpleNamespace(
-        version="1.2.3",
-        revision="abc123",
-        payload_fingerprint="f" * 64,
-        executable="/usr/local/bin/booley",
-        interpreter="/usr/local/bin/python3",
-        distribution_root="/opt/booley",
-    )
-    actual = SimpleNamespace(**{**identity.__dict__, "distribution_root": "/tmp/booley"})
+    identity = _identity()
+    actual = replace(identity, revision="def456")
     report = host_diagnostics.Findings()
     monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
     monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: actual)
@@ -115,6 +114,8 @@ def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
 
     finding = report.report().findings[0]
     assert finding.severity is Severity.FAIL
+    assert "revision abc123 -> def456" in finding.message
+    assert identity.distribution_root not in finding.message
     assert "--update" in finding.fix
 
 

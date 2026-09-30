@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def test_snapshot_fingerprint_tracks_target_recipe_and_xdc(tmp_path: Path) -> No
     changed_xdc = fpga_recipe_snapshot(resolved, target="fpga_core")
     assert fpga_recipe_snapshot_fingerprint(changed_xdc) != baseline_fingerprint
     assert baseline["flow"] == "fpga"
-    assert baseline["schema"] == 2
+    assert baseline["schema"] == 3
     assert baseline["ppa_profile"] == {
         "name": "balanced",
         "adapter": "vivado",
@@ -60,6 +61,52 @@ def test_snapshot_fingerprint_tracks_target_recipe_and_xdc(tmp_path: Path) -> No
             "final_step": "route_design",
         },
     }
+
+
+def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
+    roots = (tmp_path / "baseline", tmp_path / "candidate")
+    snapshots = []
+    for root in roots:
+        root.mkdir()
+        constraint = root / "timing.xdc"
+        constraint.write_text("create_clock -period 10 [get_ports clk]\n", encoding="utf-8")
+        resolved = replace(
+            _resolved(root),
+            files=(
+                ResolvedFile(
+                    name=str(constraint),
+                    file_type="xdc",
+                    core="::core:0",
+                ),
+            ),
+        )
+        snapshots.append(fpga_recipe_snapshot(resolved, target="fpga_core"))
+
+    assert snapshots[0] == snapshots[1]
+    assert fpga_recipe_snapshot_fingerprint(snapshots[0]) == fpga_recipe_snapshot_fingerprint(
+        snapshots[1]
+    )
+    assert snapshots[0]["constraints"] == [
+        {
+            "core": "::core:0",
+            "sha256": hashlib.sha256((roots[0] / "timing.xdc").read_bytes()).hexdigest(),
+        }
+    ]
+
+    changed_resolved = _resolved(roots[1])
+    (roots[1] / "timing.xdc").write_text(
+        "create_clock -period 8 [get_ports clk]\n", encoding="utf-8"
+    )
+    changed = fpga_recipe_snapshot(
+        replace(
+            changed_resolved,
+            files=(ResolvedFile(name=str(roots[1] / "timing.xdc"), file_type="xdc"),),
+        ),
+        target="fpga_core",
+    )
+    assert implementation_comparison_basis(changed) != implementation_comparison_basis(
+        snapshots[0]
+    )
 
 
 def test_snapshot_fingerprint_tracks_resolved_profile_mapping(tmp_path: Path) -> None:

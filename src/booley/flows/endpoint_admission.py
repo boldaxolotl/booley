@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from booley.config.jobs import parse_caps
@@ -23,7 +24,9 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     EndpointRejectedError,
 )
+from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 from booley.runtime.job_records import _proc_cmdline
+from booley.runtime.shared_infra import load_job_budget_config
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -31,6 +34,10 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class AdmissionIdentityError(ValueError):
+    """The enclosing runtime execution identity is malformed or inconsistent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,9 +49,10 @@ class AdmissionContext:
     outer_token: object | None
     max_heavy: int
     role: str
-    execution_id: str
+    execution_id: ExecutionId | None
     timeout_seconds: float | None
     cancellation: Callable[[], bool]
+    parent_execution_id: ExecutionId = field(init=False)
 
     def __post_init__(self) -> None:
         if self.mode not in {"managed", "unmanaged"}:
@@ -56,6 +64,13 @@ class AdmissionContext:
             raise ValueError("managed admission requires a store and outer token")
         if not managed and self.max_heavy != 1:
             raise ValueError("unmanaged admission has exactly one logical lane")
+        execution_id = _coerce_execution_id(self.execution_id)
+        object.__setattr__(self, "execution_id", execution_id)
+        object.__setattr__(
+            self,
+            "parent_execution_id",
+            execution_id or ExecutionId(uuid.uuid4().hex),
+        )
 
 
 class AdmissionGate:
@@ -73,7 +88,13 @@ class AdmissionGate:
         store: job_slots.SlotStore | None = None
         token: object | None = None
         try:
+            execution_id = _runtime_execution_id()
             store, token = self._endpoint._acquire_job_slot()
+            token_execution_id = getattr(token, "execution_id", None)
+            if token_execution_id is not None and token_execution_id != execution_id:
+                raise AdmissionIdentityError(
+                    f"managed Job Slot execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
+                )
             role = (
                 job_slots.ROLE_TICKET
                 if os.environ.get("BOOLEY_AGENT_ROLE") == "ticket"
@@ -87,7 +108,7 @@ class AdmissionGate:
                 outer_token=token,
                 max_heavy=max_heavy,
                 role=role,
-                execution_id=self._endpoint._invocation_id,
+                execution_id=execution_id,
                 timeout_seconds=timeout,
                 cancellation=_admission_cancellation(store, token),
             )
@@ -122,6 +143,19 @@ def authorize_simulation_targets(
 def _slot_timeout_seconds() -> float | None:
     value = as_float(os.environ.get("BOOLEY_SLOT_TIMEOUT_S"))
     return value if value is not None and value > 0 else None
+
+
+def _coerce_execution_id(value: ExecutionId | str | None) -> ExecutionId | None:
+    if value is None or value == "":
+        return None
+    try:
+        return ExecutionId(value)
+    except ValueError as exc:
+        raise AdmissionIdentityError(f"{RUNTIME_EXECUTION_ENV} is invalid: {exc}") from exc
+
+
+def _runtime_execution_id() -> ExecutionId | None:
+    return _coerce_execution_id(os.environ.get(RUNTIME_EXECUTION_ENV))
 
 
 def _admission_cancellation(
@@ -197,6 +231,13 @@ def _simulation_admission(
                 report_text=f"BLOCKED: {exc}. Retry when queued work drains.",
             )
         ) from exc
+    except AdmissionIdentityError as exc:
+        raise EndpointRejectedError(
+            EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"sim: invalid {RUNTIME_EXECUTION_ENV}: {exc}",
+            )
+        ) from exc
 
 
 def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | None, object | None]:
@@ -215,18 +256,10 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     if root is None:
         return (None, None)
 
-    from booley.runtime.shared_infra import _load_rtl_config
-
-    try:
-        # Caps must come from the SAME project the slot store belongs to
-        # (slots_dir → resolve_project_dir), never from work_dir: a
-        # linked worktree can carry a diverged booley.toml, and two
-        # claimants promoting under different caps overcommit the class.
-        # None = the CWD/BOOLEY_PROJECT_DIR resolution path.
-        cfg = _load_rtl_config(None)
-    except Exception:  # noqa: BLE001 — best-effort; defaults are safe
-        cfg = {}
-    caps = parse_caps(cfg or {})
+    # Caps must come from the SAME project the slot store belongs to
+    # (slots_dir → resolve_project_dir), never from work_dir: a linked
+    # worktree can carry a diverged booley.toml.
+    caps = parse_caps(load_job_budget_config())
     role = (
         job_slots.ROLE_TICKET
         if os.environ.get("BOOLEY_AGENT_ROLE") == "ticket"

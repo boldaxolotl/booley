@@ -38,10 +38,12 @@ from booley.flows.sim.campaign_durability import (
     durable_directory,
 )
 from booley.flows.sim.execution.contract import (
+    PreSimEvidence,
     SimulationInfrastructureFailure,
     SimulationOptions,
     SimulationTargetOutcome,
     SimulationTestOutcome,
+    pre_sim_failure_message,
 )
 from booley.flows.sim.execution.engine import (
     ProcessInvoker,
@@ -55,6 +57,7 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.targets.catalog import TargetCatalog
 
+from ..build import SimulationBuildInfrastructureError
 from .codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -68,7 +71,11 @@ from .codec import (
     encode_executable_snapshot,
     encode_simulator_bundle,
 )
-from .coordinator import SerialWorkExecutor, WorkExecutionRequest
+from .coordinator import (
+    SerialWorkExecutor,
+    WorkExecutionRequest,
+    simulation_options_from_policy,
+)
 from .model import (
     AssertionObservation,
     BundleBuildAttempt,
@@ -98,7 +105,14 @@ class _SharedReady:
     result: BundleBuildResult
     bundle: SimulatorBundle
     build_execution: Mapping[str, object]
-    compiled_group: _OrdinaryGroup | None
+
+
+@dataclass(frozen=True, slots=True)
+class _SharedFailure:
+    directory: Path
+    result: BundleBuildResult
+    failure_class: FailureClass
+    detail: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +133,6 @@ class _OrdinaryGroup(Protocol):
     def compile(self) -> object: ...
     def finish_build_failure(self) -> SimulationTargetOutcome: ...
     def build_recovery_document(self) -> dict[str, object]: ...
-    def reuse_compilation_from(self, source: object) -> None: ...
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None: ...
     def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome: ...
 
@@ -138,9 +151,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         self._execution_factory = execution_factory
         self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._shared_ready: dict[tuple[Path, str, int], _SharedReady] = {}
-        self._shared_failure: dict[
-            tuple[Path, str, int], tuple[Path, BundleBuildResult, SimulationTargetOutcome]
-        ] = {}
+        self._shared_failure: dict[tuple[Path, str, int], _SharedFailure] = {}
         self._shared_locks: dict[tuple[Path, str, int], threading.Lock] = {}
         self._shared_locks_gate = threading.Lock()
         self._prepared_attempts: dict[Path, RunDirectory] = {}
@@ -195,44 +206,38 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         with self._shared_lock(key):
             failed = self._shared_failure.get(key)
             if failed is not None:
-                directory, result, outcome = failed
-                return _blocked_result(
-                    request, directory, result, outcome, time.monotonic() - started
-                )
-            ready = self._recover_shared(request, key, handle, names)
+                return _blocked_shared_result(request, failed, time.monotonic() - started)
+            ready = self._recover_shared(request, key)
             recovered_failure = self._shared_failure.get(key)
             if recovered_failure is not None:
-                directory, result, outcome = recovered_failure
-                return _blocked_result(
-                    request, directory, result, outcome, time.monotonic() - started
+                return _blocked_shared_result(
+                    request, recovered_failure, time.monotonic() - started
                 )
-            built_now = False
+            compiled_group = None
             if ready is None:
                 built = self._build_shared(
                     request, key, handle, names, execution, workload, started
                 )
                 if isinstance(built, SimulationResult):
                     return built
-                ready = built
-                built_now = True
+                ready, compiled_group = built
         return self._launch_shared(
             request,
             run_directory,
             ready,
-            built_now,
+            compiled_group,
             inputs,
             started,
         )
 
-    def _launch_shared(self, request, run_directory, ready, built_now, inputs, started):
+    def _launch_shared(self, request, run_directory, ready, compiled_group, inputs, started):
         handle, names = inputs.handle, inputs.names
         execution = inputs.execution
         launch_group = (
-            ready.compiled_group
-            if built_now
+            compiled_group
+            if compiled_group is not None
             else self._prepare_shared_launch(request, ready, execution, handle, names)
         )
-        assert launch_group is not None
         identity = {
             "campaign_id": cast(str, request.manifest.document["campaign_id"]),
             "work_item_id": cast(str, request.work_item["work_item_id"]),
@@ -254,7 +259,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         with self._shared_locks_gate:
             return self._shared_locks.setdefault(key, threading.Lock())
 
-    def _recover_shared(self, request, key, handle, names) -> _SharedReady | None:
+    def _recover_shared(self, request, key) -> _SharedReady | None:
         ready = self._shared_ready.get(key)
         if ready is not None:
             return ready
@@ -262,8 +267,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         if recovered is None:
             return None
         if recovered.result.document["state"] == "design_failure":
-            outcome = _recovered_build_failure(handle, names, recovered.result)
-            self._shared_failure[key] = (recovered.directory, recovered.result, outcome)
+            self._shared_failure[key] = _recovered_shared_failure(
+                recovered.directory, recovered.result
+            )
             return None
         assert recovered.bundle is not None and recovered.build_execution is not None
         ready = _SharedReady(
@@ -271,14 +277,13 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             recovered.result,
             recovered.bundle,
             recovered.build_execution,
-            None,
         )
         self._shared_ready[key] = ready
         return ready
 
     def _build_shared(
         self, request, key, handle, names, execution, workload, started
-    ) -> _SharedReady | SimulationResult:
+    ) -> tuple[_SharedReady, _OrdinaryGroup] | SimulationResult:
         build_id = str(uuid.uuid4())
         ordinal, directory = request.store.allocate_build_attempt_directory(key[1], build_id)
         attempt = _shared_build_attempt(request, build_id, ordinal)
@@ -310,9 +315,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             time.monotonic() - started,
         )
         self._publication_checkpoint("after:build_result")
-        ready = _SharedReady(directory, result, bundle, build_execution, group)
+        ready = _SharedReady(directory, result, bundle, build_execution)
         self._shared_ready[key] = ready
-        return ready
+        return ready, group
 
     def _shared_build_failure(
         self, request, key, directory, attempt, group, started
@@ -329,20 +334,16 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             checkpoint=self._publication_checkpoint,
         )
         if infrastructure:
-            raise SimulationCampaignIntegrityError(
-                outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
-            )
-        self._shared_failure[key] = (directory, result, outcome)
-        return _blocked_result(request, directory, result, outcome, time.monotonic() - started)
+            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
+        failure = _fresh_shared_failure(directory, result, outcome)
+        self._shared_failure[key] = failure
+        return _blocked_shared_result(request, failure, time.monotonic() - started)
 
     @staticmethod
     def _prepare_shared_launch(request, ready, execution, handle, names):
         with execution.ordinary_group(handle, names) as group:
             _authenticate_planning_disclosure(request, group)
-            if ready.compiled_group is None:
-                group.bind_authenticated_bundle(ready.build_execution)
-            else:
-                group.reuse_compilation_from(ready.compiled_group)
+            group.bind_authenticated_bundle(ready.build_execution)
         return group
 
     def _execute_group(
@@ -447,12 +448,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         selection = cast(Mapping[str, object], request.work_item["selection"])
         names = cast(tuple[str, ...], selection["names"])
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
-        options = SimulationOptions(
+        options = simulation_options_from_policy(
+            request.policy,
             trace=cast(bool, workload["trace"]),
-            timeout_ms=round(request.policy.timeout_seconds * 1000)
-            if request.policy.timeout_seconds is not None
-            else None,
-            result_verbosity=request.policy.result_verbosity,
         )
         execution = (
             self._execution_factory(options)
@@ -534,14 +532,11 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             infrastructure=infrastructure,
             checkpoint=self._publication_checkpoint,
         )
-        return _blocked_result(
-            request,
-            build_directory,
-            result,
-            outcome,
-            elapsed,
-            infrastructure=infrastructure,
-        )
+        if infrastructure:
+            # No design verdict exists, so the campaign stays interrupted and
+            # resumable, exactly like the shared-build path.
+            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
+        return _blocked_result(request, build_directory, result, outcome, elapsed)
 
     def _run_ready_group(
         self,
@@ -737,16 +732,15 @@ def _run_hook(
 
 
 def _hook_failure_outcome(
-    target: str, names: tuple[str, ...], evidence: object
+    target: str, names: tuple[str, ...], evidence: PreSimEvidence
 ) -> SimulationTargetOutcome:
-    detail = cast(str, getattr(evidence, "detail", ""))
     tests = tuple(
         SimulationTestOutcome(
             name=name or target,
             verdict="elab_error",
             passed=False,
             elab_failed=True,
-            error_tail=detail or "Pre-Sim Commands failed",
+            error_tail=pre_sim_failure_message(evidence.status, evidence.detail),
         )
         for name in (names or (target,))
     )
@@ -782,34 +776,32 @@ def _hook_infrastructure_outcome(
     )
 
 
-def _recovered_build_failure(
-    handle: object,
-    names: tuple[str, ...],
-    result: BundleBuildResult,
-) -> SimulationTargetOutcome:
+def _recovered_shared_failure(directory: Path, result: BundleBuildResult) -> _SharedFailure:
     observation = cast(Mapping[str, object], result.document["observation"])
     detail = cast(Mapping[str, object], observation["detail"])
     text = cast(str, detail.get("text", observation["message"]))
-    tests = tuple(
-        SimulationTestOutcome(
-            name=name,
-            verdict="elab_error",
-            passed=False,
-            elab_failed=True,
-            error_tail=text,
-        )
-        for name in (names or (cast(str, getattr(handle, "selector", "simulation")),))
+    return _SharedFailure(
+        directory,
+        result,
+        FailureClass(cast(str, observation["class"])),
+        text,
     )
-    return SimulationTargetOutcome(
-        target=cast(str, getattr(handle, "selector", "simulation")),
-        target_identity=cast(str, getattr(handle, "identity", "")),
-        toplevel="",
-        eda_tool=cast(str, getattr(handle, "eda_tool", "")),
-        passed=False,
-        verdict="fail",
-        elapsed_s=cast(float, result.document["elapsed_seconds"]),
-        tests=tests,
+
+
+def _fresh_shared_failure(
+    directory: Path,
+    result: BundleBuildResult,
+    outcome: SimulationTargetOutcome,
+) -> _SharedFailure:
+    detail = next(
+        (
+            test.reason or test.error_tail
+            for test in outcome.tests
+            if test.reason or test.error_tail
+        ),
+        "build failed",
     )
+    return _SharedFailure(directory, result, FailureClass.DESIGN, detail[-1536:])
 
 
 def _setup_result(
@@ -1215,6 +1207,45 @@ def _blocked_result(
     )
 
 
+def _blocked_shared_result(
+    request: WorkExecutionRequest,
+    failure: _SharedFailure,
+    elapsed: float,
+) -> SimulationResult:
+    selection = cast(Mapping[str, object], request.work_item["selection"])
+    names = cast(tuple[str, ...], selection["names"])
+    if selection["kind"] == "unfiltered":
+        identities: tuple[str | None, ...] = (None,)
+    elif names:
+        identities = names
+    else:
+        target = cast(Mapping[str, object], request.manifest.document["target"])
+        identities = (cast(str, target["selector"]),)
+    observations = []
+    for identity in identities:
+        test = SimulationTestOutcome(
+            name=identity or "",
+            verdict="elab_error",
+            passed=False,
+            elab_failed=True,
+            error_tail=failure.detail,
+        )
+        observation = _observation(test, execution="blocked_by_build")
+        observation["failure_class"] = failure.failure_class.value
+        observations.append(observation)
+    return _result(
+        request,
+        failure.directory,
+        failure.result,
+        state="blocked_by_build",
+        bundle_id=None,
+        snapshot=None,
+        observations=observations,
+        elapsed=elapsed,
+        evidence=[],
+    )
+
+
 def _launch_snapshot(
     request: WorkExecutionRequest,
     build_directory: Path,
@@ -1355,7 +1386,7 @@ def _result(
     precedence = {"pass": 0, "inconclusive": 1, "fail": 2, "error": 3}
     grade = max(grades, key=lambda item: precedence[item.value]).value
     document = {
-        "$schema": "booley.simulation-result/v1",
+        "$schema": "booley.simulation-result/v2",
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,
@@ -1389,12 +1420,20 @@ def _observation(
     test: SimulationTestOutcome, *, execution: str | None = None
 ) -> dict[str, object]:
     observed_execution = execution or (
-        "timeout" if test.timed_out else "crash" if test.crashed else "completed"
+        "timeout"
+        if test.timed_out
+        else "crash"
+        if test.crashed
+        else "aborted"
+        if test.termination != "completed"
+        else "completed"
     )
-    blocked = observed_execution in {"blocked_by_build", "setup_error"}
+    blocked = observed_execution in {"blocked_by_build", "setup_error", "not_run"}
     functional = (
         "not_observed"
-        if blocked or observed_execution in {"timeout", "crash"}
+        if blocked
+        or observed_execution in {"timeout", "crash"}
+        or (observed_execution == "aborted" and test.failure_kind == "infrastructure")
         else "pass"
         if test.verdict == "pass"
         else "inconclusive"
@@ -1403,7 +1442,7 @@ def _observation(
     )
     assertions = (
         "not_observed"
-        if blocked or observed_execution in {"timeout", "crash"}
+        if blocked or observed_execution in {"timeout", "crash", "aborted"}
         else "dirty"
         if test.sva_errors
         else "clean"
@@ -1412,7 +1451,11 @@ def _observation(
         "test": test.name or None,
         "execution": observed_execution,
         "failure_class": (
-            "design" if blocked or observed_execution == "timeout" or not test.passed else None
+            "infrastructure"
+            if test.failure_kind == "infrastructure"
+            else "design"
+            if blocked or observed_execution in {"timeout", "aborted"} or not test.passed
+            else None
         ),
         "functional": functional,
         "assertions": assertions,
@@ -1423,6 +1466,8 @@ def _observation(
 
 
 def _result_state(tests: tuple[SimulationTestOutcome, ...]) -> str:
+    if any(test.termination != "completed" for test in tests):
+        return "aborted"
     if any(test.crashed for test in tests):
         return "crash"
     if any(test.timed_out for test in tests):

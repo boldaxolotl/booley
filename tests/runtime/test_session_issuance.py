@@ -20,8 +20,8 @@ from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import eda_grants
 from booley.runtime import devcontainer as dc
+from booley.runtime import session_admission, session_runtime, session_spec
 from booley.runtime import session_issuance as runtime_spec
-from booley.runtime import session_runtime, session_spec
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
 
@@ -200,7 +200,7 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
         runtime_spec.SessionSpecInputs(project, (), (), None, None),
         prospective,
     )
-    changed = runtime_spec.SessionSpecInputs(project, (), (), None, "changed")
+    changed = runtime_spec.SessionSpecInputs(project, (), (), "vivado-new", "license-new")
     leased = SimpleNamespace(build=SimpleNamespace(), runtime=SimpleNamespace())
     persist = Mock()
     prepare_dependencies = Mock(side_effect=pytest.fail)
@@ -220,8 +220,11 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
     )
     monkeypatch.setattr(runtime_spec, "_persist_prepared", persist)
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="authority changed"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="authority changed") as caught:
         runtime_spec.issue_prepared(project, prepared)
+
+    assert "installation_name <none> -> vivado-new" in str(caught.value)
+    assert "license_profile_name <none> -> license-new" in str(caught.value)
 
     prepare_dependencies.assert_not_called()
     persist.assert_not_called()
@@ -681,6 +684,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
             session_runtime, "_warn_on_stale_session_containers", lambda *_args: None
         )
         monkeypatch.setattr(session_runtime, "_preflight", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(
             session_runtime,
@@ -939,11 +943,14 @@ def test_validate_rejects_missing_issued_image_keeper(issued, monkeypatch) -> No
 
 
 def test_validate_rejects_runtime_image_digest_drift(issued, monkeypatch) -> None:
-    project, spec, path, _stamp = issued
+    project, spec, path, stamp = issued
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:other")
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted") as caught:
         runtime_spec.validate(project, spec, path)
+
+    assert f"image_id {stamp.image_id} -> sha256:other" in str(caught.value)
+    assert "; image " not in str(caught.value)
 
 
 def test_validate_rejects_keeper_for_another_project(issued, monkeypatch) -> None:
@@ -1017,6 +1024,49 @@ def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
     path = dc.write_devcontainer(project, spec)
     with pytest.raises(runtime_spec.RuntimeSpecError):
         runtime_spec.validate(project, spec, path)
+
+
+def test_valid_agent_app_is_omitted_from_name_only_drift(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "codex"
+    spec["name"] = "wrong"
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox identity") as caught:
+        runtime_spec._validate_spec_identity(spec)
+
+    assert "name Booley Interactive (codex) -> wrong" in str(caught.value)
+    assert "app " not in str(caught.value)
+
+
+def test_invalid_agent_app_does_not_invent_expected_name(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "other"
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox identity") as caught:
+        runtime_spec._validate_spec_identity(spec)
+
+    assert "app [claude, codex, none] -> other" in str(caught.value)
+    assert "name " not in str(caught.value)
+
+
+def test_missing_fixed_environment_uses_missing_marker(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    del spec["remoteEnv"]["HTTP_PROXY"]
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="missing fixed") as caught:
+        runtime_spec._validate_environment(spec, None)
+
+    assert "HTTP_PROXY present -> <missing>" in str(caught.value)
+
+
+def test_fixed_environment_drift_names_field_and_values(issued) -> None:
+    _project, spec, _path, _stamp = issued
+    spec["remoteEnv"]["NO_PROXY"] = "example.test"
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="fixed Sandbox") as caught:
+        runtime_spec._validate_environment(spec, None)
+
+    assert "NO_PROXY localhost,127.0.0.1 -> example.test" in str(caught.value)
 
 
 @pytest.mark.parametrize(

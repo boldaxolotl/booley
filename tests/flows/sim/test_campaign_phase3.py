@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,10 +16,17 @@ from booley.flows.sim.campaign.codec import canonical_json_bytes
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
+    ResumeCampaignRunRequest,
     SimulationCampaign,
+    WorkExecutionRequest,
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-from booley.flows.sim.campaign.planning import finalize_manifest
+from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
+from booley.flows.sim.campaign.resume import (
+    ValidatedManifestNode,
+    ValidatedResumeManifest,
+    ValidatedTargetBinding,
+)
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
@@ -60,6 +68,10 @@ def _build_execution() -> dict[str, object]:
 
 
 def _two_item_manifest() -> object:
+    return _named_manifest(("alpha", "beta"))
+
+
+def _named_manifest(names: tuple[str, ...]) -> object:
     document = _manifest()
     document.pop("fingerprints")
     document["workload"]["run_cwd"] = {  # type: ignore[index]
@@ -78,9 +90,9 @@ def _two_item_manifest() -> object:
             **runtime_identity,
         }
     ]
-    suite_raw = b"[test.alpha]\n[test.beta]\n"
+    suite_raw = "".join(f"[test.{name}]\n" for name in names).encode()
     document["required_suite"] = {
-        "names": ["alpha", "beta"],
+        "names": list(names),
         "default_invocation": False,
         "source_path": "tests.toml",
         "source_bytes": len(suite_raw),
@@ -90,7 +102,54 @@ def _two_item_manifest() -> object:
     variant = document["build_variants"][0]  # type: ignore[index]
     document["work_items"] = [
         _work_item(ordinal, name, target, variant["build_variant_id"])
-        for ordinal, name in enumerate(("alpha", "beta"))
+        for ordinal, name in enumerate(names)
+    ]
+    return finalize_manifest(document)
+
+
+def _unfiltered_cocotb_manifest() -> object:
+    document = _manifest()
+    document.pop("fingerprints")
+    item = document["work_items"][0]  # type: ignore[index]
+    item_identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"work_item_id", "fingerprint_sha256"}
+    }
+    item_identity["kind"] = "cocotb_batch"
+    item_identity["selection"] = {"kind": "unfiltered", "names": []}
+    item_identity["arguments"] = []
+    fingerprint = _sha(item_identity)
+    document["work_items"] = [
+        {
+            "work_item_id": "item:0000:" + fingerprint.removeprefix("sha256:")[:16],
+            **item_identity,
+            "fingerprint_sha256": fingerprint,
+        }
+    ]
+    return finalize_manifest(document)
+
+
+def _single_item_selection_manifest(kind: str, names: tuple[str, ...]) -> object:
+    document = _manifest()
+    document.pop("fingerprints")
+    item = document["work_items"][0]  # type: ignore[index]
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"work_item_id", "fingerprint_sha256"}
+    }
+    identity["selection"] = {"kind": kind, "names": list(names)}
+    identity["arguments"] = list(names)
+    if len(names) > 1:
+        identity["kind"] = "cocotb_batch"
+    fingerprint = _sha(identity)
+    document["work_items"] = [
+        {
+            "work_item_id": "item:0000:" + fingerprint.removeprefix("sha256:")[:16],
+            **identity,
+            "fingerprint_sha256": fingerprint,
+        }
     ]
     return finalize_manifest(document)
 
@@ -134,6 +193,7 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
     run_log.write_text("PASS\n", encoding="utf-8")
     compile_count = [0]
     launches: list[tuple[str, Path, bytes]] = []
+    bindings: list[tuple[str, ...]] = []
 
     handle = SimpleNamespace(
         identity="acme:lib:dut:1#sim",
@@ -146,7 +206,7 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
     )
 
-    executor = _shared_executor(build_root, run_log, handle, launches, compile_count)
+    executor = _shared_executor(build_root, run_log, handle, launches, compile_count, bindings)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
@@ -154,10 +214,284 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
             plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
-    _assert_shared_campaign(outcome, compile_count[0], launches, invocation)
+    _assert_shared_campaign(outcome, compile_count[0], launches, bindings, invocation)
 
 
-def _shared_executor(build_root, run_log, handle, launches, compile_count):
+def test_failed_shared_build_blocks_each_named_work_item_with_its_own_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _named_manifest(("tail", "quick"))
+    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    project = tmp_path / "project"
+    project.mkdir()
+    handle = _handle(project)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    counters = {"compile": 0, "launch": 0}
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+
+    outcome = SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    results = _completed_result_documents(store)
+    assert outcome.complete is True
+    assert outcome.aggregate_grade == "fail"
+    assert counters == {"compile": 1, "launch": 0}
+    assert [result["state"] for result in results] == ["blocked_by_build"] * 2
+    assert [result["observations"][0]["test"] for result in results] == ["tail", "quick"]
+    assert all(
+        result["observations"][0]["detail"]["reason"] == "compiler reason" for result in results
+    )
+    assert len(tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))) == 1
+    assert len({result["build_result"]["sha256"] for result in results}) == 1
+
+
+def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_selection(
+    tmp_path: Path,
+) -> None:
+    manifest = _named_manifest(("tail", "quick", "smoke"))
+    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    project = tmp_path / "project"
+    project.mkdir()
+    handle = _handle(project)
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    _, seed_counters, validated = _seed_failed_campaign(
+        store, manifest, project, handle, tmp_path / "seed-build"
+    )
+    resumed_counters = {"compile": 0, "launch": 0}
+
+    outcome = SimulationCampaign(
+        _failed_shared_executor(tmp_path / "resumed-build", resumed_counters)
+    ).run(
+        ResumeCampaignRunRequest(
+            validated,
+            plan,
+            project,
+            invocation.parent,
+            CampaignPolicy(),
+            invocation,
+            _admission(),
+        )
+    )
+
+    results = _completed_result_documents(store)
+    assert outcome.complete is True
+    assert outcome.aggregate_grade == "fail"
+    assert seed_counters == {"compile": 1, "launch": 0}
+    assert resumed_counters == {"compile": 0, "launch": 0}
+    assert [result["observations"][0]["test"] for result in results] == [
+        "tail",
+        "quick",
+        "smoke",
+    ]
+    assert [result["observations"][0]["detail"]["reason"] for result in results] == [
+        "compiler reason",
+        "compiler tail",
+        "compiler tail",
+    ]
+    assert len(tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))) == 1
+    assert len({result["build_result"]["sha256"] for result in results}) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "names", "expected"),
+    [
+        ("default", (), ["sim"]),
+        ("named", ("tail", "quick"), ["tail", "quick"]),
+    ],
+)
+def test_shared_build_failure_preserves_each_selection_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    names: tuple[str, ...],
+    expected: list[str],
+) -> None:
+    manifest = _single_item_selection_manifest(kind, names)
+    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run").mkdir()  # a literal run_cwd must exist before any build (#881)
+    handle = _handle(project)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    counters = {"compile": 0, "launch": 0}
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+
+    SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+
+    result = _completed_result_documents(CampaignStore(invocation / "targets/sim/campaign"))[0]
+    assert [item["test"] for item in result["observations"]] == expected
+
+
+def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _unfiltered_cocotb_manifest()
+    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run").mkdir()  # a literal run_cwd must exist before any build (#881)
+    handle = _handle(project)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    counters = {"compile": 0, "launch": 0}
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+
+    outcome = SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    result = _completed_result_documents(store)[0]
+    assert outcome.complete is True
+    assert outcome.aggregate_grade == "fail"
+    assert result["grade"] == "fail"
+    assert result["observations"] == [
+        {
+            "test": None,
+            "execution": "blocked_by_build",
+            "failure_class": "design",
+            "functional": "not_observed",
+            "assertions": "not_observed",
+            "assertion_count": 0,
+            "detail": {"reason": "compiler reason"},
+            "cycle_count": None,
+        }
+    ]
+
+
+def _handle(project: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        identity="acme:lib:dut:1#sim",
+        project_root=project,
+        selector="sim",
+        eda_tool="icarus",
+    )
+
+
+def _seed_failed_campaign(store, manifest, project, handle, build_root):
+    store.publish_manifest(manifest)
+    items = manifest.document["work_items"]
+    counters = {"compile": 0, "launch": 0}
+    request = _work_request(store, manifest, items[0], project, handle)
+    result = _failed_shared_executor(build_root, counters).execute(request)
+    store.verify_result_evidence(request.attempt_directory, result)
+    store.publish_result(items[0]["work_item_id"], result)
+    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
+    validated = ValidatedResumeManifest(
+        node,
+        (),
+        (handle,),
+        (ValidatedTargetBinding(node, project.resolve(), handle),),
+    )
+    return items, counters, validated
+
+
+def _failed_shared_executor(
+    build_root: Path, counters: dict[str, int]
+) -> OrdinaryHdlSerialExecutor:
+    build_root.mkdir()
+
+    class FailedGroup:
+        artifact_paths: tuple[Path, ...] = ()
+
+        def __init__(self) -> None:
+            self.build_root = build_root
+
+        def planning_disclosure(self):
+            return {}
+
+        def compile(self):
+            counters["compile"] += 1
+            return SimpleNamespace(passed=False)
+
+        def finish_build_failure(self):
+            return _failed_shared_outcome()
+
+        def launch_snapshot(self, *_args, **_kwargs):
+            counters["launch"] += 1
+            raise AssertionError("failed shared build must not launch")
+
+    class FailedExecution:
+        @contextmanager
+        def ordinary_group(self, _handle, _names):
+            yield FailedGroup()
+
+    return OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: FailedExecution(),  # type: ignore[arg-type,return-value]
+    )
+
+
+def _failed_shared_outcome() -> SimulationTargetOutcome:
+    test = SimulationTestOutcome(
+        name="tail",
+        verdict="elab_error",
+        passed=False,
+        reason="compiler reason",
+        error_tail="compiler tail",
+        elab_failed=True,
+    )
+    return SimulationTargetOutcome(
+        target="sim",
+        target_identity="acme:lib:dut:1#sim",
+        toplevel="tb",
+        eda_tool="icarus",
+        passed=False,
+        verdict="fail",
+        elapsed_s=0.1,
+        tests=(test,),
+    )
+
+
+def _work_request(store, manifest, item, project, handle) -> WorkExecutionRequest:
+    attempt_id = str(uuid.uuid4())
+    ordinal, directory = store.allocate_attempt_directory(item["work_item_id"], attempt_id)
+    return WorkExecutionRequest(
+        store,
+        manifest,
+        item,
+        attempt_id,
+        ordinal,
+        directory,
+        1,
+        CampaignPolicy(),
+        _admission(),
+        project,
+        handle,
+    )
+
+
+def _completed_result_documents(store: CampaignStore) -> list[dict[str, object]]:
+    return [
+        json.loads((store.work_item_directory(item) / "result.json").read_text())
+        for item in store.scan().complete
+    ]
+
+
+def _shared_executor(build_root, run_log, handle, launches, compile_count, bindings):
     class FakeGroup:
         def __init__(self, names: tuple[str, ...]) -> None:
             self.names = names
@@ -178,15 +512,12 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count):
             compile_count[0] += 1
             return SimpleNamespace(passed=True)
 
-        def reuse_compilation_from(self, source) -> None:
-            assert source.names == ("alpha",)
-            self.reused = True
-
         def build_recovery_document(self):
             return _build_execution()
 
         def bind_authenticated_bundle(self, evidence) -> None:
             assert evidence == _build_execution()
+            bindings.append(self.names)
 
         def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
             name = self.names[0]
@@ -221,10 +552,11 @@ def _shared_outcome(name, handle, run_log):
     )
 
 
-def _assert_shared_campaign(outcome, compile_count, launches, invocation) -> None:
+def _assert_shared_campaign(outcome, compile_count, launches, bindings, invocation) -> None:
     assert outcome.complete is True
     assert compile_count == 1
     assert [item[0] for item in launches] == ["alpha", "beta"]
+    assert bindings == [("beta",)]
     assert launches[0][1] != launches[1][1]
     assert [item[2] for item in launches] == [b"pristine", b"pristine"]
     assert all(not item[1].exists() for item in launches)

@@ -63,45 +63,54 @@ class TestSelectMutationConfig:
 
 class TestClassifyTickets:
     def test_empty_list(self):
-        result = classify_tickets([], logs_dir=Path("/tmp/logs"))
+        result = classify_tickets([], logs_dir=Path("/tmp/logs"), done_slugs=())
         assert result["executable"] == []
         assert result["blocked"] == []
 
     def test_queued_is_executable(self):
         tickets = [{"status": "queued", "file": "queue/t.md"}]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         assert len(result["executable"]) == 1
 
     def test_blocked_is_blocked(self):
         tickets = [{"status": "blocked", "file": "blocked/t.md"}]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         assert len(result["blocked"]) == 1
 
     def test_review_is_review(self):
         tickets = [{"status": "review", "file": "review/t.md"}]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         assert len(result["review"]) == 1
 
     def test_waiting_is_waiting(self):
         tickets = [{"status": "waiting", "file": "waiting/t.md"}]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         assert len(result["waiting"]) == 1
 
     def test_queued_with_unmet_deps_goes_to_waiting(self):
         tickets = [
             {"status": "queued", "file": "queue/t.md", "dependencies": ["dep-slug"]},
         ]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         assert len(result["executable"]) == 0
         assert len(result["waiting"]) == 1
 
     def test_queued_with_met_deps_is_executable(self):
         tickets = [
-            {"status": "done", "file": "done/dep-slug.md", "feature_branch": "dep-slug"},
             {"status": "queued", "file": "queue/t.md", "dependencies": ["dep-slug"]},
         ]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs={"dep-slug"})
         assert len(result["executable"]) == 1
+
+    def test_board_done_ticket_does_not_satisfy_deps(self):
+        """Only a Ticket History done record satisfies a dependency (ADR 0065)."""
+        tickets = [
+            {"status": "done", "file": "board/dep-slug.md", "feature_branch": "dep-slug"},
+            {"status": "queued", "file": "queue/t.md", "dependencies": ["dep-slug"]},
+        ]
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
+        assert result["executable"] == []
+        assert len(result["waiting"]) == 1
 
     def test_executable_sorted_by_priority_then_creation(self):
         """Priority outranks creation time in claim order (F-51).
@@ -133,7 +142,7 @@ class TestClassifyTickets:
                 "created": "2026-07-26T10:00:00Z",
             },
         ]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         assert [t["slug"] for t in result["executable"]] == [
             "newer-high",
             "older-medium",
@@ -159,7 +168,7 @@ class TestClassifyTickets:
                 "created": "2026-07-26T11:00:01Z",
             },
         ]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         assert [t["slug"] for t in result["executable"]] == ["a", "b", "c"]
 
     def test_running_recent_is_active(self, tmp_path: Path):
@@ -174,7 +183,9 @@ class TestClassifyTickets:
         ]
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
-        result = classify_tickets(tickets, orphan_threshold_min=30, logs_dir=logs_dir)
+        result = classify_tickets(
+            tickets, orphan_threshold_min=30, logs_dir=logs_dir, done_slugs=()
+        )
         assert len(result["active"]) == 1
         assert len(result["orphaned"]) == 0
 
@@ -190,7 +201,9 @@ class TestClassifyTickets:
         ]
         logs_dir = tmp_path / "logs"
         (logs_dir / "t").mkdir(parents=True)
-        result = classify_tickets(tickets, orphan_threshold_min=30, logs_dir=logs_dir)
+        result = classify_tickets(
+            tickets, orphan_threshold_min=30, logs_dir=logs_dir, done_slugs=()
+        )
         assert len(result["orphaned"]) == 1
 
     def test_executable_sorted_by_priority(self):
@@ -199,7 +212,7 @@ class TestClassifyTickets:
             {"status": "queued", "file": "queue/high.md", "priority": "high"},
             {"status": "queued", "file": "queue/med.md", "priority": "medium"},
         ]
-        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"))
+        result = classify_tickets(tickets, logs_dir=Path("/tmp/logs"), done_slugs=())
         slugs = [Path(t["file"]).stem for t in result["executable"]]
         assert slugs == ["high", "med", "low"]
 
@@ -210,6 +223,21 @@ class TestClassifyTickets:
 
 
 class TestResumeDetect:
+    def test_reports_authored_drift(self):
+        reason = "acceptance-input-change-required: authored Ticket changed"
+        result = resume_detect(
+            {
+                "status": "queued",
+                "steps_completed": [],
+                "feature_branch": "feat",
+                "authored_drift": True,
+                "authored_drift_reason": reason,
+            }
+        )
+
+        assert result["authored_drift"] is True
+        assert result["authored_drift_reason"] == reason
+
     def test_fresh_queued(self):
         entry = {"status": "queued", "steps_completed": [], "feature_branch": "feat"}
         result = resume_detect(entry)

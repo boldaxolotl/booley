@@ -16,6 +16,7 @@ from booley.harness.image_lifecycle import (
     ImageLifecycleError,
     Intent,
     LifecycleResult,
+    host_capacity_requests,
 )
 from booley.harness.image_lifecycle import (
     Status as ImageStatus,
@@ -23,12 +24,23 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
-from booley.harness.setup.skills import reconcile_host_skills
-from booley.runtime.host_install import host_install_error
+from booley.harness.setup.skills import (
+    HostSkillReconciliation,
+    reconcile_host_qa_skills,
+    reconcile_host_skills,
+)
+from booley.runtime.docker_capacity import DockerBuildPlan, ensure_docker_build_capacity
+from booley.runtime.host_install import current_host_installation, host_install_error
 from booley.runtime.paths import skills_dir
+from booley.runtime.qa_skill_selection import (
+    QA_SKILL_NAMES,
+    QaSkillSelectionError,
+    active_qa_source_root,
+)
 from booley.runtime.skill_links import SkillLinkReport
 
 MIN_GIT_VERSION = (2, 37, 2)
+RELATIVE_WORKTREE_MIN_GIT_VERSION = (2, 48, 0)
 DEV_CONTAINERS_EXTENSION_ID = "ms-vscode-remote.remote-containers"
 _GIT_VERSION_LINE = re.compile(
     r"^git version (?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
@@ -43,6 +55,7 @@ class BootstrapState(StrEnum):
     CURRENT = "current"
     PENDING = "pending"
     CHANGED = "changed"
+    WARNING = "warning"
     ERROR = "error"
 
 
@@ -67,7 +80,8 @@ class BootstrapResult:
     @property
     def ready(self) -> bool:
         return all(
-            finding.state in {BootstrapState.CURRENT, BootstrapState.CHANGED}
+            finding.state
+            in {BootstrapState.CURRENT, BootstrapState.CHANGED, BootstrapState.WARNING}
             for finding in self.findings
         )
 
@@ -80,7 +94,14 @@ class BootstrapResult:
         return 0
 
 
-def reconcile_bootstrap(intent: Intent, *, verbose: bool = False) -> BootstrapResult:
+def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent mutations.
+    intent: Intent,
+    *,
+    verbose: bool = False,
+    include_images: bool = True,
+    qa_opt_out: bool = False,
+    allow_qa_adoption: bool = False,
+) -> BootstrapResult:
     """Inspect or converge Host Bootstrap resources in their fixed order."""
     findings: list[BootstrapFinding] = []
     try:
@@ -98,26 +119,71 @@ def reconcile_bootstrap(intent: Intent, *, verbose: bool = False) -> BootstrapRe
         findings.append(BootstrapFinding("host-install", BootstrapState.ERROR, error))
         return BootstrapResult(intent, tuple(findings), policy)
 
+    if qa_opt_out:
+        _append_qa_finding(findings, intent, True, False)
+
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
     if any(finding.state is BootstrapState.ERROR for finding in prerequisites):
         return BootstrapResult(intent, tuple(findings), policy)
 
-    for reconcile in (
-        _reconcile_vscode_dev_containers,
-        _reconcile_skills,
-        _reconcile_nangate,
-    ):
+    for reconcile in (_reconcile_vscode_dev_containers, _reconcile_skills):
         findings.append(reconcile(intent))
         if findings[-1].state is BootstrapState.ERROR:
             return BootstrapResult(intent, tuple(findings), policy)
 
-    base_result, base_finding = _reconcile_base_image(intent, verbose=verbose)
+    if not qa_opt_out:
+        _append_qa_finding(findings, intent, False, allow_qa_adoption)
+
+    findings.append(_reconcile_nangate(intent))
+    if findings[-1].state is BootstrapState.ERROR:
+        return BootstrapResult(intent, tuple(findings), policy)
+
+    if not include_images:
+        return BootstrapResult(intent, tuple(findings), policy)
+
+    return _reconcile_bootstrap_images(intent, findings, policy, verbose=verbose)
+
+
+def _reconcile_bootstrap_images(
+    intent: Intent,
+    findings: list[BootstrapFinding],
+    policy: InteractiveHostPolicy,
+    *,
+    verbose: bool,
+) -> BootstrapResult:
+    """Reconcile image-bearing Host Bootstrap resources after prerequisites."""
+    plan = None
+    if intent is not Intent.CHECK:
+        try:
+            requests = (*host_capacity_requests(intent), *host_sidecars.plan_image_builds(intent))
+            if requests:
+                plan = DockerBuildPlan(requests)
+                ensure_docker_build_capacity(
+                    ("docker", "build"),
+                    image=plan.current.output_tag,
+                    current_request=plan.current,
+                    remaining_plan=plan,
+                )
+        except (
+            ImageLifecycleError,
+            host_sidecars.SidecarError,
+            OSError,
+            ValueError,
+        ) as exc:
+            findings.append(BootstrapFinding("image-capacity", BootstrapState.ERROR, str(exc)))
+            return BootstrapResult(intent, tuple(findings), policy)
+
+    base_result, base_finding = _reconcile_base_image(
+        intent,
+        verbose=verbose,
+        capacity_plan=plan,
+    )
     findings.append(base_finding)
     if base_finding.state is BootstrapState.ERROR:
         return BootstrapResult(intent, tuple(findings), policy)
 
-    sidecars = host_sidecars.reconcile_sidecars(policy, intent)
+    sidecars = host_sidecars.reconcile_sidecars(policy, intent, capacity_plan=plan)
     findings.extend(_sidecar_finding(finding) for finding in sidecars.findings)
     return BootstrapResult(intent, tuple(findings), policy, base_result)
 
@@ -159,14 +225,13 @@ def _git_version_finding(line: str) -> BootstrapFinding:
             BootstrapState.ERROR,
             f"cannot determine a supported Git version; Git {minimum} or newer is required",
         )
-    version = tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
-    suffix = match.group("suffix")
-    if _GIT_PRERELEASE_SUFFIX.search(suffix):
+    if _GIT_PRERELEASE_SUFFIX.search(match.group("suffix")):
         return BootstrapFinding(
             "git",
             BootstrapState.ERROR,
             f"pre-release Git builds are not supported; install Git {minimum} or newer",
         )
+    version = tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
     if version < MIN_GIT_VERSION:
         detected = ".".join(str(part) for part in version)
         return BootstrapFinding(
@@ -176,6 +241,14 @@ def _git_version_finding(line: str) -> BootstrapFinding:
             "Upgrade Git and rerun booley bootstrap.",
         )
     return BootstrapFinding("git", BootstrapState.CURRENT, line[:80])
+
+
+def parse_git_version(line: str) -> tuple[int, int, int] | None:
+    """Return a stable Git version, accepting ordinary vendor suffixes."""
+    match = _GIT_VERSION_LINE.fullmatch(line.strip())
+    if match is None or _GIT_PRERELEASE_SUFFIX.search(match.group("suffix")):
+        return None
+    return tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
 
 
 def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:
@@ -341,25 +414,46 @@ def _reconcile_skills(intent: Intent) -> BootstrapFinding:
         dry_run=intent is Intent.CHECK,
         allow_retarget=True,
     )
-    failures = tuple((item.target, _skill_report_error(item.report)) for item in reconciliations)
-    errors = tuple(f"{target}: {error}" for target, error in failures if error)
+    return _skill_reconciliation_finding(intent, reconciliations, qa=False)
+
+
+def _skill_reconciliation_finding(
+    intent: Intent,
+    reconciliations: tuple[HostSkillReconciliation, ...],
+    *,
+    qa: bool,
+) -> BootstrapFinding:
+    resource = "qa-skills" if qa else "skills"
+    label = "QA skill" if qa else "skill"
+    errors = tuple(
+        f"{item.target}: {error}"
+        for item in reconciliations
+        if (error := _skill_report_error(item.report))
+    )
     if errors:
-        return BootstrapFinding("skills", BootstrapState.ERROR, "; ".join(errors))
+        detail = "; ".join(errors)
+        return (
+            _qa_warning(detail) if qa else BootstrapFinding(resource, BootstrapState.ERROR, detail)
+        )
     changes = tuple(
         (item.target, sum(event.changed for event in item.report.events))
         for item in reconciliations
     )
     changed = sum(count for _target, count in changes)
     if intent is Intent.CHECK and changed:
-        pending = "; ".join(
-            f"{target}: {count} skill link change(s) pending" for target, count in changes if count
+        detail = "; ".join(
+            f"{target}: {count} {label} link change(s) pending"
+            for target, count in changes
+            if count
         )
-        return BootstrapFinding("skills", BootstrapState.PENDING, pending)
+        state = BootstrapState.WARNING if qa else BootstrapState.PENDING
+        suffix = "; run `booley bootstrap`" if qa else ""
+        return BootstrapFinding(resource, state, detail + suffix)
     state = BootstrapState.CHANGED if changed else BootstrapState.CURRENT
     targets = ", ".join(str(item.target) for item in reconciliations)
-    action = f"applied {changed} skill link change(s) across" if changed else "checked"
+    action = f"applied {changed} {label} link change(s) across" if changed else "checked"
     return BootstrapFinding(
-        "skills",
+        resource,
         state,
         f"{action} {len(reconciliations)} skill target(s): {targets}",
     )
@@ -371,6 +465,77 @@ def _skill_report_error(report: SkillLinkReport) -> str:
     if report.fatal:
         details.append(report.fatal)
     return "; ".join(details)
+
+
+def _skill_names(source: Path) -> frozenset[str]:
+    return frozenset(
+        child.name
+        for child in source.iterdir()
+        if child.is_dir() and (child / "SKILL.md").is_file()
+    )
+
+
+def _qa_warning(detail: str) -> BootstrapFinding:
+    recovery = (
+        "Restore the recorded clean primary main checkout, re-enable with "
+        "`booley bootstrap --with-qa-skills`, or recover with "
+        "`booley bootstrap --without-qa-skills`."
+    )
+    return BootstrapFinding("qa-skills", BootstrapState.WARNING, f"{detail} {recovery}")
+
+
+def _reconcile_qa_skills(
+    intent: Intent,
+    *,
+    opt_out: bool,
+    allow_adoption: bool,
+) -> BootstrapFinding | None:
+    """Reconcile optional QA skills without blocking product Host Bootstrap."""
+    try:
+        resolved = _qa_source(opt_out)
+    except (QaSkillSelectionError, OSError, ValueError) as exc:
+        return _qa_warning(str(exc))
+    if resolved is None:
+        return None
+    source, names = resolved
+    reconciliations = reconcile_host_qa_skills(
+        source,
+        names=names,
+        dry_run=intent is Intent.CHECK,
+        allow_retarget=allow_adoption,
+        allow_exact_adoption=allow_adoption,
+    )
+    return _skill_reconciliation_finding(intent, reconciliations, qa=True)
+
+
+def _qa_source(opt_out: bool) -> tuple[Path, frozenset[str]] | None:
+    if opt_out:
+        return skills_dir(), frozenset()
+    revision = current_host_installation(skills_dir()).revision
+    source = active_qa_source_root(revision)
+    if source is None:
+        return None
+    collisions = _skill_names(skills_dir()) & QA_SKILL_NAMES
+    if collisions:
+        raise QaSkillSelectionError(
+            "QA skill names collide with packaged product skills: " + ", ".join(sorted(collisions))
+        )
+    return source, QA_SKILL_NAMES
+
+
+def _append_qa_finding(
+    findings: list[BootstrapFinding],
+    intent: Intent,
+    opt_out: bool,
+    allow_adoption: bool,
+) -> None:
+    finding = _reconcile_qa_skills(
+        intent,
+        opt_out=opt_out,
+        allow_adoption=allow_adoption,
+    )
+    if finding is not None:
+        findings.append(finding)
 
 
 def _reconcile_nangate(intent: Intent) -> BootstrapFinding:
@@ -404,10 +569,18 @@ def _reconcile_nangate(intent: Intent) -> BootstrapFinding:
 
 
 def _reconcile_base_image(
-    intent: Intent, *, verbose: bool
+    intent: Intent,
+    *,
+    verbose: bool,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> tuple[LifecycleResult | None, BootstrapFinding]:
     try:
-        result = reconcile_images(HostImageScope(), intent, verbose=verbose)
+        result = reconcile_images(
+            HostImageScope(),
+            intent,
+            verbose=verbose,
+            capacity_plan=capacity_plan,
+        )
     except ImageLifecycleError as exc:
         return None, BootstrapFinding("base-image", BootstrapState.ERROR, str(exc))
     state = {

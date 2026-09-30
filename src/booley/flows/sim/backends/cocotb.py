@@ -59,6 +59,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
+
 if TYPE_CHECKING:
     from booley.flows.sim.run_guard import DiskBudgetGuard, SimTimeStallGuard
 
@@ -89,6 +91,7 @@ from booley.flows.sim.backends.cocotb_results import (
     results_payload,
 )
 from booley.flows.sim.backends.shared import (
+    RunTermination,
     append_child_cpu_marker,
     child_cpu_snapshot,
     find_icarus_image,
@@ -130,6 +133,7 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     if work.trace:
         cmd += ["--trace", "--expected-trace-scope", work.trace_scope]
     cmd += [f"--plusarg={value}" for value in work.plusargs]
+    cmd += [f"--runtime-input={value}" for value in work.runtime_inputs]
     cmd += work_transport_arguments(work)
     return cmd
 
@@ -142,46 +146,107 @@ def _publish_adapter_result(
     failure_kind: str = "",
     detail: str = "",
     trace: AdapterTraceResult | None = None,
+    termination: RunTermination | None = None,
+    simulator_returncode: int = 0,
 ) -> None:
     if identity is None:
         return
+    termination = termination or RunTermination()
+    write_adapter_result(
+        identity,
+        _cocotb_adapter_result(
+            identity,
+            output,
+            passed,
+            failure_kind,
+            detail,
+            trace,
+            termination,
+            simulator_returncode,
+        ),
+    )
+
+
+def _cocotb_adapter_result(
+    identity: AdapterTransportIdentity,
+    output: str,
+    passed: bool,
+    failure_kind: str,
+    detail: str,
+    trace: AdapterTraceResult | None,
+    termination: RunTermination,
+    simulator_returncode: int,
+) -> AdapterResult:
     results = parse_results_line(output)
     discovered = tuple(test.name for test in results.tests if test.name) if results else ()
     names = identity.selected_tests or discovered
     extras = tuple(name for name in discovered if name not in names)
     sva_errors = count_sva_errors(output)
-    test_results = _adapter_test_results(results, names)
+    test_results = _apply_batch_termination(_adapter_test_results(results, names), termination)
     test_results = _apply_design_evidence(test_results, sva_errors, failure_kind, detail)
-    functional_failed = any(test.verdict == "fail" for test in test_results)
-    preserve_failure = functional_failed or failure_kind in {"design", "timeout"}
-    test_results, detail, trace_failed = _apply_trace_evidence(
-        test_results, trace, detail, preserve_failure=preserve_failure
+    test_results, detail, trace_failed, functional_failed = _cocotb_evidence(
+        test_results, trace, detail, failure_kind
     )
-    inconclusive = any(test.verdict == "inconclusive" for test in test_results) or (
-        not passed and (results is None or results.state != STATE_OK)
-    )
+    inconclusive = _cocotb_inconclusive(test_results, termination, passed, results)
     timed_out = any(test.verdict == "timeout" for test in test_results)
     normalized_passed = (
         passed
+        and not termination.aborted
         and sva_errors == 0
         and not trace_failed
         and bool(test_results)
         and all(test.verdict == "pass" for test in test_results)
     )
-    write_adapter_result(
-        identity,
-        AdapterResult(
-            passed=normalized_passed,
-            inconclusive=inconclusive,
-            sva_errors=sva_errors,
-            tests=tuple(names),
-            failure_kind=failure_kind
-            or _cocotb_failure_kind(timed_out, functional_failed, trace_failed, inconclusive),
-            detail=detail,
-            test_results=test_results,
-            diagnostics=_extra_test_diagnostics(extras),
-            trace=trace,
-        ),
+    return AdapterResult(
+        passed=normalized_passed,
+        inconclusive=inconclusive,
+        sva_errors=sva_errors,
+        tests=tuple(names),
+        simulator_returncode=simulator_returncode,
+        termination=termination.kind,
+        missing_input_path=termination.missing_input_path,
+        failure_kind=termination.failure_kind
+        or failure_kind
+        or _cocotb_failure_kind(timed_out, functional_failed, trace_failed, inconclusive),
+        detail=termination.detail or detail,
+        test_results=test_results,
+        diagnostics=_extra_test_diagnostics(extras),
+        trace=trace,
+    )
+
+
+def _cocotb_evidence(test_results, trace, detail, failure_kind):
+    functional_failed = any(test.verdict == "fail" for test in test_results)
+    preserve_failure = functional_failed or failure_kind in {"design", "timeout"}
+    test_results, detail, trace_failed = _apply_trace_evidence(
+        test_results, trace, detail, preserve_failure=preserve_failure
+    )
+    return test_results, detail, trace_failed, functional_failed
+
+
+def _cocotb_inconclusive(test_results, termination, passed, results) -> bool:
+    return not termination.aborted and (
+        any(test.verdict == "inconclusive" for test in test_results)
+        or (not passed and (results is None or results.state != STATE_OK))
+    )
+
+
+def _apply_batch_termination(
+    results: tuple[AdapterTestResult, ...], termination: RunTermination
+) -> tuple[AdapterTestResult, ...]:
+    if not termination.aborted:
+        return results
+    return tuple(
+        test
+        if test.verdict in {"pass", "fail"}
+        else replace(
+            test,
+            verdict="timeout" if termination.kind == "timeout" else "fail",
+            detail=termination.detail,
+            termination=termination.kind,
+            failure_kind=termination.failure_kind,
+        )
+        for test in results
     )
 
 
@@ -314,12 +379,23 @@ def _partial_result_publisher(
             partial,
             AdapterResult(
                 passed=False,
-                inconclusive=any(test.verdict == "inconclusive" for test in tests),
+                inconclusive=False,
                 sva_errors=count_sva_errors(output),
                 tests=names,
+                termination="timeout",
                 failure_kind="timeout",
                 detail="cocotb batch ended before terminal adapter transport",
-                test_results=tests,
+                test_results=tuple(
+                    test
+                    if test.verdict in {"pass", "fail"}
+                    else replace(
+                        test,
+                        verdict="timeout",
+                        termination="timeout",
+                        failure_kind="timeout",
+                    )
+                    for test in tests
+                ),
             ),
         )
 
@@ -419,7 +495,13 @@ def _build_cocotb_env(
     # dir (where copyto staged the module) so a project run_cwd can't break it.
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{build_dir}{os.pathsep}{existing}" if existing else str(build_dir)
-    return env
+    cache_root = python_artifact_root(env, results_file.parent / "python-artifacts")
+    return relocate_python_artifacts(
+        env,
+        cache_root,
+        pytest_scope=f"cocotb:{module}:{build_dir.resolve()}",
+        write_bytecode=False,
+    )
 
 
 def _build_run_cmd(
@@ -464,7 +546,7 @@ def _build_run_cmd(
     return cmd
 
 
-def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeline
+def _stream_output(
     cmd: list[str],
     run_cwd: Path,
     env: dict[str, str],
@@ -473,7 +555,8 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = 0.0,
     on_line: Callable[[str], None] | None = None,
-) -> tuple[deque[str], subprocess.Popen, bool]:
+    runtime_inputs: tuple[str, ...] = (),
+) -> tuple[deque[str], subprocess.Popen, RunTermination]:
     """Run the sim, stream stdout live, enforce *timeout* (seconds).
 
     The iverilog_run watchdog pattern (timer + disk guard + $readmemh trap),
@@ -486,15 +569,17 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     from booley.flows.sim.run_guard import (
         DiskBudgetGuard,
         SimTimeStallGuard,
-        readmemh_fatal_line,
+        child_death_kwargs,
+        classify_readmemh_termination,
+        parse_readmemh_fatal,
         snapshot_dir_baseline,
+        supervise_child,
     )
     from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 
     lines: deque[str] = deque(maxlen=5_000)
     cpu_started = child_cpu_snapshot()
-    # BEFORE the spawn: the baseline walk takes seconds on the multi-GB trees
-    # this budget exists for, and anything the sim dumps during that walk would
+    # The pre-spawn baseline prevents simulator output from escaping the budget while walking.
     # otherwise land in the baseline free of charge (fpu F-23).
     disk_baseline = snapshot_dir_baseline(run_cwd, max_rundir_bytes)
     proc = subprocess.Popen(
@@ -507,7 +592,9 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
         encoding="utf-8",
         errors="replace",
         **popen_new_group_kwargs(),
+        **child_death_kwargs(),
     )
+    supervise_child(proc)
     timed_out = {"hit": False}
 
     def _kill_on_timeout() -> None:
@@ -522,7 +609,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     guard.start()
     stall_guard = SimTimeStallGuard(proc, sim_time_grace_s)
     stall_guard.start()
-    readmemh_error = ""
+    fatal_termination: RunTermination | None = None
     stdout = proc.stdout
     try:
         assert stdout is not None
@@ -537,61 +624,70 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
             stall_guard.observe(line)
             # SETUP-23: a missing $readmemh init file warns once then the sim
             # spins forever on uninitialised RAM — treat the warning as fatal.
-            fatal = readmemh_fatal_line(line)
-            if fatal:
-                readmemh_error = f"missing $readmemh memory-init file — {fatal}"
+            missing = parse_readmemh_fatal(line)
+            if missing and proc.poll() is None:
+                fatal_termination = classify_readmemh_termination(missing, run_cwd, runtime_inputs)
                 kill_process_tree(proc)
                 break
         proc.wait()
     finally:
-        if stdout is not None:
-            stdout.close()
-        timer.cancel()
-        guard.stop()
-        stall_guard.stop()
-        append_child_cpu_marker(lines, cpu_started)
+        _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started)
 
-    _append_abort_reason(
+    termination = _append_abort_reason(
         lines,
-        readmemh_error=readmemh_error,
+        fatal_termination=fatal_termination,
         guard=guard,
         stall_guard=stall_guard,
         timed_out=timed_out["hit"],
         timeout=timeout,
     )
-    return lines, proc, timed_out["hit"]
+    return lines, proc, termination
+
+
+def _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started) -> None:
+    if stdout is not None:
+        stdout.close()
+    timer.cancel()
+    guard.stop()
+    stall_guard.stop()
+    append_child_cpu_marker(lines, cpu_started)
 
 
 def _append_abort_reason(
     lines: deque[str],
     *,
-    readmemh_error: str,
+    fatal_termination: RunTermination | None,
     guard: DiskBudgetGuard,
     stall_guard: SimTimeStallGuard,
     timed_out: bool,
     timeout: int,
-) -> None:
+) -> RunTermination:
     """Echo + record why a streamed sim was cut short (if it was).
 
     Ordered by specificity: a guard that fired names a concrete cause, so it
     outranks the bare timeout (which the stall kill also trips, the timer
     having no way to know the run was already doomed).
     """
-    if readmemh_error:
-        msg = f"ERROR: {readmemh_error}"
+    if fatal_termination is not None:
+        msg = f"ERROR: {fatal_termination.detail}"
         print(msg)
         lines.append(msg + "\n")
-    elif guard.tripped:
+        return fatal_termination
+    if guard.tripped:
         print(guard.message)
         lines.append(guard.message + "\n")
-    elif stall_guard.tripped:
+        return RunTermination("disk_budget", guard.message, "infrastructure")
+    if stall_guard.tripped:
         msg = f"ERROR: {stall_guard.message}"
         print(msg)
         lines.append(msg + "\n")
-    elif timed_out:
+        return RunTermination("sim_time_stall", stall_guard.message, "infrastructure")
+    if timed_out:
         msg = f"ERROR: cocotb simulation timed out ({timeout}s)"
         print(msg)
         lines.append(msg + "\n")
+        return RunTermination("timeout", msg, "timeout")
+    return RunTermination()
 
 
 def _recover_partial_timeout_results(results, output: str, timed_out: bool, tests: list[str]):
@@ -682,7 +778,7 @@ def _assess_verdict(
     results: CocotbResults,
     output: str,
     returncode: int,
-    timed_out: bool,
+    termination: RunTermination,
     tests: list[str],
     infrastructure_error: str,
 ) -> tuple[bool, _VerdictAssessment]:
@@ -694,11 +790,11 @@ def _assess_verdict(
         verdict == "inconclusive" for _, verdict, _ in verdicts
     )
     trace_inconclusive = bool(infrastructure_error) and all_pass and sva_errors == 0
-    inconclusive = (result_inconclusive or trace_inconclusive) and not timed_out
+    inconclusive = (result_inconclusive or trace_inconclusive) and not termination.aborted
     passed = (
         all_pass
         and sva_errors == 0
-        and not timed_out
+        and not termination.aborted
         and returncode == 0
         and not infrastructure_error
     )
@@ -715,7 +811,7 @@ def _assess_verdict(
 def _print_verdict(
     assessment: _VerdictAssessment,
     results: CocotbResults,
-    timed_out: bool,
+    termination: RunTermination,
     skipped_unselected: int,
 ) -> None:
     """Print one unambiguous human Cocotb verdict."""
@@ -723,8 +819,8 @@ def _print_verdict(
     if assessment.passed:
         skipped_note = f"; {skipped_unselected} skipped" if skipped_unselected else ""
         print(f"\ncocotb sim PASSED ({len(selected)} tests{skipped_note})")
-    elif timed_out:
-        print("\ncocotb sim FAILED (timed out)")
+    elif termination.aborted:
+        print(f"\ncocotb sim ABORTED ({termination.detail})")
     elif assessment.inconclusive:
         detail = assessment.infrastructure_error or results.detail
         print(f"\ncocotb sim INCONCLUSIVE ({detail or 'selected tests unresolved'})")
@@ -755,6 +851,7 @@ def _evaluate_verdict(
     tests: list[str],
     result_verbosity: str = "compact",
     infrastructure_error: str = "",
+    termination: RunTermination | None = None,
 ) -> tuple[str, bool]:
     """Parse results.xml, print the verdict sentinels, persist result files.
 
@@ -764,9 +861,14 @@ def _evaluate_verdict(
     scanning (``parse_sim_verdict``) is deliberately absent — sentinels do not
     apply to Cocotb Targets.
     """
-    results = _load_cocotb_results(results_file, output, timed_out, tests)
+    termination = termination or (
+        RunTermination("timeout", "cocotb simulation timed out", "timeout")
+        if timed_out
+        else RunTermination()
+    )
+    results = _load_cocotb_results(results_file, output, termination.aborted, tests)
     focused, assessment = _assess_verdict(
-        results, output, returncode, timed_out, tests, infrastructure_error
+        results, output, returncode, termination, tests, infrastructure_error
     )
     results_line, skipped_unselected = _persist_result_transport(
         results,
@@ -775,26 +877,50 @@ def _evaluate_verdict(
         focused,
         result_verbosity,
     )
-    summary = format_summary(
-        assessment.passed,
-        assessment.sva_errors,
-        inconclusive=assessment.inconclusive and not assessment.passed,
+    output = _persist_cocotb_verdict(
+        output,
+        work_dir,
+        returncode,
+        results_line,
+        skipped_unselected,
+        results,
+        assessment,
+        termination,
+        infrastructure_error,
     )
+    return output, assessment.passed
+
+
+def _persist_cocotb_verdict(
+    output: str,
+    work_dir: Path,
+    returncode: int,
+    results_line: str,
+    skipped_unselected: int,
+    results: CocotbResults,
+    assessment: _VerdictAssessment,
+    termination: RunTermination,
+    infrastructure_error: str,
+) -> str:
+    inconclusive = assessment.inconclusive and not assessment.passed
+    summary = format_summary(assessment.passed, assessment.sva_errors, inconclusive=inconclusive)
     print(results_line)
     print(summary)
-    _print_verdict(assessment, results, timed_out, skipped_unselected)
-    effective_returncode = 1 if infrastructure_error and returncode == 0 else returncode
+    _print_verdict(assessment, results, termination, skipped_unselected)
+    effective_returncode = returncode
+    if (infrastructure_error or termination.aborted) and returncode == 0:
+        effective_returncode = 1
     write_result_json(
         work_dir,
         assessment.passed,
         assessment.sva_errors,
         _first_failure(assessment),
         effective_returncode,
-        inconclusive=assessment.inconclusive and not assessment.passed,
+        inconclusive=inconclusive,
     )
     output = f"{output}\n{results_line}\n{summary}"
     write_run_log(work_dir, output)
-    return output, assessment.passed
+    return output
 
 
 def _prepare_invocation(
@@ -937,6 +1063,7 @@ def _execute_cocotb_run(
     max_rundir_bytes: int,
     sim_time_grace_s: float,
     transport: AdapterTransportIdentity | None,
+    runtime_inputs: tuple[str, ...],
 ):
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
@@ -953,6 +1080,7 @@ def _execute_cocotb_run(
             max_rundir_bytes=max_rundir_bytes,
             sim_time_grace_s=sim_time_grace_s,
             on_line=publish,
+            runtime_inputs=runtime_inputs,
         )
     finally:
         heartbeat.stop()
@@ -962,7 +1090,7 @@ def _complete_cocotb_run(
     run: _CocotbRun,
     lines,
     proc,
-    timed_out: bool,
+    termination: RunTermination,
     result_verbosity: str,
     transport: AdapterTransportIdentity | None,
 ) -> int:
@@ -978,16 +1106,17 @@ def _complete_cocotb_run(
     output, passed = _evaluate_verdict(
         output,
         proc.returncode,
-        timed_out,
+        termination.kind == "timeout",
         run.work_dir,
         run.results_file,
         run.tests,
         result_verbosity,
         trace_result.failure_reason,
+        termination=termination,
     )
     failure_kind = (
-        "timeout"
-        if timed_out
+        termination.failure_kind
+        if termination.aborted
         else "design"
         if proc.returncode != 0 or count_sva_errors(output)
         else ""
@@ -998,6 +1127,8 @@ def _complete_cocotb_run(
         passed,
         failure_kind=failure_kind,
         trace=trace_result.evidence,
+        termination=termination,
+        simulator_returncode=proc.returncode,
     )
     return 0 if passed else 1
 
@@ -1017,6 +1148,7 @@ def run_cocotb_sim(
     sim_time_grace_s: float = DEFAULT_SIM_TIME_GRACE_S,
     result_verbosity: str = "compact",
     expected_trace_scope: str = "",
+    runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
 ) -> int:
     """Run the edalize-built Cocotb simulator once."""
@@ -1042,10 +1174,15 @@ def run_cocotb_sim(
         )
         return 1
     _print_run_banner(run.env, run.command, run.run_cwd, cocotb_module, eda_tool, tests)
-    lines, proc, timed_out = _execute_cocotb_run(
-        run, timeout, max_rundir_bytes, sim_time_grace_s, transport
+    lines, proc, termination = _execute_cocotb_run(
+        run,
+        timeout,
+        max_rundir_bytes,
+        sim_time_grace_s,
+        transport,
+        runtime_inputs,
     )
-    return _complete_cocotb_run(run, lines, proc, timed_out, result_verbosity, transport)
+    return _complete_cocotb_run(run, lines, proc, termination, result_verbosity, transport)
 
 
 def _finalize_cocotb_trace(
@@ -1135,6 +1272,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="max_rundir_bytes",
         help="kill the run if the run dir exceeds this many bytes (0=off; SETUP-25)",
     )
+    p.add_argument("--runtime-input", action="append", default=[])
     p.add_argument(
         "--sim-time-grace",
         type=_non_negative_float,
@@ -1157,13 +1295,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="compact",
         help="Cocotb result transport detail (full results always remain in artifacts)",
     )
-    p.add_argument(
+    _add_expected_trace_scope_argument(p)
+    add_transport_arguments(p)
+    return p.parse_args(argv)
+
+
+def _add_expected_trace_scope_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--expected-trace-scope",
         default="",
         help="resolved DUT toplevel required to validate a requested trace",
     )
-    add_transport_arguments(p)
-    return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1183,6 +1325,7 @@ def main(argv: list[str] | None = None) -> int:
         sim_time_grace_s=args.sim_time_grace_s,
         result_verbosity=args.result_verbosity,
         expected_trace_scope=args.expected_trace_scope,
+        runtime_inputs=tuple(args.runtime_input),
         transport=transport,
     )
 

@@ -385,6 +385,7 @@ def test_committed_recovery_only_finishes_replacement_cleanup(tmp_path: Path, mo
         expected_image_id="sha256:fresh",
         expected_wheel_source_fingerprint="payload-fresh",
         expected_wheel_sha256=None,
+        recovery=True,
     )
     discard.assert_called_once()
     restore.assert_not_called()
@@ -869,8 +870,10 @@ def test_journal_rejects_mismatched_or_incomplete_replacement(tmp_path: Path, mo
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
 
     _rewrite_journal_value(path, ("replacement_issuance", "image_id"), "sha256:different")
-    with pytest.raises(sr.SessionError, match="replacement identities disagree"):
+    with pytest.raises(sr.SessionError, match="replacement identities disagree") as caught:
         session_refresh.recover_project_locked(project)
+    assert "image_id sha256:fresh -> sha256:different" in str(caught.value)
+    assert "project_root" not in str(caught.value)
 
     config = tmp_path / "incomplete-config"
     path = _write_restore_journal(config, project)

@@ -7,9 +7,10 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.ticket_board.git_ops import (
-    _worktree_relative_path,
     add_worktree,
     cleanup_worktree_and_branch,
     delete_branch,
@@ -19,6 +20,7 @@ from booley.ticket_board.git_ops import (
     merge_branch,
     remove_worktree,
     remove_worktree_for_branch,
+    worktree_blocking_changes,
 )
 
 # ---------------------------------------------------------------------------
@@ -94,70 +96,76 @@ class TestFindWorktreeForBranch:
         assert find_worktree_for_branch("any") is None
 
 
-class TestWorktreeRelativePath:
-    def test_preserves_lexical_relative_path(self, tmp_path):
-        assert _worktree_relative_path(str(tmp_path), Path("./tickets/board")) == "tickets/board"
+class TestWorktreeBlockingChanges:
+    @staticmethod
+    def _result(stdout: str, returncode: int = 0) -> MagicMock:
+        return MagicMock(returncode=returncode, stdout=stdout, stderr="")
 
-    def test_returns_relative_path_in_same_namespace(self, tmp_path):
-        root = tmp_path / "checkout"
-        child = root / "tickets" / "board" / "review.md"
-        child.parent.mkdir(parents=True)
-        child.write_text("ticket\n")
+    @patch("booley.ticket_board.git_ops.git")
+    def test_unrelated_untracked_path_requires_candidate_context(self, mock_git):
+        status = self._result("?? local-notes.txt\0")
+        mock_git.side_effect = [status, self._result("", 1)]
 
-        assert _worktree_relative_path(str(root), child) == "tickets/board/review.md"
+        assert worktree_blocking_changes("/repo", candidate_paths=("design.txt",)) == ()
 
-    def test_resolves_symlink_alias(self, tmp_path):
-        root = tmp_path / "checkout"
-        root.mkdir()
-        (root / "design.txt").write_text("design\n")
-        alias = tmp_path / "alias"
-        alias.symlink_to(root, target_is_directory=True)
+        mock_git.side_effect = [status]
+        blockers = worktree_blocking_changes("/repo")
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == ["local-notes.txt"]
 
-        assert _worktree_relative_path(str(root), alias / "design.txt") == "design.txt"
+    @pytest.mark.parametrize(
+        ("untracked_path", "candidate_path"),
+        [
+            ("collision", "collision"),
+            ("collision", "collision/child.txt"),
+            ("collision/child.txt", "collision"),
+            ("collision/", "collision/child.txt"),
+        ],
+    )
+    @patch("booley.ticket_board.git_ops.git")
+    def test_untracked_candidate_path_overlap_blocks(
+        self, mock_git, untracked_path, candidate_path
+    ):
+        mock_git.side_effect = [
+            self._result(f"?? {untracked_path}\0"),
+            self._result("", 1),
+        ]
 
-    def test_translates_proven_bind_mount_alias(self, tmp_path, fake_bind_mounts):
-        root = tmp_path / "checkout"
-        root.mkdir()
-        alias = tmp_path / "runtime-alias"
-        (alias / "tickets" / "board" / "review").mkdir(parents=True)
-        candidate = alias / "tickets" / "board" / "review" / "ticket.md"
+        blockers = worktree_blocking_changes("/repo", candidate_paths=(candidate_path,))
 
-        fake_bind_mounts(root, (alias,))
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == [untracked_path]
 
-        assert _worktree_relative_path(str(root), candidate) == "tickets/board/review/ticket.md"
+    @pytest.mark.parametrize("status", ["M ", " M", "A "])
+    @patch("booley.ticket_board.git_ops.git")
+    def test_staged_and_tracked_entries_always_block(self, mock_git, status):
+        mock_git.side_effect = [
+            self._result(f"{status} tracked.txt\0"),
+            self._result("", 1),
+        ]
 
-    def test_rejects_unrelated_absolute_path(self, tmp_path):
-        root = tmp_path / "checkout"
-        unrelated = tmp_path / "unrelated"
-        root.mkdir()
-        unrelated.mkdir()
+        blockers = worktree_blocking_changes("/repo", candidate_paths=("other.txt",))
 
-        assert _worktree_relative_path(str(root), unrelated / "ticket.md") is None
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == ["tracked.txt"]
 
-    def test_rejects_ambiguous_bind_mount_ancestors(self, tmp_path, fake_bind_mounts):
-        root = tmp_path / "checkout"
-        root.mkdir()
-        alias = tmp_path / "runtime-alias"
-        nested_alias = alias / "nested"
-        nested_alias.mkdir(parents=True)
-        candidate = nested_alias / "ticket.md"
+    @patch("booley.ticket_board.git_ops.git")
+    def test_status_failure_is_not_clean(self, mock_git):
+        mock_git.return_value = self._result("", 128)
 
-        fake_bind_mounts(root, (alias, nested_alias))
+        assert worktree_blocking_changes("/repo", candidate_paths=("design.txt",)) is None
 
-        assert _worktree_relative_path(str(root), candidate) is None
+    @patch("booley.ticket_board.git_ops.git")
+    def test_case_only_overlap_blocks_when_checkout_ignores_case(self, mock_git):
+        mock_git.side_effect = [
+            self._result("?? Foo/output.txt\0"),
+            self._result("true\n"),
+        ]
 
-    def test_rejects_bind_mount_identity_lookup_errors(self, tmp_path, monkeypatch):
-        root = tmp_path / "checkout"
-        root.mkdir()
-        alias = tmp_path / "runtime-alias"
-        (alias / "tickets").mkdir(parents=True)
+        blockers = worktree_blocking_changes("/repo", candidate_paths=("foo/output.txt",))
 
-        def samefile(_left, _right):
-            raise OSError("identity unavailable")
-
-        monkeypatch.setattr(Path, "samefile", samefile)
-
-        assert _worktree_relative_path(str(root), alias / "tickets" / "ticket.md") is None
+        assert blockers is not None
+        assert [entry.path for entry in blockers] == ["Foo/output.txt"]
 
 
 # ---------------------------------------------------------------------------

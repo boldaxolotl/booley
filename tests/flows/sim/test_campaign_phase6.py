@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -48,6 +49,8 @@ from booley.flows.sim.campaign.coordinator import (
     SimulationCampaignCancellationError,
     WorkExecutionRequest,
     _acceptance_ready,
+    _collected_result_facts,
+    _prerequisite_facts,
 )
 from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
@@ -61,8 +64,12 @@ from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, Endpoi
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+from tests.flows.sim.test_campaign_codec_golden import _simulation_result
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
+from tests.flows.sim.test_campaign_phase5_adversarial import _retain_v3_before_reference
+from tests.flows.sim.test_coverage_invocation import project
+from tests.flows.sim.test_coverage_transaction import NativeExecution
 
 _STAMP = "2026-09-22T00:00:00Z"
 
@@ -214,7 +221,7 @@ class _NoEdaExecutor:
             "functional": "not_observed",
             "assertions": "not_observed",
             "assertion_count": 0,
-            "detail": {},
+            "detail": {"reason": "synthetic no-EDA build failure"},
             "cycle_count": None,
         }
         document = {
@@ -719,6 +726,54 @@ def test_acceptance_result_reference_hashes_exact_stored_bytes(tmp_path: Path) -
     assert reference["sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()  # type: ignore[index]
 
 
+def test_migrated_v1_result_references_hash_original_stored_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invocation = tmp_path / "reports/sim/1"
+    store_root = invocation / "targets/sim/campaign"
+    result_path = store_root / "work-items/0001/result.json"
+    result_path.parent.mkdir(parents=True)
+    document = json.loads(_simulation_result("completed", schema=1))
+    document["observations"][0]["cycle_count"] = 12
+    raw = canonical_json_bytes(document)
+    result_path.write_bytes(raw)
+    migrated = decode_simulation_result(raw)
+    store = SimpleNamespace(
+        root=store_root,
+        work_item_directory=lambda _work_item_id: result_path.parent,
+    )
+    recovered = SimpleNamespace(work_item_id="item:0000:0123456789abcdef", result=migrated)
+    recovery = SimpleNamespace(items=(recovered,))
+    item = {"role": "functional", "revision": "current", "target": "sim"}
+
+    consumed, _observations = _collected_result_facts(
+        store, recovery, {recovered.work_item_id: item}
+    )
+    assert consumed[0]["result"]["bytes"] == len(raw)
+    assert consumed[0]["result"]["sha256"] == _digest(raw)
+
+    entry = {
+        "manifest": {"path": "targets/base/campaign/manifest.json"},
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "target": "base",
+        "work_item_id": recovered.work_item_id,
+    }
+    manifest = SimpleNamespace(document={"prerequisites": (entry,)})
+    monkeypatch.setattr("booley.flows.sim.campaign.coordinator.CampaignStore", lambda _root: store)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coordinator._authenticate_prerequisite_manifest",
+        lambda *_args: (manifest, "smoke"),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coordinator._selected_prerequisite_result",
+        lambda *_args: recovered,
+    )
+
+    prerequisite = _prerequisite_facts(store, manifest)[0]["result"]
+    assert prerequisite["bytes"] == len(raw)
+    assert prerequisite["sha256"] == _digest(raw)
+
+
 def _ledger_bytes(log_dir: Path) -> dict[Path, bytes]:
     root = log_dir / "acceptance"
     return {path.relative_to(log_dir): path.read_bytes() for path in root.rglob("*.json")}
@@ -750,6 +805,8 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert first_state.criteria["sim_pass_sim"].met is False
     assert len(first_state.acceptance_transactions) == 1
     projection = outcome.manifest_path.parents[1] / "simulation.json"
+    projection_document = json.loads(projection.read_bytes())
+    assert projection_document["tests"][0]["error_tail"] == ("synthetic no-EDA build failure")
     first_projection = projection.read_bytes()
     first_ledger = _ledger_bytes(tmp_path / "logs")
     assert any("intents" in path.parts for path in first_ledger)
@@ -765,6 +822,17 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert projection.read_bytes() == first_projection
     assert final_state.acceptance_transactions == first_state.acceptance_transactions
     assert final_state.criteria["sim_pass_sim"].met is False
+
+
+def test_campaign_projection_error_tail_rejects_malformed_detail(tmp_path: Path) -> None:
+    outcome, invocation = _one_item_outcome(tmp_path)
+    malformed_observation = dict(outcome.observations[0], detail=[])
+    malformed = replace(outcome, observations=(malformed_observation,))
+    state = DevelopmentState.load(tmp_path / "state.json")
+    recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity={})
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="detail"):
+        record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (malformed,))
 
 
 def _named_campaign_outcome(tmp_path: Path):
@@ -1042,6 +1110,36 @@ def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, s
     assert list((reports / "sim/.pruned-1").iterdir()) == []
 
 
+def test_full_pruning_authenticates_and_removes_retained_valid_v3_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    _retain_v3_before_reference(monkeypatch)
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    reports = tmp_path / "reports"
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
+    ).execute(
+        SimRequest(
+            target="sim_0",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=reports,
+        )
+    )
+    nested = next(reports.rglob("coverage-campaign/coverage.json"))
+    assert json.loads(nested.read_text())["$schema"] == "booley.coverage-campaign/v3"
+
+    prune_invocation(reports, 1)
+
+    assert result.exit_code == 0
+    assert not (reports / "sim/1").exists()
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
 def test_full_pruning_rejects_foreign_file_in_completed_attempt(tmp_path: Path) -> None:
     reports, project_data, store = _retained_invocation(tmp_path)
     status = inspect_retained_campaign(store.manifest_path)
@@ -1153,6 +1251,37 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
         # The raced number's producer lock was released, not leaked.
         with campaign_invocation_lock(reports / "sim/2"):
             pass
+
+
+def test_simulation_reservation_releases_its_lock_when_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-race mkdir failure (EACCES, ENOSPC) must not leave the number busy."""
+    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+
+    reports = tmp_path / "reports"
+    (reports / "sim").mkdir(parents=True)
+    flow = SimulateFlow()
+    flow.context._args = SimRequest(report_dir=reports)
+    mkdir = type(reports).mkdir
+
+    def disk_full_for_one(path: Path, *args: object, **kwargs: object) -> None:
+        if path == reports / "sim/1":
+            raise OSError(errno.ENOSPC, "No space left on device", str(path))
+        mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(reports), "mkdir", disk_full_for_one)
+    with (
+        flow.context.publication_resources,
+        pytest.raises(OSError, match="No space left") as raised,
+    ):
+        flow.reserve_invocation_dir()
+
+    # The retained traceback keeps the reservation frame alive, so only an
+    # explicit release (not refcount or GC finalization) frees the number.
+    assert raised.tb is not None
+    with campaign_invocation_lock(reports / "sim/1"):
+        pass
 
 
 def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) -> None:

@@ -13,7 +13,8 @@ The documentation is split at the public-interface seam:
 | Document | Owns |
 |---|---|
 | **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, and `fpga` Booley Flows |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | Public invocation, verdict, Criteria, report, and artifact behavior for those built-in Flows |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How to run those built-in Flows and interpret their verdicts and Criteria |
+| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of those built-in Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
 | [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
@@ -339,10 +340,16 @@ unpredictable attempt token, adapter, durable Target identity, and complete
 ordered selected-test set; the decoder rejects contradictions and rejects a
 result artifact that predates the invocation or escapes its build root. Leaf
 adapters may use `[SIM_SUMMARY]` and `[SIM_RESULT]` as inputs to normalization.
+Adapter results also carry the exact run termination: `completed`, `timeout`,
+`disk_budget`, `fatal_init`, `sim_time_stall`, or `trace_stall`. Only
+`completed` permits sentinel and return-code inference; a guard termination
+wins even when the child exits zero and is recorded only for a still-live child.
 For Cocotb, per-test verdicts originate in the current run's JUnit
 `results.xml`; unexpected entries remain diagnostics and cannot affect the
-selected tests' verdicts. A nonzero process/build outcome still outranks an
-adapter pass. A requested trace must independently validate as a fresh regular
+selected tests' verdicts. If a Cocotb batch aborts, completed tests retain their
+verdicts and the remaining tests carry the batch termination. A nonzero
+process/build outcome still outranks an adapter pass. A requested trace must
+independently validate as a fresh regular
 file in an allowed location or an otherwise passing run becomes
 `inconclusive`.
 
@@ -520,7 +527,10 @@ can pass on warnings-only while the Criteria keep the honest number.
 Findings are parsed with the shared regexes in the private parser module
 (`booley.flows._eda_parsers`, one source of truth for the Verilator and
 Verible dialects), then deduplicated across Targets on `(rule, file, line)`
-and scope-filtered.
+and scope-filtered. Deduplication retains the first finding's diagnostic fields
+and row order while collecting every contributing Target. When different EDA
+tool families contribute to one row, the report also maps each Target to its
+EDA tool. These provenance fields do not change the deduplication key or count.
 The console echoes the first five; the full list always goes to the report:
 
 ```text
@@ -531,9 +541,10 @@ The console echoes the first five; the full list always goes to the report:
 The numbered copy exists because consecutive runs would otherwise clobber each
 other: a Verilator pass followed by a Verible pass is two runs of one Flow.
 The report carries `passed`, `total_warnings`, per-finding rule/file:line/
-message, any `errors`, and a `target_results` entry per Target: the EDA tool
-that actually linted, finding count, `files_linted`, `toplevel`,
-`toplevel_linted`, and duration.
+message with contributing Targets and mixed-family EDA tool provenance, any
+`errors`, and a `target_results` entry per Target: the EDA tool that actually
+linted, finding count, `files_linted`, `toplevel`, `toplevel_linted`, and
+duration.
 
 **Coverage guard (`toplevel_linted`).** A Target can lint a fileset that
 excludes its own toplevel: a style fileset trimmed of macro-heavy files, for
@@ -998,20 +1009,39 @@ sealed, approving, editing, adding, deleting, or replacing an approval file or
 one of its referenced formal proof artifacts requires `return-to-draft`; the new
 Ticket generation records a fresh protected-input baseline.
 
-The canonical Target directory holds the V3 `coverage.json` manifest, required
-`coverage-points.jsonl.gz`, `simulation.json`, `native/raw/`, `native/merged/`,
-and hook sidecars. The manifest is the canonical entry point and contains
-provenance, overall rollups, deterministic source-file rollups, percentages,
-collection, and evaluation without inline Coverage Points. Source rollups cover
-line, branch, expression, and toggle with overall eligibility and waiver policy;
-they never aggregate by instance hierarchy. It integrity-binds the compressed JSON
-Lines point store. V1 and V2 Campaigns are rejected and must be recollected. Native paths in the Campaign
-are relative to that Target directory. `booley.simulation-report/v2` artifact
+The canonical Target directory holds `simulation.json` and a
+`booley.coverage-campaign-reference/v1` `coverage.json`, not the Coverage Campaign
+manifest or point store. Its `coverage_campaign.path_base` is `origin_target`;
+resolve `coverage_campaign.path` against that directory to
+`campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
+The nested Coverage Campaign directory holds the current manifest, required
+`coverage-points.jsonl.gz`, `native/raw/`,
+`native/merged/`, and `hooks/` sidecars when collected. Native paths in the
+manifest are relative to that **Coverage Campaign directory**.
+
+The nested manifest contains provenance, overall rollups, deterministic
+source-file rollups, percentages, collection, evaluation, and scoring state
+without inline Coverage Points. The
+[Flow reports reference](FLOW_REPORTS.md#coverage-campaign-files) defines
+scoring and retained diagnostic evidence. Source rollups cover line, branch,
+expression, and toggle with overall eligibility and waiver policy;
+they never aggregate by instance hierarchy. The manifest integrity-binds the
+compressed JSON Lines point store. Manifest summary/deep readers validate the current Campaign manifest at the
+resolved nested path; the Target reference is a separate schema. The Coverage
+Analyst requires the canonical Target-level reference and matching completed
+`simulation.json`; it resolves and authenticates the nested manifest internally
+and does not accept the nested path as its input.
+`booley.simulation-report/v2` artifact
 references use `report_invocation` or `reports_root`, resolved from the containing
 `report.json`; cross-root resume references instead use `external_origin_target`,
 resolved from an explicitly supplied origin Target directory. Resume reports do
 not publish a duplicate Target projection. No flat per-Target compatibility report is
-written in any Simulation mode. The separate report-driven Analyst consumes the
+written in any Simulation mode. Endpoint reporting separately overwrites
+`<reports>/<name>.json` (for example `sim.json`) with a last-writer-wins copy of
+its newest numbered `report.json`. This backward-compatibility copy is mutable;
+a later failure can replace Campaign pointers with empty `detail`. Consumers
+must retain numbered `<reports>/<name>/<N>/...` paths, never use this copy as
+stable Campaign authority. The separate report-driven Analyst consumes the
 exact completed Target Campaign without publishing policy evidence.
 
 #### Persistence and recovery
@@ -1019,12 +1049,12 @@ exact completed Target Campaign without publishing policy evidence.
 The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
 Deep readers validate its path, schema, byte counts, point count, digest, every
-point, recomputed rollups, and evaluation before accepting point-dependent
-evidence. Deep readers also recompute the exact source-file distribution; summary
-readers validate source ordering, metric ordering, arithmetic, and reconciliation
-with overall rollups. Contract failures expose stable `COV_*` error codes. Summary readers
-validate manifest-local facts without opening point
-storage. Campaign and Simulation publication precede Criterion evidence. Coverage
+point, scoring/collection state, valid rollups, and evaluation before accepting
+point-dependent evidence. Summary readers validate rollup ordering and arithmetic,
+reconcile valid overall/source rollups, and require empty invalid rollups. Criteria
+blocks on collection before denominator/metric work. Contract failures expose
+stable `COV_*` error codes. Summary readers validate manifest-local facts without
+opening point storage. Campaign and Simulation publication precede Criterion evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic
 Harness state save as the updated Criteria. Acceptance readers ignore evidence
@@ -1035,12 +1065,21 @@ Ordinary nontransactional ledger observations retain their existing semantics.
 
 Terminal progress follows the state save. If its normal write fails, the Flow
 retries once with `phase: aborted`; the committed Campaign and Criteria remain
-valid and the command returns 2 even when that repair succeeds. Persistence errors
-retain the independently measured simulation, collection, and evaluation truths
-in the structured result; an error does not turn a measured verdict into a
-policy `blocked` verdict. Report paths are usable only when their publication
-succeeded. No later stage runs after an earlier publication failure, except for
-an observational error checkpoint.
+valid and the command returns 2 even when that repair succeeds. Before the nested
+Coverage Campaign commit marker is published, a persistence error retains any
+observed simulation verdict but reports collection as `infrastructure_error` and
+blocks a requested evaluation. After that commit, later Simulation Campaign,
+reference, summary, acceptance, report, or progress publication failures retain
+the durable collection and evaluation truths as well as the simulation verdict;
+they do not turn a committed evaluation into `blocked`. Report paths are usable
+only when their publication succeeded. No later stage runs after an earlier
+publication failure, except for an observational error checkpoint.
+
+All Simulation progress producers normalize a failed terminal publication onto
+the result already assembled from durable Target or Campaign outcomes. They do
+not replace that result with a generic error. A per-Target progress failure
+terminalizes as `aborted`, even when every Target execution already completed;
+`phase: complete` is reserved for successful progress publication.
 
 The Flow holds an OS file lock outside the invocation directory while producing
 coverage. Pruning takes the same nonblocking lock, so active invocations cannot
@@ -1132,7 +1171,8 @@ rewritten by retention, and a Campaign lock never recreates a renamed Campaign r
 ### Coverage Analysis after Simulation
 
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its V3 integrity-linked point store, and checks its
+its integrity-linked point store, rejects collector-error or incompatible
+collection before provider invocation, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native
 pruning leaves its input usable, while full pruning removes that input. The

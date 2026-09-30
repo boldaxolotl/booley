@@ -194,7 +194,7 @@ to make validation or enqueue pass.
 
 ## Step 5: Report
 
-- **Human**: print the enqueued path (`board/queue/`, or `board/waiting/` when it declares unmet dependencies — Step 4's `enqueue` already moved it there), then suggest `booley run`
+- **Human**: print the Ticket path (`tickets/board/<slug>.md`, unchanged by enqueue) and its state from `python -m booley.ticket_board show <slug>` (`queued`, or `waiting` when it declares unmet dependencies), then suggest `booley run`
 - **Agent**: return path
 
 ---
@@ -295,9 +295,10 @@ complete frontmatter example is in `TICKET_TEMPLATE.md`.
 
 Use exact registered Target and test selectors. `SIM.all` requires a nonempty
 registered suite; `fail -> pass` requires a named test and matching red/green
-evidence. The Target already identifies its top-level TB. `REVIEW.done` and
-`REVIEW.clean` are separate outcomes, so one may be mandatory and the other
-optional. `SYNTH`, `FPGA`, `CYCLE_COUNT`, and `COVERAGE` produce a separate
+evidence. The Target already identifies its top-level TB. Choose exactly one
+`REVIEW` outcome for each category/focus across mandatory and optional Criteria.
+Use `clean` when completion plus no open findings is required because it implies
+`done`. `SYNTH`, `FPGA`, `CYCLE_COUNT`, and `COVERAGE` produce a separate
 atomic Criterion for each metric. Put multiple metrics for one Target in one
 mapping, or split them between sections when mandatory/optional status differs.
 Project scalar Criteria use their registered name in uppercase and the value

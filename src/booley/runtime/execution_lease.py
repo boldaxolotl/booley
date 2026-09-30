@@ -13,6 +13,8 @@ from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
+    as_dict,
+    as_str,
     require_dict,
     require_int,
     require_list,
@@ -110,10 +112,73 @@ class ExecutionLeaseAbsentPath:
             raise ExecutionLeaseError(f"execution {self.label} now exists")
 
 
+@dataclass(frozen=True)
+class ExecutionLeaseJsonField:
+    """One top-level field of a JSON object file that must keep its admitted value.
+
+    Unlike :class:`ExecutionLeaseFile`, other fields of the file may change: this
+    pins a single fact, such as a lifecycle state, inside a mutable record.
+    """
+
+    label: str
+    path: Path
+    key: str
+    value: str
+
+    @classmethod
+    def capture(cls, label: str, path: Path, key: str) -> ExecutionLeaseJsonField:
+        """Capture the current string value of *key* at lease admission."""
+        value = _json_field(path, key)
+        if value is None:
+            raise ExecutionLeaseError(f"execution lease requires {label} at {path}")
+        return cls(label=label, path=path, key=key, value=value)
+
+    @classmethod
+    def from_mapping(cls, value: Any, *, field: str) -> ExecutionLeaseJsonField:
+        """Parse one field constraint from untrusted lease JSON."""
+        row = require_dict(value, field=field)
+        return cls(
+            label=require_str(row, "label"),
+            path=Path(require_str(row, "path")),
+            key=require_str(row, "key"),
+            value=require_str(row, "value"),
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the JSON representation persisted with the lease."""
+        return {"label": self.label, "path": str(self.path), "key": self.key, "value": self.value}
+
+    def validate(self) -> None:
+        """Require the field to still hold its admitted value."""
+        current = _json_field(self.path, self.key)
+        if current is None:
+            raise ExecutionLeaseError(f"execution {self.label} is no longer available")
+        if current != self.value:
+            raise ExecutionLeaseError(f"execution {self.label} is no longer current")
+
+
+def _json_field(path: Path, key: str) -> str | None:
+    """Return the string value of *key* in the JSON object at *path*, else ``None``."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    document = as_dict(value) or {}
+    return as_str(document.get(key))
+
+
 def _parse_files(value: Any) -> tuple[ExecutionLeaseFile, ...]:
     rows = require_list(value, field="required_files")
     return tuple(
         ExecutionLeaseFile.from_mapping(row, field=f"required_files[{index}]")
+        for index, row in enumerate(rows)
+    )
+
+
+def _parse_json_fields(value: Any) -> tuple[ExecutionLeaseJsonField, ...]:
+    rows = require_list(value, field="required_fields")
+    return tuple(
+        ExecutionLeaseJsonField.from_mapping(row, field=f"required_fields[{index}]")
         for index, row in enumerate(rows)
     )
 
@@ -149,6 +214,7 @@ class ExecutionLeaseEnvironment:
     jobs_root: Path
     required_files: tuple[ExecutionLeaseFile, ...]
     absent_paths: tuple[ExecutionLeaseAbsentPath, ...]
+    required_fields: tuple[ExecutionLeaseJsonField, ...] = ()
 
     _ENVIRONMENT_KEY = "BOOLEY_EXECUTION_LEASE"
 
@@ -167,6 +233,7 @@ class ExecutionLeaseEnvironment:
             "jobs_root": str(self.jobs_root),
             "required_files": [item.as_dict() for item in self.required_files],
             "absent_paths": [item.as_dict() for item in self.absent_paths],
+            "required_fields": [item.as_dict() for item in self.required_fields],
         }
 
     def to_environment(self) -> dict[str, str]:
@@ -221,6 +288,7 @@ class ExecutionLeaseEnvironment:
                 jobs_root=Path(require_str(value, "jobs_root")),
                 required_files=_parse_files(value.get("required_files")),
                 absent_paths=_parse_absent_paths(value.get("absent_paths")),
+                required_fields=_parse_json_fields(value.get("required_fields")),
             )
         except (BoundaryError, json.JSONDecodeError, TypeError) as exc:
             raise ExecutionLeaseError(f"execution lease environment is malformed: {exc}") from exc
@@ -320,6 +388,8 @@ def validate_recording(work_dir: Path | str | None = None) -> None:
         constraint.validate()
     for constraint in environment.absent_paths:
         constraint.validate()
+    for field_constraint in environment.required_fields:
+        field_constraint.validate()
     if _has_matching_job(environment):
         return
     if not unexpired:

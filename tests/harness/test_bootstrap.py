@@ -10,6 +10,12 @@ import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
+from booley.runtime import issuance_invalidation
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildRequest,
+    DockerCapacityError,
+)
 from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
 
 
@@ -17,10 +23,34 @@ def _current(resource: str) -> bootstrap.BootstrapFinding:
     return bootstrap.BootstrapFinding(resource, bootstrap.BootstrapState.CURRENT, "current")
 
 
+def _current_sidecars() -> bootstrap.host_sidecars.SidecarResult:
+    findings = tuple(
+        bootstrap.host_sidecars.SidecarFinding(
+            resource,
+            bootstrap.host_sidecars.SidecarState.CURRENT,
+            "current",
+        )
+        for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper")
+    )
+    return bootstrap.host_sidecars.SidecarResult(findings)
+
+
+def _prepare_empty_invalidation_store(config_root: Path, project: Path) -> Path:
+    project.mkdir()
+    pending = issuance_invalidation.prepare(
+        str(project.resolve()),
+        cleanup_resources=False,
+    )
+    issuance_invalidation.cancel(pending)
+    return config_root / "booley"
+
+
 def _wire_current(
     monkeypatch: pytest.MonkeyPatch, *, stub_vscode_extension: bool = True
 ) -> list[str]:
     calls: list[str] = []
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: ())
+    monkeypatch.setattr(bootstrap.host_sidecars, "plan_image_builds", lambda _intent: ())
     monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
     monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
@@ -55,20 +85,10 @@ def _wire_current(
             _current("base-image"),
         ),
     )
-    sidecar_findings = tuple(
-        bootstrap.host_sidecars.SidecarFinding(
-            resource,
-            bootstrap.host_sidecars.SidecarState.CURRENT,
-            "current",
-        )
-        for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper")
-    )
     monkeypatch.setattr(
         bootstrap.host_sidecars,
         "reconcile_sidecars",
-        lambda _policy, _intent: (
-            calls.append("sidecars") or bootstrap.host_sidecars.SidecarResult(sidecar_findings)
-        ),
+        lambda _policy, _intent, **_kwargs: calls.append("sidecars") or _current_sidecars(),
     )
     return calls
 
@@ -100,6 +120,72 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
     ]
     assert result.ready
     assert result.exit_status == 0
+
+
+def test_bootstrap_refuses_aggregate_image_plan_before_first_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _wire_current(monkeypatch)
+    base = DockerBuildRequest("runtime base", "base")
+    sandbox = DockerBuildRequest("Sandbox Image", "sandbox")
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    reaper = DockerBuildRequest("reaper", "reaper", BuildEstimateClass.THIN_OVERLAY)
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (base, sandbox))
+    monkeypatch.setattr(
+        bootstrap.host_sidecars,
+        "plan_image_builds",
+        lambda _intent: (proxy, reaper),
+    )
+    observed = []
+
+    def refuse(*_args, **kwargs):
+        observed.extend(kwargs["remaining_plan"].requests)
+        raise DockerCapacityError("capacity refused")
+
+    monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", refuse)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert [request.managed_image for request in observed] == [
+        "runtime base",
+        "Sandbox Image",
+        "proxy",
+        "reaper",
+    ]
+    assert "base-image" not in calls
+    assert "sidecars" not in calls
+    assert result.findings[-1].resource == "image-capacity"
+
+
+def test_bootstrap_threads_aggregate_plan_through_every_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wire_current(monkeypatch)
+    base = DockerBuildRequest("runtime base", "base")
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (base,))
+    monkeypatch.setattr(
+        bootstrap.host_sidecars,
+        "plan_image_builds",
+        lambda _intent: (proxy,),
+    )
+    monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", lambda *_a, **_kw: None)
+    observed = []
+
+    def reconcile_base(_intent, **kwargs):
+        observed.append(kwargs["capacity_plan"])
+        result = LifecycleResult("booley-sandbox", "sha256:base", Status.CURRENT)
+        return result, _current("base-image")
+
+    def reconcile_sidecars(_policy, _intent, **kwargs):
+        observed.append(kwargs["capacity_plan"])
+        return _current_sidecars()
+
+    monkeypatch.setattr(bootstrap, "_reconcile_base_image", reconcile_base)
+    monkeypatch.setattr(bootstrap.host_sidecars, "reconcile_sidecars", reconcile_sidecars)
+
+    assert bootstrap.reconcile_bootstrap(Intent.ENSURE).ready
+    assert [plan.requests for plan in observed] == [(base, proxy), (base, proxy)]
 
 
 def test_noncanonical_install_stops_before_host_mutation(
@@ -144,6 +230,310 @@ def test_check_only_pending_is_exit_one_but_mutating_pending_is_failure() -> Non
     pending = bootstrap.BootstrapFinding("resource", bootstrap.BootstrapState.PENDING, "work")
     assert bootstrap.BootstrapResult(Intent.CHECK, (pending,)).exit_status == 1
     assert bootstrap.BootstrapResult(Intent.ENSURE, (pending,)).exit_status == 2
+
+
+def test_warning_is_ready_and_non_blocking() -> None:
+    warning = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.WARNING, "restore source"
+    )
+    result = bootstrap.BootstrapResult(Intent.CHECK, (warning,))
+
+    assert result.ready is True
+    assert result.exit_status == 0
+
+
+@pytest.mark.parametrize("flag", ["with_qa_skills", "without_qa_skills"])
+def test_check_only_rejects_qa_selection_flags(flag: str, capsys) -> None:
+    args = SimpleNamespace(check_only=True, update=False, **{flag: True})
+
+    assert bootstrap_cli.run_bootstrap(args) == 2
+    assert "cannot be combined" in capsys.readouterr().out
+
+
+def test_opt_out_prunes_qa_before_failing_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
+    monkeypatch.setattr(
+        bootstrap,
+        "_reconcile_qa_skills",
+        lambda *_args, **_kwargs: calls.append("qa-prune") or _current("qa-skills"),
+    )
+    prerequisite = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(
+        bootstrap,
+        "_prerequisite_findings",
+        lambda: (calls.append("prerequisites") or prerequisite,),
+    )
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE, qa_opt_out=True)
+
+    assert calls == ["qa-prune", "prerequisites"]
+    assert [finding.resource for finding in result.findings] == [
+        "host-config",
+        "qa-skills",
+        "docker",
+    ]
+
+
+def test_explicit_qa_enable_persists_before_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    identity = SimpleNamespace(version="1.2.3", payload_fingerprint="f" * 64, revision="a" * 12)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_args, **_kwargs: events.append("register") or identity,
+    )
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path / "Booley")
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "enable_qa_skills",
+        lambda _root, _revision: events.append("enable"),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
+        ),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=True,
+            without_qa_skills=False,
+        )
+    )
+
+    assert status == 0
+    assert events == ["register", "enable", "reconcile"]
+
+
+def test_explicit_qa_warning_overrides_nonblocking_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    warning = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.WARNING, "link conflict"
+    )
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap_cli, "enable_qa_skills", lambda *_args: None)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (warning,)),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=True,
+            without_qa_skills=False,
+        )
+    )
+
+    assert status == 2
+
+
+def test_qa_adoption_always_requires_force(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[bool] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "_qa_source",
+        lambda _opt_out: (Path("/qa"), bootstrap.QA_SKILL_NAMES),
+    )
+
+    def reconcile(*_args, **kwargs):
+        observed.append(kwargs["allow_exact_adoption"])
+        return ()
+
+    monkeypatch.setattr(bootstrap, "reconcile_host_qa_skills", reconcile)
+
+    refused = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
+    approved = bootstrap._reconcile_qa_skills(Intent.REFRESH, opt_out=False, allow_adoption=True)
+
+    assert refused is not None and refused.state is bootstrap.BootstrapState.CURRENT
+    assert approved is not None and approved.state is bootstrap.BootstrapState.CURRENT
+    assert observed == [False, True]
+
+
+def test_qa_source_inspection_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "current_host_installation",
+        lambda _source: SimpleNamespace(revision="abc1234"),
+    )
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
+    monkeypatch.setattr(
+        bootstrap,
+        "_skill_names",
+        lambda _source: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+
+    finding = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
+
+    assert finding is not None
+    assert finding.state is bootstrap.BootstrapState.WARNING
+    assert "permission denied" in finding.detail
+
+
+def test_qa_source_filters_valid_skill_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packaged = tmp_path / "packaged"
+    valid = packaged / "valid"
+    valid.mkdir(parents=True)
+    (valid / "SKILL.md").write_text("# valid\n", encoding="utf-8")
+    (packaged / "incomplete").mkdir()
+
+    assert bootstrap._skill_names(packaged) == frozenset({"valid"})
+
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: packaged)
+    assert bootstrap._qa_source(True) == (packaged, frozenset())
+
+
+def test_qa_source_reports_packaged_name_collision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "current_host_installation",
+        lambda _source: SimpleNamespace(revision="abc1234"),
+    )
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
+    monkeypatch.setattr(bootstrap, "_skill_names", lambda _source: bootstrap.QA_SKILL_NAMES)
+
+    with pytest.raises(bootstrap.QaSkillSelectionError, match="collide"):
+        bootstrap._qa_source(False)
+
+
+def test_explicit_qa_enable_reports_missing_checkout(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: None)
+
+    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
+    assert "complete primary" in capsys.readouterr().out
+
+
+def test_explicit_qa_enable_reports_validation_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: Path("/Booley"))
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "enable_qa_skills",
+        lambda *_args: (_ for _ in ()).throw(bootstrap_cli.QaSkillSelectionError("invalid")),
+    )
+
+    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
+    assert "Cannot enable QA skills: invalid" in capsys.readouterr().out
+
+
+def test_opt_out_keeps_selection_when_prune_did_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    events: list[str] = []
+    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, (error,))
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: events.append("disable"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert events == ["reconcile"]
+
+
+def test_opt_out_removes_selection_after_prune_even_if_later_resource_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    events: list[str] = []
+    pruned = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
+    )
+    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: (
+            events.append("reconcile") or bootstrap.BootstrapResult(intent, (pruned, error))
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: events.append("disable"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert events == ["reconcile", "disable"]
+
+
+def test_opt_out_reports_selection_removal_failure(monkeypatch, capsys) -> None:
+    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
+    pruned = bootstrap.BootstrapFinding(
+        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
+    )
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (pruned,)),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "disable_qa_skills",
+        lambda: (_ for _ in ()).throw(OSError("read-only")),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+            with_qa_skills=False,
+            without_qa_skills=True,
+        )
+    )
+
+    assert status == 2
+    assert "Cannot disable QA skills: read-only" in capsys.readouterr().out
 
 
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,6 +674,99 @@ def test_public_adapter_check_only_does_not_register(monkeypatch):
     )
 
     assert status == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_check_only_reports_unsafe_private_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    booley_config.chmod(0o755)
+    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
+    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(force=False, check_only=True, verbose=False)
+    )
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert "[XX]" in captured.out
+    assert str(booley_config) in captured.out
+    assert "0755" in captured.out
+    assert f"chmod 700 {booley_config}" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_check_only_accepts_repaired_private_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    booley_config.chmod(0o700)
+    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
+    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+
+    assert (
+        bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
+        == 0
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_check_only_accepts_shared_xdg_root_at_0755(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    config_root.chmod(0o755)
+    expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
+    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+
+    assert (
+        bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
+        == 0
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_public_adapter_mutation_reports_unsafe_private_store_before_registration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
+    booley_config.chmod(0o755)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_a, **_kw: pytest.fail("unsafe recovery must precede registration"),
+    )
+
+    status = bootstrap_cli.run_bootstrap(
+        SimpleNamespace(force=False, check_only=False, verbose=False)
+    )
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert "[XX]" in captured.out
+    assert str(booley_config) in captured.out
+    assert "0755" in captured.out
+    assert f"chmod 700 {booley_config}" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
 
 
 def test_public_adapter_reports_registration_failure(monkeypatch, capsys):
@@ -507,6 +990,25 @@ def test_git_probe_rejects_prerelease_and_unparseable_versions(
 
     assert finding.state is bootstrap.BootstrapState.ERROR
     assert "Git 2.37.2 or newer" in finding.detail
+
+
+@pytest.mark.parametrize(
+    ("version_line", "expected"),
+    [
+        ("git version 2.47.9", (2, 47, 9)),
+        ("git version 2.48.0", (2, 48, 0)),
+        ("git version 2.53.0.windows.1", (2, 53, 0)),
+        ("git version 2.50.1 (Apple Git-155)", (2, 50, 1)),
+        ("git version 2.48.0-rc1", None),
+        ("git version 2.48.0.beta2", None),
+        ("git version unknown", None),
+    ],
+)
+def test_parse_git_version_is_strict_capability_evidence(
+    version_line: str,
+    expected: tuple[int, int, int] | None,
+) -> None:
+    assert bootstrap.parse_git_version(version_line) == expected
 
 
 def test_git_probe_reports_missing_and_execution_failures(
@@ -999,7 +1501,12 @@ def test_base_image_reports_removed_and_container_retained_release_tags(
 
 @pytest.mark.parametrize(
     ("sidecar_state", "bootstrap_state"),
-    tuple(zip(bootstrap.host_sidecars.SidecarState, bootstrap.BootstrapState, strict=True)),
+    [
+        (bootstrap.host_sidecars.SidecarState.CURRENT, bootstrap.BootstrapState.CURRENT),
+        (bootstrap.host_sidecars.SidecarState.PENDING, bootstrap.BootstrapState.PENDING),
+        (bootstrap.host_sidecars.SidecarState.CHANGED, bootstrap.BootstrapState.CHANGED),
+        (bootstrap.host_sidecars.SidecarState.ERROR, bootstrap.BootstrapState.ERROR),
+    ],
 )
 def test_sidecar_state_mapping(sidecar_state, bootstrap_state) -> None:
     finding = bootstrap._sidecar_finding(
@@ -1013,6 +1520,7 @@ def test_sidecar_state_mapping(sidecar_state, bootstrap_state) -> None:
     [
         (bootstrap.BootstrapState.CURRENT, "is current"),
         (bootstrap.BootstrapState.PENDING, "pending work"),
+        (bootstrap.BootstrapState.WARNING, "is current"),
         (bootstrap.BootstrapState.ERROR, "is incomplete"),
     ],
 )

@@ -1,4 +1,10 @@
-"""Recoverable blocked-to-draft transition for Tickets with a recorded baseline."""
+"""Recoverable blocked-to-draft transition for Tickets with a recorded baseline.
+
+The Ticket document keeps its path (ADR 0065). The cutover first replaces the
+blocked executable document with its draft form, then deletes the state record,
+so a crash can leave at most a draft-form document next to a blocked record,
+which the journal rolls forward.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,7 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -20,6 +26,7 @@ from booley.core.boundary import (
     require_dict,
     require_int,
     require_str,
+    require_str_value,
 )
 from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
@@ -37,11 +44,21 @@ from booley.ticket_board.ticket_repositories import (
     ticket_project_worktree,
 )
 
+from .board_layout import (
+    StateRecord,
+    delete_state_record,
+    read_state_record,
+    ticket_document_path,
+)
+from .lifecycle import TicketState
 from .persistence import atomic_replace_bytes
 from .ticket_baseline import (
+    AUTHORED_DRIFT_REASON,
     TicketBaseline,
     TicketBaselineError,
+    authored_drift_reason,
     load_ticket_baseline_from_document,
+    load_ticket_recovery_baseline_from_document,
     ticket_baseline_from_machine,
 )
 from .ticket_document import (
@@ -52,9 +69,11 @@ from .ticket_document import (
 )
 from .workspace_ops import (
     AuthoringWorkspace,
+    TicketBaselineOperationError,
     _generation_branch,
     _generation_file,
     open_authoring_generation,
+    preflight_authoring_destination,
     validate_basis_refs,
 )
 
@@ -83,6 +102,10 @@ class DraftTransitionJournal:
     generation_sha256: str
     archive_dir: str
     has_project: bool
+    authored_drift: dict[str, str] = field(default_factory=dict)
+    # Schema 3: the blocked record's execution identity. The document no longer
+    # changes with state (ADR 0065), so the record is the compare-and-swap target.
+    blocked_execution_id: str | None = None
 
     def with_state(
         self,
@@ -99,6 +122,10 @@ class DraftTransitionJournal:
 
 def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _tickets_dir(root: Path) -> Path:
+    return resolve_checkout_project_dir(root) / "tickets"
 
 
 def _transition_root(root: Path) -> Path:
@@ -132,11 +159,17 @@ def _load_journal(root: Path, logs_dir: Path, slug: str) -> DraftTransitionJourn
 
 def _parse_journal(value: Any) -> DraftTransitionJournal:
     mapping = require_dict(value, field="return-to-draft journal")
-    if set(mapping) != set(DraftTransitionJournal.__dataclass_fields__):
+    schema = require_int(mapping.get("schema"), field="return-to-draft journal schema")
+    expected = set(DraftTransitionJournal.__dataclass_fields__)
+    if schema < 3:
+        expected.remove("blocked_execution_id")
+    if schema == 1:
+        expected.remove("authored_drift")
+    if set(mapping) != expected:
         raise BoundaryError("return-to-draft journal has invalid fields")
     state = require_str(mapping, "state")
     return DraftTransitionJournal(
-        schema=require_int(mapping.get("schema"), field="return-to-draft journal schema"),
+        schema=schema,
         operation_id=require_str(mapping, "operation_id"),
         slug=require_str(mapping, "slug"),
         state=cast(Literal["initializing", "prepared", "cutover-ready", "published"], state),
@@ -149,6 +182,20 @@ def _parse_journal(value: Any) -> DraftTransitionJournal:
         generation_sha256=require_str(mapping, "generation_sha256"),
         archive_dir=require_str(mapping, "archive_dir"),
         has_project=require_bool(mapping, "has_project"),
+        authored_drift=(
+            require_dict(mapping.get("authored_drift"), field="return-to-draft authored drift")
+            if schema >= 2
+            else {}
+        ),
+        blocked_execution_id=(
+            require_str_value(
+                mapping.get("blocked_execution_id"),
+                field="return-to-draft blocked execution",
+                allow_empty=True,
+            )
+            if schema >= 3
+            else None
+        ),
     )
 
 
@@ -160,17 +207,17 @@ def transition_pending(project_root: Path | str, slug: str) -> bool:
 def _validate_journal(
     root: Path, logs_dir: Path, slug: str, journal: DraftTransitionJournal
 ) -> None:
-    if journal.schema != 1 or journal.slug != slug or journal.state not in _STATES:
+    if journal.schema not in {1, 2, 3} or journal.slug != slug or journal.state not in _STATES:
         raise DraftTransitionError("return-to-draft journal identity or schema is invalid")
+    _validate_authored_drift(journal)
     if not _OPERATION_RE.fullmatch(journal.operation_id):
         raise DraftTransitionError("return-to-draft journal operation ID is invalid")
     try:
         ticket_baseline_from_machine(journal.machine)
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
-    board = resolve_checkout_project_dir(root) / "tickets" / "board"
-    draft = Path(journal.draft_ticket).resolve()
-    if draft != (board / "drafts" / f"{slug}.md").resolve():
+    document = ticket_document_path(_tickets_dir(root), slug).resolve()
+    if Path(journal.draft_ticket).resolve() != document:
         raise DraftTransitionError("return-to-draft destination path is invalid")
     if not re.fullmatch(r"[0-9a-f]{16}", journal.generation):
         raise DraftTransitionError("return-to-draft generation token is invalid")
@@ -181,8 +228,7 @@ def _validate_journal(
     )
     if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in digests):
         raise DraftTransitionError("return-to-draft content identity is invalid")
-    blocked = Path(journal.blocked_ticket).resolve()
-    if blocked != (board / "blocked" / f"{slug}.md").resolve():
+    if Path(journal.blocked_ticket).resolve() != document:
         raise DraftTransitionError("return-to-draft blocked Ticket path is invalid")
     archive = Path(journal.archive_dir).resolve()
     archive_root = (logs_dir / slug / "runs").resolve()
@@ -191,6 +237,37 @@ def _validate_journal(
         raise DraftTransitionError("return-to-draft operation path is invalid")
     if archive.parent != archive_root or re.fullmatch(r"[0-9]{3}", archive.name) is None:
         raise DraftTransitionError("return-to-draft publication metadata is invalid")
+
+
+def _validate_authored_drift(journal: DraftTransitionJournal) -> None:
+    if journal.schema == 1:
+        if journal.authored_drift:
+            raise DraftTransitionError("return-to-draft authored drift is invalid")
+        return
+    expected_fields = {
+        "expected_authored_sha256",
+        "observed_authored_sha256",
+        "reason",
+    }
+    if not journal.authored_drift:
+        return
+    try:
+        expected_digest = require_str(journal.authored_drift, "expected_authored_sha256")
+        observed_digest = require_str(journal.authored_drift, "observed_authored_sha256")
+        reason = require_str(journal.authored_drift, "reason")
+    except BoundaryError as exc:
+        raise DraftTransitionError("return-to-draft authored drift is invalid") from exc
+    digests_valid = all(
+        re.fullmatch(r"[0-9a-f]{64}", value) for value in (expected_digest, observed_digest)
+    )
+    if (
+        set(journal.authored_drift) != expected_fields
+        or reason != AUTHORED_DRIFT_REASON
+        or expected_digest != journal.machine.get("authored_sha256")
+        or observed_digest == expected_digest
+        or not digests_valid
+    ):
+        raise DraftTransitionError("return-to-draft authored drift is invalid")
 
 
 def _next_archive(log_dir: Path) -> Path:
@@ -216,6 +293,27 @@ def _draft_content(root: Path, ticket: Path, slug: str) -> tuple[TicketDocument,
     return document, content
 
 
+def _load_transition_basis(
+    root: Path, slug: str, document: TicketDocument, drift_reason: str | None
+) -> TicketBaseline:
+    try:
+        if drift_reason is not None:
+            return load_ticket_recovery_baseline_from_document(root, slug, document)
+        return load_ticket_baseline_from_document(root, slug, document)
+    except TicketBaselineError as exc:
+        raise DraftTransitionError(str(exc)) from exc
+
+
+def _authored_drift_record(document: TicketDocument, drift_reason: str | None) -> dict[str, str]:
+    if drift_reason is None:
+        return {}
+    return {
+        "expected_authored_sha256": document.generated["machine"]["authored_sha256"],
+        "observed_authored_sha256": document.spec.semantic_digest(),
+        "reason": drift_reason,
+    }
+
+
 def _new_journal(
     root: Path,
     ticket: Path,
@@ -226,10 +324,13 @@ def _new_journal(
     if status != "blocked":
         raise DraftTransitionError(f"return-to-draft requires a blocked ticket, got {status!r}")
     document, draft_content = _draft_content(root, ticket, slug)
+    fields = dict(document.spec.fields)
     try:
-        basis = load_ticket_baseline_from_document(root, slug, document)
-    except TicketBaselineError as exc:
+        preflight_authoring_destination(root, fields)
+    except TicketBaselineOperationError as exc:
         raise DraftTransitionError(str(exc)) from exc
+    drift_reason = authored_drift_reason(document)
+    basis = _load_transition_basis(root, slug, document, drift_reason)
     operation_id = uuid.uuid4().hex
     operation = _operation_dir(root, operation_id)
     draft_path = operation / "draft.md"
@@ -237,9 +338,10 @@ def _new_journal(
     generation_content = (json.dumps({"generation": generation}, sort_keys=True) + "\n").encode()
     atomic_replace_bytes(draft_path, draft_content, mode=0o644)
     atomic_replace_bytes(operation / "generation.json", generation_content)
-    draft_destination = ticket.parent.parent / "drafts" / ticket.name
+    draft_destination = ticket_document_path(_tickets_dir(root), slug)
+    record = read_state_record(_tickets_dir(root), slug)
     journal = DraftTransitionJournal(
-        1,
+        3,
         operation_id,
         slug,
         "initializing",
@@ -252,6 +354,8 @@ def _new_journal(
         _digest(generation_content),
         str(_next_archive(logs_dir / slug).resolve()),
         False,
+        _authored_drift_record(document, drift_reason),
+        record.execution_id if record is not None else "",
     )
     _write_journal(root, journal)
     return journal
@@ -286,18 +390,26 @@ def _require_file(path: Path, digest: str, label: str) -> None:
 def _validate_cutover(root: Path, journal: DraftTransitionJournal) -> TicketBaseline:
     blocked = Path(journal.blocked_ticket)
     _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
+    record = read_state_record(_tickets_dir(root), journal.slug)
+    if record is None:
+        raise DraftTransitionError("return-to-draft requires a blocked ticket, found draft")
+    _require_captured_record(journal, record)
     candidate = _operation_dir(root, journal.operation_id) / "draft.md"
     _require_file(candidate, journal.draft_sha256, "replacement draft")
     document = _converted_document(root, blocked, journal.slug, "executable")
     try:
-        basis = load_ticket_baseline_from_document(root, journal.slug, document)
+        basis = (
+            load_ticket_recovery_baseline_from_document(root, journal.slug, document)
+            if journal.authored_drift
+            else load_ticket_baseline_from_document(root, journal.slug, document)
+        )
     except TicketBaselineError as exc:
         raise DraftTransitionError(str(exc)) from exc
     errors = validate_basis_refs(
         root,
         basis,
         slug=journal.slug,
-        destination_branch=str(document.spec.fields.get("branch", "")),
+        destination_branch=basis.participant("outer").destination_ref.removeprefix("refs/heads/"),
     )
     if errors:
         raise DraftTransitionError("old Ticket baseline is invalid: " + "; ".join(errors))
@@ -426,11 +538,13 @@ def _relocate_worktrees(
     if journal.has_project and project_repository is not None:
         project_path = ticket_project_worktree(canonical_outer)
         _move_worktree(project_repository, new_ref, project_path)
+    outer_base = _git(canonical_outer, "rev-parse", "HEAD")
+    project_base = _git(project_path, "rev-parse", "HEAD") if project_path else ""
     return AuthoringWorkspace(
         canonical_outer,
         project_path,
-        old_outer.destination_sha,
-        basis.project_sha and basis.participant("project").destination_sha,
+        outer_base,
+        project_base,
         journal.generation,
     )
 
@@ -440,11 +554,12 @@ def _published_worktrees(
 ) -> AuthoringWorkspace:
     outer = resolve_project_dir(root) / "worktrees" / journal.slug
     project = ticket_project_worktree(outer) if journal.has_project else None
-    project_base = basis.participant("project").destination_sha if journal.has_project else ""
+    outer_base = _git(outer, "rev-parse", "HEAD")
+    project_base = _git(project, "rev-parse", "HEAD") if project else ""
     return AuthoringWorkspace(
         outer,
         project,
-        basis.participant("outer").destination_sha,
+        outer_base,
         project_base,
         journal.generation,
     )
@@ -456,6 +571,8 @@ def _finish_published_transition(
     """Confirm published identities, then retire the slug-level recovery journal."""
     draft = Path(journal.draft_ticket)
     _require_file(draft, journal.draft_sha256, "published draft")
+    if read_state_record(_tickets_dir(root), journal.slug) is not None:
+        raise DraftTransitionError("published draft still has a state record")
     _require_file(_generation_file(root, journal.slug), journal.generation_sha256, "generation")
     worktrees = _published_worktrees(root, journal, basis)
     new_ref = f"refs/heads/{_generation_branch(journal.generation, journal.slug)}"
@@ -471,25 +588,61 @@ def _finish_published_transition(
     return worktrees
 
 
+def _require_captured_record(journal: DraftTransitionJournal, record: StateRecord) -> None:
+    """Refuse a record that is no longer the blocked execution this journal captured."""
+    if record.state is not TicketState.BLOCKED:
+        raise DraftTransitionError(
+            f"return-to-draft requires a blocked ticket, found {record.state.status}"
+        )
+    if (
+        journal.blocked_execution_id is not None
+        and record.execution_id != journal.blocked_execution_id
+    ):
+        raise DraftTransitionError(
+            "blocked Ticket was re-run since return-to-draft started; retry return-to-draft"
+        )
+
+
 def _publish_board(root: Path, journal: DraftTransitionJournal) -> None:
+    """Publish the draft-form document first, then delete the state record.
+
+    The record must still be the blocked generation this journal captured
+    (or already gone): that compare-and-swap runs before anything is written,
+    including when the cutover resumes after a crash.
+    """
     operation = _operation_dir(root, journal.operation_id)
-    blocked = Path(journal.blocked_ticket)
+    document = Path(journal.draft_ticket)
+    tickets = _tickets_dir(root)
+    record = read_state_record(tickets, journal.slug)
+    if record is not None:
+        _require_captured_record(journal, record)
+    try:
+        published = _digest(document.read_bytes()) == journal.draft_sha256
+    except FileNotFoundError as exc:
+        raise DraftTransitionError("blocked Ticket disappeared during cutover") from exc
+    if not published:
+        _publish_draft_document(operation, document, journal)
+    if record is not None:
+        # Keep the retired generation's runtime fields with its archived logs.
+        atomic_replace_bytes(
+            Path(journal.archive_dir) / "state.json", record.to_bytes(), mode=0o644
+        )
+        delete_state_record(tickets, journal.slug)
+
+
+def _publish_draft_document(
+    operation: Path, document: Path, journal: DraftTransitionJournal
+) -> None:
+    """Back up the blocked document, then replace it with the prepared draft."""
+    _require_file(document, journal.blocked_sha256, "blocked Ticket")
     blocked_backup = operation / "blocked.md"
-    draft = Path(journal.draft_ticket)
-    candidate = operation / "draft.md"
-    if blocked.exists():
-        _require_file(blocked, journal.blocked_sha256, "blocked Ticket")
-        if blocked_backup.exists():
-            raise DraftTransitionError("blocked Ticket and its backup both exist")
-        blocked.replace(blocked_backup)
-    elif not blocked_backup.exists() and not draft.exists():
-        raise DraftTransitionError("blocked Ticket disappeared during cutover")
-    if draft.exists():
-        _require_file(draft, journal.draft_sha256, "published draft")
+    if blocked_backup.exists():
+        _require_file(blocked_backup, journal.blocked_sha256, "blocked Ticket backup")
     else:
-        _require_file(candidate, journal.draft_sha256, "replacement draft")
-        draft.parent.mkdir(parents=True, exist_ok=True)
-        candidate.replace(draft)
+        atomic_replace_bytes(blocked_backup, document.read_bytes(), mode=0o644)
+    candidate = operation / "draft.md"
+    _require_file(candidate, journal.draft_sha256, "replacement draft")
+    candidate.replace(document)
 
 
 def _publish_generation(root: Path, journal: DraftTransitionJournal) -> None:
@@ -523,6 +676,13 @@ def _archive_runtime(log_dir: Path, archive: Path, operation_id: str) -> None:
     for entry in list(log_dir.iterdir()):
         if entry.name not in {".runtime", "runs"}:
             _move_archive_entry(entry, archive / entry.name)
+
+
+def _write_authored_drift_record(archive: Path, authored_drift: dict[str, str]) -> None:
+    if not authored_drift:
+        return
+    content = (json.dumps(authored_drift, indent=2, sort_keys=True) + "\n").encode()
+    atomic_replace_bytes(archive / "authored-drift.json", content, mode=0o644)
 
 
 def _move_archive_entry(source: Path, destination: Path) -> None:
@@ -563,6 +723,7 @@ def return_to_draft(
     if journal.state == "cutover-ready":
         _publish_generation(root, journal)
         _archive_runtime(logs / slug, Path(journal.archive_dir), journal.operation_id)
+        _write_authored_drift_record(Path(journal.archive_dir), journal.authored_drift)
         _publish_board(root, journal)
         append_transition(
             f"old Ticket generation {journal.machine['generation']}; "

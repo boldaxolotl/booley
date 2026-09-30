@@ -33,6 +33,7 @@ from booley.fusesoc.fusesoc_registry import (
     all_referenced_files,
     core_schema_errors,
     core_setup_hazards,
+    core_target_coverage_errors,
     core_target_doctor_flows,
     core_target_eda_tool,
     core_target_flow,
@@ -624,6 +625,41 @@ class TestDoctorTargetMetadata:
         )
         assert core_schema_errors(core) == []
 
+    def test_selected_target_coverage_errors_match_full_schema_message(self, tmp_path: Path):
+        core = tmp_path / "coverage.core"
+        core.write_text(
+            "CAPI=2:\nname: ::coverage:0\ntargets:\n"
+            "  sim:\n    flow: sim\n    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley: {coverage: {reset_included: bad}}\n",
+            encoding="utf-8",
+        )
+        expected = "targets.sim.flow_options.booley.coverage.reset_included must be a boolean"
+
+        assert core_target_coverage_errors(core, "sim") == [expected]
+        assert core_schema_errors(core) == [expected]
+
+    def test_selected_target_coverage_accepts_raw_hook_list_and_ignores_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        core = tmp_path / "coverage.core"
+        core.write_text(
+            "CAPI=2:\nname: ::coverage:0\ntargets:\n"
+            "  selected:\n    flow: sim\n    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley: {coverage: {custom_main_hooks: [start_hook, write_hook]}}\n"
+            "  sibling:\n    flow: sim\n    flow_options:\n"
+            "      tool: verilator\n"
+            "      booley: {coverage: {bogus_key: true}}\n",
+            encoding="utf-8",
+        )
+
+        assert core_target_coverage_errors(core, "selected") == []
+        assert core_target_coverage_errors(core, "sibling") == [
+            "targets.sibling.flow_options.booley.coverage.bogus_key "
+            "is not a supported coverage key"
+        ]
+
     def test_fpga_doctor_metadata_selects_target(self, tmp_path: Path):
         core = tmp_path / "fpga.core"
         core.write_text(
@@ -765,10 +801,47 @@ class TestParseEdam:
         assert r.vlnv == "::demo_core:0"
         assert r.toplevel == "tb_counter"
         assert r.eda_tool == "verilator"
+        assert r.configured_eda_tool == "verilator"
         assert r.flow_options == {"tool": "verilator", "flatten": False}
         assert r.build_root == tmp_path
         assert "TESTID" in r.parameters
         assert r.parameters["TESTID"]["paramtype"] == "plusarg"
+
+    @pytest.mark.parametrize(
+        ("edam_fields", "declared", "configured"),
+        (
+            (
+                "flow_options: {tool: icarus}\ntool_options: {verilator: {mode: lint}}\n",
+                "icarus",
+                "icarus",
+            ),
+            ("flow_options: {}\ntool_options: {icarus: {}}\n", None, "icarus"),
+            (
+                "flow_options: {}\ntool_options: {icarus: {}, verilator: {}}\n",
+                None,
+                None,
+            ),
+            ("flow_options: {tool: ''}\ntool_options: {icarus: {}}\n", "", ""),
+            ("flow_options: {}\ntool_options: {}\n", None, None),
+        ),
+    )
+    def test_configured_eda_tool_uses_capi2_api_precedence(
+        self,
+        tmp_path: Path,
+        edam_fields: str,
+        declared: str | None,
+        configured: str | None,
+    ) -> None:
+        edam = tmp_path / "tool-shape.eda.yml"
+        edam.write_text(
+            f"name: demo\ntoplevel: tb\nfiles: []\nparameters: {{}}\n{edam_fields}",
+            encoding="utf-8",
+        )
+
+        resolved = parse_edam(edam, target="sim", vlnv="::demo:0")
+
+        assert resolved.eda_tool == declared
+        assert resolved.configured_eda_tool == configured
 
     def test_rtl_tb_partition_by_tag(self, tmp_path: Path):
         r = self._resolved(tmp_path)
@@ -932,6 +1005,7 @@ class TestResolveTargetMocked:
         )
         assert result.toplevel == "tb_counter"
         assert result.eda_tool == "verilator"
+        assert result.configured_eda_tool == "verilator"
         # CLI shape: cores-root at project, build-root isolated, --setup, target, vlnv.
         cmd = captured["cmd"]
         assert cmd[: len(DEFAULT_FUSESOC_CMD)] == list(DEFAULT_FUSESOC_CMD)
@@ -1188,6 +1262,63 @@ def test_resolve_target_reports_silent_setup_failure(tmp_path: Path) -> None:
 
 
 class TestResolveTargetReal:
+    def test_isolated_constraint_is_absolute_but_file_parameter_remains_authored(
+        self, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("fusesoc")
+        project = tmp_path / "proj"
+        cores = project / ".booley_project" / "cores"
+        cores.mkdir(parents=True)
+        (project / ".booley_project" / "booley.toml").write_text(
+            "[stealth]\nenabled = true\nignore_native_cores = true\n",
+            encoding="utf-8",
+        )
+        (project / "rtl").mkdir()
+        (project / "constraints").mkdir()
+        (project / "rtl" / "top.sv").write_text(
+            "module top(input logic clk); endmodule\n", encoding="utf-8"
+        )
+        physical = project / "constraints" / "physical.sdc"
+        physical.write_text("create_clock -period 10 [get_ports clk]\n", encoding="utf-8")
+        symlink_or_skip(project / "constraints" / "timing.sdc", physical)
+        (cores / "design.core").write_text(
+            "CAPI=2:\n"
+            "name: ::isolated:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files: [rtl/top.sv]\n"
+            "    file_type: systemVerilogSource\n"
+            "  constraints:\n"
+            "    files:\n"
+            "      - constraints/timing.sdc: {file_type: SDC}\n"
+            "parameters:\n"
+            "  CONFIG: {datatype: file, paramtype: plusarg, default: config/authored.cfg}\n"
+            "targets:\n"
+            "  synth:\n"
+            "    default_tool: yosys\n"
+            "    flow: generic\n"
+            "    flow_options: {tool: yosys, arch: xilinx}\n"
+            "    filesets: [rtl, constraints]\n"
+            "    parameters: [CONFIG]\n"
+            "    toplevel: top\n",
+            encoding="utf-8",
+        )
+        cmd = (
+            list(DEFAULT_FUSESOC_CMD)
+            if shutil.which("fusesoc")
+            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        )
+
+        resolved = _resolve_target(
+            "synth",
+            project_root=project,
+            build_root=project / "out",
+            fusesoc_cmd=cmd,
+        )
+
+        assert resolved.sdc_files[0].name == physical.resolve().as_posix()
+        assert resolved.parameters["CONFIG"]["default"] == "config/authored.cfg"
+
     def test_real_setup_resolves_projected_stealth_core(self, tmp_path: Path):
         pytest.importorskip("fusesoc")
         project = tmp_path / "proj"
@@ -2003,6 +2134,26 @@ class TestSetupCommandEdaToolFlag:
         _write_core(tmp_path / "ip", legacy)
         cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         assert "--flag" not in cmd  # legacy API sets tool_verilator natively
+
+    def test_handle_setup_transports_backend_options_after_vlnv(self, tmp_path: Path):
+        from booley.fusesoc.fusesoc_registry import setup_command_for_handle
+
+        _write_core(tmp_path / "ip")
+        handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+        default = setup_command_for_handle(handle, build_root=tmp_path / "b")
+        explicit_empty = setup_command_for_handle(
+            handle, build_root=tmp_path / "b", backend_arguments=()
+        )
+        injected = setup_command_for_handle(
+            handle,
+            build_root=tmp_path / "b",
+            backend_arguments=("-j4", "VM_PARALLEL_BUILDS=1"),
+        )
+
+        assert default == explicit_empty
+        assert injected[:-1] == default
+        assert injected[-1] == "--make_options=-j4 VM_PARALLEL_BUILDS=1"
 
 
 class TestHdlSourceSlice:

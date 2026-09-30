@@ -1,21 +1,29 @@
 import json
 import tempfile
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+import pytest
+
+from booley.flows.sim.campaign_retention import _coverage_owned_files
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity, freeze_coverage_mapping
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
-from booley.flows.sim.coverage_transaction import run_coverage_target
+from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
+from booley.flows.sim.execution.contract import PreSimEvidence
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     SimulationBuildResult,
     SimulationCommandResult,
     SimulationRunResult,
 )
+from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.test_coverage_invocation import project
 
 
@@ -76,7 +84,9 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert outcome.exit_code == 0
     assert len(execution.runs) == 2
     document = json.loads(outcome.campaign_path.read_text())
-    assert document["$schema"] == "booley.coverage-campaign/v3"
+    assert document["$schema"] == "booley.coverage-campaign/v4"
+    assert document["scoring"] == {"status": "valid", "reason": None}
+    assert document["source_rollups"]
     assert "points" not in document
     campaign = load_coverage_campaign(
         outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
@@ -92,7 +102,250 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert progress.outcomes == [outcome]
 
 
-import pytest
+def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class PreSimFailure(NativeExecution):
+        def run(self, request):
+            self.runs.append(request)
+            evidence = PreSimEvidence(
+                ("prepare-vectors",),
+                (request.test.name,),
+                "failed",
+                0.2,
+                "vector generator rejected input",
+            )
+            return SimulationRunResult("elab_error", evidence.detail, evidence)
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a Pre-Sim failure")
+
+    outcome = run_coverage_target(plan, PreSimFailure(), Progress())
+
+    assert outcome.exit_code == 2
+    simulation = json.loads(outcome.simulation_path.read_text())
+    assert simulation["tests"][0]["pre_sim"]["status"] == "failed"
+    assert simulation["tests"][0]["error_tail"] == (
+        "Pre-Sim Commands failed (failed): vector generator rejected input"
+    )
+
+
+def test_missing_input_is_a_design_failure_with_structured_abort_projection(
+    tmp_path: Path,
+) -> None:
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class MissingInput(NativeExecution):
+        def run(self, request):
+            self.runs.append(request)
+            return SimulationRunResult(
+                "fail",
+                "$readmemh: Cannot open memory.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+                simulator_returncode=3,
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a design abort")
+
+    outcome = run_coverage_target(plan, MissingInput(), Progress())
+
+    assert outcome.exit_code == 1
+    assert outcome.abort_remaining is False
+    simulation = json.loads(outcome.simulation_path.read_text())
+    assert simulation["passed"] is False
+    assert simulation["simulation"] == "aborted"
+    assert simulation["collection"] == "incomplete"
+    assert simulation["tests"][0] == {
+        "name": "reset",
+        "verdict": "fail",
+        "passed": False,
+        "collection": "collector_error",
+        "termination": "fatal_init",
+        "failure_kind": "missing_input",
+        "error_tail": "$readmemh: Cannot open memory.hex",
+        "simulator_returncode": 3,
+    }
+    campaign = json.loads(outcome.campaign_path.read_text())
+    assert campaign["collection"]["status"] == "incomplete"
+
+
+def test_coverage_cli_renders_one_concise_line_per_pre_sim_firing(tmp_path: Path):
+    detail = freeze_coverage_mapping(
+        {
+            "simulation": "elab_error",
+            "collection": "collector_error",
+            "evaluation": "not_requested",
+            "tests": [
+                {
+                    "name": "reset",
+                    "pre_sim": {"status": "failed", "elapsed_s": 0.125},
+                },
+                {
+                    "name": "wrap",
+                    "pre_sim": {"status": "passed", "elapsed_s": 0.25},
+                },
+            ],
+        }
+    )
+    outcome = CoverageTargetOutcome(
+        "sim_0",
+        2,
+        tmp_path / "missing-coverage.json",
+        tmp_path / "missing-simulation.json",
+        detail,
+    )
+
+    rendered = SimulateFlow()._coverage_result([outcome]).report_text
+
+    assert "sim_0: pre-sim=failed test=reset duration=0.125s" in rendered
+    assert "sim_0: pre-sim=passed test=wrap duration=0.250s" in rendered
+
+
+@pytest.mark.parametrize(
+    ("failure", "events", "expected_finding", "gated"),
+    [
+        ("missing_start", None, "COV_WINDOW_HOOK_MISSING", False),
+        (
+            "duplicate_start",
+            [
+                {"hook": "start", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+            ],
+            "COV_WINDOW_HOOK_DUPLICATE",
+            True,
+        ),
+        (
+            "duplicate_write",
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "write", "sequence": 2, "success": True},
+            ],
+            "COV_WRITE_HOOK_DUPLICATE",
+            False,
+        ),
+    ],
+)
+def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
+    tmp_path: Path,
+    failure: str,
+    events: list[dict[str, object]] | None,
+    expected_finding: str,
+    gated: bool,
+) -> None:
+    plan = _invalid_hook_plan(tmp_path, failure, gated)
+    outcome = run_coverage_target(plan, InvalidHookExecution(events), Progress())
+    _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated)
+    _assert_invalid_hook_consumers(tmp_path, outcome)
+
+
+def _invalid_hook_plan(tmp_path: Path, failure: str, gated: bool):
+    context = project(tmp_path)
+    if gated:
+        criterion = CoverageCriterion(
+            DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+            (CoverageThreshold("line", Fraction(100)),),
+            ("reset",),
+        )
+        context = replace(context, criteria={"coverage_sim_0": criterion})
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), ("reset",)), context
+    )
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    request = plan.collection_request
+    assert request is not None
+    custom_main = failure == "duplicate_write"
+    target = replace(
+        request.target,
+        harness="custom_main" if custom_main else "generated_main",
+        custom_main_hooks=("write_hook",) if custom_main else (),
+    )
+    return replace(
+        plan,
+        collection_request=replace(request, target=target, reset_included=custom_main),
+    )
+
+
+class InvalidHookExecution(NativeExecution):
+    def __init__(self, events: list[dict[str, object]] | None) -> None:
+        super().__init__()
+        self.events = events
+
+    def run(self, request):
+        self.runs.append(request)
+        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+        request.raw_path.write_text(self.payload(self.hits), encoding="utf-8")
+        if self.events is not None:
+            assert request.hook_evidence_path is not None
+            request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            request.hook_evidence_path.write_text(
+                json.dumps(
+                    {
+                        "$schema": "booley.coverage-hook/v1",
+                        "run_id": request.run_id,
+                        "events": self.events,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return SimulationRunResult("pass")
+
+
+def _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated) -> None:
+    assert outcome.exit_code == 2
+    document = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
+    assert document["$schema"] == "booley.coverage-campaign/v4"
+    assert document["collection"]["status"] == "collector_error"
+    assert document["scoring"] == {"status": "invalid", "reason": "collector_error"}
+    assert document["rollups"] == []
+    assert document["source_rollups"] == []
+    assert document["point_store"]["point_count"] > 0
+    assert any(item["kind"] == "raw_native" for item in document["artifacts"])
+    if events is not None:
+        assert any(item["kind"] == "coverage_hook_evidence" for item in document["artifacts"])
+    assert expected_finding in {item["code"] for item in document["findings"]}
+    persisted = load_coverage_campaign(
+        outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
+    )
+    loaded = persisted.campaign
+    assert loaded.points
+    assert loaded.rollups == ()
+    target_dir = outcome.campaign_path.parent
+    owned = _coverage_owned_files(target_dir, target_dir, persisted)
+    assert all(path.absolute() in owned for path in target_dir.glob("hooks/*.json"))
+    if gated:
+        assert loaded.evaluation["status"] == "blocked"
+        assert loaded.evaluation["metrics"] == ()
+        assert all(
+            item["code"] != "COV_EVAL_EMPTY_DENOMINATOR"
+            for item in loaded.evaluation["diagnostics"]
+        )
+
+
+def _assert_invalid_hook_consumers(tmp_path: Path, outcome: CoverageTargetOutcome) -> None:
+    simulation = json.loads(outcome.simulation_path.read_text(encoding="utf-8"))
+    assert simulation["passed"] is True
+    assert simulation["collection"] == "collector_error"
+    assert outcome.detail["collection"] == "collector_error"
+    reporting = replace(
+        outcome,
+        campaign_path=tmp_path / "missing-coverage.json",
+        simulation_path=tmp_path / "missing-simulation.json",
+    )
+    assert "collection=collector_error" in SimulateFlow()._coverage_result([reporting]).report_text
+    provider_calls = []
+    analyst = CoverageAnalystSpecialist(model=provider_calls.append)
+    result = analyst.execute_cli(
+        ["--work-dir", str(tmp_path), "--campaign", str(outcome.campaign_path)]
+    )
+    assert result.exit_code == 2
+    assert provider_calls == []
+    assert getattr(analyst, "_evidence_campaign_path", None) is None
 
 
 @pytest.mark.parametrize(
@@ -350,6 +603,53 @@ def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, f
     assert campaign.evaluation["status"] == "not_requested"
     simulation = json.loads(outcome.simulation_path.read_text())
     assert [run["verdict"] for run in simulation["tests"]] == expected
+    assert simulation["passed"] is (failure_at == "merge")
+    assert simulation["simulation"] == ("pass" if failure_at == "merge" else "inconclusive")
+
+
+def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class MergeUnavailable(NativeExecution):
+        def command(self, request):
+            return SimulationCommandResult(1, stderr="merge executable unavailable")
+
+    def checkpoint(boundary):
+        if boundary == "after:coverage_campaign":
+            raise OSError("injected post-merge publication failure")
+
+    outcome = run_coverage_target(
+        plan,
+        MergeUnavailable(),
+        Progress(),
+        publication_checkpoint=checkpoint,
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.detail["passed"] is True
+    assert outcome.detail["simulation"] == "pass"
+    assert outcome.detail["collection"] == "infrastructure_error"
+    assert outcome.detail["evaluation"] == "not_requested"
+    assert outcome.detail["error"] == "injected post-merge publication failure"
+
+
+def test_build_infrastructure_failure_does_not_invent_a_simulation_verdict(tmp_path):
+    context = project(tmp_path)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+
+    class Unavailable(NativeExecution):
+        def build(self, request):
+            return SimulationBuildResult(False, "builder unavailable", infrastructure_error=True)
+
+    outcome = run_coverage_target(plan, Unavailable(), Progress())
+
+    assert outcome.exit_code == 2
+    assert outcome.detail["passed"] is None
+    assert outcome.detail["simulation"] == "not_run"
+    assert outcome.detail["collection"] == "infrastructure_error"
 
 
 def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp_path):
@@ -369,7 +669,8 @@ def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp
     outcome = run_coverage_target(plan, execution, Progress())
     assert outcome.exit_code == 2
     assert outcome.abort_remaining is True
-    assert outcome.detail["simulation"] == "inconclusive"
+    assert outcome.detail["simulation"] == "not_run"
+    assert outcome.detail["passed"] is None
     assert outcome.campaign_path.is_file()
 
 
@@ -473,8 +774,13 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert outcome.simulation_path.exists() == (
         boundary not in {"point_store", "campaign", "simulation"}
     )
-    assert outcome.detail["evaluation"] == "fail"
+    expected_evaluation = "blocked" if boundary in {"point_store", "campaign"} else "fail"
+    assert outcome.detail["evaluation"] == expected_evaluation
     assert outcome.detail["simulation"] == "fail"
+    assert outcome.detail["passed"] is False
+    assert outcome.detail["collection"] == (
+        "infrastructure_error" if boundary in {"point_store", "campaign"} else "complete"
+    )
 
 
 def test_target_transaction_never_resumes_existing_native_state(tmp_path):

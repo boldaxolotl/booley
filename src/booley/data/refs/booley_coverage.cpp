@@ -41,6 +41,12 @@ void write_evidence() {
     stream << "]}\n";
 }
 
+bool native_database_written(const char* path) {
+    std::ifstream stream(path);
+    std::string header;
+    return std::getline(stream, header) && header == "# SystemC::Coverage-3";
+}
+
 }  // namespace
 
 extern "C" void booley_coverage_start() {
@@ -51,8 +57,11 @@ extern "C" void booley_coverage_start() {
 
 extern "C" void booley_coverage_write() {
     const char* path = std::getenv("BOOLEY_COVERAGE_FILE");
-    const bool success = path && *path;
-    if (success) VerilatedCov::write(path);
-    events.push_back({"write", success});
+    events.push_back({"write", false});
+    write_evidence();
+    if (!path || !*path) return;
+    VerilatedCov::write(path);
+    if (!native_database_written(path)) return;
+    events.back().success = true;
     write_evidence();
 }

@@ -53,7 +53,12 @@ def test_committed_block_matches_source(doc: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("doc", _EMBEDDED_DOCS, ids=lambda p: p.name)
+# USAGE.md links to `booley cheat --criteria` for the full threshold tables
+# instead of embedding them, so only the cheatsheet carries this block.
+_PARAMS_EMBEDDED_DOCS = [cheatsheet_path()]
+
+
+@pytest.mark.parametrize("doc", _PARAMS_EMBEDDED_DOCS, ids=lambda p: p.name)
 def test_committed_params_block_matches_source(doc: Path) -> None:
     """Each committed criteria-params (flavours) block matches the current render."""
     assert doc.exists(), f"missing doc: {doc}"
@@ -154,7 +159,7 @@ def test_every_cycle_count_threshold_param_is_documented() -> None:
 def test_public_coverage_reference_names_explicit_collection() -> None:
     rendered = render_criteria_reference(_ENDPOINTS)
     row = next(line for line in rendered.splitlines() if "`coverage_{target}`" in line)
-    assert "`sim --coverage`" in row
+    assert "`sim` (`coverage=true`)" in row
 
 
 def test_maintainer_cli_prints_every_reference_block(monkeypatch, capsys) -> None:
@@ -205,3 +210,11 @@ after
         == "params"
     )
     assert capsys.readouterr().out == f"updated {destination}\n"
+
+
+def test_specialist_producers_show_named_arguments_without_cli_syntax() -> None:
+    rendered = render_criteria_reference(_ENDPOINTS)
+    row = next(line for line in rendered.splitlines() if "`review_rtl_bugs`" in line)
+    assert '`reviewer` (`category="rtl"`, `focus="bugs"`)' in row
+    assert "--" not in row
+    assert "MCP" not in rendered

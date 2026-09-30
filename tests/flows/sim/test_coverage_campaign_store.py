@@ -1,4 +1,4 @@
-"""V3 Coverage Campaign persistence through its public filesystem seam."""
+"""Current Coverage Campaign persistence through its public filesystem seam."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from booley.flows.sim.coverage_campaign import (
 )
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V3,
+    CAMPAIGN_SCHEMA_V4,
     MAX_COMPRESSED_BYTES,
     CoverageCampaignStoreError,
     load_coverage_campaign,
@@ -37,6 +38,22 @@ TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
 
 def _campaign():
     return decode_coverage_campaign(_valid_document(), TARGET)
+
+
+def _invalid_campaign():
+    campaign = _campaign()
+    return replace(
+        campaign,
+        normalization=freeze_coverage_mapping({"status": "partial", "unrecognized_records": []}),
+        rollups=(),
+        collection=freeze_coverage_mapping(
+            {
+                "status": "collector_error",
+                "merge": {"status": "not_run", "artifact": None},
+                "diagnostics": [],
+            }
+        ),
+    )
 
 
 def _rewrite_point_store(paths, data: bytes) -> None:
@@ -199,7 +216,8 @@ def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
 
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    assert manifest["$schema"] == CAMPAIGN_SCHEMA_V3
+    assert manifest["$schema"] == CAMPAIGN_SCHEMA_V4
+    assert manifest["scoring"] == {"status": "valid", "reason": None}
     assert "points" not in manifest
     assert manifest["rollups"][0]["percent"] == 100.0
     assert manifest["evaluation"]["status"] == "not_requested"
@@ -223,6 +241,85 @@ def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     assert loaded.summary == summary
     assert loaded.campaign == _campaign()
     assert not hasattr(loaded.campaign, "schema")
+
+
+def test_invalid_scoring_summary_and_deep_load_retain_points(tmp_path: Path) -> None:
+    paths = publish_coverage_campaign(tmp_path, _invalid_campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+
+    assert manifest["scoring"] == {"status": "invalid", "reason": "collector_error"}
+    assert manifest["rollups"] == []
+    assert manifest["source_rollups"] == []
+    summary = read_coverage_summary(paths.campaign, TARGET)
+    loaded = load_coverage_campaign(paths.campaign, TARGET)
+    assert summary.scoring == {"reason": "collector_error", "status": "invalid"}
+    assert loaded.campaign.points
+    assert loaded.campaign.rollups == ()
+
+
+@pytest.mark.parametrize(
+    "scoring",
+    [
+        {"status": "valid", "reason": None},
+        {"status": "invalid", "reason": "incomplete"},
+        {"status": "invalid", "reason": None},
+    ],
+)
+def test_v4_rejects_scoring_state_contradictions(tmp_path: Path, scoring: object) -> None:
+    paths = publish_coverage_campaign(tmp_path, _invalid_campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    manifest["scoring"] = scoring
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        read_coverage_summary(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_SCORING_STATE_INVALID"
+
+
+@pytest.mark.parametrize("inventory", ["rollups", "source_rollups"])
+def test_v4_rejects_scores_smuggled_behind_invalid_state(tmp_path: Path, inventory: str) -> None:
+    valid_paths = publish_coverage_campaign(tmp_path / "valid", _campaign())
+    invalid_paths = publish_coverage_campaign(tmp_path / "invalid", _invalid_campaign())
+    valid = json.loads(valid_paths.campaign.read_text(encoding="utf-8"))
+    invalid = json.loads(invalid_paths.campaign.read_text(encoding="utf-8"))
+    invalid[inventory] = valid[inventory]
+    invalid_paths.campaign.write_text(json.dumps(invalid), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        read_coverage_summary(invalid_paths.campaign, TARGET)
+
+    assert error.value.code == "COV_INVALID_SCORING_SUMMARY"
+
+
+def test_valid_v3_remains_readable(tmp_path: Path) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    manifest["$schema"] = CAMPAIGN_SCHEMA_V3
+    del manifest["scoring"]
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    summary = read_coverage_summary(paths.campaign, TARGET)
+    loaded = load_coverage_campaign(paths.campaign, TARGET)
+
+    assert summary.source_schema == CAMPAIGN_SCHEMA_V3
+    assert summary.scoring == {"reason": None, "status": "valid"}
+    assert loaded.campaign == _campaign()
+
+
+def test_score_bearing_invalid_v3_is_rejected(tmp_path: Path) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    manifest["$schema"] = CAMPAIGN_SCHEMA_V3
+    del manifest["scoring"]
+    manifest["collection"]["status"] = "collector_error"
+    manifest["normalization"]["status"] = "partial"
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        read_coverage_summary(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_INVALID_SCORING_SUMMARY"
 
 
 def test_manifest_has_canonical_per_source_rollups(tmp_path: Path) -> None:

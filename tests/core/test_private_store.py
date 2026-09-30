@@ -49,6 +49,55 @@ def test_rejects_unsafe_modes(store, location, mode):
             store.validate_existing_directory()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+def test_private_directory_mode_error_is_actionable(store) -> None:
+    store.ensure_directory()
+    store.root.chmod(0o755)
+
+    with pytest.raises(StoreError) as raised:
+        store.validate_existing_directory()
+
+    message = str(raised.value)
+    assert str(store.root) in message
+    assert "0755" in message
+    assert f"chmod 700 {store.root}" in message
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+def test_private_directory_mode_error_quotes_shell_path(tmp_path: Path) -> None:
+    anchor = tmp_path / "anchor with spaces"
+    store = private_store.PrivateStore(anchor / "state" / "records", anchor, "test", StoreError)
+    store.ensure_directory()
+    store.root.chmod(0o755)
+
+    with pytest.raises(StoreError) as raised:
+        store.validate_existing_directory()
+
+    assert f"chmod 700 '{store.root}'" in str(raised.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+def test_shared_anchor_mode_error_is_actionable(store) -> None:
+    store.ensure_directory()
+    store.anchor.chmod(0o777)
+
+    with pytest.raises(StoreError) as raised:
+        store.validate_existing_directory()
+
+    message = str(raised.value)
+    assert str(store.anchor) in message
+    assert "0777" in message
+    assert f"chmod 700 {store.anchor}" in message
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+def test_shared_anchor_allows_owner_read_and_execute_bits(store) -> None:
+    store.ensure_directory()
+    store.anchor.chmod(0o755)
+
+    assert store.validate_existing_directory()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership policy")
 @pytest.mark.parametrize("operation", ["directory", "file", "lock"])
 def test_rejects_foreign_ownership(store, monkeypatch, operation):

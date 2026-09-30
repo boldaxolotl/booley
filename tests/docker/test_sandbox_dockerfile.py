@@ -8,11 +8,15 @@ import shlex
 from pathlib import Path
 
 import yaml
+from tests.sandbox_image_contract import logical_instructions
 from tests.sidecar_image_helpers import DIND_IMAGE
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
 _DOCKER_DIR = _DOCKERFILE.parent
 _BASE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.base"
+_SUBSTRATE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.substrate"
+_WHEEL_DOCKERFILE = _DOCKER_DIR / "Dockerfile.wheel"
+_LIBEXEC_BWAVE = "/usr/local/libexec/booley/bwave"
 
 
 def _workflow(path: str) -> dict:
@@ -178,6 +182,43 @@ def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
     assert 'ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave"' in bwave_region
 
 
+def test_split_recipes_create_bwave_paths_in_one_overlay_layer() -> None:
+    """Issue #828: an exported layer cannot hold a hard link to a lower layer."""
+    substrate = logical_instructions(_SUBSTRATE_DOCKERFILE.read_text(encoding="utf-8"))
+    wheel = logical_instructions(_WHEEL_DOCKERFILE.read_text(encoding="utf-8"))
+    legacy = logical_instructions(_DOCKERFILE.read_text(encoding="utf-8"))
+
+    # The substrate carries no native B-Wave: the link partner would be stranded.
+    assert not [i for i in substrate if "bwave-builder" in i.value]
+    assert not [i for i in substrate if "/usr/local/libexec/booley" in i.value]
+    assert not [i for i in substrate if i.keyword == "ENV" and "BOOLEY_BWAVE_BIN" in i.value]
+
+    # Exactly one overlay RUN installs the binary and links the package-data path.
+    installs = [i for i in wheel if i.keyword == "RUN" and "install -m 0755" in i.value]
+    assert len(installs) == 1
+    run = installs[0]
+    assert "--mount=type=bind,from=bwave-builder" in run.value
+    assert f"install -m 0755 /tmp/bwave/bwave {_LIBEXEC_BWAVE}" in run.value
+    assert f'ln {_LIBEXEC_BWAVE} "$BWAVE_BIN_DIR/bwave"' in run.value
+    assert not [i for i in wheel if i.keyword == "COPY" and "--from=bwave-builder" in i.value]
+    assert not [
+        i
+        for i in wheel
+        if i is not run and i.keyword == "RUN" and f"ln {_LIBEXEC_BWAVE}" in i.value
+    ]
+
+    env = next(i for i in wheel if i.keyword == "ENV" and "BOOLEY_BWAVE_BIN" in i.value)
+    assert env.value == f"BOOLEY_BWAVE_BIN={_LIBEXEC_BWAVE}"
+    assert env.line > run.line
+
+    # The overlay builder stage matches the legacy recipe so BuildKit shares its cache.
+    def builder_stage(instructions: tuple) -> list[tuple[str, str]]:
+        start = next(n for n, i in enumerate(instructions) if "AS bwave-builder" in i.value)
+        return [(i.keyword, i.value) for i in instructions[start : start + 3]]
+
+    assert builder_stage(wheel) == builder_stage(legacy)
+
+
 def test_ci_captures_docker_cache_and_layer_evidence() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
 
@@ -230,9 +271,8 @@ def test_readme_uses_current_slim_image_storage_guidance() -> None:
 
     assert "15 GB of Docker storage" not in readme
     assert "21 GB" not in readme
-    assert "4 GB of Docker storage" in readme
-    assert "6 GB" in readme
-    assert "for image with RISC-V tools included" in readme
+    assert "about **4 GB** free for the image" in readme
+    assert "(**6 GB** with the RISC-V toolchain)" in readme
     assert "On the measured containerd store" not in readme
     assert "1.58/2.02 GB" not in readme
     assert "2.82/4.48 GB" not in readme
@@ -645,11 +685,30 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
     )
     assert "global_placement" in probe
     assert "detailed_placement" in probe
-    assert 'run_openroad "repair-off" 0' in probe
-    assert 'run_openroad "repair-on" 1' in probe
-    assert "repair_timing -setup" in probe
-    assert "report_design_area" in probe
+    assert 'run_openroad "repair-off"' in probe
+    assert 'run_openroad "repair-on"' in probe
+    assert '(("repair-off", False), ("repair-on", True))' in probe
+    assert "Design area" in probe
     assert "QT_QPA_PLATFORM=offscreen openroad -gui -exit -no_init -no_splash /dev/null" in probe
+    assert "_build_yosys_script" in probe
+    assert "write_openroad_script" in probe
+    assert "u_probe_buffer" in probe
+    assert "Removed [1-9][0-9]* buffers" in probe
+    assert r"Wire dut.\intentional_undriven is used but has no driver" in probe
+    assert "read_liberty -lib -nooverwrite -setattr booley_check_library" in probe
+    assert "log_abc_dut.txt" in probe
+    assert "abc-control" in probe
+    assert 'ABC: Warning: Detected 2 multi-output cells (for example, "FA_X1").' in probe
+    assert "collision-preserve" in probe
+    assert "collision-attribute" in probe
+    assert 'grep -Fq "Assertion failed"' in probe
+    assert 'test ! -e "$work/collision-attribute/synth_collision_attribute.v"' in probe
+    assert 'grep -Fq "assign Z = A;"' in probe
+    assert "if grep -E '^\\[WARNING '" in probe
+    assert '"$work"/check_dut_*.txt "$work"/yosys*.log' in probe
+    assert '"$work"/log_abc_*.txt' in probe
+    assert '"$work"/synth*.ys' in probe
+    assert 'cp -R "$work/abc-control" "$work/collision-preserve"' in probe
 
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:

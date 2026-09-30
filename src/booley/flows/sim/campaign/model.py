@@ -16,6 +16,21 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
 
 
+def simulation_status_from_observations(
+    observations: tuple[Mapping[str, object], ...],
+) -> str:
+    """Reduce Campaign observations to the endpoint simulation vocabulary."""
+    executions = {item["execution"] for item in observations}
+    functional = {item["functional"] for item in observations}
+    for status in ("aborted", "crash", "timeout"):
+        if status in executions:
+            return status
+    for status in ("fail", "inconclusive", "pass"):
+        if status in functional:
+            return status
+    return "not_run"
+
+
 def _freeze_json(value: object) -> FrozenJson:
     """Copy JSON-shaped input into recursively immutable storage."""
     if isinstance(value, Mapping):
@@ -33,6 +48,7 @@ class ExecutionObservation(StrEnum):
     COMPLETED = "completed"
     TIMEOUT = "timeout"
     CRASH = "crash"
+    ABORTED = "aborted"
     SETUP_ERROR = "setup_error"
     BLOCKED_BY_BUILD = "blocked_by_build"
     NOT_RUN = "not_run"
@@ -76,6 +92,7 @@ def grade_observations(
     elif execution in {
         ExecutionObservation.TIMEOUT,
         ExecutionObservation.CRASH,
+        ExecutionObservation.ABORTED,
         ExecutionObservation.SETUP_ERROR,
         ExecutionObservation.BLOCKED_BY_BUILD,
     }:

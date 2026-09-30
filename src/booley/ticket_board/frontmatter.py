@@ -355,6 +355,30 @@ def _extract_fm_block(text):
     return fm_lines, body
 
 
+def is_v2_ticket_document(text: str) -> bool:
+    """Return whether delimited frontmatter contains a top-level v2 marker."""
+    source = text.removeprefix("\ufeff")
+    lines = source.splitlines()
+    if not lines or lines[0] != "---":
+        return False
+    end = next((index for index, line in enumerate(lines[1:], 1) if line == "---"), len(lines))
+    frontmatter = lines[1:end]
+    marker = re.compile(
+        r"^(?:CRITERIA_MANDATORY|CRITERIA_OPTIONAL|"
+        r'"(?:CRITERIA_MANDATORY|CRITERIA_OPTIONAL)"|'
+        r"'(?:CRITERIA_MANDATORY|CRITERIA_OPTIONAL)')\s*:"
+    )
+    if any(marker.match(line) is not None for line in frontmatter):
+        return True
+    try:
+        parsed = yaml.safe_load("\n".join(frontmatter))
+    except yaml.YAMLError:
+        return False
+    return isinstance(parsed, dict) and bool(
+        {"CRITERIA_MANDATORY", "CRITERIA_OPTIONAL"} & set(parsed)
+    )
+
+
 def _parse_key_value(key, val, fm_lines, idx, fields):
     """Parse a key: value pair, handling nested blocks, lists, dicts, scalars.
 
@@ -567,6 +591,29 @@ def update_frontmatter(
     file_path = Path(file_path)
     with file_path.open(encoding="utf-8") as f:
         text = f.read()
+    if is_v2_ticket_document(text):
+        raise ValueError("v2 Ticket updates must use the Ticket document serializer")
+    fields, content = prepare_frontmatter_update(text, updates, remove_keys)
+
+    # Atomic write: tmp file + rename to avoid corruption on crash.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(file_path.parent), suffix=".tmp", prefix=file_path.stem
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        Path(tmp_name).replace(file_path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+    return fields
+
+
+def prepare_frontmatter_update(
+    text: str, updates: dict[str, Any], remove_keys: list[str] | None = None
+) -> tuple[dict[str, Any], str]:
+    """Prepare and validate a legacy frontmatter update without publishing it."""
     fields, body = parse_frontmatter(text)
 
     # Apply updates
@@ -604,16 +651,4 @@ def update_frontmatter(
     if serialized_body != original_body:
         raise ValueError("serialization changed ticket body; refusing to replace ticket")
 
-    # Atomic write: tmp file + rename to avoid corruption on crash.
-    tmp_fd, tmp_name = tempfile.mkstemp(
-        dir=str(file_path.parent), suffix=".tmp", prefix=file_path.stem
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        Path(tmp_name).replace(file_path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
-
-    return fields
+    return fields, content

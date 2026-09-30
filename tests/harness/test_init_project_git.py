@@ -92,7 +92,7 @@ def test_project_data_initialization_failure_remains_retryable(
         del kwargs
         if "init" in command:
             raise subprocess.TimeoutExpired(command, 30)
-        return subprocess.CompletedProcess(command, 0, "main\n", "")
+        return subprocess.CompletedProcess(command, 0, "refs/heads/main\n", "")
 
     monkeypatch.setattr(init_cmd.subprocess, "run", fail_init)
 

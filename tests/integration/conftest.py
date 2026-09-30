@@ -37,7 +37,8 @@ if "claude_agent_sdk" not in sys.modules:
         },
     )
     _sdk.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
-    _sdk.ProcessError = type("ProcessError", (Exception,), {})
+    _sdk.ProcessError = type("ProcessError", (_sdk.ClaudeSDKError,), {})
+    _sdk.ResultError = type("ResultError", (_sdk.ProcessError,), {})
     _sdk.RateLimitEvent = type("RateLimitEvent", (), {})
     _sdk.ResultMessage = type("ResultMessage", (), {})
     _sdk.query = AsyncMock()
@@ -114,11 +115,10 @@ def project_root(tmp_path: Path) -> Path:
         timeout=10,
     )
 
-    # Create tickets tree (ticket_board uses board/ prefix for ticket dirs)
+    # Create tickets tree: documents in board/, state records in state/
     tickets = root / ".booley" / "project" / "tickets"
-    for subdir in ("queue", "active", "blocked", "waiting", "archived", "review", "done"):
-        (tickets / "board" / subdir).mkdir(parents=True)
-    (tickets / "logs").mkdir(parents=True)
+    for subdir in ("board", "state", "logs"):
+        (tickets / subdir).mkdir(parents=True)
 
     # Stub .booley/src (not used directly -- patched via _scripts_dir)
     (root / ".booley" / "src").mkdir(parents=True, exist_ok=True)
@@ -240,18 +240,14 @@ def _env_isolation(project_root: Path):
     """Set env vars so ticket_board subprocesses use the isolated tickets dir."""
     old_td = os.environ.get("TICKETS_DIR")
     old_pr = os.environ.get("PROJECT_ROOT")
-    old_nd = os.environ.get("NTFY_DISABLE")
 
     os.environ["TICKETS_DIR"] = str(project_root / ".booley" / "project" / "tickets")
     os.environ["PROJECT_ROOT"] = str(project_root)
-    # Silence real ntfy.sh pushes: e2e tests drive state transitions that
-    # would otherwise fire curl to the user's real topic.
-    os.environ["NTFY_DISABLE"] = "1"
 
     yield
 
     # Restore
-    for key, old in [("TICKETS_DIR", old_td), ("PROJECT_ROOT", old_pr), ("NTFY_DISABLE", old_nd)]:
+    for key, old in [("TICKETS_DIR", old_td), ("PROJECT_ROOT", old_pr)]:
         if old is None:
             os.environ.pop(key, None)
         else:

@@ -13,8 +13,9 @@ The documentation is split by responsibility, not by reader type:
 | Document | Owns |
 |---|---|
 | **This document** | The MCP tool framework: discovery, lifecycle, base classes, `McpToolResult`, Criteria routing, and Custom Flows and MCP tools |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | The public invocation, target-selection, result, and artifact contract for RTL developers running built-in Booley Flows |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How RTL developers run built-in Booley Flows and interpret their results |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, and `fpga` Booley Flows |
+| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of the built-in Flows |
 | [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
@@ -76,8 +77,10 @@ Every agent-facing call follows the same shape:
    mutable state/report persistence, then releases admission. In Ticket Mode,
    normalized Criterion changes are appended before state is saved; Interactive
    Mode has no persistent Criterion evidence. If final acceptance recording
-   fails, final mutable persistence is skipped while terminal reporting and
-   admission cleanup still run. An append failure during an in-run Criterion
+   fails, the coordinator returns exit 2, adds a structured `completion_error`,
+   preserves existing result and Target facts, skips final mutable persistence,
+   and makes one bounded recovery-report attempt before admission cleanup. Later
+   recovery failures do not overwrite the first diagnosis. An append failure during an in-run Criterion
    update instead follows the invocation error path; see the failure distinctions
    in [Built-in Flow execution](FLOW-EXECUTION.md).
 
@@ -231,6 +234,10 @@ A command-backed `BooleyFlow` overrides `_add_args`, `_build_command`, and
 `_interpret_result`. Complex built-ins and custom host wrappers may
 override `_run()` instead. The minimal Custom Flow below uses the command-backed
 contract without backend-specific machinery.
+
+Booley redirects Python bytecode and pytest caches for Project endpoints and
+their subprocesses to runtime storage. Custom Flows must not depend on cache
+files in the source checkout.
 
 | Method | Responsibility |
 |--------|----------------|
@@ -785,6 +792,65 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |
 
+## Built-in Flow calls
+
+The built-in `sim`, `lint`, `synth`, and `fpga` endpoints expose the same
+controls as their CLI ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)), with
+these MCP-specific shapes.
+
+**Target selection.** MCP keeps one comma-separated `target` string rather than
+an array; caller order is preserved, as on the CLI.
+
+**Verdict.** The call carries the Flow exit grade (`0`/`1`/`2`) in `EXIT_CODE:`
+and in structured output. MCP `isError` is not the design verdict.
+
+**Report.** The per-invocation report (fields in
+[FLOW_REPORTS.md](FLOW_REPORTS.md#invocation-report)) is attached as
+`structuredContent.reports[0]`, and `structuredContent.passed` repeats the
+overall boolean verdict. If the report is too large for the MCP result,
+`reports` is empty, `truncated` is `true`, and the result retains the Flow,
+Target, exit code, and artifact pointers needed to open the durable report.
+
+**Progress fallback.** For `progress.json` fallback evidence, `partial` is true
+whenever the phase is not `complete` or pending Targets remain. Thus `aborted`
+and `superseded` are terminal but partial, and neither appears as a running
+checkpoint. After timeout or cancellation, the MCP supervisor attempts an
+idempotent `aborted` repair only after it has reaped the child process; a
+missing or unwritable checkpoint does not override the Job's exit or
+cancellation result.
+
+### Simulation input
+
+The `sim` input takes test names as an array, not the former scalar shape:
+
+```json
+{"target":"sim_soc","test":["reset","interrupts"]}
+```
+
+MCP has no `tests_file` or `skip` property. It accepts exact test names directly
+in `test`. Coverage selections use deterministic sorted test-name order for
+Campaign identity and run numbering, regardless of array order. Plain
+selections preserve array order (an omitted `test` follows the registry order);
+HDL tests are scheduled in that order, while cocotb controls test-function
+execution order within its filtered batch. `resume_from` names one manifest
+and conflicts with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
+
+Structured campaign output reports `grade`, `complete`, aggregate
+`observation_counts`, and a maximum-32 `observations` preview. Every preview
+entry retains `test`, `execution`, `functional`, `assertions`,
+`assertion_count`, and bounded `detail`; `observation_total` and
+`observations_truncated` disclose whether the preview is complete. The
+independent observation axes mean:
+
+- `execution`: whether the simulator completed, timed out, was guard-aborted,
+  or failed before producing trustworthy test evidence;
+- `functional`: the pass/fail/inconclusive test verdict;
+- `assertions`: assertion evidence independently observed for that test.
+
+Resolve the `manifest` artifact reference, then inspect its authenticated
+terminal results for the complete durable record; the MCP preview is
+intentionally not a replacement for those files.
+
 ### Simulation coverage input
 
 The public `sim` schema exposes optional boolean `coverage` (default false).
@@ -799,7 +865,7 @@ for the ordered persistence and Criterion-evidence transaction.
 ## Report-driven Coverage Analyst
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
-path) and optional `instruction`. V3 input returns `booley.coverage-analysis/v2`
+path) and optional `instruction`. V3 or V4 input returns `booley.coverage-analysis/v2`
 with the Campaign manifest and integrity-linked point-store digest as observed evidence.
 The report carries immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, screened Waiver Candidates, and the exact
@@ -808,7 +874,7 @@ No Criteria are satisfied or mutated, including in Ticket Mode. Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
-The wrapper checks canonical invocation/Target identity, the complete V3
+The wrapper checks canonical invocation/Target identity, the complete V3/V4
 manifest/point-store relationship, and a matching completed Simulation projection
 before model invocation. The deep module is
 `analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
@@ -826,7 +892,7 @@ cumulative byte budgets; later `points` or `source` queries may pass delivered v
 as `point_refs`. The host privately resolves them back to exact Campaign IDs before
 publishing an advisory report. Point records include their complete eligible,
 unscored, or waived disposition and Approved Waiver provenance. The host first
-deep-validates the complete V3 manifest/point-store pair, so paging and reference
+deep-validates the complete V3/V4 manifest/point-store pair, so paging and reference
 resolution never weaken Campaign integrity. No other MCP tool is visible to this
 model. The validated session retains references to immutable
 Coverage Points rather than encoded population copies, uses an exact-ID index, derives

@@ -8,6 +8,8 @@ projection owners. No command rendering, Sandbox issuance, or full Init here.
 
 from __future__ import annotations
 
+import re
+import subprocess
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -20,6 +22,12 @@ from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig, parse_eda_config
 from booley.fusesoc import core_projection, fusesoc_registry
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
+from booley.harness.bootstrap import RELATIVE_WORKTREE_MIN_GIT_VERSION, parse_git_version
+from booley.harness.setup.git_hooks import (
+    WORKTREE_RELATIVE_KEY,
+    read_local_config,
+    worktree_policy_repositories,
+)
 from booley.harness.setup.guidance_links import (
     CANON_NAME,
     ensure_guidance_links,
@@ -63,6 +71,16 @@ class ProjectLoadResult:
     project: ProjectAudit | None
 
 
+@dataclass(frozen=True, slots=True)
+class WorktreePortabilityRequest:
+    """Inputs needed to inspect host/Sandbox worktree portability."""
+
+    project: ProjectAudit
+    docker_exe: str | None
+    sandbox_image: str
+    inside_runtime: bool
+
+
 def load_project(project_root: Path) -> ProjectLoadResult:
     """Read and validate checkout-local configuration, without repairs."""
     report = Findings()
@@ -95,6 +113,216 @@ def check_stealth_cores(project: ProjectAudit, *, mode: ReadinessMode) -> Diagno
         repair=mode is ReadinessMode.RECONCILE,
     )
     return report.report()
+
+
+def inspect_worktree_portability(request: WorktreePortabilityRequest) -> DiagnosticReport:
+    """Inspect repository policy and every live Ticket Workspace without repair."""
+    report = Findings()
+    host_version, sandbox_version = _inspect_git_versions(request, report)
+    repositories = worktree_policy_repositories(request.project.project_root)
+    extensions = _inspect_repository_policies(repositories, report)
+    minimum = RELATIVE_WORKTREE_MIN_GIT_VERSION
+    known_old = any(
+        version is not None and version < minimum for version in (host_version, sandbox_version)
+    )
+    capable = all(
+        version is not None and version >= minimum for version in (host_version, sandbox_version)
+    )
+    if any(extensions) and known_old:
+        report.fail(
+            "relative-worktree repository format is enabled but one Git side is older than 2.48",
+            "restore Git 2.48 or newer before using or migrating this Project",
+        )
+    elif any(extensions) and not capable:
+        report.warn(
+            "relative-worktree repository format is enabled but one Git side could not be verified",
+            "restore access to both Git clients and rerun Doctor before changing worktrees",
+            check_id="git.worktree-portability",
+            subject=str(request.project.project_root),
+        )
+    elif not capable:
+        report.warn(
+            "new Ticket Workspaces use the container-only absolute-link fallback; "
+            "run Git in the Sandbox and do not run host `git worktree prune`",
+            check_id="git.worktree-portability",
+            subject=str(request.project.project_root),
+        )
+    _inspect_live_worktrees(request.project, report)
+    return report.report()
+
+
+def _git_version_at(*command: str) -> tuple[int, int, int] | None:
+    try:
+        result = subprocess.run(
+            list(command), capture_output=True, text=True, check=False, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_git_version(result.stdout) if result.returncode == 0 else None
+
+
+def _inspect_git_versions(
+    request: WorktreePortabilityRequest, report: Findings
+) -> tuple[tuple[int, int, int] | None, tuple[int, int, int] | None]:
+    current = _git_version_at("git", "--version")
+    if request.inside_runtime:
+        _report_git_version("Sandbox Git", current, report)
+        report.warn(
+            "host Git capability is unknown inside the Sandbox",
+            "run `booley doctor` on the host",
+            check_id="git.worktree-portability",
+            subject="host-git",
+        )
+        return None, current
+    _report_git_version("host Git", current, report)
+    sandbox = (
+        _git_version_at(
+            request.docker_exe,
+            "run",
+            "--rm",
+            request.sandbox_image,
+            "git",
+            "--version",
+        )
+        if request.docker_exe
+        else None
+    )
+    _report_git_version("Sandbox Image Git", sandbox, report)
+    return current, sandbox
+
+
+def _report_git_version(
+    label: str, version: tuple[int, int, int] | None, report: Findings
+) -> None:
+    minimum = RELATIVE_WORKTREE_MIN_GIT_VERSION
+    if version is not None and version >= minimum:
+        report.pass_(f"{label} {'.'.join(map(str, version))} supports relative worktrees")
+        return
+    detail = "is older than 2.48" if version is not None else "could not be verified"
+    report.warn(
+        f"{label} {detail}",
+        "install or restore Git 2.48 or newer",
+        check_id="git.worktree-portability",
+        subject=label.lower().replace(" ", "-"),
+    )
+
+
+def _inspect_repository_policies(
+    repositories: tuple[Path, ...], report: Findings
+) -> tuple[bool, ...]:
+    extensions: list[bool] = []
+    for repository in repositories:
+        policy = read_local_config(repository, WORKTREE_RELATIVE_KEY)
+        extension = read_local_config(repository, "extensions.relativeWorktrees") == "true"
+        format_version = read_local_config(repository, "core.repositoryFormatVersion")
+        extensions.append(extension)
+        if policy == "true":
+            report.pass_(f"{repository}: {WORKTREE_RELATIVE_KEY}=true")
+        else:
+            report.warn(
+                f"{repository}: {WORKTREE_RELATIVE_KEY} is {policy or 'unset'}",
+                "run `booley init`",
+                check_id="git.worktree-portability",
+                subject=str(repository),
+            )
+        _report_repository_format(repository, format_version, extension, report)
+    return tuple(extensions)
+
+
+def _report_repository_format(
+    repository: Path, format_version: str | None, extension: bool, report: Findings
+) -> None:
+    shown = format_version or "0"
+    if extension and (not shown.isdigit() or int(shown) < 1):
+        report.fail(
+            f"{repository}: extensions.relativeWorktrees requires repository format 1 or newer",
+            f"repair the Git repository format at {repository}",
+        )
+        return
+    report.pass_(
+        f"{repository}: repository format {shown}; "
+        f"extensions.relativeWorktrees={'true' if extension else 'false'}"
+    )
+
+
+def _absolute_git_path(value: str) -> bool:
+    return Path(value).is_absolute() or re.match(r"^[A-Za-z]:[\\/]", value) is not None
+
+
+def _read_worktree_config(administration: Path, key: str) -> str | None:
+    path = administration / "config.worktree"
+    if not path.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "config", "--file", str(path), "--get", key],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _worktree_metadata_problems(worktree: Path) -> tuple[str, ...]:
+    problems: list[str] = []
+    try:
+        pointer = (worktree / ".git").read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
+        if _absolute_git_path(pointer):
+            problems.append("absolute .git pointer")
+        administration = Path(pointer)
+        if not administration.is_absolute():
+            administration = worktree / administration
+        administration = administration.resolve()
+        reverse = (administration / "gitdir").read_text(encoding="utf-8").strip()
+        if _absolute_git_path(reverse):
+            problems.append("absolute reverse gitdir")
+    except OSError:
+        return ("unreadable worktree registration",)
+    for key in ("core.worktree", "core.hooksPath"):
+        value = _read_worktree_config(administration, key)
+        if value and _absolute_git_path(value):
+            problems.append(f"absolute {key}")
+    return tuple(problems)
+
+
+def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
+    root = project.project_dir / "worktrees"
+    if not root.is_dir():
+        return ()
+    worktrees: list[Path] = []
+    for outer in sorted(root.iterdir()):
+        if not (outer / ".git").is_file():
+            continue
+        worktrees.append(outer)
+        try:
+            paired = resolve_checkout_project_dir(outer)
+        except (FileNotFoundError, ValueError):
+            continue
+        if (
+            paired != project.project_dir
+            and paired.is_relative_to(outer)
+            and (paired / ".git").is_file()
+        ):
+            worktrees.append(paired)
+    return tuple(worktrees)
+
+
+def _inspect_live_worktrees(project: ProjectAudit, report: Findings) -> None:
+    for worktree in _live_worktree_paths(project):
+        problems = _worktree_metadata_problems(worktree)
+        if problems:
+            report.warn(
+                f"{worktree}: non-portable Ticket Workspace metadata ({', '.join(problems)})",
+                "run a supported worktree move/repair with Git 2.48 or newer",
+                check_id="git.worktree-portability",
+                subject=str(worktree),
+            )
+        else:
+            report.pass_(f"{worktree}: Ticket Workspace metadata is relative")
 
 
 def _check_project_setup(

@@ -7,9 +7,88 @@ project-relative, and it is absent rather than wrong.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
+import pytest
+
 from booley.flows import artifacts
+from booley.flows.artifact_durability import durable_copy
+
+
+def _assert_host_readable(path: Path) -> None:
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if os.name == "nt":
+        assert mode & stat.S_IREAD
+    else:
+        assert mode == 0o644
+
+
+class TestDurablePublication:
+    def test_bytes_use_safe_collision_resistant_components(self, tmp_path: Path):
+        invocation = tmp_path / "reports/lint/1"
+
+        relative = artifacts.publish_bytes(
+            invocation,
+            ("artifacts", "../../target", "run.log"),
+            b"evidence",
+            work_dir=tmp_path,
+        )
+
+        published = tmp_path / relative
+        assert published.read_bytes() == b"evidence"
+        _assert_host_readable(published)
+        assert published.is_relative_to(invocation)
+        assert ".." not in published.relative_to(invocation).parts
+
+    def test_file_snapshot_is_readable_outside_the_publisher_identity(self, tmp_path: Path):
+        invocation = tmp_path / "reports/sim/1"
+        source = tmp_path / "source"
+        source.write_bytes(b"evidence")
+        source.chmod(0o600)
+
+        relative = artifacts.publish_file(
+            invocation,
+            ("copy",),
+            source,
+            work_dir=tmp_path,
+        )
+
+        _assert_host_readable(tmp_path / relative)
+
+    def test_destination_is_create_only(self, tmp_path: Path):
+        invocation = tmp_path / "reports/lint/1"
+        arguments = (invocation, ("run.log",), b"first")
+        artifacts.publish_bytes(*arguments, work_dir=tmp_path)
+
+        with pytest.raises(FileExistsError):
+            artifacts.publish_bytes(invocation, ("run.log",), b"second", work_dir=tmp_path)
+
+        assert (invocation / "run.log").read_bytes() == b"first"
+
+    def test_missing_and_mutating_sources_are_not_published(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        invocation = tmp_path / "reports/sim/1"
+        with pytest.raises(FileNotFoundError):
+            artifacts.publish_file(
+                invocation, ("missing",), tmp_path / "missing", work_dir=tmp_path
+            )
+
+        source = tmp_path / "source"
+        source.write_bytes(b"before")
+
+        def mutate_after_copy(source_path: Path, destination: Path, **kwargs) -> None:
+            durable_copy(source_path, destination, **kwargs)
+            source_path.write_bytes(b"after")
+
+        monkeypatch.setattr(artifacts, "durable_copy", mutate_after_copy)
+        destination = invocation / "copy"
+        with pytest.raises(OSError, match="changed during publication"):
+            artifacts.publish_file(invocation, ("copy",), source, work_dir=tmp_path)
+
+        assert not destination.exists()
 
 
 class TestRelative:

@@ -203,3 +203,32 @@ def review_receipt_drift(
     ):
         changed.append("tb_policy")
     return changed
+
+
+def current_review_receipt_identity(
+    detail: Mapping[str, Any],
+    work_dir: Path,
+    *,
+    tb_policy_digest: str | None = None,
+) -> dict[str, Any]:
+    """Return the current read-only inputs used by receipt freshness."""
+    contract = detail.get("contract")
+    if not isinstance(contract, Mapping):
+        return {"contract_version": None}
+    scope_raw = contract.get("scope")
+    scope = (
+        tuple(item for item in scope_raw if isinstance(item, str))
+        if isinstance(scope_raw, list)
+        else ()
+    )
+    documents = {}
+    for name in ("ticket", "spec", "decisions"):
+        raw_path = contract.get(f"{name}_source")
+        path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
+        documents[name] = _document_digest(path)
+    return {
+        "version": contract.get("version"),
+        "documents": documents,
+        "scope_hashes": _scope_hashes(work_dir, scope),
+        "tb_policy_digest": tb_policy_digest,
+    }

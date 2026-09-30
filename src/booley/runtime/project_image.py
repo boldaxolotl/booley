@@ -31,7 +31,8 @@ from booley.config.sandbox import (
     project_image_name,
     project_sandbox_image,
 )
-from booley.runtime.docker_build import run_docker_build
+from booley.runtime.docker_build import DockerBuildResult, run_docker_build
+from booley.runtime.docker_capacity import DockerBuildPlan, DockerBuildRequest
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -43,10 +44,16 @@ from booley.runtime.image_provenance import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["project_image_name", "project_sandbox_image"]
+__all__ = ["is_managed_sandbox_image", "project_image_name", "project_sandbox_image"]
 
 BASE_IMAGE = SANDBOX_IMAGE
 MANAGED_PROJECT_PARENT = "booley-project-parent"
+
+
+def is_managed_sandbox_image(project_root: Path, image: str) -> bool:
+    """Return whether Booley owns the selected image's provenance contract."""
+    return image in {BASE_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)}
+
 
 # Packages the base sandbox image pins and manages (ADR 0019). A project
 # requirements pin on any of these shadows the image's version at build time
@@ -429,7 +436,14 @@ def write_project_image_files(
 # ---------------------------------------------------------------------------
 
 
-def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) -> bool:
+def build_project_image(
+    image: str,
+    docker_dir: Path,
+    *,
+    verbose: bool = False,
+    capacity_request: DockerBuildRequest | None = None,
+    capacity_plan: DockerBuildPlan | None = None,
+) -> bool:
     """``docker build`` the generated image. Context is *docker_dir* (small, no
     repo .dockerignore interference). Returns success."""
     dockerfile = docker_dir / "Dockerfile"
@@ -462,21 +476,28 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
             image=image,
             verbose=verbose,
             timeout=1800,
+            current_request=capacity_request,
+            remaining_plan=capacity_plan,
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         logger.error("project image build failed: %s", exc)
         return False
+    return _project_build_succeeded(result)
+
+
+def _project_build_succeeded(result: DockerBuildResult) -> bool:
+    """Report the bounded Docker result at the Project image boundary."""
     if result.timed_out:
         logger.error("project image build timed out: %s", "\n".join(result.diagnostics))
         return False
-    if result.returncode != 0:
-        logger.error(
-            "project image build failed (rc=%s): %s",
-            result.returncode,
-            "\n".join(result.diagnostics),
-        )
-        return False
-    return True
+    if result.returncode == 0:
+        return True
+    logger.error(
+        "project image build failed (rc=%s): %s",
+        result.returncode,
+        "\n".join(result.diagnostics),
+    )
+    return False
 
 
 def docker_image_id(image: str) -> str | None:

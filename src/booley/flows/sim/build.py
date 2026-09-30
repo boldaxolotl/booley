@@ -9,18 +9,18 @@ command and turn one completed process into typed build evidence.
 from __future__ import annotations
 
 import re
-import secrets
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from booley.core.build_paths import work_root_for
+from booley.flows.eda_failures import classify_eda_failure
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import TargetHandle, TargetInspection
 from booley.targets.parameter_integrity import (
     ParameterIntegrityError,
     validate_top_parameter_intent,
@@ -29,6 +29,10 @@ from booley.targets.parameter_integrity import (
 from .. import edam as edam_layer
 from ..base import SubprocessResult
 from . import edam as sim_edam
+from .build_parallelism import LaneKind, verilator_backend_arguments
+
+if TYPE_CHECKING:
+    from .execution.contract import SimulationTargetOutcome
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
@@ -36,6 +40,32 @@ BuildFailureKind = Literal["design", "infrastructure"] | None
 
 class SimulationBuildPreparationError(RuntimeError):
     """An expected Target/configuration failure before the build can run."""
+
+
+def _validated_simulator(
+    handle: TargetHandle,
+    resolved: fusesoc_registry.ResolvedTarget,
+) -> str:
+    """Return the configured simulator after authenticating it against the Target."""
+    declaration_help = (
+        "declare either `flow: sim` with `flow_options.tool`, or legacy `default_tool`"
+    )
+    try:
+        eda_tool = sim_edam.matching_eda_tool(
+            handle.eda_tool,
+            resolved.configured_eda_tool,
+            target=handle.selector,
+        )
+    except ValueError as exc:
+        raise SimulationBuildPreparationError(
+            f"Simulation Target {handle.selector!r}: {exc}; {declaration_help}"
+        ) from exc
+    if eda_tool not in {"icarus", "verilator"}:
+        raise SimulationBuildPreparationError(
+            f"simulator {eda_tool!r} is not supported by the public sim Flow; "
+            "select a Verilator or Icarus Target"
+        )
+    return eda_tool
 
 
 _TERMINAL_RECORD_RE = re.compile(
@@ -49,10 +79,6 @@ _IVERILOG_DESIGN_ERROR_RE = re.compile(
     r"|^error:\s*(?:unable to bind|unable to elaborate|unknown module type|"
     r"invalid module item|syntax error)",
     re.IGNORECASE | re.MULTILINE,
-)
-_MISSING_TOOL_RE = re.compile(
-    r"(?:command not found|No such file or directory|could not invoke fusesoc)",
-    re.IGNORECASE,
 )
 
 
@@ -100,11 +126,6 @@ class BuildOutcome:
         return self.verdict == "fail" and self.failure_kind == "design"
 
 
-def new_attempt_token() -> str:
-    """Return an unpredictable token for one build execution attempt."""
-    return secrets.token_hex(16)
-
-
 def prepare_simulation_build(
     handle: TargetHandle,
     *,
@@ -112,6 +133,7 @@ def prepare_simulation_build(
     build_root: Path | None = None,
     resolution_vlnv: str | None = None,
     environment: Mapping[str, str] | None = None,
+    lane_kind: LaneKind = "heavy",
 ) -> PreparedSimulationBuild:
     """Resolve and prepare the simulator image used by normal Simulation."""
     try:
@@ -121,12 +143,13 @@ def prepare_simulation_build(
             build_root=build_root,
             resolution_vlnv=resolution_vlnv,
             environment=environment,
+            lane_kind=lane_kind,
         )
     except (
         fusesoc_registry.FuseSocError,
         ParameterIntegrityError,
         selftest_overlay.SelftestOverlayError,
-        FileNotFoundError,
+        OSError,
     ) as exc:
         raise SimulationBuildPreparationError(str(exc)) from exc
 
@@ -138,32 +161,25 @@ def _prepare_simulation_build(
     build_root: Path | None,
     resolution_vlnv: str | None,
     environment: Mapping[str, str] | None,
+    lane_kind: LaneKind,
 ) -> PreparedSimulationBuild:
     """Prepare one supported simulator Target after boundary normalization."""
-    root = handle.project_root
+    root, inspection, backend_arguments = _simulation_recipe_inputs(handle, lane_kind=lane_kind)
     target = handle.selector
     work_root = build_root or work_root_for(root, "sim", target, variant=variant)
     resolved = fusesoc_registry.resolve_target_handle(
         handle,
         build_root=work_root,
         resolution_vlnv=resolution_vlnv,
+        backend_arguments=backend_arguments,
     )
     validate_top_parameter_intent(resolved, flow="sim")
-    eda_tool = sim_edam.normalize_eda_tool(resolved.eda_tool)
-    if eda_tool not in {"icarus", "verilator"}:
-        raise SimulationBuildPreparationError(
-            f"simulator {eda_tool!r} is not supported by the public sim Flow; "
-            "select a Verilator or Icarus Target"
-        )
+    eda_tool = _validated_simulator(handle, resolved)
     _stage_doctor_overlay(root, resolved.build_root)
-    try:
-        inspection = TargetCatalog.build(root).inspect(handle)
-        fileset = {
-            "rtl": tuple(inspection.rtl_files),
-            "tb": tuple(inspection.tb_files),
-        }
-    except Exception:  # noqa: BLE001 — report context cannot invalidate the build
-        fileset = {}
+    fileset = {
+        "rtl": tuple(inspection.rtl_files),
+        "tb": tuple(inspection.tb_files),
+    }
     rel = edam_layer.relpath_for_make(resolved.build_root, root)
     return PreparedSimulationBuild(
         target=target,
@@ -177,6 +193,48 @@ def _prepare_simulation_build(
         environment=dict(environment or {}),
         fileset=fileset,
     )
+
+
+def _simulation_recipe_inputs(
+    handle: TargetHandle,
+    *,
+    lane_kind: LaneKind,
+    inspection: TargetInspection | None = None,
+) -> tuple[Path, TargetInspection, tuple[str, ...]]:
+    """Return validated Project, Target facts, and backend setup arguments."""
+    root = fusesoc_registry.require_current_target_handle(handle)
+    selected = inspection or TargetCatalog.build(root).inspect(handle)
+    backend_arguments = verilator_backend_arguments(
+        selected,
+        lane_kind=lane_kind,
+        project_root=root,
+    )
+    return root, selected, backend_arguments
+
+
+def simulation_setup_command(
+    handle: TargetHandle,
+    *,
+    build_root: Path,
+    resolution_vlnv: str | None = None,
+    lane_kind: LaneKind = "heavy",
+    inspection: TargetInspection | None = None,
+) -> list[str]:
+    """Preview the exact FuseSoC setup command used by Simulation preparation."""
+    try:
+        _, _, backend_arguments = _simulation_recipe_inputs(
+            handle,
+            lane_kind=lane_kind,
+            inspection=inspection,
+        )
+    except (fusesoc_registry.FuseSocError, OSError) as exc:
+        raise SimulationBuildPreparationError(str(exc)) from exc
+    kwargs: dict[str, Any] = {"build_root": build_root}
+    if resolution_vlnv is not None:
+        kwargs["resolution_vlnv"] = resolution_vlnv
+    if backend_arguments:
+        kwargs["backend_arguments"] = backend_arguments
+    return fusesoc_registry.setup_command_for_handle(handle, **kwargs)
 
 
 def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
@@ -233,18 +291,26 @@ def build_stage_script(
     )
 
 
-def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome:
+def classify_build_outcome(
+    result: SubprocessResult,
+    token: str,
+    *,
+    timeout_s: int | None = None,
+) -> BuildOutcome:
     """Classify current-attempt build evidence, failing closed on ambiguity."""
     output = result.stdout + ("\n" + result.stderr if result.stderr else "")
     records = [
         match for match in _TERMINAL_RECORD_RE.finditer(result.stdout) if match["token"] == token
     ]
     if len(records) != 1:
+        reason = _abnormal_build_reason(
+            result, timeout_s, "missing or duplicate authenticated terminal build record"
+        )
         return _infrastructure_outcome(
             result,
             output,
             ran=bool(records),
-            reason="missing or duplicate authenticated terminal build record",
+            reason=reason,
             terminal_record=False,
         )
     record = records[0]
@@ -258,7 +324,48 @@ def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome
         build_output += "\n" + result.stderr
     if build_rc == 0:
         return _successful_build_outcome(build_result, output, build_rc)
-    return _failed_build_outcome(build_result, output, build_output, build_rc)
+    return _failed_build_outcome(
+        build_result,
+        output,
+        build_output,
+        build_rc,
+        timeout_s=timeout_s,
+    )
+
+
+def _build_timeout_reason(timeout_s: int | None) -> str:
+    limit = f" after {timeout_s} s" if timeout_s is not None else ""
+    return f"build timed out{limit} (raise [flows.sim].build_timeout_ms)"
+
+
+# Remedy named in an OOM reason. ``-j<N>`` in ``flow_options.make_options``
+# disables Booley's automatic Verilator ``-j`` (see ``build_parallelism``);
+# ``[sandbox].memory`` only applies to a newly created Sandbox container.
+_OOM_REMEDY = (
+    "for Verilator, lower build parallelism with -j<N> in the Target's "
+    "flow_options.make_options, or raise [sandbox].memory and recreate the Sandbox"
+)
+
+
+def _build_oom_reason(peak_rss_mb: float | None) -> str:
+    """Name the OOM evidence without claiming the build process itself was killed.
+
+    The Sandbox OOM counter is cgroup-wide, so a sibling process may have
+    raised it; the wording states only what was observed.
+    """
+    peak = (
+        "build peak RSS unknown" if peak_rss_mb is None else f"build peak RSS {peak_rss_mb:.0f} MB"
+    )
+    return f"build failed while the Sandbox recorded an OOM kill ({peak}; {_OOM_REMEDY})"
+
+
+def _abnormal_build_reason(result: SubprocessResult, timeout_s: int | None, generic: str) -> str:
+    """Pick the most specific reason: Booley's own timeout kill, then OOM, then *generic*."""
+    if result.timed_out:
+        return _build_timeout_reason(timeout_s)
+    if result.oom_kill_delta > 0:
+        return _build_oom_reason(result.peak_rss_mb)
+    return generic
 
 
 def _successful_build_outcome(
@@ -286,23 +393,30 @@ def _failed_build_outcome(
     output: str,
     build_output: str,
     build_rc: int,
+    *,
+    timeout_s: int | None,
 ) -> BuildOutcome:
     """Classify one authenticated nonzero build result."""
     if result.timed_out or result.oom_kill_delta > 0 or build_rc < 0 or build_rc >= 128:
+        reason = _abnormal_build_reason(result, timeout_s, "abnormal build termination")
         return _infrastructure_outcome(
             result,
             output,
             ran=True,
             returncode=build_rc,
-            reason="abnormal build termination",
+            reason=reason,
         )
-    if _MISSING_TOOL_RE.search(build_output):
+    failure = classify_eda_failure(
+        replace(result, returncode=build_rc, stdout=build_output, stderr=""),
+        authenticated_build=True,
+    )
+    if failure is not None and failure.kind == "infrastructure":
         return _infrastructure_outcome(
             result,
             output,
             ran=True,
             returncode=build_rc,
-            reason="required build tool or file was unavailable",
+            reason=failure.reason,
         )
     if _recognized_design_diagnostic(build_output):
         return BuildOutcome(
@@ -366,3 +480,60 @@ def _infrastructure_outcome(
         terminal_record=terminal_record,
         reason=reason,
     )
+
+
+# Bounds for the agent-visible excerpt of a failed build's output. Sized so the
+# canonical JSON of ``{"text": report}`` (worst case: every byte escaped to two
+# characters) stays under the campaign codec's 2 KiB detail ceiling.
+BUILD_REPORT_TAIL_LINES = 15
+BUILD_REPORT_TAIL_BYTES = 800
+
+_BUILD_MARKER_LINE_RE = re.compile(r"^\s*BOOLEY_(?:BUILD|RUN)_\w+")
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def build_output_tail(output: str) -> str:
+    """Return a bounded, marker-free, control-free excerpt of build output."""
+    # Sanitize before the marker test so an ANSI-prefixed marker cannot slip by.
+    sanitized = (
+        _CONTROL_CHARS_RE.sub("", _ANSI_CSI_RE.sub("", line)) for line in output.splitlines()
+    )
+    lines = [line for line in sanitized if not _BUILD_MARKER_LINE_RE.match(line)]
+    tail = "\n".join(lines[-BUILD_REPORT_TAIL_LINES:]).strip()
+    encoded = tail.encode("utf-8")
+    if len(encoded) <= BUILD_REPORT_TAIL_BYTES:
+        return tail
+    # Dropping undecodable leading bytes discards a partially cut character.
+    cut = encoded[-BUILD_REPORT_TAIL_BYTES:].decode("utf-8", errors="ignore")
+    return "..." + cut
+
+
+def build_failure_report(outcome: BuildOutcome) -> str:
+    """Return the reason first, then a bounded tail of the build output."""
+    tail = build_output_tail(outcome.output)
+    if not tail:
+        return outcome.reason
+    return f"{outcome.reason}\n--- output tail ---\n{tail}"
+
+
+class SimulationBuildInfrastructureError(RuntimeError):
+    """An authenticated build attempt ended without a design verdict."""
+
+    def __init__(self, target: str, outcome: BuildOutcome) -> None:
+        super().__init__(build_failure_report(outcome))
+        self.target = target
+        self.outcome = outcome
+
+    @classmethod
+    def from_target_outcome(
+        cls, outcome: SimulationTargetOutcome
+    ) -> SimulationBuildInfrastructureError:
+        """Normalize an engine infrastructure outcome that ran no tests."""
+        failure = outcome.infrastructure_failure
+        assert failure is not None
+        detail = failure.detail or failure.message
+        build = outcome.builds[-1] if outcome.builds else setup_failure_outcome(detail)
+        if not build.reason:
+            build = replace(build, reason=detail, output=detail)
+        return cls(outcome.target, build)

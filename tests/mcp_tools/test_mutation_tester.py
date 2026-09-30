@@ -7,6 +7,7 @@ two-phase apply/revert tests were deleted along with their helpers.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -15,12 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
+from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
@@ -38,6 +40,7 @@ from booley.specialists.mutation_tester import (
     parse_creator_output,
 )
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import IncompatibleTargetError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,6 +166,43 @@ def _sample_specs(n: int = 3, category: str = "operator_change") -> list[Mutatio
         )
         for i in range(1, n + 1)
     ]
+
+
+def test_creator_provider_failure_has_durable_debug_traceback(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    transcript_dir = tmp_path / "transcripts"
+    endpoint = _make_endpoint(
+        tmp_path,
+        monkeypatch,
+        extra_args=["--transcript-dir", str(transcript_dir)],
+    )
+    plan = SimpleNamespace(work_dir=tmp_path, scope_files=[])
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.hide_opposite_sources",
+        lambda *_args, **_kwargs: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        endpoint,
+        "_invoke_creator",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("creator boom")),
+    )
+    caplog.set_level("DEBUG")
+
+    specs, elapsed, error = endpoint._proposal_round(plan, "prompt", 1, None)
+
+    assert specs == []
+    assert elapsed == 0.0
+    assert error is not None and error.exit_code == EXIT_ERROR
+    assert error.report_text.startswith("mutation creator failed: RuntimeError: creator boom")
+    assert "Diagnostic:" in error.report_text
+    ordinary = [record for record in caplog.records if record.levelno >= 20]
+    assert all(record.exc_info is None for record in ordinary)
+    assert any(record.exc_info for record in caplog.records if record.levelno == 10)
+    diagnostics = list(transcript_dir.glob("mutation_tester.*.error.log"))
+    assert len(diagnostics) == 1
+    assert "RuntimeError: creator boom" in diagnostics[0].read_text(encoding="utf-8")
+    assert str(diagnostics[0]) in error.report_text
 
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:
@@ -559,7 +599,7 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
     )
 
 
-def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
+def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
     Returns a fake ResolvedTarget whose ``build_root`` is the requested build
@@ -572,17 +612,32 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
         return types.SimpleNamespace(
             selector=target,
             name=target,
+            identity=f"::{target}:0#{target}",
             vlnv=f"::{target}:0",
             project_root=Path(work_dir),
             eda_tool=eda_tool,
             cocotb_module=None,
         )
 
-    def _fake_resolve(handle, *, build_root, **kwargs):
-        return types.SimpleNamespace(
+    def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
+        assert lane_kind == "unreserved"
+        resolved = types.SimpleNamespace(
             build_root=Path(build_root),
             toplevel="tb",
             eda_tool=eda_tool,
+            configured_eda_tool=eda_tool,
+        )
+        return PreparedSimulationBuild(
+            target=handle.selector,
+            target_identity=getattr(
+                handle, "identity", f"::{handle.selector}:0#{handle.selector}"
+            ),
+            resolved=resolved,
+            work_root=Path(build_root),
+            build_root=Path(build_root),
+            eda_tool=eda_tool or "verilator",
+            toplevel="tb",
+            make_argv=("make", "-C", str(build_root)),
         )
 
     monkeypatch.setattr(
@@ -601,8 +656,8 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
         ),
     )
     monkeypatch.setattr(
-        "booley.fusesoc.fusesoc_registry.resolve_target_handle",
-        _fake_resolve,
+        "booley.specialists.mutation_tester.prepare_simulation_build",
+        _fake_prepare,
     )
 
 
@@ -667,6 +722,96 @@ def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
     assert not any("MUT_ID" in arg for arg in sim_cmd)
     assert "--top" in sim_cmd and "tb" in sim_cmd
     assert "--trace" not in sim_cmd
+
+
+def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeypatch) -> None:
+    handle = SimpleNamespace(selector="default", identity="::demo:0#default")
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    prepared = PreparedSimulationBuild(
+        target="default",
+        target_identity=handle.identity,
+        resolved=SimpleNamespace(build_root=build_dir / "nested"),
+        work_root=build_dir,
+        build_root=build_dir / "nested",
+        eda_tool="verilator",
+        toplevel="tb",
+        make_argv=("custom-build", "--exact-command"),
+    )
+    catalog = SimpleNamespace(select=lambda *args, **kwargs: handle)
+    monkeypatch.setattr(TargetCatalog, "build", classmethod(lambda _cls, _root: catalog))
+    prepare = MagicMock(return_value=prepared)
+    monkeypatch.setattr("booley.specialists.mutation_tester.prepare_simulation_build", prepare)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.subprocess.run",
+        lambda command, **kwargs: (
+            captured.append(command),
+            _fake_proc(rc=0),
+        )[1],
+    )
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+    result = endpoint._run_elab("default", tmp_path, build_dir)
+
+    prepare.assert_called_once_with(handle, build_root=build_dir, lane_kind="unreserved")
+    assert captured == [["custom-build", "--exact-command"]]
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Target parameter intent is inconsistent",
+        "Doctor requested a bad simulation fixture but its overlay is empty",
+    ),
+)
+def test_elab_surfaces_shared_preparation_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    message: str,
+) -> None:
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.prepare_simulation_build",
+        lambda *args, **kwargs: (_ for _ in ()).throw(SimulationBuildPreparationError(message)),
+    )
+    run = MagicMock()
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", run)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    result = endpoint._run_elab("default", tmp_path, build_dir)
+
+    assert result.returncode == 1
+    assert message in result.stderr
+    run.assert_not_called()
+
+
+def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monkeypatch):
+    captured: list[tuple[list[str], dict[str, str]]] = []
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append((list(cmd), kwargs["env"]))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
+
+    expected = runtime / "python-artifacts"
+    assert len(captured) == 2
+    for _cmd, environment in captured:
+        assert environment["PYTHONPYCACHEPREFIX"] == str(expected / "bytecode")
+        assert f"cache_dir={expected / 'pytest'}" in environment["PYTEST_ADDOPTS"]
 
 
 def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
@@ -1333,7 +1478,7 @@ class TestValidateScopeAgainstTarget:
 # ---------------------------------------------------------------------------
 
 
-def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
+def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | None = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
 
     def build(_cls, work_dir):
@@ -1361,6 +1506,73 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "ve
 
 
 class TestCocotbSimDispatch:
+    @pytest.mark.parametrize("eda_tool", (None, "mystery-sim"))
+    def test_missing_or_unknown_simulator_never_defaults_to_verilator(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        eda_tool: str | None,
+    ) -> None:
+        _patch_cocotb_target(monkeypatch, module=None, eda_tool=eda_tool)
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+        with pytest.raises(UnsupportedSimTargetError, match="unsupported simulator metadata"):
+            endpoint.target_eda_tool("default", tmp_path)
+
+    def test_elab_rejects_declared_and_configured_simulator_disagreement(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _patch_resolve_target(monkeypatch, eda_tool="icarus")
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.prepare_simulation_build",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                SimulationBuildPreparationError(
+                    "Target 'default' declared 'icarus' but setup configured 'verilator'"
+                )
+            ),
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+
+        result = endpoint._run_elab("default", tmp_path, build_dir)
+
+        assert result.returncode == 1
+        assert "declared 'icarus' but setup configured 'verilator'" in result.stderr
+
+    def test_invalid_cocotb_target_selection_is_not_reclassified(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class InvalidCatalog:
+            def select(self, target: str, *, for_flow: str):
+                raise IncompatibleTargetError(f"{target} is not {for_flow}-compatible")
+
+        monkeypatch.setattr(
+            TargetCatalog, "build", classmethod(lambda cls, root: InvalidCatalog())
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+        with pytest.raises(UnsupportedSimTargetError, match="cannot select Simulation Target"):
+            endpoint.cocotb_target("default", tmp_path)
+
+    def test_cached_simulator_marker_must_match_target_declaration(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _patch_cocotb_target(monkeypatch, module=None, eda_tool="icarus")
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        (build_dir / ".booley_edalize_eda_tool").write_text("verilator", encoding="utf-8")
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+
+        with pytest.raises(UnsupportedSimTargetError, match="cached build metadata"):
+            endpoint.target_eda_tool("default", tmp_path, build_dir)
+
     def test_cocotb_target_runs_cocotb_run_half(self, tmp_path: Path, monkeypatch):
         """A Cocotb Target must run with Cocotb's module/filter environment."""
         captured: list[list[str]] = []
@@ -1502,3 +1714,26 @@ _INFRA_OUT = (
     "ERROR: Verilator executable Vtb not found in build\n"
     "[SIM_INFRA_ERROR] Verilator executable Vtb not found in build\n"
 )
+
+
+def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
+    tmp_path: Path,
+) -> None:
+    """Issue #881: the baseline must not build before it knows run_cwd is usable."""
+    state = tmp_path / ".booley_project"
+    state.mkdir()
+    (state / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
+    plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")
+    endpoint = MutationTesterSpecialist()
+
+    with patch.object(endpoint, "_run_elab", side_effect=AssertionError("built")) as elab:
+        result = endpoint._run_pristine_baseline(plan)  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result.exit_code == EXIT_ERROR
+    assert "mutation baseline cannot run: literal run directory must already exist" in (
+        result.report_text
+    )
+    assert ".gitkeep" in result.report_text
+    assert result.detail["phase"] == "baseline_run_cwd"
+    elab.assert_not_called()

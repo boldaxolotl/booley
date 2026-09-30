@@ -264,7 +264,7 @@ def test_acceptance_control_paths_include_approved_waiver_inputs(
     policy_root = tmp_path if anchor == "rtl_repository" else project
     approvals = policy_root / "coverage-waivers"
     approval = approvals / "rtl/counter.sv.toml"
-    proof = policy_root / "proofs/counter.sby"
+    proof = approvals / "proofs/counter.sby"
     approval.parent.mkdir(parents=True)
     proof.parent.mkdir(parents=True)
     proof.write_text("[tasks]\ncover\n", encoding="utf-8")
@@ -302,7 +302,6 @@ def test_acceptance_control_paths_include_approved_waiver_inputs(
             {
                 ".booley_project/pipeline.toml",
                 f"{prefix}coverage-waivers",
-                f"{prefix}proofs/counter.sby",
             }
         )
     )
@@ -753,6 +752,68 @@ def test_comparison_basis_reports_resolution_and_recipe_changes(
         "incompatible measurement bases (tool)"
         in acceptance_targets.validate_acceptance_targets({}, tmp_path, tmp_path / "build")[0]
     )
+
+
+def _install_comparison_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    binding = acceptance_targets.CriterionTarget(
+        "mandatory", "synthesis_ok", "candidate", "synth", True, "baseline"
+    )
+    monkeypatch.setattr(acceptance_targets, "validate_criterion_targets", lambda *_args: [])
+    monkeypatch.setattr(acceptance_targets, "criterion_targets", lambda *_args: (binding,))
+    monkeypatch.setattr(acceptance_targets, "_missing_target_sources", lambda *_args: [])
+    monkeypatch.setattr(acceptance_targets, "_dry_resolve_binding", lambda *_args, **_kwargs: [])
+
+
+def _comparison_snapshot(target: str, *digests: str | None) -> dict:
+    return {
+        "schema": 4,
+        "flow": "synth",
+        "target": target,
+        "vlnv": "::core:0",
+        "toplevel": "top",
+        "parameters": {},
+        "recipe_args": ["--synth-mode", "logical"],
+        "constraints": [
+            {"core": f"::provider_{index}:0", "sha256": digest}
+            for index, digest in enumerate(digests)
+        ],
+        "technology": {"liberty": "/opt/pdk/stdcells.lib", "physical_pdk": None},
+    }
+
+
+def test_comparison_basis_accepts_relocated_identical_constraints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_comparison_binding(monkeypatch)
+    baseline = _comparison_snapshot("baseline", "a" * 64, "b" * 64)
+    candidate = _comparison_snapshot("candidate", "a" * 64, "b" * 64)
+    candidate["constraints"][0]["core"] = "::renamed_provider:0"
+    monkeypatch.setattr(
+        acceptance_targets, "_comparison_snapshots", lambda *_args: (baseline, candidate)
+    )
+
+    assert acceptance_targets.validate_acceptance_targets({}, tmp_path, tmp_path / "build") == []
+
+
+def test_comparison_basis_rejects_unreadable_or_changed_constraints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_comparison_binding(monkeypatch)
+    baseline = _comparison_snapshot("baseline", "a" * 64, "b" * 64)
+    candidates = (
+        _comparison_snapshot("candidate", "a" * 64, "c" * 64),
+        _comparison_snapshot("candidate", "b" * 64, "a" * 64),
+        _comparison_snapshot("candidate", "a" * 64, None),
+    )
+    for candidate in candidates:
+        monkeypatch.setattr(
+            acceptance_targets,
+            "_comparison_snapshots",
+            lambda *_args, value=candidate: (baseline, value),
+        )
+        errors = acceptance_targets.validate_acceptance_targets({}, tmp_path, tmp_path / "build")
+        assert len(errors) == 1
+        assert "incompatible" in errors[0]
 
 
 def test_comparison_snapshots_dispatch_by_flow(

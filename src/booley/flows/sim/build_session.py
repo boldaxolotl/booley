@@ -33,6 +33,7 @@ from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
+from . import edam as sim_edam
 from .build import PreparedSimulationBuild
 
 
@@ -565,6 +566,12 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             target=candidate.resolved.name,
             vlnv=candidate.resolved.vlnv,
         )
+        configured_tool = sim_edam.normalize_eda_tool(resolved.configured_eda_tool)
+        if configured_tool != candidate.eda_tool:
+            raise SimulationBuildSlotError(
+                "retained Simulation EDAM configured "
+                f"{configured_tool!r}, expected {candidate.eda_tool!r}"
+            )
         make_rel = edam_layer.relpath_for_make(resolved.build_root, self.handle.project_root)
         return PreparedSimulationBuild(
             target=candidate.target,
@@ -572,7 +579,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             resolved=resolved,
             work_root=root,
             build_root=resolved.build_root,
-            eda_tool=candidate.eda_tool,
+            eda_tool=configured_tool,
             toplevel=candidate.toplevel,
             make_argv=tuple(edam_layer.make_command(make_rel)),
             environment=candidate.environment,

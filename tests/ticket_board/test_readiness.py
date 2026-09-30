@@ -13,7 +13,10 @@ from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import readiness as readiness_module
 from booley.ticket_board import ticket_baseline as ticket_baseline_module
 from booley.ticket_board import ticket_validation as ticket_validation_module
+from booley.ticket_board.board_layout import read_state_record
+from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.readiness import check_ticket_ready
 from booley.ticket_board.ticket_baseline import TicketBaselineError
 
@@ -32,6 +35,12 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def _state(project: Path, slug: str) -> TicketState | None:
+    """Return *slug*'s recorded lifecycle state, or None for a draft."""
+    record = read_state_record(project / "tickets", slug)
+    return None if record is None else record.state
+
+
 def _remove_ticket_worktree(root: Path) -> Path:
     paths = [
         Path(line.removeprefix("worktree "))
@@ -47,8 +56,8 @@ def _assert_actual_intake(root: Path, project: Path, ticket: Path) -> None:
     context = asyncio.run(intake.run(str(ticket), root))
 
     assert context.slug == "demo"
-    assert (project / "tickets" / "board" / "active" / "demo.md").exists()
-    assert not (project / "tickets" / "board" / "queue" / "demo.md").exists()
+    assert _state(project, "demo") is TicketState.RUNNING
+    assert (project / "tickets" / "board" / "demo.md").exists()
     assert not (root / "generated.hex").exists()
 
 
@@ -97,7 +106,7 @@ targets:
         "[flows.sim]\ndefault_target = 'sim_toy'\n", encoding="utf-8"
     )
     (project / "tests.toml").write_text("[sim_toy]\ntests = ['smoke']\n", encoding="utf-8")
-    (project / "tickets" / "board" / "queue").mkdir(parents=True)
+    (project / "tickets" / "board").mkdir(parents=True)
     _git(root, "add", "-A")
     _git(
         root,
@@ -120,7 +129,7 @@ targets:
     assert tio.enqueue_ticket("demo") is True
     workspace = _remove_ticket_worktree(root)
     assert not workspace.exists()
-    ticket = project / "tickets" / "board" / "queue" / "demo.md"
+    ticket = project / "tickets" / "board" / "demo.md"
     ticket_before = ticket.read_bytes()
     resolved_roots: list[Path] = []
 
@@ -140,7 +149,7 @@ targets:
     assert result.errors == ()
     assert resolved_roots == [root.resolve()]
     assert ticket.read_bytes() == ticket_before
-    assert not (project / "tickets" / "board" / "active" / "demo.md").exists()
+    assert _state(project, "demo") is TicketState.QUEUED
     assert not (root / "generated.hex").exists()
     assert _git(root, "status", "--porcelain") == ""
 
@@ -172,7 +181,7 @@ def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "user.email", "test@example.invalid")
     project = root / ".booley_project"
-    (project / "tickets/board/drafts").mkdir(parents=True)
+    (project / "tickets/board").mkdir(parents=True)
     (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
     (root / "README.md").write_text("demo\n", encoding="utf-8")
@@ -203,6 +212,49 @@ def test_readiness_without_worktree_checks_current_generation_ref(tmp_path: Path
     assert any("protected path" in error for error in result.errors)
 
 
+def test_operational_legacy_review_pair_reports_hard_cutoff_without_mutation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    project = root / ".booley_project"
+    (project / "tickets/board").mkdir(parents=True)
+    (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
+    (root / "README.md").write_text("demo\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "add", "-f", ".booley_project")
+    _git(root, "commit", "-m", "initial")
+    tio = TicketIO(project / "tickets", project_root=root)
+    draft = tio.create_ticket_document(
+        "legacy-pair",
+        "---\nsummary: Legacy pair\ntype: bugfix\nbranch: main\n"
+        "scope: [README.md]\non_success: [review]\n"
+        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
+        "---\n\n## Description\n\nExercise readiness.\n",
+    )
+    assert draft is not None
+    assert tio.enqueue_ticket("legacy-pair")
+    ticket = project / "tickets/board/legacy-pair.md"
+    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    fields["CRITERIA_MANDATORY"]["REVIEW"]["rtl"]["bugs"] = ["done", "clean"]
+    ticket.write_text(format_frontmatter(fields, body), encoding="utf-8")
+    content = ticket.read_bytes()
+    status_before = _git(root, "status", "--porcelain", "--untracked-files=all")
+
+    result = check_ticket_ready(root, "legacy-pair")
+
+    assert result.ready is False
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("12:7: ")
+    assert "clean already implies done" in result.errors[0]
+    assert ticket.read_bytes() == content
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == status_before
+
+
 def test_worktree_discovery_failure_is_loud(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -229,7 +281,7 @@ def test_executable_validation_uses_authoritative_basis_reader(
     root = tmp_path / "demo"
     (root / ".git").mkdir(parents=True)
     tickets = root / ".booley_project/tickets"
-    ticket = tickets / "board/queue/demo.md"
+    ticket = tickets / "board/demo.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("ticket\n", encoding="utf-8")
 

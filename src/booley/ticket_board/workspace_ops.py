@@ -11,7 +11,9 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
+from booley.core.differences import format_differences
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
@@ -19,6 +21,10 @@ from booley.runtime.project_dir import (
     runtime_dir,
 )
 from booley.runtime.project_prepare import prepare_project
+from booley.runtime.worktree_relocation import (
+    WorktreeRelocationError,
+    refresh_relative_worktree_config,
+)
 from booley.ticket_board.ticket_repositories import (
     TicketRepository,
     paired_project_repository,
@@ -44,7 +50,7 @@ from .basis_publication import (
     publish_ticket_commits,
 )
 from .frontmatter import parse_frontmatter
-from .git_status import parse_porcelain_v1_z
+from .git_status import GitStatusEntry, parse_porcelain_v1_z
 from .helpers import TicketSlugError, validate_ticket_slug
 from .persistence import WriteOnceConflictError, atomic_write_once
 from .planned_dependencies import (
@@ -207,6 +213,15 @@ def _outer_destination_commit(repository: Path, branch: str) -> str:
             f"outer `branch` {branch!r} does not exist in the outer repository"
         )
     return sha
+
+
+def preflight_authoring_destination(root: Path, fields: dict[str, Any]) -> None:
+    """Validate an authored destination before a recoverable transaction starts."""
+    branch = fields.get("branch")
+    if not isinstance(branch, str) or not branch:
+        raise TicketBaselineOperationError("ticket has no destination branch")
+    _preflight_project_repository(root, branch, fields.get("project_destination_ref"))
+    _outer_destination_commit(root, branch)
 
 
 def _branch_sha(repository: Path, branch: str) -> str:
@@ -662,6 +677,7 @@ def relocate_refresh_workspace(
                 "refreshed Ticket workspace disappeared during relocation"
             )
         _require_git(root, "worktree", "move", str(workspace.outer), str(canonical))
+        _refresh_moved_worktree(canonical)
     _restore_refresh_project(canonical, project_source, holding)
     if has_project and paired_project_repository(canonical) is None:
         raise TicketBaselineOperationError("refreshed paired project workspace is unavailable")
@@ -716,6 +732,7 @@ def _stage_refresh_project(
         raise TicketBaselineOperationError("paired project repository is unavailable")
     if not holding.exists():
         _require_git(project_source, "worktree", "move", str(paired.worktree), str(holding))
+        _refresh_moved_worktree(holding)
 
 
 def _restore_refresh_project(canonical: Path, project_source: Path | None, holding: Path) -> None:
@@ -730,6 +747,16 @@ def _restore_refresh_project(canonical: Path, project_source: Path | None, holdi
         str(holding),
         str(ticket_project_worktree(canonical)),
     )
+    _refresh_moved_worktree(ticket_project_worktree(canonical))
+
+
+def _refresh_moved_worktree(worktree: Path) -> None:
+    try:
+        refresh_relative_worktree_config(worktree)
+    except WorktreeRelocationError as exc:
+        raise TicketBaselineOperationError(
+            f"could not refresh moved Ticket Workspace metadata: {exc}"
+        ) from exc
 
 
 def load_refresh_source_workspace(
@@ -778,27 +805,78 @@ def basis_changed_paths(
     return tuple(line for line in output.splitlines() if line)
 
 
+def _basis_checkout_status(repository: Path) -> tuple[GitStatusEntry, ...]:
+    result = _git(
+        repository,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise TicketBaselineOperationError(
+            f"git status failed in {repository} (rc={result.returncode}): {detail}"
+        )
+    try:
+        return parse_porcelain_v1_z(result.stdout)
+    except ValueError as exc:
+        raise TicketBaselineOperationError(
+            f"could not parse Git status in {repository}: {exc}"
+        ) from exc
+
+
+def _status_path_is_within(path: str, directory: str) -> bool:
+    normalized = path.removeprefix("./").rstrip("/")
+    boundary = directory.removeprefix("./").rstrip("/")
+    return normalized == boundary or normalized.startswith(f"{boundary}/")
+
+
+def _is_project_participant_entry(entry: GitStatusEntry, project_path: str) -> bool:
+    if entry.status != "??" or entry.source_path is not None:
+        return False
+    paths = (entry.path,) + ((entry.source_path,) if entry.source_path is not None else ())
+    return all(_status_path_is_within(path, project_path) for path in paths) and (
+        entry.path.removeprefix("./").rstrip("/") == project_path.rstrip("/")
+    )
+
+
 def _workspace_from_basis_checkout(
     root: Path, outer: Path, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     project = None
+    project_relative = None
     if any(row.role == "project" for row in basis.participants):
         paired = paired_project_repository(outer)
-        project = (
-            paired.worktree
-            if paired is not None
-            else outer / checkout_project_dir_relative_to(root)
-        )
+        if paired is not None:
+            project = paired.worktree
+            project_relative = Path(paired.path_prefix)
+        else:
+            project_relative = checkout_project_dir_relative_to(root)
+            project = outer / project_relative
     repositories = {"outer": outer, **({"project": project} if project else {})}
-    if set(repositories) != {row.role for row in basis.participants}:
-        raise TicketBaselineOperationError("waiting Ticket workspace participants changed")
+    expected_roles = {row.role for row in basis.participants}
+    if set(repositories) != expected_roles:
+        raise TicketBaselineOperationError(
+            "waiting Ticket workspace participants changed: "
+            + format_differences(
+                {"participant_roles": expected_roles},
+                {"participant_roles": set(repositories)},
+            )
+        )
     for participant in basis.participants:
         repository = repositories[participant.role]
         if _require_git(repository, "rev-parse", "HEAD") != participant.authoring_sha:
             raise TicketBaselineOperationError(
                 "waiting Ticket workspace was already executed or changed"
             )
-        if _require_git(repository, "status", "--porcelain", "--untracked-files=all"):
+        status = _basis_checkout_status(repository)
+        if participant.role == "outer" and project_relative is not None:
+            project_path = project_relative.as_posix()
+            status = tuple(
+                entry for entry in status if not _is_project_participant_entry(entry, project_path)
+            )
+        if status:
             raise TicketBaselineOperationError("waiting Ticket workspace is not pristine")
     project_base = basis.participant("project").destination_sha if project else ""
     return AuthoringWorkspace(

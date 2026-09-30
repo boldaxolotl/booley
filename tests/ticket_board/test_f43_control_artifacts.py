@@ -8,20 +8,27 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from booley.harness._ticket_ops import DirectTicketOps
+from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+from booley.ticket_board.board_layout import read_state_record, write_state_record
 from booley.ticket_board.cli import main
 from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
     render_criteria_section,
 )
 from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.history_publication import pending_history_commits
 from booley.ticket_board.io import TicketIO
+from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.ticket_history import read_closed_ticket
 from booley.ticket_board.validation import validate_ticket_fields
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True, timeout=30
+    )
     return result.stdout.strip()
 
 
@@ -60,8 +67,8 @@ def _project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
         encoding="utf-8",
     )
     project = root / ".booley_project"
-    (project / "tickets" / "board" / "drafts").mkdir(parents=True)
-    (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
+    (project / "tickets" / "board").mkdir(parents=True)
+    (project / ".gitignore").write_text(PROJECT_GITIGNORE, encoding="utf-8")
     (project / "booley.toml").write_text(
         "[flows.lint]\ndefault_target = 'lint_toy'\n", encoding="utf-8"
     )
@@ -113,9 +120,8 @@ def test_authored_draft_validates_without_hiding_product_changes(
 ) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     ticket = _ticket(tio)
-    _git(root, "add", "-f", str(ticket.relative_to(root)))
-    _commit_all(root, "add draft ticket")
-    _git(root / ".booley_project" / "worktrees" / "change-target", "reset", "--hard", "main")
+    # Board documents are ignored (ADR 0065), so authoring edits never show
+    # up as Git changes; product edits still must.
     _replace_ticket(ticket, "type: refactor\n", "type: refactor\npriority: high\n")
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
@@ -287,7 +293,7 @@ def test_validate_ticket_does_not_reopen_published_authoring_workspace(
     root, tio = _project(tmp_path, monkeypatch)
     _ticket(tio)
     assert tio.enqueue_ticket("change-target") is True
-    ticket = tio.tickets_dir / "board" / "queue" / "change-target.md"
+    ticket = tio.tickets_dir / "board" / "change-target.md"
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
     capsys.readouterr()
@@ -335,27 +341,21 @@ def _review_completion_case(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     assert tio.enqueue_ticket("change-target") is True
-    queue = draft.parent.parent / "queue" / draft.name
+    queue = draft
     unrelated_ticket = queue.parent / "unrelated-ticket.md"
     unrelated_ticket.write_text(queue.read_text(encoding="utf-8"), encoding="utf-8")
-    _git(
-        root,
-        "add",
-        "-f",
-        str(queue.relative_to(root)),
-        str(unrelated_ticket.relative_to(root)),
-    )
-    _commit_all(root, "queue ticket")
-    review = queue.parent.parent / "review" / queue.name
-    review.parent.mkdir(parents=True, exist_ok=True)
-    queue.rename(review)
+    # Board documents are ignored working state (ADR 0065): nothing to commit.
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == ""
+    record = read_state_record(tio.tickets_dir, "change-target")
+    assert record is not None
+    write_state_record(tio.tickets_dir, "change-target", record.with_state(TicketState.REVIEW))
     monkeypatch.chdir(root)
     source = root / "rtl" / "toy.sv"
     original = source.read_text(encoding="utf-8")
     return root, tio, unrelated_ticket, source, original
 
 
-def test_review_completion_ignores_its_board_rename_but_not_product_edits(
+def test_review_completion_blocks_on_product_edits_but_not_on_ignored_board_documents(
     tmp_path: Path, monkeypatch
 ) -> None:
     root, tio, unrelated_ticket, source, original = _review_completion_case(tmp_path, monkeypatch)
@@ -364,12 +364,66 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"
 
     source.write_text(original, encoding="utf-8")
-    unrelated_original = unrelated_ticket.read_text(encoding="utf-8")
+    # Editing another live Ticket document touches only ignored state.
     _replace_ticket(unrelated_ticket, "type: refactor\n", "type: refactor\npriority: high\n")
-    assert op_complete(tio, "change-target") is False
-    assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"
-
-    unrelated_ticket.write_text(unrelated_original, encoding="utf-8")
     assert op_complete(tio, "change-target") is True
-    assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "done"
+    # A finished completion closes the Ticket into Ticket History.
+    assert find_ticket_file(tio.tickets_dir, "change-target") == (None, None)
+    assert not (tio.tickets_dir / "board" / "change-target.md").exists()
+    closed = read_closed_ticket(tio.tickets_dir, "change-target")
+    assert closed is not None
+    assert closed.block.outcome is TicketState.DONE
+    # Closing commits the history record wherever Git tracks it (a global
+    # ignore of .booley_project/ leaves nothing to commit).
+    assert pending_history_commits(tio.tickets_dir) == []
     assert "lint_toy_new" in (root / "toy.core").read_text(encoding="utf-8")
+
+
+def test_closing_a_ticket_leaves_the_checkout_clean(tmp_path: Path, monkeypatch) -> None:
+    """With init's ignore patterns, a user's ``git add -A`` never tracks the board.
+
+    ADR 0065: the live document and its state record are working state, so
+    closing removes them without leaving a deletion that blocks the next
+    Ticket's completion. Only the committed history record remains.
+    """
+    monkeypatch.setattr(
+        "booley.ticket_board.operations._completion_acceptance_valid",
+        lambda *_: SimpleNamespace(participant_heads=None),
+    )
+    root, tio = _project(tmp_path, monkeypatch)
+    # A host-global ignore of .booley_project/ would hide history from Git,
+    # and the default Stealth word list refuses a commit naming a Ticket.
+    _git(root, "config", "core.excludesFile", "/dev/null")
+    project = root / ".booley_project"
+    (project / "booley.toml").write_text(
+        "[stealth]\nenabled = false\n\n[flows.lint]\ndefault_target = 'lint_toy'\n",
+        encoding="utf-8",
+    )
+    _commit_all(root, "disable stealth")
+    _ticket(tio, merge=True, planned=True)
+    core = project / "worktrees" / "change-target" / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_toy_new:\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n"
+        + "    filesets: [rtl]\n"
+        + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
+    assert tio.enqueue_ticket("change-target") is True
+    # A live Ticket leaves nothing for ``git add -A`` to pick up.
+    _git(root, "add", "-A")
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == ""
+    record = read_state_record(tio.tickets_dir, "change-target")
+    assert record is not None
+    write_state_record(tio.tickets_dir, "change-target", record.with_state(TicketState.REVIEW))
+    monkeypatch.chdir(root)
+
+    assert op_complete(tio, "change-target") is True
+
+    assert read_closed_ticket(tio.tickets_dir, "change-target") is not None
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == ""
+    assert _git(root, "ls-files", ".booley_project/tickets") == (
+        ".booley_project/tickets/history/change-target.md"
+    )

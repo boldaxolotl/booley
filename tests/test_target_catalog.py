@@ -135,6 +135,28 @@ def test_catalog_rejects_duplicate_canonical_target_identities(project: Path) ->
         catalog.select_many("lint_a,alpha#lint_a", for_flow="lint")
 
 
+def test_sim_selection_error_names_supported_tool_declarations(tmp_path: Path) -> None:
+    _write_core(
+        tmp_path,
+        "missing-tool.core",
+        "acme:ip:missing:1.0",
+        """
+        sim_missing:
+          flow: sim
+          filesets: []
+          toplevel: top
+        """,
+    )
+
+    with pytest.raises(IncompatibleTargetError) as exc:
+        TargetCatalog.build(tmp_path).select("sim_missing", for_flow="sim")
+
+    message = str(exc.value)
+    assert "flow_options.tool" in message
+    assert "default_tool" in message
+    assert "Verilator or Icarus" in message
+
+
 def test_catalog_select_many_preserves_authored_order(project: Path) -> None:
     selected = TargetCatalog.build(project).select_many("lint_b,lint_a", for_flow="lint")
 
@@ -269,6 +291,44 @@ def test_cached_inspection_mappings_are_deeply_immutable(project: Path) -> None:
     cached = catalog.inspect(handle)
     assert cached.flow_options["tool"] == "verilator"
     assert "mutated" not in cached.inputs[0].attributes
+
+
+@pytest.mark.parametrize(
+    ("target_body", "expected_flow", "expected_tool"),
+    (
+        (
+            "flow: sim\nflow_options:\n  tool: verilator\n  make_options: [OPT_FAST=-O3]",
+            ("OPT_FAST=-O3",),
+            (),
+        ),
+        (
+            "default_tool: verilator\ntools:\n  verilator:\n    make_options: [-j7]",
+            (),
+            ("-j7",),
+        ),
+    ),
+    ids=("modern-flow-api", "legacy-tool-api"),
+)
+def test_inspection_exposes_condition_selected_backend_options(
+    tmp_path: Path,
+    target_body: str,
+    expected_flow: tuple[str, ...],
+    expected_tool: tuple[str, ...],
+) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
+    _write_core(
+        tmp_path,
+        "options.core",
+        "acme:ip:options:1.0",
+        f"sim:\n{textwrap.indent(target_body, '  ')}\n  filesets: [rtl]\n  toplevel: a\n",
+    )
+
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim", for_flow="sim"))
+
+    assert tuple(inspection.flow_options.get("make_options", ())) == expected_flow
+    assert tuple(inspection.tool_options.get("make_options", ())) == expected_tool
 
 
 def test_inspection_normalizes_windows_fileset_paths_on_posix(tmp_path: Path) -> None:

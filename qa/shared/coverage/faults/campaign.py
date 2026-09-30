@@ -81,6 +81,7 @@ def mutate(path: Path, owned: Path, mode: str) -> None:
     elif mode in {"v1", "v2"}:
         document["$schema"] = "booley.coverage-campaign/" + mode
         document.pop("source_rollups")
+        document.pop("scoring")
         if mode == "v1":
             document["points"] = [
                 json.loads(line) for line in gzip.decompress(points.read_bytes()).splitlines()
@@ -119,6 +120,8 @@ def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None
         if len(rows) < 2 or rows[0]["rollups"] == rows[1]["rollups"]:
             raise ValueError("two sources with distinct distributions required")
         rows[0]["rollups"], rows[1]["rollups"] = rows[1]["rollups"], rows[0]["rollups"]
+    elif mode in {"invalid-overall-score", "invalid-source-score"}:
+        corrupt_scoring(mode, document)
     elif mode == "wrong-evaluation":
         document["evaluation"]["status"] = (
             "pass" if document["evaluation"]["status"] != "pass" else "fail"
@@ -127,6 +130,15 @@ def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None
         document["point_store"]["point_count"] = 1_000_001
     else:
         raise ValueError(f"unknown Campaign fault: {mode}")
+
+
+def corrupt_scoring(mode: str, document: dict) -> None:
+    document["collection"]["status"] = "collector_error"
+    document["scoring"] = {"status": "invalid", "reason": "collector_error"}
+    if mode == "invalid-overall-score":
+        document["source_rollups"] = []
+    else:
+        document["rollups"] = []
 
 
 def main() -> None:

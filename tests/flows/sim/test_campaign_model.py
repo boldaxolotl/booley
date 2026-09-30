@@ -30,6 +30,7 @@ from booley.flows.sim.campaign.model import (
     SimulationAttempt,
     SimulatorBundle,
     grade_observations,
+    simulation_status_from_observations,
 )
 
 
@@ -268,3 +269,20 @@ def test_grade_table_is_exhaustive(
         ).value
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    ("executions", "expected"),
+    [
+        (("completed", "timeout"), "timeout"),
+        (("timeout", "crash"), "crash"),
+        (("crash", "aborted"), "aborted"),
+        (("timeout", "crash", "aborted"), "aborted"),
+    ],
+)
+def test_simulation_status_uses_codec_execution_strength(executions, expected) -> None:
+    observations = tuple(
+        {"execution": execution, "functional": "not_observed"} for execution in executions
+    )
+
+    assert simulation_status_from_observations(observations) == expected

@@ -16,6 +16,11 @@ from booley.flows.endpoint_reporting import _StdoutWitness
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
+    ExecutionResult,
+)
+from booley.runtime.exception_diagnostics import (
+    exception_report_text,
+    write_exception_diagnostic,
 )
 
 if TYPE_CHECKING:
@@ -115,6 +120,41 @@ def prepare_execution(
     )
 
 
+def _transcript_diagnostic_path(endpoint: EndpointState) -> Path | None:
+    if getattr(endpoint.args, "transcript_dir", None) is None:
+        return None
+    resolver = getattr(endpoint, "_transcript_path", None)
+    if not callable(resolver):
+        return None
+    try:
+        return resolver()
+    except Exception:
+        logger.debug("Could not resolve endpoint transcript diagnostic path", exc_info=True)
+        return None
+
+
+def _exception_outcome(
+    endpoint: EndpointState,
+    prepared: PreparedExecution,
+    exc: Exception,
+) -> EndpointOutcome:
+    logger.debug("Endpoint %s failed with exception", endpoint.name, exc_info=True)
+    persist = not prepared.non_persisting_dry_run
+    transcript_path = _transcript_diagnostic_path(endpoint) if persist else None
+    diagnostic_path = write_exception_diagnostic(
+        exc,
+        endpoint_name=endpoint.name,
+        invocation_id=endpoint._invocation_id,
+        report_dir=endpoint.args.report_dir,
+        transcript_path=transcript_path,
+        persist=persist,
+    )
+    return EndpointOutcome(
+        exit_code=EXIT_ERROR,
+        report_text=exception_report_text(endpoint.name, exc, diagnostic_path),
+    )
+
+
 def invoke_endpoint(
     endpoint: EndpointState,
     prepared: PreparedExecution,
@@ -136,9 +176,8 @@ def invoke_endpoint(
             else:
                 raw = endpoint._run()
             result = endpoint._adapt_outcome(raw)
-        except Exception:
-            logger.exception("Endpoint %s failed with exception", endpoint.name)
-            result = EndpointOutcome(exit_code=EXIT_ERROR)
+        except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
+            result = _exception_outcome(endpoint, prepared, exc)
     finally:
         sys.stdout = witness.wrapped
     result = endpoint._adapt_outcome(result)
@@ -153,10 +192,11 @@ def finish_execution(
     *,
     started: float | None,
     acceptance_recorded: bool,
-) -> int:
+) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
-    return endpoint._finish_main(
-        endpoint._adapt_outcome(outcome),
+    final_outcome = endpoint._adapt_outcome(outcome)
+    exit_code = endpoint._finish_main(
+        final_outcome,
         prepared.display_target,
         outcome.display_label or prepared.display_label,
         started=started,
@@ -164,3 +204,4 @@ def finish_execution(
         dry_run=prepared.dry_run,
         non_persisting_dry_run=prepared.non_persisting_dry_run,
     )
+    return ExecutionResult(exit_code=exit_code, outcome=final_outcome)

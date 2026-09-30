@@ -19,8 +19,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.core.boundary import as_str_list
-from booley.criteria.categories import (
-    verification_fingerprint_categories as _verification_fingerprint_categories,
+from booley.criteria.freshness import (
+    VerificationFreshness,
+    evaluate_verification_freshness,
+    verification_freshness_eligible,
 )
 
 # NOTE: DevelopmentState is imported function-locally (not here) because the
@@ -28,10 +30,14 @@ from booley.criteria.categories import (
 # its source module; a module-level binding here would defeat that patch.
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
-from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "VerificationFreshness",
+    "evaluate_verification_freshness",
+]
 
 _REPORT_CRITERION = "_report_submitted"
 _JUSTIFIED_OPTIONAL_DETAIL = "unmet_optional_criteria"
@@ -248,7 +254,9 @@ def _has_matching_failing_evidence(entry) -> bool:
     return False
 
 
-def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
+def _enforce_acceptance_evidence(
+    state, *, work_dir: Path | None, persist: bool = True
+) -> list[str]:
     """Fail closed on evidence that cannot satisfy the recorded Ticket baseline."""
     if not getattr(state, "strict_criteria", False):
         return []
@@ -275,7 +283,8 @@ def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
 
     if rejected:
         _invalidate_submitted_report(state, now=now)
-        state.save()
+        if persist:
+            state.save()
         logger.warning(
             "Rejected insufficient Criterion evidence for %s: %s",
             state.slug,
@@ -302,107 +311,6 @@ def _find_unverified_transitions(criteria: dict) -> list[str]:
     return unverified
 
 
-def _mark_review_receipt_stale(
-    entry,
-    *,
-    categories: list[str],
-    now: str,
-    reason: str,
-    dimensions: list[str],
-) -> bool:
-    _mark_verification_stale(
-        entry,
-        now=now,
-        reason=reason,
-        changed_categories=categories,
-        current={},
-    )
-    entry.detail["stale_review_dimensions"] = dimensions
-    return True
-
-
-def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], now: str) -> bool:
-    from booley.evidence.review_receipt import ReviewTicketError, review_receipt_drift
-
-    try:
-        from .review_policy import review_policy_digest
-
-        detail = entry.detail or {}
-        contract = detail.get("contract") if isinstance(detail, dict) else None
-        category = contract.get("category", "") if isinstance(contract, dict) else ""
-        changed = review_receipt_drift(
-            detail,
-            work_dir,
-            tb_policy_digest=review_policy_digest(work_dir, category),
-        )
-    except ReviewTicketError as exc:
-        return _mark_review_receipt_stale(
-            entry,
-            categories=categories,
-            now=now,
-            reason=str(exc),
-            dimensions=["ticket"],
-        )
-    except (FuseSocError, OSError) as exc:
-        return _mark_review_receipt_stale(
-            entry,
-            categories=categories,
-            now=now,
-            reason=f"Reviewer source context can no longer be resolved: {exc}",
-            dimensions=["source_context"],
-        )
-    if not changed:
-        return False
-    return _mark_review_receipt_stale(
-        entry,
-        categories=categories,
-        now=now,
-        reason=(
-            "Reviewer requirement changed after the recorded verdict "
-            f"({', '.join(changed)}); re-run Reviewer."
-        ),
-        dimensions=changed,
-    )
-
-
-def _source_evidence_is_stale(
-    entry,
-    *,
-    work_dir: Path,
-    fingerprints: dict[str | None, dict],
-    categories: list[str],
-    now: str,
-) -> bool:
-    stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
-    target = stamp.get("target") if isinstance(stamp, dict) else None
-    target = target if isinstance(target, str) and target else None
-    try:
-        if target not in fingerprints:
-            fingerprints[target] = compute_source_fingerprint(work_dir, target=target)
-        current = fingerprints[target]
-    except FuseSocError as exc:
-        _mark_verification_stale(
-            entry,
-            now=now,
-            reason=(
-                f"Target-specific source fingerprint can no longer be resolved: {exc}. "
-                "Re-run the relevant Flow or Specialist with a valid Target."
-            ),
-            changed_categories=categories,
-            current={},
-        )
-        return True
-    except OSError:
-        logger.debug("Could not compute final source fingerprint", exc_info=True)
-        return False
-    return _stale_verification_entry(
-        entry,
-        categories=categories,
-        current=current,
-        now=now,
-    )
-
-
 def _refresh_verification_entry(
     key: str,
     entry,
@@ -412,29 +320,31 @@ def _refresh_verification_entry(
     now: str,
 ) -> bool:
     """Refresh one passing criterion against its receipt and source evidence."""
-    categories = _verification_fingerprint_categories(key)
-    if key.startswith(("review_rtl_", "review_tb_")) and _review_receipt_is_stale(
+    result = evaluate_verification_freshness(
+        key,
         entry,
         work_dir=work_dir,
-        categories=categories,
-        now=now,
-    ):
-        return True
-    if (
-        key.startswith(("review_rtl_", "review_tb_"))
-        and (entry.detail or {}).get("review_detail_version") == 4
-    ):
-        return False
-    return _source_evidence_is_stale(
-        entry,
-        work_dir=work_dir,
+        fingerprint_provider=compute_source_fingerprint,
         fingerprints=fingerprints,
-        categories=categories,
-        now=now,
     )
+    assert result is not None
+    if not result.stale:
+        return False
+    _mark_verification_stale(
+        entry,
+        now=now,
+        reason=result.reason,
+        changed_categories=result.changed_categories,
+        current=result.current_source_fingerprint,
+    )
+    if result.review_dimensions:
+        entry.detail["stale_review_dimensions"] = list(result.review_dimensions)
+    return True
 
 
-def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]:
+def refresh_verification_freshness(
+    state, *, work_dir: Path | None, persist: bool = True
+) -> list[str]:
     """Persistently invalidate passing checks whose source fingerprint drifted."""
     resolved_work_dir = work_dir
     if resolved_work_dir is None and getattr(state, "work_dir", ""):
@@ -446,12 +356,11 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
     stale_keys: list[str] = []
     fingerprints: dict[str | None, dict] = {}
     for key, entry in state.criteria.items():
-        is_review = key.startswith(("review_rtl_", "review_tb_"))
-        if key.startswith("_") or (not entry.met and not is_review):
-            continue
-        if not entry.mandatory and not is_review:
-            continue
-        if not _verification_fingerprint_categories(key):
+        if not verification_freshness_eligible(
+            key,
+            entry,
+            include_unobserved_review=True,
+        ):
             continue
         if _refresh_verification_entry(
             key,
@@ -469,7 +378,8 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
             state.slug,
             ", ".join(stale_keys),
         )
-        state.save()
+        if persist:
+            state.save()
     return stale_keys
 
 
@@ -487,73 +397,12 @@ def _invalidate_submitted_report(state, *, now: str) -> None:
     )
 
 
-def _stale_verification_entry(
-    entry,
-    *,
-    categories: set[str],
-    current: dict,
-    now: str,
-) -> bool:
-    """Mark a passing verification entry stale if its source fingerprint drifted.
-
-    Returns ``True`` when the entry was marked stale, ``False`` otherwise.
-    """
-    stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
-    if not isinstance(stamp, dict):
-        _mark_verification_stale(
-            entry,
-            now=now,
-            reason=(
-                "Passing verification criterion has no source fingerprint; "
-                "re-run the relevant Flow or Specialist."
-            ),
-            changed_categories=categories,
-            current=current,
-        )
-        return True
-    previous = stamp.get("fingerprint", {})
-    stamped_categories = stamp.get("categories", [])
-    if not isinstance(previous, dict) or not isinstance(stamped_categories, list):
-        _mark_verification_stale(
-            entry,
-            now=now,
-            reason=(
-                "Passing verification criterion has an invalid source "
-                "fingerprint; re-run the relevant Flow or Specialist."
-            ),
-            changed_categories=categories,
-            current=current,
-        )
-        return True
-
-    changed_categories: list[str] = []
-    for category in stamped_categories:
-        old_digest = (previous.get(category, {}) or {}).get("digest")
-        new_digest = (current.get(category, {}) or {}).get("digest")
-        if old_digest != new_digest:
-            changed_categories.append(str(category))
-    if not changed_categories:
-        return False
-
-    _mark_verification_stale(
-        entry,
-        now=now,
-        reason=(
-            "RTL/testbench sources changed after the last passing "
-            "verification evidence; re-run the relevant Flow or Specialist."
-        ),
-        changed_categories=changed_categories,
-        current=current,
-    )
-    return True
-
-
 def _mark_verification_stale(
     entry,
     *,
     now: str,
     reason: str,
-    changed_categories: set[str] | list[str],
+    changed_categories: set[str] | list[str] | tuple[str, ...],
     current: dict,
 ) -> None:
     """Mark a passing verification entry unmet with a stale diagnostic."""
@@ -585,6 +434,60 @@ def _compute_criteria_stats(
     }
 
 
+def _active_declared_block_reason(state, stats: dict) -> str | None:
+    """Return the active Developer Agent-declared reason for this projection."""
+    all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
+    blocked_entry = state.criteria.get("_blocked_reason")
+    if blocked_entry and blocked_entry.met and not all_mandatory_met:
+        return blocked_entry.detail.get("reason", "blocked by agent")
+    return None
+
+
+def project_active_declared_block_reason(state_path: Path, *, work_dir: Path | None) -> str | None:
+    """Project current acceptance state without persisting invalidations."""
+    from booley.criteria.state import DevelopmentState
+
+    state = DevelopmentState.load(state_path)
+    if not state.criteria:
+        return None
+    refresh_verification_freshness(state, work_dir=work_dir, persist=False)
+    _enforce_acceptance_evidence(state, work_dir=work_dir, persist=False)
+    return _active_declared_block_reason(state, _compute_criteria_stats(state.criteria))
+
+
+def _missing_mandatory_verdict(state, base: dict) -> CriteriaVerdict:
+    """Fail a state whose visible mandatory Criteria set is empty."""
+    logger.warning(
+        "State for %s has no visible mandatory criteria -- failing instead "
+        "of treating 0/0 as success.",
+        _state_slug_for_log(state),
+    )
+    return CriteriaVerdict(
+        disposition="failed",
+        unmet_mandatory=["_mandatory_criteria_missing"],
+        **base,
+    )
+
+
+def _all_mandatory_met_verdict(state, stats: dict, base: dict) -> CriteriaVerdict:
+    """Apply the Developer Report gate after all mandatory Criteria pass."""
+    report_error = _run_report_gate_error(state)
+    if report_error:
+        logger.warning(
+            "All visible mandatory criteria met for %s, but %s -- "
+            "failing so the Developer Agent resubmits the report on the next run.",
+            state.slug,
+            report_error,
+        )
+        return CriteriaVerdict(
+            disposition="failed",
+            unmet_mandatory=[_REPORT_CRITERION],
+            **base,
+        )
+    logger.info("All %d mandatory criteria met for %s", stats["mandatory"], state.slug)
+    return CriteriaVerdict(disposition="review", **base)
+
+
 def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
     """Decide ticket disposition from criteria stats and blocked reason."""
     all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
@@ -596,40 +499,16 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
     }
 
     # Check _blocked_reason — only when mandatory criteria are NOT all met.
-    blocked_entry = state.criteria.get("_blocked_reason")
-    if blocked_entry and blocked_entry.met and not all_mandatory_met:
-        reason = blocked_entry.detail.get("reason", "blocked by agent")
+    reason = _active_declared_block_reason(state, stats)
+    if reason is not None:
         logger.info("Ticket %s blocked: %s", state.slug, reason)
         return CriteriaVerdict(disposition="blocked", blocked_reason=reason, **base)
 
     if stats["mandatory"] == 0 and not getattr(state, "authorized_zero_mandatory_basis_id", ""):
-        logger.warning(
-            "State for %s has no visible mandatory criteria -- failing instead "
-            "of treating 0/0 as success.",
-            _state_slug_for_log(state),
-        )
-        return CriteriaVerdict(
-            disposition="failed",
-            unmet_mandatory=["_mandatory_criteria_missing"],
-            **base,
-        )
+        return _missing_mandatory_verdict(state, base)
 
     if all_mandatory_met:
-        report_error = _run_report_gate_error(state)
-        if report_error:
-            logger.warning(
-                "All visible mandatory criteria met for %s, but %s -- "
-                "failing so the developer resubmits the report on the next run.",
-                state.slug,
-                report_error,
-            )
-            return CriteriaVerdict(
-                disposition="failed",
-                unmet_mandatory=[_REPORT_CRITERION],
-                **base,
-            )
-        logger.info("All %d mandatory criteria met for %s", stats["mandatory"], state.slug)
-        return CriteriaVerdict(disposition="review", **base)
+        return _all_mandatory_met_verdict(state, stats, base)
 
     logger.warning(
         "%d/%d mandatory criteria unmet for %s: %s",
@@ -702,5 +581,6 @@ __all__ = [
     "build_criteria_summary_lines",
     "check_criteria_acceptance",
     "format_criteria_verdict",
+    "project_active_declared_block_reason",
     "refresh_verification_freshness",
 ]

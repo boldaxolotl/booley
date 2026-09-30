@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from booley.ticket_board import amendment_v2
 from booley.ticket_board.amendment_proposal import AmendmentProposalError
 from booley.ticket_board.amendment_v2 import build_v2_amendment_proposal
 from booley.ticket_board.ticket_document import (
@@ -90,6 +91,57 @@ def test_v2_amendment_moves_last_review_requirement_to_optional(tmp_path: Path) 
     converted = convert_ticket_document(text, TicketConversionContext("draft", lambda _: view))
     assert converted.document is not None, converted.diagnostics
     assert converted.document.spec.criteria[0].mandatory is False
+
+
+def test_review_optional_move_rejects_destination_collision() -> None:
+    mandatory = {"REVIEW": {"rtl": {"bugs": "done"}}}
+    optional = {"REVIEW": {"rtl": {"bugs": "clean"}}}
+    parent = mandatory["REVIEW"]["rtl"]
+    row = amendment_v2.TicketCriterion(
+        "review_rtl_bugs_done",
+        "REVIEW",
+        True,
+        "rtl",
+        "bugs",
+        "done",
+        "done",
+        1,
+        1,
+    )
+
+    with pytest.raises(AmendmentProposalError, match="already has an optional outcome"):
+        amendment_v2._move_review_optional(
+            mandatory,
+            optional,
+            row,
+            parent,
+            "bugs",
+            "done",
+        )
+    assert mandatory == {"REVIEW": {"rtl": {"bugs": "done"}}}
+    assert optional == {"REVIEW": {"rtl": {"bugs": "clean"}}}
+
+
+def test_v2_amendment_proposal_preserves_authored_body_whitespace(tmp_path: Path) -> None:
+    spec, view = _spec("  REVIEW: {rtl: {bugs: done}}\n")
+    body = "\n## Description\n\nCheck the result.  \n\n"
+    spec = TicketSpec(
+        spec.fields,
+        body,
+        spec.criteria,
+        spec.targets,
+        spec.on_success,
+        spec.target_plan,
+    )
+
+    proposal = build_v2_amendment_proposal(
+        spec, _request(spec.criteria[0].identity, make_optional=True), tmp_path, view
+    )
+    text = "---\n" + yaml.safe_dump(proposal.fields, sort_keys=False) + "---\n" + spec.body
+    converted = convert_ticket_document(text, TicketConversionContext("draft", lambda _: view))
+
+    assert converted.document is not None, converted.diagnostics
+    assert converted.document.spec.body == body
 
 
 def test_v2_amendment_moves_scalar_synth_pass_to_optional(tmp_path: Path) -> None:
@@ -216,12 +268,6 @@ def test_v2_amendment_scope_addition_preserves_existing_scope(tmp_path: Path) ->
             "smoke",
             {"SIM": {"sim_a": {"all": "pass"}}},
             {"SIM": {"sim_a": {"smoke": "pass"}}},
-        ),
-        (
-            "  REVIEW: {rtl: {bugs: [done, clean]}}\n",
-            "done",
-            {"REVIEW": {"rtl": {"bugs": "clean"}}},
-            {"REVIEW": {"rtl": {"bugs": "done"}}},
         ),
     ],
 )

@@ -99,6 +99,9 @@ recipe_fingerprint() {
   PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
     'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' "$1"
 }
+BASE_RECIPE="$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.base")"
+STANDARD_RECIPE="$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.substrate")"
+OVERLAY_RECIPE="$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.wheel")"
 SOURCE_UPDATED_AT="$(git -C "$BOOLEY_ROOT" log -1 --format=%cI HEAD 2>/dev/null || true)"
 IMAGE_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_METADATA_ARGS=(
@@ -112,18 +115,38 @@ BUILD_METADATA_ARGS=(
 
 BASE_CONTRACT="$($PYBUILD "$BOOLEY_ROOT/.github/scripts/docker_base_contract.py" \
   --repo "$BOOLEY_ROOT")"
+SELECTION_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
+  'import sys; from booley.runtime.image_identity import logical_selection_fingerprint_for_chain as fingerprint; values=sys.argv[2:]; print(fingerprint(sys.argv[1], tuple(tuple(values[index:index+5]) for index in range(0, len(values), 5))))' \
+  booley-sandbox \
+  runtime-base "$BASE_CONTRACT" "$BASE_RECIPE" "" "" \
+  standard-substrate "$STANDARD_INPUTS" "$STANDARD_RECIPE" "" "" \
+  wheel-overlay "" "$OVERLAY_RECIPE" "$BASE_CONTRACT" "$STANDARD_INPUTS")"
 BASE_METADATA_ARGS=(
   --build-arg "BOOLEY_BASE_SOURCE_REVISION=${COMMIT:-unknown}"
   --build-arg "BOOLEY_BASE_CONTRACT=$BASE_CONTRACT"
   --build-arg "BOOLEY_BASE_BUILT_AT=$IMAGE_BUILT_AT"
 )
 
+CAPACITY_PLAN_INDEX="${BOOLEY_IMAGE_BUILD_PLAN_INDEX:-0}"
+if [ -z "${BOOLEY_IMAGE_BUILD_PLAN_FILE:-}" ]; then
+  BOOLEY_IMAGE_BUILD_PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/booley-image-plan.XXXXXX")"
+  chmod 600 "$BOOLEY_IMAGE_BUILD_PLAN_FILE"
+  trap 'rm -f "$BOOLEY_IMAGE_BUILD_PLAN_FILE"' EXIT
+  printf '%s\n' '{"requests":[' \
+    '{"managed_image":"runtime base","output_tag":"booley-runtime-base:local","estimate_class":"heavyweight"},' \
+    '{"managed_image":"standard substrate","output_tag":"booley-sandbox-standard-substrate:local","estimate_class":"heavyweight"},' \
+    '{"managed_image":"booley-sandbox wheel overlay","output_tag":"booley-sandbox","estimate_class":"thin-overlay"}' \
+    ']}' >"$BOOLEY_IMAGE_BUILD_PLAN_FILE"
+fi
+
 run_docker_build() {
   local image="$1"
   shift
   PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -m booley.runtime.docker_capacity \
-    --image "$image" -- "$@"
+    --image "$image" --plan-file "$BOOLEY_IMAGE_BUILD_PLAN_FILE" \
+    --current-index "$CAPACITY_PLAN_INDEX" -- "$@"
   "$@"
+  CAPACITY_PLAN_INDEX=$((CAPACITY_PLAN_INDEX + 1))
 }
 
 echo ">>> Building stable EDA/runtime base (cacheable across candidate changes)..."
@@ -131,7 +154,7 @@ run_docker_build booley-runtime-base:local docker build "${BASE_METADATA_ARGS[@]
   --label "io.booley.provenance.schema=3" \
   --label "io.booley.artifact.role=runtime-base" \
   --label "io.booley.artifact.effective-inputs=$BASE_CONTRACT" \
-  --label "io.booley.build.recipe-fingerprint=$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.base")" \
+  --label "io.booley.build.recipe-fingerprint=$BASE_RECIPE" \
   --label "io.booley.build.origin=local" \
   -t booley-runtime-base:local -f "$SCRIPT_DIR/Dockerfile.base" "$BOOLEY_ROOT"
 RUNTIME_BASE_ID="$(docker image inspect booley-runtime-base:local --format '{{.Id}}')"
@@ -141,7 +164,7 @@ run_docker_build booley-sandbox-standard-substrate:local docker build "$@" \
   --label "io.booley.provenance.schema=3" \
   --label "io.booley.artifact.role=standard-substrate" \
   --label "io.booley.artifact.effective-inputs=$STANDARD_INPUTS" \
-  --label "io.booley.build.recipe-fingerprint=$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.substrate")" \
+  --label "io.booley.build.recipe-fingerprint=$STANDARD_RECIPE" \
   --label "io.booley.build.parent-artifact-kind=local-image-id" \
   --label "io.booley.build.parent-artifact=$RUNTIME_BASE_ID" \
   --label "io.booley.build.origin=local" \
@@ -159,7 +182,8 @@ run_docker_build booley-sandbox docker build "${BUILD_METADATA_ARGS[@]}" "$@" \
   --label "io.booley.wheel.sha256=$WHEEL_SHA256" \
   --label "io.booley.runtime-base.contract=$BASE_CONTRACT" \
   --label "io.booley.standard-substrate.contract=$STANDARD_INPUTS" \
-  --label "io.booley.build.recipe-fingerprint=$(recipe_fingerprint "$SCRIPT_DIR/Dockerfile.wheel")" \
+  --label "io.booley.build.recipe-fingerprint=$OVERLAY_RECIPE" \
+  --label "io.booley.sandbox.selection-fingerprint=$SELECTION_FINGERPRINT" \
   --label "io.booley.build.parent-artifact-kind=local-image-id" \
   --label "io.booley.build.parent-artifact=$STANDARD_ID" \
   --label "io.booley.build.origin=local" \

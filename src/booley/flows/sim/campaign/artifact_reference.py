@@ -104,6 +104,11 @@ def resolve_artifact_reference(
     return ResolvedArtifact(path, raw)
 
 
+def decode_artifact_reference(value: object, *, allowed_bases: Set[str]) -> ArtifactReference:
+    """Decode one exact typed reference without authenticating current artifact bytes."""
+    return _reference(value, allowed_bases)
+
+
 def resolve_report_artifact_reference(
     report_path: Path,
     value: object,
@@ -230,6 +235,7 @@ __all__ = [
     "ArtifactReferenceError",
     "ResolvedArtifact",
     "build_artifact_reference",
+    "decode_artifact_reference",
     "encode_artifact_reference",
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",

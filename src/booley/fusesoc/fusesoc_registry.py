@@ -44,7 +44,7 @@ from typing import Any
 import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
 
-from booley.core.boundary import is_str_list
+from booley.core.boundary import as_dict, is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -610,6 +610,29 @@ def _check_coverage_target_metadata(value: Any, label: str, errors: list[str]) -
         errors.append(f"{coverage_label}.custom_main_hooks contains unknown hook(s) {invalid!r}")
     if len({str(hook) for hook in hooks}) != len(hooks):
         errors.append(f"{coverage_label}.custom_main_hooks must not contain duplicates")
+
+
+def coverage_target_metadata_errors(value: Any, label: str) -> list[str]:
+    """Return canonical schema errors for one coverage metadata value."""
+    errors: list[str] = []
+    _check_coverage_target_metadata(value, label, errors)
+    return errors
+
+
+def core_target_coverage_errors(core_file: Path | str, target_name: str) -> list[str]:
+    """Return coverage-recipe schema errors for one authored Target.
+
+    The raw ``.core`` value is validated before Target inspection freezes YAML
+    arrays into tuples. Malformed parent Booley metadata remains part of the
+    whole-core Doctor audit rather than this selected-Target boundary.
+    """
+    doc = read_core(core_file)
+    booley = core_target_flow_option(doc, target_name, "booley")
+    if not isinstance(booley, Mapping) or "coverage" not in booley:
+        return []
+    return coverage_target_metadata_errors(
+        booley["coverage"], f"targets.{target_name}.flow_options.booley"
+    )
 
 
 def core_schema_errors(core_file: Path | str) -> list[str]:
@@ -1842,6 +1865,13 @@ class ResolvedTarget:
     edam_path: Path = field(repr=False)
     """Absolute path to the resolved ``.eda.yml`` that was parsed."""
 
+    configured_eda_tool: str | None = None
+    """The EDA tool FuseSoC configured in the generated EDAM.
+
+    Modern ``flow_options.tool`` is authoritative. Legacy EDAMs identify the
+    configured tool through their sole ``tool_options`` key.
+    """
+
     flow_options: Mapping[str, Any] = field(default_factory=dict)
     """The resolved Target's ``flow_options`` block.
 
@@ -1931,12 +1961,19 @@ class ResolvedTarget:
         return tuple(dirs)
 
 
-def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarget:
-    """Parse a resolved ``.eda.yml`` into a :class:`ResolvedTarget`.
+def _configured_eda_tool(edam: Mapping[str, Any], flow_options: Mapping[str, Any]) -> str | None:
+    """Extract FuseSoC's configured backend using CAPI2 API precedence."""
+    eda_tool = flow_options.get("tool")
+    if "tool" in flow_options:
+        return str(eda_tool) if eda_tool is not None else None
+    tool_options = as_dict(edam.get("tool_options"), default={})
+    if tool_options is not None and len(tool_options) == 1:
+        return str(next(iter(tool_options)))
+    return None
 
-    The EDAM records the design (files/top/params/EDA tool) but not the Booley
-    Target name or core VLNV that produced it, so those are passed in.
-    """
+
+def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarget:
+    """Parse EDAM design data; the caller supplies its Booley Target identity."""
     path = Path(edam_path)
     try:
         with path.open("r", encoding="utf-8") as f:
@@ -1966,6 +2003,7 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
     if not isinstance(flow_options, Mapping):
         flow_options = {}
     eda_tool = flow_options.get("tool")
+    configured_eda_tool = _configured_eda_tool(edam, flow_options)
     cocotb_module = flow_options.get("cocotb_module")
 
     return ResolvedTarget(
@@ -1973,6 +2011,7 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
         vlnv=vlnv,
         toplevel=str(edam.get("toplevel", "")),
         eda_tool=eda_tool,
+        configured_eda_tool=configured_eda_tool,
         flow_options=dict(flow_options),
         cocotb_module=str(cocotb_module) if cocotb_module else None,
         files=tuple(files),
@@ -2087,6 +2126,7 @@ def setup_command_for_handle(
     build_root: Path | str,
     resolution_vlnv: str | None = None,
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
+    backend_arguments: Sequence[str] = (),
 ) -> list[str]:
     """Build FuseSoC setup argv from catalog-authorized Target facts."""
     root = require_current_target_handle(handle)
@@ -2103,6 +2143,7 @@ def setup_command_for_handle(
         eda_tool=handle.eda_tool,
         build_root=Path(build_root),
         fusesoc_cmd=fusesoc_cmd,
+        backend_arguments=backend_arguments,
     )
 
 
@@ -2134,6 +2175,7 @@ def _setup_argv(
     eda_tool: str | None,
     build_root: Path,
     fusesoc_cmd: Sequence[str],
+    backend_arguments: Sequence[str] = (),
 ) -> list[str]:
     flag_args = ["--flag", f"tool_{eda_tool}"] if flow and eda_tool else []
     library_args = [
@@ -2141,6 +2183,7 @@ def _setup_argv(
         for library_root in library_plan.roots
         for argument in ("--cores-root", str(library_root))
     ]
+    backend_args = [f"--make_options={' '.join(backend_arguments)}"] if backend_arguments else []
     return [
         *fusesoc_cmd,
         *library_args,
@@ -2152,6 +2195,7 @@ def _setup_argv(
         "--target",
         target_name,
         vlnv,
+        *backend_args,
     ]
 
 
@@ -2263,6 +2307,7 @@ def resolve_target_handle(
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
     env: Mapping[str, str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    backend_arguments: Sequence[str] = (),
 ) -> ResolvedTarget:
     """Resolve a catalog-authorized handle without selecting its token again."""
     root = require_current_target_handle(handle)
@@ -2273,6 +2318,7 @@ def resolve_target_handle(
         build_root=build_root,
         resolution_vlnv=resolution_vlnv,
         fusesoc_cmd=fusesoc_cmd,
+        backend_arguments=backend_arguments,
     )
     source_ref = TargetRef(
         name=handle.name,

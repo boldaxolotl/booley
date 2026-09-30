@@ -1,7 +1,7 @@
 """Validate a ticket's run logs + state file and format the report.
 
 What: given a ticket's log directory, checks that the expected log artifacts
-(transitions.log, booley_state.json, progress.json) exist, that the developer
+(transitions.log, booley_state.json, the state record) exist, that the developer
 state file passes its gate checks, and that no expected steps were skipped; then
 renders the result as a human-readable Markdown report.
 
@@ -16,9 +16,11 @@ Consumers: ``_ticket_ops.py`` and ``cli.py`` (``_cmd_validate_logs``) import
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .board_layout import state_record_path, state_record_relative_path
 from .constants import STEP_ORDER
 from .paths import existing_human_log_file, existing_runtime_file
 
@@ -96,13 +98,15 @@ def validate_logs(
     missing_files = []
     gate_failures = []
     state_path = existing_runtime_file(logs_dir, slug, "booley_state.json")
-    progress_path = existing_runtime_file(logs_dir, slug, "progress.json")
+    record_path = state_record_path(Path(logs_dir).parent, slug)
     if not state_path.exists():
         missing_files.append({"step": "developer", "file": "booley_state.json"})
     else:
         gate_failures.extend(_validate_state_file(state_path))
-    if not progress_path.exists():
-        missing_files.append({"step": "runtime", "file": "progress.json"})
+    if not record_path.exists():
+        missing_files.append(
+            {"step": "runtime", "file": state_record_relative_path(slug).as_posix()}
+        )
 
     legacy_steps = [
         step for step in steps_completed if step in STEP_ORDER and step not in {"setup", "summary"}
@@ -180,3 +184,15 @@ def format_validate_logs_report(result: dict[str, Any], slug: str) -> tuple[str,
         lines.append(f"**{errors} issue(s) found.**")
 
     return "\n".join(lines), errors
+
+
+def append_authored_drift_diagnostic(
+    report: str, error_count: int, entry: Mapping[str, Any]
+) -> tuple[str, int]:
+    """Append the shared recovery diagnostic for a drifted Ticket."""
+    if not entry.get("authored_drift"):
+        return report, error_count
+    return (
+        f"{report}\n\n{entry['authored_drift_reason']}; use return-to-draft",
+        error_count + 1,
+    )

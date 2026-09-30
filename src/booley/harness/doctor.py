@@ -37,8 +37,16 @@ from booley.audit import (
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.config.jobs import parse_caps
 from booley.config.project_config import normalize_tests_toml
-from booley.core.boundary import is_str_list
+from booley.core.boundary import BoundaryError, is_str_list, require_int
 from booley.flows import execution
+from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.sim.config import (
+    DEFAULT_SIM_BUILD_TIMEOUT_MS,
+    DEFAULT_SIM_TIMEOUT_MS,
+    LITERAL_RUN_CWD_REMEDY,
+    literal_run_cwd_error,
+    parse_run_cwd_template,
+)
 from booley.fusesoc import (
     core_security,
     fusesoc_registry,
@@ -47,7 +55,6 @@ from booley.fusesoc import (
 from booley.harness import (
     doctor_stamp,
     host_diagnostics,
-    image_lifecycle,
     nangate_pdk,
     upgrade_cli,
     upgrade_review,
@@ -76,6 +83,7 @@ from booley.harness.setup.line_endings import (
 from booley.harness.setup.readiness import ProjectAudit
 from booley.runtime import (
     auth_token,
+    image_identity,
     inspection,
     project_repositories,
     runtime_context,
@@ -91,12 +99,14 @@ from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     resolve_checkout_project_dir,
 )
+from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, TargetRef
 from booley.targets.flow_names import config_section
-from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
+from booley.ticket_board.board_layout import required_board_directories
+from booley.ticket_board.legacy_layout import legacy_layout_problems, migration_pointer
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -110,6 +120,7 @@ _DEEP_TIMEOUTS_S = {
 # cleanup, boundary interpretation, and the eager terminal report write after
 # that inner boundary expires.
 _SYNTH_DEEP_FINALIZE_MARGIN_S = 180
+_SIM_DEEP_FINALIZE_MARGIN_S = 30
 
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
@@ -756,6 +767,14 @@ def _run_runtime_phase(
     """Run runtime-location, container, MCP, and Ticket Preflight parity checks."""
     progress("Sandbox/auth checks")
     sandbox_image = _sandbox_image(project)
+    if project is not None:
+        request = readiness.WorktreePortabilityRequest(
+            project=project,
+            docker_exe=docker_exe,
+            sandbox_image=sandbox_image,
+            inside_runtime=runtime_context.inside_session_runtime(),
+        )
+        reporter.diagnostics(readiness.inspect_worktree_portability(request))
     _check_runtime_location(
         docker_exe,
         sandbox_image,
@@ -930,17 +949,11 @@ def _check_worktree_prune_guard(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """ADR 0028 Decision 10: host ``git gc`` must never prune ticket worktrees.
-
-    Worktrees are created in-container, so their git metadata records
-    container paths the host cannot see; without ``gc.worktreePruneExpire=
-    never`` a host-side ``git gc`` silently drops those registrations.
-    ``booley init`` sets the knob; this check catches repos initialized
-    before ADR 0028 (or a user resetting their git config).
-    """
+    """Keep automatic pruning disabled for legacy and fallback worktrees."""
     from booley.harness.setup.git_hooks import (
         WORKTREE_PRUNE_KEY,
         WORKTREE_PRUNE_VALUE,
+        worktree_policy_repositories,
     )
 
     try:
@@ -954,29 +967,40 @@ def _check_worktree_prune_guard(
         if probe.returncode != 0:
             _skip("worktree prune guard: project root is not a git repo")
             return
-        got = subprocess.run(
-            ["git", "-C", str(project_root), "config", "--get", WORKTREE_PRUNE_KEY],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-        value = got.stdout.strip() if got.returncode == 0 else None
     except (FileNotFoundError, subprocess.SubprocessError):
         _skip("worktree prune guard: git unavailable")
         return
 
-    if value == WORKTREE_PRUNE_VALUE:
+    repositories = worktree_policy_repositories(project_root)
+    wrong: list[tuple[Path, str | None]] = []
+    try:
+        for repository in repositories:
+            got = subprocess.run(
+                ["git", "-C", str(repository), "config", "--get", WORKTREE_PRUNE_KEY],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            value = got.stdout.strip() if got.returncode == 0 else None
+            if value != WORKTREE_PRUNE_VALUE:
+                wrong.append((repository, value))
+    except (FileNotFoundError, subprocess.SubprocessError):
+        _skip("worktree prune guard: git unavailable")
+        return
+
+    if not wrong:
         _pass(
             f"{WORKTREE_PRUNE_KEY}={WORKTREE_PRUNE_VALUE} "
-            "(in-container worktrees safe from host git gc)"
+            f"in {len(repositories)} Ticket Workspace repository/repositories"
         )
         return
+    repository, value = wrong[0]
     detail = f"set to {value!r}" if value else "unset"
     _fail(
         f"{WORKTREE_PRUNE_KEY} is {detail} — a host-side `git gc` can prune "
-        "in-container ticket worktree registrations",
-        f"git -C {project_root} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
+        f"legacy or fallback Ticket Workspace registrations in {repository}",
+        f"git -C {repository} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
     )
 
 
@@ -1699,22 +1723,26 @@ def _check_image_bakes_current_booley(
     if image not in (DOCKER_IMAGE, generated, *FLAVOR_IMAGES):
         return
     if project is not None:
-        result = image_lifecycle.reconcile(
-            image_lifecycle.ProjectImageScope(project.project_root),
-            image_lifecycle.Intent.CHECK,
-        )
-        if result.status is image_lifecycle.Status.STALE:
+        try:
+            spec = json.loads(
+                dc.devcontainer_path(project.project_root).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return
+        issued_image = spec.get("image") if isinstance(spec, dict) else None
+        if not isinstance(issued_image, str) or not issued_image:
+            return
+        result = idk.compare_issued_build(issued_image, executable=docker_exe)
+        if result.status is image_identity.Status.MISMATCH:
             _warn(
-                f"'{image}' bakes Booley sources that no longer match this "
-                "checkout (image provenance differs); the sandbox runs "
+                f"issued Sandbox Image '{issued_image}' bakes Booley sources that no longer "
+                f"match the canonical host installation ({result.detail}); the sandbox runs "
                 "stale code (egress is locked, so it can't pip-install the "
                 "fix). Rebuild with booley session refresh."
             )
             return
-        if result.status is image_lifecycle.Status.CURRENT:
-            _pass(f"'{image}' bakes exactly this checkout's Booley sources")
-            return
-        if result.status is image_lifecycle.Status.EXTERNAL:
+        if result.status is image_identity.Status.MATCH:
+            _pass(f"issued Sandbox Image '{issued_image}' bakes current Booley sources")
             return
 
 
@@ -1865,16 +1893,17 @@ def _run_container_checks(
     _fail: Fail,
 ) -> None:
     """Run container EDA tool and runtime checks."""
-    if not docker_exe:
-        banner("Container checks")
     from booley.runtime import runtime_context
 
+    banner("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _skip(_no_docker_skip_reason())
         return
+    if not docker_exe:
+        _skip(_no_docker_skip_reason())
+        return
 
-    banner("Container checks")
     if _docker_image_exists_by_name(image):
         _pass(f"{image} image present")
     else:
@@ -1886,6 +1915,18 @@ def _run_container_checks(
     _check_custom_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_image_bakes_current_booley(project, docker_exe, image, _pass, _warn)
     _check_container_uid(project, docker_exe, image, _pass, _warn, _fail)
+    container_check = _container_command_check(docker_exe, image, verbose, _pass, _fail)
+    _run_container_tool_checks(project, container_check)
+    _check_riscv_toolchain(docker_exe, image, _pass, _skip, _fail)
+
+
+ContainerCheck = Callable[..., None]
+
+
+def _container_command_check(
+    docker_exe: str, image: str, verbose: bool, _pass: Check, _fail: Fail
+) -> ContainerCheck:
+    """Return a check that passes when *cmd* exits zero in a fresh *image* container."""
 
     def _container_check(description: str, cmd: list[str], fix: str = "") -> None:
         try:
@@ -1905,6 +1946,13 @@ def _run_container_checks(
         except (subprocess.SubprocessError, FileNotFoundError):
             _fail(f"{description} (timeout/error)", fix)
 
+    return _container_check
+
+
+def _run_container_tool_checks(
+    project: ProjectAudit | None, _container_check: ContainerCheck
+) -> None:
+    """Check the EDA tools and Booley runtime payload baked into the sandbox image."""
     _container_check("verilator", ["verilator", "--version"], "rebuild sandbox image")
     _container_check("yosys", ["yosys", "-V"], "rebuild sandbox image")
     _container_check("iverilog", ["iverilog", "-V"], "rebuild sandbox image")
@@ -1937,8 +1985,6 @@ def _run_container_checks(
             ["cocotb-config", "--version"],
             "sandbox image predates cocotb support — rebuild the sandbox image",
         )
-
-    _check_riscv_toolchain(docker_exe, image, _pass, _skip, _fail)
 
 
 # RISC-V variant checks fire only when the image bakes this flavour marker
@@ -1995,7 +2041,6 @@ def _run_mcp_checks(
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
-    _check_interactive_logs_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
     _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
@@ -2030,27 +2075,6 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         _note=reporter.note_,
     )
     _check_subscription_creds_health(provider, reporter.pass_, reporter.warn_, policy=auth_policy)
-
-
-def _check_interactive_logs_gitignore(
-    project_dir: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    _warn = _warning_sink(_warn, "interactive.logs-gitignore")
-    gitignore = project_dir / ".gitignore"
-    if not gitignore.is_file():
-        _warn(".booley_project/.gitignore missing; interactive logs may be tracked")
-        return
-    try:
-        content = gitignore.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        _warn(f"could not read {gitignore}: {exc}")
-        return
-    if ".interactive_logs/" in content:
-        _pass("interactive MCP logs are gitignored")
-    else:
-        _warn(".booley_project/.gitignore should include .interactive_logs/")
 
 
 def _check_interactive_logs_tracked(
@@ -2767,13 +2791,16 @@ def _run_ticket_preflight_parity_checks(
     project: ProjectAudit | None,
     reporter: _Reporter,
 ) -> None:
-    """Mirror cheap Ticket Preflight checks in doctor output."""
+    """Mirror cheap Ticket Preflight checks, plus the Project ignore policy they rely on."""
     banner("Run checks")
     if project is None:
         reporter.skip_("run checks skipped - project config invalid")
         return
 
     _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_ticket_board_layout(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_project_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
+    _check_ticket_history_committed(project.project_dir, reporter.pass_, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_ticket_board_import(project.project_root, reporter.pass_, reporter.fail_)
@@ -2789,7 +2816,7 @@ def _run_ticket_preflight_parity_checks(
 
 def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
     tickets_dir = project_dir / "tickets"
-    required = [tickets_dir / "board" / state for state in REQUIRED_BOARD_DIRS]
+    required = required_board_directories(tickets_dir)
     required.extend([tickets_dir / "logs", tickets_dir / "locks"])
     missing = [path for path in required if not path.is_dir()]
     if missing:
@@ -2799,6 +2826,90 @@ def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
         )
         return
     _pass("tickets tree present")
+
+
+def _check_ticket_board_layout(project_dir: Path, _pass: Check, _fail: Fail) -> None:
+    """Fail while the board keeps pre-ADR-0065 leftovers board commands refuse to run on."""
+    problems = legacy_layout_problems(project_dir / "tickets")
+    for problem in problems:
+        if not problem.migration:
+            _fail(f"Ticket Board cannot be checked: {problem.summary}", problem.fix)
+            continue
+        _fail(
+            f"Ticket Board needs a manual migration: {problem.summary}",
+            f"{problem.fix}; {migration_pointer()}",
+        )
+    if not problems:
+        _pass("Ticket Board uses state records")
+
+
+def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> None:
+    """Warn when ``.booley_project/.gitignore`` lacks a transient-state pattern ``init`` adds.
+
+    A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
+    the checkout, which blocks the next Ticket's completion.
+    """
+    _warn = _warning_sink(_warn, "project.gitignore")
+    gitignore = project_dir / ".gitignore"
+    if not gitignore.is_file():
+        _warn(
+            ".booley_project/.gitignore missing; transient Booley state may be tracked",
+            "booley init",
+        )
+        return
+    try:
+        content = gitignore.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _warn(f"could not read {gitignore}: {exc}")
+        return
+    missing = missing_gitignore_patterns(content)
+    if missing:
+        _warn(
+            f".booley_project/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
+            "booley init",
+        )
+        return
+    _pass("transient Booley state is gitignored")
+
+
+def _check_ticket_history_committed(project_dir: Path, _pass: Check, _warn: Check) -> None:
+    """Warn about Closed Tickets whose history record Booley has not committed yet.
+
+    Closing never waits for the commit (ADR 0065); the next board operation
+    retries it. A record that stays uncommitted means that retry keeps failing
+    (for example a detached HEAD or a missing Git identity).
+    """
+    from booley.ticket_board.history_publication import (
+        HistoryCommitError,
+        history_ignored,
+        pending_history_commits,
+    )
+    from booley.ticket_board.ticket_history import TicketHistoryError
+
+    _warn = _warning_sink(_warn, "tickets.history-uncommitted")
+    tickets_dir = project_dir / "tickets"
+    try:
+        if history_ignored(tickets_dir):
+            _warn(
+                "tickets/history/ is gitignored; Closed Tickets' history records won't be committed",
+                "un-ignore tickets/history in the repository's .gitignore",
+            )
+            return
+        pending = pending_history_commits(tickets_dir)
+    except (HistoryCommitError, TicketHistoryError) as exc:
+        _warn(
+            f"cannot inspect Ticket History commits: {exc}",
+            "fix the repository state, then run any `booley board` command",
+        )
+        return
+    if not pending:
+        _pass("Ticket History committed")
+        return
+    shown = ", ".join(pending[:5]) + (", …" if len(pending) > 5 else "")
+    _warn(
+        f"{len(pending)} Closed Ticket history record(s) not committed yet ({shown})",
+        "run any `booley board` command to retry the commit and read its warning",
+    )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:
@@ -3015,8 +3126,10 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
-            "flows manually with a raised --timeout-ms, and set "
-            "[flows.<flow>].timeout_ms so --deep honors a larger budget."
+            "flows manually with a raised --timeout-ms. For Simulation compiler "
+            "progress, raise [flows.sim].build_timeout_ms; for simulator or "
+            "standalone-sweep progress, raise timeout_ms. Set the corresponding "
+            "[flows.<flow>] knob so --deep honors the larger budget."
         )
     else:
         _pass(
@@ -3059,6 +3172,8 @@ def _run_flow_audit(
                     f"line(s)); they run in the Sandbox before "
                     "each sim run (BOOLEY_* env contract, ADR 0039)"
                 )
+        if flow_name == "sim":
+            _check_sim_run_cwd(project, _pass, _warn)
         targets = _check_doctor_targets(project, flow_name, _fail)
         if not targets:
             continue
@@ -4399,6 +4514,74 @@ def _readmem_literal_targets(root: Path) -> list[str]:
     return sorted(targets)
 
 
+def _git_output(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
+    """Run one read-only git command; None when git is missing or times out."""
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+
+def _literal_sim_run_cwd(project: ProjectAudit) -> str | None:
+    """Return the configured literal sim ``run_cwd``; None when unset, ``.``, or templated."""
+    flows = project.booley_toml.get("flows", {})
+    sim = config_section(flows, "sim") if isinstance(flows, dict) else {}
+    configured = str(sim.get("run_cwd") or ".")
+    if configured == ".":
+        return None
+    try:
+        # Templated values are Booley-owned; an invalid template is rejected by planning.
+        return None if parse_run_cwd_template(configured) else configured
+    except ValueError:
+        return None
+
+
+def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
+    """Warn when a literal ``[flows.sim].run_cwd`` will be missing at run time.
+
+    Booley never creates a literal ``run_cwd`` (docs/user/CONFIG.md), so it must
+    exist in every checkout and Ticket worktree. That means a real directory that
+    holds at least one *committed* file: an empty directory, a gitignored one, or
+    one whose placeholder is only staged vanishes in a fresh checkout. Unset,
+    ``.``, and templated values (Booley-owned) are not checked.
+    """
+    configured = _literal_sim_run_cwd(project)
+    if configured is None:
+        return
+    path = (project.project_root / configured).absolute()
+    problem = literal_run_cwd_error(path)
+    if problem is not None:
+        _warning_sink(_warn, "sim.run-cwd-missing", subject=configured)(
+            problem, LITERAL_RUN_CWD_REMEDY
+        )
+        return
+    if not path.resolve().is_relative_to(project.project_root.resolve()):
+        _pass(f"sim run_cwd {configured} is outside the checkout (shared by every worktree)")
+        return
+    inside = _git_output(["rev-parse", "--is-inside-work-tree"], path)
+    if inside is None or inside.returncode != 0:
+        return  # not in a repository: tracking is unknowable, stay quiet
+    # The committed tree (not the index): a staged-only placeholder does not count.
+    # git resolves the innermost repository that owns the directory.
+    tree = _git_output(["ls-tree", "-r", "--name-only", "HEAD", "--", "."], path)
+    if tree is None or tree.returncode != 0 or not tree.stdout.strip():
+        _warning_sink(_warn, "sim.run-cwd-untracked", subject=configured)(
+            f"sim run_cwd {configured} exists but contains no committed file "
+            "(gitignored, untracked, or only staged), so it will be missing in a "
+            "fresh checkout or Ticket worktree",
+            LITERAL_RUN_CWD_REMEDY,
+        )
+        return
+    _pass(f"sim run_cwd {configured} is committed")
+
+
 def _check_readmemh_targets_tracked(
     root: Path,
     _pass: Check,
@@ -5196,6 +5379,13 @@ def _run_selftest_checks(
         )
 
 
+def _sandbox_failure_remedy(exc: session_runtime.SessionError) -> str:
+    """Keep admission-control remediation distinct from stale issuance."""
+    if str(exc).startswith("Sandbox start refused:"):
+        return "free Sandbox capacity using the command in the refusal, then retry"
+    return "run 'booley init --seed' and retry"
+
+
 def _prepare_selftest_invocation(
     project: ProjectAudit,
     flow_name: str,
@@ -5227,7 +5417,7 @@ def _prepare_selftest_invocation(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            "run 'booley init --seed' and retry",
+            _sandbox_failure_remedy(exc),
         )
         return None
     env = _doctor_subprocess_env(project)
@@ -5269,9 +5459,16 @@ def _execute_selftest(
             check=False,
         )
     except subprocess.TimeoutExpired:
+        remedy = (
+            "raise [flows.sim].build_timeout_ms for credible compiler progress, "
+            "raise [flows.sim].timeout_ms for credible simulator or standalone-sweep "
+            "progress, or use a lighter fixture"
+            if flow_name == "sim"
+            else f"raise [flows.{flow_name}].timeout_ms or use a lighter fixture"
+        )
         _fail(
             f"{label} timed out after {timeout_s}s",
-            f"raise [flows.{flow_name}].timeout_ms or use a lighter fixture",
+            remedy,
         )
         return None
     except OSError as exc:
@@ -5368,17 +5565,44 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     """Wall-clock budget for a ``--deep`` Flow smoke, in seconds (F5).
 
     The hardcoded :data:`_DEEP_TIMEOUTS_S` floor is a *minimum*, not the
-    authority: a project that raised ``[flows.<flow>].timeout_ms`` (e.g. a
-    415K-LOC core needing 90-min asic synth, or a heavy sim) would otherwise be
-    spuriously killed by the shorter deep budget. Honor the configured knob by
-    taking the larger of the two, so deep never falls below the safe smoke floor
-    yet respects a legitimately-raised per-Flow timeout. Unparseable values are
-    ignored and the floor stands.
+    authority. Synthesis honors its configured run budget plus finalization.
+    Simulation validates and reserves its distinct build, Pre-Sim, run, and
+    finalization budgets. Other legacy calculations retain their established
+    fallback behavior for unparseable values.
     """
+    if flow_name == "sim":
+        build_s = _configured_sim_build_timeout_s(project)
+        run_s = _configured_sim_timeout_s(project)
+        planned_s = build_s + DEFAULT_TIMEOUT_S + run_s + _SIM_DEEP_FINALIZE_MARGIN_S
+        return max(_DEEP_TIMEOUTS_S["sim"], planned_s)
     timeout_s = _configured_timeout_s(project, flow_name, _DEEP_TIMEOUTS_S[flow_name])
     if flow_name == "synth":
         timeout_s += _SYNTH_DEEP_FINALIZE_MARGIN_S
     return timeout_s
+
+
+def _configured_sim_build_timeout_s(project: ProjectAudit) -> int:
+    """Return the validated Project Simulation build budget in whole seconds."""
+    flows = project.booley_toml.get("flows", {})
+    section = config_section(flows, "sim") if isinstance(flows, dict) else {}
+    raw = section.get("build_timeout_ms", DEFAULT_SIM_BUILD_TIMEOUT_MS)
+    field = "[flows.sim].build_timeout_ms"
+    value = require_int(raw, field=field)
+    if value <= 0:
+        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
+    return max(1, value // 1000)
+
+
+def _configured_sim_timeout_s(project: ProjectAudit) -> int:
+    """Return the validated Project simulator budget in whole seconds."""
+    flows = project.booley_toml.get("flows", {})
+    section = config_section(flows, "sim") if isinstance(flows, dict) else {}
+    raw = section.get("timeout_ms", DEFAULT_SIM_TIMEOUT_MS)
+    field = "[flows.sim].timeout_ms"
+    value = require_int(raw, field=field)
+    if value <= 0:
+        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
+    return max(1, value // 1000)
 
 
 def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> int:
@@ -5629,7 +5853,7 @@ def _doctor_flow_command(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            "run 'booley init --seed' and retry",
+            _sandbox_failure_remedy(exc),
         )
         return None
 

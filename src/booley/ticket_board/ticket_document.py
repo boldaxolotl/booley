@@ -17,9 +17,18 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import AliasToken, AnchorToken, TagToken
 
+from booley.core.boundary import BoundaryError, require_finite_number_value
 from booley.core.models import OnSuccess, TargetPlan, TargetPlanEntry, TargetPlanRole
-from booley.criteria.coverage import validate_coverage_metrics
-from booley.criteria.templates import _validate_criterion_params, encode_criterion_component
+from booley.criteria.coverage import (
+    COVERAGE_METRICS,
+    COVERAGE_MIGRATION_SKELETON,
+    validate_coverage_metrics,
+)
+from booley.criteria.templates import (
+    _validate_criterion_params,
+    encode_criterion_component,
+    find_retired_criteria,
+)
 from booley.criteria.thresholds import describe_threshold
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp
 from booley.targets.domain import FuseSocError, UnknownTargetError
@@ -58,7 +67,13 @@ _REVIEW_FOCUS = {
     "rtl": frozenset({"bugs", "spec", "protocol", "security", "optimization", "code_style"}),
     "tb": frozenset({"quality"}),
 }
-_GENERATED_KEYS = frozenset({"machine", "acceptance_amendment", "created", "feature_branch"})
+_GENERATED_KEY_ORDER = ("machine", "created", "feature_branch", "acceptance_amendment")
+_GENERATED_KEYS = frozenset(_GENERATED_KEY_ORDER)
+_DIRECT_RETIRED_COVERAGE_METRICS = {
+    "coverage_branch": "branch",
+    "coverage_expression": "expression",
+    "coverage_toggle": "toggle",
+}
 
 
 @dataclass(frozen=True)
@@ -581,6 +596,7 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
         flags = _on_success(fields)
         mandatory = fields[_MANDATORY]
         optional = fields.get(_OPTIONAL, {})
+        _reject_retired_coverage_criteria(mandatory, optional)
         mentions = (
             *_targets_from_section(mandatory, _MANDATORY, locations),
             *_targets_from_section(optional, _OPTIONAL, locations),
@@ -593,7 +609,7 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
             _reference_selectors(mandatory, optional, tuple(mentions)),
             fields,
         )
-        generated = {key: fields[key] for key in _GENERATED_KEYS if key in fields}
+        generated = {key: fields[key] for key in _GENERATED_KEY_ORDER if key in fields}
         if context.stage == "draft" and generated:
             raise ValueError("Draft Ticket cannot contain generated execution metadata")
         if context.stage == "executable" and "machine" not in generated:
@@ -622,6 +638,57 @@ def convert_ticket_document(text: str, context: TicketConversionContext) -> Tick
         return TicketConversion(locals().get("preview"), (_diagnostic(exc),), None)
 
 
+def _reject_retired_coverage_criteria(
+    mandatory: Mapping[str, Any], optional: Mapping[str, Any]
+) -> None:
+    for section in (mandatory, optional):
+        for key, declaration in section.items():
+            matches = [
+                name
+                for name, _hint in find_retired_criteria([key])
+                if name.startswith("coverage_")
+            ]
+            if not matches:
+                continue
+            retired = matches[0]
+            direct_metric = _DIRECT_RETIRED_COVERAGE_METRICS.get(retired)
+            if (
+                direct_metric is not None
+                and isinstance(declaration, Mapping)
+                and len(declaration) == 1
+            ):
+                target, threshold = next(iter(declaration.items()))
+                try:
+                    number = require_finite_number_value(
+                        threshold, field=f"retired Criterion {key!r} threshold"
+                    )
+                except BoundaryError:
+                    number = None
+                if (
+                    isinstance(target, str)
+                    and target.strip()
+                    and number is not None
+                    and 0 < number <= 100
+                ):
+                    record = {
+                        target: {
+                            "tests": "all",
+                            "metrics": {direct_metric: {"min_pct": number}},
+                        }
+                    }
+                    migration = (
+                        "COVERAGE: "
+                        + yaml.safe_dump(record, default_flow_style=True, sort_keys=False).strip()
+                    )
+                    raise ValueError(f"retired Criterion {key!r}; replace it with {migration!r}")
+            supported = ", ".join(sorted(COVERAGE_METRICS))
+            raise ValueError(
+                f"retired Criterion {key!r}; replace it with "
+                f"{COVERAGE_MIGRATION_SKELETON!r} and choose a supported metric: "
+                f"{supported}"
+            )
+
+
 def serialize_ticket_document(document: TicketDocument, context: TicketConversionContext) -> str:
     """Render v2 frontmatter and prove it preserves the converted Ticket meaning."""
     if set(document.generated) - _GENERATED_KEYS:
@@ -629,7 +696,9 @@ def serialize_ticket_document(document: TicketDocument, context: TicketConversio
     fields = {
         key: value for key, value in document.spec.fields.items() if key not in _GENERATED_KEYS
     }
-    fields.update(document.generated)
+    fields.update(
+        (key, document.generated[key]) for key in _GENERATED_KEY_ORDER if key in document.generated
+    )
     rendered = (
         "---\n"
         + yaml.safe_dump(fields, sort_keys=False, allow_unicode=True)
@@ -691,6 +760,7 @@ def _normalize_criteria(
     """Expand authored capability blocks into stable atomic requirements."""
     rows: list[TicketCriterion] = []
     seen: set[str] = set()
+    review_seen: set[tuple[str | None, str | None]] = set()
     annotations: dict[str, tuple[str | None, str | None]] = {}
     for section_name, section, required in (
         (_MANDATORY, mandatory, True),
@@ -701,11 +771,26 @@ def _normalize_criteria(
             raise ValueError(f"Unknown Ticket capabilities: {', '.join(sorted(unknown))}")
         for capability, declaration in section.items():
             parsed = _capability_rows(
-                capability, declaration, section_name, required, view, locations, annotations
+                capability,
+                declaration,
+                section_name,
+                required,
+                view,
+                locations,
+                annotations,
             )
             if not parsed:
                 raise ValueError(f"{section_name}.{capability} must not be empty")
             for row in parsed:
+                if row.capability == "REVIEW":
+                    review_identity = (row.target, row.test)
+                    if review_identity in review_seen:
+                        raise ValueError(
+                            "REVIEW category/focus must choose one scalar done or clean outcome; "
+                            "clean already implies done; amend REVIEW outcome to "
+                            f"clean at {row.line}:{row.column}"
+                        )
+                    review_seen.add(review_identity)
                 if row.identity in seen:
                     raise ValueError(f"Duplicate atomic Criterion {row.identity}")
                 seen.add(row.identity)
@@ -1047,21 +1132,18 @@ def _review_rows(
     for category, focuses in categories.items():
         if category not in _REVIEW_FOCUS:
             raise ValueError(f"REVIEW category {category!r} is unknown")
-        for focus, outcomes in _nonempty_mapping(focuses, "REVIEW category").items():
+        for focus, outcome in _nonempty_mapping(focuses, "REVIEW category").items():
             if focus not in _REVIEW_FOCUS[category]:
                 raise ValueError(f"REVIEW {category} focus {focus!r} is unknown")
-            values = outcomes if isinstance(outcomes, list) else [outcomes]
-            if (
-                not values
-                or any(not isinstance(value, str) for value in values)
-                or len(values) != len(set(values))
-                or set(values) - {"done", "clean"}
-            ):
-                raise ValueError("REVIEW outcome must be done, clean, or [done, clean]")
             line, column = locations.get((section_name, "REVIEW", category, focus), (1, 1))
-            rows.extend(
+            if not isinstance(outcome, str) or outcome not in {"done", "clean"}:
+                raise ValueError(
+                    "REVIEW outcome must be scalar done or clean; lists are not allowed. "
+                    "clean already implies done; amend REVIEW outcome to "
+                    f"clean at {line}:{column}"
+                )
+            rows.append(
                 _criterion("REVIEW", required, category, focus, outcome, outcome, line, column)
-                for outcome in values
             )
     return tuple(rows)
 
@@ -1114,18 +1196,7 @@ def _coverage_rows(
     raw = _nonempty_mapping(value, "COVERAGE")
     if set(raw) != {"tests", "metrics"}:
         raise ValueError("COVERAGE requires exactly tests and metrics")
-    tests = raw["tests"]
-    registered = set(view.tests_for_target(target))
-    if tests != "all" and (
-        not isinstance(tests, list)
-        or not tests
-        or any(not isinstance(test, str) for test in tests)
-        or len(tests) != len(set(tests))
-        or set(tests) - registered
-    ):
-        raise ValueError(f"COVERAGE {target!r} needs all or registered named tests")
-    if tests == "all" and not registered:
-        raise ValueError(f"COVERAGE {target!r} has no registered tests")
+    tests = _validate_coverage_tests(target, raw["tests"], set(view.tests_for_target(target)))
     metrics = validate_coverage_metrics(raw["metrics"], field="COVERAGE")
     rows = []
     for metric, policy in metrics.items():
@@ -1143,6 +1214,33 @@ def _coverage_rows(
             )
         )
     return tuple(rows)
+
+
+def _validate_coverage_tests(target: str, tests: object, registered: set[str]) -> str | list[str]:
+    if tests == "all":
+        if not registered:
+            raise ValueError(f"COVERAGE {target!r} has no registered tests")
+        return tests
+    if (
+        not isinstance(tests, list)
+        or not tests
+        or any(not isinstance(test, str) or not test.strip() for test in tests)
+    ):
+        raise ValueError(f"COVERAGE {target!r} tests must be all or nonempty names")
+    seen: set[str] = set()
+    duplicates = []
+    for test in tests:
+        if test in seen and test not in duplicates:
+            duplicates.append(test)
+        seen.add(test)
+    if duplicates:
+        rendered = ", ".join(repr(test) for test in duplicates)
+        raise ValueError(f"COVERAGE {target!r} duplicate test names include {rendered}")
+    unknown = [test for test in tests if test not in registered]
+    if unknown:
+        rendered = ", ".join(repr(test) for test in unknown)
+        raise ValueError(f"COVERAGE {target!r} unregistered test names include {rendered}")
+    return tests
 
 
 def _derive_target_plan(

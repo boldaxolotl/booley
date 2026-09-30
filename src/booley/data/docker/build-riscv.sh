@@ -5,6 +5,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BOOLEY_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
+BOOLEY_IMAGE_BUILD_PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/booley-image-plan.XXXXXX")"
+chmod 600 "$BOOLEY_IMAGE_BUILD_PLAN_FILE"
+trap 'rm -f "$BOOLEY_IMAGE_BUILD_PLAN_FILE"' EXIT
+printf '%s\n' '{"requests":[' \
+  '{"managed_image":"runtime base","output_tag":"booley-runtime-base:local","estimate_class":"heavyweight"},' \
+  '{"managed_image":"standard substrate","output_tag":"booley-sandbox-standard-substrate:local","estimate_class":"heavyweight"},' \
+  '{"managed_image":"booley-sandbox wheel overlay","output_tag":"booley-sandbox","estimate_class":"thin-overlay"},' \
+  '{"managed_image":"RISC-V substrate","output_tag":"booley-sandbox-riscv-substrate:local","estimate_class":"heavyweight"},' \
+  '{"managed_image":"booley-sandbox-riscv wheel overlay","output_tag":"booley-sandbox-riscv","estimate_class":"thin-overlay"}' \
+  ']}' >"$BOOLEY_IMAGE_BUILD_PLAN_FILE"
+export BOOLEY_IMAGE_BUILD_PLAN_FILE
+export BOOLEY_IMAGE_BUILD_PLAN_INDEX=0
+
 # Build the runtime base, standard substrate, and exact wheel once.
 echo ">>> Preparing standard substrate and wheel..."
 "$SCRIPT_DIR/build.sh" "$@"
@@ -18,6 +31,7 @@ for cand in "${PYTHON:-}" python3 /usr/bin/python3 python; do
   fi
 done
 FP_PY="${FP_PY:-python3}"
+CAPACITY_PLAN_INDEX=3
 WHEEL_SOURCE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$FP_PY" -P -c \
   'import sys; from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path(sys.argv[1])) or "")' \
   "$BOOLEY_ROOT")"
@@ -33,8 +47,10 @@ run_docker_build() {
   local image="$1"
   shift
   PYTHONPATH="$BOOLEY_ROOT/src" "${FP_PY:-python3}" -P -m booley.runtime.docker_capacity \
-    --image "$image" -- "$@"
+    --image "$image" --plan-file "$BOOLEY_IMAGE_BUILD_PLAN_FILE" \
+    --current-index "$CAPACITY_PLAN_INDEX" -- "$@"
   "$@"
+  CAPACITY_PLAN_INDEX=$((CAPACITY_PLAN_INDEX + 1))
 }
 
 echo ">>> Building RISC-V tool substrate..."
@@ -53,6 +69,17 @@ RISCV_ID="$(docker image inspect booley-sandbox-riscv-substrate:local --format '
 OVERLAY_RECIPE="$(PYTHONPATH="$BOOLEY_ROOT/src" "$FP_PY" -P -c \
   'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' \
   "$SCRIPT_DIR/Dockerfile.wheel")"
+BASE_INPUTS="$(docker image inspect booley-runtime-base:local --format '{{ with index .Config.Labels "io.booley.artifact.effective-inputs" }}{{ . }}{{ end }}')"
+BASE_RECIPE="$(docker image inspect booley-runtime-base:local --format '{{ with index .Config.Labels "io.booley.build.recipe-fingerprint" }}{{ . }}{{ end }}')"
+STANDARD_INPUTS="$(docker image inspect booley-sandbox-standard-substrate:local --format '{{ with index .Config.Labels "io.booley.artifact.effective-inputs" }}{{ . }}{{ end }}')"
+STANDARD_RECIPE="$(docker image inspect booley-sandbox-standard-substrate:local --format '{{ with index .Config.Labels "io.booley.build.recipe-fingerprint" }}{{ . }}{{ end }}')"
+SELECTION_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$FP_PY" -P -c \
+  'import sys; from booley.runtime.image_identity import logical_selection_fingerprint_for_chain as fingerprint; values=sys.argv[2:]; print(fingerprint(sys.argv[1], tuple(tuple(values[index:index+5]) for index in range(0, len(values), 5))))' \
+  booley-sandbox-riscv \
+  runtime-base "$BASE_INPUTS" "$BASE_RECIPE" "" "" \
+  standard-substrate "$STANDARD_INPUTS" "$STANDARD_RECIPE" "" "" \
+  riscv-substrate "$RECIPE_FINGERPRINT" "$RECIPE_FINGERPRINT" "" "" \
+  wheel-overlay "" "$OVERLAY_RECIPE" "$RUNTIME_BASE_CONTRACT" "$STANDARD_SUBSTRATE_CONTRACT")"
 
 echo ">>> Building booley-sandbox-riscv wheel overlay..."
 run_docker_build booley-sandbox-riscv docker build "$@" \
@@ -70,6 +97,7 @@ run_docker_build booley-sandbox-riscv docker build "$@" \
   --label "io.booley.runtime-base.contract=$RUNTIME_BASE_CONTRACT" \
   --label "io.booley.standard-substrate.contract=$STANDARD_SUBSTRATE_CONTRACT" \
   --label "io.booley.build.recipe-fingerprint=$OVERLAY_RECIPE" \
+  --label "io.booley.sandbox.selection-fingerprint=$SELECTION_FINGERPRINT" \
   --label "io.booley.build.parent-artifact-kind=local-image-id" \
   --label "io.booley.build.parent-artifact=$RISCV_ID" \
   --label "io.booley.build.origin=local" \

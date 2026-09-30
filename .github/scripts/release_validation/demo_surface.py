@@ -10,6 +10,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from booley.ticket_board.board_layout import state_record_path, ticket_document_path, ticket_state
+from booley.ticket_board.lifecycle import TicketState
+
 
 def _run(command: list[str], *, project: Path, env: dict[str, str]) -> str:
     result = subprocess.run(
@@ -70,15 +73,11 @@ def validate(
 ) -> dict[str, object]:
     project = project.resolve()
     state = project_state.resolve()
-    ticket = state / "tickets" / "board" / "queue" / f"{ticket_slug}.md"
-    if not ticket.is_file():
-        raise ValueError(f"queued demo ticket is missing: {ticket}")
-    before = _digest(ticket)
-    env = os.environ | {"BOOLEY_PROJECT_DIR": str(state)}
-    version_code = "import booley; print(booley.__version__)"
-    version = _run([str(python), "-I", "-c", version_code], project=project, env=env)
-    if version != expected_version:
-        raise RuntimeError(f"image version differs: {version!r} != {expected_version!r}")
+    tickets_dir = state / "tickets"
+    ticket, record = _require_queued_demo_ticket(tickets_dir, ticket_slug)
+    # The document and its state record together are the queued Ticket (ADR 0065).
+    before = (_digest(ticket), _digest(record))
+    _require_image_version(python, project=project, state=state, expected=expected_version)
     _exercise_commands(
         project=project,
         state=state,
@@ -87,8 +86,9 @@ def validate(
         python=python,
         booley=booley,
     )
-    active = state / "tickets" / "board" / "active" / ticket.name
-    if _digest(ticket) != before or active.exists():
+    if (_digest(ticket), _digest(record)) != before or ticket_state(
+        tickets_dir, ticket_slug
+    ) is not TicketState.QUEUED:
         raise RuntimeError("demo ticket surface mutated the queued ticket")
     return {
         "schema": 1,
@@ -101,6 +101,27 @@ def validate(
             {"id": "demo.ticket-immutable", "status": "pass"},
         ],
     }
+
+
+def _require_queued_demo_ticket(tickets_dir: Path, slug: str) -> tuple[Path, Path]:
+    """Return the demo Ticket's document and state record paths; it must be queued."""
+    ticket = ticket_document_path(tickets_dir, slug)
+    record = state_record_path(tickets_dir, slug)
+    if not ticket.is_file():
+        raise ValueError(f"queued demo ticket is missing: {ticket}")
+    initial_state = ticket_state(tickets_dir, slug)
+    if initial_state is not TicketState.QUEUED:
+        raise ValueError(f"demo ticket {slug!r} is {initial_state.status}, not queued: {record}")
+    return ticket, record
+
+
+def _require_image_version(python: Path, *, project: Path, state: Path, expected: str) -> None:
+    """Refuse an image whose installed Booley is not the release candidate's version."""
+    env = os.environ | {"BOOLEY_PROJECT_DIR": str(state)}
+    version_code = "import booley; print(booley.__version__)"
+    version = _run([str(python), "-I", "-c", version_code], project=project, env=env)
+    if version != expected:
+        raise RuntimeError(f"image version differs: {version!r} != {expected!r}")
 
 
 def main() -> int:

@@ -60,3 +60,11 @@ def test_controller_keeps_slowest_worker_collection_time(tmp_path: Path) -> None
     shard_plugin.pytest_testnodedown(second, None)
 
     assert max(shard_plugin._COLLECTION_SECONDS) == 2.25
+
+
+def test_controller_tolerates_worker_crash_before_workeroutput(tmp_path: Path) -> None:
+    shard_plugin.pytest_configure(_Config(tmp_path / "unused.json"))
+
+    shard_plugin.pytest_testnodedown(SimpleNamespace(), RuntimeError("worker crashed"))
+
+    assert shard_plugin._COLLECTION_SECONDS == []

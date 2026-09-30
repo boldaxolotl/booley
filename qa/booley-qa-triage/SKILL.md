@@ -1,9 +1,19 @@
 ---
 name: booley-qa-triage
-description: Triage finished Booley QA runs with the maintainer one finding at a time — verify each against current main, decide together, and file or fix as each decision lands.
+description: Only when the user explicitly asks, triage finished Booley QA runs with the maintainer one finding at a time — verify each against current main, decide together, and file or fix as each decision lands.
 ---
 
 # Triage Booley QA findings
+
+Use this skill only when the user explicitly invokes it. This is behavioral
+guidance for clients without enforceable invocation metadata. Resolve the real
+path of this loaded `SKILL.md`; derive `qa/` and the source root from its parent
+directories. Before acting, require that source to be a clean primary checkout
+on `main`, with `.git` as a directory and HEAD matching the canonical host
+`booley --version` revision. Stop with restore/re-enable guidance if validation
+fails. Resolve repository inputs such as
+`docs/internals/agents/triage-labels.md`, `qa/missions/`, and `qa/shared/` from
+that derived root, never from the process working directory.
 
 Input: one or more QA run directories (each has `findings.md` and `log.md`).
 The maintainer decides; you verify each finding and prepare the decision.
@@ -47,14 +57,15 @@ Triage is a conversation, one **brief** per turn.
    next cluster.
    - `file` (a product or doc cluster, or a `qa-bug` the maintainer asks to file):
      draft the issue in a local file with problem, repro, build identity, the verified
-     cause, the **approved fix direction only**, and acceptance criteria. When the
+     cause, the **approved fix direction only** under a `## Fix` heading, and
+     acceptance criteria. When the
      blast radius is yes or likely, the fix section starts with **Step 1: audit**,
      naming the suspected places and the pattern to search for; the fix then
      covers every affected place the audit finds. When the decision widens scope in
      other ways (for example "add a Doctor check"), write that into the issue too.
      Follow the issue rules in `AGENTS.md`: scan title and body with the
      confidential-content guard, then `gh issue create`. Label with `bug`,
-     `documentation`, or `enhancement`, plus the triage role from
+     `documentation`, or `enhancement`, and with the triage role from
      `docs/internals/agents/triage-labels.md` (`ready-for-agent` when the fix is
      decided, `needs-triage` for open design).
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.

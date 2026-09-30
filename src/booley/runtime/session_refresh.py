@@ -23,6 +23,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
@@ -309,7 +310,19 @@ def _validate_journal_identities(journal: _RefreshJournal) -> None:
         replacement.project_root != str(journal.project_root)
         or replacement.image_id != journal.target_image_id
     ):
-        raise sr.SessionError("Session refresh journal replacement identities disagree")
+        raise sr.SessionError(
+            "Session refresh journal replacement identities disagree: "
+            + format_differences(
+                {
+                    "project_root": str(journal.project_root),
+                    "image_id": journal.target_image_id,
+                },
+                {
+                    "project_root": replacement.project_root,
+                    "image_id": replacement.image_id,
+                },
+            )
+        )
     if journal.direction is _RecoveryDirection.COMMITTED_FORWARD and (
         journal.phase is not _RefreshPhase.VERIFIED
         or replacement is None
@@ -506,7 +519,10 @@ def _verify_restored_journal(journal: _RefreshJournal) -> None:
     except runtime_spec.RuntimeSpecError as exc:
         raise sr.SessionError(f"restored host issuance did not verify: {exc}") from exc
     if issuance != journal.prior_issuance:
-        raise sr.SessionError("restored host issuance differs from the recorded predecessor")
+        raise sr.SessionError(
+            "restored host issuance differs from the recorded predecessor: "
+            + format_differences(asdict(journal.prior_issuance), asdict(issuance))
+        )
     if journal.prior_runtime is not None:
         sr.verify_restored_refresh_session(journal.prior_runtime, recovery=True)
 
@@ -542,6 +558,7 @@ def _resume_journal(journal: _RefreshJournal) -> RecoveryResult:
         expected_image_id=target,
         expected_wheel_source_fingerprint=journal.target_payload_fingerprint,
         expected_wheel_sha256=journal.target_wheel_sha256,
+        recovery=True,
     )
     if journal.direction is not _RecoveryDirection.COMMITTED_FORWARD:
         journal = replace(
@@ -729,7 +746,10 @@ def _reconcile_refresh_image(
     if not result.selected_id:
         raise sr.SessionError("refresh did not produce an immutable Sandbox Image ID")
     if result != prepared_result:
-        raise sr.SessionError("committed Sandbox Image differs from the verified candidate")
+        raise sr.SessionError(
+            "committed Sandbox Image differs from the verified candidate: "
+            + format_differences(asdict(prepared_result), asdict(result))
+        )
     journal = replace(
         journal,
         phase=_RefreshPhase.IMAGE_SELECTED,
@@ -856,7 +876,10 @@ def _try_complete_noop(
         return None
     committed = images.commit()
     if committed != prepared:
-        raise sr.SessionError("committed Sandbox Image differs from the verified candidate")
+        raise sr.SessionError(
+            "committed Sandbox Image differs from the verified candidate: "
+            + format_differences(asdict(prepared), asdict(committed))
+        )
     return committed
 
 

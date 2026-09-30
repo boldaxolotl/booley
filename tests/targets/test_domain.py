@@ -72,6 +72,12 @@ class TestFlowCanDrive:
             ref = self._ref(declared_flow, eda_tool)
             assert not flow_can_drive("sim", ref)
 
+    @pytest.mark.parametrize("flow", (None, "sim"))
+    def test_sim_target_without_an_accepted_tool_declaration_is_not_drivable(
+        self, flow: str | None
+    ) -> None:
+        assert not flow_can_drive("sim", self._ref(flow, None))
+
     def test_specialist_name_is_rejected(self):
         with pytest.raises(ValueError, match=r"mutation_tester.*not a target-aware"):
             flow_can_drive("mutation_tester", self._ref("sim", "verilator"))

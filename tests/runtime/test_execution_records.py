@@ -10,13 +10,60 @@ from pathlib import Path
 import pytest
 
 from booley.runtime.execution_records import (
+    PROTOCOL_VERSION,
     ExecutionId,
     atomic_write_json,
+    campaign_child_entry_manifests,
     execution_paths,
     gc_terminal_executions,
     read_attachment_heartbeat,
+    verify_inherited_execution_id,
     write_attachment_heartbeat,
 )
+from booley.runtime.pid import (
+    DEAD,
+    REUSED,
+    RUNNING,
+    UNKNOWN,
+    ZOMBIE,
+    ProcessIdentity,
+    ProcessObservation,
+)
+
+
+def test_campaign_child_entry_manifest_rejects_display_form_parent_identity(
+    tmp_path: Path,
+) -> None:
+    child_id = "e" * 32
+    entries = tmp_path / "entries"
+    entries.mkdir()
+    entry = {
+        "$schema": "booley.simulation-campaign-child-entry/v1",
+        "child_execution_id": child_id,
+        "parent_execution_id": "sim-20260925T153819Z-1",
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "manifest_path": str((tmp_path / "manifest.json").resolve()),
+        "manifest_sha256": "sha256:" + "1" * 64,
+        "work_item_id": "item:0000:0123456789abcdef",
+        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
+        "attempt_ordinal": 1,
+        "attempt_relative_path": "items/item/attempts/0001-attempt",
+        "runtime_context_sha256": "sha256:" + "2" * 64,
+    }
+    (entries / f"{child_id}.json").write_text(
+        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid schema"):
+        campaign_child_entry_manifests(tmp_path)
+
+    entry["parent_execution_id"] = "a" * 32
+    (entries / f"{child_id}.json").write_text(
+        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    assert campaign_child_entry_manifests(tmp_path) == (Path(entry["manifest_path"]),)
 
 
 def test_atomic_write_json_fsyncs_file_then_rename_then_parent(
@@ -53,6 +100,169 @@ def test_execution_id_owns_validation() -> None:
     assert str(ExecutionId("a" * 32)) == "a" * 32
     with pytest.raises(ValueError, match="32 lowercase hexadecimal"):
         ExecutionId("not-an-execution")
+
+
+def _active_execution_record(supervisor: ProcessIdentity | None) -> dict:
+    return {
+        "schema_version": PROTOCOL_VERSION,
+        "state": "running",
+        "runtime_identity": supervisor.identity_scope if supervisor is not None else None,
+        "supervisor": supervisor.to_payload() if supervisor is not None else None,
+        "leader": None,
+        "exit_code": None,
+        "tree_terminal": False,
+        "terminal_cause": None,
+        "updated_at": "1970-01-01T00:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(("owner_pid", "ancestor_result"), [(20, True), (10, False)])
+def test_verified_inherited_execution_accepts_descendant_and_supervisor_itself(
+    tmp_path: Path, owner_pid: int, ancestor_result: bool
+) -> None:
+    execution_id = "d" * 32
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=tmp_path).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert verify_inherited_execution_id(
+        execution_id,
+        project_dir=tmp_path,
+        owner_pid=owner_pid,
+        observe_identity=lambda _identity: ProcessObservation(RUNNING),
+        ancestor_check=lambda pid, ancestor: ancestor_result and (pid, ancestor) == (20, 10),
+    ) == ExecutionId(execution_id)
+
+
+def test_verified_inherited_execution_rejects_record_from_another_project(
+    tmp_path: Path,
+) -> None:
+    execution_id = "e" * 32
+    foreign = tmp_path / "foreign"
+    current = tmp_path / "current"
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=foreign).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=current,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda pid, ancestor: (pid, ancestor) == (20, 10),
+        )
+        is None
+    )
+
+
+def test_verified_inherited_execution_rejects_non_ancestor(tmp_path: Path) -> None:
+    execution_id = "f" * 32
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=tmp_path).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda _pid, _ancestor: False,
+        )
+        is None
+    )
+
+
+def test_verified_inherited_execution_rejects_invalid_id(tmp_path: Path) -> None:
+    assert (
+        verify_inherited_execution_id(
+            "not-an-execution",
+            project_dir=tmp_path,
+            owner_pid=20,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("record_kind", ["missing", "malformed", "terminal", "future"])
+def test_verified_inherited_execution_rejects_unusable_records(
+    tmp_path: Path, record_kind: str
+) -> None:
+    execution_id = "1" * 32
+    paths = execution_paths(execution_id, project_dir=tmp_path)
+    supervisor = ProcessIdentity(10, "fake", 1)
+    if record_kind == "malformed":
+        paths.root.mkdir(parents=True)
+        paths.record.write_text("not-json", encoding="utf-8")
+    elif record_kind != "missing":
+        record = _active_execution_record(supervisor)
+        if record_kind == "terminal":
+            record.update(state="terminal", tree_terminal=True, exit_code=0)
+        else:
+            record["schema_version"] = PROTOCOL_VERSION + 1
+        atomic_write_json(paths.record, record)
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda _pid, _ancestor: True,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("state", [DEAD, REUSED, ZOMBIE, UNKNOWN])
+def test_verified_inherited_execution_requires_live_durable_supervisor(
+    tmp_path: Path, state
+) -> None:
+    execution_id = "2" * 32
+    supervisor = ProcessIdentity(10, "fake", 1)
+    atomic_write_json(
+        execution_paths(execution_id, project_dir=tmp_path).record,
+        _active_execution_record(supervisor),
+    )
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(state),
+            ancestor_check=lambda _pid, _ancestor: True,
+        )
+        is None
+    )
+
+
+def test_verified_inherited_execution_rejects_live_leader_without_supervisor(
+    tmp_path: Path,
+) -> None:
+    execution_id = "3" * 32
+    leader = ProcessIdentity(10, "fake", 1)
+    record = _active_execution_record(None)
+    record["leader"] = leader.to_payload()
+    atomic_write_json(execution_paths(execution_id, project_dir=tmp_path).record, record)
+
+    assert (
+        verify_inherited_execution_id(
+            execution_id,
+            project_dir=tmp_path,
+            owner_pid=20,
+            observe_identity=lambda _identity: ProcessObservation(RUNNING),
+            ancestor_check=lambda _pid, _ancestor: True,
+        )
+        is None
+    )
 
 
 def _old_terminal(project_dir: Path, execution_id: str) -> None:

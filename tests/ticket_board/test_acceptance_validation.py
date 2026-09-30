@@ -92,7 +92,7 @@ def _project_with_projection(
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "user.email", "test@example.invalid")
     project_dir = root / ".booley_project"
-    (project_dir / "tickets/board/drafts").mkdir(parents=True)
+    (project_dir / "tickets/board").mkdir(parents=True)
     (project_dir / "cores").mkdir()
     (root / ".gitignore").write_text("/.booley-projected-*.core\n", encoding="utf-8")
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8")
@@ -178,7 +178,7 @@ def _enqueued_projection_ticket(
 
 
 def _runtime_ticket(root: Path) -> Path:
-    return root / ".booley_project/tickets/board/queue/generated-input.md"
+    return root / ".booley_project/tickets/board/generated-input.md"
 
 
 def assert_ticket_worktree_inputs_unchanged(
@@ -212,7 +212,7 @@ def _paired_projection_ticket(tmp_path: Path) -> tuple[Path, Path, TicketBaselin
     _git(root, "commit", "-m", "initial outer")
 
     project_dir = root / ".booley_project"
-    (project_dir / "tickets/board/drafts").mkdir(parents=True)
+    (project_dir / "tickets/board").mkdir(parents=True)
     (project_dir / "cores").mkdir()
     (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n/tmp/\n", encoding="utf-8")
     (project_dir / "booley.toml").write_text(
@@ -362,7 +362,7 @@ def test_nondeterministic_post_setup_marker_fails_live_guard(tmp_path: Path) -> 
         )
 
 
-def test_altered_generated_projection_fails_live_guard(tmp_path: Path) -> None:
+def test_altered_owned_root_projection_passes_live_guard(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path)
     reconcile_projected_cores(workspace)
     projection = workspace / ".booley-projected-demo.core"
@@ -371,18 +371,38 @@ def test_altered_generated_projection_fails_live_guard(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(TicketBaselineError, match="protected path") as raised:
+    assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+
+
+@pytest.mark.parametrize("unsafe", ["markerless", "symlink"])
+def test_generated_projection_lookalike_fails_live_guard(
+    tmp_path: Path,
+    unsafe: str,
+) -> None:
+    root, workspace, basis = _enqueued_projection_ticket(tmp_path)
+    reconcile_projected_cores(workspace)
+    projection = workspace / ".booley-projected-demo.core"
+    if unsafe == "markerless":
+        projection.write_text(
+            projection.read_text(encoding="utf-8").replace(
+                "# Booley stealth core projection: ", "# user projection: "
+            ),
+            encoding="utf-8",
+        )
+    else:
+        target = workspace / "projection-target"
+        projection.replace(target)
+        projection.symlink_to(target)
+
+    with pytest.raises(TicketBaselineError, match=r"\.booley-projected-demo\.core"):
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
-    assert str(raised.value).count("acceptance-input-change-required") == 1
 
-
-def test_missing_live_projection_is_candidate_drift(tmp_path: Path) -> None:
+def test_reference_only_owned_projection_passes_live_guard(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path)
 
     assert not (workspace / ".booley-projected-demo.core").exists()
-    with pytest.raises(TicketBaselineError, match=r"\.booley-projected-demo\.core"):
-        assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+    assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
 def test_live_only_ordinary_core_remains_rejected(tmp_path: Path) -> None:
@@ -395,12 +415,80 @@ def test_live_only_ordinary_core_remains_rejected(tmp_path: Path) -> None:
         assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
+@pytest.mark.parametrize("paired", [False, True], ids=["outer-only", "paired"])
+@pytest.mark.parametrize(
+    ("relative", "content"),
+    [
+        ("authored.core", "CAPI=2:\nname: booley::authored:0\ntargets: {}\n"),
+        ("constraints.sdc", "create_clock -period 10 clk\n"),
+        ("pins.xdc", "set_property PACKAGE_PIN A1 [get_ports clk]\n"),
+        ("vendor/FUSESOC_IGNORE", "hand-authored\n"),
+        (
+            ".booley-projected-lookalike.core",
+            "CAPI=2:\nname: booley::lookalike:0\ntargets: {}\n",
+        ),
+    ],
+)
+def test_authored_acceptance_inputs_remain_protected(
+    tmp_path: Path,
+    paired: bool,
+    relative: str,
+    content: str,
+) -> None:
+    if paired:
+        root, workspace, basis = _paired_projection_ticket(tmp_path)
+    else:
+        root, workspace, basis = _enqueued_projection_ticket(tmp_path)
+    path = workspace / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(TicketBaselineError, match=Path(relative).name):
+        assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+
+
 def test_isolated_projection_ignores_checkout_root_difference(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path, ignore_native_cores=True)
     reconcile_projected_cores(workspace)
     reconcile_isolated_registry(workspace)
 
     assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+
+
+def test_resumed_ticket_guard_ignores_owned_trace_projection_without_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, workspace, _basis = _enqueued_projection_ticket(tmp_path, ignore_native_cores=True)
+    overlay = workspace / ".booley_project/cores/demo.booleytrace.core"
+    overlay.write_text(
+        "CAPI=2:\nname: booley::demo-booleytrace:0\nfilesets: {}\ntargets: {}\n",
+        encoding="utf-8",
+    )
+    projection = next(
+        path
+        for path in reconcile_isolated_registry(workspace).written
+        if ".booleytrace.core" in path.name
+    )
+    overlay.unlink()
+    initial = projection.read_bytes()
+    ticket = _runtime_ticket(root)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+    monkeypatch.setenv("BOOLEY_SLUG", "generated-input")
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr("booley.ticket_board.flow_execution.detect_project_root", lambda: root)
+    flow = _AcceptanceFlow()
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
+    flow.execution_adapter = TicketBoardFlowExecution()
+    flow.parse_args(["--target", "demo", "--work-dir", str(workspace)])
+
+    assert flow._pre_state_gate() is None
+    assert flow._pre_state_gate() is None
+
+    assert projection.read_bytes() == initial
 
 
 def test_isolated_projection_accepts_recorded_host_root(
@@ -425,7 +513,7 @@ def test_isolated_projection_accepts_recorded_host_root(
     assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
-def test_altered_isolated_projection_fails_live_guard(tmp_path: Path) -> None:
+def test_altered_owned_isolated_projection_passes_live_guard(tmp_path: Path) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path, ignore_native_cores=True)
     reconcile_projected_cores(workspace)
     reconcile_isolated_registry(workspace)
@@ -435,8 +523,7 @@ def test_altered_isolated_projection_fails_live_guard(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(TicketBaselineError, match="protected path"):
-        assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
+    assert_ticket_worktree_inputs_unchanged(root, basis, workspace)
 
 
 def test_renderer_cannot_rewrite_tracked_projection(tmp_path: Path) -> None:
@@ -569,7 +656,7 @@ def test_flow_entry_accepts_matching_post_setup_marker_and_rejects_missing_marke
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, workspace, _basis = _enqueued_projection_ticket(tmp_path, post_setup_marker=True)
-    ticket = root / ".booley_project/tickets/board/queue/generated-input.md"
+    ticket = root / ".booley_project/tickets/board/generated-input.md"
     prepare_acceptance_checkout(
         root,
         workspace,
@@ -671,7 +758,7 @@ def test_ticket_flow_composes_admission_and_durable_evidence(
 
     root, workspace, _basis = _enqueued_projection_ticket(tmp_path)
     reconcile_projected_cores(workspace)
-    ticket = root / ".booley_project/tickets/board/queue/generated-input.md"
+    ticket = root / ".booley_project/tickets/board/generated-input.md"
     log_dir = tmp_path / "ticket-logs"
     state_path = log_dir / ".runtime/booley_state.json"
     state = DevelopmentState.load(state_path)
@@ -727,7 +814,7 @@ def test_developer_handoff_accepts_matching_post_setup_marker_and_rejects_drift(
     )
     ctx = TicketContext(
         slug="generated-input",
-        ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
+        ticket_path=root / ".booley_project/tickets/board/generated-input.md",
         ticket_type="feature",
         branch="main",
         summary="Accept generated input",
@@ -760,7 +847,7 @@ async def test_resumed_setup_path_accepts_marker_and_rejects_missing_marker(
     )
     ctx = TicketContext(
         slug="generated-input",
-        ticket_path=root / ".booley_project/tickets/board/queue/generated-input.md",
+        ticket_path=root / ".booley_project/tickets/board/generated-input.md",
         ticket_type="feature",
         branch="main",
         summary="Accept generated input",
@@ -784,12 +871,14 @@ async def test_resumed_setup_path_accepts_marker_and_rejects_missing_marker(
     monkeypatch.setattr(developer, "block_ticket", block)
     monkeypatch.setattr(developer, "_prepare_blocked_triage", AsyncMock())
 
-    await developer._run_ticket_body(ctx, root, 0.0)
+    result = await developer._run_ticket_body(ctx, root, 0.0)
+    assert result.disposition == "blocked"
     block.assert_called_once_with(ctx, "stop after resume guard", "setup")
 
     block.reset_mock()
     (workspace / "picosoc/FUSESOC_IGNORE").unlink()
-    await developer._run_ticket_body(ctx, root, 0.0)
+    result = await developer._run_ticket_body(ctx, root, 0.0)
+    assert result.disposition == "blocked"
 
     reason = block.call_args.args[1]
     assert "picosoc/FUSESOC_IGNORE" in reason
@@ -883,10 +972,9 @@ def test_live_guard_cleans_materialized_reference_after_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, workspace, basis = _enqueued_projection_ticket(tmp_path)
-    reconcile_projected_cores(workspace)
-    projection = workspace / ".booley-projected-demo.core"
-    projection.write_text(
-        projection.read_text(encoding="utf-8") + "# drift\n",
+    foreign = workspace / "foreign.core"
+    foreign.write_text(
+        "CAPI=2:\nname: booley::foreign:0\ntargets: {}\n",
         encoding="utf-8",
     )
     destinations: list[Path] = []

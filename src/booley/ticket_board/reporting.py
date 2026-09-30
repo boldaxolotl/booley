@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import yaml
 
 from .acceptance_journal import JournalState
 from .analytics import compute_step_cost
+from .board_layout import state_root, unreadable_board_documents
 from .constants import (
     PRIORITY_ORDER,
     STEP_ORDER,
 )
+from .frontmatter import parse_frontmatter
 from .helpers import fmt_datetime_user, fmt_duration, fmt_tokens, parse_iso
+
+if TYPE_CHECKING:
+    from .ticket_history import ClosedTicket
 
 # Import colors from harness; fall back to no-op if unavailable
 try:
@@ -479,8 +486,11 @@ def display_board(
     When *tickets_dir* is given, ticket names become OSC 8 hyperlinks to
     their .md files (clickable in VS Code and other modern terminals).
     """
+    unreadable = unreadable_board_documents(tickets_dir) if tickets_dir is not None else []
     if not tickets:
-        print("Ticket board is empty -- no tickets tracked.")
+        if not unreadable:
+            print("Ticket board is empty -- no tickets tracked.")
+        _print_unreadable_note(unreadable, tickets_dir)
         return
 
     tickets = _sort_tickets(tickets)
@@ -514,3 +524,39 @@ def display_board(
         if (c := counts.get(s, 0)) > 0
     ]
     print(f" {bold(str(len(tickets)))} tickets: {', '.join(parts)}")
+    _print_unreadable_note(unreadable, tickets_dir)
+
+
+def _print_unreadable_note(unreadable: list[tuple[Path, str]], tickets_dir: Path | None) -> None:
+    """Say which Tickets the board could not show because their state record is broken.
+
+    One broken Ticket is named with its reason; several get a single summary line
+    so a damaged state directory does not flood the board.
+    """
+    if not unreadable or tickets_dir is None:
+        return
+    records = state_root(tickets_dir)
+    if len(unreadable) == 1:
+        path, reason = unreadable[0]
+        print(red(f" ! {path.stem} is not shown: {reason}"))
+    else:
+        print(
+            red(
+                f" ! {len(unreadable)} tickets are not shown: "
+                f"their state records in {records} cannot be read"
+            )
+        )
+    print(
+        "   Commands on a broken ticket refuse to run until its state record is "
+        "repaired or removed."
+    )
+
+
+def closed_ticket_summary(closed: ClosedTicket) -> str:
+    """Return the ``summary`` a Closed Ticket had when it closed, or its slug."""
+    try:
+        fields, _body = parse_frontmatter(closed.document)
+    except (ValueError, yaml.YAMLError):
+        return closed.slug
+    summary = fields.get("summary")
+    return summary if isinstance(summary, str) and summary else closed.slug

@@ -204,12 +204,17 @@ class SubmitRunReportMcpTool(McpTool):
         return schema
 
     def _run(self) -> McpToolResult:
-        if gate := self._clean_worktree_gate():
-            return gate
-        if gate := self._criteria_freshness_gate():
+        ticket_type = os.environ.get("BOOLEY_TICKET_TYPE", "").strip()
+        if not ticket_type:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "submit_run_report is Ticket Mode only; this session is not a Ticket run"
+                ),
+            )
+        if gate := self._ticket_finalization_gate():
             return gate
 
-        ticket_type = os.environ.get("BOOLEY_TICKET_TYPE", "").strip()
         if ticket_type not in _TYPE_FIELD:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -230,6 +235,10 @@ class SubmitRunReportMcpTool(McpTool):
             return gate
 
         return self._file_justifications_gate() or self._submit_report(ticket_type, unmet_optional)
+
+    def _ticket_finalization_gate(self) -> McpToolResult | None:
+        """Reject incomplete Ticket state before validating report contents."""
+        return self._clean_worktree_gate() or self._criteria_freshness_gate()
 
     def _file_justifications_gate(self) -> McpToolResult | None:
         """Reject missing explanations before publishing the final report."""

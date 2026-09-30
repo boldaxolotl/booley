@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -10,14 +9,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from booley.ticket_board.logs import (
-    append_incident,
-    clear_from_step,
-    load_progress,
-    progress_default,
-    reset_progress,
-    save_progress,
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    StateRecordError,
+    read_state_record,
+    runtime_default,
+    state_record_path,
+    write_state_record,
 )
+from booley.ticket_board.lifecycle import TicketState
+from booley.ticket_board.logs import append_incident, clear_from_step
 
 
 @pytest.fixture
@@ -27,74 +28,62 @@ def logs_dir(tmp_path):
     return d
 
 
+def _tickets_dir(logs_dir: Path) -> Path:
+    """The tickets dir owning *logs_dir*, where state records live."""
+    return logs_dir.parent
+
+
 # ---------------------------------------------------------------------------
-# load_progress / save_progress
+# Runtime fields in the state record (replaced progress.json)
 # ---------------------------------------------------------------------------
 
 
-class TestLoadProgress:
-    def test_returns_none_when_missing(self, logs_dir):
-        assert load_progress(logs_dir, "my-ticket") is None
-
-    def test_loads_existing_progress(self, logs_dir):
-        slug_dir = logs_dir / "my-ticket"
-        slug_dir.mkdir()
-        data = {"step": "sim", "steps_completed": ["plan"]}
-        (slug_dir / "progress.json").write_text(json.dumps(data), encoding="utf-8")
-        result = load_progress(logs_dir, "my-ticket")
-        assert result is not None
-        assert result["step"] == "sim"
-        assert result["steps_completed"] == ["plan"]
-
-    def test_merges_with_defaults(self, logs_dir):
-        slug_dir = logs_dir / "my-ticket"
-        slug_dir.mkdir()
-        (slug_dir / "progress.json").write_text('{"step": "lint"}', encoding="utf-8")
-        result = load_progress(logs_dir, "my-ticket")
-        assert result["failed_step"] is None
-        assert result["error"] is None
-        assert result["blocked_reason"] is None
-
-    def test_returns_none_on_corrupt_json(self, logs_dir):
-        slug_dir = logs_dir / "my-ticket"
-        slug_dir.mkdir()
-        (slug_dir / "progress.json").write_text("not json", encoding="utf-8")
-        assert load_progress(logs_dir, "my-ticket") is None
-
-
-class TestSaveProgress:
-    def test_creates_dirs_and_writes(self, logs_dir):
-        save_progress(logs_dir, "new-ticket", {"step": "plan"})
-        path = logs_dir / "new-ticket" / ".runtime" / "progress.json"
-        assert path.exists()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["step"] == "plan"
-
-    def test_overwrites_existing(self, logs_dir):
-        save_progress(logs_dir, "t", {"step": "a"})
-        save_progress(logs_dir, "t", {"step": "b"})
-        data = json.loads(
-            (logs_dir / "t" / ".runtime" / "progress.json").read_text(encoding="utf-8")
+class TestResetRuntimeFromStep:
+    def test_clears_error_fields_and_keeps_state(self, logs_dir):
+        (logs_dir / "t").mkdir()
+        record = StateRecord.fresh(
+            TicketState.BLOCKED,
+            step="implementation",
+            steps_completed=["setup", "planning", "implementation", "custom"],
+            error="boom",
+            failed_step="sim",
+            blocked_reason="stuck",
+            blocked_step="sim",
+            execution_id="exec-1",
         )
-        assert data["step"] == "b"
+        write_state_record(_tickets_dir(logs_dir), "t", record)
+        clear_from_step(logs_dir, "t", "implementation")
+        result = read_state_record(_tickets_dir(logs_dir), "t")
+        assert result is not None
+        assert result.state is TicketState.BLOCKED
+        # Steps before the target stay done; custom steps survive the reset.
+        assert result.runtime["steps_completed"] == ["setup", "planning", "run-config", "custom"]
+        for key in ("error", "failed_step", "blocked_reason", "blocked_step"):
+            assert result.runtime[key] is None
+        assert result.runtime["execution_id"] == "exec-1"
+        assert result.runtime["last_update"]
+
+    def test_draft_without_record_stays_a_draft(self, logs_dir):
+        (logs_dir / "t").mkdir()
+        clear_from_step(logs_dir, "t", "plan")
+        assert not state_record_path(_tickets_dir(logs_dir), "t").exists()
+
+    def test_corrupt_record_fails_closed(self, logs_dir):
+        (logs_dir / "t").mkdir()
+        path = state_record_path(_tickets_dir(logs_dir), "t")
+        path.parent.mkdir(parents=True)
+        path.write_text("not json", encoding="utf-8")
+        with pytest.raises(StateRecordError):
+            clear_from_step(logs_dir, "t", "plan")
+        assert path.read_text(encoding="utf-8") == "not json"
 
 
-class TestResetProgress:
-    def test_writes_defaults(self, logs_dir):
-        save_progress(logs_dir, "t", {"step": "sim", "error": "boom"})
-        reset_progress(logs_dir, "t")
-        result = load_progress(logs_dir, "t")
-        assert result["step"] == ""
-        assert result["error"] is None
-        assert result["steps_completed"] == []
-
-
-class TestProgressDefault:
+class TestRuntimeDefault:
     def test_returns_deep_copy(self):
-        val = progress_default("steps_completed")
+        val = runtime_default("steps_completed")
         assert val == []
         val.append("x")
-        assert progress_default("steps_completed") == []
+        assert runtime_default("steps_completed") == []
 
 
 # ---------------------------------------------------------------------------

@@ -8,30 +8,41 @@ import os
 import secrets
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias, TypedDict
 
 import yaml
 
-from booley.runtime.project_dir import runtime_dir
+from booley.core.differences import format_differences
+from booley.fusesoc.core_projection import (
+    CoreProjectionError,
+    is_generated_projection,
+)
+from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 from booley.ticket_board.criteria_projection import project_ticket_criteria
 from booley.ticket_board.ticket_repositories import resolve_inner_project_repo
 
-from .acceptance_path_policy import is_static_acceptance_path
+from .acceptance_path_policy import is_protected_acceptance_path
+from .acceptance_validation import prepare_acceptance_checkout
 from .amendment_proposal import AmendmentProposal
 from .amendment_v2 import build_v2_amendment_proposal
 from .basis_publication import load_basis_publication
 from .git_status import GitStatusEntry, parse_porcelain_v1_z
-from .logs import PROGRESS_DEFAULTS, load_progress, save_progress
+from .lifecycle import TicketState
 from .paths import existing_runtime_file, human_log_file, ticket_log_dir
 from .persistence import atomic_replace_bytes, atomic_write_once
 from .scanner import find_ticket_file
 from .ticket_baseline import (
+    AUTHORED_DRIFT_GUIDANCE,
+    AUTHORED_DRIFT_REASON,
     PATH_POLICY,
     BasisParticipant,
     TicketBaseline,
+    TicketBaselineError,
     assert_live_inputs_unchanged,
     canonical_json,
     load_ticket_baseline_from_document,
@@ -45,6 +56,7 @@ from .ticket_baseline import (
 from .ticket_document import (
     TicketDocument,
     convert_ticket_document,
+    serialize_ticket_document,
     ticket_conversion_context,
 )
 from .validation import _scope_contains_path, validate_ticket_spec
@@ -52,6 +64,21 @@ from .validation import _scope_contains_path, validate_ticket_spec
 
 class AmendmentError(RuntimeError):
     """An amendment cannot be previewed or safely published."""
+
+
+class _ProjectionIdentity(TypedDict):
+    kind: Literal["projection"]
+    sha256: str
+    executable: bool
+
+
+class _ReferenceIdentity(TypedDict):
+    kind: Literal["reference"]
+    sha256: str
+    executable: bool
+
+
+_GeneratedIdentity: TypeAlias = _ProjectionIdentity | _ReferenceIdentity
 
 
 def _git(
@@ -132,31 +159,119 @@ def _status_snapshot(
     basis: TicketBaseline,
     scope: list[str],
     repositories: dict[str, tuple[Path, Path]],
+    *,
+    generated_reference: Path | None = None,
+    expected_ignored: dict[str, dict[str, _GeneratedIdentity]] | None = None,
 ) -> dict[str, Any]:
-    snapshots: dict[str, Any] = {}
     protected = set(PATH_POLICY.discover(root))
-    for role, (_owner, checkout) in repositories.items():
-        head = _git(checkout, "rev-parse", "HEAD")
-        if _git(checkout, "ls-files", "-u"):
-            raise AmendmentError(f"{role} Ticket Workspace has an unresolved Git conflict")
-        raw = _git(checkout, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-        entries = parse_porcelain_v1_z(raw)
-        files: dict[str, str | None] = {}
-        for entry in entries:
-            _check_checkpoint_path(role, entry, scope, protected, checkout)
-            path = checkout / entry.path
-            files[entry.path] = (
-                hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-            )
-        snapshots[role] = {
-            "head": head,
-            "index_sha256": hashlib.sha256(
-                _git(checkout, "ls-files", "-s", "-z").encode()
-            ).hexdigest(),
-            "entries": [asdict(item) for item in entries],
-            "files": files,
+    return {
+        role: _repository_status_snapshot(
+            role,
+            checkout,
+            scope,
+            protected,
+            _reference_repository(generated_reference, role),
+            (expected_ignored or {}).get(role),
+        )
+        for role, (_owner, checkout) in repositories.items()
+    }
+
+
+def _repository_status_snapshot(
+    role: str,
+    checkout: Path,
+    scope: list[str],
+    protected: set[str],
+    reference: Path | None,
+    expected: dict[str, _GeneratedIdentity] | None,
+) -> dict[str, Any]:
+    head = _git(checkout, "rev-parse", "HEAD")
+    if _git(checkout, "ls-files", "-u"):
+        raise AmendmentError(f"{role} Ticket Workspace has an unresolved Git conflict")
+    raw = _git(checkout, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    entries = parse_porcelain_v1_z(raw)
+    ignored: dict[str, _GeneratedIdentity] = {}
+    retained: list[GitStatusEntry] = []
+    files: dict[str, str | None] = {}
+    for entry in entries:
+        identity = _ignored_generated_identity(
+            role, entry, checkout, reference, protected, (expected or {}).get(entry.path)
+        )
+        if identity is not None:
+            ignored[entry.path] = identity
+            continue
+        _check_checkpoint_path(role, entry, scope, protected, checkout)
+        retained.append(entry)
+        path = checkout / entry.path
+        files[entry.path] = (
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        )
+    if expected is not None and set(ignored) != set(expected):
+        raise AmendmentError(f"{role} generated source changed after the approved preview")
+    return {
+        "head": head,
+        "index_sha256": hashlib.sha256(
+            _git(checkout, "ls-files", "-s", "-z").encode()
+        ).hexdigest(),
+        "entries": [asdict(item) for item in retained],
+        "files": files,
+        "ignored_generated": ignored,
+    }
+
+
+def _reference_repository(reference: Path | None, role: str) -> Path | None:
+    if reference is None or role == "outer":
+        return reference
+    return reference / checkout_project_dir_relative_to(reference)
+
+
+def _ignored_generated_identity(
+    role: str,
+    entry: GitStatusEntry,
+    checkout: Path,
+    reference: Path | None,
+    protected: set[str],
+    expected: _GeneratedIdentity | None,
+) -> _GeneratedIdentity | None:
+    if entry.status != "??" or entry.source_path is not None:
+        return None
+    path = checkout / entry.path
+    if expected is not None:
+        actual = _generated_identity(checkout, path, expected.get("kind") == "projection")
+        if actual != expected:
+            raise AmendmentError(f"{role} generated source {entry.path!r} changed")
+        return actual
+    if is_generated_projection(checkout, path):
+        return _generated_identity(checkout, path, True)
+    if reference is None or not _protected_generated_path(role, entry.path, protected):
+        return None
+    live_identity = _generated_identity(checkout, path, False)
+    reference_identity = _generated_identity(reference, reference / entry.path, False)
+    if live_identity is not None and live_identity == reference_identity:
+        return live_identity
+    return None
+
+
+def _generated_identity(
+    repository: Path, path: Path, require_projection: bool
+) -> _GeneratedIdentity | None:
+    if require_projection and not is_generated_projection(repository, path):
+        return None
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return {
+            "kind": "projection" if require_projection else "reference",
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "executable": bool(path.stat().st_mode & 0o111),
         }
-    return snapshots
+    except OSError:
+        return None
+
+
+def _protected_generated_path(role: str, local: str, protected: set[str]) -> bool:
+    composite = f".booley_project/{local}" if role == "project" else local
+    return is_protected_acceptance_path(composite, protected)
 
 
 def _check_checkpoint_path(
@@ -166,11 +281,8 @@ def _check_checkpoint_path(
         if local is None:
             continue
         composite = f".booley_project/{local}" if role == "project" else local
-        if (
-            not _scope_contains_path({"scope": scope}, composite)
-            or is_static_acceptance_path(composite)
-            or composite in protected
-            or any(composite.startswith(path.rstrip("/") + "/") for path in protected)
+        if not _scope_contains_path({"scope": scope}, composite) or is_protected_acceptance_path(
+            composite, protected
         ):
             raise AmendmentError(f"dirty source {composite!r} is outside prior Scope or protected")
         if (checkout / local).is_symlink():
@@ -190,28 +302,55 @@ def _convert_ticket(root: Path, slug: str, source: str) -> TicketDocument:
     return converted.document
 
 
-def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], AmendmentProposal]:
-    root = Path(tio._project_root).resolve()
-    ticket, status = find_ticket_file(tio.tickets_dir, slug)
-    if ticket is None or status != "blocked":
-        raise AmendmentError(f"Ticket {slug!r} must be blocked to amend")
-    source = ticket.read_bytes()
-    document = _convert_ticket(root, slug, source.decode("utf-8"))
-    fields, body = dict(document.spec.fields), document.spec.body
-    basis = load_ticket_baseline_from_document(root, slug, document)
-    heads = validate_current_basis_refs(root, basis)
-    proposal = _validated_proposal(root, slug, basis, document, request)
-    revised_document = _converted_proposal(root, slug, document, proposal)
-    repositories = _repositories(root, basis)
-    prior_scope = fields.get("scope", [])
-    source_state = _status_snapshot(root, basis, prior_scope, repositories)
-    if {role: value["head"] for role, value in source_state.items()} != heads:
-        raise AmendmentError("Ticket refs changed during amendment preview")
+def _serialize_ticket(root: Path, slug: str, document: TicketDocument) -> bytes:
+    try:
+        with ticket_conversion_context(root, slug, "executable") as context:
+            return serialize_ticket_document(document, context).encode()
+    except ValueError as exc:
+        raise AmendmentError(f"invalid amended Ticket: {exc}") from exc
+
+
+def _validate_preview_heads(
+    expected: dict[str, str], source_state: dict[str, dict[str, Any]]
+) -> None:
+    actual = {role: value["head"] for role, value in source_state.items()}
+    if actual != expected:
+        raise AmendmentError(
+            "Ticket refs changed during amendment preview: " + format_differences(expected, actual)
+        )
+
+
+@contextmanager
+def _prepared_amendment_reference(
+    root: Path,
+    basis: TicketBaseline,
+    *,
+    slug: str,
+    ticket: Path,
+) -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
+        try:
+            reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
+            prepare_acceptance_checkout(root, reference, slug=slug, ticket_path=ticket)
+            assert_live_inputs_unchanged(basis, root, reference)
+        except (TicketBaselineError, CoreProjectionError, OSError, ValueError) as exc:
+            raise AmendmentError(str(exc)) from exc
+        yield reference
+
+
+def _preview_record(
+    tio: Any,
+    slug: str,
+    source: bytes,
+    basis: TicketBaseline,
+    source_state: dict[str, Any],
+    prior_scope: list[str],
+    revised_document: TicketDocument,
+    proposal: AmendmentProposal,
+    repositories: dict[str, tuple[Path, Path]],
+) -> dict[str, Any]:
     state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     _preflight_state(state_path, proposal)
-    state_digest = (
-        hashlib.sha256(state_path.read_bytes()).hexdigest() if state_path.exists() else ""
-    )
     current_results = _preview_evidence(
         state_path,
         proposal,
@@ -227,9 +366,11 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
         "old_machine": basis.ticket_identity(),
         "source_state": source_state,
         "prior_scope": prior_scope,
-        "state_sha256": state_digest,
+        "state_sha256": hashlib.sha256(state_path.read_bytes()).hexdigest()
+        if state_path.exists()
+        else "",
         "revised_fields": dict(revised_document.spec.fields),
-        "body": body,
+        "body": revised_document.spec.body,
         "reason": proposal.reason,
         "actor": proposal.actor,
         "feedback": proposal.feedback,
@@ -239,7 +380,50 @@ def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], Amen
         "mandatory_after": sum(row.mandatory for row in revised_document.spec.criteria),
     }
     preview["digest"] = hashlib.sha256(canonical_json(preview)).hexdigest()
-    return preview, proposal
+    return preview
+
+
+def _inspection(tio: Any, slug: str, request: Any) -> tuple[dict[str, Any], AmendmentProposal]:
+    root = Path(tio._project_root).resolve()
+    ticket, status = find_ticket_file(tio.tickets_dir, slug)
+    if ticket is None or status != "blocked":
+        raise AmendmentError(f"Ticket {slug!r} must be blocked to amend")
+    source = ticket.read_bytes()
+    document = _convert_ticket(root, slug, source.decode("utf-8"))
+    try:
+        basis = load_ticket_baseline_from_document(root, slug, document)
+    except TicketBaselineError as exc:
+        if str(exc) == AUTHORED_DRIFT_REASON:
+            raise AmendmentError(AUTHORED_DRIFT_GUIDANCE) from exc
+        raise
+    heads = validate_current_basis_refs(root, basis)
+    repositories = _repositories(root, basis)
+    prior_scope = document.spec.fields.get("scope", [])
+    with _prepared_amendment_reference(root, basis, slug=slug, ticket=ticket) as reference:
+        proposal = _validated_proposal(root, slug, basis, document, request, reference)
+        revised_document = _converted_proposal(root, slug, document, proposal)
+        source_state = _status_snapshot(
+            root,
+            basis,
+            prior_scope,
+            repositories,
+            generated_reference=reference,
+        )
+    _validate_preview_heads(heads, source_state)
+    return (
+        _preview_record(
+            tio,
+            slug,
+            source,
+            basis,
+            source_state,
+            prior_scope,
+            revised_document,
+            proposal,
+            repositories,
+        ),
+        proposal,
+    )
 
 
 def _converted_proposal(
@@ -250,21 +434,23 @@ def _converted_proposal(
 
 
 def _validated_proposal(
-    root: Path, slug: str, basis: TicketBaseline, document: TicketDocument, request: Any
+    root: Path,
+    slug: str,
+    basis: TicketBaseline,
+    document: TicketDocument,
+    request: Any,
+    reference: Path,
 ) -> AmendmentProposal:
     spec = document.spec
-    with tempfile.TemporaryDirectory(prefix="booley-amend-preview-") as directory:
-        reference = materialize_basis_checkout(root, basis, Path(directory) / "basis")
-        assert_live_inputs_unchanged(basis, root, reference)
-        with ticket_conversion_context(root, slug, "executable") as context:
-            view = context.resolve_view({"machine": basis.ticket_identity()})
-            proposal = build_v2_amendment_proposal(spec, request, root, view)
-        candidate = {**proposal.fields, **document.generated}
-        revised = _convert_ticket(root, slug, _render_ticket(candidate, spec.body))
-        errors = validate_ticket_spec(revised.spec, project_root=reference)
-        if errors:
-            raise AmendmentError("invalid amended Ticket: " + "; ".join(errors))
-        return proposal
+    with ticket_conversion_context(root, slug, "executable") as context:
+        view = context.resolve_view({"machine": basis.ticket_identity()})
+        proposal = build_v2_amendment_proposal(spec, request, root, view)
+    candidate = {**proposal.fields, **document.generated}
+    revised = _convert_ticket(root, slug, _render_ticket(candidate, spec.body))
+    errors = validate_ticket_spec(revised.spec, project_root=reference)
+    if errors:
+        raise AmendmentError("invalid amended Ticket: " + "; ".join(errors))
+    return proposal
 
 
 def _preflight_state(path: Path, proposal: AmendmentProposal) -> None:
@@ -367,13 +553,19 @@ def _finish_amendment(tio: Any, journal: dict[str, Any]) -> dict[str, Any]:
     root = Path(tio._project_root).resolve()
     old = ticket_baseline_from_machine(journal["old_machine"])
     if old.as_dict() != journal["basis"]:
-        raise AmendmentError("amendment journal baseline identity changed")
+        raise AmendmentError(
+            "amendment journal baseline identity changed: "
+            + format_differences(journal["basis"], old.as_dict())
+        )
     repositories = _repositories(root, old)
     _prepare_amendment_participants(root, journal, old, repositories)
     _publish_refs(root, journal, old, repositories)
     new_basis = ticket_baseline_from_machine(journal["machine"])
     if new_basis.as_dict() != journal["new_basis"]:
-        raise AmendmentError("prepared amendment baseline identity changed")
+        raise AmendmentError(
+            "prepared amendment baseline identity changed: "
+            + format_differences(journal["new_basis"], new_basis.as_dict())
+        )
     _publish_board_and_state(tio, journal, new_basis, repositories)
     _publish_handoff_and_queue(tio, journal, new_basis)
     return {
@@ -395,10 +587,17 @@ def _prepare_amendment_participants(
         if role in journal["prepared"]:
             continue
         owner, checkout = repositories[role]
-        expected = journal["source_state"][role]
-        actual = _status_snapshot(root, old, journal["prior_scope"], {role: (owner, checkout)})[
-            role
-        ]
+        expected = {
+            **journal["source_state"][role],
+            "ignored_generated": journal["source_state"][role].get("ignored_generated", {}),
+        }
+        actual = _status_snapshot(
+            root,
+            old,
+            journal["prior_scope"],
+            {role: (owner, checkout)},
+            expected_ignored={role: expected.get("ignored_generated", {})},
+        )[role]
         if actual != expected:
             raise AmendmentError(f"{role} source changed after the approved preview")
         commits = _prepare_participant(
@@ -423,7 +622,9 @@ def _prepare_amendment_participants(
             for row in old.participants
         )
         journal["new_basis"] = TicketBaseline(participants).as_dict()
-        journal["machine"] = _amendment_machine(root, old, journal, participants=participants)
+        journal["machine"] = json.loads(
+            json.dumps(_amendment_machine(root, old, journal, participants=participants))
+        )
         journal["phase"] = "prepared"
         _write_journal(root, journal)
 
@@ -607,11 +808,19 @@ def _publish_board_and_state(
     ticket, status = find_ticket_file(tio.tickets_dir, journal["slug"])
     if ticket is None or status != "blocked":
         raise AmendmentError("blocked Ticket disappeared during publication")
-    fields = dict(journal["revised_fields"])
-    fields["machine"] = journal["machine"]
-    candidate = _render_ticket(fields, journal["body"]).encode()
-    if ticket.read_bytes() != candidate:
-        original = hashlib.sha256(ticket.read_bytes()).hexdigest()
+    current = ticket.read_bytes()
+    source_document = _convert_ticket(root, journal["slug"], current.decode())
+    revised_fields = dict(journal["revised_fields"])
+    revised_fields["machine"] = journal["machine"]
+    revised_document = _convert_ticket(
+        root, journal["slug"], _render_ticket(revised_fields, journal["body"])
+    )
+    generated = {**source_document.generated, "machine": journal["machine"]}
+    candidate = _serialize_ticket(
+        root, journal["slug"], TicketDocument(revised_document.spec, generated)
+    )
+    if current != candidate:
+        original = hashlib.sha256(current).hexdigest()
         if original != journal["ticket_sha256"]:
             raise AmendmentError("Board Ticket changed during amendment publication")
         atomic_replace_bytes(ticket, candidate, mode=0o644)
@@ -777,7 +986,7 @@ def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: TicketB
     if marker not in content:
         addition = _amendment_summary(journal, record)
         atomic_replace_bytes(blocked, (content + addition).encode(), mode=0o644)
-    progress = load_progress(tio.logs_dir, slug) or dict(PROGRESS_DEFAULTS)
+    progress = tio.read_progress(slug)
     progress.update(
         {
             "workspace_intent": "resume",
@@ -787,16 +996,11 @@ def _publish_handoff_and_queue(tio: Any, journal: dict[str, Any], basis: TicketB
             "failed_step": None,
         }
     )
-    save_progress(tio.logs_dir, slug, progress)
     ticket, status = find_ticket_file(tio.tickets_dir, slug)
-    if status == "blocked" and ticket is not None:
-        queue = tio.tickets_dir / "board" / "queue" / ticket.name
-        queue.parent.mkdir(parents=True, exist_ok=True)
-        if queue.exists():
-            raise AmendmentError("queue destination is occupied")
-        ticket.replace(queue)
-    elif status != "queued":
+    if ticket is None or status not in {"blocked", "queued"}:
         raise AmendmentError("Ticket moved unexpectedly before resume queue")
+    # One record replace publishes the resume intent and the queued state.
+    tio.commit_state(ticket.stem, TicketState.QUEUED, progress)
     transition = human_log_file(tio.logs_dir, slug, "transitions.log")
     if not transition.exists() or marker not in transition.read_text(encoding="utf-8"):
         tio._append_transition_unlocked(slug, "blocked", "queued", "ticket-triage", marker)

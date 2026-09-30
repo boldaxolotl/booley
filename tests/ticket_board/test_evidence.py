@@ -11,6 +11,7 @@ def _ticket_io(tmp_path: Path, entry: dict | None) -> SimpleNamespace:
         logs_dir=tmp_path / "logs",
         tickets_dir=None,
         find_ticket=lambda _slug: entry,
+        inspect_ticket=lambda _slug: entry,
     )
 
 
@@ -43,3 +44,22 @@ def test_collect_evidence_reports_only_authoritative_ticket_data(tmp_path: Path)
 
 def test_collect_evidence_returns_none_for_unknown_ticket(tmp_path: Path) -> None:
     assert op_collect_evidence(_ticket_io(tmp_path, None), "missing") is None
+
+
+def test_collect_evidence_reports_authored_drift(tmp_path: Path) -> None:
+    reason = "acceptance-input-change-required: authored Ticket changed"
+    evidence = op_collect_evidence(
+        _ticket_io(
+            tmp_path,
+            {
+                "authored_drift": True,
+                "authored_drift_reason": reason,
+                "criteria": {},
+            },
+        ),
+        "drifted",
+    )
+
+    assert evidence is not None
+    assert evidence["authored_drift"] is True
+    assert evidence["authored_drift_reason"] == reason

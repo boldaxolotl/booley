@@ -24,7 +24,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -37,6 +37,7 @@ from booley.evidence.timing import (
     per_clock_to_json,
     worst_clock,
 )
+from booley.flows.eda_failures import classify_eda_failure
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -892,7 +893,7 @@ def _target_summary(
         # structuredContent, so the pointers ride along with the numbers.
         "artifacts": {
             **({"log": metrics.log_path} if metrics.log_path else {}),
-            **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
+            **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         },
     }
     if baseline is not None:
@@ -1396,12 +1397,28 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
             metrics.termination = "infrastructure_error"
+        failure = None
+        if metrics.termination not in {"timeout", "oom", "resource_killed"}:
+            failure = classify_eda_failure(
+                replace(result, stdout=output, stderr=""),
+                expected_token=getattr(outcome, "attempt_token", None),
+            )
+        if failure is not None and failure.kind == "infrastructure":
+            metrics.returncode = 2
+            metrics.infra_error = failure.reason
+            metrics.termination = "infrastructure_error"
         if result.peak_rss_mb is not None:
             metrics.peak_rss_mb = max(metrics.peak_rss_mb or 0.0, result.peak_rss_mb)
         if outcome.forced_failure and metrics.returncode == 0:
             metrics.returncode = 1
             metrics.termination = "eda_tool_failure"
-        metrics.yosys_complete = metrics.termination == "completed" or outcome.yosys_complete
+        legacy_inline = (
+            not outcome.yosys_complete
+            and metrics.has_metrics
+            and bool(result.stdout.strip())
+            and "BOOLEY_STAGE:" not in result.stdout
+        )
+        metrics.yosys_complete = outcome.yosys_complete or legacy_inline
         metrics.timing_complete = (
             metrics.termination == "completed"
             and metrics.synth_mode is not None
@@ -1452,7 +1469,22 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         output: str,
     ) -> None:
         """Persist output and surface terminal diagnostics without duplicating it."""
-        metrics.log_path = self._persist_synth_log(target, output)
+        self._persist_synth_log(target, output)
+        metrics.log_path = ""
+        if getattr(self, "_execution_role", "candidate") == "candidate":
+            invocation_dir = self.reserve_invocation_dir()
+            if invocation_dir is not None:
+                try:
+                    metrics.log_path = artifacts.publish_bytes(
+                        invocation_dir,
+                        ("artifacts", f"synth_{target_report_slug(target)}", "run.log"),
+                        output.encode(),
+                        work_dir=Path(self.args.work_dir),
+                    )
+                except OSError:
+                    logger.warning(
+                        "could not publish numbered synth log for %s", target, exc_info=True
+                    )
         metrics.dirs = self._artifact_dirs(target, metrics.synth_mode)
         if metrics.termination == "oom":
             logger.warning("Synth %s was killed by the cgroup OOM killer", target)
@@ -1690,25 +1722,41 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     ) -> dict[str, Any]:
         """Copy mutable log/timing evidence beside this invocation's report."""
         root = Path(self.args.work_dir)
-        destination = report_dir / "artifacts" / f"synth_{safe_target}"
+        invocation_dir = self.reserve_invocation_dir()
+        assert invocation_dir is not None
+        destination = invocation_dir / "artifacts" / f"synth_{safe_target}"
         result: dict[str, Any] = {
             **({"log": metrics.log_path} if metrics.log_path else {}),
-            **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
+            **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         }
-        if metrics.log_path:
-            source = root / metrics.log_path
-            if source.is_file():
-                destination.mkdir(parents=True, exist_ok=True)
-                copied = destination / "run.log"
-                shutil.copy2(source, copied)
-                result["log"] = posix_relpath(copied, root)
         timing = metrics.dirs.get("timing") if metrics.dirs else None
         if timing:
             source_dir = root / timing
             if source_dir.is_dir():
-                copied_dir = destination / "timing"
-                shutil.copytree(source_dir, copied_dir, dirs_exist_ok=True)
-                result.setdefault("dirs", {})["timing"] = posix_relpath(copied_dir, root)
+                try:
+                    copied_any = False
+                    for source in sorted(path for path in source_dir.rglob("*") if path.is_file()):
+                        artifacts.publish_file(
+                            invocation_dir,
+                            (
+                                "artifacts",
+                                f"synth_{safe_target}",
+                                "timing",
+                                *source.relative_to(source_dir).parts,
+                            ),
+                            source,
+                            work_dir=root,
+                        )
+                        copied_any = True
+                    if copied_any:
+                        result["timing"] = posix_relpath(destination / "timing", root)
+                except (OSError, ValueError):
+                    shutil.rmtree(destination / "timing", ignore_errors=True)
+                    logger.warning(
+                        "could not publish numbered synth timing evidence for %s",
+                        safe_target,
+                        exc_info=True,
+                    )
         return result
 
     def _write_progress_report(

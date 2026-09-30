@@ -338,3 +338,13 @@ class TestFailedStepSendOff:
         init_cmd._step_advisories(ctx)
 
         assert "already configured" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_init_guidance_does_not_offer_retired_notifications(project, capsys, configured):
+    _write(project, CONFIGURED_TOML if configured else init_cmd.BOOLEY_TOML_SKELETON)
+    init_cmd._step_advisories(InitContext(project_root=project))
+    output = capsys.readouterr().out
+    assert "ntfy" not in output.lower()
+    assert "[notifications]" not in output
+    assert "[notifications]" not in init_cmd.BOOLEY_TOML_SKELETON

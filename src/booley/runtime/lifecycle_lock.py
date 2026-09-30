@@ -19,6 +19,7 @@ from booley.runtime.file_lock import (
 
 _LOCK_DIR = "locks"
 _LOCK_NAME = "docker-lifecycle.lock"
+DEFAULT_WAIT_TIMEOUT_SECONDS = 120.0
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ def _lock_owner(handle: TextIO) -> str:
     """Return the recorded owner when the platform permits a contended read."""
     try:
         handle.seek(0)
-        return handle.read().strip() or "another Booley command"
+        owner = handle.read().strip()
+        return owner if owner.isprintable() else "another Booley command"
     except OSError:
         return "another Booley command"
 
@@ -40,11 +42,21 @@ def _lock_owner(handle: TextIO) -> str:
 def host_lifecycle_lock(
     operation: str,
     *,
-    wait_timeout_s: float | None = None,
+    wait_timeout_s: float | None = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> Iterator[None]:
-    """Hold the host-wide lock, optionally waiting for bounded contention."""
-    directory = config_dir() / _LOCK_DIR
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    """Hold the host-wide lock, waiting by default for bounded contention."""
+    booley_config = config_dir()
+    shared_config = booley_config.parent
+    if not shared_config.exists():
+        shared_config.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            shared_config.chmod(0o700)
+    if not booley_config.exists():
+        booley_config.mkdir(exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            booley_config.chmod(0o700)
+    directory = booley_config / _LOCK_DIR
+    directory.mkdir(exist_ok=True, mode=0o700)
     path = directory / _LOCK_NAME
     with path.open("a+", encoding="utf-8") as handle:
         if os.name != "nt":

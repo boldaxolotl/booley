@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict, require_str
+from booley.core.boundary import BoundaryError, require_dict, require_str, require_str_value
 from booley.review.explanation import ExplanationError, StructuredExplanation
 
 PACKAGE_VERSION = 2
@@ -217,6 +217,10 @@ class CriterionRow:
     outcome: str
     freshness: str
     metric: str
+    label: str
+    detail: str
+    report_path: str | None
+    changed_categories: tuple[str, ...] = ()
     availability: str = "available"
 
     @classmethod
@@ -225,14 +229,31 @@ class CriterionRow:
         required_value = row.get("required")
         if required_value not in {"mandatory", "optional"}:
             raise ReviewArtifactError("criterion required must be mandatory or optional")
+        changed_categories = _strings(row.get("changed_categories", []), "changed_categories")
+        if any(not item for item in changed_categories):
+            raise ReviewArtifactError("changed_categories must contain nonblank strings")
+        criterion = require_str(row, "criterion")
+        try:
+            label = require_str_value(row.get("label", criterion), field="criterion label")
+            detail = require_str_value(
+                row.get("detail", ""),
+                field="criterion detail",
+                allow_empty=True,
+            )
+        except BoundaryError as exc:
+            raise ReviewArtifactError(str(exc)) from exc
         return cls(
-            require_str(row, "category"),
-            require_str(row, "criterion"),
-            required_value == "mandatory",
-            _enum(row, "outcome", CRITERION_OUTCOMES),
-            _enum(row, "freshness", CRITERION_FRESHNESS),
-            require_str(row, "metric"),
-            _enum(
+            category=require_str(row, "category"),
+            criterion=criterion,
+            required=required_value == "mandatory",
+            outcome=_enum(row, "outcome", CRITERION_OUTCOMES),
+            freshness=_enum(row, "freshness", CRITERION_FRESHNESS),
+            metric=require_str(row, "metric"),
+            label=label,
+            detail=detail,
+            report_path=_optional_path(row, "report_path"),
+            changed_categories=tuple(sorted(set(changed_categories))),
+            availability=_enum(
                 {"availability": row.get("availability", "available")},
                 "availability",
                 {"available", "unavailable"},
@@ -240,15 +261,22 @@ class CriterionRow:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        status = "STALE" if self.freshness == "stale" else self.outcome.replace("_", " ")
+        status = self.outcome.replace("_", " ")
+        if self.freshness == "stale":
+            suffix = f" ({', '.join(self.changed_categories)})" if self.changed_categories else ""
+            status = f"STALE{suffix}"
         if self.availability == "unavailable":
             status = "unavailable (no observation)"
         return {
             "category": self.category,
             "criterion": self.criterion,
+            "label": self.label,
+            "detail": self.detail,
+            "report_path": self.report_path,
             "required": "mandatory" if self.required else "optional",
             "outcome": self.outcome,
             "freshness": self.freshness,
+            "changed_categories": list(self.changed_categories),
             "status": status,
             "metric": self.metric,
             "availability": self.availability,

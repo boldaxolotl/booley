@@ -13,8 +13,12 @@ Run exactly once:
 booley board show $SLUG --no-open-diffs
 ```
 
-This command performs a fast freshness check and prints the fixed review
-briefing with diff launching disabled. Always use `--no-open-diffs`: the automatic
+This command performs a fast freshness check of the prepared package manifest
+and prints the fixed review briefing with diff launching disabled. Review preparation separately compares
+each source-sensitive Criterion and Reviewer receipt with the current Ticket
+worktree. Stale rows name the changed source categories; a stale mandatory
+Criterion forces a `hold` recommendation without changing its recorded outcome
+or mutating runtime state. Always use `--no-open-diffs`: the automatic
 filter uses extensions and binary detection, so it cannot recognize every
 compiled output (for example, hexadecimal firmware stored as `.txt`).
 
@@ -39,10 +43,12 @@ findings, explanation highlights, scope deviations, changed files, deterministic
 criteria, review findings and dispositions, Target recipe comparisons, commit
 history, run economics, and the decision choices.
 
-If the command reports a missing or stale package, show that as a Booley
-post-processing finding and offer **reset** / **skip**. `board review --force`
-is a maintenance/recovery operation and requires an explicit user request; it
-is not the interactive fallback.
+If the command reports an ordinary unaccepted missing or stale package, show
+that as a Booley post-processing finding and offer **review** / **reset** /
+**skip**. `board review --force` is a maintenance/recovery operation and
+requires an explicit user request; it is not the interactive fallback. A
+`STALE ACCEPTANCE — Ticket heads changed after acceptance.` marker is different:
+follow the accepted-review choices below and do not regenerate the package.
 
 Tickets without `triage_report` in their `on_success` list intentionally have no semantic
 report-agent assessment. The same command renders their deterministic criteria,
@@ -57,13 +63,18 @@ identifies an anomaly requiring diagnosis. Start
 with the one cited source relevant to that question. Do not routinely reread
 `REPORT.md`, state, run logs, transcripts, Flow reports, Git history, or diffs.
 
-The package is authoritative only while its manifest is fresh. Its deterministic
-facts include every declared criterion, feature-branch commit (oldest first),
+An ordinary unaccepted package is authoritative only while its manifest is
+fresh. A stale-marked accepted briefing remains authoritative as the immutable
+record of what was accepted, but it is not evidence that the changed live heads
+are current or acceptable; its integrity digests and the marker's exact-head
+comparison govern the available actions. The package's deterministic facts
+include every declared criterion, feature-branch commit (oldest first),
 changed path (including renames and submodules), recorded scope deviation,
 current-run usage summary, and mechanical health check. The report agent supplies
 the recommendation, scope classifications, report summary, blockers, and findings.
 Both `review_*_done` and `review_*_clean` are freshness-sensitive to their
-recorded source fingerprint. The package also lists every review finding and
+recorded source fingerprint, or to their receipt for current package versions.
+The package also lists every review finding and
 disposition deterministically; every accepted waiver, including `MINOR`, must
 appear with its justification.
 
@@ -85,25 +96,30 @@ operation is
 It preserves work and creates an unaccepted package when its Basis/worktree are
 valid. Never substitute a mechanical move or fabricate accepted evidence.
 
-For accepted review, ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
+For current accepted review, ask: **approve** / **reset** / **archive** / **skip**.
+For stale accepted review, ask: **restore exact accepted heads** / **reset** /
+**archive** / **skip**.
+Do not offer approval while any mandatory Criterion is marked stale; rerun its
+Flow or Specialist and prepare a new review package first.
 
 - **Approve**: `booley board approve $SLUG`
-- **Fix here**: Criteria Satisfaction Records are immutable. Explain that
-  changed source
-  heads cannot be silently reaccepted by `board review`; retain work and
-  resolve the required acceptance recovery before claiming another approval.
+- **Restore exact accepted heads**: Criteria Satisfaction Records are immutable.
+  First save every post-acceptance commit on a separate safety branch. Then move
+  every Ticket ref and worktree named in the stale marker to its listed frozen
+  commit, rerun `booley board show $SLUG`, and approve once the marker is gone.
+  A new `git revert` commit does not restore an accepted head.
 - **Reset**: ask why a clean run is required, then run
-  `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`.
+  `booley board reset $SLUG --reason "<correction reason>"`.
   This is a clean start:
   retire the Ticket worktree and branch, archive the current runtime artifacts
   as prior-run history, clear the active state, and return the Ticket to
   `queued`. Do not selectively retain reviewed work.
-- **Archive**: `python -m booley.ticket_board archive $SLUG --force`
+- **Archive**: `booley board archive $SLUG`
 - **Skip**: leave as-is
 
-Review never resumes through an ordinary move to `queued`. It finishes in
-`done` or `archived`, stays in `review` while the reviewer fixes it, or uses the
-explicit full reset above.
+Review never resumes through an ordinary move to `queued`. It closes into
+Ticket History with outcome `done` or `archived`, stays in `review` while the
+reviewer fixes it, or uses the explicit full reset above.
 
 After the decision, invoke `/booley-feedback` for every confirmed Booley defect.
 The skill never submits externally; the user controls any manual sharing.

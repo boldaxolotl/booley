@@ -99,7 +99,7 @@ def activate(
     owner_pid: int | None = None,
     execution_id: str | None = None,
 ) -> bool:
-    """Activate a ticket for execution (move to active/).
+    """Activate a ticket for execution (mark it running).
 
     Returns False if another live runner already owns the ticket.
     """
@@ -228,7 +228,7 @@ def unblock(
 
 
 def ticket_status(project_root: Path, slug: str) -> str:
-    """Current board status of a ticket, or "" when it is not on the board."""
+    """Status of a ticket: its board status, its closed outcome, or "" if unknown."""
     return get_ticket_ops().ticket_status(project_root, slug)
 
 

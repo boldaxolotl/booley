@@ -14,6 +14,13 @@ from booley.runtime.build_stamp import (
     extracted_development_context,
     wheel_embedded_source_fingerprint,
 )
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+    DockerCacheEvidence,
+    ensure_docker_build_capacity,
+)
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.project_dir import resolve_checkout_project_dir
@@ -32,6 +39,7 @@ DockerPort = runtime_lifecycle.DockerPort
 HostImageScope = runtime_lifecycle.HostImageScope
 ImageCleanup = runtime_lifecycle.ImageCleanup
 ImageLifecycleError = runtime_lifecycle.ImageLifecycleError
+IncrementalPlanUnavailableError = runtime_lifecycle.IncrementalPlanUnavailableError
 InstalledImageContractError = runtime_lifecycle.InstalledImageContractError
 ImageNode = runtime_lifecycle.ImageNode
 ImageScope = runtime_lifecycle.ImageScope
@@ -47,11 +55,19 @@ PlanAction = runtime_lifecycle.PlanAction
 
 class _LegacyBuildAdapter:
     def __init__(
-        self, project_root: Path, docker: DockerPort | None = None, *, verbose: bool
+        self,
+        project_root: Path,
+        docker: DockerPort | None = None,
+        *,
+        verbose: bool,
+        refresh_runtime_base: bool = False,
+        capacity_plan: DockerBuildPlan | None = None,
     ) -> None:
         self.project_root = project_root
         self.docker = docker
         self.verbose = verbose
+        self.refresh_runtime_base = refresh_runtime_base
+        self.capacity_plan = capacity_plan
 
     def build(
         self,
@@ -108,7 +124,13 @@ class _LegacyBuildAdapter:
         )
 
         if booley.version_attribution.origin is VersionOrigin.SOURCE:
-            _step_docker_image(context, node.reference, allow_pull=False)
+            _step_docker_image(
+                context,
+                node.reference,
+                allow_pull=False,
+                rebuild_runtime_base=self.refresh_runtime_base,
+                capacity_plan=self.capacity_plan,
+            )
             return
         try:
             with extracted_development_context() as root:
@@ -123,6 +145,8 @@ class _LegacyBuildAdapter:
                     ),
                     node.payload.fingerprint,
                     preserve_build_stamp=True,
+                    rebuild_runtime_base=self.refresh_runtime_base,
+                    capacity_plan=self.capacity_plan,
                 )
         except (OSError, ValueError) as error:
             raise ImageLifecycleError(
@@ -152,14 +176,63 @@ class _LegacyBuildAdapter:
             raise ImageLifecycleError(f"failed to rebuild {node.reference}")
 
 
+def _capacity_request(node: ImageNode, *, output_tag: str | None = None) -> DockerBuildRequest:
+    """Project one BUILD node into validated Docker capacity facts."""
+    estimate = (
+        BuildEstimateClass.THIN_OVERLAY
+        if node.role is ImageRole.WHEEL_OVERLAY
+        else BuildEstimateClass.HEAVYWEIGHT
+    )
+    labels = [
+        (runtime_lifecycle.LABEL_ARTIFACT_ROLE, node.role.value),
+        (runtime_lifecycle.LABEL_RECIPE_FINGERPRINT, node.build.recipe_fingerprint),
+        (runtime_lifecycle.LABEL_EFFECTIVE_INPUTS, node.effective_inputs or ""),
+    ]
+    if node.runtime_base_contract is not None:
+        labels.append((runtime_lifecycle.LABEL_RUNTIME_BASE_CONTRACT, node.runtime_base_contract))
+    if node.standard_substrate_contract is not None:
+        labels.append(
+            (
+                runtime_lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT,
+                node.standard_substrate_contract,
+            )
+        )
+    return DockerBuildRequest(
+        node.reference,
+        output_tag or node.reference,
+        estimate,
+        DockerCacheEvidence(node.reference, tuple(labels)),
+    )
+
+
+def capacity_plan(lifecycle_plan: LifecyclePlan) -> DockerBuildPlan | None:
+    """Return the ordered BUILD-only capacity projection of a lifecycle plan."""
+    steps = getattr(lifecycle_plan, "steps", ())
+    requests = tuple(
+        _capacity_request(node)
+        for node, step in zip(lifecycle_plan.nodes, steps, strict=True)
+        if step.action is PlanAction.BUILD
+    )
+    return DockerBuildPlan(requests) if requests else None
+
+
 class _IncrementalBuildAdapter:
     """Build role-specific candidates without moving managed image tags."""
 
-    def __init__(self, project_root: Path, docker: DockerPort, *, verbose: bool) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        docker: DockerPort,
+        *,
+        verbose: bool,
+        requests: tuple[DockerBuildRequest, ...] = (),
+    ) -> None:
         self.project_root = project_root
         self.docker = docker
         self.verbose = verbose
         self._wheel_sha256: str | None = None
+        self._requests = requests
+        self._next_request_index = 0
         import booley
 
         self.source_root = booley.version_attribution.source_root
@@ -237,6 +310,20 @@ class _IncrementalBuildAdapter:
         if inputs is None:
             return
         build_context, contexts, build_args = inputs
+        planned_index = self._next_request_index if self._requests else None
+        if (
+            planned_index is not None
+            and self._requests[planned_index].managed_image != node.reference
+        ):
+            raise ImageLifecycleError(
+                f"capacity plan expected {self._requests[planned_index].managed_image!r}, "
+                f"not {node.reference!r}"
+            )
+        current = _capacity_request(node, output_tag=candidate)
+        if planned_index is None:
+            tail = DockerBuildPlan((current,))
+        else:
+            tail = DockerBuildPlan((current, *self._requests[planned_index + 1 :]))
         spec = docker_image._DockerBuildSpec(
             dockerfile=node.recipe,
             context=build_context,
@@ -247,12 +334,17 @@ class _IncrementalBuildAdapter:
             parent_artifact=parent_id,
             labels=tuple(self._build_labels(node)),
             build_note=f"preparing {node.role.value}",
+            capacity_request=current,
+            capacity_plan=tail,
         )
         result = docker_image._docker_build_image(context, spec)
         if result is None:
             return
         if result != 0:
             context.record("docker_image", "err", f"{node.role.value} build failed")
+            return
+        if planned_index is not None:
+            self._next_request_index += 1
 
     def _build_labels(self, node: ImageNode) -> list[tuple[str, str]]:
         labels = [
@@ -280,6 +372,13 @@ class _IncrementalBuildAdapter:
                 (
                     runtime_lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT,
                     node.standard_substrate_contract,
+                )
+            )
+        if node.logical_selection_fingerprint is not None:
+            labels.append(
+                (
+                    runtime_lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT,
+                    node.logical_selection_fingerprint,
                 )
             )
         return labels
@@ -364,8 +463,21 @@ def _docker_adapter() -> DockerPort:
     return runtime_lifecycle._docker_adapter()
 
 
-def _build_adapter(project_root: Path, docker: DockerPort, *, verbose: bool) -> BuildPort:
-    return _LegacyBuildAdapter(project_root, docker, verbose=verbose)
+def _build_adapter(
+    project_root: Path,
+    docker: DockerPort,
+    *,
+    verbose: bool,
+    refresh_runtime_base: bool = False,
+    capacity_plan: DockerBuildPlan | None = None,
+) -> BuildPort:
+    return _LegacyBuildAdapter(
+        project_root,
+        docker,
+        verbose=verbose,
+        refresh_runtime_base=refresh_runtime_base,
+        capacity_plan=capacity_plan,
+    )
 
 
 def _transaction_build_adapter(
@@ -373,8 +485,9 @@ def _transaction_build_adapter(
     docker: DockerPort,
     *,
     verbose: bool,
+    requests: tuple[DockerBuildRequest, ...] = (),
 ) -> _IncrementalBuildAdapter:
-    return _IncrementalBuildAdapter(project_root, docker, verbose=verbose)
+    return _IncrementalBuildAdapter(project_root, docker, verbose=verbose, requests=requests)
 
 
 def _artifact_policy(project_root: Path | None = None) -> ArtifactPolicy:
@@ -410,6 +523,7 @@ def reconcile(
     intent: Intent,
     *,
     verbose: bool = False,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> LifecycleResult:
     """Reconcile an image graph with Project Initialization build adapters."""
     docker = _docker_adapter()
@@ -423,7 +537,17 @@ def reconcile(
         root = scope.project_root.resolve()
     else:
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    builder = None if intent is Intent.CHECK else _build_adapter(root, docker, verbose=verbose)
+    builder = (
+        None
+        if intent is Intent.CHECK
+        else _build_adapter(
+            root,
+            docker,
+            verbose=verbose,
+            refresh_runtime_base=(intent is Intent.REFRESH and isinstance(scope, HostImageScope)),
+            capacity_plan=capacity_plan,
+        )
+    )
     return runtime_lifecycle.reconcile(
         scope,
         intent,
@@ -434,13 +558,48 @@ def reconcile(
     )
 
 
-def plan(scope: ProjectImageScope) -> LifecyclePlan:
+def plan(scope: ProjectImageScope, *, intent: Intent = Intent.ENSURE) -> LifecyclePlan:
     """Plan source/release convergence using the installed artifact policy."""
     docker = _docker_adapter()
     return runtime_lifecycle.plan(
         scope,
         docker=docker,
         artifact_policy=_artifact_policy(scope.project_root),
+        intent=intent,
+    )
+
+
+def host_capacity_requests(intent: Intent) -> tuple[DockerBuildRequest, ...]:
+    """Return the exact local Host Bootstrap build sequence without mutation."""
+    docker = _docker_adapter()
+    policy = _artifact_policy()
+    if policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
+        return ()
+    checked = runtime_lifecycle.reconcile(
+        HostImageScope(),
+        Intent.CHECK,
+        docker=docker,
+        artifact_policy=policy,
+    )
+    if intent is not Intent.REFRESH and checked.status is Status.CURRENT:
+        return ()
+    import booley
+    from booley.harness.setup import docker_image
+
+    root = booley.version_attribution.source_root
+    if root is None:
+        return (
+            DockerBuildRequest("runtime base", docker_image.LOCAL_RUNTIME_BASE_IMAGE),
+            DockerBuildRequest("Sandbox Image", docker_image.DOCKER_IMAGE),
+        )
+    docker_dir = docker_data_dir()
+    fingerprint = docker_image._image_build_fingerprint(root)
+    return docker_image._local_build_capacity_requests(
+        docker_dir / "Dockerfile.base",
+        docker_dir / "Dockerfile",
+        root,
+        fingerprint,
+        rebuild_runtime_base=intent is Intent.REFRESH,
     )
 
 
@@ -448,9 +607,22 @@ def prepare(
     lifecycle_plan: LifecyclePlan,
     *,
     verbose: bool = False,
+    future_requests: tuple[DockerBuildRequest, ...] = (),
 ) -> PreparedConvergence:
     """Build and verify candidates while leaving managed tags unchanged."""
     docker = _docker_adapter()
+    lifecycle_build_plan = capacity_plan(lifecycle_plan)
+    planned_requests = (
+        lifecycle_build_plan.requests if lifecycle_build_plan is not None else ()
+    ) + future_requests
+    build_plan = DockerBuildPlan(planned_requests) if planned_requests else None
+    if build_plan is not None:
+        ensure_docker_build_capacity(
+            ("docker", "build"),
+            image=build_plan.current.output_tag,
+            current_request=build_plan.current,
+            remaining_plan=build_plan,
+        )
     import booley
 
     needs_source = any(
@@ -469,6 +641,7 @@ def prepare(
             lifecycle_plan.project_root,
             docker,
             verbose=verbose,
+            requests=build_plan.requests if build_plan is not None else (),
         )
         builder.source_root = source_root
         return runtime_lifecycle.prepare(
@@ -492,3 +665,18 @@ def validate(prepared: PreparedConvergence) -> None:
 def abort(prepared: PreparedConvergence) -> None:
     """Discard one previously prepared convergence."""
     runtime_lifecycle.abort(prepared, docker=_docker_adapter())
+
+
+def reconcile_planned(
+    scope: ProjectImageScope,
+    intent: Intent,
+    *,
+    verbose: bool = False,
+) -> LifecycleResult:
+    """Plan, preflight, prepare, and atomically adopt one Project image graph."""
+    prepared = prepare(plan(scope, intent=intent), verbose=verbose)
+    try:
+        return commit(prepared)
+    except BaseException:
+        abort(prepared)
+        raise

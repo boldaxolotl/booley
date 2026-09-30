@@ -12,6 +12,7 @@ import sys
 import tomllib
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,8 +28,11 @@ from booley.audit import (
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.harness import developer_probe, doctor, doctor_stamp, host_diagnostics
+from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
+    issuance_invalidation,
+    project_gitignore,
     runtime_context,
     session_issuance,
     session_runtime,
@@ -36,6 +40,14 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
+from booley.ticket_board.board_layout import (
+    StateRecord,
+    read_state_record,
+    required_board_directories,
+    ticket_document_path,
+    write_state_record,
+)
+from booley.ticket_board.lifecycle import TicketState
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
@@ -123,7 +135,7 @@ tests = ["full"]
 """.lstrip(),
         encoding="utf-8",
     )
-    (project_dir / ".gitignore").write_text(".interactive_logs/\n", encoding="utf-8")
+    (project_dir / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
     # ADR 0039: a resolvable .core Target is mandatory — without one the core
     # audit hard-FAILs and every doctor E2E fixture here would go red.
     (root / "unit.core").write_text(
@@ -169,8 +181,8 @@ tests = ["full"]
 
 def _write_tickets_tree(project_dir: Path) -> None:
     tickets_dir = project_dir / "tickets"
-    for state in ("drafts", "queue", "active", "review", "done", "blocked", "waiting"):
-        (tickets_dir / "board" / state).mkdir(parents=True, exist_ok=True)
+    for directory in required_board_directories(tickets_dir):
+        directory.mkdir(parents=True, exist_ok=True)
     (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
     (tickets_dir / "locks").mkdir(parents=True, exist_ok=True)
 
@@ -216,7 +228,7 @@ def _patch_host_environment(monkeypatch, root: Path) -> None:
     _patch_bootstrap_current(monkeypatch)
 
 
-def _patch_environment(
+def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixture
     monkeypatch,
     root: Path,
     project_dir: Path,
@@ -244,15 +256,11 @@ def _patch_environment(
         "up",
         lambda _root: "booley-session-test",
     )
-    # Keep the suite hermetic: the host-clock check (F-5) probes an HTTP Date
-    # header over the real network.
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda _root, _intent: doctor.image_lifecycle.LifecycleResult(
-            "booley-sandbox",
-            "sha256:fixture",
-            doctor.image_lifecycle.Status.CURRENT,
+        doctor.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MATCH
         ),
     )
 
@@ -278,6 +286,8 @@ def _patch_environment(
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
         if cmd[:3] == ["git", "rev-parse", "--git-common-dir"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
+        if cmd[:2] == ["git", "--version"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[:3] == [sys.executable, "-c", "import booley.ticket_board"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["ps", "-aq"]:
@@ -287,8 +297,14 @@ def _patch_environment(
         if cmd[0] == "git" and "config" in cmd and "gc.worktreePruneExpire" in cmd:
             # Healthy default: the ADR 0028 worktree prune guard is set.
             return subprocess.CompletedProcess(cmd, 0, stdout="never\n", stderr="")
+        if cmd[0] == "git" and "config" in cmd and "worktree.useRelativePaths" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+        if cmd[0] == "git" and "config" in cmd and "extensions.relativeWorktrees" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
         if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["id", "-u"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
+        if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[1:3] == ["image", "inspect"] and "{{json .Config.Env}}" in cmd:
             # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
             return subprocess.CompletedProcess(
@@ -353,6 +369,39 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     assert "--dry-run" in tool_calls[0]
     assert "--target" in tool_calls[0]
     assert tool_calls[0][tool_calls[0].index("--target") + 1] == "sim_fast"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    real_up = session_runtime.up
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    config_root = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    pending = issuance_invalidation.prepare(
+        str(tmp_path.resolve()),
+        cleanup_resources=False,
+    )
+    issuance_invalidation.cancel(pending)
+    booley_config = config_root / "booley"
+    booley_config.chmod(0o755)
+    monkeypatch.setattr(doctor.session_runtime, "up", real_up)
+
+    result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "FAIL" in captured.out
+    assert "could not enter the Sandbox" in captured.out
+    assert str(booley_config) in captured.out
+    assert "0755" in captured.out
+    assert f"chmod 700 {booley_config}" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
 
 
 def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, capsys):
@@ -454,7 +503,7 @@ def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
-def test_doctor_fails_when_issued_runtime_has_different_booley_version(
+def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
     tmp_path,
     monkeypatch,
     capsys,
@@ -466,12 +515,22 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_version(
         project_dir,
         runtime_booley_version="9.9.9",
     )
+    monkeypatch.setattr(
+        doctor.inspection.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.inspection.image_identity.Comparison(
+            doctor.inspection.image_identity.Status.MISMATCH,
+            "version 1.0 -> 9.9.9; revision abc123 -> def456; "
+            "wheel_source_fingerprint current -> stale",
+        ),
+    )
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
     output = capsys.readouterr().out
     assert rc == 1
-    assert f"host Booley {__version__} != Sandbox Booley 9.9.9" in output
+    assert "revision abc123 -> def456" in output
+    assert "wheel_source_fingerprint current -> stale" in output
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
@@ -605,6 +664,218 @@ def test_doctor_fails_without_tickets_tree(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert rc == 1
     assert "tickets tree missing" in output
+
+
+def test_tickets_tree_requires_state_record_directory(tmp_path):
+    """A pre-ADR-0065 board (per-state dirs, no state/) is not a healthy tree."""
+    tickets_dir = tmp_path / "tickets"
+    for legacy in ("queue", "active"):
+        (tickets_dir / "board" / legacy).mkdir(parents=True)
+    (tickets_dir / "logs").mkdir()
+    (tickets_dir / "locks").mkdir()
+    rec = _Rec()
+
+    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
+
+    assert rec.events == [("fail", "tickets tree missing 1 directories")]
+    assert rec.fix_hints == ["booley init"]
+
+    (tickets_dir / "state").mkdir()
+    rec = _Rec()
+    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
+    assert rec.events == [("pass", "tickets tree present")]
+
+
+def _gitignore_probe(project_dir: Path) -> list[doctor.DoctorFinding]:
+    """Run the Project ``.gitignore`` probe against *project_dir* and return its findings."""
+    reporter = doctor._Reporter.create()
+    doctor._check_project_gitignore(project_dir, reporter.pass_, reporter.warn_)
+    assert reporter.findings is not None
+    return reporter.findings
+
+
+def test_project_gitignore_passes_with_every_init_pattern(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
+
+    assert [(f.severity, f.message) for f in _gitignore_probe(tmp_path)] == [
+        ("pass", "transient Booley state is gitignored")
+    ]
+
+
+def test_project_gitignore_names_each_missing_pattern(tmp_path: Path) -> None:
+    kept = [
+        p for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS if not p.startswith("tickets/")
+    ]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in kept), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert findings[0].check_id == "project.gitignore"
+    for pattern in ("tickets/board/", "tickets/state/", "tickets/logs/", "tickets/locks/"):
+        assert pattern in findings[0].message
+    assert findings[0].fix == "booley init"
+
+
+def test_project_gitignore_accepts_anchored_spelling_of_nested_pattern(tmp_path: Path) -> None:
+    anchored = {"tickets/board/": "/tickets/board/", "tickets/state/": "/tickets/state/"}
+    lines = [anchored.get(p, p) for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in lines), encoding="utf-8")
+
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
+
+
+def test_project_gitignore_anchored_spelling_of_top_level_pattern_differs(
+    tmp_path: Path,
+) -> None:
+    # ``worktrees/`` matches at any depth; ``/worktrees/`` only at the top.
+    lines = [
+        "/worktrees/" if p == "worktrees/" else p
+        for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS
+    ]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in lines), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "worktrees/" in findings[0].message
+
+
+def test_project_gitignore_missing_file_warns(tmp_path: Path) -> None:
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "missing" in findings[0].message
+    assert findings[0].fix == "booley init"
+
+
+def _history_probe(project_dir: Path) -> doctor._Reporter:
+    """Run the Ticket History commit probe against *project_dir* and return its reporter."""
+    reporter = doctor._Reporter.create()
+    doctor._check_ticket_history_committed(project_dir, reporter.pass_, reporter.warn_)
+    return reporter
+
+
+def _history_git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _history_repo(tmp_path: Path, monkeypatch) -> Path:
+    """Return a project dir inside a fresh Git repository with one initial commit."""
+    for key, value in {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }.items():
+        monkeypatch.setenv(key, value)
+    _history_git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "README").write_text("x\n", encoding="utf-8")
+    _history_git(tmp_path, "add", "README")
+    _history_git(tmp_path, "commit", "-q", "-m", "init")
+    # The default Stealth policy bans "ticket"; this repository opts out.
+    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley_project" / "booley.toml").write_text(
+        "[stealth]\nenabled = false\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_ticket_history_probe_passes_without_history(tmp_path, monkeypatch):
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    (project_dir / "tickets").mkdir()
+
+    reporter = _history_probe(project_dir)
+
+    assert reporter.findings is not None
+    assert [(f.severity, f.message) for f in reporter.findings] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_warns_until_records_are_committed(tmp_path, monkeypatch):
+    """An uncommitted record WARNs with its slug; Booley's commit clears it (ADR 0065)."""
+    from booley.ticket_board.history_publication import commit_history_record
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    tickets_dir = project_dir / "tickets"
+    place_closed_ticket(tickets_dir, "alpha", "---\nsummary: a\n---\n")
+    place_closed_ticket(tickets_dir, "beta", "---\nsummary: b\n---\n", outcome="archived")
+
+    reporter = _history_probe(project_dir)
+
+    assert reporter.findings is not None
+    warnings = [f for f in reporter.findings if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert warnings[0].check_id == "tickets.history-uncommitted"
+    assert "2 Closed Ticket history record(s) not committed yet (alpha, beta)" in (
+        warnings[0].message
+    )
+    assert not any(f.severity == "pass" for f in reporter.findings)
+
+    assert commit_history_record(tickets_dir, "alpha", policy_root=tmp_path)
+    reporter = _history_probe(project_dir)
+    warnings = [f for f in reporter.findings or [] if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert "(beta)" in warnings[0].message
+    assert "alpha" not in warnings[0].message
+
+    assert commit_history_record(tickets_dir, "beta", policy_root=tmp_path)
+    reporter = _history_probe(project_dir)
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_passes_for_records_committed_by_hand(tmp_path, monkeypatch):
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
+    _history_git(project_dir, "add", "tickets")
+    _history_git(project_dir, "commit", "-q", "-m", "history")
+
+    reporter = _history_probe(project_dir)
+
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_has_nothing_to_warn_outside_a_repository(tmp_path, monkeypatch):
+    """No repository tracks history, so an uncommitted record is not a finding."""
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    place_closed_ticket(tmp_path / "tickets", "alpha", "---\nsummary: a\n---\n")
+
+    reporter = _history_probe(tmp_path)
+
+    assert [(f.severity, f.message) for f in reporter.findings or []] == [
+        ("pass", "Ticket History committed")
+    ]
+
+
+def test_ticket_history_probe_warns_when_history_is_gitignored(tmp_path, monkeypatch):
+    """An ignored history/ is never committed, so Doctor must not report it committed."""
+    from booley.ticket_board.history_publication import publish_history_record
+    from tests.ticket_board.conftest import place_closed_ticket
+
+    project_dir = _history_repo(tmp_path, monkeypatch)
+    (project_dir / ".gitignore").write_text("tickets/history/\n", encoding="utf-8")
+    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
+
+    reporter = _history_probe(project_dir)
+
+    assert [(f.severity, f.check_id) for f in reporter.findings or []] == [
+        ("warn", "tickets.history-uncommitted")
+    ]
+    warning = (reporter.findings or [])[0]
+    assert "gitignored" in warning.message
+    assert "un-ignore tickets/history" in warning.fix
+    # Publication itself stays non-failing: nothing tracks the record.
+    assert publish_history_record(project_dir / "tickets", "alpha", policy_root=tmp_path)
 
 
 def test_doctor_reports_ticket_board_import_failure(tmp_path, monkeypatch, capsys):
@@ -884,6 +1155,26 @@ def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
     assert rec.kinds() == {"fail"}
     assert "could not enter the Sandbox" in rec.fails()[0]
     assert "bad issuance" in rec.fails()[0]
+
+
+def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
+    project, _calls = _tool_check_harness(
+        tmp_path,
+        monkeypatch,
+        lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        doctor.session_runtime,
+        "up",
+        lambda _root: (_ for _ in ()).throw(
+            doctor.session_runtime.SessionError("Sandbox start refused: host is at capacity")
+        ),
+    )
+    rec = _Rec()
+
+    _run_flow_check(project, rec, dry_run=False)
+
+    assert rec.fix_hints == ["free Sandbox capacity using the command in the refusal, then retry"]
 
 
 def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
@@ -1470,7 +1761,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     assert doctor._deep_timeout_s(project, "synth") == (
         5400 + doctor._SYNTH_DEEP_FINALIZE_MARGIN_S
     )
-    assert doctor._deep_timeout_s(project, "sim") == doctor._DEEP_TIMEOUTS_S["sim"]
+    assert doctor._deep_timeout_s(project, "sim") == 4290
     assert doctor._deep_timeout_s(project, "lint") == doctor._DEEP_TIMEOUTS_S["lint"]
     # No knob at all -> the hardcoded floor.
     bare = doctor.ProjectAudit(
@@ -1484,6 +1775,49 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
         doctor._deep_timeout_s(bare, "synth")
         == doctor._DEEP_TIMEOUTS_S["synth"] + doctor._SYNTH_DEEP_FINALIZE_MARGIN_S
     )
+    assert doctor._deep_timeout_s(bare, "sim") == 4830
+
+    custom = doctor.ProjectAudit(
+        project_root=tmp_path,
+        project_dir=tmp_path / ".booley_project",
+        booley_toml={"flows": {"sim": {"timeout_ms": 5000, "build_timeout_ms": 7000}}},
+        configs_toml={},
+        first_target="",
+    )
+    assert doctor._deep_timeout_s(custom, "sim") == doctor._DEEP_TIMEOUTS_S["sim"]
+
+
+def test_sim_selftest_timeout_names_stage_specific_knobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        project_dir=tmp_path / ".booley_project",
+        booley_toml={},
+        configs_toml={},
+        first_target="",
+    )
+    failures: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        MagicMock(side_effect=subprocess.TimeoutExpired(["sim"], 10)),
+    )
+
+    result = doctor._execute_selftest(
+        project,
+        ["sim"],
+        {},
+        10,
+        "sim self-test",
+        "sim",
+        _fail=lambda message, remedy: failures.append((message, remedy)),
+    )
+
+    assert result is None
+    assert "build_timeout_ms" in failures[0][1]
+    assert "timeout_ms" in failures[0][1]
 
 
 def test_validate_known_tables_warns_on_unknown_and_retired():
@@ -3999,8 +4333,10 @@ targets:
 # ---------------------------------------------------------------------------
 
 
-def _image_lifecycle_result(image: str, status) -> object:
-    return doctor.image_lifecycle.LifecycleResult(image, "sha256:test", status)
+def _write_issued_image_spec(project_root: Path) -> None:
+    path = project_root / ".devcontainer" / "devcontainer.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"image": "sha256:issued"}), encoding="utf-8")
 
 
 def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monkeypatch):
@@ -4010,16 +4346,20 @@ def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monk
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.STALE),
+        doctor.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MISMATCH,
+            "revision old -> new; wheel_source_fingerprint old -> new",
+        ),
     )
 
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert warns and "image provenance differs" in warns[0]
+    assert warns and "revision old -> new" in warns[0]
     assert not passes
 
 
@@ -4028,10 +4368,13 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.CURRENT),
+        doctor.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MATCH
+        ),
     )
     # The mtime fallback must not run; poison it to prove that.
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1 / 0)
@@ -4039,7 +4382,7 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert passes and "exactly this checkout" in passes[0]
+    assert passes and "current Booley sources" in passes[0]
     assert not warns
 
 
@@ -4048,10 +4391,13 @@ def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, mon
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.STALE),
+        doctor.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MISMATCH, "revision old -> new"
+        ),
     )
 
     warns: list[str] = []
@@ -4066,16 +4412,19 @@ def test_image_bakes_current_booley_passes_when_provenance_is_current(tmp_path, 
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.CURRENT),
+        doctor.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.MATCH
+        ),
     )
 
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert passes and "exactly this checkout" in passes[0]
+    assert passes and "current Booley sources" in passes[0]
     assert not warns
 
 
@@ -4105,10 +4454,13 @@ def test_image_bakes_current_booley_silent_when_undeterminable(tmp_path, monkeyp
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor.image_lifecycle,
-        "reconcile",
-        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.EXTERNAL),
+        doctor.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
+            doctor.image_identity.Status.UNKNOWN
+        ),
     )
 
     warns: list[str] = []
@@ -4179,6 +4531,263 @@ class TestWorktreePruneGuard:
         assert rec.kinds() == {"pass"}
 
 
+class TestWorktreePortability:
+    def _project(self, root: Path):
+        project_dir = root / ".booley_project"
+        project_dir.mkdir(exist_ok=True)
+        return SimpleNamespace(project_root=root, project_dir=project_dir)
+
+    def test_two_capable_sides_and_enabled_policy_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "worktree.useRelativePaths", "true"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: (2, 53, 0))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, "docker", "image", False)
+        )
+
+        assert not [item for item in report.findings if item.severity is Severity.FAIL]
+        assert not [item for item in report.findings if item.severity is Severity.WARN]
+        assert any("worktree.useRelativePaths=true" in item.message for item in report.findings)
+
+    def test_runtime_probe_reports_sandbox_and_unknown_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        project = self._project(tmp_path)
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: (2, 53, 0))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", True)
+        )
+
+        messages = [item.message for item in report.findings]
+        assert any("Sandbox Git 2.53.0 supports" in message for message in messages)
+        assert any("host Git capability is unknown" in message for message in messages)
+
+    def test_probe_and_worktree_config_os_errors_are_bounded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        administration = tmp_path / "admin"
+        administration.mkdir()
+        (administration / "config.worktree").touch()
+        monkeypatch.setattr(
+            readiness.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+        )
+
+        assert readiness._git_version_at("git", "--version") is None
+        assert readiness._read_worktree_config(administration, "core.worktree") is None
+
+    def test_invalid_relative_extension_format_fails(self, tmp_path: Path):
+        findings = readiness.Findings()
+
+        readiness._report_repository_format(tmp_path, "invalid", True, findings)
+
+        report = findings.report()
+        assert [item for item in report.findings if item.severity is Severity.FAIL]
+
+    def test_unreadable_and_unresolvable_live_worktrees(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        project_dir = tmp_path / ".booley_project"
+        outer = project_dir / "worktrees" / "ticket"
+        ignored = project_dir / "worktrees" / "not-a-worktree"
+        outer.mkdir(parents=True)
+        ignored.mkdir()
+        (outer / ".git").touch()
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        monkeypatch.setattr(
+            readiness,
+            "resolve_checkout_project_dir",
+            lambda _root: (_ for _ in ()).throw(FileNotFoundError),
+        )
+
+        assert readiness._worktree_metadata_problems(outer) == (
+            "unreadable worktree registration",
+        )
+        assert readiness._live_worktree_paths(project) == (outer,)
+
+    def test_relative_live_worktree_reports_pass(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        worktree = project_dir / "worktrees" / "ticket"
+        administration = tmp_path / "admin"
+        worktree.mkdir(parents=True)
+        administration.mkdir()
+        (worktree / ".git").write_text(
+            f"gitdir: {os.path.relpath(administration, worktree)}\n", encoding="utf-8"
+        )
+        (administration / "gitdir").write_text(
+            f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
+        )
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        findings = readiness.Findings()
+
+        readiness._inspect_live_worktrees(project, findings)
+
+        assert any(
+            item.severity is Severity.PASS and "metadata is relative" in item.message
+            for item in findings.report().findings
+        )
+
+    def test_old_sandbox_before_opt_in_warns_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "worktree.useRelativePaths", "false"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        versions = iter(((2, 53, 0), (2, 47, 9)))
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: next(versions))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, "docker", "image", False)
+        )
+
+        warnings = [item.message for item in report.findings if item.severity is Severity.WARN]
+        assert any("container-only" in message for message in warnings)
+        assert any("do not run host `git worktree prune`" in message for message in warnings)
+        assert not [item for item in report.findings if item.severity is Severity.FAIL]
+
+    def test_old_side_after_repository_opt_in_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
+            check=True,
+        )
+        project = self._project(tmp_path)
+        versions = iter(((2, 53, 0), (2, 47, 9)))
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: next(versions))
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, "docker", "image", False)
+        )
+
+        failures = [item.message for item in report.findings if item.severity is Severity.FAIL]
+        assert len(failures) == 1
+        assert "repository format" in failures[0]
+
+    def test_live_metadata_reports_absolute_paths(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        worktree = project_dir / "worktrees" / "ticket"
+        administration = tmp_path / "admin"
+        worktree.mkdir(parents=True)
+        administration.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {administration}\n", encoding="utf-8")
+        (administration / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", False)
+        )
+
+        messages = [item.message for item in report.findings]
+        assert any(
+            str(worktree) in message and "absolute .git pointer" in message for message in messages
+        )
+        assert any("absolute reverse gitdir" in message for message in messages)
+
+    def test_live_metadata_reads_worktree_config_not_shared_config(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        administration = tmp_path / ".git" / "worktrees" / "ticket"
+        worktree.mkdir()
+        administration.mkdir(parents=True)
+        pointer = os.path.relpath(administration, worktree)
+        reverse = os.path.relpath(worktree / ".git", administration)
+        (worktree / ".git").write_text(f"gitdir: {pointer}\n", encoding="utf-8")
+        (administration / "gitdir").write_text(f"{reverse}\n", encoding="utf-8")
+        subprocess.run(
+            [
+                "git",
+                "config",
+                "--file",
+                str(administration / "config.worktree"),
+                "core.worktree",
+                "../../../worktree",
+            ],
+            check=True,
+        )
+
+        problems = readiness._worktree_metadata_problems(worktree)
+
+        assert problems == ()
+
+    def test_live_metadata_includes_paired_project_data_worktree(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        outer = project_dir / "worktrees" / "ticket"
+        paired = outer / ".booley_project"
+        outer_admin = tmp_path / "outer-admin"
+        paired_admin = tmp_path / "paired-admin"
+        for worktree, administration in ((outer, outer_admin), (paired, paired_admin)):
+            worktree.mkdir(parents=True, exist_ok=True)
+            administration.mkdir()
+            (worktree / ".git").write_text(
+                f"gitdir: {os.path.relpath(administration, worktree)}\n", encoding="utf-8"
+            )
+            (administration / "gitdir").write_text(
+                f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
+            )
+        subprocess.run(
+            [
+                "git",
+                "config",
+                "--file",
+                str(paired_admin / "config.worktree"),
+                "core.hooksPath",
+                str(paired_admin / "hooks"),
+            ],
+            check=True,
+        )
+        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+
+        paths = readiness._live_worktree_paths(project)
+        problems = readiness._worktree_metadata_problems(paired)
+
+        assert paths == (outer, paired)
+        assert problems == ("absolute core.hooksPath",)
+
+    def test_missing_docker_probe_after_opt_in_warns_instead_of_claiming_old_git(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
+            check=True,
+        )
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: (2, 53, 0))
+        project = self._project(tmp_path)
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", False)
+        )
+
+        assert not [item for item in report.findings if item.severity is Severity.FAIL]
+        assert any(
+            "could not be verified" in item.message
+            for item in report.findings
+            if item.severity is Severity.WARN
+        )
+
+
 class TestWorktreeCoreShadowGuard:
     """A stale worktree .core under .booley_project/ shadows the repo-root
     source in FuseSoC's --cores-root scan unless a FUSESOC_IGNORE marker is
@@ -4228,17 +4837,19 @@ class TestWorktreeCoreShadowGuard:
 def _seed_board(tmp_path: Path) -> Path:
     """Create a minimal tickets tree; return the tickets dir."""
     tickets = tmp_path / "tickets"
-    for state in ("queue", "active", "blocked"):
-        (tickets / "board" / state).mkdir(parents=True, exist_ok=True)
+    for directory in required_board_directories(tickets):
+        directory.mkdir(parents=True, exist_ok=True)
     (tickets / "logs").mkdir(parents=True, exist_ok=True)
     return tickets
 
 
 def _seed_active_ticket(tickets: Path, slug: str = "stuck") -> None:
-    (tickets / "board" / "active" / f"{slug}.md").write_text(
+    """Place a running Ticket (board document + running state record) with a lock."""
+    ticket_document_path(tickets, slug).write_text(
         "---\nsummary: Stuck ticket\n---\n",
         encoding="utf-8",
     )
+    write_state_record(tickets, slug, StateRecord.fresh(TicketState.RUNNING))
     lock_dir = tickets / "logs" / slug
     lock_dir.mkdir(parents=True, exist_ok=True)
     (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
@@ -4319,6 +4930,9 @@ class TestBoardOrphanSelfHeal:
         assert rec.kinds() == {"warn"}
         assert "found 1 orphaned" in rec.events[0][1]
         assert board_calls == []
+        record = read_state_record(tickets, "stuck")
+        assert record is not None
+        assert record.state is TicketState.RUNNING
 
 
 # ---------------------------------------------------------------------------
@@ -6296,6 +6910,25 @@ class TestNoDockerSkipReason:
             "provider-side web access disabled" in m for lvl, m in rec.events if lvl == "pass"
         )
 
+    def test_host_without_runtime_skips_instead_of_running_none(self, monkeypatch):
+        # A non-canonical host run leaves docker_exe unset even with Docker on PATH;
+        # the checks used to go on and run [None, "run", ...].
+        _set_venue(monkeypatch, False)
+        monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
+        monkeypatch.setattr(
+            doctor.subprocess,
+            "run",
+            lambda *a, **k: pytest.fail(f"ran a container check without a runtime: {a}"),
+        )
+        rec = _Rec()
+
+        doctor._run_container_checks(
+            None, None, "booley-sandbox", False, rec.p, rec.w, rec.s, rec.f
+        )
+
+        assert any("no Docker/Podman runtime found" in m for lvl, m in rec.events if lvl == "skip")
+        assert not [m for lvl, m in rec.events if lvl == "fail"]
+
 
 class TestSynthHeavyTargetCalibration:
     def _project(self, tmp_path, *, marked=("asic_small", "asic_full"), booley_toml=None):
@@ -6425,3 +7058,181 @@ def test_doctor_reuses_one_target_source_inspector(
 
     assert len(managers) == 1
     assert resolutions == 1
+
+
+# ---------------------------------------------------------------------------
+# sim run_cwd probe (issue #881)
+# ---------------------------------------------------------------------------
+
+
+def _git_commit_all(root: Path, message: str = "add") -> None:
+    """Commit everything staged under ``root`` with a throwaway identity."""
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message],
+        cwd=root,
+        check=True,
+    )
+
+
+def _run_cwd_project(root: Path, run_cwd: str | None) -> doctor.ProjectAudit:
+    sim: dict[str, object] = {} if run_cwd is None else {"run_cwd": run_cwd}
+    return doctor.ProjectAudit(root, root / ".booley_project", {"flows": {"sim": sim}}, {}, "sim")
+
+
+def _check_run_cwd(root: Path, run_cwd: str | None) -> _Collector:
+    collector = _Collector()
+    doctor._check_sim_run_cwd(_run_cwd_project(root, run_cwd), collector._pass, collector._warn)
+    return collector
+
+
+def _committed_repo(root: Path) -> None:
+    """A git repo with one unrelated committed file, so HEAD exists."""
+    _git_init(root)
+    (root / "README").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=root, check=True)
+    _git_commit_all(root)
+
+
+def test_flow_audit_wires_sim_run_cwd_check_only_for_enabled_sim(tmp_path, monkeypatch):
+    checked: list[str] = []
+    monkeypatch.setattr(
+        doctor, "_check_sim_run_cwd", lambda project, *_: checked.append(str(project.project_root))
+    )
+    monkeypatch.setattr(doctor, "_check_doctor_targets", lambda *args, **kwargs: [])
+    project = _run_cwd_project(tmp_path, "run")
+    enabled = doctor.ProjectAudit(
+        project.project_root,
+        project.project_dir,
+        {"flows": {"sim": {"run_cwd": "run"}, "lint": {"enabled": False}}},
+        {},
+        "sim",
+    )
+
+    _run_isolated_flow_audit(enabled, monkeypatch)
+    assert checked == [str(tmp_path)]
+
+    checked.clear()
+    disabled = doctor.ProjectAudit(
+        project.project_root,
+        project.project_dir,
+        {"flows": {"sim": {"enabled": False}}},
+        {},
+        "sim",
+    )
+    _run_isolated_flow_audit(disabled, monkeypatch)
+    assert checked == []
+
+
+def test_sim_run_cwd_missing_warns(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-missing"]
+    assert str(tmp_path / "run") in c.warned[0]
+    assert c.warned[0].subject == "run"
+    assert not c.passed
+
+
+def test_sim_run_cwd_regular_file_warns_as_not_a_directory(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").write_text("file\n", encoding="utf-8")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-missing"]
+    assert "not a directory" in c.warned[0]
+
+
+def test_sim_run_cwd_gitignored_warns_untracked(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("run/\n", encoding="utf-8")
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-untracked"]
+    assert not c.passed
+
+
+def test_sim_run_cwd_untracked_not_ignored_warns_untracked(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-untracked"]
+
+
+def test_sim_run_cwd_staged_but_uncommitted_warns_untracked(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "run/.gitkeep"], cwd=tmp_path, check=True)
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert [m.check_id for m in c.warned] == ["sim.run-cwd-untracked"]
+
+
+def test_sim_run_cwd_committed_placeholder_passes(tmp_path: Path) -> None:
+    _committed_repo(tmp_path)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "run/.gitkeep"], cwd=tmp_path, check=True)
+    _git_commit_all(tmp_path, "placeholder")
+
+    c = _check_run_cwd(tmp_path, "run")
+
+    assert not c.warned
+    assert any("is committed" in m for m in c.passed)
+
+
+@pytest.mark.parametrize("run_cwd", [None, "", ".", "runs/{attempt}", "runs/{bogus}"])
+def test_sim_run_cwd_unset_or_templated_is_silent(tmp_path: Path, run_cwd: str | None) -> None:
+    _committed_repo(tmp_path)
+
+    c = _check_run_cwd(tmp_path, run_cwd)
+
+    assert not c.warned and not c.passed
+
+
+def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
+    tmp_path: Path,
+) -> None:
+    """The host repo ignores ``.booley_project/``; its own repo owns the placeholder."""
+    _committed_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text(".booley_project/\n", encoding="utf-8")
+    nested = tmp_path / ".booley_project"
+    nested.mkdir()
+    _committed_repo(nested)
+    (nested / "runs" / "sim").mkdir(parents=True)
+    (nested / "runs" / "sim" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "runs/sim/.gitkeep"], cwd=nested, check=True)
+    _git_commit_all(nested, "placeholder")
+
+    c = _check_run_cwd(tmp_path, ".booley_project/runs/sim")
+
+    assert not c.warned
+    assert any("is committed" in m for m in c.passed)
+
+
+def test_ticket_board_layout_probe_fails_when_git_cannot_be_asked(tmp_path, monkeypatch):
+    """Doctor FAILs a board whose tracked-state check Git could not answer."""
+    from booley.ticket_board import legacy_layout
+
+    tickets = tmp_path / "tickets"
+    for name in ("board", "state", "history"):
+        (tickets / name).mkdir(parents=True)
+    failed = subprocess.CompletedProcess([], 129, stdout="", stderr="fatal: bad index")
+    monkeypatch.setattr(legacy_layout.subprocess, "run", lambda *_a, **_k: failed)
+    reporter = doctor._Reporter.create()
+
+    doctor._check_ticket_board_layout(tmp_path, reporter.pass_, reporter.fail_)
+
+    findings = reporter.findings or []
+    assert [f.severity for f in findings] == ["fail"]
+    assert "Ticket Board cannot be checked" in findings[0].message
+    assert "fatal: bad index" in findings[0].message

@@ -11,12 +11,13 @@ from booley.flows.sim.workload import build_workload_snapshot
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 
-def _resolved(root: Path) -> ResolvedTarget:
+def _resolved(root: Path, *, configured_eda_tool: str = "verilator") -> ResolvedTarget:
     return ResolvedTarget(
         name="sim_core",
         vlnv="::core:0",
         toplevel="tb_core",
         eda_tool="verilator",
+        configured_eda_tool=configured_eda_tool,
         files=(
             ResolvedFile("rtl.sv", "systemVerilogSource"),
             ResolvedFile("tb.sv", "systemVerilogSource", tags=("tb",)),
@@ -48,6 +49,29 @@ def test_workload_snapshot_preserves_input_roles_and_is_path_stable(tmp_path: Pa
     assert first["fingerprint"] == second["fingerprint"]
     assert [row["role"] for row in first["inputs"]] == ["rtl", "tb", "workload"]
     assert first["provenance_limitation"] == PROVENANCE_LIMITATION
+
+
+def test_workload_snapshot_records_configured_backend_and_fingerprints_changes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    _write_inputs(root)
+
+    legacy_icarus = build_workload_snapshot(
+        root,
+        "sim_core",
+        "coremark",
+        _resolved(root, configured_eda_tool="icarus"),
+    )
+    verilator = build_workload_snapshot(
+        root,
+        "sim_core",
+        "coremark",
+        _resolved(root, configured_eda_tool="verilator"),
+    )
+
+    assert legacy_icarus["eda_tool"] == "icarus"
+    assert legacy_icarus["fingerprint"] != verilator["fingerprint"]
 
 
 def test_configured_run_cwd_is_normalized_for_workload_snapshot(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ def test_native_adapter_invocations_preserve_order_and_option_shaping() -> None:
         "trace_files": ("dump.vcd",),
         "pass_sentinels": ("PASS",),
         "fail_sentinels": ("FAIL",),
+        "runtime_inputs": ("firmware.hex", "vectors/input.bin"),
     }
 
     verilator = prepare_adapter_invocation(
@@ -42,6 +43,8 @@ def test_native_adapter_invocations_preserve_order_and_option_shaping() -> None:
     assert "--top" not in icarus
     assert "--plusarg=--firmware=image.elf" in icarus
     assert icarus[icarus.index("--work-dir") + 1] == "attempt/evidence"
+    assert "--runtime-input=firmware.hex" in verilator
+    assert "--runtime-input=vectors/input.bin" in icarus
 
 
 def test_cocotb_adapter_supports_unfiltered_batch() -> None:
@@ -56,12 +59,14 @@ def test_cocotb_adapter_supports_unfiltered_batch() -> None:
             tests=(),
             result_verbosity="full",
             sim_time_grace_s=4.5,
+            runtime_inputs=("firmware.hex",),
         )
     )
 
     assert command[:3] == ["python3", "-m", "booley.flows.sim.backends.cocotb"]
     assert not any(argument.startswith("--test=") for argument in command)
     assert command[command.index("--eda-tool") + 1] == "icarus"
+    assert "--runtime-input=firmware.hex" in command
 
 
 def test_transport_identity_is_all_or_nothing() -> None:

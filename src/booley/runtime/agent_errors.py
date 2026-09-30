@@ -48,6 +48,14 @@ class AgentTimeoutError(Exception):
     """Local agent runtime deadline reached; not retryable."""
 
 
+class AgentProviderError(RuntimeError):
+    """Terminal provider-process failure not covered by a narrower error type."""
+
+    def __init__(self, message: str, provider: str) -> None:
+        self.provider = provider
+        super().__init__(message)
+
+
 class UsageLimitError(Exception):
     """Daily or subscription usage cap reached; not retryable."""
 

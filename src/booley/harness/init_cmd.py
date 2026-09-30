@@ -15,7 +15,7 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
     - Project directory (.booley_project/ with config skeletons)
-    - Tickets directory tree (board states + logs)
+    - Tickets directory tree (board, state records, logs)
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
     - Pinned Nangate45 download into the per-user cache
@@ -66,7 +66,12 @@ from booley.fusesoc.core_projection import (
 # keep resolving them by their original ``init_cmd`` names. F401 is suppressed
 # for this file (see pyproject) because a facade re-exports names it may not use.
 from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk
-from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
+from booley.harness.bootstrap import (
+    BootstrapResult,
+    BootstrapState,
+    parse_git_version,
+    reconcile_bootstrap,
+)
 from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
     ImageLifecycleError,
@@ -118,6 +123,7 @@ from booley.harness.setup.git_hooks import (
     _step_git_hooks,
     _step_line_endings,
     _step_project_git_hooks,
+    _step_worktree_link_policy,
     _step_worktree_prune_guard,
 )
 from booley.harness.setup.guidance_links import ensure_guidance_links, plan_guidance_links
@@ -129,6 +135,7 @@ from booley.runtime import auth_token, project_repositories
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
+from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
@@ -139,18 +146,18 @@ from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
     resolve_project_dir,
 )
+from booley.runtime.project_gitignore import (
+    PROJECT_GITIGNORE,
+    PROJECT_GITIGNORE_PATTERNS,
+    missing_gitignore_patterns,
+)
 from booley.runtime.session_issuance import SessionSpecInputs
 from booley.runtime.timefmt import detect_host_timezone
-from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
+from booley.ticket_board.board_layout import required_board_directories
 
 # ---------------------------------------------------------------------------
 # Layout constants
 # ---------------------------------------------------------------------------
-
-# Ticket Board directories that `booley init` creates — derived from the canonical
-# lifecycle (excludes archived, created on demand) so it can't drift from
-# doctor's required-dirs check, which reads the same source.
-BOARD_STATES = REQUIRED_BOARD_DIRS
 
 MIN_PY = (3, 11)
 
@@ -201,46 +208,6 @@ def _ticket_creation_skeleton() -> str:
     """Read the free-form Ticket Creation Guidance template shipped with the skill."""
     template = skills_dir() / "booley-ticket-create" / "TICKET_CREATION_TEMPLATE.md"
     return template.read_text(encoding="utf-8")
-
-
-# Inside ``.booley_project/`` we ignore transient state that should never be
-# committed (tmp scratch, runtime logs, lockfiles).  ``.interactive_logs/`` is
-# new in ADR 0012 — per-session transcripts written by the MCP server when an
-# outer Claude Code / Codex tab calls Booley Flows and Specialists.
-#
-# Only *fixed-name*, Booley-owned transient dirs belong here — patterns that are
-# correct for every project. ``flow-reports/`` is durable Flow evidence that is
-# transient to Git. ``.runtime/`` (dotted) is the scratch/EDA build
-# root (``resolve_project_dir()/".runtime"``, holds the multi-GB edalize tree);
-# ``runtime/`` (no dot) is the container-lifetime bookkeeping dir — the doctor
-# stamp (``runtime/doctor_stamp.json``), the developer probe, and the job-slot
-# store all live there (F-6: it is a distinct dir from ``.runtime/``, not a
-# typo — do not "dedupe" the two away).  ``worktrees/`` holds per-run git
-# worktrees.  Project-configurable output dirs (``[flows.sim].output_dir``
-# etc.) are deliberately NOT listed — they vary per project and often live
-# outside ``.booley_project/``.
-#
-# ``__pycache__/`` + ``*.pyc``: Project-authored Python lifecycle hooks may
-# still run in ``.booley_project/hooks/``. The managed Git policy bundle is
-# isolated under ``.booley_project/.managed/`` and runs from its zip archive.
-PROJECT_GITIGNORE_PATTERNS = (
-    "tmp/",
-    "flow-reports/",
-    "tickets/logs/",
-    "tickets/locks/",
-    ".interactive_logs/",
-    ".runtime/",
-    "runtime/",
-    "worktrees/",
-    "__pycache__/",
-    "*.pyc",
-    "SETUP-REPORT.md",
-    "FEEDBACK-REPORT.md",
-)
-
-PROJECT_GITIGNORE = "# Transient Booley state — do not commit.\n" + "".join(
-    f"{pattern}\n" for pattern in PROJECT_GITIGNORE_PATTERNS
-)
 
 
 # ---------------------------------------------------------------------------
@@ -297,11 +264,10 @@ def _backfill_project_gitignore(project_dir: Path, ctx: InitContext) -> None:
         return
 
     # File present — append only the patterns it's missing.  Compare against
-    # stripped lines so trailing whitespace or a missing final newline doesn't
-    # cause a spurious duplicate.
+    # normalized lines so trailing whitespace, a missing final newline, or an
+    # anchored spelling doesn't cause a spurious duplicate.
     existing = gitignore.read_text(encoding="utf-8")
-    present = {line.strip() for line in existing.splitlines()}
-    missing = [p for p in PROJECT_GITIGNORE_PATTERNS if p not in present]
+    missing = missing_gitignore_patterns(existing)
     if not missing:
         return
 
@@ -509,7 +475,9 @@ def _step_tickets(ctx: InitContext) -> None:
 
     tickets_dir = resolve_project_dir(ctx.project_root) / "tickets"
 
-    required = [tickets_dir / "board" / state for state in BOARD_STATES]
+    # Board directories come from the lifecycle's board layout, the same source
+    # doctor's required-dirs check reads, so the two cannot drift.
+    required = required_board_directories(tickets_dir)
     required.append(tickets_dir / "logs")
     required.append(tickets_dir / "locks")
 
@@ -1088,12 +1056,15 @@ def _step_image_lifecycle(
         if ctx.force
         else ImageLifecycleIntent.ENSURE
     )
+    scope = ProjectImageScope(ctx.project_root, base_result)
     try:
-        result = reconcile_images(
-            ProjectImageScope(ctx.project_root, base_result),
-            intent,
-            verbose=ctx.verbose,
-        )
+        if intent is ImageLifecycleIntent.CHECK:
+            result = reconcile_images(scope, intent, verbose=ctx.verbose)
+        else:
+            try:
+                result = image_lifecycle.reconcile_planned(scope, intent, verbose=ctx.verbose)
+            except image_lifecycle.IncrementalPlanUnavailableError:
+                result = reconcile_images(scope, intent, verbose=ctx.verbose)
     except ImageLifecycleError as exc:
         err(str(exc))
         ctx.record("docker_image", "err", str(exc))
@@ -1409,6 +1380,8 @@ def _resolve_host_skills_sources(project_root: Path) -> list[tuple[str, str]]:
             # into the image — never re-mount it from the host.
             if builtin_dir and (real == builtin_dir or builtin_dir in real.parents):
                 continue
+            if is_booley_qa_skill_path(real):
+                continue
             if real in seen_paths:
                 continue
             seen_names.add(entry.name)
@@ -1542,17 +1515,18 @@ def _report_interactive_changes(
 def _interactive_precondition_failed(
     ctx: InitContext,
     nangate_pdk_root: Path | object | None,
+    *,
+    init_will_create_project_dir: bool = False,
 ) -> bool:
     if _devcontainer_is_tracked(ctx.project_root):
         err(".devcontainer/ is tracked by git — refusing to clobber it")
         info("  Interactive Mode is unavailable for this repo until it is removed")
         ctx.record("interactive", "err", "tracked .devcontainer")
         return True
-    project_data_missing = (
-        "BOOLEY_PROJECT_DIR" not in os.environ
-        and not (ctx.project_root / ".booley_project").is_dir()
-    )
-    if ctx.check_only and project_data_missing:
+    if _init_owned_project_dir_missing(
+        ctx,
+        init_will_create_project_dir=init_will_create_project_dir,
+    ):
         warn("would seed the Sandbox after creating the private project directory")
         ctx.record("interactive", "warn", "project directory would be created first")
         return True
@@ -1560,6 +1534,28 @@ def _interactive_precondition_failed(
         err("Sandbox not seeded because the Nangate45 setup download failed")
         ctx.record("interactive", "err", "Nangate45 cache unavailable")
         return True
+    return False
+
+
+def _init_owned_project_dir_missing(
+    ctx: InitContext,
+    *,
+    init_will_create_project_dir: bool,
+) -> bool:
+    """Return whether full init owns the one unavailable Project-data source."""
+    if not ctx.check_only or not init_will_create_project_dir:
+        return False
+    target = project_dir_for_init(ctx.project_root)
+    configured = os.environ.get("BOOLEY_PROJECT_DIR")
+    candidate = Path(configured).expanduser() if configured else target
+    if not candidate.is_absolute() or candidate != target:
+        return False
+    try:
+        target.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
     return False
 
 
@@ -1606,10 +1602,15 @@ def _step_interactive(
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
     agent_app: str | None = None,
     runtime_image_id: str | None = None,
+    init_will_create_project_dir: bool = False,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
-    if _interactive_precondition_failed(ctx, nangate_pdk_root):
+    if _interactive_precondition_failed(
+        ctx,
+        nangate_pdk_root,
+        init_will_create_project_dir=init_will_create_project_dir,
+    ):
         return
 
     sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
@@ -1861,9 +1862,6 @@ def _step_advisories(ctx: InitContext) -> None:
     failed = _failed_step_names(ctx)
     if failed:
         _print_incomplete_advisory(failed)
-        print()
-        info("Optional:")
-        info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
         ctx.record("advisories", "ok", "incomplete")
         return
     demo = _is_demo_project(ctx.project_root)
@@ -1874,9 +1872,6 @@ def _step_advisories(ctx: InitContext) -> None:
     # only wants Step 3").
     scaffolded = any(r.name == "scaffold" and r.status in ("ok", "warn") for r in ctx.results)
     detail = _print_success_advisory(ctx, demo=demo, scaffolded=scaffolded)
-    print()
-    info("Optional:")
-    info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
     ctx.record("advisories", "ok", detail)
 
 
@@ -2109,7 +2104,7 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
         if finding.state is BootstrapState.ERROR:
             err(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "err", finding.detail)
-        elif finding.state is BootstrapState.PENDING:
+        elif finding.state in {BootstrapState.PENDING, BootstrapState.WARNING}:
             warn(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "warn", finding.detail)
         elif finding.state is BootstrapState.CHANGED:
@@ -2168,6 +2163,26 @@ def _selected_runtime_image_id(result: LifecycleResult | None) -> str | None:
     return result.selected_id
 
 
+def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
+    """Probe the selected Sandbox Image without treating failure as capability."""
+    if image_id is None:
+        return None
+    try:
+        result = idk._run_docker(["run", "--rm", image_id, "git", "--version"], timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_git_version(result.stdout) if result.returncode == 0 else None
+
+
+def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> None:
+    """Reconcile pruning safety and the two-sided worktree-link policy."""
+    _step_worktree_prune_guard(ctx)
+    _step_worktree_link_policy(
+        ctx,
+        sandbox_git_version=_sandbox_git_version(runtime_image_id),
+    )
+
+
 def _run_project_init_steps(
     ctx: InitContext,
     args: argparse.Namespace,
@@ -2177,15 +2192,12 @@ def _run_project_init_steps(
     bootstrap_result: BootstrapResult | None = None,
 ) -> int:
     """Run seed-only or full project mutations after preflight succeeds."""
-
     if getattr(args, "seed", False):
         if not _step_agent_config(ctx, selection, agent_config_path):
             return _print_summary(ctx)
         return _run_seed(ctx, selection)
 
-    # --scaffold: emit a runnable starter IP (RTL + TB + .core + populated
-    # config) before the regular steps, which then backfill around it. A
-    # refusal (existing design files) aborts the whole run — the user asked
+    # A refusal to scaffold aborts the run — the user asked
     # for a fresh scaffold and must decide, not get a half-initialized mix.
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
@@ -2202,17 +2214,18 @@ def _run_project_init_steps(
     )
     pdk_root = nangate_pdk.cache_root()
     image_result = _reconcile_initialized_image(ctx, bootstrap_result)
+    runtime_image_id = _selected_runtime_image_id(image_result)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
-    _step_worktree_prune_guard(ctx)
+    _step_worktree_policies(ctx, runtime_image_id)
     _step_line_endings(ctx, _line_ending_project_dir(ctx.project_root))
     _step_guidance_links(ctx, guidance_plan)
-    runtime_image_id = _selected_runtime_image_id(image_result)
     _step_interactive(
         ctx,
         nangate_pdk_root=pdk_root,
         agent_app=selection.provider,
         runtime_image_id=runtime_image_id,
+        init_will_create_project_dir=True,
     )
     _step_project_inventory(ctx)
     _step_advisories(ctx)
@@ -2303,18 +2316,28 @@ def _run_init_unlocked(
 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
     """Run Project initialization without racing host Docker mutations."""
-    if getattr(args, "check_only", False):
-        from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime import issuance_invalidation, session_runtime
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
 
-        if shared_recovery_blocks_command(read_only=True):
+    if getattr(args, "check_only", False):
+        try:
+            recovery_pending = shared_recovery_blocks_command(read_only=True)
+        except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
+            err(str(exc))
+            return 2
+        if recovery_pending:
             err("interrupted Sandbox host state requires recovery")
             return 2
         return _run_init_unlocked(args, project_root)
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
 
     with host_lifecycle_lock("project init"):
-        if shared_recovery_blocks_command(read_only=False):
+        try:
+            recovery_performed = shared_recovery_blocks_command(read_only=False)
+        except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
+            err(str(exc))
+            return 2
+        if recovery_performed:
             err("recovered interrupted Sandbox host state; run `booley init` again")
             return 2
         return _run_init_unlocked(args, project_root)

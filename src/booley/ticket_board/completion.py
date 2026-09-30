@@ -91,18 +91,12 @@ def _request(
     cleanup: bool,
     expected_sources: Mapping[str, str] | None = None,
 ) -> AcceptanceRequest:
-    ticket_name = Path(str(entry["file"])).name
-    allowed_board_rename = (
-        tio.tickets_dir / "board" / "queue" / ticket_name,
-        tio.tickets_dir / str(entry["file"]),
-    )
     return AcceptanceRequest(
         root=Path(tio._project_root).resolve(),
         slug=slug,
         basis=basis,
         cleanup=cleanup,
         ticket_status=entry["status"],
-        allowed_board_rename=allowed_board_rename,
         expected_sources=expected_sources,
     )
 
@@ -170,7 +164,7 @@ def _finish_progress(
 
 def _report_failure(tio: Any, slug: str, exc: Exception) -> bool:
     try:
-        current = tio.find_ticket(slug)
+        current = tio.inspect_ticket(slug)
     except (OSError, ValueError) as status_exc:
         print(
             f"Error: completion outcome for '{slug}' is uncertain: {exc}; "
@@ -214,11 +208,15 @@ def complete_review_ticket(
     effective_policy: Any,
     *,
     expected_sources: Mapping[str, str] | None = None,
-) -> bool:
-    """Apply Ticket Board policy around recoverable repository acceptance."""
+) -> AcceptanceOutcome | None:
+    """Apply Ticket Board policy around recoverable repository acceptance.
+
+    Returns ``None`` on failure, else how far acceptance got: only
+    :attr:`AcceptanceOutcome.COMPLETE` lets the Ticket close.
+    """
     inputs = _completion_inputs(tio, slug, effective_policy)
     if inputs is None:
-        return False
+        return None
     entry, basis = inputs
     try:
         progress = advance_acceptance(
@@ -232,17 +230,11 @@ def complete_review_ticket(
             )
         )
         progress = _finish_progress(
-            tio,
-            slug,
-            entry,
-            basis,
-            effective_policy.cleanup,
-            progress,
-            expected_sources,
+            tio, slug, entry, basis, effective_policy.cleanup, progress, expected_sources
         )
     except LockContentionError:
         print("Error: another acceptance is already running", file=sys.stderr)
-        return False
+        return None
     except (
         AcceptanceJournalError,
         AcceptanceOperationError,
@@ -250,11 +242,18 @@ def complete_review_ticket(
         OSError,
         ValueError,
     ) as exc:
-        return _report_failure(tio, slug, exc)
+        # A done Ticket whose recovery is pending stays live until a retry finishes.
+        return AcceptanceOutcome.ACCEPTED_PENDING if _report_failure(tio, slug, exc) else None
+    return _reported_outcome(slug, progress)
+
+
+def _reported_outcome(slug: str, progress: AcceptanceProgress) -> AcceptanceOutcome:
+    """Warn when acceptance is only partly finished, then return its outcome."""
     if progress.outcome is AcceptanceOutcome.ACCEPTED_PENDING:
         print(
             f"Warning: accepted '{slug}' but cleanup is pending or acceptance "
-            f"recovery is incomplete: {progress.detail}",
+            f"recovery is incomplete: {progress.detail}; the Ticket closes once "
+            f"a retry finishes it",
             file=sys.stderr,
         )
-    return True
+    return progress.outcome

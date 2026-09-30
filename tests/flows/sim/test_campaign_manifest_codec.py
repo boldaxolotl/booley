@@ -21,6 +21,7 @@ from booley.flows.sim.campaign.codec import (
 )
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
+    CampaignRecoveryStatus,
     WorkExecutionRequest,
     _new_store,
 )
@@ -34,11 +35,15 @@ from booley.flows.sim.campaign.planning import (
     finalize_manifest,
     manifest_digest,
 )
-from booley.flows.sim.campaign.resume import validate_resume_manifest
+from booley.flows.sim.campaign.resume import (
+    ValidatedManifestNode,
+    ValidatedResumeManifest,
+    validate_resume_manifest,
+)
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
 from booley.targets.catalog import TargetCatalog
 
 
@@ -114,9 +119,6 @@ class _GeneratorGroup:
 
     def build_recovery_document(self):
         return _build_execution()
-
-    def reuse_compilation_from(self, _source):
-        return None
 
     def bind_authenticated_bundle(self, evidence):
         assert evidence == _build_execution()
@@ -655,6 +657,46 @@ def test_recovery_retries_a_crash_after_attempt_directory_allocation(
     recovery = store.scan()
     assert recovery.interrupted == (work_item_id,)
     assert recovery.items[0].attempt_count == 2
+
+
+@pytest.mark.parametrize("state", ["pending", "interrupted", "complete"])
+@pytest.mark.parametrize("kind", ["ordinary_hdl", "cocotb_batch", "coverage_aggregate"])
+def test_unfinished_coverage_work_only_applies_to_coverage_aggregates(
+    tmp_path: Path, kind: str, state: str
+) -> None:
+    manifest = SimpleNamespace(document={"work_items": [{"kind": kind, "work_item_id": "w1"}]})
+    status = CampaignRecoveryStatus(
+        manifest_path=tmp_path / "manifest.json",
+        manifest_sha256="0" * 64,
+        completed=("w1",) if state == "complete" else (),
+        interrupted=("w1",) if state == "interrupted" else (),
+        pending=("w1",) if state == "pending" else (),
+    )
+
+    unfinished = _unfinished_coverage_work(manifest, status)  # type: ignore[arg-type]
+
+    assert unfinished == (("w1",) if kind == "coverage_aggregate" and state != "complete" else ())
+
+
+def test_hdl_resume_with_interrupted_item_is_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
+    store.allocate_attempt_directory(work_item_id, "550e8400-e29b-41d4-a716-446655440001")
+    assert store.scan().interrupted == (work_item_id,)
+    validated = ValidatedResumeManifest(
+        ValidatedManifestNode(store.manifest_path, manifest, "0" * 64), (), ()
+    )
+
+    def forbidden(*_args: object) -> None:
+        raise AssertionError("non-coverage resume must not be inspected by the guard")
+
+    monkeypatch.setattr("booley.flows.sim.flow.SimulationCampaign.inspect_resume", forbidden)
+
+    assert SimulateFlow()._refuse_unfinished_coverage_resume(validated) is None
 
 
 @pytest.mark.parametrize("nondeterministic", [False, True])

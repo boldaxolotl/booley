@@ -1,21 +1,18 @@
-"""Log management: progress tracking, incidents, and retry cleanup."""
+"""Log management: incidents and retry cleanup."""
 
 from __future__ import annotations
 
-import copy
-import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from booley.runtime.timefmt import format_human_datetime
 
 logger = logging.getLogger(__name__)
 
+from .board_layout import read_state_record, write_state_record
 from .constants import STEP_ORDER
 from .helpers import now_iso
 from .paths import (
-    existing_runtime_file,
     human_log_file,
     legacy_file,
     runtime_file,
@@ -24,105 +21,34 @@ from .paths import (
 
 RESET_BOUNDARY_PREFIX = "### Reset Boundary ("
 
-# ---------------------------------------------------------------------------
-# progress.json -- runtime execution state (step, steps_completed, etc.)
-# ---------------------------------------------------------------------------
 
-# Default values for every runtime field in progress.json
-PROGRESS_DEFAULTS = {
-    "step": "",
-    "steps_completed": [],
-    "workspace_intent": "fresh",
-    "last_update": "",
-    "failed_step": None,
-    "error": None,
-    "blocked_reason": None,
-    "blocked_step": None,
-    "execution_id": "",
-    "execution_owner_pid": None,
-}
+def _reset_runtime_from_step(
+    logs_dir: str | Path, slug: str, target_step: str, planned_steps: set[str] | None
+) -> None:
+    """Truncate steps_completed before *target_step* and clear error/blocked fields.
 
-
-def load_progress(logs_dir: str | Path, slug: str) -> dict[str, Any] | None:
-    """Load progress.json for a ticket. Returns dict or None if missing.
-
-    None signals the caller to fall back to frontmatter (backward compat).
-    When the file exists, merges with PROGRESS_DEFAULTS so newly added
-    fields get default values automatically.
+    Updates the Ticket's state record in place, keeping its state. A draft has
+    no record and nothing to reset; a corrupt record raises
+    :class:`~booley.ticket_board.board_layout.StateRecordError`.
     """
-    path = existing_runtime_file(logs_dir, slug, "progress.json")
-    if path.exists():
-        try:
-            with path.open(encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            # Corrupted file — fall back to frontmatter like a missing file
-            return None
-        result = copy.deepcopy(PROGRESS_DEFAULTS)
-        result.update(data)
-        return result
-    return None
-
-
-def save_progress(logs_dir: str | Path, slug: str, progress: dict[str, Any]) -> None:
-    """Save progress.json for a ticket atomically. Creates logs dir if needed."""
-    import os
-    import tempfile
-
-    path = runtime_file(logs_dir, slug, "progress.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = json.dumps(progress, indent=2) + "\n"
-    tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix="progress")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        Path(tmp_name).replace(path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
-
-
-def progress_default(key: str) -> Any:
-    """Return a deep copy of the default value for a runtime field."""
-    return copy.deepcopy(PROGRESS_DEFAULTS[key])
-
-
-def reset_progress(logs_dir: str | Path, slug: str) -> None:
-    """Reset progress.json to defaults (for full reset)."""
-    save_progress(logs_dir, slug, copy.deepcopy(PROGRESS_DEFAULTS))
-
-
-def _reset_progress_file(prog_path, target_step, planned_steps):
-    """Reset progress.json: truncate steps_completed, clear error/blocked fields."""
-    try:
-        progress = json.loads(prog_path.read_text(encoding="utf-8"))
-        # Boundary: external JSON may decode to any type; we mutate it as a dict.
-        if not isinstance(progress, dict):
-            logger.warning("Ignoring non-object progress.json at %s", prog_path)
-            return
-        steps_done = progress.get("steps_completed", [])
-        if target_step in STEP_ORDER:
-            idx = STEP_ORDER.index(target_step)
-            planned = planned_steps or set(STEP_ORDER)
-            prereqs = set(STEP_ORDER[:idx])
-            keep = [s for s in STEP_ORDER[:idx] if s in planned] + [
-                s for s in steps_done if s not in STEP_ORDER and s not in prereqs
-            ]
-            progress["steps_completed"] = keep
-        for key in ("error", "failed_step", "blocked_reason", "blocked_step"):
-            progress[key] = None
-        progress["last_update"] = now_iso()
-        # Atomic write: temp file + rename
-        content = json.dumps(progress, indent=2) + "\n"
-        tmp_path = prog_path.with_suffix(".tmp")
-        tmp_path.write_text(content, encoding="utf-8")
-        try:
-            tmp_path.replace(prog_path)
-        except PermissionError:
-            prog_path.write_text(content, encoding="utf-8")
-            tmp_path.unlink(missing_ok=True)
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to reset progress.json: %s", e)
+    tickets_dir = Path(logs_dir).parent
+    record = read_state_record(tickets_dir, slug)
+    if record is None:
+        return
+    progress = record.progress()
+    steps_done = progress["steps_completed"]
+    if target_step in STEP_ORDER:
+        idx = STEP_ORDER.index(target_step)
+        planned = planned_steps or set(STEP_ORDER)
+        prereqs = set(STEP_ORDER[:idx])
+        keep = [s for s in STEP_ORDER[:idx] if s in planned] + [
+            s for s in steps_done if s not in STEP_ORDER and s not in prereqs
+        ]
+        progress["steps_completed"] = keep
+    for key in ("error", "failed_step", "blocked_reason", "blocked_step"):
+        progress[key] = None
+    progress["last_update"] = now_iso()
+    write_state_record(tickets_dir, slug, record.with_runtime(progress))
 
 
 def clear_from_step(
@@ -148,14 +74,8 @@ def clear_from_step(
             except OSError as e:
                 logger.warning("Failed to remove status.json for %s: %s", slug, e)
 
-    # 2. Reset progress.json
-    prog_path = runtime_file(logs_dir, slug, "progress.json")
-    if not prog_path.exists():
-        legacy_prog = log_dir / "progress.json"
-        if legacy_prog.exists():
-            prog_path = legacy_prog
-    if prog_path.exists():
-        _reset_progress_file(prog_path, target_step, planned_steps)
+    # 2. Reset the runtime fields of the Ticket's state record
+    _reset_runtime_from_step(logs_dir, slug, target_step, planned_steps)
 
     # 3. Append retry banner to harness.log
     try:

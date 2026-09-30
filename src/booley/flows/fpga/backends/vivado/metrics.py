@@ -111,7 +111,7 @@ def _metrics_detail(
         else {
             "artifacts": {
                 **({"log": metrics.log_path} if metrics.log_path else {}),
-                **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
+                **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
             }
         }
     )

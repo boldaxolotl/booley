@@ -286,6 +286,19 @@ class TestFormatMcpToolResult:
         assert "report_text:" not in result
         assert "status: pass" in result
 
+    def test_coverage_headline_is_exposed_exactly_once(self):
+        headline = (
+            "sim_custom: simulation PASS · coverage collection COMPLETE · "
+            "evaluation FAIL (branch: observed 1/2 points; displayed 50%; minimum 80%) "
+            "(Simulation Campaign campaign-123)"
+        )
+        report = {"status": "fail", "report_text": headline}
+
+        result = _format_mcp_tool_result(1, f"running...\n{headline}\n", "", report)
+
+        assert result.count(headline) == 1
+        assert "report_text:" not in result
+
 
 class TestOutputCapEnvKnobs:
     """BOOLEY_MCP_MAX_STDOUT_BYTES / BOOLEY_MCP_MAX_STDERR_BYTES overrides."""
@@ -603,11 +616,11 @@ class TestStructuredContent:
         big = {
             "flow": "lint",
             "exit_code": 1,
-            "detail": {"artifacts": {"report": "reports/lint_report.json"}},
+            "detail": {"artifacts": {"report": "reports/lint/1/lint_report.json"}},
             "report_text": "x" * (70 * 1024),
         }
         payload = mcp_server._structured_from_report(big)
-        assert payload["artifacts"] == {"report": "reports/lint_report.json"}
+        assert payload["artifacts"] == {"report": "reports/lint/1/lint_report.json"}
 
     def test_oversized_report_finds_artifacts_nested_one_level_in_detail(self):
         """A multi-target endpoint keys its detail by target and hangs the block
@@ -2678,4 +2691,92 @@ def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_
     restarted = _JobManager(_FakeLifetime())
     assert "EXIT_CODE: 0" in _text(
         asyncio.run(mcp_server._dispatch_poll({"run_id": run_id}, restarted))
+    )
+
+
+def _write_direct_custom_flow(tmp_path: Path) -> Path:
+    module = tmp_path / "direct_custom_flow.py"
+    helper = tmp_path / "project_helper.py"
+    helper.write_text("VALUE = 42\n", encoding="utf-8")
+    module.write_text(
+        "from pathlib import Path\n"
+        "from booley.flows.base import BooleyFlow\n"
+        "from booley.runtime.endpoint_execution import EndpointOutcome\n"
+        "import project_helper\n"
+        "class ProjectFlow(BooleyFlow):\n"
+        "    name = 'project_probe'\n"
+        "    description = 'Project probe'\n"
+        "    def _add_args(self, parser):\n"
+        "        pass\n"
+        "    def _run(self):\n"
+        "        assert project_helper.VALUE == 42\n"
+        "        Path('direct-ran').write_text(__file__, encoding='utf-8')\n"
+        "        return EndpointOutcome()\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(ProjectFlow()._run().exit_code)\n",
+        encoding="utf-8",
+    )
+    return module
+
+
+def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The endpoint interpreter is protected before a Custom Flow is imported."""
+    import asyncio
+
+    from booley.runtime.project_dir import reset_cache
+
+    module = _write_direct_custom_flow(tmp_path)
+    for name in (
+        "PYTHONPYCACHEPREFIX",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    reset_cache()
+
+    definition = {
+        "module": "project_probe",
+        "is_custom": True,
+        "custom_path": str(module),
+        "is_flow": True,
+        "is_specialist": False,
+    }
+    command = mcp_server._endpoint_command("project_probe", {}, definition, {})
+    command[0] = sys.executable
+    environment = mcp_server._endpoint_subprocess_env()
+    source_root = Path(mcp_server.__file__).resolve().parents[2]
+    environment["PYTHONPATH"] = str(source_root)
+    code, _stdout, stderr, timed_out = asyncio.run(
+        mcp_server._run_subprocess(command, env=environment)
+    )
+
+    assert code == 0 and not timed_out, stderr
+    assert Path((tmp_path / "direct-ran").read_text(encoding="utf-8")) == module
+    runtime = tmp_path / ".runtime" / "python-artifacts"
+    assert any((runtime / "bytecode").rglob("project_helper*.pyc"))
+    assert not (tmp_path / "__pycache__").exists()
+
+
+def test_endpoint_environment_without_project_uses_runtime_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime.project_dir import reset_cache
+
+    for name in ("BOOLEY_PROJECT_DIR", "BOOLEY_RUNTIME_DIR", "BOOLEY_LOGS_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    reset_cache()
+
+    environment = mcp_server._endpoint_subprocess_env()
+
+    assert environment["BOOLEY_RUNTIME_DIR"]
+    assert Path(environment["PYTHONPYCACHEPREFIX"]).parts[-2:] == (
+        "python-artifacts",
+        "bytecode",
     )

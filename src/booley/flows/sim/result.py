@@ -139,7 +139,11 @@ _HARNESS_INFRA_MARKER_RE = re.compile(
     # run_guard watchdogs: disk budget, frozen simulator clock
     r"|(?:ERROR: )?simulation killed:"
     # run_guard's fatal missing-$readmemh abort
-    r"|ERROR: missing \$readmem"
+    r"|ERROR: (?:missing \$readmem|declared runtime input .+ before \$readmem)"
+    # trace-session watchdog abort
+    r"|ERROR: bwave trace pipeline stalled"
+    # Supported simulator-native missing-memory diagnostics with ERROR wrappers.
+    r"|ERROR: .*\$readmem[hb].*(?i:cannot|can't|unable to|could not|failed to) open"
     r")"
 )
 

@@ -11,12 +11,28 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### New features
 
+- Simulation now has a positive-integer `[flows.sim].build_timeout_ms` setting,
+  defaulting to one hour, used consistently by ordinary, Coverage, and
+  Elaboration Check simulator-image builds. Simulator execution and Pre-Sim
+  Commands retain their separate budgets.
+
+- Maintainers can persistently opt the three repository-owned QA skills into
+  Host Bootstrap with `booley bootstrap --with-qa-skills` and safely remove
+  only managed QA links with `--without-qa-skills`. Optional-source failures
+  warn without blocking product Bootstrap or Project Initialization, and QA
+  skills remain outside release wheels and Sandbox host-skill mounts.
+
+- `booley board show` and generated review packages now compare recorded
+  Criterion and Reviewer-receipt evidence with the live Ticket worktree. They
+  show changed source categories, hold on stale mandatory evidence, and leave
+  the recorded runtime state unchanged.
 - Simulation now records each exact Target workload as a durable Simulation
   Campaign. Immutable manifests, authenticated shared Simulator Bundles,
   isolated append-only attempts, strict resume, and bounded Project-local
   scheduling make completed work reusable without treating mutable reports as
-  authority. Cocotb retries as one disclosed batch; native coverage retries as
-  one aggregate with a distinct attempt-scoped Coverage Campaign.
+  authority. Cocotb retries as one disclosed batch; native coverage is one
+  aggregate that resume finishes only after its collection completed; an
+  unfinished collection is refused.
 - `sim --resume-from <manifest.json>` resumes only the named Campaign. Dry-run
   previews completed, interrupted, pending, and mismatched work without
   admission or mutation. Structured CLI/MCP results retain bounded manifest,
@@ -24,6 +40,51 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- `--timeout-ms` and `[flows.sim].timeout_ms` no longer lengthen an Elaboration
+  Check Target build. Projects whose simulator-image builds need more than one
+  hour must set `[flows.sim].build_timeout_ms` explicitly.
+
+- The Ticket Board now keeps each live Ticket at `tickets/board/<slug>.md`
+  with its status in an ignored `tickets/state/<slug>.json`, and moves done
+  and archived Tickets into the tracked `tickets/history/`. Boards made by
+  earlier versions need a one-time manual migration: until then `booley
+  doctor` FAILs and `booley board` and `booley run` refuse to start, both when
+  Tickets remain in the old `board/<status>/` folders and when Git still
+  tracks files under `tickets/board/` or `tickets/state/`. Follow
+  [the Troubleshooting entry](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
+- `booley board` now lists live Tickets only. Add `--all` (also accepted by
+  `python -m booley.ticket_board board|show|read-board`) to include done and
+  archived Tickets, dated by when they closed. `booley board show <slug>`
+  also finds a Closed Ticket.
+- `booley board archive <slug>` now abandons one live Ticket: it releases the
+  Ticket's worktrees and refs, keeps its logs, and closes it into
+  `tickets/history/` with outcome archived. Bare `booley board archive` no
+  longer sweeps done Tickets (they close by themselves); it only resumes an
+  archive a crash interrupted. `--force` and `--keep-logs` have no effect and
+  will be removed. Moving a Ticket to `archived` directly is refused; use
+  `archive` instead. Closed Tickets cannot be reopened, and their slugs cannot
+  be reused.
+- Booley commits each history record to the repository that tracks
+  `tickets/history/` (`chore(<slug>): close Ticket (<outcome>)`). In the
+  Project's own repository the `[stealth]` policy redacts banned phrases from
+  that message, so with the default word list it reads
+  `chore(<slug>): close redacted (<outcome>)`. When the commit cannot be made (for example a detached HEAD, or the Ticket's
+  `project_destination_ref` is not checked out), the Ticket still closes, and
+  the commit is retried on the next Ticket Board command. Doctor WARNs about
+  uncommitted records.
+- Doctor no longer crashes when no container runtime is installed; it skips
+  its container checks instead.
+- Doctor's `interactive.logs-gitignore` warning is now `project.gitignore`
+  and checks every ignore pattern `booley init` writes. Waivers on the old id
+  no longer match; re-waive under the new one.
+- REVIEW category/focus declarations now require exactly one scalar `done` or
+  `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
+  already-published Tickets. `booley board check-ready <slug>` is equivalent to
+  `booley run --ticket <slug> --check-ready` for detecting the invalid grammar.
+- Projects that placed formal proof artifacts at `<anchor>/proofs/...` as a
+  workaround must move them beneath
+  `<anchor>/<approval-directory>/proofs/...`. Keep the authored proof reference
+  unchanged because it is relative to the configured approval directory.
 - Existing Projects should rerun `booley init` before their first direct Flow
   invocation after upgrading. Initialization appends the new `flow-reports/`
   ignore rule without replacing user-authored `.gitignore` content.
@@ -42,11 +103,62 @@ Packaged release history starts at 0.2.7. For older changes, see
   Booley-owned isolated attempt directories.
 - Existing Simulation Campaign schema versions are immutable. Unsupported or
   corrupt manifests fail closed and must be rerun or restored byte-for-byte;
-  upgrades never rewrite retained authority in place. See
-  [Simulation Campaign migration](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SIMULATION_CAMPAIGN_MIGRATION.md).
+  upgrades never rewrite retained authority in place.
 
 ### Bug fixes
 
+- `python -m booley.ticket_board validate-logs <slug>` now renders its normal
+  Markdown and machine-readable JSON diagnostics for executable Tickets with
+  runtime snapshots instead of raising `AttributeError`.
+  ([#849](https://github.com/boldaxolotl/Booley/issues/849))
+- Clean liberty-mapped synthesis no longer receives false no-driver, ABC
+  multi-output, `IFP-0028`, `GPL-0302`, or `STA-0349` advisories from Booley's
+  generated Yosys and OpenROAD scripts. OpenROAD now removes every eligible
+  buffer, including hand-instantiated buffers without fixed or `dont_touch`
+  protection. Grid-aligned floorplan margins and whole-design buffer removal
+  can change PPA for every physical profile; the balanced and max-frequency
+  profiles additionally use 0.80 placement density, moving the PicoRV32
+  reference area from 23,516 to 23,531 um². Custom Liberty files must be
+  accepted by Yosys `read_liberty -lib` and provide usable pin directions.
+  Synthesis recipe schema 3 invalidates schema-2 fingerprints frozen at Ticket
+  intake. Affected baseline-comparison Tickets report incomplete recipe evidence;
+  run `booley board reset <slug> --reason "refresh synthesis recipe schema 3"`,
+  which archives prior runtime progress, then rerun the Ticket to freeze the new
+  fingerprint. ([#816](https://github.com/boldaxolotl/Booley/issues/816))
+- Invalid Coverage Campaign rejections now name a bounded, control-safe prefix
+  of finding codes and locations, including the specific rollup field when it
+  can be determined, while still rejecting before a Coverage Analyst model
+  call. ([#799](https://github.com/boldaxolotl/Booley/issues/799))
+- Custom-main coverage now retains failed native-write hook evidence and reports
+  the write failure instead of a missing or incompatible database. A write
+  before the start hook is reported as an ordering violation rather than as a
+  later duplicate. ([#795](https://github.com/boldaxolotl/Booley/issues/795))
+- Host Bootstrap, Project Initialization, Sandbox lifecycle, and Sandbox
+  Issuance mutations now wait for the shared host Docker lifecycle lock for a
+  bounded interval, reporting busy owners while they wait. They continue when
+  the holder releases the lock and otherwise exit with one clean `ERROR:`
+  message and status 2 instead of failing immediately or printing a traceback.
+  ([#785](https://github.com/boldaxolotl/Booley/issues/785))
+- Mismatch and drift diagnostics now name every safe field that differs and
+  show its recorded-to-current value transition, including canonical host
+  wheel, Doctor, Host Bootstrap, Sandbox, Ticket Board, and EDA records.
+  ([#779](https://github.com/boldaxolotl/Booley/issues/779))
+- A commit after review acceptance is now reported as stale acceptance, with
+  the frozen and live heads and the real exits (restore the accepted heads or
+  reset), instead of as a corrupt review binding. `board show` renders the
+  frozen briefing with a stale marker instead of failing. ([#775](https://github.com/boldaxolotl/Booley/issues/775))
+- Native-coverage Simulation now runs Pre-Sim Commands before every selected
+  test process, including one-test Cocotb batches. It rejects stale staged
+  inputs and hook mutations of authenticated compile, simulator, and coverage
+  artifacts, while preserving attributed failures in CLI, MCP, and durable
+  Simulation Campaign reports. (#723)
+- Approved Waiver Sets now load referenced non-TOML formal proof artifacts from
+  the configured approval directory without parsing them as approval documents.
+  Unreferenced artifacts still invalidate the set, and lowercase `*.toml` remains
+  reserved for approval documents.
+- `booley run` now emits one machine-readable result for every normal Ticket
+  ending. Direct-to-done Tickets correctly return success, while `blocked` and
+  `failed` results return a nonzero status and identify their disposition.
 - Direct built-in and Custom Flows now keep their default reports under resolved
   Project data. Plain Simulation, native coverage, and resume share one report
   root and invocation-number sequence, and no default `flow-reports/` directory
@@ -155,7 +267,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   Mutation callers must select one Target instead of supplying DUT or testbench
   topology separately.
 - When Acceptance Basis inputs must change, run
-  `booley board return-to-draft <slug>`. Booley archives the previous run and
+  `python -m booley.ticket_board return-to-draft <slug>`. Booley archives the previous run and
   starts a new authoring generation. Deinitialize native Git submodules first
   if the command reports them.
 - After upgrading, run `booley bootstrap`. Refresh a headless runtime with
@@ -278,7 +390,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   pre-push hook receives the corrected project-state guard.
 - Booley rejects legacy Target Contract tickets. Recreate them with the current
   Ticket workflow. Enqueue now publishes the Acceptance Basis without a separate
-  seal step; use `booley board return-to-draft <slug>` when a blocked Ticket
+  seal step; use `python -m booley.ticket_board return-to-draft <slug>` when a blocked Ticket
   needs different authored inputs.
 
 [Full changes from v0.2.12](https://github.com/boldaxolotl/booley/compare/v0.2.12...v0.2.13)

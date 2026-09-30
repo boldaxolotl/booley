@@ -6,4 +6,5 @@ SECTIONS
   .rodata : { *(.rodata*) }
   .data : { *(.data*) }
   .bss : { *(.bss*) }
+  .tohost : { *(.tohost) }
 }

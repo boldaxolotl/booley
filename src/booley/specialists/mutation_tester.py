@@ -47,7 +47,6 @@ from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
-from booley.flows import edam as edam_layer
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.backends.cocotb_results import (
@@ -57,7 +56,11 @@ from booley.flows.sim.backends.cocotb_results import (
     CocotbResults,
     parse_results_line,
 )
-from booley.flows.sim.config import resolve_run_cwd
+from booley.flows.sim.build import PreparedSimulationBuild, prepare_simulation_build
+from booley.flows.sim.config import (
+    literal_run_cwd_problem,
+    resolve_run_cwd,
+)
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
 from booley.flows.target_campaign import (
@@ -75,8 +78,10 @@ from booley.flows.target_test_suite import (
 )
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
+from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
 
 from .specialist import Specialist
@@ -1320,11 +1325,12 @@ replacement must differ, and every proposal must remain a single source edit.
                 specs, elapsed = self._invoke_creator(
                     prompt, resume=round_idx > 1, attempt=round_idx
                 )
-        except Exception as exc:
-            logger.exception("Creator invocation failed on round %d", round_idx)
+        except Exception as exc:  # noqa: BLE001 — normalize the creator-provider boundary
+            log_exception(logger, exc, summary=f"Creator invocation failed on round {round_idx}")
+            diagnostic_path = self._write_provider_diagnostic(exc, self._transcript_path())
             error = McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text=f"creator agent invocation failed: {exc}",
+                report_text=exception_report_text("mutation creator", exc, diagnostic_path),
             )
             return [], 0.0, error
         strays = self._revert_stray_tracked_edits(plan.work_dir, pre_dirty, keep=[])
@@ -1386,6 +1392,19 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _run_pristine_baseline(self, plan: MutationRunPlan) -> McpToolResult | None:
         """Build and run the byte-identical project before any proposal is applied."""
+        run_cwd_problem = literal_run_cwd_problem(plan.work_dir)
+        if run_cwd_problem is not None:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"mutation baseline cannot run: {run_cwd_problem}",
+                detail=_failure_detail(
+                    phase="baseline_run_cwd",
+                    reason=run_cwd_problem,
+                    specs=[],
+                    work_dir=plan.work_dir,
+                    log_tail="",
+                ),
+            )
         build_path = lock_mod.baseline_build_dir()
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
@@ -1650,11 +1669,7 @@ replacement must differ, and every proposal must remain a single source edit.
         so the callers' ``returncode`` / ``stdout+stderr`` checks are unchanged.
         """
         try:
-            handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
-            resolved = fusesoc_registry.resolve_target_handle(
-                handle,
-                build_root=build_path,
-            )
+            _handle, prepared = self._resolve_elab_target(target, work_dir, build_path)
         except (
             Exception  # noqa: BLE001 — isolate resolve failure; surface as return code 1
         ) as exc:
@@ -1664,18 +1679,36 @@ replacement must differ, and every proposal must remain a single source edit.
                 stdout="",
                 stderr=f"FuseSoC target resolution failed: {exc}",
             )
-        rel = edam_layer.relpath_for_make(resolved.build_root, work_dir)
+        configured_tool = prepared.eda_tool
+        rel = posix_relpath(prepared.build_root, work_dir)
         (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
-        eda_tool = sim_edam.normalize_eda_tool(getattr(resolved, "eda_tool", None))
-        (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(eda_tool, encoding="utf-8")
+        (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(configured_tool, encoding="utf-8")
         return subprocess.run(
-            edam_layer.make_command(rel),
+            list(prepared.make_argv),
             cwd=work_dir,
+            env=relocate_python_artifacts(
+                os.environ,
+                python_artifact_root(os.environ, build_path / "python-artifacts"),
+                pytest_scope=f"mutation-build:{build_path.resolve()}",
+            ),
             capture_output=True,
             text=True,
             timeout=900,
             check=False,
         )
+
+    @staticmethod
+    def _resolve_elab_target(
+        target: str, work_dir: Path, build_path: Path
+    ) -> tuple[Any, PreparedSimulationBuild]:
+        """Resolve one mutation Target without swallowing tool-authority errors."""
+        handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
+        prepared = prepare_simulation_build(
+            handle,
+            build_root=build_path,
+            lane_kind="unreserved",
+        )
+        return handle, prepared
 
     def cocotb_target(self, target: str, work_dir: Path) -> CocotbSimTarget | None:
         """Resolve *target*'s cocotb identity, or ``None`` for a classic Target.
@@ -1690,9 +1723,12 @@ replacement must differ, and every proposal must remain a single source edit.
         rather than producing a meaningless score.
         """
         try:
-            module = TargetCatalog.build(work_dir).select(target).cocotb_module
-        except Exception:  # noqa: BLE001 — best-effort .core read; a classic Target is the safe default
-            return None
+            handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
+        except fusesoc_registry.FuseSocError as exc:
+            raise UnsupportedSimTargetError(
+                f"mutation_tester: cannot select Simulation Target {target!r}: {exc}"
+            ) from exc
+        module = handle.cocotb_module
         if not module:
             return None
         eda_tool = self.target_eda_tool(target, work_dir)
@@ -1712,14 +1748,60 @@ replacement must differ, and every proposal must remain a single source edit.
         build_path: Path | None = None,
     ) -> str:
         """Return the run-half family for *target*, preferring resolved build metadata."""
+        declared = self._declared_sim_tool(target, work_dir)
         marker = build_path / _EDALIZE_EDA_TOOL_MARKER if build_path is not None else None
         if marker is not None and marker.exists():
-            return sim_edam.normalize_eda_tool(marker.read_text(encoding="utf-8").strip())
+            configured = self._supported_sim_tool(
+                marker.read_text(encoding="utf-8").strip(), target
+            )
+            if configured != declared:
+                raise UnsupportedSimTargetError(
+                    f"mutation_tester: Target {target!r} declared {declared!r} but cached "
+                    f"build metadata names {configured!r}"
+                )
+            return configured
+        return declared
+
+    def _declared_sim_tool(self, target: str, work_dir: Path) -> str:
+        """Return the selected Target's supported declared simulator."""
         try:
-            declared = TargetCatalog.build(work_dir).select(target).eda_tool
-        except Exception:  # noqa: BLE001 — best-effort .core read; legacy default is Verilator
-            declared = None
-        return sim_edam.normalize_eda_tool(declared)
+            declared = TargetCatalog.build(work_dir).select(target, for_flow="sim").eda_tool
+        except fusesoc_registry.FuseSocError as exc:
+            raise UnsupportedSimTargetError(
+                f"mutation_tester: cannot select Simulation Target {target!r}: {exc}"
+            ) from exc
+        return self._supported_sim_tool(declared, target)
+
+    @classmethod
+    def _matching_sim_tool(
+        cls,
+        declared: str | None,
+        configured: str | None,
+        target: str,
+    ) -> str:
+        """Authenticate configured simulator metadata against the Target declaration."""
+        try:
+            family = sim_edam.matching_eda_tool(declared, configured, target=target)
+        except ValueError as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+        return cls._supported_sim_tool(family, target)
+
+    @staticmethod
+    def _supported_sim_tool(eda_tool: str | None, target: str) -> str:
+        """Normalize one mutation-capable simulator without choosing a default."""
+        try:
+            family = sim_edam.normalize_eda_tool(eda_tool)
+        except ValueError as exc:
+            raise UnsupportedSimTargetError(
+                f"mutation_tester: Target {target!r} has unsupported simulator "
+                f"metadata {eda_tool!r}"
+            ) from exc
+        if family not in {"icarus", "verilator"}:
+            raise UnsupportedSimTargetError(
+                f"mutation_tester: Target {target!r} resolves to {family!r}; "
+                "the mutation run-many loop supports icarus and verilator only"
+            )
+        return family
 
     def _validate_target_runner(self, target: str, work_dir: Path) -> None:
         """Reject Target toolchains whose prebuilt image this loop cannot drive."""
@@ -1737,12 +1819,15 @@ replacement must differ, and every proposal must remain a single source edit.
         if marker.exists():
             return marker.read_text(encoding="utf-8").strip()
         # Defensive: marker lost (e.g. external cleanup) — re-resolve.
-        handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
-        resolved = fusesoc_registry.resolve_target_handle(
-            handle,
-            build_root=build_path,
+        _handle, prepared = self._resolve_elab_target(
+            target,
+            work_dir,
+            build_path,
         )
-        return edam_layer.relpath_for_make(resolved.build_root, work_dir)
+        rel = posix_relpath(prepared.build_root, work_dir)
+        marker.write_text(rel, encoding="utf-8")
+        (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(prepared.eda_tool, encoding="utf-8")
+        return rel
 
     @staticmethod
     def _target_test_suite(target: str) -> TargetTestSuite:
@@ -1885,6 +1970,51 @@ replacement must differ, and every proposal must remain a single source edit.
             cmd += ["--run-cwd", run_cwd]
         return cmd
 
+    def _pinned_sim_command(
+        self,
+        target: str,
+        work_dir: Path,
+        build_path: Path,
+        tb_top: str,
+        *,
+        timeout: int = 300,
+        test_name: str | None = None,
+        cocotb_tests: tuple[str, ...] = (),
+    ) -> list[str]:
+        rel = self._bin_dir_rel(target, work_dir, build_path)
+        cocotb = self.cocotb_target(target, work_dir)
+        if cocotb is not None:
+            return self._cocotb_sim_cmd(
+                cocotb=cocotb,
+                rel=rel,
+                target=target,
+                work_dir=work_dir,
+                timeout=timeout,
+                test_names=cocotb_tests,
+            )
+        eda_tool = self.target_eda_tool(target, work_dir, build_path)
+        if eda_tool == "icarus":
+            return self._icarus_sim_cmd(
+                rel=rel,
+                target=target,
+                work_dir=work_dir,
+                timeout=timeout,
+                test_name=test_name,
+            )
+        if eda_tool == "verilator":
+            return self._verilator_sim_cmd(
+                rel=rel,
+                target=target,
+                work_dir=work_dir,
+                tb_top=tb_top,
+                timeout=timeout,
+                test_name=test_name,
+            )
+        raise UnsupportedSimTargetError(
+            f"mutation_tester: cached Target {target!r} resolves to unsupported "
+            f"EDA toolchain {eda_tool!r}"
+        )
+
     def _run_sim_pinned(
         self,
         target: str,
@@ -1896,54 +2026,24 @@ replacement must differ, and every proposal must remain a single source edit.
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess:
-        """Run the simulation image built in *build_path*.
-
-        Which run-half drives it depends on the Target: a Cocotb Target goes
-        through :mod:`booley.flows.sim.backends.cocotb`
-        (it needs cocotb's VPI environment); classic Targets use the run-half
-        matching the resolved toolchain (``iverilog_run`` for Icarus,
-        ``verilator_run`` for Verilator). Both exit non-zero on a FAIL verdict,
-        which the sweep reads as "mutation detected". Returns the run
-        :class:`~subprocess.CompletedProcess`.
-        """
-        rel = self._bin_dir_rel(target, work_dir, build_path)
-        cocotb = self.cocotb_target(target, work_dir)
-        if cocotb is not None:
-            cmd = self._cocotb_sim_cmd(
-                cocotb=cocotb,
-                rel=rel,
-                target=target,
-                work_dir=work_dir,
-                timeout=timeout,
-                test_names=cocotb_tests,
-            )
-        else:
-            eda_tool = self.target_eda_tool(target, work_dir, build_path)
-            if eda_tool == "icarus":
-                cmd = self._icarus_sim_cmd(
-                    rel=rel,
-                    target=target,
-                    work_dir=work_dir,
-                    timeout=timeout,
-                    test_name=test_name,
-                )
-            elif eda_tool == "verilator":
-                cmd = self._verilator_sim_cmd(
-                    rel=rel,
-                    target=target,
-                    work_dir=work_dir,
-                    tb_top=tb_top,
-                    timeout=timeout,
-                    test_name=test_name,
-                )
-            else:
-                raise UnsupportedSimTargetError(
-                    f"mutation_tester: cached Target {target!r} resolves to unsupported "
-                    f"EDA toolchain {eda_tool!r}"
-                )
+        """Run the simulation image built in *build_path*."""
+        cmd = self._pinned_sim_command(
+            target,
+            work_dir,
+            build_path,
+            tb_top,
+            timeout=timeout,
+            test_name=test_name,
+            cocotb_tests=cocotb_tests,
+        )
         return subprocess.run(
             cmd,
             cwd=work_dir,
+            env=relocate_python_artifacts(
+                os.environ,
+                python_artifact_root(os.environ, build_path / "python-artifacts"),
+                pytest_scope=f"mutation-run:{build_path.resolve()}",
+            ),
             capture_output=True,
             text=True,
             timeout=timeout,

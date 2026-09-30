@@ -31,7 +31,6 @@ from booley.core.models import (
     AgentCallParams,
     AgentResult,
     ArtifactPathResolver,
-    RateLimitNotifier,
 )
 from booley.runtime.timefmt import rfc3339_from_epoch, utc_now_rfc3339
 
@@ -59,6 +58,7 @@ from .agent_errors import (
     is_usage_limit,
 )
 from .developer_budget import DeveloperBudget, run_with_developer_budget
+from .exception_diagnostics import log_exception, provider_exception_message
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,6 @@ class ClaudeSDKBackend:
                     params.timeout_seconds,
                     transcript_path=_transcript_path_for_attempt(params.transcript_path, attempt),
                     artifact_paths=params.artifact_paths,
-                    notify_rate_limit=params.notify_rate_limit,
                     output_format=params.output_format,
                     capture_agent_capability_calls=params.capture_agent_capability_calls,
                     attempt=attempt,
@@ -202,7 +201,6 @@ class ClaudeSDKBackend:
         transcript_file: Any,
         on_event: Any,
         state: _StreamState,
-        notify_rate_limit: RateLimitNotifier | None = None,
         budget: DeveloperBudget | None = None,
     ) -> None:
         """Stream agent messages, recording progress into ``state``.
@@ -231,7 +229,6 @@ class ClaudeSDKBackend:
                     transcript_file,
                     on_event,
                     state,
-                    notify_rate_limit=notify_rate_limit,
                     budget=budget,
                 ),
                 budget,
@@ -246,7 +243,6 @@ class ClaudeSDKBackend:
                 transcript_file,
                 on_event,
                 state,
-                notify_rate_limit=notify_rate_limit,
                 on_message=lambda: setattr(
                     idle_scope, "deadline", anyio.current_time() + timeout_seconds
                 ),
@@ -261,7 +257,6 @@ class ClaudeSDKBackend:
         transcript_path: Path | None,
         output_format: dict[str, Any] | None,
         artifact_paths: ArtifactPathResolver | None = None,
-        notify_rate_limit: RateLimitNotifier | None = None,
         capture_agent_capability_calls: list[str] | None = None,
         attempt: int = 1,
         label: str | None = None,
@@ -298,8 +293,6 @@ class ClaudeSDKBackend:
                     )
                 try:
                     stream_kwargs = {"budget": budget} if budget is not None else {}
-                    if notify_rate_limit is not None:
-                        stream_kwargs["notify_rate_limit"] = notify_rate_limit
                     await self._process_stream(
                         prompt,
                         options,
@@ -712,7 +705,6 @@ async def _consume_claude_stream(
     on_event: Any,
     state: _StreamState,
     *,
-    notify_rate_limit: RateLimitNotifier | None = None,
     budget: DeveloperBudget | None = None,
     on_message: Callable[[], None] | None = None,
 ) -> None:
@@ -739,7 +731,7 @@ async def _consume_claude_stream(
             _dispatch_usage(on_event, counters, options.model)
             state.session_id = getattr(message, "session_id", None)
         elif isinstance(message, RateLimitEvent):
-            await _handle_rate_limit_event(message, budget, notify_rate_limit=notify_rate_limit)
+            await _handle_rate_limit_event(message, budget)
 
 
 def _update_budget_for_claude_message(message: object, budget: DeveloperBudget) -> None:
@@ -864,7 +856,6 @@ def _handle_stream_exception(
             transcript_path=transcript_path,
         )
         raise exc
-
     # intentionally broad: SDK can raise arbitrary exceptions
     if got_result and isinstance(exc, _SDK_TEARDOWN_EXCEPTIONS):
         logger.debug(
@@ -882,14 +873,15 @@ def _handle_stream_exception(
         attempt=attempt,
         transcript_path=transcript_path,
     )
-    if is_usage_limit(str(exc)):
-        raise UsageLimitError(str(exc), provider="claude") from exc
-    if is_context_exhausted(str(exc)):
-        raise ContextExhaustedError(str(exc), provider="claude") from exc
-    if _is_transient_error(exc):
-        logger.warning("Transient API error: %s", exc)
-        raise TransientAPIError(str(exc)) from exc
-    logger.error("Agent call failed: %s", exc, exc_info=True)
+    provider_message = provider_exception_message(exc)
+    if is_usage_limit(provider_message):
+        raise UsageLimitError(provider_message, provider="claude") from exc
+    if is_context_exhausted(provider_message):
+        raise ContextExhaustedError(provider_message, provider="claude") from exc
+    if _is_transient_error(RuntimeError(provider_message)):
+        logger.warning("Transient API error: %s", provider_message)
+        raise TransientAPIError(provider_message) from exc
+    log_exception(logger, exc, summary="Agent call failed")
     raise exc
 
 
@@ -1044,8 +1036,6 @@ def _dump_crash_context(
 async def _handle_rate_limit_event(
     event: RateLimitEvent,
     budget: DeveloperBudget | None = None,
-    *,
-    notify_rate_limit: RateLimitNotifier | None = None,
 ) -> None:
     """Handle a rate limit event from the SDK stream."""
     info = event.rate_limit_info
@@ -1063,11 +1053,6 @@ async def _handle_rate_limit_event(
             rfc3339_from_epoch(info.resets_at) if info.resets_at else "unknown",
             RATE_LIMIT_SLEEP_BUFFER_S,
         )
-        if notify_rate_limit is not None:
-            try:
-                notify_rate_limit(info.rate_limit_type, sleep_s, info.resets_at)
-            except Exception:  # A failed delivery must not interrupt provider backoff.
-                logger.warning("Rate-limit notification failed", exc_info=True)
         if budget is not None:
             budget.pause("claude-rate-limit", "provider rate limit")
         try:

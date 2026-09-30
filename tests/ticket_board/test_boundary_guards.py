@@ -16,7 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from booley.ticket_board import analytics, execution, logs, notifications, scanner, validation
+from booley.ticket_board import analytics, execution, logs, scanner, validation
+from booley.ticket_board.board_layout import StateRecordError, state_record_path
 from booley.ticket_board.paths import runtime_file
 
 
@@ -96,59 +97,6 @@ class TestValidateStateFile:
         )
         out = validation._validate_state_file(path)
         assert any("none are mandatory" in f["message"] for f in out)
-
-
-# ---------------------------------------------------------------------------
-# notifications: ntfy_review_digest
-# ---------------------------------------------------------------------------
-
-
-class TestReviewDigest:
-    def test_non_object_json(self, tmp_path):
-        _write_state(tmp_path, "t", "42")
-        assert notifications.ntfy_review_digest(tmp_path, "t") == ""
-
-    def test_malformed_json(self, tmp_path):
-        _write_state(tmp_path, "t", "{bad")
-        assert notifications.ntfy_review_digest(tmp_path, "t") == ""
-
-    def test_non_dict_criteria_and_timeline(self, tmp_path):
-        _write_state(tmp_path, "t", json.dumps({"criteria": ["x"], "timeline": "nope"}))
-        assert notifications.ntfy_review_digest(tmp_path, "t") == ""
-
-    def test_non_numeric_cost_ignored(self, tmp_path):
-        _write_state(
-            tmp_path,
-            "t",
-            json.dumps({"timeline": [{"cost_usd": "free"}, {"cost_usd": 1.5}]}),
-        )
-        assert notifications.ntfy_review_digest(tmp_path, "t") == "$1.50"
-
-    def test_happy_path(self, tmp_path):
-        _write_state(
-            tmp_path,
-            "t",
-            json.dumps(
-                {
-                    "criteria": {"c": {"detail": {"tests_total": 4, "tests_passed": 3}}},
-                    "timeline": [{"cost_usd": 2.0}],
-                }
-            ),
-        )
-        digest = notifications.ntfy_review_digest(tmp_path, "t")
-        assert "3P/1F sim" in digest
-        assert "$2.00" in digest
-
-    @pytest.mark.parametrize(
-        "status, expected", [("ready", "triage ready"), ("failed", "triage report failed")]
-    )
-    def test_triage_report_status(self, tmp_path, status, expected):
-        _write_state(tmp_path, "t", json.dumps({"criteria": {}, "timeline": []}))
-        manifest = tmp_path / "t" / ".runtime" / "triage-prep" / "manifest.json"
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(json.dumps({"status": status}), encoding="utf-8")
-
-        assert notifications.ntfy_review_digest(tmp_path, "t") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -300,23 +248,35 @@ class TestValidationSourcePrefixes:
 
 
 # ---------------------------------------------------------------------------
-# logs: _reset_progress_file
+# logs: _reset_runtime_from_step (state record replaced progress.json)
 # ---------------------------------------------------------------------------
 
 
-class TestResetProgressFile:
-    def test_non_object_json_left_untouched(self, tmp_path):
-        prog = tmp_path / "progress.json"
-        prog.write_text("[1, 2, 3]", encoding="utf-8")  # wrong shape
-        # Must not raise; file is left as-is because it is not a dict.
-        logs._reset_progress_file(prog, "rtl-implement", None)
-        assert json.loads(prog.read_text(encoding="utf-8")) == [1, 2, 3]
+class TestResetRuntimeFromStep:
+    """A state record that cannot be trusted fails closed and stays untouched."""
 
-    def test_malformed_json_left_untouched(self, tmp_path):
-        prog = tmp_path / "progress.json"
-        prog.write_text("{bad", encoding="utf-8")
-        logs._reset_progress_file(prog, "rtl-implement", None)
-        assert prog.read_text(encoding="utf-8") == "{bad"
+    @staticmethod
+    def _write_record(tmp_path: Path, text: str) -> Path:
+        record = state_record_path(tmp_path, "slug")
+        record.parent.mkdir(parents=True)
+        record.write_text(text, encoding="utf-8")
+        return record
+
+    def test_non_object_json_raises_and_is_left_untouched(self, tmp_path):
+        record = self._write_record(tmp_path, "[1, 2, 3]")  # wrong shape
+        with pytest.raises(StateRecordError, match="not a JSON object"):
+            logs._reset_runtime_from_step(tmp_path / "logs", "slug", "rtl-implement", None)
+        assert json.loads(record.read_text(encoding="utf-8")) == [1, 2, 3]
+
+    def test_malformed_json_raises_and_is_left_untouched(self, tmp_path):
+        record = self._write_record(tmp_path, "{bad")
+        with pytest.raises(StateRecordError, match="not valid JSON"):
+            logs._reset_runtime_from_step(tmp_path / "logs", "slug", "rtl-implement", None)
+        assert record.read_text(encoding="utf-8") == "{bad"
+
+    def test_missing_record_is_a_draft_noop(self, tmp_path):
+        logs._reset_runtime_from_step(tmp_path / "logs", "slug", "rtl-implement", None)
+        assert not state_record_path(tmp_path, "slug").exists()
 
 
 class TestCriteriaSummaryIgnoresInternalCriteria:

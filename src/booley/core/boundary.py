@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
+import uuid
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -45,11 +47,14 @@ __all__ = [
     "require_bool_value",
     "require_dict",
     "require_finite_number",
+    "require_finite_number_value",
     "require_int",
     "require_list",
     "require_opt_str",
+    "require_sha256_digest",
     "require_str",
     "require_str_value",
+    "require_uuid4",
 ]
 
 
@@ -140,6 +145,26 @@ def require_str_value(value: Any, *, field: str = "value", allow_empty: bool = F
     return value
 
 
+def require_sha256_digest(value: Any, *, field: str = "value") -> str:
+    """Return one canonical ``sha256:`` digest string."""
+    parsed = require_str_value(value, field=field)
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", parsed):
+        raise BoundaryError(f"{field} must be a sha256 digest")
+    return parsed
+
+
+def require_uuid4(value: Any, *, field: str = "value") -> str:
+    """Return one lowercase canonical UUIDv4 string."""
+    parsed_value = require_str_value(value, field=field)
+    try:
+        parsed = uuid.UUID(parsed_value)
+    except ValueError as exc:
+        raise BoundaryError(f"{field} must be lowercase UUIDv4") from exc
+    if parsed.version != 4 or str(parsed) != parsed_value:
+        raise BoundaryError(f"{field} must be lowercase UUIDv4")
+    return parsed_value
+
+
 def is_str_list(value: Any) -> bool:
     """Return True iff *value* is a list whose every element is a ``str``.
 
@@ -214,7 +239,9 @@ def _finite_number(value: Any) -> int | float | None:
     """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)) and math.isfinite(value):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
         return value
     return None
 
@@ -274,6 +301,19 @@ def require_finite_number(value: Any, *, field: str) -> float:
     if number is None:
         raise BoundaryError(f"{field} must be a finite number, got {value!r}")
     return float(number)
+
+
+def require_finite_number_value(value: Any, *, field: str) -> int | float:
+    """Return a finite number without changing its authored numeric type.
+
+    Unlike :func:`require_finite_number`, this validator does not coerce ints
+    to floats. It is therefore safe for arbitrarily large Python integers and
+    for boundaries where the original int/float distinction is persisted.
+    """
+    number = _finite_number(value)
+    if number is None:
+        raise BoundaryError(f"{field} must be a finite number, got {value!r}")
+    return number
 
 
 def as_positive_int(value: Any, default: int, *, field: str | None = None) -> int:

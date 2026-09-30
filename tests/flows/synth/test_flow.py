@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -23,7 +24,9 @@ from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import ClockTiming, make_clock_timing
+from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.implementation_comparison import TargetExecutionRef
@@ -55,7 +58,9 @@ from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.recipe import (
     BASELINE_REF_PARAM,
     default_recipe_args,
+    synthesis_recipe_changes,
     synthesis_recipe_snapshot,
+    synthesis_recipe_snapshot_fingerprint,
 )
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import parse_synth_diagnostics
@@ -67,6 +72,118 @@ from booley.targets.domain import TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
+
+
+class TestEdaFailureClassification:
+    @pytest.mark.parametrize(
+        ("stage", "executable"),
+        (("sv2v", "sv2v"), ("yosys", "yosys"), ("openroad", "openroad")),
+    )
+    def test_missing_executable_is_infrastructure_error(self, stage: str, executable: str) -> None:
+        from booley.flows.eda_failures import classify_eda_failure
+
+        result = classify_eda_failure(
+            SubprocessResult(
+                returncode=2,
+                stdout=f"/bin/sh: 1: {executable}: not found\n",
+                stderr="",
+            ),
+            expected_stage=stage,
+            expected_executable=executable,
+        )
+        assert result is not None
+        assert result.kind == "infrastructure"
+        assert f"missing tool: {executable}" in result.reason
+
+    def test_missing_sv2v_is_infrastructure_error(self) -> None:
+        self.test_missing_executable_is_infrastructure_error("sv2v", "sv2v")
+
+    def test_missing_yosys_is_infrastructure_error(self) -> None:
+        self.test_missing_executable_is_infrastructure_error("yosys", "yosys")
+
+    def test_missing_openroad_is_infrastructure_error(self) -> None:
+        self.test_missing_executable_is_infrastructure_error("openroad", "openroad")
+
+    @pytest.mark.parametrize(
+        ("stage", "subject"),
+        (
+            ("yosys", "read_slang"),
+            ("yosys", "cells.lib"),
+            ("openroad", "Nangate45_tech.lef"),
+        ),
+    )
+    def test_missing_dependency_is_infrastructure_error(self, stage: str, subject: str) -> None:
+        from booley.flows.eda_failures import classify_eda_failure, render_failure_marker
+
+        token = "0123456789abcdef0123456789abcdef"
+        marker = render_failure_marker(token, "missing_required_file", stage, subject)
+        result = classify_eda_failure(
+            SubprocessResult(returncode=2, stdout=marker, stderr=""),
+            expected_token=token,
+            expected_stage=stage,
+        )
+        assert result is not None
+        assert result.kind == "infrastructure"
+        assert subject in result.reason
+
+    def test_missing_read_slang_is_infrastructure_error(self) -> None:
+        self.test_missing_dependency_is_infrastructure_error("yosys", "read_slang")
+
+    def test_missing_liberty_is_infrastructure_error(self) -> None:
+        self.test_missing_dependency_is_infrastructure_error("yosys", "cells.lib")
+
+    def test_missing_physical_pdk_is_infrastructure_error(self) -> None:
+        self.test_missing_dependency_is_infrastructure_error("openroad", "Nangate45_tech.lef")
+
+
+class TestBoundaryCompatibility:
+    def test_legacy_inline_metrics_remain_complete(self, tmp_path: Path) -> None:
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+        metrics = _parse_synth_output("Chip area for module 'dut': 1000.0", 0.1)
+        outcome = SimpleNamespace(
+            diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+            forced_failure=None,
+            yosys_complete=False,
+            infrastructure_failure=None,
+        )
+        flow._apply_boundary_completion(
+            metrics,
+            outcome,
+            SubprocessResult(
+                returncode=0,
+                stdout="Chip area for module 'dut': 1000.0",
+                stderr="",
+            ),
+            "Chip area for module 'dut': 1000.0",
+        )
+        assert metrics.yosys_complete is True
+        assert metrics.structural_checks_complete is True
+
+    @pytest.mark.parametrize(
+        ("process", "expected"),
+        (
+            (SubprocessResult(returncode=-1, timed_out=True), "timeout"),
+            (SubprocessResult(returncode=2, oom_kill_delta=1), "oom"),
+            (SubprocessResult(returncode=137), "resource_killed"),
+        ),
+    )
+    def test_terminal_reason_survives_infrastructure_classification(
+        self, tmp_path: Path, process: SubprocessResult, expected: str
+    ) -> None:
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+        metrics = SynthMetrics()
+        outcome = SimpleNamespace(
+            diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+            forced_failure=None,
+            yosys_complete=False,
+            attempt_token="0123456789abcdef0123456789abcdef",
+        )
+
+        flow._apply_boundary_completion(metrics, outcome, process, process.stderr)
+
+        assert metrics.termination == expected
 
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
@@ -88,22 +205,98 @@ def _dry_run_flow(work_dir: Path, target: str = "lite") -> AsicSynthesizeFlow:
 
 def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
     flow = AsicSynthesizeFlow()
-    flow._args = SimpleNamespace(work_dir=tmp_path)
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
     shared = tmp_path / "shared"
     timing = shared / "timing"
     timing.mkdir(parents=True)
     log = shared / "run.log"
     log.write_text("first log\n", encoding="utf-8")
     (timing / "slack.rpt").write_text("first timing\n", encoding="utf-8")
-    metrics = SynthMetrics(log_path="shared/run.log", dirs={"timing": "shared/timing"})
+    invocation = flow.reserve_invocation_dir()
+    assert invocation is not None
+    durable_log = invocation / "artifacts/synth_demo/run.log"
+    durable_log.parent.mkdir(parents=True)
+    durable_log.write_text("first log\n", encoding="utf-8")
+    metrics = SynthMetrics(
+        log_path=durable_log.relative_to(tmp_path).as_posix(),
+        dirs={"timing": "shared/timing"},
+    )
 
     artifacts = flow._snapshot_report_artifacts(tmp_path / "reports", "demo", metrics)
     log.write_text("second log\n", encoding="utf-8")
     (timing / "slack.rpt").write_text("second timing\n", encoding="utf-8")
 
     assert (tmp_path / artifacts["log"]).read_text(encoding="utf-8") == "first log\n"
-    copied_timing = tmp_path / artifacts["dirs"]["timing"] / "slack.rpt"
+    copied_timing = tmp_path / artifacts["timing"] / "slack.rpt"
     assert copied_timing.read_text(encoding="utf-8") == "first timing\n"
+
+
+def test_numbered_log_publication_failure_is_best_effort(tmp_path: Path) -> None:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    metrics = SynthMetrics()
+    process = SubprocessResult(returncode=0, stdout="ok", stderr="")
+
+    with patch(
+        "booley.flows.synth.flow.artifacts.publish_bytes",
+        side_effect=OSError("evidence disk full"),
+    ):
+        flow._record_boundary_diagnostics("demo", metrics, process, 0.1, "complete output")
+
+    assert metrics.log_path == ""
+    assert work_root_for(tmp_path, "synth", "demo").joinpath("run.log").is_file()
+
+
+def test_timing_snapshot_failure_cleans_partial_evidence(tmp_path: Path) -> None:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    timing = tmp_path / "shared/timing"
+    timing.mkdir(parents=True)
+    (timing / "one.rpt").write_text("one", encoding="utf-8")
+    (timing / "two.rpt").write_text("two", encoding="utf-8")
+    metrics = SynthMetrics(dirs={"timing": "shared/timing"})
+    real_publish = artifacts.publish_file
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("evidence disk full")
+        return real_publish(*args, **kwargs)
+
+    with patch("booley.flows.synth.flow.artifacts.publish_file", side_effect=fail_second):
+        published = flow._snapshot_report_artifacts(tmp_path / "reports", "demo", metrics)
+
+    assert "timing" not in published
+    assert not (tmp_path / "reports/synth/1/artifacts/synth_demo/timing").exists()
 
 
 def test_clockless_sdc_marker_is_classified_as_configuration_error(tmp_path: Path) -> None:
@@ -1470,25 +1663,12 @@ class TestSingleConfigRun:
 
         assert result.exit_code == EXIT_SUCCESS
 
-    def test_workspace_is_owned_through_artifact_snapshot(
+    def test_captured_output_publication_does_not_copy_shared_log(
         self,
         flow_and_state,
         tmp_path: Path,
     ):
         flow, _ = flow_and_state
-        copy_started = Event()
-        release_copy = Event()
-        build_root = work_root_for(tmp_path, "synth", "lite")
-        real_copy2 = shutil.copy2
-
-        def held_copy(source, destination, *args, **kwargs):
-            if Path(source).is_relative_to(build_root):
-                copy_started.set()
-                if not release_copy.wait(5.0):
-                    raise TimeoutError("test did not release artifact snapshot")
-            return real_copy2(source, destination, *args, **kwargs)
-
-        dry_run = _dry_run_flow(tmp_path)
         synth_output = "Chip area for top module '\\design_top': 6400.0\n"
 
         with (
@@ -1502,25 +1682,17 @@ class TestSingleConfigRun:
                     duration_s=1.0,
                 ),
             ),
-            patch.object(shutil, "copy2", side_effect=held_copy),
+            patch.object(shutil, "copy2", wraps=shutil.copy2) as copy2,
             patch.object(
                 fusesoc_registry,
                 "_setup_command",
                 return_value=["fusesoc", "run", "--setup", "--target", "lite"],
             ),
-            ThreadPoolExecutor(max_workers=1) as pool,
         ):
-            running = pool.submit(flow._run)
-            assert copy_started.wait(5.0)
-            try:
-                preview = dry_run._run()
-                assert build_root.is_dir()
-                assert preview.exit_code == EXIT_SUCCESS
-            finally:
-                release_copy.set()
-            result = running.result(timeout=10.0)
+            result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
+        copy2.assert_not_called()
 
     def test_workspace_lease_timeout_is_an_infrastructure_error(
         self,
@@ -1714,9 +1886,9 @@ class TestSingleConfigRun:
         # directories holding everything else.
         assert "reports" not in data
         artifacts = data["artifacts"]
-        assert artifacts["report"] == "reports/synth_lite.json"
+        assert artifacts["report"] == "reports/synth/1/targets/lite.json"
         assert artifacts["log"].endswith("run.log")
-        assert artifacts["dirs"]["build"].endswith("synth/lite/synth")
+        assert artifacts["live_dirs"]["build"].endswith("synth/lite/synth")
 
     def test_artifact_dirs_omit_a_timing_dir_that_never_appeared(
         self, flow_and_state, tmp_path: Path
@@ -1740,7 +1912,7 @@ class TestSingleConfigRun:
 
         dirs = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))[
             "artifacts"
-        ]["dirs"]
+        ]["live_dirs"]
         assert "build" in dirs
         assert "timing" not in dirs
 
@@ -1781,11 +1953,11 @@ class TestSingleConfigRun:
             (tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8")
         )["artifacts"]
         # Three entries total, whatever the run produced.
-        assert set(artifacts) == {"report", "log", "dirs"}
-        listing = {p.name for p in (tmp_path / artifacts["dirs"]["build"]).iterdir()}
+        assert set(artifacts) == {"report", "log", "live_dirs"}
+        listing = {p.name for p in (tmp_path / artifacts["live_dirs"]["build"]).iterdir()}
         assert set(written) <= listing, "every artifact is reachable by listing the dir"
         # Every pointer is work-dir-relative and really resolves.
-        assert not artifacts["dirs"]["build"].startswith("/")
+        assert not artifacts["live_dirs"]["build"].startswith("/")
         assert (tmp_path / artifacts["log"]).is_file()
 
     def test_subprocess_failure_without_metrics_fails_json(
@@ -2616,6 +2788,79 @@ class TestCriterionKey:
 
 
 class TestBuildSynthCmd:
+    def test_recipe_identity_ignores_isolated_checkout_path(self, tmp_path: Path) -> None:
+        left_root = tmp_path / "baseline"
+        right_root = tmp_path / "candidate"
+        constraint = Path("constraints/dut.sdc")
+        for root in (left_root, right_root):
+            path = root / constraint
+            path.parent.mkdir(parents=True)
+            path.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+
+        left = _fake_synth_resolved(tmp_path / "left-build")
+        right = _fake_synth_resolved(tmp_path / "right-build")
+        left = dataclasses.replace(
+            left,
+            files=(
+                fusesoc_registry.ResolvedFile(
+                    name=str(left_root / constraint),
+                    file_type="SDC",
+                    core="::syn_demo:0",
+                ),
+            ),
+        )
+        right = dataclasses.replace(
+            right,
+            files=(
+                fusesoc_registry.ResolvedFile(
+                    name=str(right_root / constraint),
+                    file_type="SDC",
+                    core="::syn_demo:0",
+                ),
+            ),
+        )
+
+        left_snapshot = synthesis_recipe_snapshot(left, default_recipe_args(), target="lite")
+        right_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
+
+        assert left_snapshot == right_snapshot
+        assert synthesis_recipe_snapshot_fingerprint(
+            left_snapshot
+        ) == synthesis_recipe_snapshot_fingerprint(right_snapshot)
+        assert left_snapshot["flow"] == "synth"
+        assert left_snapshot["constraints"] == [
+            {
+                "core": "::syn_demo:0",
+                "sha256": hashlib.sha256((left_root / constraint).read_bytes()).hexdigest(),
+            }
+        ]
+
+        (right_root / constraint).write_text(
+            "create_clock -period 5 [get_ports clk]\n", encoding="utf-8"
+        )
+        changed_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
+        assert synthesis_recipe_snapshot_fingerprint(
+            changed_snapshot
+        ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
+        assert implementation_comparison_basis(
+            changed_snapshot
+        ) != implementation_comparison_basis(left_snapshot)
+
+    def test_stable_constraint_identity_preserves_selfcompare_diagnostic(
+        self,
+    ) -> None:
+        flow = AsicSynthesizeFlow()
+        flow._baseline_selfcompare_msg = "baseline and candidate resolve identically"
+        current = {"lite": SynthMetrics(recipe_fingerprint="same")}
+        baseline = {"lite": SynthMetrics(recipe_fingerprint="same")}
+
+        flow._discard_stale_selfcompare(["lite"], current, baseline)
+
+        assert flow._baseline_selfcompare_msg is not None
+        current["lite"].recipe_fingerprint = "changed"
+        flow._discard_stale_selfcompare(["lite"], current, baseline)
+        assert flow._baseline_selfcompare_msg is None
+
     @staticmethod
     def _append_sdc_args(
         flow: AsicSynthesizeFlow,
@@ -2665,8 +2910,16 @@ class TestBuildSynthCmd:
             default_recipe_args(),
             target="lite",
         )
-        assert snapshot["schema"] == 2
+        assert snapshot["schema"] == 4
         assert "default_clock_ps" not in snapshot
+
+        previous = {**snapshot, "schema": 3}
+        assert synthesis_recipe_snapshot_fingerprint(previous) != (
+            synthesis_recipe_snapshot_fingerprint(snapshot)
+        )
+        assert synthesis_recipe_changes(previous, snapshot) == [
+            {"path": "schema", "before": 3, "after": 4}
+        ]
 
     def test_default_ppa_profile_forwarded(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
@@ -3773,8 +4026,8 @@ class TestTruncationResilientOutput:
         assert "Number of cells: 12345" in log_file.read_text(encoding="utf-8")
         # The report points at the persisted log, project-relative.
         assert (
-            "[synth] lite: log: .booley_project/.runtime/edalize/synth/lite/run.log"
-        ) in result.report_text
+            "[synth] lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
+        )
 
     def test_synth_log_written_on_fail(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
@@ -3798,8 +4051,8 @@ class TestTruncationResilientOutput:
         assert "Yosys died before stat output" in text
         assert "ERROR: frontend rejected converted Verilog" in text
         assert (
-            "[synth] lite: log: .booley_project/.runtime/edalize/synth/lite/run.log"
-        ) in result.report_text
+            "[synth] lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
+        )
 
     def test_command_echo_demoted_to_debug(
         self,

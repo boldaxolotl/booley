@@ -17,7 +17,7 @@ import pytest
 
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
-from booley.runtime import auth_token, session_runtime
+from booley.runtime import auth_token, issuance_invalidation, session_runtime
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)
@@ -671,13 +671,65 @@ class TestClaudeMintLocation:
         monkeypatch.setattr(auth_cmd, "_prompt_secret", prompt)
         monkeypatch.setattr(auth_cmd, "err", errors.append)
 
-        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], project)
-
-        assert token is None
+        with pytest.raises(session_runtime.SessionError, match="cannot inventory runtimes"):
+            auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], project)
         prompt.assert_not_called()
+        assert errors == []
+
+    def test_run_auth_returns_two_for_sandbox_start_refusal(self, tmp_path, monkeypatch):
+        errors: list[str] = []
+        monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+        monkeypatch.setattr(
+            auth_cmd,
+            "_acquire",
+            Mock(side_effect=session_runtime.SessionError("Sandbox start refused: at cap")),
+        )
+        args = SimpleNamespace(
+            status=False,
+            clear=False,
+            app=auth_token.APP_CLAUDE,
+            token_stdin=False,
+        )
+
+        assert auth_cmd.run_auth(args, tmp_path) == 2
         assert errors == [
-            "could not run `claude setup-token` in the Sandbox: cannot inventory runtimes"
+            "could not run `claude setup-token` in the Sandbox: Sandbox start refused: at cap"
         ]
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+    def test_run_auth_reports_unsafe_private_store(
+        self,
+        home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        project = home / "rtl"
+        project.mkdir()
+        pending = issuance_invalidation.prepare(
+            str(project.resolve()),
+            cleanup_resources=False,
+        )
+        issuance_invalidation.cancel(pending)
+        booley_config = home / "config" / "booley"
+        booley_config.chmod(0o755)
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
+        args = SimpleNamespace(
+            status=False,
+            clear=False,
+            app=auth_token.APP_CLAUDE,
+            token_stdin=False,
+        )
+
+        assert auth_cmd.run_auth(args, project) == 2
+
+        captured = capsys.readouterr()
+        assert "could not run `claude setup-token` in the Sandbox" in captured.out
+        assert str(booley_config) in captured.out
+        assert "0755" in captured.out
+        assert f"chmod 700 {booley_config}" in captured.out
+        assert "Traceback" not in captured.out
+        assert "Traceback" not in captured.err
 
     def test_non_project_mint_keeps_host_cli_fallback(self, tmp_path, monkeypatch):
         run = Mock(return_value=SimpleNamespace(returncode=0))

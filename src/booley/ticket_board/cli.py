@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
+from .board_layout import StateRecordError
 from .cli_handlers import (
     _cmd_activate,
     _cmd_amend,
     _cmd_approve,
     _cmd_archive,
     _cmd_block,
-    _cmd_board,
     _cmd_classify,
     _cmd_collect_evidence,
     _cmd_complete,
@@ -42,42 +43,62 @@ from .cli_handlers import (
     _cmd_usage,
     _cmd_validate_logs,
     _cmd_validate_ticket,
-)
-from .constants import (
-    TICKET_DIRS,
+    show_board_view,
 )
 from .helpers import (
     detect_tickets_dir,
     ensure_utf8_output,
 )
 from .io import TicketIO
+from .legacy_layout import LegacyBoardLayoutError
+from .lifecycle import board_target_choices
+from .operations import READ_ONLY_BOARD_COMMANDS, open_board
+from .ticket_history import TicketHistoryError
+
+
+def add_all_tickets_flag(p: argparse.ArgumentParser, *, keep_parent: bool = False) -> None:
+    """Add ``--all``, which adds Closed Tickets to a board listing.
+
+    *keep_parent* leaves a value a parent parser already set in place: a
+    subparser's own default would otherwise reset ``booley board --all show``.
+    """
+    p.add_argument(
+        "--all",
+        action="store_true",
+        default=argparse.SUPPRESS if keep_parent else False,
+        help="Also list Closed Tickets from Ticket History",
+    )
 
 
 def _add_query_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register read-only board/ticket inspection subcommands."""
     # board (default)
-    sub.add_parser("board", help="Display board as markdown table")
+    p = sub.add_parser("board", help="Display board as markdown table")
+    add_all_tickets_flag(p)
     # show: with a slug, print one ticket's paths/branch/criteria; without, an
     # alias for 'board' (back-compat).
     p = sub.add_parser("show", help="Show a ticket's paths/branch/criteria (or the board)")
     p.add_argument("slug", nargs="?", default=None, help="Ticket slug to inspect")
+    add_all_tickets_flag(p)
 
     # slug
     p = sub.add_parser("slug", help="Generate slug from summary text")
     p.add_argument("summary", help="Summary text to slugify")
 
     # read-board
-    sub.add_parser("read-board", help="Print all tickets as JSON")
+    p = sub.add_parser("read-board", help="Print all tickets as JSON")
+    add_all_tickets_flag(p)
 
 
 def _add_ticket_edit_subcommands(sub: argparse._SubParsersAction) -> None:
-    """Register subcommands that mutate a single ticket's frontmatter/logs."""
+    """Register commands that mutate runtime or generated Ticket Board fields."""
     # update-board
-    p = sub.add_parser("update-board", help="Update a ticket's frontmatter fields")
-    p.add_argument("slug", help="Ticket slug")
-    p.add_argument(
-        "--set", nargs="+", metavar="K=V", help="Field updates (e.g. status=running step=planning)"
+    p = sub.add_parser(
+        "update-board",
+        help="Update mutable runtime/generated Ticket Board fields; v2 authored fields are rejected",
     )
+    p.add_argument("slug", help="Ticket slug")
+    p.add_argument("--set", nargs="+", metavar="K=V", help="Field updates (e.g. step=planning)")
     p.add_argument("--append-step", metavar="STEP", help="Append a step to steps_completed")
     reset_group = p.add_mutually_exclusive_group()
     reset_group.add_argument(
@@ -124,8 +145,7 @@ def _add_lifecycle_subcommands(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("move-ticket", help="Move ticket file between directories")
     p.add_argument("slug", help="Ticket slug")
     # Accept both bare names (queue) and board/-prefixed (board/queue)
-    _VALID_TO_DIRS = TICKET_DIRS + [d.split("/", 1)[1] for d in TICKET_DIRS]
-    p.add_argument("--to", required=True, choices=_VALID_TO_DIRS, help="Target directory")
+    p.add_argument("--to", required=True, choices=board_target_choices(), help="Target state")
 
     # block
     p = sub.add_parser("block", help="Block a ticket")
@@ -213,7 +233,9 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
 def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register ticket creation, queueing, and approval subcommands."""
     # create-file
-    p = sub.add_parser("create-file", help="Create a new ticket .md file in drafts/")
+    p = sub.add_parser(
+        "create-file", help="Create a new draft ticket .md file on the Ticket Board"
+    )
     _add_create_file_args(p)
 
     p = sub.add_parser("return-to-draft", help="Start fresh Ticket authoring")
@@ -224,7 +246,7 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     p.add_argument("slug", help="Ticket slug")
 
     # activate
-    p = sub.add_parser("activate", help="Activate a ticket for execution (move to active/)")
+    p = sub.add_parser("activate", help="Activate a ticket for execution (mark it running)")
     p.add_argument("slug", help="Ticket slug")
 
     # unblock
@@ -237,7 +259,7 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     # reset
     p = sub.add_parser(
         "reset",
-        help="Reset a ticket (move to queue, clear state, wipe logs, delete worktree+branch)",
+        help="Reset a Ticket (queue, archive run artifacts, restore Ticket baseline worktrees)",
     )
     p.add_argument("slug", help="Ticket slug")
     p.add_argument(
@@ -287,18 +309,17 @@ def _add_reporting_subcommands(sub: argparse._SubParsersAction) -> None:
     )
 
     # archive
-    p = sub.add_parser("archive", help="Archive done tickets (or a specific ticket by slug)")
+    p = sub.add_parser("archive", help="Abandon a live ticket, closing it as archived")
     p.add_argument(
-        "slug", nargs="?", default=None, help="Specific ticket to archive (default: all done/)"
+        "slug",
+        nargs="?",
+        default=None,
+        help="Live ticket to abandon (default: resume interrupted archives)",
     )
-    p.add_argument(
-        "--keep-logs", action="store_true", help="Keep log directories (default: remove them too)"
-    )
-    p.add_argument(
-        "--force",
-        action="store_true",
-        help="Archive a ticket that is not 'done' (discards its state)",
-    )
+    # Accepted for one release so existing scripts keep working; logs are
+    # always kept now and archiving a live ticket needs no override.
+    p.add_argument("--keep-logs", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
 
     # log-incident
     p = sub.add_parser("log-incident", help="Append an incident to logs/<slug>/incidents.md")
@@ -385,7 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 HANDLERS = {
     # Pure output commands
-    "board": _cmd_board,
+    "board": show_board_view,
     "show": _cmd_show,
     "slug": _cmd_slug,
     "read-board": _cmd_read_board,
@@ -449,7 +470,13 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = HANDLERS.get(command)
     if handler is not None:
-        return handler(tio, args)
+        try:
+            open_board(tio, recover=command not in READ_ONLY_BOARD_COMMANDS)
+            return handler(tio, args)
+        except (LegacyBoardLayoutError, StateRecordError, TicketHistoryError) as exc:
+            # A broken state record fails closed: say which one instead of a traceback.
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
 
     parser.print_help()
     return 1

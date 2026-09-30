@@ -299,6 +299,32 @@ class TestHarnessInfraLines:
         assert sr.is_harness_infra_line(line) is True
         assert sr.count_sva_errors(line + "\n") == 0
 
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "ERROR: $readmemh: Cannot open memory.hex",
+            "ERROR: $readmemb: unable to open image.bin",
+            "ERROR: $readmemh: can't open vectors.hex",
+            "ERROR: $readmemb: could not open boot.bin",
+        ],
+    )
+    def test_supported_raw_readmem_open_failures_are_not_sva(self, line):
+        assert sr.is_harness_infra_line(line) is True
+        assert sr.count_sva_errors(line + "\n") == 0
+        assert sr.count_sva_errors_xcelium(line + "\n") == 0
+        assert sr.count_sva_errors_vcs(line + "\n") == 0
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "ERROR: memory controller can't open grant window",
+            "ERROR: DUT could not open transaction after reset",
+        ],
+    )
+    def test_unrelated_dut_open_errors_remain_sva(self, line):
+        assert sr.is_harness_infra_line(line) is False
+        assert sr.count_sva_errors(line + "\n") == 1
+
 
 # ---------------------------------------------------------------------------
 # count_sva_errors_xcelium

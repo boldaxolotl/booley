@@ -355,7 +355,6 @@ def run_if_due(
                 trigger,
                 progress=emit_progress,
             )
-        _notify_if_changed(project_root, report)
         return report
     except Exception:  # noqa: BLE001 — lifecycle advisory must never block a session or ticket sweep
         return None
@@ -471,21 +470,6 @@ def consume_changed_summary(
     except (FileNotFoundError, OSError):
         return None
     return _brief_message(report, project_root)
-
-
-def _notify_if_changed(project_root: Path, report: dict[str, Any]) -> None:
-    if not any(issue_counts(report)):
-        return
-    try:
-        from booley.ticket_board.notifications import is_event_enabled, ntfy_send
-
-        if not is_event_enabled("doctor"):
-            return
-    except (ImportError, OSError):
-        return
-    summary = consume_changed_summary(project_root, channel="ntfy", issues_only=True)
-    if summary is not None:
-        ntfy_send("Booley Doctor found issues", summary, priority="4")
 
 
 def main() -> int:

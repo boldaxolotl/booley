@@ -9,17 +9,25 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.criteria.freshness import verification_freshness_eligible
 from booley.criteria.state import (
     DevelopmentState,
 )
 from booley.criteria.templates import cycle_count_criterion_key
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.review_receipt import (
+    REVIEW_DETAIL_VERSION,
+    ReviewInvocation,
+    build_review_contract_detail,
+)
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.ticket_board.criteria_acceptance import (
     CriteriaVerdict,
     build_criteria_summary_lines,
     check_criteria_acceptance,
+    evaluate_verification_freshness,
     format_criteria_verdict,
+    project_active_declared_block_reason,
     refresh_verification_freshness,
 )
 from tests.criterion_endpoint_support import builtin_endpoint_catalog
@@ -200,6 +208,44 @@ class TestCheckCriteriaAcceptance:
         )
         verdict = self._write_state_and_check(tmp_path, state)
         assert verdict.disposition == "review"
+
+    @pytest.mark.parametrize(
+        ("blocked_met", "mandatory_met", "expected"),
+        [
+            (True, False, "Need a pin assignment."),
+            (False, False, None),
+            (True, True, None),
+        ],
+    )
+    def test_declared_block_projection_uses_active_policy(
+        self,
+        tmp_path: Path,
+        blocked_met: bool,
+        mandatory_met: bool,
+        expected: str | None,
+    ):
+        state_path = tmp_path / "booley_state.json"
+        state = DevelopmentState.load(state_path)
+        state.init_criteria({"implementation_complete": True, "_blocked_reason": False})
+        state.set_criterion("implementation_complete", mandatory_met)
+        state.set_criterion(
+            "_blocked_reason",
+            blocked_met,
+            detail={"reason": "Need a pin assignment."},
+        )
+        state.save()
+
+        assert project_active_declared_block_reason(state_path, work_dir=tmp_path) == expected
+
+    @pytest.mark.parametrize("contents", [None, "{broken json"])
+    def test_declared_block_projection_ignores_missing_or_corrupt_state(
+        self, tmp_path: Path, contents: str | None
+    ):
+        state_path = tmp_path / "booley_state.json"
+        if contents is not None:
+            state_path.write_text(contents, encoding="utf-8")
+
+        assert project_active_declared_block_reason(state_path, work_dir=tmp_path) is None
 
     def test_strict_model_contract_accepts_model_evidence(self, tmp_path: Path):
         state_path = tmp_path / "booley_state.json"
@@ -608,6 +654,28 @@ class TestCheckCriteriaAcceptance:
         assert state.criteria["_report_submitted"].met is False
         assert state.criteria["_report_submitted"].stale is True
 
+    def test_declared_block_projection_applies_freshness_without_persisting(self, tmp_path: Path):
+        state_path, work_dir = self._fresh_state(tmp_path)
+        state = DevelopmentState.load(state_path)
+        state.set_criterion(
+            "_blocked_reason",
+            True,
+            detail={"reason": "Need a protocol decision."},
+        )
+        state.save()
+        before = state_path.read_bytes()
+        (work_dir / "rtl" / "dut.sv").write_text(
+            "module dut; wire changed; endmodule\n", encoding="utf-8"
+        )
+
+        reason = project_active_declared_block_reason(state_path, work_dir=work_dir)
+
+        assert reason == "Need a protocol decision."
+        assert state_path.read_bytes() == before
+        persisted = DevelopmentState.load(state_path)
+        assert persisted.criteria["sim_pass_default"].met is True
+        assert persisted.criteria["sim_pass_default"].stale is False
+
     def test_direct_testbench_edit_makes_sim_stale_unmet(self, tmp_path: Path):
         state_path, work_dir = self._fresh_state(tmp_path)
         (work_dir / "tb" / "tb.sv").write_text("module tb; wire y; endmodule\n", encoding="utf-8")
@@ -926,3 +994,142 @@ class TestBuildCriteriaSummaryLines:
         raw = self._strip(lines[0])
         assert "reviews" in raw
         assert "not yet run" in raw
+
+
+def test_read_only_freshness_evaluator_reports_tb_drift_without_mutation(
+    tmp_path: Path,
+) -> None:
+    work_dir = tmp_path / "work"
+    (work_dir / ".booley_project").mkdir(parents=True)
+    (work_dir / "rtl").mkdir()
+    (work_dir / "tb").mkdir()
+    (work_dir / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    (work_dir / "tb" / "tb.sv").write_text("module tb; endmodule\n")
+    (work_dir / "design.core").write_text(
+        "CAPI=2:\n"
+        "name: ::design:0\n"
+        "filesets:\n"
+        "  rtl: {files: [rtl/dut.sv]}\n"
+        "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+        "targets:\n"
+        "  sim: {filesets: [rtl, tb], toplevel: tb}\n",
+        encoding="utf-8",
+    )
+    entry = _FakeCriterion(
+        met=True,
+        mandatory=True,
+        detail={
+            SOURCE_FINGERPRINT_DETAIL_KEY: {
+                "categories": ["rtl", "tb"],
+                "target": "sim",
+                "fingerprint": compute_source_fingerprint(work_dir, target="sim"),
+            }
+        },
+    )
+    before = repr(entry)
+    current = evaluate_verification_freshness(
+        "sim_pass_sim",
+        entry,
+        work_dir=work_dir,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+    (work_dir / "tb" / "tb.sv").write_text("module tb; // changed\nendmodule\n")
+
+    result = evaluate_verification_freshness(
+        "sim_pass_sim",
+        entry,
+        work_dir=work_dir,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+
+    assert current.stale is False
+    assert current.changed_categories == ()
+    assert result.stale is True
+    assert result.changed_categories == ("tb",)
+    assert "sources changed" in result.reason
+    assert repr(entry) == before
+
+
+def test_freshness_eligibility_distinguishes_gate_from_review_placeholders() -> None:
+    pending_review = _FakeCriterion(met=False, mandatory=True)
+    assert verification_freshness_eligible(
+        "review_rtl_bugs_done",
+        pending_review,
+        include_unobserved_review=True,
+    )
+    assert not verification_freshness_eligible(
+        "review_rtl_bugs_done",
+        pending_review,
+        include_unobserved_review=False,
+    )
+    assert not verification_freshness_eligible(
+        "sim_pass_sim",
+        _FakeCriterion(met=True, mandatory=False),
+        include_unobserved_review=True,
+    )
+
+
+def test_read_only_freshness_evaluator_normalizes_malformed_project_config(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text("[broken", encoding="utf-8")
+    entry = _FakeCriterion(
+        met=True,
+        mandatory=True,
+        detail={SOURCE_FINGERPRINT_DETAIL_KEY: {"categories": ["rtl"]}},
+    )
+
+    result = evaluate_verification_freshness(
+        "sim_pass_sim",
+        entry,
+        work_dir=tmp_path,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+
+    assert result.stale
+    assert result.changed_categories == ("rtl", "tb")
+    assert result.current_evidence_identity
+    assert "can no longer be resolved" in result.reason
+
+
+def test_read_only_freshness_evaluator_prefers_version_4_reviewer_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    (tmp_path / ".booley_project").mkdir()
+    source = tmp_path / "rtl" / "dut.sv"
+    source.parent.mkdir()
+    source.write_text("module dut; endmodule\n", encoding="utf-8")
+    detail = {
+        "review_detail_version": REVIEW_DETAIL_VERSION,
+        "contract": build_review_contract_detail(
+            ReviewInvocation(
+                work_dir=tmp_path,
+                category="rtl",
+                focus="bugs",
+                scope=("rtl/dut.sv",),
+                mode="done",
+            )
+        ),
+    }
+    entry = _FakeCriterion(True, True, detail=detail)
+
+    assert not evaluate_verification_freshness(
+        "review_rtl_bugs_done",
+        entry,
+        work_dir=tmp_path,
+        fingerprint_provider=compute_source_fingerprint,
+    ).stale
+    source.write_text("module dut; // changed\nendmodule\n", encoding="utf-8")
+    result = evaluate_verification_freshness(
+        "review_rtl_bugs_done",
+        entry,
+        work_dir=tmp_path,
+        fingerprint_provider=compute_source_fingerprint,
+    )
+
+    assert result.stale
+    assert result.changed_categories == ("rtl",)
+    assert result.review_dimensions == ("scope",)

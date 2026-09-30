@@ -10,8 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 
+import booley
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+)
 
 
 class FakeDocker:
@@ -54,6 +60,244 @@ class FakeDocker:
     def remove_tag(self, image: str) -> None:
         self.mutations.append(("remove_tag", image))
         self.images.pop(image, None)
+
+
+def test_capacity_plan_projects_only_build_steps_by_role(tmp_path: Path) -> None:
+    def node(reference, role):
+        return SimpleNamespace(
+            reference=reference,
+            role=role,
+            build=SimpleNamespace(recipe_fingerprint=f"recipe-{reference}"),
+            effective_inputs=f"inputs-{reference}",
+            runtime_base_contract=None,
+            standard_substrate_contract=None,
+        )
+
+    nodes = (
+        node("reuse", lifecycle.ImageRole.RUNTIME_BASE),
+        node("heavy", lifecycle.ImageRole.PROJECT_OVERLAY),
+        node("pull", lifecycle.ImageRole.WHEEL_OVERLAY),
+        node("thin", lifecycle.ImageRole.WHEEL_OVERLAY),
+    )
+    steps = tuple(
+        SimpleNamespace(action=action)
+        for action in (
+            lifecycle.PlanAction.REUSE,
+            lifecycle.PlanAction.BUILD,
+            lifecycle.PlanAction.PULL,
+            lifecycle.PlanAction.BUILD,
+        )
+    )
+    plan = SimpleNamespace(nodes=nodes, steps=steps, project_root=tmp_path)
+
+    projected = harness_lifecycle.capacity_plan(plan)
+
+    assert projected is not None
+    assert [request.managed_image for request in projected.requests] == ["heavy", "thin"]
+    assert projected.requests[0].estimate_class is BuildEstimateClass.HEAVYWEIGHT
+    assert projected.requests[1].estimate_class is BuildEstimateClass.THIN_OVERLAY
+    assert projected.requests[1].cache_evidence.reference == "thin"
+
+
+def test_capacity_request_includes_optional_parent_contracts() -> None:
+    node = SimpleNamespace(
+        reference="sandbox",
+        role=lifecycle.ImageRole.PROJECT_OVERLAY,
+        build=SimpleNamespace(recipe_fingerprint="recipe"),
+        effective_inputs="inputs",
+        runtime_base_contract="runtime-contract",
+        standard_substrate_contract="substrate-contract",
+    )
+
+    request = harness_lifecycle._capacity_request(node)
+
+    labels = dict(request.cache_evidence.expected_labels)
+    assert labels[lifecycle.LABEL_RUNTIME_BASE_CONTRACT] == "runtime-contract"
+    assert labels[lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT] == "substrate-contract"
+
+
+def test_host_capacity_requests_skip_verified_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE) == ()
+
+
+def test_host_capacity_requests_skip_current_local_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = object()
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.CURRENT),
+    )
+
+    assert harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE) == ()
+
+
+def test_host_capacity_requests_fall_back_without_source_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", object)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.STALE),
+    )
+    monkeypatch.setattr(booley, "version_attribution", SimpleNamespace(source_root=None))
+
+    requests = harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
+
+    assert [request.managed_image for request in requests] == ["runtime base", "Sandbox Image"]
+
+
+def test_host_capacity_requests_use_local_build_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.setup import docker_image
+
+    expected = (DockerBuildRequest("base", "base"),)
+    observed = []
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", object)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.STALE),
+    )
+    monkeypatch.setattr(booley, "version_attribution", SimpleNamespace(source_root=tmp_path))
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: tmp_path / "docker")
+    monkeypatch.setattr(docker_image, "_image_build_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(
+        docker_image,
+        "_local_build_capacity_requests",
+        lambda *args, **kwargs: observed.append((args, kwargs)) or expected,
+    )
+
+    assert harness_lifecycle.host_capacity_requests(lifecycle.Intent.REFRESH) == expected
+    assert observed[0][1]["rebuild_runtime_base"] is True
+
+
+def test_reconcile_planned_commits_prepared_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    scope = SimpleNamespace()
+    planned = SimpleNamespace()
+    prepared = SimpleNamespace()
+    expected = SimpleNamespace()
+    monkeypatch.setattr(harness_lifecycle, "plan", lambda *_args, **_kwargs: planned)
+    monkeypatch.setattr(harness_lifecycle, "prepare", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(
+        harness_lifecycle, "commit", lambda value: expected if value is prepared else None
+    )
+
+    assert harness_lifecycle.reconcile_planned(scope, lifecycle.Intent.ENSURE) is expected
+
+
+def test_reconcile_planned_aborts_failed_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared = SimpleNamespace()
+    aborted = []
+    monkeypatch.setattr(harness_lifecycle, "plan", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(harness_lifecycle, "prepare", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "commit",
+        lambda _prepared: (_ for _ in ()).throw(RuntimeError("adoption failed")),
+    )
+    monkeypatch.setattr(harness_lifecycle, "abort", aborted.append)
+
+    with pytest.raises(RuntimeError, match="adoption failed"):
+        harness_lifecycle.reconcile_planned(SimpleNamespace(), lifecycle.Intent.ENSURE)
+
+    assert aborted == [prepared]
+
+
+def test_prepare_checks_project_and_sidecar_plan_before_runtime_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    node = SimpleNamespace(
+        reference="base",
+        role=lifecycle.ImageRole.RUNTIME_BASE,
+        build=SimpleNamespace(recipe_fingerprint="recipe"),
+        effective_inputs="inputs",
+        runtime_base_contract=None,
+        standard_substrate_contract=None,
+        acquisition_policy=lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    lifecycle_plan = SimpleNamespace(
+        nodes=(node,),
+        steps=(SimpleNamespace(action=lifecycle.PlanAction.BUILD),),
+        project_root=tmp_path,
+    )
+    sidecar = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    observed = []
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "ensure_docker_build_capacity",
+        lambda *_args, **kwargs: observed.extend(kwargs["remaining_plan"].requests),
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "prepare",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    harness_lifecycle.prepare(lifecycle_plan, future_requests=(sidecar,))
+
+    assert [request.managed_image for request in observed] == ["base", "proxy"]
+
+
+def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import booley
+    from booley.harness.setup import docker_image
+    from booley.runtime.version_attribution import VersionOrigin
+
+    base = DockerBuildRequest("base", lifecycle.BASE_IMAGE)
+    proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
+    plan = DockerBuildPlan((base, proxy))
+    observed = []
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        SimpleNamespace(origin=VersionOrigin.SOURCE),
+    )
+    monkeypatch.setattr(
+        docker_image,
+        "_step_docker_image",
+        lambda *_args, **kwargs: observed.append(kwargs["capacity_plan"]),
+    )
+    adapter = harness_lifecycle._LegacyBuildAdapter(
+        tmp_path,
+        FakeDocker({}),
+        verbose=False,
+        capacity_plan=plan,
+    )
+
+    adapter._build_base(SimpleNamespace(reference=lifecycle.BASE_IMAGE), SimpleNamespace())
+
+    assert observed == [plan]
 
 
 class FakeBuilder:
@@ -220,6 +464,50 @@ def test_incremental_plan_produces_a_true_noop_for_current_graph(
     assert all(step.action is lifecycle.PlanAction.REUSE for step in current.steps)
 
 
+def test_legacy_check_misclassifies_current_role_graph_as_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Characterize why issued-image diagnostics must not call legacy reconcile."""
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    current = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    _install_planned_graph(docker, current.nodes)
+
+    legacy = lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK, docker=docker
+    )
+
+    assert legacy.status is lifecycle.Status.STALE
+
+
+def test_source_and_release_final_images_share_selection_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+
+    source = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    release = lifecycle.plan(
+        lifecycle.ProjectImageScope(root),
+        docker=docker,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert source.nodes[-1].logical_selection_fingerprint
+    assert (
+        source.nodes[-1].logical_selection_fingerprint
+        == release.nodes[-1].logical_selection_fingerprint
+    )
+    assert (
+        dict(release.nodes[-1].expected_labels)[lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT]
+        == release.nodes[-1].logical_selection_fingerprint
+    )
+
+
 def test_incremental_plan_propagates_standard_change_only_to_descendants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -348,6 +636,32 @@ def test_validate_rejects_candidates_changed_after_preparation(
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="changed before commit"):
         lifecycle.validate(prepared, docker=docker)
+
+
+def test_validate_names_every_changed_image_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    changed_snapshot = lifecycle.InputSnapshot(
+        ((*planned.input_snapshot.identities[0][:3], "changed-input"),)
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "plan",
+        lambda *_args, **_kwargs: replace(planned, input_snapshot=changed_snapshot),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="inputs changed") as caught:
+        lifecycle.validate(prepared, docker=docker)
+
+    message = str(caught.value)
+    assert ".parent_compatibility_key" in message
+    assert "changed-input" in message
 
 
 def test_incremental_adapter_build_inputs_cover_each_image_role(
@@ -677,6 +991,23 @@ def test_runtime_release_parent_validation_and_adapter_guards(
         lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
 
 
+def test_published_release_without_selection_label_still_verifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    node = lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
+    parent = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64
+    labels = _registry_labels(node, parent)
+    labels.pop(lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT)
+    labels[lifecycle.LABEL_WHEEL_SHA256] = "e" * 64
+    docker = FakeDocker({"release": ("sha256:" + "a" * 64, labels)})
+
+    prepared = lifecycle._verify_prepared_image(node, "release", None, docker)
+
+    assert prepared.image_id == "sha256:" + "a" * 64
+
+
 def test_incremental_adapter_release_pull_and_project_recipe_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -866,6 +1197,31 @@ def test_official_release_project_requirements_use_local_overlay_only(
         lifecycle.PlanAction.PULL,
         lifecycle.PlanAction.BUILD,
     ]
+
+
+def test_hybrid_project_selection_fingerprint_includes_release_flavor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standard = _project(tmp_path / "standard")
+    riscv = _project(tmp_path / "riscv", "booley-sandbox-riscv")
+    for root in (standard, riscv):
+        (root / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
+        config = root / ".booley_project" / "booley.toml"
+        configured = "booley-sandbox-riscv" if root == riscv else "booley-sandbox"
+        config.write_text(
+            f'[sandbox]\nimage = "{configured}"\npip_requirements = ["requirements.txt"]\n',
+            encoding="utf-8",
+        )
+    contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+
+    standard_graph = lifecycle._hybrid_release_graph(standard, "same-project", contracts)
+    riscv_graph = lifecycle._hybrid_release_graph(riscv, "same-project", contracts)
+
+    assert (
+        standard_graph[-1].logical_selection_fingerprint
+        != riscv_graph[-1].logical_selection_fingerprint
+    )
 
 
 def test_official_release_default_project_requirements_use_standard_overlay(
@@ -1366,6 +1722,31 @@ def test_packaged_distribution_missing_base_pulls_verified_release(
     assert result.status is lifecycle.Status.CHANGED
 
 
+def _distribution_local_build_recorder(docker: FakeDocker, calls: list[tuple]):
+    def local_build(
+        _ctx,
+        docker_dir,
+        exists,
+        fingerprint,
+        *,
+        preserve_build_stamp=False,
+        rebuild_runtime_base=False,
+    ) -> None:
+        calls.append((docker_dir, exists, fingerprint, preserve_build_stamp, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            fingerprint,
+        )
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=False,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+
+    return local_build
+
+
 def test_development_distribution_missing_base_builds_locally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1375,23 +1756,18 @@ def test_development_distribution_missing_base_builds_locally(
     context_root = tmp_path / "verified-context"
     context_docker = context_root / "src" / "booley" / "data" / "docker"
     context_docker.mkdir(parents=True)
-    calls: list[tuple[Path, bool, str | None, bool]] = []
+    calls: list[tuple[Path, bool, str | None, bool, bool]] = []
 
     @contextmanager
     def _context():
         yield context_root
 
-    def _local_build(ctx, docker_dir, exists, fingerprint, *, preserve_build_stamp=False):
-        calls.append((docker_dir, exists, fingerprint, preserve_build_stamp))
-        payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", fingerprint)
-        FakeBuilder(docker).build(
-            lifecycle._base_node(payload),
-            force=False,
-            source=lifecycle.ArtifactSource.LOCAL_BUILD,
-        )
-
     monkeypatch.setattr(harness_lifecycle, "extracted_development_context", _context)
-    monkeypatch.setattr(init_docker_image, "_docker_local_build", _local_build)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_local_build",
+        _distribution_local_build_recorder(docker, calls),
+    )
     monkeypatch.setattr(
         harness_lifecycle,
         "embedded_official_release",
@@ -1728,7 +2104,16 @@ def _wire_source_builds(
             )
         docker.images[node.reference] = (image_id, labels)
 
-    def build_base(context, _docker_dir, _exists, _fingerprint) -> None:
+    def build_base(
+        context,
+        _docker_dir,
+        _exists,
+        _fingerprint,
+        *,
+        rebuild_runtime_base=False,
+        **_kwargs,
+    ) -> None:
+        del rebuild_runtime_base
         payload = lifecycle.PayloadProvenance(
             lifecycle.PROVENANCE_SCHEMA,
             "0.2.6",
@@ -1749,6 +2134,143 @@ def _wire_source_builds(
     monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
     monkeypatch.setattr(init_docker_image, "_flavor_build", build_flavor)
     return builds
+
+
+def _install_stale_outer_base(docker: FakeDocker) -> None:
+    payload = lifecycle.PayloadProvenance(
+        lifecycle.PROVENANCE_SCHEMA,
+        "0.2.6",
+        "payload-new",
+    )
+    node = lifecycle._base_node(payload)
+    labels = _local_build_labels(
+        node,
+        docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or "",
+    )
+    labels[lifecycle.LABEL_PAYLOAD_FINGERPRINT] = "payload-old"
+    docker.images[lifecycle.BASE_IMAGE] = ("sha256:" + "b" * 64, labels)
+
+
+@pytest.mark.parametrize(
+    ("scope_kind", "intent", "expected"),
+    [
+        ("host", lifecycle.Intent.ENSURE, False),
+        ("host", lifecycle.Intent.REFRESH, True),
+        ("project", lifecycle.Intent.REFRESH, False),
+    ],
+)
+def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scope_kind: str,
+    intent: lifecycle.Intent,
+    expected: bool,
+) -> None:
+    from booley.harness.setup import docker_image as init_docker_image
+
+    root = _project(tmp_path)
+    docker_dir = _set_source_installation(tmp_path, monkeypatch)
+    docker, _pulls = _wire_source_docker(docker_dir, monkeypatch)
+    _install_stale_outer_base(docker)
+    calls: list[tuple[bool, bool]] = []
+
+    def build_base(context, _selected, *, rebuild_runtime_base, **_kwargs) -> None:
+        calls.append((context.force, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            "payload-new",
+        )
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+        context.record("docker_image", "ok", "built")
+
+    monkeypatch.setattr(init_docker_image, "_step_docker_image", build_base)
+    scope = (
+        lifecycle.HostImageScope() if scope_kind == "host" else lifecycle.ProjectImageScope(root)
+    )
+
+    harness_lifecycle.reconcile(scope, intent)
+
+    assert calls == [(True, expected)]
+
+
+def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
+    def build_base(
+        context,
+        docker_dir,
+        _exists,
+        _fingerprint,
+        *,
+        preserve_build_stamp=False,
+        rebuild_runtime_base=False,
+        **_kwargs,
+    ) -> None:
+        calls.append((docker_dir, preserve_build_stamp, rebuild_runtime_base))
+        payload = lifecycle.PayloadProvenance(
+            lifecycle.PROVENANCE_SCHEMA,
+            "0.2.6",
+            "payload-new",
+        )
+        FakeBuilder(docker).build(
+            lifecycle._base_node(payload),
+            force=True,
+            source=lifecycle.ArtifactSource.LOCAL_BUILD,
+        )
+        context.record("docker_image", "ok", "built")
+
+    return build_base
+
+
+def test_extracted_development_reconcile_passes_runtime_base_refresh_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import booley
+    from booley.harness.setup import docker_image as init_docker_image
+    from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+    root = _project(tmp_path)
+    extracted_root, extracted_docker = _source_recipe_tree(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    _install_stale_outer_base(docker)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="0.2.6",
+            origin=VersionOrigin.DISTRIBUTION,
+            distribution_name="booley-rtl",
+        ),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "_expected_image_build_contracts",
+        lambda: lifecycle.ImageBuildContracts("stable-contract", "standard-contract"),
+    )
+    monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: False)
+
+    @contextmanager
+    def extracted_context():
+        yield extracted_root
+
+    calls: list[tuple[Path, bool, bool]] = []
+
+    monkeypatch.setattr(harness_lifecycle, "extracted_development_context", extracted_context)
+    monkeypatch.setattr(
+        init_docker_image,
+        "_docker_local_build",
+        _extracted_build_recorder(docker, calls),
+    )
+
+    harness_lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
+
+    assert calls == [(extracted_docker, True, False)]
 
 
 def _install_current_legacy_base(docker: FakeDocker) -> str:

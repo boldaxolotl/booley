@@ -20,6 +20,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.differences import format_differences
 from booley.runtime import project_image
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
@@ -33,10 +34,12 @@ from booley.runtime.image_build_contracts import (
     expected_image_build_contracts,
     standard_substrate_contract,
 )
+from booley.runtime.image_identity import logical_selection_fingerprint_for_chain
 from booley.runtime.image_provenance import (
     LABEL_ARTIFACT_ROLE,
     LABEL_BUILD_ORIGIN,
     LABEL_EFFECTIVE_INPUTS,
+    LABEL_LOGICAL_SELECTION_FINGERPRINT,
     LABEL_PARENT_ARTIFACT,
     LABEL_PARENT_ARTIFACT_KIND,
     LABEL_PAYLOAD_FINGERPRINT,
@@ -135,6 +138,10 @@ class ImageLifecycleError(RuntimeError):
     """A managed Sandbox Image could not be reconciled or verified."""
 
 
+class IncrementalPlanUnavailableError(ImageLifecycleError):
+    """The selected image must use the compatibility reconciliation path."""
+
+
 class InstalledImageContractError(ImageLifecycleError):
     """An installed Booley artifact lacks valid image compatibility metadata."""
 
@@ -231,6 +238,15 @@ class InputSnapshot:
     identities: tuple[tuple[str, str, str, str | None], ...]
 
 
+def _input_snapshot_mapping(snapshot: InputSnapshot) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for reference, effective_inputs, recipe_fingerprint, parent_key in snapshot.identities:
+        values[f"{reference}.effective_inputs"] = effective_inputs
+        values[f"{reference}.recipe_fingerprint"] = recipe_fingerprint
+        values[f"{reference}.parent_compatibility_key"] = parent_key
+    return values
+
+
 @dataclass(frozen=True, slots=True)
 class LifecyclePlan:
     """Pure, ordered convergence decision for one selected Sandbox Image."""
@@ -284,6 +300,7 @@ class ImageNode:
     wheel_source_fingerprint: str | None = None
     runtime_base_contract: str | None = None
     standard_substrate_contract: str | None = None
+    logical_selection_fingerprint: str | None = None
     acquisition_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY
 
     @property
@@ -307,6 +324,10 @@ class ImageNode:
             labels.append((LABEL_RUNTIME_BASE_CONTRACT, self.runtime_base_contract))
         if self.standard_substrate_contract is not None:
             labels.append((LABEL_STANDARD_SUBSTRATE_CONTRACT, self.standard_substrate_contract))
+        if self.logical_selection_fingerprint is not None:
+            labels.append(
+                (LABEL_LOGICAL_SELECTION_FINGERPRINT, self.logical_selection_fingerprint)
+            )
         if self.build.parent_artifact:
             labels.append((LABEL_PARENT_ARTIFACT, self.build.parent_artifact))
         elif self.parent is not None:
@@ -717,7 +738,29 @@ def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
         image_build_contracts=contracts,
     )
     nodes.append(overlay)
-    return tuple(nodes)
+    return _stamp_logical_selection(selected, tuple(nodes))
+
+
+def _stamp_logical_selection(
+    selected: str,
+    nodes: tuple[ImageNode, ...],
+) -> tuple[ImageNode, ...]:
+    projection = tuple(
+        (
+            node.role.value if node.role else "",
+            "" if node.role is ImageRole.WHEEL_OVERLAY else (node.effective_inputs or ""),
+            node.build.recipe_fingerprint,
+            node.runtime_base_contract or "",
+            node.standard_substrate_contract or "",
+        )
+        for node in nodes
+    )
+    fingerprint = logical_selection_fingerprint_for_chain(
+        selected,
+        projection,
+        initial_parent_key=nodes[0].logical_selection_fingerprint or "",
+    )
+    return (*nodes[:-1], replace(nodes[-1], logical_selection_fingerprint=fingerprint))
 
 
 def _source_graph_base(
@@ -754,7 +797,7 @@ def _source_graph_project(project_root: Path, selected: str, substrate: ImageNod
     requirements_body = _project_requirements_body(project_root)
     dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
     if dockerfile.is_file() and not project_image.is_managed_generated_file(dockerfile):
-        raise ImageLifecycleError(
+        raise IncrementalPlanUnavailableError(
             "wheel-only convergence is unavailable for a user-owned Project Docker "
             "recipe; preserve its exact ancestry and rebuild it explicitly"
         )
@@ -779,7 +822,7 @@ def _complete_release_node(selected: str, contracts: ImageBuildContracts) -> Ima
     wheel_source = _expected_wheel_source_fingerprint()
     if wheel_source is None:
         raise ImageLifecycleError("installed release has no wheel-source fingerprint")
-    return _graph_node(
+    node = _graph_node(
         reference=selected,
         role=ImageRole.WHEEL_OVERLAY,
         recipe=docker_data_dir() / "Dockerfile.wheel",
@@ -789,6 +832,52 @@ def _complete_release_node(selected: str, contracts: ImageBuildContracts) -> Ima
         policy=ArtifactPolicy.VERIFIED_RELEASE_ONLY,
         image_build_contracts=contracts,
     )
+    fingerprint = _release_selection_fingerprint(selected, contracts)
+    return replace(node, logical_selection_fingerprint=fingerprint)
+
+
+def _release_selection_fingerprint(
+    selected: str,
+    contracts: ImageBuildContracts,
+) -> str:
+    docker_dir = docker_data_dir()
+    nodes = [
+        (
+            ImageRole.RUNTIME_BASE.value,
+            contracts.runtime_base,
+            resolve_recipe_fingerprint((docker_dir / "Dockerfile.base",)),
+            "",
+            "",
+        ),
+        (
+            ImageRole.STANDARD_SUBSTRATE.value,
+            contracts.standard_substrate,
+            resolve_recipe_fingerprint((docker_dir / "Dockerfile.substrate",)),
+            "",
+            "",
+        ),
+    ]
+    if selected == "booley-sandbox-riscv":
+        riscv_recipe = resolve_recipe_fingerprint((docker_dir / "Dockerfile.riscv",))
+        nodes.append(
+            (
+                ImageRole.RISCV_SUBSTRATE.value,
+                riscv_recipe,
+                riscv_recipe,
+                "",
+                "",
+            )
+        )
+    nodes.append(
+        (
+            ImageRole.WHEEL_OVERLAY.value,
+            "",
+            resolve_recipe_fingerprint((docker_dir / "Dockerfile.wheel",)),
+            contracts.runtime_base,
+            contracts.standard_substrate,
+        )
+    )
+    return logical_selection_fingerprint_for_chain(selected, nodes)
 
 
 def _release_project_overlay(project_root: Path, selected: str, parent: ImageNode) -> ImageNode:
@@ -818,7 +907,10 @@ def _hybrid_release_graph(
     configured = _configured_image(project_root)
     published_parent = configured if configured in FLAVOR_RECIPES else BASE_IMAGE
     parent = _complete_release_node(published_parent, contracts)
-    return parent, _release_project_overlay(project_root, selected, parent)
+    return _stamp_logical_selection(
+        selected,
+        (parent, _release_project_overlay(project_root, selected, parent)),
+    )
 
 
 def _snapshot(nodes: tuple[ImageNode, ...]) -> InputSnapshot:
@@ -863,14 +955,28 @@ def _node_provenance_reason(node: ImageNode, docker: DockerPort) -> Diagnostic |
         return Diagnostic("inputs-changed", "node-owned compatibility inputs changed")
     if docker.label(node.reference, LABEL_RECIPE_FINGERPRINT) != node.build.recipe_fingerprint:
         return Diagnostic("recipe-changed", "the node build recipe changed")
+    identity_reason = _node_identity_reason(node, docker)
+    if identity_reason is not None:
+        return identity_reason
+    if _node_artifact_source(node, node.reference, docker) not in node.acquisition_policy.sources:
+        return Diagnostic("wrong-origin", "artifact source violates acquisition policy")
+    return None
+
+
+def _node_identity_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | None:
     if node.wheel_source_fingerprint is not None and (
         docker.label(node.reference, LABEL_WHEEL_SOURCE_FINGERPRINT)
         != node.wheel_source_fingerprint
         or not docker.label(node.reference, LABEL_WHEEL_SHA256)
     ):
         return Diagnostic("inputs-changed", "wheel identity differs or is incomplete")
-    if _node_artifact_source(node, node.reference, docker) not in node.acquisition_policy.sources:
-        return Diagnostic("wrong-origin", "artifact source violates acquisition policy")
+    recorded_selection = docker.label(node.reference, LABEL_LOGICAL_SELECTION_FINGERPRINT)
+    if (
+        node.logical_selection_fingerprint is not None
+        and recorded_selection is not None
+        and recorded_selection != node.logical_selection_fingerprint
+    ):
+        return Diagnostic("inputs-changed", "logical Sandbox Image selection changed")
     return None
 
 
@@ -902,6 +1008,7 @@ def plan(
     *,
     docker: DockerPort | None = None,
     artifact_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY,
+    intent: Intent = Intent.ENSURE,
 ) -> LifecyclePlan:
     """Observe and purely plan the minimal invalid closure for one Project."""
     if not isinstance(scope, ProjectImageScope):
@@ -915,7 +1022,7 @@ def plan(
         "booley-sandbox-riscv",
         project_image.project_image_name(root),
     }:
-        raise ImageLifecycleError(f"Sandbox Image {selected!r} is externally managed")
+        raise IncrementalPlanUnavailableError(f"Sandbox Image {selected!r} is externally managed")
     if artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
         nodes = (_complete_release_node(selected, contracts),)
     elif artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL:
@@ -925,7 +1032,11 @@ def plan(
     invalid = False
     steps = []
     for node in nodes:
-        reason = _planned_reason(node, resolved_docker, parent_invalid=invalid)
+        reason = (
+            Diagnostic("refresh", "explicit refresh requested")
+            if intent is Intent.REFRESH
+            else _planned_reason(node, resolved_docker, parent_invalid=invalid)
+        )
         if reason is None:
             steps.append(
                 PlanStep(
@@ -990,6 +1101,11 @@ def _prepared_provenance(node: ImageNode, parent_artifact: str | None) -> dict[s
     }
     if node.wheel_source_fingerprint is not None:
         required[LABEL_WHEEL_SOURCE_FINGERPRINT] = node.wheel_source_fingerprint
+    if (
+        node.logical_selection_fingerprint is not None
+        and node.acquisition_policy is not ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    ):
+        required[LABEL_LOGICAL_SELECTION_FINGERPRINT] = node.logical_selection_fingerprint
     required.update(_image_contract_labels(node))
     if parent_artifact is not None:
         required[LABEL_PARENT_ARTIFACT] = parent_artifact
@@ -1102,7 +1218,13 @@ def validate(
         artifact_policy=prepared.plan.nodes[-1].acquisition_policy,
     )
     if current.input_snapshot != prepared.input_snapshot:
-        raise ImageLifecycleError("image inputs changed while candidates were being prepared")
+        raise ImageLifecycleError(
+            "image inputs changed while candidates were being prepared: "
+            + format_differences(
+                _input_snapshot_mapping(prepared.input_snapshot),
+                _input_snapshot_mapping(current.input_snapshot),
+            )
+        )
     for image in prepared.candidates:
         if image.candidate_reference == image.reference:
             continue
@@ -1309,7 +1431,7 @@ def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) 
     if not is_local_image_id(recorded_parent):
         return False
     expected_contract = _expected_image_build_contracts().runtime_base
-    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, "io.booley.runtime-base.contract")
+    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, LABEL_RUNTIME_BASE_CONTRACT)
     return (
         stable_contract == expected_contract
         and docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent

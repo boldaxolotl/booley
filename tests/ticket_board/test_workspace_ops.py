@@ -7,6 +7,7 @@ ambiguous partial states cannot be reproduced safely through a full public workf
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,8 @@ from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
     TicketBaseline,
 )
+
+from .conftest import make_paired_repository
 
 
 def _completed(
@@ -40,6 +43,36 @@ def _git(repository: Path, *args: str) -> str:
         timeout=30,
     )
     return result.stdout.strip()
+
+
+def _ordinary_paired_basis_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, TicketBaseline]:
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    root = tmp_path / "source"
+    project = make_paired_repository(root)
+
+    checkout = tmp_path / "checkout"
+    _git(tmp_path, "clone", "-q", "--shared", "--no-checkout", str(root), str(checkout))
+    _git(checkout, "checkout", "-q", "--detach", _git(root, "rev-parse", "HEAD"))
+    nested = checkout / ".booley_project"
+    _git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--shared",
+        "--no-checkout",
+        str(project),
+        str(nested),
+    )
+    _git(nested, "checkout", "-q", "--detach", _git(project, "rev-parse", "HEAD"))
+    basis = TicketBaseline(
+        (
+            replace(_participant(), authoring_sha=_git(checkout, "rev-parse", "HEAD")),
+            replace(_participant("project"), authoring_sha=_git(nested, "rev-parse", "HEAD")),
+        )
+    )
+    return root, checkout, basis
 
 
 def _attachment(tmp_path: Path) -> workspace_ops._OpenAttachment:
@@ -741,11 +774,29 @@ def test_rollback_open_retains_outer_when_paired_cleanup_is_ambiguous(
     ]
 
 
+def test_refresh_moved_worktree_translates_relocation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        workspace_ops,
+        "refresh_relative_worktree_config",
+        lambda _path: (_ for _ in ()).throw(
+            workspace_ops.WorktreeRelocationError("injected failure")
+        ),
+    )
+
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError,
+        match="could not refresh moved Ticket Workspace metadata",
+    ):
+        workspace_ops._refresh_moved_worktree(tmp_path)
+
+
 def test_draft_generation_rejects_invalid_and_conflicting_descriptors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
-    ticket = tmp_path / "board" / "drafts" / "ticket.md"
+    ticket = tmp_path / "board" / "ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text(
         "---\nsummary: Ticket\ntype: feature\nbranch: main\nscope: []\n"
@@ -956,6 +1007,7 @@ def test_refresh_workspace_relocation_and_discard_cover_owned_state(
     monkeypatch.setattr(
         workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
     )
+    monkeypatch.setattr(workspace_ops, "_refresh_moved_worktree", lambda _path: None)
 
     workspace_ops.relocate_refresh_workspace(
         root, "ticket", "0" * 16, operation, workspace, has_project=False
@@ -1001,6 +1053,7 @@ def test_refresh_project_staging_restoration_and_participation_checks(
     monkeypatch.setattr(
         workspace_ops, "_require_git", lambda *args, **_kwargs: commands.append(args) or ""
     )
+    monkeypatch.setattr(workspace_ops, "_refresh_moved_worktree", lambda _path: None)
 
     workspace_ops._stage_refresh_project(workspace, project_source, holding)
     holding.mkdir()
@@ -1121,9 +1174,12 @@ def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads
     outer = tmp_path / "outer"
     outer.mkdir()
     project = tmp_path / "project"
-    paired = SimpleNamespace(worktree=project)
+    paired = SimpleNamespace(worktree=project, path_prefix="project")
     basis = TicketBaseline((_participant(), _participant("project")))
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: paired)
+    monkeypatch.setattr(
+        workspace_ops, "checkout_project_dir_relative_to", lambda _root: Path("project")
+    )
     monkeypatch.setattr(
         workspace_ops,
         "_require_git",
@@ -1133,6 +1189,7 @@ def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads
             else basis.participant("project" if repository == project else "outer").authoring_sha
         ),
     )
+    monkeypatch.setattr(workspace_ops, "_git", lambda *_args, **_kwargs: _completed("git"))
 
     result = workspace_ops._workspace_from_basis_checkout(tmp_path, outer, basis)
 
@@ -1140,12 +1197,12 @@ def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads
     assert result.project_base_sha == basis.participant("project").destination_sha
 
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: None)
-    monkeypatch.setattr(
-        workspace_ops, "checkout_project_dir_relative_to", lambda _root: Path("project")
-    )
     changed = TicketBaseline((_participant(), _participant("zeta")))
-    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="participants changed"):
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="participants changed"
+    ) as caught:
         workspace_ops._workspace_from_basis_checkout(tmp_path, outer, changed)
+    assert "participant_roles {outer, zeta} -> {outer}" in str(caught.value)
 
     native = TicketBaseline((_participant(),))
     monkeypatch.setattr(
@@ -1153,8 +1210,140 @@ def test_workspace_from_basis_checkout_validates_participants_and_pristine_heads
         "_require_git",
         lambda _repository, *args: "dirty" if args[0] == "status" else "a" * 40,
     )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args, **_kwargs: _completed("git", stdout="?? dirty\0"),
+    )
     with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not pristine"):
         workspace_ops._workspace_from_basis_checkout(tmp_path, outer, native)
+
+
+def test_workspace_from_basis_checkout_excludes_only_nested_project_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, checkout, basis = _ordinary_paired_basis_checkout(tmp_path, monkeypatch)
+
+    workspace = workspace_ops._workspace_from_basis_checkout(root, checkout, basis)
+
+    assert workspace.project == checkout / ".booley_project"
+    lookalike = checkout / ".booley_project-copy" / "dirty.txt"
+    lookalike.parent.mkdir()
+    lookalike.write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not pristine"):
+        workspace_ops._workspace_from_basis_checkout(root, checkout, basis)
+
+    lookalike.unlink()
+    lookalike.parent.rmdir()
+    backslash = checkout / ".booley_project\\evil"
+    backslash.write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not pristine"):
+        workspace_ops._workspace_from_basis_checkout(root, checkout, basis)
+
+
+def test_workspace_from_basis_checkout_uses_linked_project_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    project = outer / ".booley_project"
+    outer.mkdir()
+    project.mkdir()
+    basis = TicketBaseline((_participant(), _participant("project")))
+    paired = SimpleNamespace(worktree=project, path_prefix=".booley_project")
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: paired)
+    monkeypatch.setattr(
+        workspace_ops,
+        "checkout_project_dir_relative_to",
+        lambda _root: pytest.fail("linked checkout must use its actual paired boundary"),
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_require_git",
+        lambda repository, *_args: (
+            basis.participant("project" if repository == project else "outer").authoring_sha
+        ),
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda repository, *_args, **_kwargs: _completed(
+            "git", stdout="" if repository == project else "?? .booley_project/\0"
+        ),
+    )
+
+    workspace = workspace_ops._workspace_from_basis_checkout(tmp_path, outer, basis)
+
+    assert workspace.project == project
+
+
+def test_workspace_from_basis_checkout_rejects_rename_from_project_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    project = outer / ".booley_project"
+    outer.mkdir()
+    project.mkdir()
+    basis = TicketBaseline((_participant(), _participant("project")))
+    paired = SimpleNamespace(worktree=project, path_prefix=".booley_project")
+    monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: paired)
+    monkeypatch.setattr(
+        workspace_ops,
+        "_require_git",
+        lambda repository, *_args: (
+            basis.participant("project" if repository == project else "outer").authoring_sha
+        ),
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda repository, *_args, **_kwargs: _completed(
+            "git",
+            stdout="" if repository == project else "R  outer.txt\0.booley_project/file\0",
+        ),
+    )
+
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not pristine"):
+        workspace_ops._workspace_from_basis_checkout(tmp_path, outer, basis)
+
+
+def test_workspace_from_basis_checkout_rejects_outer_and_project_dirt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, checkout, basis = _ordinary_paired_basis_checkout(tmp_path, monkeypatch)
+    dirty_outer = checkout / "dirty.txt"
+    dirty_outer.write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not pristine"):
+        workspace_ops._workspace_from_basis_checkout(root, checkout, basis)
+
+    dirty_outer.unlink()
+    (checkout / ".booley_project/booley.toml").write_text("[flows]\ndirty = true\n")
+    with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not pristine"):
+        workspace_ops._workspace_from_basis_checkout(root, checkout, basis)
+
+
+def test_workspace_from_basis_checkout_wraps_malformed_porcelain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    basis = TicketBaseline((_participant(),))
+
+    monkeypatch.setattr(
+        workspace_ops,
+        "_require_git",
+        lambda *_args: basis.participant("outer").authoring_sha,
+    )
+    monkeypatch.setattr(
+        workspace_ops,
+        "_git",
+        lambda *_args, **_kwargs: _completed("git", stdout="malformed\0"),
+    )
+
+    with pytest.raises(
+        workspace_ops.TicketBaselineOperationError, match="could not parse Git status"
+    ):
+        workspace_ops._workspace_from_basis_checkout(tmp_path, outer, basis)
 
 
 def test_prepare_replacement_basis_resumes_or_starts_publication(
@@ -1385,6 +1574,7 @@ def test_refresh_relocation_rejects_missing_checkout_and_repository_mismatch(
         )
     workspace.outer.mkdir()
     monkeypatch.setattr(workspace_ops, "_require_git", lambda *_args: "")
+    monkeypatch.setattr(workspace_ops, "_refresh_moved_worktree", lambda _path: None)
     monkeypatch.setattr(workspace_ops, "_restore_refresh_project", lambda *_args: None)
     with pytest.raises(
         workspace_ops.TicketBaselineOperationError, match="paired project workspace"

@@ -17,6 +17,17 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [CONTEXT.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTEXT.md).
 
+## Push notifications stopped arriving
+
+Booley no longer sends ntfy push notifications. Legacy `[notifications]` settings
+in `.booley_project/booley.toml` are ignored and can be deleted; Doctor reports a
+nonblocking warning for the obsolete table. If you manually added `ntfy.sh` to
+the host `egress_allowlist` solely for this feature, remove that entry while
+preserving entries needed for other authorized purposes. Stop your Project
+containers, run `booley bootstrap` on the host, and restart them to apply the
+policy change. Local Ticket status, logs, review briefings, Doctor reports, and
+provider rate-limit wait/retry behavior remain available.
+
 ## VS Code says “A mount config is invalid” while reopening the container
 
 Booley validates every host bind in the current generated spec before Docker
@@ -26,7 +37,7 @@ source and its container target; restore that source, or run `booley init
 
 A rebuild may otherwise select a stopped VS Code container whose old bind list
 still mentions a deleted skill, credential file, tool installation, mask
-directory, or editor-injected socket. During `booley session prepare`, Booley
+directory, or editor-injected socket. When preparing the Sandbox for attachment, Booley
 now removes such a stopped container (without deleting named volumes) so Dev
 Containers creates one from the current spec. When exactly one running legacy
 VS Code container is authenticated to this Project, Booley stops it by immutable
@@ -265,20 +276,23 @@ experiment, not a setup requirement.
   default 7200).
 
 - **An image build is refused for insufficient disk capacity.** Booley checks
-  Docker's reported storage filesystem before starting a build and preserves a
-  post-build safety reserve. The error shows available and required space plus
-  current/reclaimable build-cache usage. Run `docker builder prune` to
-  interactively remove unused build cache, then retry. Booley never prunes
-  images, volumes, Project artifacts, or user data automatically. If Docker's
-  reported root is not the filesystem that actually stores its data, bypass
-  only that invocation with `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`; any other
-  value keeps the check enabled.
+  Docker's reported storage filesystem before the complete known build sequence
+  and again before each remaining build. The error names the sequence and shows
+  available and required space, each image estimate, one safety reserve, and
+  current/reclaimable build-cache usage. `docker builder prune` can free unused
+  cache, but it can also evict layers the planned retry needs to rebuild; inspect
+  the complete-sequence estimate before choosing that tradeoff. This is related
+  to the recovery behavior discussed in [issue #790](https://github.com/boldaxolotl/booley/issues/790).
+  Booley never prunes cache or removes images, volumes, Project artifacts, or
+  user data automatically. If Docker's reported root is not the filesystem that
+  actually stores its data, bypass only that invocation with
+  `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`; any other value keeps the check enabled.
 
 - **Docker reports `No space left on device` after the capacity preflight
   passed.** An image recipe can grow beyond the conservative estimate. Booley
-  retains Docker's error and adds the same safe build-cache cleanup guidance;
-  free space and retry. A completed preflight is not permission to delete
-  images, volumes, or Project data.
+  retains Docker's error and warns that pruning may discard reusable layers.
+  Recheck the complete sequence after cleanup. A completed preflight is not
+  permission to delete cache, images, volumes, or Project data.
 
 ## Lint or ASIC synth fails with an interface parameter mismatch
 
@@ -324,10 +338,10 @@ mismatches show up when building a core's boot software:
 
 Don't stop at "a RISC-V toolchain exists in the image". **Test the project's
 exact compile flags** against the sandbox compiler on one real file before
-writing config:
+writing config. Run the probe directly in the Sandbox shell:
 
 ```bash
-booley shell -- riscv-none-elf-gcc -march=<theirs> ...
+riscv-none-elf-gcc -march=<theirs> ...
 ```
 
 Better to plan for it during setup planning (Step 0 of the
@@ -357,8 +371,9 @@ deliberately outside every repo and bind mount so it cannot be committed) and
 re-seeds the devcontainer spec; Booley then injects it on every container start.
 **Rebuild an existing container once** so the read-only mount exists.
 `booley auth --status` reports which credential each agent would use, and
-`booley doctor` warns when a run is about to rely on a refreshing one. Full
-billing and precedence detail is in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing).
+`booley doctor` warns when a run is about to rely on a refreshing one. Billing
+options are in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing);
+choosing between several credentials is in [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#pinning-what-bills-agent-auth).
 
 ## Two interactive agents keep clobbering each other's edits
 
@@ -368,6 +383,100 @@ the repo you opened, so two interactive agents editing the same worktree trip
 over each other's changes. When you want an interactive agent to work in
 parallel with others, tell it up front to create a fresh worktree and work
 there. (Background on the two modes: [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#interactive-mode).)
+
+## Ticket worktrees show as `prunable` on the host
+
+```
+/work/.booley_project/worktrees/axi-fix  0000000 [detached HEAD] prunable
+```
+
+Ticket Workspaces are host-addressable only when both the host and the Sandbox
+use Git 2.48 or newer. Run `booley init` after upgrading; new worktrees then use
+relative metadata, so host `git status` and `git worktree list` work normally.
+Existing worktrees are not rewritten.
+
+With an older or unverified Git, new worktrees keep the container-only fallback,
+and `prunable` on the host is expected. **Do not "clean it up"**: a host-side
+`git worktree prune` can deregister an active Ticket Workspace. Use Git through
+the Sandbox instead. Once relative worktrees are enabled, keep both Git clients
+at 2.48 or newer. `booley doctor` reports fallback, incompatible downgrades,
+and non-portable live worktrees.
+
+## `git` cannot see files under `.booley_project/`
+
+```
+$ git checkout -- .booley_project/booley.toml
+error: pathspec '.booley_project/booley.toml' did not match any file(s) known to git
+```
+
+`.booley_project/` is usually its own Git repository, and the outer repository
+ignores it so your RTL history stays clean of Booley bookkeeping. Outer-repo
+commands therefore cannot see anything inside it. Run them against the inner
+repository instead:
+
+```bash
+git -C .booley_project checkout -- booley.toml     # restore Booley config
+git -C .booley_project status                      # what changed in Booley's own repo
+git -C .booley_project log --oneline -5
+```
+
+The same applies to `tests.toml`, `ticket_creation.md`, the legacy
+`ticket_defaults.md`, `criteria.toml`, and the `.core` files. If
+`git -C .booley_project rev-parse --git-dir` errors, the directory is not a
+repository on this machine and those files were never version-controlled: copy
+one aside before you edit it.
+
+## `booley board` refuses to start: the Ticket Board needs migrating
+
+Booley keeps each live Ticket at `tickets/board/<slug>.md` with its status in
+`tickets/state/<slug>.json`, and closed Tickets in `tickets/history/`. Boards
+made by older versions kept Tickets in status folders (`board/queue/`,
+`board/done/`, ...) tracked by Git. Until you migrate, `booley doctor` FAILs
+and `booley board` and `booley run` refuse to start. There is no migration
+command:
+
+1. Stop every `booley run`, and create `tickets/state/`.
+2. Move each document in `board/<folder>/` (except `done/` and `archived/`) to
+   `board/<slug>.md`. Except for drafts, write `state/<slug>.json` with
+   `state` set from the folder: `queue/` → `queued`, `waiting/` → `waiting`,
+   `blocked/` → `blocked`, `review/` → `review`, and `active/` → `blocked` with
+   `"blocked_reason": "migrated while running"`. Copy any values from the
+   Ticket's old `logs/<slug>/.runtime/progress.json` (or
+   `logs/<slug>/progress.json`) over these defaults; the record holds exactly
+   these keys:
+
+   ```json
+   {"schema": 1, "state": "queued", "step": "", "steps_completed": [],
+    "workspace_intent": "fresh", "last_update": "", "failed_step": null,
+    "error": null, "blocked_reason": null, "blocked_step": null,
+    "execution_id": "", "execution_owner_pid": null}
+   ```
+
+3. Move each document in `board/done/` and `board/archived/` to
+   `history/<slug>.md`, adding a `closed:` block as the **last** frontmatter
+   key. `date` is the UTC time of the last `-> done` (or `-> archived`) line in
+   `logs/<slug>/human-logs/transitions.log`, else the file's modification time;
+   `generation` is the document's `machine.generation`, else empty:
+
+   ```yaml
+   closed:
+     outcome: done
+     date: '2026-09-30T12:00:00Z'
+     generation: ''
+   ```
+
+4. Delete the empty `board/<folder>/` directories, make sure
+   `.booley_project/.gitignore` ignores `tickets/board/` and `tickets/state/`,
+   and commit (skip `tickets/history` if no Ticket ever closed):
+
+   ```bash
+   git -C .booley_project rm -r --cached --ignore-unmatch -- tickets/board tickets/state
+   git -C .booley_project add .gitignore tickets/history
+   git -C .booley_project commit -m "Migrate the Ticket Board to state records"
+   ```
+
+5. `booley doctor` should pass its Ticket Board checks, and `booley board`
+   should list the same open Tickets as before.
 
 ## RTL simulates cleanly but `synth` rejects it under `slang`
 
@@ -497,9 +606,16 @@ with `booley projects forget /exact/deleted/project`.
 ## Coverage Campaign diagnostics and retention
 
 Coverage collection requires explicit `sim --coverage` / `--cov` or MCP
-`coverage: true`. V3 keeps overall and per-source-file percentages and evaluation in the
-`coverage.json` manifest and exact points in required
-`coverage-points.jsonl.gz`. Report retention is explicit: native-only pruning
+`coverage: true`. The numbered Target's `coverage.json` is a
+`booley.coverage-campaign-reference/v1` pointer. Resolve its
+`coverage_campaign.path` from that origin Target directory
+(`coverage_campaign.path_base: origin_target`) to the selected attempt's
+`campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
+That nested Campaign manifest keeps overall and per-source-file
+percentages and evaluation, with exact points in its required sibling
+`coverage-points.jsonl.gz`. Native paths resolve from the nested Coverage Campaign
+directory, which also holds `native/raw/`, `native/merged/`, and collected hook
+evidence. Report retention is explicit: native-only pruning
 keeps both Campaign files, `simulation.json`, and hook evidence; full
 invocation pruning removes all reports and prevents re-analysis. See the
 [exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
@@ -514,10 +630,12 @@ Simulation starts a new numbered invocation when rerun without an exact
 named manifest; Booley never guesses a “latest” Simulation Campaign. A resume
 still creates a new compatibility invocation while authoritative results remain
 beside the original manifest. Ordinary HDL retries only interrupted work items;
-Cocotb retries the whole interrupted batch; native coverage retries the whole
-serial collection/merge aggregate into a distinct nested Coverage Campaign.
-Neither Cocotb nor coverage resumes or overwrites an interrupted native result
-database. Legacy and elaboration-only invocations are not resumable. Empty
+Cocotb retries the whole interrupted batch; native coverage never retries its
+collection: a resume, or its `--dry-run` preview, of a coverage Campaign whose
+collection has no recorded result exits `2`; start a new
+`booley flow sim --coverage` run. A coverage resume only finishes an
+interrupted publication. Neither Cocotb nor coverage resumes or overwrites an
+interrupted native result database. Legacy and elaboration-only invocations are not resumable. Empty
 `.pruned-N` directories reserve historical invocation numbers and should be
 retained.
 
@@ -574,17 +692,29 @@ retry the same exact `--full`
 selection with `--project-data <resolved-project-data>`. Do not add that option
 to compensate for an incorrect project-data path or for native-only pruning.
 
+`<reports>/sim.json` is a mutable last-writer compatibility copy of the newest
+invocation report, not a stable Campaign pointer. A later failed run can
+replace its `detail` with an empty object. Select evidence through the numbered
+`<reports>/sim/<N>/...` paths instead.
+
 ### Coverage Analyst input and model availability
 
-Pass `coverage_analyst --campaign <reports>/sim/<number>/targets/<target>/coverage.json`.
+Call the `coverage_analyst` Specialist from your connected agent session with
+`campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
 Target names, `latest`, the point-store path, waveforms, and legacy
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
-point store makes a V3 Campaign unusable for analysis. V1 and V2 Campaigns are
-not readable; recollect coverage with the current Booley version. A missing or incomplete
+point store makes a Campaign unusable for analysis. Recollect unsupported
+Campaigns with the current Booley version. A missing or incomplete
 matching `simulation.json` means that Target is
 not ready for analysis; another Target still running does not block a completed one.
 Native-payload pruning preserves analysis. Full-invocation pruning removes the
 Campaign, so select another retained invocation or collect new evidence.
+
+The Analyst requires that canonical Target-level reference with matching completed
+`simulation.json`; it does not accept the resolved nested manifest. The manifest
+summary/deep readers in `booley.flows.sim.coverage_campaign_store` instead take
+the resolved nested Campaign manifest, which is distinct from the Target
+reference schema.
 
 Missing, changed, unsafe, or mismatched Target sources produce report-only analysis.
 Stealth-mode projects also use report-only analysis because resolving their sources
@@ -621,11 +751,15 @@ the Campaign-bound evidence tool.
   point approval prevents all approvals for that Target from applying. Approvals
   naming a known Target outside the invocation are not checked against points by
   that run; unknown Target identities are rejected when the Approved Waiver Set
-  is loaded.
+  is loaded. An infrastructure or persistence error can also block a requested
+  evaluation without producing coverage findings. In that case, inspect the
+  Target's `error` and `collection` status, correct the failure, and rerun.
 - Legacy Criteria (`coverage_toggle`, `coverage_fsm`, `coverage_value`,
   `coverage_branch`, `coverage_expression`, `coverage_mean`) are rejected.
-  Replace them with the `coverage` record in CONFIG.md; no silent translation
-  or waveform scoring remains.
+  Replace them with an uppercase, Target-keyed `COVERAGE` record such as
+  `COVERAGE: {sim_core: {tests: all, metrics: {toggle: {min_pct: 50}}}}`;
+  replace `all` with an exact registered suite when needed. Choose only a
+  supported native metric; no silent translation or waveform scoring remains.
 - Missing `sim_<target>.json`: flat Simulation projections were removed. Follow
   the exact numbered report pointer. Missing `coverage_report.json` or mutable
   `coverage_waivers.json` is expected; use a canonical Campaign and the configured

@@ -39,6 +39,16 @@ def test_seed_agent_config_uses_resolved_project_directory(tmp_path, monkeypatch
     assert init_cmd._agent_config_path(tmp_path, seed=True) == project_dir / "booley.toml"
 
 
+def test_sandbox_git_version_treats_runtime_error_as_unknown(monkeypatch):
+    monkeypatch.setattr(
+        init_cmd.idk,
+        "_run_docker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
+    )
+
+    assert init_cmd._sandbox_git_version("image-id") is None
+
+
 def test_seed_retains_ancestor_project_resolution(tmp_path, monkeypatch):
     parent_config = tmp_path / ".booley_project" / "booley.toml"
     parent_config.parent.mkdir()
@@ -426,6 +436,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
             "nangate_pdk_root": "pdk",
             "agent_app": "codex",
             "runtime_image_id": result.selected_id,
+            "init_will_create_project_dir": True,
         }
     ]
     assert remembered == [tmp_path]
@@ -458,7 +469,11 @@ def test_image_lifecycle_step_returns_each_nonerror_result(
     detail,
 ):
     result = init_cmd.LifecycleResult("booley-sandbox", "sha256:" + "f" * 64, status)
-    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda *_args, **_kwargs: result,
+    )
     ctx = InitContext(project_root=tmp_path)
 
     assert init_cmd._step_image_lifecycle(ctx) is result
@@ -472,7 +487,11 @@ def test_image_lifecycle_step_reports_release_tag_cleanup(tmp_path, monkeypatch)
         init_cmd.ImageLifecycleStatus.CHANGED,
         cleanup=ImageCleanup(removed=("ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.5",)),
     )
-    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda *_args, **_kwargs: result,
+    )
     ctx = InitContext(project_root=tmp_path)
 
     assert init_cmd._step_image_lifecycle(ctx) is result
@@ -489,7 +508,11 @@ def test_image_lifecycle_step_returns_after_reporting_pending_cleanup(tmp_path, 
         init_cmd.ImageLifecycleStatus.CURRENT,
         cleanup=ImageCleanup(pending=(release,)),
     )
-    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda *_args, **_kwargs: result,
+    )
     ctx = InitContext(project_root=tmp_path)
 
     assert init_cmd._step_image_lifecycle(ctx) is result
@@ -508,7 +531,11 @@ def test_image_lifecycle_step_reports_cleanup_alongside_stale_image(tmp_path, mo
         diagnostics=(Diagnostic("stale", "flavor provenance is stale"),),
         cleanup=ImageCleanup(pending=(pending,), retained_required=(retained,)),
     )
-    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda *_args, **_kwargs: result,
+    )
     ctx = InitContext(project_root=tmp_path)
 
     assert init_cmd._step_image_lifecycle(ctx) is result
@@ -534,7 +561,11 @@ def test_image_lifecycle_step_reports_cleanup_when_image_was_rebuilt(tmp_path, m
         changed_images=("booley-sandbox-riscv",),
         cleanup=ImageCleanup(removed=(release,)),
     )
-    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda *_args, **_kwargs: result,
+    )
     ctx = InitContext(project_root=tmp_path)
 
     assert init_cmd._step_image_lifecycle(ctx) is result

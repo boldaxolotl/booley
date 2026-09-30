@@ -113,6 +113,15 @@ class TestBuildParser:
 
 
 class TestMainDispatch:
+    @pytest.fixture(autouse=True)
+    def _skip_board_opening(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Dispatch tests use a mock TicketIO, which has no real board to open.
+
+        Opening one would run the legacy-layout guard's ``git`` in a mock
+        directory; that fails closed (test_legacy_layout covers the refusal).
+        """
+        monkeypatch.setattr("booley.ticket_board.cli.open_board", lambda _tio, *, recover: None)
+
     @patch("booley.ticket_board.cli.detect_tickets_dir")
     @patch("booley.ticket_board.cli.TicketIO")
     def test_default_command_is_board(self, mock_tio_cls, mock_detect, tmp_path):

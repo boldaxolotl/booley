@@ -23,6 +23,7 @@ from booley.ticket_board.analytics import (
     parse_transitions_log,
     usage_entries_to_steps,
 )
+from booley.ticket_board.board_layout import document_stage, is_board_document, read_state_record
 from booley.ticket_board.cli_handlers import (
     _cmd_update_board,
 )
@@ -36,7 +37,6 @@ from booley.ticket_board.execution import (
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO, scan_all_tickets
 from booley.ticket_board.lifecycle import SETTLED_STATUSES
-from booley.ticket_board.logs import load_progress
 from booley.ticket_board.operations import (
     op_activate,
     op_block,
@@ -53,8 +53,10 @@ from booley.ticket_board.ticket_document import (
     convert_ticket_document,
     ticket_conversion_context,
 )
+from booley.ticket_board.ticket_history import done_slugs, read_closed_ticket
 from booley.ticket_board.ticket_validation import validate_ticket_document
 from booley.ticket_board.validation import (
+    append_authored_drift_diagnostic,
     format_validate_logs_report,
 )
 from booley.ticket_board.validation import validate_logs as tb_validate_logs
@@ -220,6 +222,7 @@ class DirectTicketOps:
         return classify_tickets(
             scan_all_tickets(tio.tickets_dir, project_root=tio._project_root),
             logs_dir=tio.logs_dir,
+            done_slugs=done_slugs(tio.tickets_dir),
         )
 
     def parse_ticket(self, project_root: Path, path: str) -> dict[str, Any]:
@@ -229,12 +232,7 @@ class DirectTicketOps:
             raise TicketCLIError("parse-ticket", 2, f"File not found: {path}")
         with p.open(encoding="utf-8") as f:
             text = f.read()
-        stage = (
-            "executable"
-            if p.parent.name
-            in {"queue", "waiting", "active", "blocked", "review", "done", "archived"}
-            else "draft"
-        )
+        stage = document_stage(tio.tickets_dir, p, off_board="draft")
         with ticket_conversion_context(project_root, p.stem, stage) as context:
             converted = convert_ticket_document(text, context)
         if converted.document is None:
@@ -243,9 +241,15 @@ class DirectTicketOps:
         document = converted.document
         fields = {**document.spec.fields, **document.generated}
         body = document.spec.body
-        progress = load_progress(tio.logs_dir, p.stem)
-        if progress is not None:
-            fields.update(progress)
+        # Only a board document has a state record; a snapshot or a
+        # user-supplied file elsewhere reports its document fields alone.
+        record = (
+            read_state_record(tio.tickets_dir, p.stem)
+            if is_board_document(tio.tickets_dir, p)
+            else None
+        )
+        if record is not None:
+            fields.update(record.progress())
         return {"fields": fields, "body": body}
 
     def validate_ticket(
@@ -262,7 +266,7 @@ class DirectTicketOps:
 
     def resume(self, project_root: Path, slug: str) -> dict[str, Any]:
         tio = self._tio(project_root)
-        entry = tio.find_ticket(slug)
+        entry = tio.inspect_ticket(slug)
         if not entry:
             raise TicketCLIError("resume", 1, f"Ticket '{slug}' not found")
         return resume_detect(entry)
@@ -274,8 +278,12 @@ class DirectTicketOps:
         ticket_type = type_or_slug
         planned = None
         if ticket_type not in VALID_TYPES:
-            entry = tio.find_ticket(ticket_type)
+            entry = tio.inspect_ticket(ticket_type)
             if entry:
+                if entry.get("authored_drift"):
+                    from booley.ticket_board.ticket_baseline import AUTHORED_DRIFT_GUIDANCE
+
+                    raise TicketCLIError("next-stage", 2, AUTHORED_DRIFT_GUIDANCE)
                 planned = entry.get("planned_steps", [])
                 ticket_type = entry.get("type", "feature")
                 if ticket_type not in VALID_TYPES:
@@ -302,9 +310,13 @@ class DirectTicketOps:
         return evidence
 
     def ticket_status(self, project_root: Path, slug: str) -> str:
-        """Current board status, or "" when the ticket is not on the board."""
-        entry = self._tio(project_root).find_ticket(slug)
-        return entry.get("status", "") if entry else ""
+        """Current status: board status, else the Closed Ticket's outcome, else ""."""
+        tio = self._tio(project_root)
+        entry = tio.inspect_ticket(slug)
+        if entry:
+            return entry.get("status", "")
+        closed = read_closed_ticket(tio.tickets_dir, slug.removesuffix(".md"))
+        return closed.block.outcome.status if closed is not None else ""
 
     # -- State-changing ----------------------------------------------------
 
@@ -456,7 +468,7 @@ class DirectTicketOps:
 
     def validate_logs(self, project_root: Path, slug: str) -> tuple[bool, str]:
         tio = self._tio(project_root)
-        entry = tio.find_ticket(slug)
+        entry = tio.inspect_ticket(slug)
         if not entry:
             raise TicketCLIError("validate-logs", 1, f"Ticket '{slug}' not found")
         ticket_type = entry.get("type", "feature")
@@ -464,7 +476,8 @@ class DirectTicketOps:
         ticket_fields = {}
         ticket_path = tio.logs_dir / slug / "ticket.md"
         if ticket_path.exists():
-            tio.load_basis(slug, runtime_ticket_path=ticket_path)
+            if not entry.get("authored_drift"):
+                tio.load_basis(slug, runtime_ticket_path=ticket_path)
             with ticket_path.open(encoding="utf-8") as f:
                 with ticket_conversion_context(project_root, slug, "executable") as context:
                     converted = convert_ticket_document(f.read(), context)
@@ -473,6 +486,7 @@ class DirectTicketOps:
                 ticket_fields = {**converted.document.spec.fields, **converted.document.generated}
         result = tb_validate_logs(tio.logs_dir, slug, ticket_type, steps_completed, ticket_fields)
         report, error_count = format_validate_logs_report(result, slug)
+        report, error_count = append_authored_drift_diagnostic(report, error_count, entry)
         return error_count == 0, report
 
     def timing(self, project_root: Path, slug: str, *, save: bool = False) -> str:
@@ -525,7 +539,7 @@ class DirectTicketOps:
 def _resolve_end_time(tio, slug: str):
     """Resolve end_time for timing from ticket status."""
 
-    entry = tio.find_ticket(slug)
+    entry = tio.inspect_ticket(slug)
     if entry and entry.get("status") in SETTLED_STATUSES:
         last_update = entry.get("last_update", "")
         if last_update:

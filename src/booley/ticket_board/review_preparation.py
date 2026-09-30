@@ -15,13 +15,26 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.core.differences import format_differences
 from booley.core.models import AgentCallParams, AgentResult
+from booley.criteria.freshness import (
+    evaluate_verification_freshness,
+    verification_freshness_eligible,
+)
+from booley.criteria.presentation import state_criterion_presentation
 from booley.criteria.state import DevelopmentState
+from booley.flows.sim.coverage_reference import (
+    CoverageCampaignReferenceError,
+    resolve_persisted_coverage_campaign_reference,
+)
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.review.generation import (
     ExplanationError,
     ResolvedReviewEvidence,
@@ -44,6 +57,13 @@ from booley.runtime.agent_config import get_backend_config, load_backend_config
 from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.ticket_board.acceptance_diagnostics import (
+    AcceptanceHeadDrift,
+    StaleAcceptanceError,
+    compare_accepted_heads,
+    format_stale_acceptance,
+    participant_head_locations,
+)
 from booley.ticket_board.acceptance_ledger import read_acceptance
 from booley.ticket_board.agent_execution import configure_agent_call
 from booley.ticket_board.helpers import tickets_dir_from_project_root
@@ -81,26 +101,25 @@ def _usage_summary(ctx: ReviewPrepContext) -> str:
     return result.stdout.strip() if result.returncode == 0 else "unavailable"
 
 
-def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
-    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
-    if ctx.inspection is not None:
-        state = ctx.inspection["state"]
-    else:
-        try:
-            state = require_dict(
-                json.loads(state_path.read_text(encoding="utf-8")),
-                field="review state",
-            )
-        except (OSError, json.JSONDecodeError, BoundaryError):
-            state = {}
-    scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
+def _read_review_mapping(path: Path, *, field: str) -> dict[str, Any]:
     try:
-        scope = require_dict(
-            json.loads(scope_path.read_text(encoding="utf-8")),
-            field="review scope",
+        return require_dict(
+            json.loads(path.read_text(encoding="utf-8")),
+            field=field,
         )
     except (OSError, json.JSONDecodeError, BoundaryError):
-        scope = {}
+        return {}
+
+
+def _resolve_review_coverage_report(report_root: Path, value: object) -> Path | None:
+    """Resolve one authenticated Coverage report for review presentation."""
+    try:
+        return resolve_persisted_coverage_campaign_reference(report_root, value).reference_path
+    except CoverageCampaignReferenceError:
+        return None
+
+
+def _review_dirty_paths(ctx: ReviewPrepContext) -> list[str]:
     dirty = _git(ctx.worktree, "status", "--short").splitlines()
     if ctx.project_repository is not None:
         dirty.extend(
@@ -111,6 +130,20 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
                 "--short",
             ).splitlines()
         )
+    return dirty
+
+
+def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = (
+        ctx.inspection["state"]
+        if ctx.inspection is not None
+        else _read_review_mapping(state_path, field="review state")
+    )
+    scope = _read_review_mapping(
+        ctx.log_dir / ".runtime" / "scope_deviations.json",
+        field="review scope",
+    )
     crashes = sorted(
         str(path) for path in (ctx.log_dir / ".runtime" / "developer").glob("*.crash.json")
     )
@@ -125,11 +158,22 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
     evidence = ResolvedReviewEvidence.capture(
         state=state,
         scope=scope,
-        dirty_worktree=dirty,
+        dirty_worktree=_review_dirty_paths(ctx),
         developer_crashes=crashes,
         missing_evidence=missing,
     )
-    return build_review_facts(ctx, evidence, run_economics=_usage_summary(ctx))
+    return build_review_facts(
+        ctx,
+        evidence,
+        run_economics=_usage_summary(ctx),
+        freshness_eligible=verification_freshness_eligible,
+        freshness_evaluator=partial(
+            evaluate_verification_freshness,
+            fingerprint_provider=compute_source_fingerprint,
+        ),
+        criterion_presenter=state_criterion_presentation,
+        coverage_report_resolver=_resolve_review_coverage_report,
+    )
 
 
 class ReviewPrepError(RuntimeError):
@@ -167,6 +211,19 @@ class ReviewPrepContext:
     triage_report_enabled: bool = True
     project_repository: ProjectReviewRepository | None = None
     inspection: ReviewInspection | None = None
+    accepted_head_drift: AcceptanceHeadDrift | None = None
+
+
+@dataclass(frozen=True)
+class ReviewTicketInputs:
+    """Validated Ticket inputs needed to resolve one review context."""
+
+    tickets_dir: Path
+    tio: TicketIO
+    entry: dict[str, Any]
+    slug: str
+    basis: TicketBaseline
+    report_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -299,17 +356,23 @@ def _review_snapshot_heads(
     accepted = read_acceptance(log_dir)
     if accepted.kind == "corrupt":
         raise ReviewPrepError(f"Criteria Satisfaction Record is corrupt: {accepted.reason}")
-    if accepted.kind != "accepted" or accepted.snapshot is None:
+    if accepted.kind == "accepted" and accepted.snapshot is None:
+        raise ReviewPrepError(
+            "Criteria Satisfaction Record is corrupt: accepted result has no snapshot"
+        )
+    if accepted.kind != "accepted":
         if status == "review":
             raise ReviewPrepError("review Ticket has no Criteria Satisfaction Record")
         return None
     expected_roles = {participant.role for participant in basis.participants}
     if set(accepted.snapshot.participant_heads) != expected_roles:
         raise ReviewPrepError(
-            "Criteria Satisfaction Record participants disagree with Ticket baseline"
+            "Criteria Satisfaction Record is corrupt: participants disagree with Ticket baseline"
         )
     if accepted.snapshot.ticket_identity != basis.ticket_identity():
-        raise ReviewPrepError("Criteria Satisfaction Record names a different Ticket generation")
+        raise ReviewPrepError(
+            "Criteria Satisfaction Record is corrupt: names a different Ticket generation"
+        )
     return accepted.snapshot.participant_heads
 
 
@@ -335,7 +398,10 @@ def _resolve_review_repositories(
     project_root: Path,
     basis: TicketBaseline,
     expected_heads: dict[str, str] | None,
-) -> tuple[Path, str, ProjectReviewRepository | None]:
+    *,
+    accepted_heads: bool = False,
+    allow_stale_accepted: bool = False,
+) -> tuple[Path, str, ProjectReviewRepository | None, AcceptanceHeadDrift | None]:
     try:
         current_heads = validate_current_basis_refs(project_root, basis)
     except TicketBaselineError as exc:
@@ -348,10 +414,118 @@ def _resolve_review_repositories(
     if repository is not None:
         actual_heads["project"] = repository.head_sha
     if actual_heads != current_heads:
-        raise ReviewPrepError("live review checkouts disagree with Ticket baseline refs")
-    if expected_heads is not None and actual_heads != expected_heads:
-        raise ReviewPrepError("live review heads disagree with the Criteria Satisfaction Record")
-    return worktree, head_sha, repository
+        raise ReviewPrepError(
+            "live review checkouts disagree with Ticket baseline refs: "
+            + format_differences(current_heads, actual_heads)
+        )
+    worktrees = {"outer": worktree}
+    if repository is not None:
+        worktrees["project"] = repository.worktree
+    locations = participant_head_locations(
+        ((row.role, row.ticket_ref) for row in basis.participants),
+        worktrees,
+    )
+    drift = (
+        compare_accepted_heads(expected_heads, actual_heads, locations)
+        if expected_heads is not None
+        else None
+    )
+    if drift is not None:
+        if not accepted_heads:
+            raise ReviewPrepError("review inputs changed; run booley board review to refresh them")
+        if not allow_stale_accepted:
+            raise StaleAcceptanceError(drift)
+    return worktree, head_sha, repository, drift
+
+
+def _review_selection(
+    project_root: Path,
+    log_dir: Path,
+    slug: str,
+    entry: dict[str, Any],
+    basis: TicketBaseline,
+    *,
+    inspect_unaccepted: bool,
+) -> tuple[ReviewInspection | None, dict[str, str] | None, bool]:
+    """Resolve the selected inspection and whether expected heads come from the CSR."""
+    from .review_records import read_entry
+
+    accepted = read_acceptance(log_dir)
+    selected = None if inspect_unaccepted else read_entry(log_dir)
+    snapshot_status = str(entry.get("status"))
+    if (selected and selected["disposition"] == "unaccepted") or (
+        inspect_unaccepted and accepted.kind != "accepted"
+    ):
+        snapshot_status = "blocked"
+    snapshot_heads = _review_snapshot_heads(project_root, log_dir, slug, snapshot_status, basis)
+    if selected is None:
+        return None, snapshot_heads, snapshot_heads is not None
+    if selected["ticket_generation"] != basis.ticket_identity()["generation"]:
+        raise ReviewPrepError("review entry belongs to a different Ticket generation")
+    if snapshot_heads is not None and selected["heads"] != snapshot_heads:
+        raise ReviewPrepError(
+            "selected review package is corrupt: heads disagree with the "
+            "Criteria Satisfaction Record"
+        )
+    return selected, selected["heads"], snapshot_heads is not None
+
+
+def _review_ticket_inputs(
+    project_root: Path,
+    slug: str,
+    *,
+    require_review: bool,
+    allow_report_disabled: bool,
+    locked_basis: TicketBaseline | None,
+) -> ReviewTicketInputs:
+    """Load and validate one Ticket before resolving its repositories."""
+    tickets_dir = tickets_dir_from_project_root(project_root)
+    tio = TicketIO(tickets_dir, project_root=project_root)
+    entry = tio.find_ticket(slug)
+    if not entry:
+        raise ReviewPrepError(f"ticket '{slug}' was not found")
+    canonical = Path(str(entry["file"])).stem
+    report_enabled = _validate_review_entry(
+        entry,
+        canonical,
+        require_review=require_review,
+        allow_report_disabled=allow_report_disabled,
+    )
+    basis = locked_basis if locked_basis is not None else _load_review_basis(tio, canonical)
+    return ReviewTicketInputs(tickets_dir, tio, entry, canonical, basis, report_enabled)
+
+
+def _build_review_context(
+    project_root: Path,
+    inputs: ReviewTicketInputs,
+    selected: ReviewInspection | None,
+    resolved: tuple[Path, str, ProjectReviewRepository | None, AcceptanceHeadDrift | None],
+) -> ReviewPrepContext:
+    """Assemble a review context from validated Ticket and repository inputs."""
+    from .review_records import package_dir
+
+    worktree, head_sha, project_repository, accepted_head_drift = resolved
+    log_dir = inputs.tio.logs_dir / inputs.slug
+    outer = inputs.basis.participant("outer")
+    runtime_dir = (
+        package_dir(log_dir, selected) if selected else ticket_runtime_dir(log_dir) / "triage-prep"
+    )
+    return ReviewPrepContext(
+        project_root=project_root,
+        slug=inputs.slug,
+        log_dir=log_dir,
+        runtime_dir=runtime_dir,
+        worktree=worktree,
+        ticket_path=inputs.tickets_dir / str(inputs.entry["file"]),
+        base_sha=outer.authoring_sha,
+        head_sha=head_sha,
+        feature_branch=outer.ticket_ref.removeprefix("refs/heads/"),
+        ticket_generation=inputs.basis.ticket_identity()["generation"],
+        triage_report_enabled=inputs.report_enabled,
+        project_repository=project_repository,
+        inspection=selected,
+        accepted_head_drift=accepted_head_drift,
+    )
 
 
 def _resolve_context(
@@ -362,60 +536,32 @@ def _resolve_context(
     allow_report_disabled: bool = False,
     inspect_unaccepted: bool = False,
     locked_basis: TicketBaseline | None = None,
+    allow_stale_accepted: bool = False,
 ) -> ReviewPrepContext:
-    tickets_dir = tickets_dir_from_project_root(project_root)
-    tio = TicketIO(tickets_dir, project_root=project_root)
-    entry = tio.find_ticket(slug)
-    if not entry:
-        raise ReviewPrepError(f"ticket '{slug}' was not found")
-    slug = Path(str(entry["file"])).stem
-    report_enabled = _validate_review_entry(
-        entry,
+    inputs = _review_ticket_inputs(
+        project_root,
         slug,
         require_review=require_review,
         allow_report_disabled=allow_report_disabled,
+        locked_basis=locked_basis,
     )
-    basis = locked_basis if locked_basis is not None else _load_review_basis(tio, slug)
-    outer = basis.participant("outer")
-    feature_branch = outer.ticket_ref.removeprefix("refs/heads/")
-    log_dir = tio.logs_dir / slug
-    from .review_records import package_dir, read_entry
-
-    inspection = None if inspect_unaccepted else read_entry(log_dir)
-    snapshot_status = str(entry.get("status"))
-    if inspect_unaccepted or (inspection and inspection["disposition"] == "unaccepted"):
-        snapshot_status = "blocked"
-    expected_heads = _review_snapshot_heads(
+    log_dir = inputs.tio.logs_dir / inputs.slug
+    selected, expected_heads, accepted_heads = _review_selection(
         project_root,
         log_dir,
-        slug,
-        snapshot_status,
-        basis,
+        inputs.slug,
+        inputs.entry,
+        inputs.basis,
+        inspect_unaccepted=inspect_unaccepted,
     )
-    if inspection is not None:
-        if inspection["ticket_generation"] != basis.ticket_identity()["generation"]:
-            raise ReviewPrepError("review entry belongs to a different Ticket generation")
-        expected_heads = inspection["heads"]
-    worktree, head_sha, project_repository = _resolve_review_repositories(
-        project_root, basis, expected_heads
+    resolved = _resolve_review_repositories(
+        project_root,
+        inputs.basis,
+        expected_heads,
+        accepted_heads=accepted_heads,
+        allow_stale_accepted=allow_stale_accepted,
     )
-    return ReviewPrepContext(
-        project_root=project_root,
-        slug=slug,
-        log_dir=log_dir,
-        runtime_dir=package_dir(log_dir, inspection)
-        if inspection
-        else ticket_runtime_dir(log_dir) / "triage-prep",
-        worktree=worktree,
-        ticket_path=tickets_dir / str(entry["file"]),
-        base_sha=outer.authoring_sha,
-        head_sha=head_sha,
-        feature_branch=feature_branch,
-        ticket_generation=basis.ticket_identity()["generation"],
-        triage_report_enabled=report_enabled,
-        project_repository=project_repository,
-        inspection=inspection,
-    )
+    return _build_review_context(project_root, inputs, selected, resolved)
 
 
 def _resolve_project_review_repository(
@@ -558,6 +704,7 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
         "--untracked-files=all",
     )
     digest.update(status.encode("utf-8"))
+    digest.update(_verification_evidence_identity(ctx))
     if ctx.project_repository is not None:
         project = ctx.project_repository
         digest.update(project.base_sha.encode("ascii"))
@@ -577,6 +724,43 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
         digest.update(_file_sha256(path).encode("ascii"))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _verification_evidence_identity(ctx: ReviewPrepContext) -> bytes:
+    inspection_state = ctx.inspection.get("state") if ctx.inspection is not None else None
+    if isinstance(inspection_state, Mapping) and isinstance(
+        inspection_state.get("criteria"), Mapping
+    ):
+        state = inspection_state
+    else:
+        state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+    criteria = state.get("criteria") if isinstance(state, Mapping) else None
+    if not isinstance(criteria, Mapping):
+        return b""
+    fingerprints: dict[str | None, dict] = {}
+    identities = []
+    for key, entry in sorted(criteria.items()):
+        if not isinstance(key, str) or not isinstance(entry, Mapping):
+            continue
+        if not verification_freshness_eligible(
+            key,
+            entry,
+            include_unobserved_review=False,
+        ):
+            continue
+        result = evaluate_verification_freshness(
+            key,
+            entry,
+            work_dir=ctx.worktree,
+            fingerprint_provider=compute_source_fingerprint,
+            fingerprints=fingerprints,
+        )
+        identities.append((key, result.current_evidence_identity, result.reason))
+    return json.dumps(identities, sort_keys=True, separators=(",", ":")).encode()
 
 
 def _require_unchanged(ctx: ReviewPrepContext, expected_sha: str, message: str) -> None:
@@ -632,6 +816,42 @@ def _fresh_outcome(
         else "existing review briefing is current; HTML is unavailable"
     )
     return ReviewPrepOutcome("fresh", message, html_path, briefing_path)
+
+
+def _frozen_accepted_outcome(
+    ctx: ReviewPrepContext,
+    manifest: dict[str, Any] | None,
+) -> ReviewPrepOutcome | None:
+    """Validate frozen accepted artifacts without comparing changed live source."""
+    from .acceptance_ledger import validate_review_package_binding
+
+    accepted = read_acceptance(ctx.log_dir)
+    binding = ctx.log_dir / "acceptance" / "review-package.json"
+    if (
+        accepted.kind != "accepted"
+        or accepted.snapshot is None
+        or not binding.is_file()
+        or not manifest
+        or manifest.get("status") != "ready"
+    ):
+        return None
+    validate_review_package_binding(ctx.log_dir, accepted.snapshot)
+    if "inspection_artifacts" in manifest and not _inspection_artifacts_valid(ctx, manifest):
+        return None
+    briefing_path = _verified_artifact(manifest, "briefing")
+    if briefing_path is None:
+        return None
+    has_html = manifest.get("html_path") is not None
+    html_path = _verified_artifact(manifest, "html") if has_html else None
+    html_unavailable = not has_html and isinstance(manifest.get("html_error"), str)
+    if (has_html and html_path is None) or (not has_html and not html_unavailable):
+        return None
+    return ReviewPrepOutcome(
+        "fresh",
+        "frozen accepted review package is integrity-checked",
+        html_path,
+        briefing_path,
+    )
 
 
 def _base_manifest(
@@ -1222,6 +1442,11 @@ def _prepare_report_disabled_package(
 ) -> ReviewPrepOutcome:
     """Persist the same typed package without making the optional model call."""
     facts = _build_review_facts(ctx)
+    _require_unchanged(
+        ctx,
+        source_sha,
+        "live review inputs changed while review facts were built",
+    )
     _write_json(ctx.runtime_dir / "facts.json", facts)
     briefing_path = write_triage_package(
         ctx,
@@ -1230,7 +1455,6 @@ def _prepare_report_disabled_package(
         None,
         None,
     )
-    source_sha = _source_fingerprint(ctx)
     duration = time.monotonic() - started
     manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
     manifest.update(
@@ -1253,6 +1477,7 @@ def _prepare_report_disabled_package(
 def _write_ready_manifest(
     ctx: ReviewPrepContext,
     prompt_sha: str,
+    source_sha: str,
     briefing_path: Path,
     html_path: Path | None,
     prepared: PreparedReviewOutput,
@@ -1260,7 +1485,7 @@ def _write_ready_manifest(
     duration: float,
 ) -> None:
     """Persist integrity metadata for one completed model-generated package."""
-    manifest = _base_manifest(ctx, prompt_sha, _source_fingerprint(ctx), "ready")
+    manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
     manifest.update(
         {
             "briefing_path": str(briefing_path),
@@ -1284,6 +1509,7 @@ def _write_ready_manifest(
 def _persist_model_review(
     ctx: ReviewPrepContext,
     prompt_sha: str,
+    source_sha: str,
     facts: dict[str, Any],
     prepared: PreparedReviewOutput,
     result: AgentResult,
@@ -1310,6 +1536,7 @@ def _persist_model_review(
     _write_ready_manifest(
         ctx,
         prompt_sha,
+        source_sha,
         briefing_path,
         html_path,
         prepared,
@@ -1337,9 +1564,13 @@ async def _prepare_model_review(
     try:
         evidence = _collect_git_evidence(ctx)
         facts = _build_review_facts(ctx)
+        _require_unchanged(
+            ctx,
+            source_sha,
+            "live review inputs changed while review facts were built",
+        )
         _write_json(ctx.runtime_dir / "facts.json", facts)
         package = _build_evidence_package(ctx, source_sha, evidence)
-        source_sha = _source_fingerprint(ctx)
         with _agent_workspace(ctx, package) as workspace:
             _require_unchanged(
                 ctx,
@@ -1359,6 +1590,7 @@ async def _prepare_model_review(
         return _persist_model_review(
             ctx,
             prompt_sha,
+            source_sha,
             facts,
             prepared,
             result,
@@ -1412,7 +1644,7 @@ def _requested_review_slug(project_root: Path, slug: str) -> str | None:
     from .review_records import assert_idle, operation_path, read_entry, read_json
 
     tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
-    board = tio.find_ticket(slug)
+    board = tio.inspect_ticket(slug)
     if board is None:
         return None
     canonical = Path(board["file"]).stem
@@ -1497,6 +1729,77 @@ async def prepare_review_command(
     return await prepare_review(project_root, slug, force=force)
 
 
+def _briefing_artifacts(
+    ctx: ReviewPrepContext,
+) -> tuple[dict[str, Any] | None, ReviewPrepOutcome | None]:
+    """Resolve current or frozen artifacts for a read-only briefing."""
+    if ctx.accepted_head_drift is not None:
+        artifact_ctx = dataclass_replace(
+            ctx,
+            runtime_dir=ticket_runtime_dir(ctx.log_dir) / "triage-prep",
+        )
+        manifest = _read_manifest(artifact_ctx)
+        return manifest, _frozen_accepted_outcome(ctx, manifest)
+    manifest = _read_manifest(ctx)
+    _prompt, prompt_sha = _review_prompt(ctx)
+    source_sha = _source_fingerprint(ctx)
+    return manifest, _fresh_outcome(ctx, manifest, prompt_sha, source_sha)
+
+
+def _missing_briefing_outcome(
+    ctx: ReviewPrepContext,
+    manifest: dict[str, Any] | None,
+) -> ReviewBriefingOutcome:
+    """Return state-specific guidance when no verified briefing can be rendered."""
+    accepted = read_acceptance(ctx.log_dir)
+    binding = ctx.log_dir / "acceptance" / "review-package.json"
+    if ctx.accepted_head_drift is not None and manifest is None and not binding.exists():
+        message = format_stale_acceptance(ctx.slug, ctx.accepted_head_drift, status="review")
+        return ReviewBriefingOutcome(
+            "stale",
+            message + "\n\nThe frozen accepted review package is unavailable.",
+        )
+    guidance = f"; run booley board review {ctx.slug}" if accepted.kind != "accepted" else ""
+    return ReviewBriefingOutcome(
+        "stale",
+        "prepared review package is missing, stale, or failed integrity checks" + guidance,
+    )
+
+
+def _render_review_briefing_outcome(
+    ctx: ReviewPrepContext,
+    fresh: ReviewPrepOutcome,
+    *,
+    open_diffs: bool,
+) -> ReviewBriefingOutcome:
+    """Render one verified current or frozen review package."""
+    assert fresh.package_path is not None
+    package = load_triage_package(fresh.package_path)
+    failures = open_package_diffs(package) if open_diffs else []
+    accepted = read_acceptance(ctx.log_dir)
+    inspection = package.get("inspection")
+    presentation: Mapping[str, Any] = (
+        accepted_review_presentation(package)
+        if accepted.kind == "accepted" and inspection is not None
+        else package
+    )
+    actions = None
+    if ctx.accepted_head_drift is not None:
+        actions = "**restore exact accepted heads** / **reset** / **archive** / **skip**"
+    briefing = render_review_briefing(presentation, failures, accepted_actions=actions)
+    if presentation is not package:
+        briefing += "\n\nAcceptance was published after this report was prepared."
+    if ctx.accepted_head_drift is not None:
+        marker = format_stale_acceptance(ctx.slug, ctx.accepted_head_drift, status="review")
+        briefing = marker + "\n\n" + briefing
+    return ReviewBriefingOutcome(
+        "ready",
+        "prepared review briefing loaded",
+        briefing,
+        tuple(failures),
+    )
+
+
 def review_briefing_command(
     project_root: Path, slug: str, *, open_diffs: bool = True
 ) -> ReviewBriefingOutcome:
@@ -1508,33 +1811,11 @@ def review_briefing_command(
             slug,
             require_review=True,
             allow_report_disabled=True,
+            allow_stale_accepted=True,
         )
-        _prompt, prompt_sha = _review_prompt(ctx)
-        source_sha = _source_fingerprint(ctx)
-        manifest = _read_manifest(ctx)
-        fresh = _fresh_outcome(ctx, manifest, prompt_sha, source_sha)
+        manifest, fresh = _briefing_artifacts(ctx)
         if fresh is None or manifest is None:
-            return ReviewBriefingOutcome(
-                "stale",
-                "prepared review package is missing or stale; rerun the ticket report preparation",
-            )
-        package = load_triage_package(Path(str(manifest["briefing_path"])))
-        failures = open_package_diffs(package) if open_diffs else []
-        accepted = read_acceptance(ctx.log_dir)
-        inspection = package.get("inspection")
-        presentation: Mapping[str, Any] = (
-            accepted_review_presentation(package)
-            if accepted.kind == "accepted" and inspection is not None
-            else package
-        )
-        briefing = render_review_briefing(presentation, failures)
-        if presentation is not package:
-            briefing += "\n\nAcceptance was published after this report was prepared."
-        return ReviewBriefingOutcome(
-            "ready",
-            "prepared review briefing loaded",
-            briefing,
-            tuple(failures),
-        )
+            return _missing_briefing_outcome(ctx, manifest)
+        return _render_review_briefing_outcome(ctx, fresh, open_diffs=open_diffs)
     except Exception as exc:  # noqa: BLE001 — CLI boundary returns a stable outcome
         return ReviewBriefingOutcome("failed", f"{type(exc).__name__}: {exc}"[:2000])

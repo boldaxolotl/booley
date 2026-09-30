@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
@@ -21,7 +20,9 @@ from booley.flows.execution_persistence import NoAcceptanceRecorder
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
+    normalize_completion_error,
 )
+from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
@@ -253,16 +254,18 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
-    _refresh_report_detail(endpoint, result)
-    report_json = json.dumps(_report_document(endpoint, result), indent=2)
+    if not getattr(endpoint, "_skip_report_detail_refresh", False):
+        _refresh_report_detail(endpoint, result)
+    report = _report_document(endpoint, result)
     inv_dir = endpoint._reserved_invocation_dir
-    endpoint._reserved_invocation_dir = None
     if inv_dir is None:
         inv_dir = endpoint._next_invocation_dir(report_dir)
+        endpoint._reserved_invocation_dir = inv_dir
     inv_path = inv_dir / "report.json"
-    inv_path.write_text(report_json, encoding="utf-8")
+    atomic_write_json(inv_path, report)
     flat_path = report_dir / f"{endpoint.name}.json"
-    flat_path.write_text(report_json, encoding="utf-8")
+    atomic_write_json(flat_path, report)
+    endpoint._reserved_invocation_dir = None
     return inv_path
 
 
@@ -423,7 +426,7 @@ def _resolve_display_label(endpoint: EndpointState) -> str | None:
 
 
 def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float) -> None:
-    """Persist mutable run state and the structured report.
+    """Persist mutable run state after final acceptance.
 
     The execution coordinator calls ``record_acceptance`` first. That step
     also runs ``_pre_save_hook`` so this timeline sees the final rather than
@@ -431,6 +434,9 @@ def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float)
     """
     criteria_set = list(endpoint._pending_criteria_set or ())
     _persist_run_state(endpoint, result, duration, criteria_set)
+
+
+def _publish_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
     if endpoint.write_report(result) is None:
         endpoint._warn_no_report_artifact()
 
@@ -442,6 +448,10 @@ def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) ->
     witness = endpoint._stdout_witness
     already_shown = witness is not None and witness.saw(result.report_text)
     if already_shown:
+        return
+    original, separator, diagnosis = result.report_text.partition("\nCompletion failure (")
+    if separator and witness is not None and witness.saw(original):
+        print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
         return
     if result.exit_code != EXIT_SUCCESS:
         print(result.report_text, file=sys.stderr, flush=True)
@@ -497,22 +507,83 @@ def _finish_main(
     """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
     duration = (time.monotonic() - started) if started is not None else 0.0
     try:
-        if acceptance_recorded and not non_persisting_dry_run:
-            endpoint._post_run(result, duration)
+        if not non_persisting_dry_run:
+            _finish_publication(endpoint, result, duration, acceptance_recorded)
     finally:
         try:
-            endpoint._publish_console_report(result)
+            try:
+                endpoint._publish_console_report(result)
+            except OSError as exc:
+                logger.debug("Endpoint console publication failed", exc_info=True)
+                normalize_completion_error(result, exc, "publish console diagnosis")
+                _recover_report_publication(endpoint, result)
         finally:
             endpoint._pending_criteria_set = None
-            _write_display_event(
-                _endpoint_end_event(
-                    endpoint.name,
-                    display_target,
-                    result,
-                    duration,
-                    display_label=display_label,
-                    dry_run=dry_run,
-                    identity=endpoint._display_identity,
-                ),
-            )
+            try:
+                _write_display_event(
+                    _endpoint_end_event(
+                        endpoint.name,
+                        display_target,
+                        result,
+                        duration,
+                        display_label=display_label,
+                        dry_run=dry_run,
+                        identity=endpoint._display_identity,
+                    ),
+                )
+            except Exception:
+                if "completion_error" in result.detail:
+                    logger.debug("Failed to publish endpoint-end event", exc_info=True)
+                else:
+                    raise
     return result.exit_code
+
+
+def _finish_publication(
+    endpoint: EndpointState,
+    result: EndpointOutcome,
+    duration: float,
+    acceptance_recorded: bool,
+) -> None:
+    if not acceptance_recorded:
+        _publish_report_with_recovery(endpoint, result, refresh_detail=False)
+        return
+    try:
+        endpoint._post_run(result, duration)
+    except Exception as exc:
+        logger.debug("Endpoint completion persistence failed", exc_info=True)
+        normalize_completion_error(result, exc, "persist endpoint completion")
+        _recover_report_publication(endpoint, result)
+        return
+    _publish_report_with_recovery(endpoint, result)
+
+
+def _publish_report_with_recovery(
+    endpoint: EndpointState,
+    result: EndpointOutcome,
+    *,
+    refresh_detail: bool = True,
+) -> None:
+    previous = endpoint._skip_report_detail_refresh
+    endpoint._skip_report_detail_refresh = not refresh_detail
+    try:
+        _publish_report(endpoint, result)
+    except Exception as exc:
+        logger.debug("Endpoint report publication failed", exc_info=True)
+        normalize_completion_error(result, exc, "publish report.json")
+        _recover_report_publication(endpoint, result)
+    finally:
+        endpoint._skip_report_detail_refresh = previous
+
+
+def _recover_report_publication(endpoint: EndpointState, result: EndpointOutcome) -> None:
+    previous = getattr(endpoint, "_skip_report_detail_refresh", False)
+    endpoint._skip_report_detail_refresh = True
+    try:
+        _publish_report(endpoint, result)
+    except Exception as exc:
+        logger.debug("Endpoint recovery report publication failed", exc_info=True)
+        normalize_completion_error(result, exc, "publish report.json")
+        endpoint._reserved_invocation_dir = None
+    finally:
+        endpoint._skip_report_detail_refresh = previous

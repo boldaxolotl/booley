@@ -337,7 +337,6 @@ def test_idle_reaper_removes_licensed_vscode_container_and_owned_topology() -> N
         stopped = reaper.reap_once(
             now=time.time() + 120,
             idle_timeout=1,
-            max_sessions=4,
             run=isolated_run,
         )
         assert stopped == [container_id]
