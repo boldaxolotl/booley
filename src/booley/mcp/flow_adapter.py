@@ -4,7 +4,7 @@ from typing import Any
 
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
-from booley.mcp.schema_extractor import extract_schema
+from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS, extract_schema
 
 
 def _specialist_schema(endpoint: Any) -> dict[str, Any]:
@@ -15,7 +15,7 @@ def _specialist_schema(endpoint: Any) -> dict[str, Any]:
         return extracted
     schema = hook()
     properties = schema.setdefault("properties", {})
-    for dest in ("model", "max_turns", "timeout", "timeout_ms", "report_dir", "transcript_dir"):
+    for dest in SPECIALIST_CLI_ONLY_DESTS:
         properties.pop(dest, None)
     if "required" in schema:
         schema["required"] = [dest for dest in schema["required"] if dest in properties]

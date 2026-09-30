@@ -24,10 +24,13 @@ _FILTERED_DESTS = frozenset(
         "instruction",  # Specialist._add_args()
         "transcript_dir",
         "timeout",  # Project endpoint legacy infrastructure
-        "model",
-        "max_turns",
         "help",  # standard argparse
     }
+)
+
+# Specialist controls stay private through both parser and custom-schema routes.
+SPECIALIST_CLI_ONLY_DESTS = frozenset(
+    {"model", "max_turns", "timeout", "timeout_ms", "report_dir", "transcript_dir"}
 )
 
 # Agent-facing schema for the shared --work-dir arg. Curated rather than
@@ -104,7 +107,7 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
         # Exact-Campaign analysis makes instruction part of its public contract.
         public_instruction = parser.prog == "coverage_analyst" and dest == "instruction"
         if (dest in _FILTERED_DESTS and not public_instruction) or (
-            is_specialist and dest == "timeout_ms"
+            is_specialist and dest in SPECIALIST_CLI_ONLY_DESTS
         ):
             continue
 

@@ -1930,7 +1930,7 @@ class TestReportGeneration:
     def test_default_report_root_uses_project_data(
         self, _mock_backend, _mock_tests, tmp_path: Path, monkeypatch
     ):
-        from booley.flows.endpoint_session import _apply_default_flow_report_root
+        from booley.flows.endpoint_session import _apply_default_endpoint_report_root
         from booley.runtime.project_dir import reset_cache
 
         rtl = tmp_path / "rtl-checkout"
@@ -1958,7 +1958,7 @@ class TestReportGeneration:
                     "lite",
                 ]
             )
-        assert _apply_default_flow_report_root(flow.context) is None
+        assert _apply_default_endpoint_report_root(flow.context) is None
         flow.read_state()
         flow._simulation_execution_override = _BoundaryHarness(flow)
         with flow.context.publication_resources:

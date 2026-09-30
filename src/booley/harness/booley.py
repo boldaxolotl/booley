@@ -1913,10 +1913,15 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
     """Run a visible Specialist through its existing entry point."""
     from booley.mcp.endpoint_config import get_endpoint_config
     from booley.mcp.registry import discover_mcp_tools
+    from booley.runtime.project_dir import resolve_checkout_project_dir
 
     config, flows = get_endpoint_config(project_root)
+    try:
+        project_tools = resolve_checkout_project_dir(project_root) / "mcp_tools"
+    except FileNotFoundError:
+        project_tools = None
     endpoints = discover_mcp_tools(
-        project_mcp_tools_dir=project_root / PROJECT_DIR_NAME / "mcp_tools",
+        project_mcp_tools_dir=project_tools,
         mcp_tool_config=config,
         flow_config=flows,
     )

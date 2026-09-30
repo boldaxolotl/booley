@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from booley.mcp.application import McpApplication
+from booley.mcp.base import McpTool, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.schema_extractor import extract_schema
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
@@ -22,6 +23,43 @@ from booley.specialists.reviewer import ReviewerSpecialist
 def _make_parser(**kwargs) -> argparse.ArgumentParser:
     """Create a minimal parser for testing."""
     return argparse.ArgumentParser(prog="test", **kwargs)
+
+
+def test_custom_flow_keeps_its_model_and_turn_arguments() -> None:
+    from booley.mcp.server import _params_to_argv
+
+    class CustomFlow(McpTool):
+        name = "custom_flow"
+        endpoint_kind = "flow"
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            parser.add_argument("--model", required=True)
+            parser.add_argument("--max-turns", type=int, default=7)
+
+        def _run(self) -> McpToolResult:
+            return McpToolResult(exit_code=0)
+
+    endpoint = CustomFlow()
+    schema = flow_schema(endpoint)
+    assert schema["properties"]["model"]["type"] == "string"
+    assert schema["properties"]["max_turns"] == {"type": "integer", "default": 7}
+    assert "model" in schema["required"]
+    received = []
+
+    async def dispatch(_name, arguments, _source):
+        args = endpoint.parse_args(_params_to_argv(arguments))
+        received.append((args.model, args.max_turns))
+        return []
+
+    application = McpApplication(
+        [{"name": endpoint.name, "description": "", "schema": schema}],
+        dispatch=dispatch,
+        canonicalize=lambda name: name,
+        on_discovery_error=lambda _message: None,
+    )
+    result = asyncio.run(application.call_tool(endpoint.name, {"model": "logic", "max_turns": 3}))
+    assert result.is_error is False
+    assert received == [("logic", 3)]
 
 
 # --- Type mapping tests ---

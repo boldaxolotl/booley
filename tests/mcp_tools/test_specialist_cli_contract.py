@@ -146,6 +146,44 @@ def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox):
     endpoint.read_state.assert_not_called()
 
 
+@pytest.mark.parametrize("selection", ["override", "checkout_snapshot", "subdirectory"])
+def test_disabled_gate_uses_selected_project_config(tmp_path, monkeypatch, sandbox, selection):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    data = root / ("project_data" if selection == "override" else ".booley_project")
+    data.mkdir()
+    (data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = false\n")
+    if selection == "override":
+        (root / "booley.toml").write_text('[project]\ndir = "project_data"\n')
+    elif selection == "checkout_snapshot":
+        session_data = tmp_path / "session_data"
+        session_data.mkdir()
+        (session_data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = true\n")
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(session_data))
+    else:
+        root = root / "rtl"
+        root.mkdir()
+    endpoint = ProjectSpecialist()
+    endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
+    assert endpoint.main(["--work-dir", str(root)]) == 2
+    endpoint.read_state.assert_not_called()
+
+
+def test_listing_resolves_project_directory_override(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "project_data"\n')
+    data = tmp_path / "project_data"
+    (data / "mcp_tools").mkdir(parents=True)
+    (data / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
+    (data / "mcp_tools/project_review.py").write_text(
+        'from booley.specialists.specialist import Specialist\nclass ProjectReview(Specialist):\n    name = "project_review"\n    description = "Project fixture"\n'
+    )
+    assert cli._cmd_specialist(command(["specialist"]), tmp_path) == 0
+    output = capsys.readouterr().out
+    assert "project_review" in output
+    assert "reviewer" not in output
+
+
 @pytest.mark.parametrize("value", ["0", "-1", "1.5"])
 def test_positive_milliseconds(value):
     with pytest.raises(SystemExit) as error:
