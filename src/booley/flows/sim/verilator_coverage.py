@@ -32,6 +32,8 @@ from .execution.freshness import (
     snapshot_artifact,
     validate_fresh_artifact,
 )
+from .verilator_declarations import DeclarationInventory, declaration_source_aliases
+from .verilator_identity import PINNED_VERILATOR, VerilatorCollectorIdentity
 
 CoverageHarness = Literal["generated_main", "custom_main", "cocotb", "hdl_testbench"]
 CoverageSourceKind = Literal["rtl", "testbench", "generated", "foreign"]
@@ -45,19 +47,6 @@ VERILATOR_COVERAGE_INSTRUMENTATION = (
     "--coverage-per-instance",
 )
 
-
-@dataclass(frozen=True)
-class VerilatorCollectorIdentity:
-    """Exact stable Verilator tag and full upstream commit identity."""
-
-    tag: str
-    commit: str
-
-
-PINNED_VERILATOR = VerilatorCollectorIdentity(
-    tag="v5.052",
-    commit="ea338be98e1e838d3518809ce8899f85a009963c",
-)
 
 _NATIVE_HEADER = "# SystemC::Coverage-3"
 _NATIVE_RECORD_RE = re.compile(r"^C '(?P<identity>.*)' (?P<hits>[0-9]+)$")
@@ -180,6 +169,7 @@ class SimulationBuildResult:
     collector: VerilatorCollectorIdentity | None = None
     infrastructure_error: bool = False
     reason: str = ""
+    declarations: DeclarationInventory | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +241,8 @@ class CoverageBuildEvidence:
 
     variant: SimulationBuildVariant
     instrumentation: tuple[str, ...]
+    declarations: DeclarationInventory | None = None
+    successful: bool = False
 
 
 @dataclass(frozen=True)
@@ -294,6 +286,8 @@ class CoverageCollectionResult:
     collector: VerilatorCollectorIdentity
     unrecognized_records: tuple[Mapping[str, FrozenJson], ...] = ()
     infrastructure_error: bool = False
+    native_sources: tuple[str, ...] = ()
+    native_source_diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1229,6 +1223,21 @@ def _unknown_findings(collected: tuple[_CollectedRun, ...]) -> tuple[CoverageFin
     )
 
 
+def _native_source_presence(build, collected) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    inventory = build.declarations
+    present, unresolved = set(), set()
+    aliases = declaration_source_aliases(inventory.sources) if inventory else {}
+    for item in collected:
+        for record in item.records:
+            native = record.attributes.get("f", "")
+            source = aliases.get(native.replace("\\", "/"))
+            if source is None:
+                unresolved.add(native)
+            else:
+                present.add(source.path)
+    return tuple(sorted(present)), tuple(sorted(unresolved))
+
+
 def _result(
     request: CoverageCollectionRequest,
     build: CoverageBuildEvidence,
@@ -1241,7 +1250,10 @@ def _result(
     compatibility: Literal["compatible", "incompatible", "unknown"],
     extra_artifacts: tuple[CoverageArtifact, ...] = (),
 ) -> CoverageCollectionResult:
+    present, unresolved = _native_source_presence(build, collected)
     return CoverageCollectionResult(
+        native_sources=present,
+        native_source_diagnostics=unresolved,
         status=status,
         build=build,
         runs=tuple(item.run for item in collected),
@@ -1286,7 +1298,7 @@ def _build_collection(
         return build, _infrastructure_failure(
             request, build, (), finding.message, code=finding.code
         )
-    return build, None
+    return replace(build, declarations=build_result.declarations, successful=True), None
 
 
 def _merge_collection(

@@ -1179,3 +1179,47 @@ pruning leaves its input usable, while full pruning removes that input. The
 Analyst's versioned output and capability-isolated, budgeted evidence boundary are documented in
 [MCP-TOOLS.md](MCP-TOOLS.md#report-driven-coverage-analyst). The release gate and
 validation commands are recorded in [coverage-release-gate.md](coverage-release-gate.md).
+
+
+### Producing-build RTL source advisories
+
+Coverage overlays canonically add `--dumpi-tree-json 1 --dumpi-V3Global 9` to
+all Verilator coverage harness variants. Ordinary simulation, lint and synthesis
+do not enable these switches. The declaration contract/options participate in
+both coverage recipe fingerprints and the Simulation Campaign command model.
+The adapter allocates a fresh generation and reduces its unique early cells tree
+and matching metadata while holding the build lease; it does not compile again.
+
+`verilator_declarations.py` owns immutable declaration facts and the pinned JSON
+boundary. `verilator_declaration_build.py` verifies authored/staged EDAM aliases
+and source hashes. Both declarations and all parsed native records use the same
+exact alias resolver for advisory source presence, leaving existing scored point
+identities and dispositions unchanged. Unknown metric classes still establish
+presence. Unresolved records suppress accusations globally for that Target.
+The decoder limits each raw file to 32 MiB, nesting to 128, and declarations/file
+IDs to 100,000; the dump search also limits entries to 100,000.
+
+No authoritative physical map exists for authored `line locations. The pinned
+preprocessor lexer recognizes literal `line; token joins and continued macros can
+construct tokens. A conservative byte trigger joins continued source lines and
+rejects possible `line text, backtick token joins, and continuations that form
+the identifier `line` in every mapped physical HDL input/include and compiler
+options, including decoys or inactive text. Ordinary multiline macros do not
+disable discovery. Compiler
+file IDs not accounted for by these inputs make discovery incomplete as well.
+This trigger never interprets RTL or assigns physical locations. This trades
+potential false incomplete status for avoiding incorrect file-level accusations.
+Large real-design dump overhead remains unmeasured.
+
+`SimulationBuildResult` forwards the inventory through `CoverageBuildEvidence`
+and `_CapturingExecution`. The collector preserves sorted native source presence
+before metric filtering; publication records it with the compact inventory.
+`coverage_source_gaps.py` compares complete compatible observations only and
+constructs validated source-closure pointers. The store checks compact artifact
+digests/ownership and validates new advisory publication against its inventory.
+Resume consumes published evidence instead of rereading present-day Project RTL.
+
+The Analyst `zero_point_sources` view uses normal byte budgets, stable cursors,
+and source-count audit accounting with an empty `point_ids` list. Point-bearing
+views retain their existing returned-count invariant. Minimal overviews retain
+discovery status, total source count, and the paginated-query hint.

@@ -22,6 +22,7 @@ from .coverage_campaign_store import POINT_STORE_NAME, publish_coverage_campaign
 from .coverage_invocation import CoverageTargetPlan
 from .coverage_policy import evaluate_coverage_campaign
 from .coverage_provenance import coverage_digest, validate_coverage_sources
+from .coverage_source_gaps import source_gap_findings
 from .coverage_waivers import CoverageWaiverValidationError, load_approved_waiver_set
 from .execution.contract import PreSimStatus, pre_sim_failure_message
 from .verilator_coverage import CoverageCollectionResult, SimulationExecutionPort, collect
@@ -73,7 +74,19 @@ def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> Cov
         points=points,
         rollups=derive_coverage_rollups(points) if scoreable else (),
         collection=_collection_metadata(result),
-        findings=result.findings,
+        findings=(
+            *result.findings,
+            *(
+                source_gap_findings(
+                    result.build.declarations,
+                    plan.source_closure,
+                    result.native_sources,
+                    result.native_source_diagnostics,
+                )
+                if scoreable and result.native_format.compatibility == "compatible"
+                else ()
+            ),
+        ),
         evaluation=_ungated_evaluation(),
     )
 
@@ -173,6 +186,9 @@ def _execute_coverage_transaction(
         _start_target(root)
         result = collect(replace(plan.collection_request, artifact_root=root), execution)
         validate_coverage_sources(plan)
+        from .coverage_declaration_artifact import publish_declaration_evidence
+
+        result = publish_declaration_evidence(root, result)
         campaign = _evaluate(plan, _campaign(plan, result))
         outcome = _publish(
             plan,
