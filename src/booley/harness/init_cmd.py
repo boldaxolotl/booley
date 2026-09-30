@@ -1862,9 +1862,6 @@ def _step_advisories(ctx: InitContext) -> None:
     failed = _failed_step_names(ctx)
     if failed:
         _print_incomplete_advisory(failed)
-        print()
-        info("Optional:")
-        info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
         ctx.record("advisories", "ok", "incomplete")
         return
     demo = _is_demo_project(ctx.project_root)
@@ -1875,9 +1872,6 @@ def _step_advisories(ctx: InitContext) -> None:
     # only wants Step 3").
     scaffolded = any(r.name == "scaffold" and r.status in ("ok", "warn") for r in ctx.results)
     detail = _print_success_advisory(ctx, demo=demo, scaffolded=scaffolded)
-    print()
-    info("Optional:")
-    info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
     ctx.record("advisories", "ok", detail)
 
 

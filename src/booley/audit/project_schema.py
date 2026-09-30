@@ -24,7 +24,6 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "models",
         "jobs",
         "interactive",
-        "notifications",
         "feedback",
         "sources",
         "developer",
@@ -35,6 +34,7 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
 )
 
 RETIRED_BOOLEY_TOML_TABLES = {
+    "notifications": "push delivery was removed; settings are ignored — delete this table",
     "tools": (
         "retired — move deterministic settings to [flows.*] and Specialist or "
         "other non-Flow endpoint settings to [mcp_tools.*]"

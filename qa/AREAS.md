@@ -56,7 +56,6 @@ adding to QA; it is a breadth guide, not a pass/fail contract.
 | Ticket concurrency | [taxi/ticket-machinery](missions/taxi/MISSION.md) |
 | Ticket operator interface | [taxi/ticket-machinery](missions/taxi/MISSION.md) |
 | Ticket execution policy | [taxi/ticket-machinery](missions/taxi/MISSION.md) |
-| Ticket notifications | [uart/sandbox-isolation](missions/uart/MISSION.md) |
 | Trace Artifact | [picorv32/interactive-bwave](missions/picorv32/MISSION.md), [picorv32/interactive-repair](missions/picorv32/MISSION.md), [taxi/bwave](missions/taxi/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Trace registry | [taxi/bwave](missions/taxi/MISSION.md) |
 | Waveform queries | [picorv32/interactive-bwave](missions/picorv32/MISSION.md), [picorv32/interactive-repair](missions/picorv32/MISSION.md), [taxi/bwave](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |

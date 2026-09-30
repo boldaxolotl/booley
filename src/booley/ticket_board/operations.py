@@ -35,7 +35,6 @@ from .lifecycle import (
     parse_board_target,
 )
 from .logs import RESET_BOUNDARY_PREFIX
-from .notifications import is_event_enabled, ntfy_review_digest, ntfy_send
 from .paths import (
     existing_human_log_file,
     existing_runtime_file,
@@ -321,7 +320,7 @@ def op_block(
     expected_execution_id: str | None = None,
 ) -> bool:
     """Block a ticket: mark it blocked, update runtime fields, log transition."""
-    entry, old_status, old_step = _inspect_old_state(tio, slug, step)
+    _entry, old_status, old_step = _inspect_old_state(tio, slug, step)
 
     ok = _op_move_and_log(
         tio,
@@ -332,10 +331,6 @@ def op_block(
         expected_status="running" if expected_execution_id is not None else None,
         expected_execution_id=expected_execution_id,
     )
-    if ok and is_event_enabled("blocked"):
-        ticket_name = entry.get("summary", slug) if entry else slug
-        body = f"{step} | {reason}"[:120]
-        ntfy_send(f"BLOCKED: {ticket_name}", body, priority="4")
     return ok
 
 
@@ -389,7 +384,7 @@ def _handoff_to_review(
     old_step,
     expected_execution_id: str | None,
 ):
-    """Move ticket to review/ and send notification if enabled.
+    """Move ticket to review/ and prepare its local handoff.
 
     ``on_success.cleanup`` is deliberately NOT honored here: the reviewer needs
     the worktree and branch to inspect the work. Cleanup runs later, in
@@ -414,11 +409,6 @@ def _handoff_to_review(
         expected_execution_id=expected_execution_id,
         before_move=lambda: _prepare_handoff_snapshot(tio, slug, entry, expected_execution_id),
     )
-    if ok and is_event_enabled("review"):
-        ticket_name = entry.get("summary", slug) if entry else slug
-        digest = ntfy_review_digest(tio.logs_dir, slug)
-        body = digest[:120] if digest else ""
-        ntfy_send(f"REVIEW: {ticket_name}", body)
     return ok
 
 
@@ -810,8 +800,6 @@ def _approve_transition(
         {"step": "complete"},
         ("review:summary", "done:complete", actor, detail),
     )
-    if ok and is_event_enabled("done"):
-        ntfy_send(f"DONE: {entry.get('summary', slug)}", "Ticket completed")
     return ok
 
 

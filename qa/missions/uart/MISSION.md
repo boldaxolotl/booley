@@ -19,7 +19,7 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
   standard image. The evaluator needs cocotb 2.1.0 and Icarus outside the Sandbox.
 - Also: a Codex or Claude client; the previous published Booley release (upgrade and legacy
   cases); a digest-pinned external image with the same Booley build and EDA tools. Optional:
-  VS Code with Dev Containers, a disposable notification topic, a run-owned Git server.
+  VS Code with Dev Containers, a run-owned Git server.
 - Hosts: written for Ubuntu and Windows (Docker Desktop WSL2) with Codex CLI, Codex VS Code
   and Claude CLI; rerun on another host or client for coverage. Area 2's CRLF cases are
   Windows-only.
@@ -213,10 +213,10 @@ Try:
   endpoint denied).
 - Each `invalid-{scheme,path,port,ip,wildcard,key}.toml` is rejected before bootstrap changes
   anything, with file bytes unchanged. Then `fixtures/host-policy/recovery.toml` succeeds.
-- Observed provider, relay, notification and egress routes match the declared policy.
+- Observed provider, relay and egress routes match the declared policy.
 Look for: typos accepted silently, a partial bootstrap after a rejection.
 
-### 13. sandbox-isolation — Isolation and notifications (~20 min)
+### 13. sandbox-isolation — Sandbox isolation (~20 min)
 Try:
 - In the Sandbox: non-root restricted user; no host home, SSH keys or Docker socket mounted;
   PDK writes refused; undeclared routes blocked while provider calls work; interrupting owned
@@ -224,10 +224,9 @@ Try:
 - Push-deny: a control client outside the runtime can push to a run-owned Git server. The same
   push from the Sandbox to a separate probe ref must be blocked by the network boundary, not by
   credentials or the server, and the ref stays unchanged.
-- Notifications: no topic sends nothing; a disposable authorized topic receives blocked-Ticket
-  and Doctor notifications, and completion follows the docs; with the notifier unavailable,
-  every transition still completes.
-Look for: writable mounts that should be read-only, notifications that block a transition.
+- Local lifecycle: blocked/review/done transitions retain status, logs and review briefings;
+  automatic Doctor persists its report.
+Look for: writable mounts that should be read-only, missing local lifecycle reports.
 
 ### 14. interactive-surface — MCP, discovery, custom flows, feedback (~25 min)
 Try:

@@ -186,7 +186,9 @@ def test_manual_smoke_result_does_not_replace_health_status(tmp_path: Path):
 
 def test_changed_summary_is_consumed_once_per_channel(tmp_path: Path):
     _project(tmp_path)
-    _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
+    report = _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
+    announcements = auto_doctor.state_dir(tmp_path / ".booley_project") / "announcements.json"
+    announcements.write_text(json.dumps({"ntfy": report["finding_hash"]}))
 
     first = auto_doctor.consume_changed_summary(tmp_path, channel="mcp", issues_only=True)
     second = auto_doctor.consume_changed_summary(tmp_path, channel="mcp", issues_only=True)
@@ -195,6 +197,7 @@ def test_changed_summary_is_consumed_once_per_channel(tmp_path: Path):
     assert first is not None and "1 FAIL" in first
     assert second is None
     assert other == first
+    assert json.loads(announcements.read_text())["ntfy"] == report["finding_hash"]
 
 
 def test_launch_skips_when_current(tmp_path: Path, monkeypatch):
@@ -218,15 +221,19 @@ def test_launch_starts_detached_worker_when_due(tmp_path: Path, monkeypatch):
 
 
 def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch):
-    _project(tmp_path)
+    project_dir = _project(tmp_path)
+    (project_dir / "booley.toml").write_text(
+        '[project]\nname = "unit"\n[notifications]\nntfy_topic = "probe"\n'
+    )
     calls = []
+    deliveries = []
+    monkeypatch.setattr(auto_doctor.subprocess, "Popen", lambda *a, **k: deliveries.append(a))
 
     def execute(root, _project_dir, trigger, **_kwargs):
         calls.append(trigger)
         return _report(root, clean=True, checked_at=datetime.now(tz=UTC))
 
     monkeypatch.setattr(auto_doctor, "_execute", execute)
-    monkeypatch.setattr(auto_doctor, "_notify_if_changed", lambda *_a: None)
 
     progress = []
     assert (
@@ -239,4 +246,6 @@ def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch)
     )
     assert auto_doctor.run_if_due(tmp_path, trigger="test") is None
     assert calls == ["test"]
+    assert deliveries == []
+    assert auto_doctor.load_report(tmp_path) is not None
     assert progress == ["starting (no automatic Doctor result)"]

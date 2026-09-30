@@ -9,7 +9,6 @@ Tests cover:
 """
 
 import sys
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -200,7 +199,7 @@ class TestHandleRateLimitEvent:
         """Rejected status with resets_at should sleep then raise TransientAPIError."""
         from booley.runtime.agent_backend import _handle_rate_limit_event
 
-        future_ts = int(time.time()) + 5  # 5 seconds from now
+        future_ts = 1005
         info = _MockRateLimitInfo(
             status="rejected",
             resets_at=future_ts,
@@ -208,20 +207,19 @@ class TestHandleRateLimitEvent:
         )
         event = _sdk.RateLimitEvent(rate_limit_info=info)
 
-        mock_notify = MagicMock()
-        with patch("booley.runtime._claude_backend.anyio") as mock_anyio:
+        with (
+            patch("booley.runtime._claude_backend.anyio") as mock_anyio,
+            patch("booley.runtime._claude_backend.time.time", return_value=1000),
+        ):
             mock_anyio.sleep = AsyncMock()
 
             with pytest.raises(TransientAPIError) as exc_info:
-                await _handle_rate_limit_event(event, notify_rate_limit=mock_notify)
+                await _handle_rate_limit_event(event)
 
             # Should have slept (5s + 60s buffer = ~65s)
             mock_anyio.sleep.assert_awaited_once()
             sleep_arg = mock_anyio.sleep.call_args[0][0]
-            assert 60 <= sleep_arg <= 70  # 5 + 60 buffer, with timing tolerance
-
-            # Should have notified
-            mock_notify.assert_called_once()
+            assert sleep_arg == 65
 
             # retry_after=0 because we already slept
             assert exc_info.value.retry_after == 0
@@ -256,7 +254,10 @@ class TestHandleRateLimitEvent:
         event = _sdk.RateLimitEvent(rate_limit_info=info)
 
         # Should not raise
-        with patch("booley.runtime._claude_backend.anyio") as mock_anyio:
+        with (
+            patch("booley.runtime._claude_backend.anyio") as mock_anyio,
+            patch("booley.runtime._claude_backend.time.time", return_value=1000),
+        ):
             mock_anyio.sleep = AsyncMock()
             await _handle_rate_limit_event(event)
             mock_anyio.sleep.assert_not_awaited()
@@ -306,33 +307,3 @@ class TestTransientAPIError:
     def test_zero_retry_after(self):
         e = TransientAPIError("already slept", retry_after=0)
         assert e.retry_after == 0
-
-
-# ---------------------------------------------------------------------------
-# _notify_rate_limit (fire-and-forget)
-# ---------------------------------------------------------------------------
-
-
-class TestNotifyRateLimit:
-    """Notification preferences and delivery live at execution composition."""
-
-    @pytest.mark.parametrize("enabled", [False, True])
-    def test_event_preferences_and_payload(self, enabled):
-        from booley.ticket_board.notifications import notify_rate_limit
-
-        with (
-            patch(
-                "booley.ticket_board.notifications.is_event_enabled", return_value=enabled
-            ) as pref,
-            patch("booley.ticket_board.notifications.ntfy_send") as send,
-        ):
-            notify_rate_limit("five_hour", 300.0, None)
-        pref.assert_called_once_with("rate_limit")
-        if enabled:
-            send.assert_called_once_with(
-                title="Harness rate-limited (five_hour)",
-                body="Sleeping 5min until unknown",
-                priority="3",
-            )
-        else:
-            send.assert_not_called()
