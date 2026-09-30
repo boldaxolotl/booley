@@ -519,10 +519,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
                 report_dir=root / "reports",
             )
         )
-        # This generated harness never writes the requested waveform, so a
-        # traced run is honestly inconclusive (#884) rather than a false pass;
-        # each variant must still build its own binary.
-        assert result.exit_code == (1 if trace else 0), result.outcome
+        assert result.exit_code == 0, result.outcome
         binaries = {
             hashlib.sha256(path.read_bytes()).hexdigest()
             for path in root.rglob("Vtop")
