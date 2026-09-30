@@ -16,6 +16,11 @@ from booley.criteria.state import (
     DevelopmentState,
 )
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.review_receipt import (
+    REVIEW_DETAIL_VERSION,
+    ReviewInvocation,
+    build_review_contract_detail,
+)
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.mcp.submit_run_report import SubmitRunReportMcpTool
@@ -845,6 +850,14 @@ def test_report_renders_done_findings_and_every_clean_waiver(
     state_file: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    work_dir = tmp_path / "worktree"
+    _init_repo(work_dir)
+    source = work_dir / "rtl/dut.sv"
+    source.parent.mkdir()
+    source.write_text("module dut; endmodule\n", encoding="utf-8")
+    _git(work_dir, "add", "rtl/dut.sv")
+    _git(work_dir, "commit", "-qm", "Initial reviewed source")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
     state = DevelopmentState.load(state_file)
     state.init_criteria(
         {
@@ -860,12 +873,16 @@ def test_report_renders_done_findings_and_every_clean_waiver(
     }
     review_fingerprint = {
         "categories": [CATEGORY_RTL],
-        "fingerprint": compute_source_fingerprint(Path.cwd()),
+        "fingerprint": compute_source_fingerprint(work_dir),
     }
     state.set_criterion(
         "review_rtl_bugs_done",
         True,
         detail={
+            "review_detail_version": REVIEW_DETAIL_VERSION,
+            "contract": build_review_contract_detail(
+                ReviewInvocation(work_dir, "rtl", "bugs", ("rtl/dut.sv",), "done")
+            ),
             "issues": 1,
             "issue_list": [finding],
             SOURCE_FINGERPRINT_DETAIL_KEY: review_fingerprint,
@@ -875,6 +892,10 @@ def test_report_renders_done_findings_and_every_clean_waiver(
         "review_rtl_security_clean",
         True,
         detail={
+            "review_detail_version": REVIEW_DETAIL_VERSION,
+            "contract": build_review_contract_detail(
+                ReviewInvocation(work_dir, "rtl", "security", ("rtl/dut.sv",), "clean")
+            ),
             "issues": 0,
             "pending": [],
             "resolved": [
@@ -894,6 +915,8 @@ def test_report_renders_done_findings_and_every_clean_waiver(
         tmp_path,
         "feature",
         [
+            "--work-dir",
+            str(work_dir),
             "--summary",
             "Implemented the requested behavior.",
             "--design-decisions",
