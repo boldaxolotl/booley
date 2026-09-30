@@ -114,7 +114,7 @@ def _submit_report(work_dir: Path, monkeypatch):
     return report._run()
 
 
-def test_cocotb_target_rejects_false_sim_result_requirement(tmp_path, monkeypatch):
+def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatch):
     """Cocotb verdicts come from results.xml, never HDL sentinels."""
     tb = tmp_path / "tb" / "test_uart.py"
     tb.parent.mkdir()
@@ -161,7 +161,8 @@ def test_cocotb_target_rejects_false_sim_result_requirement(tmp_path, monkeypatc
             ]
         )
 
-    assert result.detail["issues"] == 0, result.report_text
+    assert result.detail["issues"] == 1, result.report_text
+    assert result.criterion_met is False
 
 
 def test_ticket_deferred_work_cannot_be_critical(tmp_path, monkeypatch):
@@ -199,6 +200,7 @@ def test_ticket_deferred_work_cannot_be_critical(tmp_path, monkeypatch):
     _state(tmp_path, monkeypatch, "review_rtl_bugs_done")
     leaked = _issue("bugs", "rtl/uart.sv", "FIFO and interrupt behavior is not implemented")
     leaked["ticket_clause"] = "Deferred to later tickets: FIFOs and interrupt generation."
+    leaked["disposition"] = "deferred"
 
     with (
         patch("booley.specialists.reviewer._load_ticket_document", converted_ticket),
