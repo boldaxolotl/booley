@@ -112,7 +112,8 @@ _BASELINE_RELATIVE_SUFFIXES = ("_increase_at_most", "_reduce_at_least")
 _REVISION_OWNED_QOR_CRITERIA = frozenset({"synthesis_ok", "fpga_impl_ok"})
 
 _RULE_EXIT_WITH_REPORT = """\
-2. **EXIT CONDITION**: When all mandatory criteria are met, your final action \
+2. **EXIT CONDITION**: When all mandatory criteria are met strictly or, for \
+Coverage Criteria, by a verified Provisional Coverage Verdict, your final action \
 is `submit_run_report`. Pass exactly one type-specific report arg, include \
 real uncertainties (coverage gaps, assumptions, edge cases), and summarize \
 which edits you made and which Booley Flows or Specialists you used, and why. If \
@@ -166,6 +167,11 @@ final report.
 """
 
 _RULE_INFEASIBLE_CRITERION = """\
+Before blocking on unreachable mandatory coverage, use `coverage_analyst` to \
+record screened Waiver Candidates. If every mandatory Criterion is met strictly \
+or at least provisionally, submit your report and finish for human review; leave \
+the strict Criteria unchanged and do not write `_blocked_reason`. Candidates \
+have no approval authority: the human accepts or rejects them at Ticket review.
 If a mandatory criterion cannot be met within the Ticket's requirements, write \
 `_blocked_reason` with detail `{"reason": "..."}` naming the criterion and explaining \
 why it cannot be met, including the evidence and approaches tried, then stop. \

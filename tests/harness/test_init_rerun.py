@@ -749,6 +749,7 @@ class TestProjectGitignoreBackfill:
 
         assert ignored("tickets/board/alpha.md")
         assert ignored("tickets/state/alpha.json")
+        assert ignored("tickets/waiver-candidates/alpha.json")
         assert not ignored("tickets/history/alpha.md")
 
     def test_anchored_spelling_is_not_duplicated(self, tmp_path: Path):

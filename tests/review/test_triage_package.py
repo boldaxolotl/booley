@@ -1023,3 +1023,109 @@ def test_review_rejects_malformed_persisted_justifications(tmp_path):
         state_path.write_text(json.dumps(state))
         with pytest.raises(tp.TriagePackageError, match="file justifications"):
             _facts(ctx)
+
+
+def _waiver_row(candidate_id: str, status: str, *, needed: bool = False) -> dict:
+    return {
+        "candidate_id": candidate_id,
+        "status": status,
+        "status_reason": "Eligible zero-hit point of this Campaign.",
+        "needed": needed,
+        "criteria": ["coverage_line"],
+        "target": "acme:demo:counter:1#sim",
+        "point_id": "cp1:abc",
+        "location": "rtl/counter.sv:4",
+        "waiver_reason": "unreachable",
+        "justification": "Reset-only | tied off",
+        "proposal_count": 2,
+        "metrics": [
+            {
+                "metric": "line",
+                "strict_percent": 50.0,
+                "provisional_percent": 100.0,
+                "minimum_percent": 70,
+            }
+        ],
+    }
+
+
+def test_waiver_candidates_round_trip_through_the_review_package(tmp_path: Path) -> None:
+    """ADR 0066: candidate rows are part of the immutable, schema-checked package."""
+    from booley.review.artifact import ReviewPackage
+
+    ctx = _context(tmp_path)
+    facts = {**_facts(ctx), "waiver_candidates": [_waiver_row("wc-1", "offered", needed=True)]}
+    package = ReviewPackage.parse({**facts, "assessment": _assessment(), "html_path": None})
+
+    assert package.to_dict()["waiver_candidates"] == [_waiver_row("wc-1", "offered", needed=True)]
+    legacy = {**facts, "assessment": _assessment(), "html_path": None}
+    del legacy["waiver_candidates"]
+    assert ReviewPackage.parse(legacy).waiver_candidates == ()
+
+
+def test_malformed_waiver_candidate_rows_are_rejected(tmp_path: Path) -> None:
+    import pytest
+
+    from booley.review.artifact import ReviewArtifactError, ReviewPackage
+
+    ctx = _context(tmp_path)
+    for bad in (
+        {**_waiver_row("wc-1", "approved")},
+        {**_waiver_row("wc-1", "offered"), "needed": "yes"},
+        {**_waiver_row("wc-1", "offered"), "proposal_count": 0},
+        {**_waiver_row("wc-1", "offered"), "waiver_reason": "covered_elsewhere"},
+    ):
+        value = {
+            **_facts(ctx),
+            "waiver_candidates": [bad],
+            "assessment": _assessment(),
+            "html_path": None,
+        }
+        with pytest.raises(ReviewArtifactError):
+            ReviewPackage.parse(value)
+
+
+def test_briefing_groups_waiver_candidates_and_asks_for_decisions(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    rows = [
+        _waiver_row("wc-offered", "offered", needed=True),
+        _waiver_row("wc-extra", "not_needed"),
+        {**_waiver_row("wc-old", "stale"), "status_reason": "RTL source changed"},
+    ]
+    package = {
+        **_facts(ctx),
+        "waiver_candidates": rows,
+        "assessment": _assessment(),
+        "html_path": None,
+        "inspection": {
+            "schema": 1,
+            "disposition": "unaccepted",
+            "reason": "Coverage is met only provisionally",
+            "blocked_reason": "",
+            "heads": {},
+            "ticket_generation": "g",
+        },
+    }
+    package["criteria"] = [
+        {**row, "required": "mandatory", "status": "unmet"} for row in package["criteria"][:1]
+    ] or package["criteria"]
+
+    rendered = tp.render_review_briefing(package, [])
+
+    section = rendered.split("#### Waiver Candidates", 1)[1]
+    assert section.index("Offered for your decision") < section.index("wc-offered")
+    assert section.index("wc-offered") < section.index("Not needed") < section.index("wc-extra")
+    assert "**needed**" in section
+    assert "line: 50.0% → 100.0% (min 70%)" in section
+    assert "candidate record, unverified" in section
+    assert "Reset-only \\| tied off" in section  # Markdown table pipes stay escaped
+    assert "Why: RTL source changed" in section
+    assert "--accept-waivers" in section
+    assert "**decide waivers and approve**" in rendered.rsplit("Choose:", 1)[1]
+
+
+def test_briefing_omits_the_section_without_candidates(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    package = {**_facts(ctx), "assessment": _assessment(), "html_path": None}
+
+    assert "Waiver Candidates" not in tp.render_review_briefing(package, [])

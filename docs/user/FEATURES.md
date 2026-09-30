@@ -205,8 +205,11 @@ cores. Disable the feature with
 
 The Coverage Analyst explains one retained native Coverage Campaign, keeping
 observed counts and stored verdicts separate from causal hypotheses. It can
-suggest tests and Waiver Candidates for human review, but cannot launch
-Simulation, read waveforms, evaluate Criteria, or approve exclusions. Verified
+suggest tests and Waiver Candidates, but cannot launch Simulation, read
+waveforms, evaluate Criteria, or approve exclusions. In Ticket Mode Booley
+records the screened candidates; a Ticket short only by those points goes to
+review, where you accept or reject each one with `booley board approve`, and
+accepted ones merge with the RTL as Approved Waivers. Verified
 Target sources are optional. Large Campaigns use bounded overview, point, and
 source retrieval rather than copying every point into the model prompt; point views
 preserve Approved Waiver provenance. Native-payload pruning leaves the normalized
@@ -214,4 +217,5 @@ Campaign analyzable. Explicit `sim --coverage` (alias `--cov`) collects native
 Verilator evidence with or without a Coverage Criterion. Gated collection applies
 exact-suite metric thresholds and the project-wide Approved Waiver Set; simulation
 and coverage verdicts stay independent. See the [collection and retention
-reference](FLOW_REFERENCE.md#coverage).
+reference](FLOW_REFERENCE.md#coverage) and [waivers at
+review](FLOW_REFERENCE.md#coverage-waivers-at-review).

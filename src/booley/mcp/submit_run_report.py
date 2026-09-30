@@ -1,7 +1,8 @@
 """SubmitRunReportMcpTool writes the final human-readable run report.
 
 The developer calls this once, as its very last action, after all
-mandatory acceptance criteria are met. The MCP tool writes ``REPORT.md`` into
+mandatory acceptance criteria are met strictly or coverage is verified
+provisionally for Human review. The MCP tool writes ``REPORT.md`` into
 the logs directory and sets the internal ``_report_submitted`` criterion
 so the harness can verify the report was actually produced.
 
@@ -345,6 +346,8 @@ class SubmitRunReportMcpTool(McpTool):
         if stale:
             _emit_criteria_update(self.state)
         unmet = self.state.unmet_mandatory()
+        provisional = self._provisional_report_keys(unmet)
+        unmet = [key for key in unmet if key not in provisional]
         if not unmet:
             return None
         stale_note = f" Newly stale: {', '.join(stale)}." if stale else ""
@@ -356,6 +359,27 @@ class SubmitRunReportMcpTool(McpTool):
                 "Specialist before submitting the final report."
             ),
         )
+
+    def _provisional_report_keys(self, unmet: list[str]) -> frozenset[str]:
+        """Permit report submission for verified candidates without satisfying Criteria."""
+        from booley.ticket_board.helpers import tickets_dir_from_project_root
+        from booley.ticket_board.provisional_coverage import (
+            TicketCoverageContext,
+            evaluate_ticket_provisional_coverage,
+        )
+
+        slug = os.environ.get("BOOLEY_SLUG", "")
+        control_root = os.environ.get("BOOLEY_CONTROL_PROJECT_ROOT", "")
+        runtime_dir = os.environ.get("BOOLEY_RUNTIME_DIR", "")
+        if not slug or not control_root or not runtime_dir:
+            return frozenset()
+        coverage = TicketCoverageContext(
+            slug,
+            tickets_dir_from_project_root(control_root),
+            Path(runtime_dir).parent,
+            self._submission_worktree(),
+        )
+        return evaluate_ticket_provisional_coverage(self.state, unmet, coverage).met_keys
 
     # --- helpers ---
 

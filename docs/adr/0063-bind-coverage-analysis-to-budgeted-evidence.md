@@ -8,7 +8,7 @@ Each response and the whole analysis session have byte budgets, and the report r
 retrieval scope and exact point identifiers used.
 
 ---
-status: accepted
+status: accepted (amended by ADR 0066)
 ---
 
 ## Considered Options

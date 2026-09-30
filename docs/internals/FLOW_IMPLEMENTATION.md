@@ -184,9 +184,11 @@ The protected-path policy covers FuseSoC-selected Target declarations, the test
 registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
 discovery sentinels, Project routing, and the configured
 [Approved Waiver Set](../../src/booley/flows/sim/CONTEXT.md) together with every
-formal proof artifact referenced by an approval. This project-wide approval
+proof artifact referenced by an approval. This project-wide approval
 policy is protected for every sealed Ticket, including a Ticket without a
-Coverage Criterion. Exact Git
+Coverage Criterion. Review-time waiver promotion (ADR 0066) does not break
+this: it commits only in the Acceptance Journal's merge candidate, never on the
+Ticket branch. Exact Git
 comparisons intentionally block formatting-only control changes. RTL and testbench
 contents remain editable when Scope permits them.
 
@@ -1008,9 +1010,34 @@ Project-wide waiver configuration is `[coverage.waivers]` in the project-data
 `booley.toml`, with explicit `anchor` (`rtl_repository` or
 `project_data_repository`) and safe relative `directory`. Target window/hook
 configuration remains under `flow_options.booley.coverage`. Once a Ticket is
-sealed, approving, editing, adding, deleting, or replacing an approval file or
-one of its referenced formal proof artifacts requires `return-to-draft`; the new
+sealed, hand-editing, adding, deleting, or replacing an approval file or
+one of its referenced proof artifacts requires `return-to-draft`; the new
 Ticket generation records a fresh protected-input baseline.
+
+The other approval path is review-time promotion (ADR 0066). In Ticket Mode the
+Coverage Analyst's wrapper records screened Waiver Candidates in the ignored
+`tickets/waiver-candidates/<slug>.json`. Gated evaluation computes the strict
+verdict and a Provisional Coverage Verdict that also counts candidates; a Ticket
+whose unmet mandatory Coverage Criteria are all met provisionally is handed to
+`review` as an unaccepted inspection (`logs/<slug>/review/provisional-handoff.json`,
+bound to the execution id), never to `done`. Briefing and approve re-derive every
+candidate from Campaign and point-store digests, Target, zero-hit point, and source
+SHA-256 at the approved head; mismatches are stale or invalid and not offered.
+`board approve --accept-waivers/--reject-waivers` requires a decision for every
+offered candidate, predicts the strict verdict before any change, and on failure
+records only rejections and exits non-zero with the Ticket still in review. On
+success the Acceptance Journal commits `chore(<slug>): approve coverage waivers`
+in its merge candidate (appends to `<source>.toml`, writes `proofs/<id>.md` with
+`proof.kind = "review"` for `unreachable`) before the destination fast-forwards.
+Approval keeps the package's original capture and records its post-decision
+live-input fingerprint separately in
+`review/approval-captures/<inspection-generation>.json`. Publication recovery
+checks that live fingerprint while verifying the immutable package against its
+original capture; completion retries reuse the same binding. Changes outside
+approval still make the review inputs stale.
+Rejections, keyed by Target, point, and source SHA-256, filter later proposals and
+survive return-to-draft and `board reset`, which clear only candidates; closing the
+Ticket discards the record.
 
 The canonical Target directory holds `simulation.json` and a
 `booley.coverage-campaign-reference/v1` `coverage.json`, not the Coverage Campaign

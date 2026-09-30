@@ -6,9 +6,10 @@ merely untidy, and there is no automatic migration (Projects migrate by hand):
 - documents under ``board/<state>/`` are invisible, because current code reads
   only ``board/<slug>.md`` and the state record beside it, so the board looks
   empty and the runner idles;
-- files Git still tracks under ``tickets/board/`` or ``tickets/state/`` are
-  live state the ignore patterns cannot hide, so every transition leaves
-  changes in the checkout that block the next Ticket's completion.
+- files Git still tracks under ``tickets/board/``, ``tickets/state/``, or
+  ``tickets/waiver-candidates/`` (ADR 0066) are live state the ignore patterns
+  cannot hide, so every transition leaves changes in the checkout that block
+  the next Ticket's completion.
 
 Doctor reports each problem as a FAIL; board commands and ``booley run``
 raise :class:`LegacyBoardLayoutError` before touching anything. When Git cannot
@@ -80,7 +81,7 @@ def legacy_state_files(tickets_dir: Path) -> list[Path]:
 
 
 def tracked_live_state_files(tickets_dir: Path) -> list[str]:
-    """Return files Git tracks under ``board/`` or ``state/``, relative to *tickets_dir*.
+    """Return tracked files under live-state directories, relative to *tickets_dir*.
 
     Reads the index, so a tracked file already deleted from disk still counts:
     the next commit would keep it. Returns an empty list when *tickets_dir* is
@@ -164,11 +165,12 @@ def _tracked_state_problems(tickets_dir: Path) -> list[LayoutProblem]:
         ]
     if not tracked:
         return []
-    board, state = (tickets_relative_label(name, "") for name in live_state_directory_names())
+    labels = [tickets_relative_label(name, "") for name in live_state_directory_names()]
+    directories = ", ".join(labels[:-1]) + f", or {labels[-1]}"
     return [
         LayoutProblem(
             summary=(
-                f"Git tracks {len(tracked)} file(s) under {board} or {state}; "
+                f"Git tracks {len(tracked)} file(s) under {directories}; "
                 "live Ticket state must stay untracked"
             ),
             fix=f"{_untrack_command(tickets_dir)} && commit the removal",
@@ -182,7 +184,7 @@ def _untrack_command(tickets_dir: Path) -> str:
     ``-C <tickets>`` runs it in the repository that tracks the files, as the
     check does, even when a stealth ``.booley_project`` is its own repository
     nested in the Project's. ``--ignore-unmatch``: an old board never tracked
-    ``state/``, and ``git rm`` otherwise refuses the whole command over the
+    ``state/`` or ``waiver-candidates/``, and ``git rm`` otherwise refuses the whole command over the
     unmatched path.
     """
     return (

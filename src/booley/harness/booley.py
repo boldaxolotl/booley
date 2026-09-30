@@ -89,6 +89,7 @@ if TYPE_CHECKING:
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
     from booley.ticket_board.readiness import ReadinessResult
+    from booley.ticket_board.waiver_approval import WaiverDecisions
 
 # --- Constants ---
 LOOP_LOG_REL = Path("logs") / "booley.log"
@@ -594,6 +595,7 @@ def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
     approve_p.add_argument("slug")
     approve_p.add_argument("--no-merge", action="store_true", help="Skip configured merge")
     approve_p.add_argument("--no-cleanup", action="store_true", help="Skip configured cleanup")
+    _add_waiver_approval_options(approve_p)
 
     validate_p = board_sub.add_parser(
         "validate",
@@ -603,6 +605,29 @@ def _add_public_board_review_subparsers(board_sub, root_opt) -> None:
     )
     validate_p.add_argument("slug")
     validate_p.add_argument("endpoint_command", nargs=argparse.REMAINDER)
+
+
+def _add_waiver_approval_options(approve_p) -> None:
+    """Register explicit Human decisions for provisionally met coverage."""
+    approve_p.add_argument(
+        "--accept-waivers",
+        action="append",
+        default=[],
+        metavar="ID[,ID...]",
+        help="Waiver Candidates to promote to Approved Waivers (ADR 0066)",
+    )
+    approve_p.add_argument(
+        "--reject-waivers",
+        action="append",
+        default=[],
+        metavar="ID[,ID...]",
+        help="Waiver Candidates to reject; rejected points are not proposed again",
+    )
+    approve_p.add_argument(
+        "--approval-ref",
+        default=None,
+        help="Override approval_ref for promoted waivers (default ticket:<slug>@<capture>)",
+    )
 
 
 def _add_legacy_board_review_subparsers(board_sub, root_opt) -> None:
@@ -1402,6 +1427,21 @@ def _cmd_board_review(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _waiver_ids(values: list[str]) -> frozenset[str]:
+    """Flatten repeatable, comma-separated candidate id lists."""
+    return frozenset(item.strip() for value in values for item in value.split(",") if item.strip())
+
+
+def _waiver_decisions(args: argparse.Namespace) -> WaiverDecisions:
+    from booley.ticket_board.waiver_approval import WaiverDecisions
+
+    return WaiverDecisions(
+        accepted=_waiver_ids(args.accept_waivers),
+        rejected=_waiver_ids(args.reject_waivers),
+        approval_ref=args.approval_ref,
+    )
+
+
 def _cmd_board_approve(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.review_lifecycle import ReviewPrepError, approve_review_command
 
@@ -1411,6 +1451,7 @@ def _cmd_board_approve(args: argparse.Namespace, project_root: Path) -> int:
             args.slug,
             no_merge=args.no_merge,
             no_cleanup=args.no_cleanup,
+            decisions=_waiver_decisions(args),
         )
     except (ValueError, OSError, ReviewPrepError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

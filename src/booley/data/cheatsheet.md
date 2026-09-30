@@ -112,7 +112,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Ticket Mode, Booley records its screened Waiver Candidates for a human to accept or reject at Ticket review. When every mandatory Criterion is met strictly or by a verified Provisional Coverage Verdict, submit your run report and finish for human review without blocking or marking strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 

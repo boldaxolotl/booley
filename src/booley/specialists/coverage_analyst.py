@@ -1,14 +1,19 @@
-"""Read-only Coverage Analyst for one exact, persisted native Campaign."""
+"""Coverage Analyst for one exact, persisted native Campaign.
+
+The model only reads evidence. In Ticket Mode, host code records the screened
+Waiver Candidates for the Ticket (ADR 0066, amending ADR 0063).
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeSDKError
 
@@ -26,6 +31,7 @@ from booley.flows.sim.coverage_analysis_input import (
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
     CoverageCampaignSummary,
+    LoadedCoverageCampaign,
     publish_coverage_campaign,
 )
 from booley.flows.sim.coverage_evidence import decode_coverage_evidence_audit
@@ -48,6 +54,11 @@ from .coverage_analysis import (
     CoverageModelResult,
 )
 from .coverage_analysis_schema import coverage_analysis_model_schema
+from .coverage_candidate_recording import (
+    TicketCandidateContext,
+    candidate_summary_line,
+    record_ticket_candidates,
+)
 from .specialist import Specialist
 
 logger = logging.getLogger(__name__)
@@ -62,7 +73,7 @@ class _CoverageProviderError(Exception):
 
 
 class CoverageAnalystSpecialist(Specialist):
-    """Explain normalized evidence without measurement or approval authority."""
+    """Explain normalized evidence; record screened candidates, never approve them."""
 
     name: str = "coverage_analyst"
     description: str = "Explain one exact coverage.json Campaign and propose advisory next steps"
@@ -89,17 +100,44 @@ class CoverageAnalystSpecialist(Specialist):
         )
 
     def coverage_analyst(self, campaign: Path, instruction: str = "") -> CoverageAnalysisReport:
+        return self._analyze_path(campaign, instruction)[0]
+
+    def _analyze_path(
+        self, campaign: Path, instruction: str
+    ) -> tuple[CoverageAnalysisReport, LoadedCoverageCampaign, Path]:
         campaign = campaign if campaign.is_absolute() else self.args.work_dir / campaign
         campaign = campaign.absolute()
         loaded = read_coverage_campaign(campaign)
         sources = coverage_sources(loaded.campaign, self.args.work_dir)
-        return self._analyze_bound(
+        report = self._analyze_bound(
             loaded.campaign,
             sources,
             instruction,
             campaign,
             summary=loaded.summary,
         )
+        return report, loaded, campaign
+
+    def _record_candidates(
+        self, document: dict[str, object], loaded: LoadedCoverageCampaign, campaign: Path
+    ) -> str | None:
+        """ADR 0066: record screened candidates for the Ticket; return a Console line."""
+        context = TicketCandidateContext.from_environment(
+            getattr(self.args, "slug", ""), os.environ
+        )
+        if context is None:
+            return None
+        screened = cast(list[dict[str, object]], document["waiver_candidates"])
+        section = record_ticket_candidates(
+            context,
+            loaded.campaign,
+            loaded.summary,
+            campaign,
+            screened,
+            invocation_id=str(self._invocation_id),
+        )
+        document["waiver_candidate_record"] = section
+        return candidate_summary_line(section)
 
     def _analyze_bound(
         self,
@@ -252,7 +290,9 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _run(self) -> McpToolResult:
         try:
-            report = self.coverage_analyst(self.args.campaign, self.args.instruction)
+            report, loaded, campaign = self._analyze_path(
+                self.args.campaign, self.args.instruction
+            )
         except ContextExhaustedError as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -273,8 +313,15 @@ class CoverageAnalystSpecialist(Specialist):
             )
         document = report.to_dict()
         summary = f"Coverage advisory: {document['closure_recommendation']} ({document['eligibility']}, {document['source_access']})"
+        lines = [summary]
+        candidate_line = self._record_candidates(document, loaded, campaign)
+        if candidate_line is not None:
+            lines.append(candidate_line)
         return McpToolResult(
-            exit_code=EXIT_SUCCESS, detail=document, report_text=summary, display_lines=[summary]
+            exit_code=EXIT_SUCCESS,
+            detail=document,
+            report_text="\n".join(lines),
+            display_lines=lines,
         )
 
     def _build_prompt(self) -> str:

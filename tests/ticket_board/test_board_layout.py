@@ -20,6 +20,7 @@ from booley.ticket_board.board_layout import (
     document_state,
     documents_in_state,
     iter_board_documents,
+    live_state_directory_names,
     locate_document,
     read_state_record,
     required_board_directories,
@@ -27,6 +28,10 @@ from booley.ticket_board.board_layout import (
     state_root,
     ticket_document_path,
     ticket_state,
+    tickets_relative_label,
+    waiver_candidates_lock_path,
+    waiver_candidates_path,
+    waiver_candidates_root,
     write_state_record,
 )
 from booley.ticket_board.lifecycle import TicketState
@@ -54,6 +59,26 @@ class TestPaths:
 
     def test_required_directories(self, tmp_path):
         assert required_board_directories(tmp_path) == [tmp_path / "board", tmp_path / "state"]
+
+    def test_waiver_candidate_paths(self, tmp_path):
+        """ADR 0066: created lazily, so never a Doctor-required directory."""
+        assert waiver_candidates_root(tmp_path) == tmp_path / "waiver-candidates"
+        assert waiver_candidates_path(tmp_path, "t1") == tmp_path / "waiver-candidates" / "t1.json"
+        assert waiver_candidates_lock_path(tmp_path, "t1") == (
+            tmp_path / "locks" / "waiver-candidates-t1.lock"
+        )
+        assert waiver_candidates_root(tmp_path) not in required_board_directories(tmp_path)
+        assert "waiver-candidates" in live_state_directory_names()
+        assert tickets_relative_label("waiver-candidates", "<slug>.json") == (
+            "waiver-candidates/<slug>.json"
+        )
+
+    @pytest.mark.parametrize("slug", ["", "..", "a/b"])
+    def test_waiver_candidate_paths_refuse_bad_slugs(self, tmp_path, slug):
+        with pytest.raises(ValueError):
+            waiver_candidates_path(tmp_path, slug)
+        with pytest.raises(ValueError):
+            waiver_candidates_lock_path(tmp_path, slug)
 
     @pytest.mark.parametrize("slug", ["", ".", "..", "../x", "a/b", "a\\b"])
     def test_slug_never_leaves_the_board(self, tmp_path, slug):
@@ -320,12 +345,17 @@ class TestBoardDocuments:
         assert locate_document(tmp_path, "T1") is None
 
 
-def test_project_gitignore_ignores_board_and_state_but_not_history():
+def test_project_gitignore_ignores_live_state_but_not_history():
     """runtime cannot import ticket_board, so its ignore literals are pinned here."""
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
-    from booley.ticket_board.board_layout import HISTORY_DIR_NAME, STATE_DIR_NAME
+    from booley.ticket_board.board_layout import (
+        HISTORY_DIR_NAME,
+        STATE_DIR_NAME,
+        WAIVER_CANDIDATES_DIR_NAME,
+    )
     from booley.ticket_board.lifecycle import BOARD_DIR_NAME
 
     assert f"tickets/{BOARD_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
     assert f"tickets/{STATE_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
+    assert f"tickets/{WAIVER_CANDIDATES_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
     assert not any(HISTORY_DIR_NAME in pattern for pattern in PROJECT_GITIGNORE_PATTERNS)

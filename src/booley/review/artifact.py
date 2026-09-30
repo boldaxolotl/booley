@@ -26,6 +26,7 @@ CRITERION_OUTCOMES = frozenset({"met", "unmet", "not_run"})
 CRITERION_FRESHNESS = frozenset({"current", "stale", "unknown"})
 REVIEW_DISPOSITIONS = frozenset({"reported", "open", "fixed", "waived", "excluded"})
 RECOMMENDATIONS = frozenset({"approve", "reset", "archive", "hold"})
+WAIVER_CANDIDATE_STATUSES = frozenset({"offered", "not_needed", "stale", "invalid"})
 
 
 class ReviewArtifactError(ValueError):
@@ -347,6 +348,70 @@ class ReviewDispositionRow:
 
 
 @dataclass(frozen=True)
+class WaiverCandidateRow:
+    """One ADR 0066 Waiver Candidate as re-derived for the review.
+
+    ``justification`` is candidate-record text: Sandbox-writable, never verified.
+    """
+
+    candidate_id: str
+    status: str
+    status_reason: str
+    needed: bool
+    criteria: tuple[str, ...]
+    target: str
+    point_id: str
+    location: str
+    waiver_reason: str
+    justification: str
+    proposal_count: int
+    metrics: tuple[Mapping[str, Any], ...]
+
+    @classmethod
+    def parse(cls, value: Any) -> WaiverCandidateRow:
+        row = require_dict(value, field="waiver candidate")
+        count = row.get("proposal_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            raise ReviewArtifactError("waiver candidate proposal_count must be positive")
+        needed = row.get("needed")
+        if not isinstance(needed, bool):
+            raise ReviewArtifactError("waiver candidate needed must be boolean")
+        return cls(
+            candidate_id=require_str(row, "candidate_id"),
+            status=_enum(row, "status", WAIVER_CANDIDATE_STATUSES),
+            status_reason=require_str(row, "status_reason"),
+            needed=needed,
+            criteria=_strings(row.get("criteria"), "criteria"),
+            target=require_str(row, "target"),
+            point_id=require_str(row, "point_id"),
+            location=require_str(row, "location"),
+            waiver_reason=_enum(row, "waiver_reason", frozenset({"excluded", "unreachable"})),
+            justification=require_str(row, "justification"),
+            proposal_count=count,
+            metrics=tuple(
+                _freeze(require_dict(item, field="waiver candidate metric"))
+                for item in _rows(row.get("metrics"), "metrics")
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "status": self.status,
+            "status_reason": self.status_reason,
+            "needed": self.needed,
+            "criteria": list(self.criteria),
+            "target": self.target,
+            "point_id": self.point_id,
+            "location": self.location,
+            "waiver_reason": self.waiver_reason,
+            "justification": self.justification,
+            "proposal_count": self.proposal_count,
+            "metrics": [_thaw(item) for item in self.metrics],
+        }
+
+
+@dataclass(frozen=True)
 class ScopeAssessment:
     path: str
     classification: str
@@ -463,6 +528,8 @@ class ReviewPackage(Mapping[str, Any]):
     feature_branch: str
     review_audit: tuple[ReviewAuditRow, ...] = ()
     inspection: Mapping[str, Any] | None = None
+    # ADR 0066; absent in packages written before Waiver Candidates existed.
+    waiver_candidates: tuple[WaiverCandidateRow, ...] = ()
     kind: str = "review"
     version: int = PACKAGE_VERSION
 
@@ -540,6 +607,10 @@ class ReviewPackage(Mapping[str, Any]):
                 run_economics=require_str(row, "run_economics"),
                 health=_freeze(require_dict(row.get("health"), field="health")),
                 feature_branch=str(row.get("feature_branch", "")),
+                waiver_candidates=tuple(
+                    WaiverCandidateRow.parse(item)
+                    for item in _rows(row.get("waiver_candidates", []), "waiver_candidates")
+                ),
                 kind=str(row.get("kind", "review")),
             )
         except (BoundaryError, ExplanationError) as exc:
@@ -560,6 +631,7 @@ class ReviewPackage(Mapping[str, Any]):
             "criteria": [row.to_dict() for row in self.criteria],
             "review_dispositions": [row.to_dict() for row in self.review_dispositions],
             "review_audit": [row.to_dict() for row in self.review_audit],
+            "waiver_candidates": [row.to_dict() for row in self.waiver_candidates],
             "recipe_comparisons": [_thaw(row) for row in self.recipe_comparisons],
             "cycle_comparisons": [_thaw(row) for row in self.cycle_comparisons],
             "scope": _thaw(self.scope),

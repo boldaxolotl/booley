@@ -13,12 +13,13 @@ from types import MappingProxyType
 from booley.config.coverage_waiver_inputs import (
     APPROVAL_DOCUMENT_FIELDS,
     APPROVAL_RECORD_FIELDS,
+    PROOF_KINDS,
     REQUIRED_APPROVAL_RECORD_FIELDS,
     CoverageWaiverConfig,
     approval_record_has_required_strings,
-    formal_proof_references,
     is_safe_relative_posix,
     is_sha256,
+    proof_references,
 )
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
 from booley.flows.sim.coverage_campaign import (
@@ -184,7 +185,7 @@ def _proof_findings(proof: object, pointer: str) -> list[CoverageFinding]:
         return [_error("COV_WAIVER_PROOF_INVALID", pointer, "Proof must be a table.")]
     if set(document) != {"kind", "reference", "sha256"}:
         return [_error("COV_WAIVER_PROOF_INVALID", pointer, "Proof fields are closed.")]
-    valid = kind == "formal" and bool(reference) and is_sha256(fingerprint)
+    valid = kind in PROOF_KINDS and bool(reference) and is_sha256(fingerprint)
     return [] if valid else [_error("COV_WAIVER_PROOF_INVALID", pointer, "Invalid proof.")]
 
 
@@ -564,11 +565,11 @@ def _try_load_approval_file(
         approval_directory,
     )
     source = as_str(document.get("source"))
-    proof_references = formal_proof_references(document)
+    referenced_proofs = proof_references(document)
     if findings:
-        return None, tuple(findings), source, proof_references
+        return None, tuple(findings), source, referenced_proofs
     assert source is not None
-    return _load_approval_file(raw, document, relative), (), source, proof_references
+    return _load_approval_file(raw, document, relative), (), source, referenced_proofs
 
 
 def _duplicate_source_findings(
@@ -655,7 +656,7 @@ def _unreferenced_artifact_findings(
         _error(
             "COV_WAIVER_FILE_UNREFERENCED",
             f"/files/{file.relative_path}",
-            "Non-TOML file is not referenced by a valid formal proof.",
+            "Non-TOML file is not referenced by a valid proof.",
         )
         for file in proof_artifacts
         if file.relative_path not in proof_references

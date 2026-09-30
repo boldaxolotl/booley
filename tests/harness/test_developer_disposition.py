@@ -576,3 +576,94 @@ def test_expired_wall_budget_does_not_create_hook_failure(tmp_path: Path):
 
     run.assert_not_called()
     block.assert_not_called()
+
+
+class TestProvisionalDisposition:
+    """ADR 0066: a Ticket met only provisionally goes to review, never through handoff."""
+
+    @staticmethod
+    def _provisional():
+        from booley.flows.sim.coverage_provisional import CandidateScreen, ProvisionalVerdict
+        from booley.ticket_board.provisional_coverage import (
+            ProvisionalCriterion,
+            TicketProvisionalCoverage,
+        )
+
+        verdict = ProvisionalVerdict(
+            "fail", {"status": "pass"}, (CandidateScreen("wc-1", "offered", "ok", needed=True),)
+        )
+        return TicketProvisionalCoverage(
+            (ProvisionalCriterion("coverage_line", "campaign:1", "sim/1/c.json", verdict),),
+            "sha256:" + "f" * 64,
+        )
+
+    def _start(self, tmp_path: Path, *, handed_off: bool, outcome: ReviewPrepOutcome):
+        provisional = self._provisional()
+
+        def check(_state_path, *, work_dir, provisional):
+            assert provisional(MagicMock(), ["coverage_line"]) == frozenset({"coverage_line"})
+            return CriteriaVerdict(disposition="review", provisional=("coverage_line",))
+
+        mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["verdict"].side_effect = check
+        extra = {
+            "judge": patch(
+                "booley.ticket_board.provisional_coverage.evaluate_ticket_provisional_coverage",
+                return_value=provisional,
+            ),
+            "op": patch(
+                "booley.ticket_board.provisional_handoff.op_handoff_provisional",
+                return_value=handed_off,
+            ),
+            "request": patch(
+                "booley.ticket_board.review_lifecycle.request_review_command",
+                new_callable=AsyncMock,
+                return_value=outcome,
+            ),
+        }
+        mocks.update({name: p.start() for name, p in extra.items()})
+        patches.update(extra)
+        return mocks, patches, provisional
+
+    @pytest.mark.asyncio
+    async def test_provisional_review_publishes_an_unaccepted_inspection(self, tmp_path: Path):
+        ctx = _make_ctx(tmp_path)
+        outcome = ReviewPrepOutcome("ready", "prepared", package_path=tmp_path / "package.json")
+        mocks, patches, provisional = self._start(tmp_path, handed_off=True, outcome=outcome)
+        try:
+            result = await _resolve_ticket_disposition(
+                ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+            )
+            assert result.disposition == "review"
+            assert result.review_package_path == tmp_path / "package.json"
+            assert mocks["op"].call_args.args[1:] == (ctx.slug, provisional)
+            assert mocks["request"].await_args.kwargs["action"] == "request"
+            assert mocks["handoff"].call_count == 0  # never the freezing handoff
+            assert mocks["prepare_review"].await_count == 0
+            assert mocks["block"].call_count == mocks["fail"].call_count == 0
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
+    async def test_failed_provisional_handoff_raises(self, tmp_path: Path):
+        outcome = ReviewPrepOutcome("ready", "prepared", package_path=tmp_path / "p.json")
+        _mocks, patches, _ = self._start(tmp_path, handed_off=False, outcome=outcome)
+        try:
+            with pytest.raises(RuntimeError, match="provisional handoff failed"):
+                await _resolve_ticket_disposition(
+                    _make_ctx(tmp_path), tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+                )
+        finally:
+            _stop_all(patches)
+
+    @pytest.mark.asyncio
+    async def test_package_failure_after_the_move_names_the_retry(self, tmp_path: Path):
+        outcome = ReviewPrepOutcome("failed", "renderer crashed")
+        _mocks, patches, _ = self._start(tmp_path, handed_off=True, outcome=outcome)
+        try:
+            with pytest.raises(RuntimeError, match="booley board review t-test-0001"):
+                await _resolve_ticket_disposition(
+                    _make_ctx(tmp_path), tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
+                )
+        finally:
+            _stop_all(patches)

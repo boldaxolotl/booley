@@ -803,6 +803,12 @@ def _approve_transition(
     return ok
 
 
+def _has_waiver_promotion(tio: Any, slug: str) -> bool:
+    from .waiver_approval import promotion_plan_path
+
+    return promotion_plan_path(ticket_log_dir(tio.logs_dir, slug)).exists()
+
+
 def op_approve(tio: Any, slug: str) -> bool:
     """Complete a review Ticket through the validated terminal boundary."""
     return op_complete(tio, slug)
@@ -1323,6 +1329,13 @@ def _prepare_completion_request(
             file=sys.stderr,
         )
         return None
+    if not on_success.merge and _has_waiver_promotion(tio, slug):
+        print(
+            f"Error: cannot complete '{slug}': approved coverage waivers are promoted "
+            "only with the merge (ADR 0066)",
+            file=sys.stderr,
+        )
+        return None
     return slug, on_success, accepted_snapshot
 
 
@@ -1675,6 +1688,10 @@ def _reset_runtime_state(tio: Any, slug: str) -> None:
     # every other runtime entry around the live lock.
     _wipe_log_dir(tio, slug, {"ticket.md", "runs", "blocked.md", ".runtime"})
     _append_reset_boundary(tio.logs_dir, slug)
+    # ADR 0066: a clean start drops Waiver Candidates but keeps rejections.
+    from . import waiver_candidates
+
+    waiver_candidates.clear_candidates(tio.tickets_dir, slug)
     if transition_history:
         transitions_path.parent.mkdir(parents=True, exist_ok=True)
         transitions_path.write_text(transition_history, encoding="utf-8")

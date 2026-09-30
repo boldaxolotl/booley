@@ -2000,7 +2000,8 @@ configuration that was never exported.
 
 `coverage_analyst` retains its configured Specialist model role and standard tier
 floor. Its input is one exact canonical `coverage.json` path plus an optional
-`instruction`. It has no per-call coverage policy or waiver-directory settings.
+`instruction`. It has no per-call coverage policy or waiver-directory settings;
+Ticket Mode candidate recording needs no configuration.
 The model receives normalized evidence and, only when the entire current Target
 closure matches its recorded fingerprints, verified RTL/testbench text.
 
@@ -2088,11 +2089,13 @@ approved_at = "2026-09-09T09:00:00Z"
 approval_ref = "review:CR-1042"
 ```
 
-For `reason = "unreachable"`, add an `approval.proof` table with `kind = "formal"`,
-a safe `reference` relative to the approval directory, and exact `sha256` of the
-proof file. Lowercase `*.toml` paths below the approval directory are reserved
-for approval documents, so proof artifacts use another extension. Every non-TOML
-file below the directory must be named by a formal proof reference in a valid
+For `reason = "unreachable"`, add an `approval.proof` table with a `kind`, a
+safe `reference` relative to the approval directory, and exact `sha256` of the
+proof file. Use `kind = "formal"` for a formal-tool result and `kind = "review"`
+for a written human review argument, such as a Markdown file; review-time
+approval writes one as `proofs/<waiver-id>.md`. Lowercase `*.toml` paths below
+the approval directory are reserved for approval documents, so proof artifacts use another extension. Every non-TOML
+file below the directory must be named by a proof reference in a valid
 approval document; otherwise loading reports it as unreferenced. `excluded`
 cannot carry proof. Both reasons yield `waived`; only
 exact RTL points are waivable. Loading rejects unsafe paths/symlinks, malformed
@@ -2106,6 +2109,7 @@ The immutable digest binds bytes, configuration, sources, approvals, proof, and
 provenance. Every `--coverage` run loads this directory, with or without a Coverage
 Criterion. Without one, an invalid set, or an unmatched approval in a completely
 collected Campaign, still blocks evaluation and exits 2. `--no-waivers` skips
-loading. Analyst Waiver
-Candidates have no approval authority and cannot be copied here as approved
-content.
+loading. Analyst Waiver Candidates have no approval authority of their own and
+cannot be copied here by hand; they become approval files only through
+`booley board approve --accept-waivers`, which writes them here in the Ticket's
+merge (see [Coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review)).

@@ -197,6 +197,21 @@ def _isolate_host_lifecycle_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path / "host-config")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_agent_session_markers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suite may run from a Claude or Codex shell; start every test outside one.
+
+    ``agent_session_app`` changes Doctor and CLI behavior when these markers are
+    set, so an inherited marker made clean-run Doctor tests fail only locally.
+    Tests of that detection set the markers they need explicitly.
+    """
+    from booley.runtime import runtime_context
+
+    for markers in dict(runtime_context._AGENT_SESSION_MARKERS).values():
+        for marker in markers:
+            monkeypatch.delenv(marker, raising=False)
+
+
 # --- Minimal FST fixtures ---------------------------------------------------
 # Structural FST inspection requires a well-formed header block AND at least one
 # value-change block: a header-only file is the exact shape a simulator writes

@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -856,6 +856,7 @@ def build_review_facts(
     criterion_presenter: CriterionPresenter,
     coverage_report_resolver: CoverageReportResolver,
     run_economics: str = "unavailable",
+    waiver_candidates: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
     inspection = getattr(ctx, "inspection", None)
@@ -925,6 +926,7 @@ def build_review_facts(
         ),
         "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
         "review_audit": collect_review_audit(state.get("criteria", {})),
+        "waiver_candidates": [dict(row) for row in waiver_candidates],
         "recipe_comparisons": _recipe_comparisons(state),
         "cycle_comparisons": _cycle_comparisons(state, changes),
         "scope": scope,
@@ -1230,6 +1232,63 @@ def _render_review_audit(lines: list[str], package: Mapping[str, Any]) -> None:
         )
 
 
+_WAIVER_GROUPS = (
+    ("offered", "Offered for your decision"),
+    ("not_needed", "Not needed (the strict verdict already passes)"),
+    ("stale", "Stale (not offered)"),
+    ("invalid", "Invalid (not offered)"),
+)
+
+
+def _waiver_delta(row: Mapping[str, Any]) -> str:
+    parts = [
+        f"{item.get('metric')}: {item.get('strict_percent')}% → "
+        f"{item.get('provisional_percent')}% (min {item.get('minimum_percent')}%)"
+        for item in row.get("metrics", [])
+    ]
+    return "; ".join(parts) or "—"
+
+
+def _render_waiver_candidate(lines: list[str], row: Mapping[str, Any]) -> None:
+    needed = " · **needed**" if row.get("needed") else ""
+    lines.extend(
+        [
+            f"- `{_markdown_text(row['candidate_id'])}` · {_markdown_text(row['waiver_reason'])}"
+            f" · `{_markdown_text(row['location'])}`{needed}",
+            f"  - Target: `{_markdown_text(row['target'])}`; Criteria: "
+            f"{_markdown_text(', '.join(row.get('criteria', [])) or '—')}",
+            f"  - Coverage: {_markdown_text(_waiver_delta(row))}",
+            f"  - Proposed {row['proposal_count']} time(s). Justification (candidate record, "
+            f"unverified): {_markdown_text(row['justification'])}",
+        ]
+    )
+    if row["status"] != "offered":
+        lines.append(f"  - Why: {_markdown_text(row['status_reason'])}")
+
+
+def _render_waiver_candidates(lines: list[str], package: Mapping[str, Any]) -> None:
+    """ADR 0066: the Human accepts or rejects each offered candidate at approval."""
+    rows = package.get("waiver_candidates", [])
+    if not rows:
+        return
+    lines.extend(["", "#### Waiver Candidates"])
+    for status, title in _WAIVER_GROUPS:
+        group = [row for row in rows if row.get("status") == status]
+        if not group:
+            continue
+        lines.extend(["", f"**{title}**", ""])
+        for row in group:
+            _render_waiver_candidate(lines, row)
+    if any(row.get("status") == "offered" for row in rows):
+        lines.extend(
+            [
+                "",
+                "Decide every offered candidate: `booley board approve <slug> "
+                "--accept-waivers ID,... --reject-waivers ID,...`. Nothing defaults to accept.",
+            ]
+        )
+
+
 def _render_recipe_comparisons(lines: list[str], package: Mapping[str, Any]) -> None:
     """Render Target recipe changes and the QoR checks they contextualize."""
     rows = package.get("recipe_comparisons", [])
@@ -1487,6 +1546,14 @@ def _mandatory_criteria_met(package: Mapping[str, Any]) -> bool:
     )
 
 
+def _offers_waiver_candidates(package: Mapping[str, Any]) -> bool:
+    """A provisional review: approval needs a decision on each offered candidate."""
+    return any(
+        isinstance(row, Mapping) and row.get("status") == "offered"
+        for row in package.get("waiver_candidates", [])
+    )
+
+
 def _health_findings(package: Mapping[str, Any], diff_failures: list[str]) -> list[str]:
     health = package.get("health", {})
     findings = list(package["assessment"].get("findings", []))
@@ -1560,6 +1627,7 @@ def render_review_briefing(
     _render_scope(lines, package)
     _render_changes(lines, package, set(diff_failures))
     _render_criteria(lines, package)
+    _render_waiver_candidates(lines, package)
     _render_review_dispositions(lines, package)
     _render_review_audit(lines, package)
     _render_cycle_comparisons(lines, package)
@@ -1571,5 +1639,7 @@ def render_review_briefing(
         actions = "**fix here** / **review** / **hold** / **reset** / **archive**"
         if _mandatory_criteria_met(package):
             actions = "**approve** / " + actions
+        elif _offers_waiver_candidates(package):
+            actions = "**decide waivers and approve** / " + actions
     lines.extend(["", f"Choose: {actions}."])
     return "\n".join(lines)

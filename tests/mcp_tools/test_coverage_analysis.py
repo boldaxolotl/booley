@@ -381,3 +381,24 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind):
         .to_dict()
     )
     assert report["waiver_candidates"][0]["screening"] == "forbidden"
+
+
+@pytest.mark.parametrize(
+    ("hits", "expected"), [({}, "ready_for_human_review"), ({"run:smoke": 3}, "investigate")]
+)
+def test_unreachable_needs_zero_hits_but_no_model_proof_reference(hits, expected) -> None:
+    """ADR 0066: the review proof is written at approval; observed hits still contradict."""
+    from dataclasses import replace
+    from types import MappingProxyType
+
+    from booley.specialists.coverage_analysis import _candidate_screen
+
+    document = _valid_document()
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+    point = replace(campaign.points[0], hits_by_run=MappingProxyType(hits))
+    rtl = {point.identity.source: "sha256:" + "a" * 64}
+    item = {"reason": "unreachable", "evidence": "Tied off", "proof_reference": ""}
+
+    assert _candidate_screen(item, point, rtl, object())[0] == expected

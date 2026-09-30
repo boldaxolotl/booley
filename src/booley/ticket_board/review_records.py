@@ -109,9 +109,19 @@ def entry_path(log_dir: Path) -> Path:
     return log_dir / "review" / "entry.json"
 
 
+def provisional_handoff_path(log_dir: Path) -> Path:
+    """Return the ADR 0066 marker of a review entered on a Provisional Coverage Verdict."""
+    return log_dir / "review" / "provisional-handoff.json"
+
+
 def operation_path(log_dir: Path) -> Path:
     """Return the recoverable operation record, outside disposable runtime outputs."""
     return log_dir / "review" / "operation.json"
+
+
+def approval_capture_path(log_dir: Path, row: ReviewInspection) -> Path:
+    """Return approval's live-input binding for one immutable inspection."""
+    return log_dir / "review" / "approval-captures" / f"{row['generation']}.json"
 
 
 def read_json(path: Path) -> dict[str, Any] | None:

@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -78,6 +78,8 @@ from .worktree_health import check_worktree_health
 
 if TYPE_CHECKING:
     from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board.provisional_coverage import TicketProvisionalCoverage
     from booley.ticket_board.review_lifecycle import ReviewPrepOutcome
 
     from .developer_guardrails import DirtyFile
@@ -1559,6 +1561,71 @@ async def _handoff_accepted_ticket(
     )
 
 
+class _ProvisionalCoverageJudge:
+    """ADR 0066 judge for check_criteria_acceptance; keeps its last judgement."""
+
+    def __init__(self, ctx: TicketContext, project_root: Path) -> None:
+        self._ctx = ctx
+        self._project_root = project_root
+        self.result: TicketProvisionalCoverage | None = None
+
+    def __call__(self, state: DevelopmentState, unmet: Sequence[str]) -> frozenset[str]:
+        from booley.ticket_board.helpers import tickets_dir_from_project_root
+        from booley.ticket_board.paths import ticket_log_dir
+        from booley.ticket_board.provisional_coverage import (
+            TicketCoverageContext,
+            evaluate_ticket_provisional_coverage,
+        )
+
+        tickets_dir = tickets_dir_from_project_root(self._project_root)
+        context = TicketCoverageContext(
+            self._ctx.slug,
+            tickets_dir,
+            ticket_log_dir(tickets_dir / "logs", self._ctx.slug),
+            self._ctx.work_dir,
+        )
+        self.result = evaluate_ticket_provisional_coverage(state, unmet, context)
+        return self.result.met_keys
+
+
+async def _handoff_provisional_ticket(
+    ctx: TicketContext, project_root: Path, provisional: TicketProvisionalCoverage
+) -> TicketRunResult:
+    """Send a provisionally met Ticket to review and publish its unaccepted inspection."""
+    from booley.ticket_board.helpers import tickets_dir_from_project_root
+    from booley.ticket_board.io import TicketIO
+    from booley.ticket_board.provisional_handoff import (
+        PROVISIONAL_REVIEW_REASON,
+        op_handoff_provisional,
+    )
+    from booley.ticket_board.review_lifecycle import request_review_command
+
+    from .colors import dim, yellow
+
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    expected = ctx.execution_id or None
+    if not op_handoff_provisional(tio, ctx.slug, provisional, expected_execution_id=expected):
+        raise RuntimeError(f"provisional handoff failed for {ctx.slug}")
+    keys = ", ".join(item.key for item in provisional.criteria)
+    terminal.raw(f"  {yellow('[PROVISIONAL]')} {keys} met only with Waiver Candidates")
+    outcome = await request_review_command(
+        project_root, ctx.slug, action="request", reason=PROVISIONAL_REVIEW_REASON
+    )
+    if not outcome.ready or outcome.package_path is None:
+        # The Ticket is already in review; the inspection is retried on demand.
+        raise RuntimeError(
+            f"{ctx.slug} is in review, but its review package failed: {outcome.message}. "
+            f"Run `booley board review {ctx.slug}` to retry."
+        )
+    terminal.raw(f"  {dim('review package:')} {outcome.package_path}")
+    return TicketRunResult(
+        slug=ctx.slug,
+        disposition="review",
+        review_package_path=outcome.package_path,
+        html_path=outcome.html_path,
+    )
+
+
 async def _resolve_ticket_disposition(
     ctx: TicketContext,
     state_path: Path,
@@ -1573,7 +1640,8 @@ async def _resolve_ticket_disposition(
 
     from .colors import bold_red, yellow
 
-    verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir)
+    judge = _ProvisionalCoverageJudge(ctx, project_root)
+    verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir, provisional=judge)
     logger.info("Criteria verdict for %s: %s", ctx.slug, verdict.disposition)
     _display_criteria_verdict(state_path, verdict, endpoint_catalog)
 
@@ -1584,6 +1652,9 @@ async def _resolve_ticket_disposition(
         block_ticket(ctx, verdict.blocked_reason, "developer", run_index=run_index)
         terminal.raw(f"  {yellow('[BLOCK]')} {verdict.blocked_reason}")
         return _ticket_run_result(ctx.slug, "blocked")
+    if verdict.disposition == "review" and verdict.provisional:
+        assert judge.result is not None
+        return await _handoff_provisional_ticket(ctx, project_root, judge.result)
     if verdict.disposition == "review":
         logger.info("All mandatory criteria met for %s", ctx.slug)
         return await _handoff_accepted_ticket(ctx, project_root, run_index)

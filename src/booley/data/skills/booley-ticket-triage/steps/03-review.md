@@ -40,8 +40,8 @@ interactive triage and do not poll the manifest.
 The briefing presents the reports first: the Developer Agent's `REPORT.md`, then
 the polished HTML report. It then presents the decision summary, actionable
 findings, explanation highlights, scope deviations, changed files, deterministic
-criteria, review findings and dispositions, Target recipe comparisons, commit
-history, run economics, and the decision choices.
+criteria, Waiver Candidates (when any), review findings and dispositions, Target
+recipe comparisons, commit history, run economics, and the decision choices.
 
 If the command reports an ordinary unaccepted missing or stale package, show
 that as a Booley post-processing finding and offer **review** / **reset** /
@@ -89,6 +89,29 @@ record Ticket evidence. Commit changes, then use `booley board review $SLUG`
 to capture new inputs. `booley board approve $SLUG` checks every normal
 acceptance gate, publishes first acceptance, and completes the Ticket.
 Hold leaves the Ticket unchanged.
+
+### Waiver Candidates
+
+A briefing whose choices include **decide waivers and approve** reached review
+on a Provisional Coverage Verdict: coverage passes only if some Waiver
+Candidates become Approved Waivers. Take the offered candidates **one at a
+time**. For each, show its point, reason, coverage change, whether it is
+needed, and its justification, saying that the justification is unverified
+candidate-record text. Then ask the user **accept** or **reject**. Never
+propose an answer, and never accept on the user's behalf. Do not offer stale,
+invalid, or not-needed candidates.
+
+When every offered candidate is decided, run:
+
+```bash
+booley board approve $SLUG --accept-waivers <id,...> --reject-waivers <id,...>
+```
+
+Omit a flag whose list is empty. If the user rejects a needed candidate,
+approve refuses: it records the rejections, promotes nothing, and leaves the
+Ticket in review. Then offer **fix here** / **reset** / **archive**. An accepted
+waiver reaches the destination only with the merge, as the commit
+`chore(<slug>): approve coverage waivers`.
 
 If a legacy review has no Criteria Satisfaction Record, the explicit recovery
 operation is

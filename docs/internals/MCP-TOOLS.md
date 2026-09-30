@@ -878,7 +878,14 @@ with the Campaign manifest and integrity-linked point-store digest as observed e
 The report carries immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, screened Waiver Candidates, and the exact
 bounded evidence-retrieval scope.
-No Criteria are satisfied or mutated, including in Ticket Mode. Invalid input or
+No Criteria are satisfied or mutated, including in Ticket Mode. In Ticket Mode
+the non-model wrapper records `ready_for_human_review` candidates in the ignored
+per-Ticket record `tickets/waiver-candidates/<slug>.json` (ADR 0066), adds a
+`waiver_candidate_record` detail (`recorded`, `filtered_by_rejection`,
+`candidate_ids`, strict and provisional verdicts), and prints one Console line
+`Waiver Candidates recorded N (filtered by rejection M); coverage strict X ·
+provisional Y`. A recording failure reports `status: failed` without failing the
+analysis. Outside Ticket Mode nothing is recorded. Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
@@ -919,8 +926,10 @@ Stored evaluation maps directly to closure recommendations:
 `not_requested` → `ungated_no_recommendation`.
 Candidates identify exact points and remain `not_approved`: non-RTL/unscored,
 unknown, duplicate, or invalid-reason candidates are `forbidden`; missing source
-verification, evidence, or required proof reference is `investigate`; otherwise
-`ready_for_human_review` requests human validation, never approval.
+verification or evidence, or an `unreachable` point with observed hits, is
+`investigate`; otherwise `ready_for_human_review` asks for a human accept or reject
+at Ticket review. `unreachable` needs no model proof reference: approval writes
+a `review` proof. The model never writes the record.
 
 Capability-isolated Codex calls use a private exact-model catalog to remove model-provided
 shell/patch/search tools and explicit startup settings to disable other tools,

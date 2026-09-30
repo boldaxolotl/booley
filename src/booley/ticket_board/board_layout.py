@@ -16,11 +16,16 @@ draft: a record that cannot be read or parsed, has an unknown schema, or has
 invalid fields raises :class:`StateRecordError`, so every command on that Ticket
 fails without changing anything.
 
-No other module joins board, state, or history paths; callers go through the functions
-here, or through :class:`booley.ticket_board.io.TicketIO` for locked writes. The one
-exception is :mod:`booley.runtime.project_gitignore`, which spells ``tickets/board/``
-and ``tickets/state/`` as literal ignore patterns: runtime sits below this package
-and must not import it, so a test pins those literals to the constants here.
+The ignored ``<tickets>/waiver-candidates/<slug>.json`` record holds a live
+Ticket's Waiver Candidates (ADR 0066); :mod:`booley.ticket_board.waiver_candidates`
+owns its format and its lock under ``<tickets>/locks/``.
+
+No other module joins board, state, history, or waiver-candidate paths; callers go
+through the functions here, or through :class:`booley.ticket_board.io.TicketIO` for
+locked writes. The one exception is :mod:`booley.runtime.project_gitignore`, which
+spells ``tickets/board/``, ``tickets/state/``, and ``tickets/waiver-candidates/`` as
+literal ignore patterns: runtime sits below this package and must not import it, so
+a test pins those literals to the constants here.
 """
 
 from __future__ import annotations
@@ -50,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 STATE_DIR_NAME = "state"
 HISTORY_DIR_NAME = "history"
+WAIVER_CANDIDATES_DIR_NAME = "waiver-candidates"
+LOCKS_DIR_NAME = "locks"
 STATE_RECORD_SCHEMA = 1
 
 # Runtime fields a state record carries next to its state, with their defaults.
@@ -222,14 +229,33 @@ def history_slug(tickets_dir: Path, path: Path) -> str | None:
     return path.stem
 
 
+def waiver_candidates_root(tickets_dir: Path) -> Path:
+    """Return ``<tickets_dir>/waiver-candidates``, the Waiver Candidate records."""
+    return Path(tickets_dir) / WAIVER_CANDIDATES_DIR_NAME
+
+
+def waiver_candidates_path(tickets_dir: Path, slug: str) -> Path:
+    """Return the path of the Waiver Candidate record for *slug*."""
+    return waiver_candidates_root(tickets_dir) / f"{_require_slug(slug)}.json"
+
+
+def waiver_candidates_lock_path(tickets_dir: Path, slug: str) -> Path:
+    """Return the lock serializing writers of the Waiver Candidate record for *slug*."""
+    return Path(tickets_dir) / LOCKS_DIR_NAME / f"waiver-candidates-{_require_slug(slug)}.lock"
+
+
 def required_board_directories(tickets_dir: Path) -> list[Path]:
-    """Return the directories ``booley init`` creates and doctor requires."""
+    """Return the directories ``booley init`` creates and doctor requires.
+
+    ``waiver-candidates/`` is deliberately absent: its writer creates it on
+    first use, so Projects initialized before ADR 0066 stay Doctor-green.
+    """
     return [board_root(tickets_dir), state_root(tickets_dir)]
 
 
 def live_state_directory_names() -> tuple[str, ...]:
     """Return the tickets-relative directories holding live, untracked Ticket state."""
-    return (BOARD_DIR_NAME, STATE_DIR_NAME)
+    return (BOARD_DIR_NAME, STATE_DIR_NAME, WAIVER_CANDIDATES_DIR_NAME)
 
 
 def tickets_relative_label(directory: str, *parts: str) -> str:
@@ -238,7 +264,12 @@ def tickets_relative_label(directory: str, *parts: str) -> str:
     For messages, which may name placeholders like ``<slug>.md`` that are no
     valid slug; a trailing ``""`` part renders a directory's trailing slash.
     """
-    if directory not in (BOARD_DIR_NAME, STATE_DIR_NAME, HISTORY_DIR_NAME):
+    if directory not in (
+        BOARD_DIR_NAME,
+        STATE_DIR_NAME,
+        HISTORY_DIR_NAME,
+        WAIVER_CANDIDATES_DIR_NAME,
+    ):
         raise ValueError(f"{directory!r} is no Ticket Board layout directory")
     return "/".join((directory, *parts))
 

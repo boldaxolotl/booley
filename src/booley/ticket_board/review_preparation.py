@@ -66,6 +66,7 @@ from booley.ticket_board.acceptance_diagnostics import (
 )
 from booley.ticket_board.acceptance_ledger import read_acceptance
 from booley.ticket_board.agent_execution import configure_agent_call
+from booley.ticket_board.board_layout import waiver_candidates_path
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
@@ -173,7 +174,56 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
         ),
         criterion_presenter=state_criterion_presentation,
         coverage_report_resolver=_resolve_review_coverage_report,
+        waiver_candidates=_waiver_candidate_rows(ctx, state),
     )
+
+
+def _candidate_location(point_id: str, source: str) -> str:
+    """``source:line`` for a cp1 point, or the bare source when undecodable."""
+    from booley.flows.sim.coverage_campaign import decode_coverage_point_id
+
+    identity = decode_coverage_point_id(point_id) or {}
+    location = identity.get("location")
+    start = location.get("start") if isinstance(location, Mapping) else None
+    line = start.get("line") if isinstance(start, Mapping) else None
+    return f"{source}:{line}" if isinstance(line, int) else source
+
+
+def _waiver_candidate_rows(ctx: ReviewPrepContext, state: Mapping[str, Any]) -> list[dict]:
+    """ADR 0066: every recorded Waiver Candidate, re-derived from evidence."""
+    from booley.criteria.state import CriterionEntry
+
+    from .provisional_coverage import TicketCoverageContext, describe_waiver_candidates
+
+    raw = state.get("criteria", {})
+    criteria = {
+        str(key): CriterionEntry.from_dict(dict(value))
+        for key, value in (raw.items() if isinstance(raw, Mapping) else ())
+        if isinstance(value, Mapping)
+    }
+    context = TicketCoverageContext(
+        ctx.slug, tickets_dir_from_project_root(ctx.project_root), ctx.log_dir, ctx.worktree
+    )
+    views, _digest = describe_waiver_candidates(criteria, context)
+    return [
+        {
+            "candidate_id": view.candidate.candidate_id,
+            "status": view.status,
+            "status_reason": view.reason,
+            "needed": view.needed,
+            "criteria": list(view.criteria),
+            "target": view.candidate.binding.target_identity,
+            "point_id": view.candidate.proposal.point_id,
+            "location": _candidate_location(
+                view.candidate.proposal.point_id, view.candidate.proposal.source
+            ),
+            "waiver_reason": view.candidate.proposal.reason,
+            "justification": view.candidate.proposal.justification,
+            "proposal_count": view.candidate.proposal_count,
+            "metrics": [dict(item) for item in view.metrics],
+        }
+        for view in views
+    ]
 
 
 class ReviewPrepError(RuntimeError):
@@ -662,22 +712,27 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
         candidate = ctx.log_dir / relative
         if candidate.is_dir():
             paths.extend(
-                (str(path.relative_to(ctx.log_dir)), path)
+                (path.relative_to(ctx.log_dir).as_posix(), path)
                 for path in sorted(candidate.rglob("*"))
                 if path.is_file()
             )
         elif candidate.is_file():
             paths.append((relative, candidate))
+    candidates = waiver_candidates_path(tickets_dir_from_project_root(ctx.project_root), ctx.slug)
+    if candidates.is_file():
+        paths.append(("waiver-candidates", candidates))
     if ctx.inspection is not None:
         evidence = ctx.log_dir / "acceptance" / "evidence"
         paths.extend(
-            (str(path.relative_to(ctx.log_dir)), path)
+            (path.relative_to(ctx.log_dir).as_posix(), path)
             for path in sorted(evidence.glob("*/record.json"))
         )
     return paths
 
 
-def _source_fingerprint(ctx: ReviewPrepContext) -> str:
+def _source_fingerprint(
+    ctx: ReviewPrepContext, *, source_overrides: Mapping[str, bytes | None] | None = None
+) -> str:
     """Hash stable review inputs and the live Git status.
 
     Human logs are deliberately excluded: review preparation writes its own
@@ -686,6 +741,17 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
     source change. The agent still receives a copied pre-call ``run.log``.
     """
     digest = hashlib.sha256()
+    _hash_repository_inputs(ctx, digest)
+    for label, content_hash in _source_content_hashes(ctx, source_overrides):
+        digest.update(label.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content_hash.encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _hash_repository_inputs(ctx: ReviewPrepContext, digest: Any) -> None:
+    """Bind semantic review identity, participant heads, status, and verification."""
     if ctx.inspection is not None:
         from .review_records import require_clean
 
@@ -718,12 +784,33 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
                 "--untracked-files=all",
             ).encode("utf-8")
         )
-    for label, path in _source_paths(ctx):
-        digest.update(label.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(_file_sha256(path).encode("ascii"))
-        digest.update(b"\0")
-    return digest.hexdigest()
+
+
+def _source_content_hashes(
+    ctx: ReviewPrepContext, overrides: Mapping[str, bytes | None] | None
+) -> list[tuple[str, str]]:
+    """Hash a staged approval without writing any of its inputs to the live store."""
+    overrides = overrides or {}
+    paths = dict(_source_paths(ctx))
+    labels = [label for label in paths if not label.startswith("acceptance/evidence/")]
+    if "waiver-candidates" in overrides and "waiver-candidates" not in labels:
+        labels.append("waiver-candidates")
+    labels.extend(
+        sorted(
+            label
+            for label in paths.keys() | overrides.keys()
+            if label.startswith("acceptance/evidence/")
+        )
+    )
+    result = []
+    for label in labels:
+        if label in overrides:
+            content = overrides[label]
+            if content is not None:
+                result.append((label, hashlib.sha256(content).hexdigest()))
+        else:
+            result.append((label, _file_sha256(paths[label])))
+    return result
 
 
 def _verification_evidence_identity(ctx: ReviewPrepContext) -> bytes:

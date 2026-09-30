@@ -121,6 +121,7 @@ def test_op_complete_routes_authored_cleanup_without_merge(
     }
     tio = SimpleNamespace(
         _project_root=root,
+        logs_dir=tmp_path / "logs",
         find_ticket=lambda _slug: {
             "status": state["status"],
             "file": "board/review/test-cleanup.md",

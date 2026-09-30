@@ -33,12 +33,14 @@ import yaml
 from booley.core.boundary import BoundaryError, as_dict, require_dict, require_str_value
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp, utc_now_rfc3339
 
+from . import waiver_candidates
 from .board_layout import (
     delete_state_record,
     history_document_path,
     history_documents,
     state_record_path,
     ticket_document_path,
+    waiver_candidates_path,
 )
 from .lifecycle import TicketState
 from .persistence import WriteOnceConflictError, atomic_write_once, durable_unlink
@@ -288,13 +290,15 @@ def close_ticket(tickets_dir: Path, slug: str, block: ClosedBlock) -> ClosedBloc
 
 
 def finish_closing(tickets_dir: Path, slug: str) -> bool:
-    """Remove a Closed Ticket's board document and state record (lock held).
+    """Remove a Closed Ticket's board document, state record, and candidates (lock held).
 
     Returns whether anything was left to remove. Safe to repeat.
     """
     removed_document = durable_unlink(ticket_document_path(tickets_dir, slug))
     removed_record = delete_state_record(tickets_dir, slug)
-    return removed_document or removed_record
+    # ADR 0066: a Closed Ticket's candidates and rejections are disposable state.
+    removed_candidates = waiver_candidates.discard(tickets_dir, slug)
+    return removed_document or removed_record or removed_candidates
 
 
 def interrupted_closings(tickets_dir: Path) -> list[str]:
@@ -304,6 +308,7 @@ def interrupted_closings(tickets_dir: Path) -> list[str]:
         for path in closed_ticket_documents(tickets_dir)
         if ticket_document_path(tickets_dir, path.stem).exists()
         or state_record_path(tickets_dir, path.stem).exists()
+        or waiver_candidates_path(tickets_dir, path.stem).exists()
     ]
 
 

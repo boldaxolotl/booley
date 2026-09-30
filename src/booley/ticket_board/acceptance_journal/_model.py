@@ -76,6 +76,11 @@ def _removal_digest(removal_targets: tuple[str, ...]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+# ADR 0066: present only in journals that promote approved coverage waivers.
+_PROMOTION_FIELD = "promotion_digest"
+_UNCHECKED: Any = object()
+
+
 class AcceptanceJournalError(ValueError):
     """An Acceptance Journal is unreadable or violates its schema."""
 
@@ -147,6 +152,12 @@ class AcceptanceJournal:
     removal_targets: tuple[str, ...]
     removal_digest: str
     schema: int = 5
+    promotion_digest: str | None = None
+
+    @property
+    def needs_finalization(self) -> bool:
+        """Whether candidates are finalized after preparation (removals or promotion)."""
+        return bool(self.removal_targets) or self.promotion_digest is not None
 
     @property
     def roles(self) -> tuple[str, ...]:
@@ -270,6 +281,11 @@ class AcceptanceJournal:
             "cleaned": list(self.cleaned),
             "removal_targets": list(self.removal_targets),
             "removal_digest": self.removal_digest,
+            **(
+                {_PROMOTION_FIELD: self.promotion_digest}
+                if self.promotion_digest is not None
+                else {}
+            ),
         }
 
 
@@ -279,6 +295,7 @@ def initial_journal(
     *,
     cleanup: bool,
     removal_targets: tuple[str, ...] = (),
+    promotion_digest: str | None = None,
 ) -> AcceptanceJournal:
     """Return a new journal before any repository mutation."""
     return AcceptanceJournal(
@@ -293,6 +310,7 @@ def initial_journal(
         cleaned=(),
         removal_targets=removal_targets,
         removal_digest=_removal_digest(removal_targets),
+        promotion_digest=promotion_digest,
     )
 
 
@@ -485,17 +503,17 @@ def validate_journal(
     *,
     cleanup: bool | None,
     removal_targets: tuple[str, ...] | None = None,
+    promotion_digest: str | None = _UNCHECKED,
 ) -> AcceptanceJournal:
     """Validate external journal data against its immutable identity."""
     journal = require_dict(value, field="acceptance journal")
     _validate_journal_identity(journal, slug, participants)
-    if set(journal) != _JOURNAL_FIELDS:
+    if set(journal) - {_PROMOTION_FIELD} != _JOURNAL_FIELDS:
         raise BoundaryError("acceptance journal has invalid fields")
+    stored_promotion = _validated_promotion(journal, promotion_digest)
     if journal.get("schema") != 5:
         raise BoundaryError("acceptance journal schema must be 5")
-    transaction = require_str(journal, "transaction")
-    if not re.fullmatch(r"[0-9a-f]{32}", transaction):
-        raise BoundaryError("acceptance journal transaction is invalid")
+    transaction = _validated_transaction(journal)
     state = _validated_state(journal)
     actual_cleanup = _validated_policy(journal.get("policy"), cleanup=cleanup)
     stored_removals = _validated_removals(journal, removal_targets)
@@ -512,18 +530,37 @@ def validate_journal(
         candidates,
         published,
         cleaned,
-        has_removals=bool(stored_removals),
+        has_removals=bool(stored_removals) or stored_promotion is not None,
     )
-    return _normalized(
-        journal,
-        state,
-        actual_cleanup,
-        sources,
-        candidates,
-        published,
-        cleaned,
-        stored_removals,
+    return replace(
+        _normalized(
+            journal,
+            state,
+            actual_cleanup,
+            sources,
+            candidates,
+            published,
+            cleaned,
+            stored_removals,
+        ),
+        promotion_digest=stored_promotion,
     )
+
+
+def _validated_transaction(journal: dict[str, Any]) -> str:
+    transaction = require_str(journal, "transaction")
+    if not re.fullmatch(r"[0-9a-f]{32}", transaction):
+        raise BoundaryError("acceptance journal transaction is invalid")
+    return transaction
+
+
+def _validated_promotion(journal: dict[str, Any], expected: str | None) -> str | None:
+    stored = journal.get(_PROMOTION_FIELD)
+    if stored is not None and (not isinstance(stored, str) or not stored.startswith("sha256:")):
+        raise BoundaryError("acceptance journal promotion digest is invalid")
+    if expected is not _UNCHECKED and stored != expected:
+        raise BoundaryError("acceptance journal waiver promotion changed after acceptance began")
+    return stored
 
 
 def _validated_removals(
@@ -580,6 +617,7 @@ def load_journal(
     *,
     cleanup: bool,
     removal_targets: tuple[str, ...] = (),
+    promotion_digest: str | None = None,
 ) -> AcceptanceJournal:
     """Read and validate one Ticket's current-schema journal."""
     value = read_json(path)
@@ -590,6 +628,7 @@ def load_journal(
             participants,
             cleanup=cleanup,
             removal_targets=removal_targets,
+            promotion_digest=promotion_digest,
         )
     except BoundaryError as exc:
         raise AcceptanceJournalError(f"acceptance journal is malformed: {path}: {exc}") from exc

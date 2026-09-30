@@ -91,6 +91,8 @@ def _request(
     cleanup: bool,
     expected_sources: Mapping[str, str] | None = None,
 ) -> AcceptanceRequest:
+    from .waiver_approval import promotion_plan_for_completion
+
     return AcceptanceRequest(
         root=Path(tio._project_root).resolve(),
         slug=slug,
@@ -98,6 +100,7 @@ def _request(
         cleanup=cleanup,
         ticket_status=entry["status"],
         expected_sources=expected_sources,
+        waiver_promotion=promotion_plan_for_completion(tio.logs_dir / slug),
     )
 
 

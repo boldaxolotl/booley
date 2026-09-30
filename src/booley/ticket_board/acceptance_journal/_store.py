@@ -67,6 +67,7 @@ class AcceptanceStore(Protocol):
         *,
         cleanup: bool,
         removal_targets: tuple[str, ...],
+        promotion_digest: str | None = None,
     ) -> AcceptanceJournal: ...
 
     def load_persisted(self, path: Path) -> AcceptanceJournal: ...
@@ -102,6 +103,7 @@ class FileAcceptanceStore:
         *,
         cleanup: bool,
         removal_targets: tuple[str, ...],
+        promotion_digest: str | None = None,
     ) -> AcceptanceJournal:
         return load_journal(
             path,
@@ -109,6 +111,7 @@ class FileAcceptanceStore:
             participants,
             cleanup=cleanup,
             removal_targets=removal_targets,
+            promotion_digest=promotion_digest,
         )
 
     def load_persisted(self, path: Path) -> AcceptanceJournal:
@@ -149,6 +152,7 @@ class FaultingAcceptanceStore:
         *,
         cleanup: bool,
         removal_targets: tuple[str, ...],
+        promotion_digest: str | None = None,
     ) -> AcceptanceJournal:
         return self.delegate.load(
             path,
@@ -156,6 +160,7 @@ class FaultingAcceptanceStore:
             participants,
             cleanup=cleanup,
             removal_targets=removal_targets,
+            promotion_digest=promotion_digest,
         )
 
     def load_persisted(self, path: Path) -> AcceptanceJournal:

@@ -327,8 +327,8 @@ booley flow sim --target sim_soc --coverage
 ```
 
 Then call the `coverage_analyst` Specialist from your connected agent session with
-`campaign="<reports>/sim/12/targets/sim_soc/coverage.json"` for waiver candidates
-and testbench improvements (advisory only). The verdict card prints the exact
+`campaign="<reports>/sim/12/targets/sim_soc/coverage.json"` for Waiver Candidates
+and testbench improvements. The verdict card prints the exact
 `coverage.json` path to pass as `campaign`.
 
 #### Requirements
@@ -355,7 +355,10 @@ and testbench improvements (advisory only). The verdict card prints the exact
 - **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
   with evaluation `not_requested`. Use it to explore.
 - **Gated** (Ticket with a `coverage_<target>` Criterion): Booley also checks
-  the thresholds. Only a persisted `pass` satisfies the Criterion.
+  the thresholds. Only a persisted `pass` satisfies
+  the Criterion. A Ticket short only by points its Waiver Candidates would
+  waive goes to review instead; see
+  [Coverage waivers at review](#coverage-waivers-at-review).
 - **Raw numbers** (`--no-waivers`): applies no approved waivers. With a
   Coverage Criterion it needs `--diagnostic`; otherwise Booley exits 2 before
   anything builds. The thresholds are then evaluated on raw numbers, and no
@@ -387,6 +390,52 @@ Waivers are checked per Target: one invalid approval blocks that Target's
 evaluation. See [Coverage configuration](CONFIG.md#native-coverage-configuration)
 and [Approved coverage waivers](CONFIG.md#approved-coverage-waivers) for the
 full syntax.
+
+#### Coverage waivers at review
+
+In Ticket Mode, the Coverage Analyst's own code (not its model) records the
+Waiver Candidates it screens as `ready_for_human_review` in an ignored
+per-Ticket record, `tickets/waiver-candidates/<slug>.json`. An `unreachable`
+candidate needs a zero-hit point; a point with hits stays "investigate". Outside
+Ticket Mode nothing is recorded.
+
+Gated evaluation then reports two verdicts: the strict one (Approved Waiver Set
+only) and a **Provisional Coverage Verdict** that also counts the candidates.
+Only the strict verdict satisfies a Criterion. When every unmet mandatory
+Coverage Criterion is met provisionally, the Ticket goes to `review` as an
+unaccepted inspection, never straight to `done`, whatever `on_success` says.
+`booley board review <slug>` regenerates that inspection.
+
+`booley board show <slug>` lists the candidates as offered, not needed (the
+strict verdict already passes), stale (source changed or another Campaign), or
+invalid (no longer re-derivable from the evidence), each with its coverage
+delta. Justifications are marked unverified; your decision is the authority.
+
+```bash
+booley board approve <slug> --accept-waivers W1,W2 --reject-waivers W3 \
+  [--approval-ref REF]
+```
+
+- Decide every offered candidate; an undecided one fails approve. Nothing
+  defaults to accept, and accepting requires merge (no `--no-merge`).
+- If approval stops before acceptance is frozen, retry with the same explicit
+  waiver decisions and approval reference. Booley recovers its own partial
+  writes and still rejects unrelated changes to the reviewed inputs. A saved
+  promotion plan supplies no approval authority. After acceptance is frozen,
+  `booley board approve <slug>` resumes completion without repeating decisions.
+- Approve predicts the strict verdict first. If it would still fail, approve
+  records the rejections, promotes nothing, exits non-zero, and the Ticket
+  stays in review: fix it there, reset it, or archive it.
+- Otherwise the Acceptance Journal commits
+  `chore(<slug>): approve coverage waivers` in its merge candidate: it appends
+  the records to `<source>.toml` and writes `proofs/<id>.md` (proof kind
+  `review`) for each `unreachable` one. The waivers reach the destination with
+  the RTL they justify; the Ticket branch never changes.
+- `approved_by` is the Project checkout's Git identity (the `[agent.git]`
+  identity is refused). `approval_ref` defaults to `ticket:<slug>@<capture_sha>`.
+- A rejection is kept by Target, point, and source SHA-256 and filters later
+  proposals until that source changes. Return-to-draft and `board reset` clear
+  the candidates but keep rejections; closing the Ticket discards both.
 
 #### Results
 
@@ -443,11 +492,13 @@ never infers a latest Campaign or merges coverage across Targets or runs.
 #### Analyzing a Campaign
 
 `coverage_analyst` explains one Campaign: what is uncovered, likely reasons,
-which tests to add, and possible waiver candidates for human review.
+which tests to add, and Waiver Candidates for human review.
 
 Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact coverage.json>"`.
 
-It never runs simulation, changes Criteria, or approves waivers. See
+It never runs simulation, changes Criteria, or approves waivers; in Ticket
+Mode Booley records its candidates for
+[approval at review](#coverage-waivers-at-review). See
 [USAGE.md](USAGE.md#coverage_analyst).
 
 #### Cleaning up old Campaigns

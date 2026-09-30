@@ -16,6 +16,27 @@ from booley.harness.developer_prompt import (
 )
 from booley.mcp.registry import McpToolInfo
 
+
+def test_provisional_coverage_handoff_precedes_infeasible_blocking(tmp_path: Path):
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("---\nsummary: coverage\n---\n")
+    system, _ = build_developer_prompt(
+        DeveloperPromptContext(
+            ticket_path=ticket,
+            state_path=tmp_path / "state.json",
+            logs_dir=tmp_path,
+            slug="coverage",
+            mcp_tools=[],
+        )
+    )
+
+    assert "verified Provisional Coverage Verdict" in system
+    assert "leave the strict Criteria unchanged and do not write `_blocked_reason`" in system
+    assert system.index("Before blocking on unreachable mandatory coverage") < system.index(
+        "If a mandatory criterion cannot be met"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
