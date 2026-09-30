@@ -178,7 +178,8 @@ Try:
   retry same selection completes; prune an active invocation → rc2, lock untouched; reap producer → prune
   succeeds.
 - Follow `../../shared/coverage/simulation-campaign/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
-  mid-collection and resume from the Manifest (new attempt, whole aggregate rerun, one canonical reference);
+  mid-collection; resume and `--dry-run` from the Manifest → rc2 before any EDA launch naming a new
+  `--coverage` run, attempt inventory unchanged; the fresh run is the control;
   fail the Development State save via a directory at its `.tmp` path, remove, resume (one transaction, no
   new attempt); flip one byte in a terminal `result.json` → rc2 before any EDA launch, restore → resume
   without rerun. Cross-check with `../../shared/coverage/simulation-campaign/validate_aggregate.py`.
