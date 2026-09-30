@@ -30,6 +30,7 @@ from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportIdentity,
     partial_result_identity,
+    publish_native_adapter_result,
     write_adapter_result,
 )
 from booley.flows.sim.build import (
@@ -2546,6 +2547,153 @@ def test_trace_archive_failure_is_typed_infrastructure(tmp_path: Path) -> None:
     assert outcome.infrastructure_failure is not None
     assert outcome.infrastructure_failure.kind == "artifact_persistence"
     assert "evidence disk full" in outcome.infrastructure_failure.detail
+
+
+_BACKEND_TRACE_HINT = (
+    "trace requested but no fresh .fst store or convertible .vcd was produced "
+    "(a testbench with its own C++ main() writes its dump under a name "
+    "Booley cannot guess - declare it in [flows.sim].trace_files)"
+)
+
+
+def _owned_main_invoker(
+    handle: TargetHandle,
+    prepared: PreparedSimulationBuild,
+    writes: tuple[Path, ...],
+    *,
+    detail: str = _BACKEND_TRACE_HINT,
+    adapter: str = "icarus",
+):
+    """Simulate a native adapter whose testbench wrote *writes* but no declared trace."""
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        for path in writes:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"dump")
+        identity = AdapterTransportIdentity(
+            adapter,
+            "abc123",
+            handle.identity,
+            ("smoke",),
+            prepared.build_root / ".booley-adapter-abc123.json",
+        )
+        publish_native_adapter_result(
+            identity,
+            "[SIM_RESULT] PASSED\n",
+            0,
+            trace_required=True,
+            trace=AdapterTraceResult("incident", path="incident.txt", detail=detail),
+        )
+        return SubprocessResult(returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
+
+    return invoke
+
+
+def _run_owned_main(
+    tmp_path: Path,
+    writes: tuple[str, ...],
+    *,
+    config: str = 'run_cwd = "run"\n',
+    detail: str = _BACKEND_TRACE_HINT,
+    preexisting: tuple[str, ...] = (),
+) -> SimulationTargetOutcome:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text(f"[flows.sim]\n{config}", encoding="utf-8")
+    (tmp_path / "run").mkdir()
+    for name in preexisting:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_bytes(b"old")
+    return _run_execution(
+        handle,
+        prepared,
+        _owned_main_invoker(
+            handle, prepared, tuple(tmp_path / name for name in writes), detail=detail
+        ),
+        ("smoke",),
+        cocotb=False,
+        options=SimulationOptions(trace=True),
+        trace_mode=TraceMode.NATIVE_FST,
+    )
+
+
+def test_owned_main_dump_without_trace_files_is_inconclusive_with_candidates(
+    tmp_path: Path,
+) -> None:
+    """#884: an undeclared owned-main dump is inconclusive and names the remedy."""
+    outcome = _run_owned_main(tmp_path, ("run/sim.vcd",))
+
+    assert outcome.verdict == "inconclusive"
+    reason = outcome.tests[0].reason
+    assert "[flows.sim].trace_files" in reason
+    assert "listed, not adopted): sim.vcd" in reason
+
+
+def test_unqueryable_trace_detail_survives_verbatim(tmp_path: Path) -> None:
+    detail = "trace requested but the retained waveform is not queryable: bad header"
+    outcome = _run_owned_main(tmp_path, ("run/sim.vcd",), detail=detail)
+
+    assert outcome.tests[0].reason.startswith(detail)
+
+
+def test_trace_candidates_exclude_stale_owned_and_other_attempt_files(tmp_path: Path) -> None:
+    outcome = _run_owned_main(
+        tmp_path,
+        (
+            "run/new.vcd",
+            "run/dump.vcd",
+            ".booley_project/.runtime/other/attempt.vcd",
+        ),
+        config='run_cwd = "."\n',
+        preexisting=("run/old.vcd",),
+    )
+
+    reason = outcome.tests[0].reason
+    assert reason.endswith("listed, not adopted): run/dump.vcd, run/new.vcd")
+    assert "old.vcd" not in reason
+    assert "attempt.vcd" not in reason
+
+
+def test_trace_candidates_exclude_icarus_owned_dump(tmp_path: Path) -> None:
+    outcome = _run_owned_main(tmp_path, ("run/dump.vcd",))
+
+    assert "listed, not adopted" not in outcome.tests[0].reason
+
+
+def test_trace_candidates_are_capped(tmp_path: Path) -> None:
+    outcome = _run_owned_main(tmp_path, tuple(f"run/w{i}.vcd" for i in range(7)))
+
+    reason = outcome.tests[0].reason
+    assert "w0.vcd, w1.vcd, w2.vcd, w3.vcd, w4.vcd, +2 more" in reason
+    assert "w5.vcd" not in reason
+
+
+def test_no_fresh_waveform_makes_no_candidate_claim(tmp_path: Path) -> None:
+    outcome = _run_owned_main(tmp_path, ())
+
+    assert outcome.verdict == "inconclusive"
+    assert "listed, not adopted" not in outcome.tests[0].reason
+
+
+def test_refused_trace_route_names_trace_files(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    (tmp_path / "run").mkdir()
+    outcome = _run_execution(
+        handle,
+        prepared,
+        _passing_trace_invoker(handle, prepared, tmp_path / "run" / "wave.fst", fresh=False),
+        ("smoke",),
+        cocotb=False,
+        options=SimulationOptions(trace=True),
+        trace_mode=TraceMode.NATIVE_FST,
+    )
+
+    assert outcome.verdict == "inconclusive"
+    assert "[flows.sim].trace_files" in outcome.tests[0].reason
 
 
 @pytest.mark.parametrize(

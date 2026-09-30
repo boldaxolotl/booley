@@ -363,17 +363,61 @@ def test_native_adapter_publishes_authenticated_terminal_evidence(tmp_path, adap
 def test_trace_request_requires_positive_waveform_evidence(tmp_path, adapter) -> None:
     identity = _identity(tmp_path)
 
+    reason = (
+        "trace requested but no fresh .fst store or convertible .vcd was produced "
+        "(a testbench with its own C++ main() writes its dump under a name "
+        "Booley cannot guess - declare it in [flows.sim].trace_files)"
+    )
     adapter._publish_adapter_result(
         identity,
         "[SIM_RESULT] PASSED\n",
         0,
         trace_required=True,
+        trace=AdapterTraceResult("incident", path="incident.txt", detail=reason),
     )
 
     result = read_adapter_result(identity)
     assert result.passed is False
     assert result.inconclusive is True
     assert result.failure_kind == "artifact"
+    # #884: a passing simulation without its waveform is inconclusive per test,
+    # carrying the remedy, never a passing test inside a reasonless failed Target.
+    assert result.test_results[0].verdict == "inconclusive"
+    assert "[flows.sim].trace_files" in result.test_results[0].detail
+
+
+def test_native_trace_missing_keeps_functional_failure_and_timeout(tmp_path) -> None:
+    trace = AdapterTraceResult("incident", detail="waveform missing")
+    identity = _identity(tmp_path)
+    verilator._publish_adapter_result(
+        identity, "[SIM_RESULT] FAILED\n", 1, trace_required=True, trace=trace
+    )
+    assert read_adapter_result(identity).test_results[0].verdict == "fail"
+
+    timed_out = RunTermination(kind="timeout", detail="timed out", failure_kind="timeout")
+    verilator._publish_adapter_result(
+        identity, "", 0, trace_required=True, trace=trace, termination=timed_out
+    )
+    assert read_adapter_result(identity).test_results[0].verdict == "timeout"
+
+
+def test_validator_rejects_passing_test_beside_trace_failure(tmp_path) -> None:
+    identity = _identity(tmp_path)
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=False,
+            inconclusive=True,
+            sva_errors=0,
+            tests=("reset",),
+            failure_kind="artifact",
+            detail="waveform missing",
+            test_results=(AdapterTestResult("reset", "pass"),),
+        ),
+    )
+
+    with pytest.raises(AdapterTransportError, match="trace failure contradicts a passing test"):
+        read_adapter_result(identity)
 
 
 @pytest.mark.parametrize(

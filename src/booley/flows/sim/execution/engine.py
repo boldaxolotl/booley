@@ -13,10 +13,11 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.build_paths import work_root_for
+from booley.core.project_dir import PROJECT_DIR_NAME
 from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
@@ -29,6 +30,7 @@ from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTransportIdentity,
 )
+from booley.flows.sim.backends.shared import BOOLEY_DUMP_VCD_NAME
 from booley.flows.sim.build import (
     BuildOutcome,
     PreparedSimulationBuild,
@@ -71,7 +73,7 @@ from booley.flows.sim.runtime_inputs import (
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -107,6 +109,11 @@ _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 _TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
 _NO_WAVEFORM = "the simulation passed, but --trace produced no queryable waveform"
+_NO_WAVEFORM_REMEDY = (
+    "; if the testbench's own main writes a dump, declare it in [flows.sim].trace_files"
+)
+# Cap on listed candidate dump files: the reason lands on one RESULT line.
+_MAX_TRACE_CANDIDATES = 5
 _PACKAGED_DUMP_IDENTITY = Path("booley-package/refs/booley_vcd_dump.sv")
 
 
@@ -1070,6 +1077,11 @@ class SimulationExecution:
         compatibility = tuple(item for item in archived if item.kind != "trace")
         if attempt.trace_requested and trace is None and adapter is not None and adapter.passed:
             adapter = _missing_trace_result(adapter)
+        if attempt.trace_requested and trace is None and _is_artifact_failure(adapter):
+            assert trace_policy is not None, "a requested trace always has a policy"
+            adapter = _with_trace_diagnosis(
+                adapter, _trace_candidates_clause(handle, attempt, trace_policy)
+            )
         tests = _test_outcomes(
             handle,
             attempt,
@@ -2132,7 +2144,7 @@ def _trace_artifact_policy(
 
 def _missing_trace_result(adapter: AdapterResult) -> AdapterResult:
     tests = tuple(
-        replace(test, verdict="inconclusive", detail=_NO_WAVEFORM)
+        replace(test, verdict="inconclusive", detail=_NO_WAVEFORM + _NO_WAVEFORM_REMEDY)
         if test.verdict == "pass"
         else test
         for test in adapter.test_results
@@ -2142,9 +2154,64 @@ def _missing_trace_result(adapter: AdapterResult) -> AdapterResult:
         passed=False,
         inconclusive=True,
         failure_kind="artifact",
-        detail=_NO_WAVEFORM,
+        detail=_NO_WAVEFORM + _NO_WAVEFORM_REMEDY,
         test_results=tests,
     )
+
+
+def _is_artifact_failure(adapter: AdapterResult | None) -> TypeGuard[AdapterResult]:
+    return adapter is not None and adapter.failure_kind == "artifact"
+
+
+def _trace_candidates_clause(
+    handle: TargetHandle,
+    attempt: _Attempt,
+    trace_policy: TraceArtifactPolicy,
+) -> str:
+    """Name waveform files this attempt wrote that no trace setting declared.
+
+    Empty when the run left none behind (no claim is better than a guess).
+    """
+    root = handle.project_root
+    work_dir = Path(attempt.work.work_dir or attempt.work.build_dir)
+    work_dir = (work_dir if work_dir.is_absolute() else root / work_dir).resolve()
+    owned = {work_dir / "trace.fst", work_dir / "trace.vcd"}
+    if attempt.work.adapter in {"icarus", "cocotb"}:
+        owned.add(trace_policy.run_cwd / BOOLEY_DUMP_VCD_NAME)
+    ignored = {(root / PROJECT_DIR_NAME / ".runtime").resolve()}
+    ignored.add((resolve_checkout_project_dir(root) / ".runtime").resolve())
+    listed, omitted = trace_policy.fresh_candidates(
+        owned=frozenset(owned),
+        ignored_dirs=tuple(sorted(ignored)),
+        limit=_MAX_TRACE_CANDIDATES,
+    )
+    if not listed:
+        return ""
+    names = [_candidate_display(path, trace_policy.run_cwd) for path in listed]
+    if omitted:
+        names.append(f"+{omitted} more")
+    return "; waveform files created or changed by this run (listed, not adopted): " + ", ".join(
+        names
+    )
+
+
+def _candidate_display(path: Path, run_cwd: Path) -> str:
+    """Render *path* relative to the run cwd when inside it (a ``trace_files`` form)."""
+    try:
+        return path.relative_to(run_cwd).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _with_trace_diagnosis(adapter: AdapterResult, clause: str) -> AdapterResult:
+    """Append *clause* to every inconclusive detail, keeping the backend text first."""
+    if not clause:
+        return adapter
+    tests = tuple(
+        replace(test, detail=test.detail + clause) if test.verdict == "inconclusive" else test
+        for test in adapter.test_results
+    )
+    return replace(adapter, detail=adapter.detail + clause, test_results=tests)
 
 
 def _cycle_observation(

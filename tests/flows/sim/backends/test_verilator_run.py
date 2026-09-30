@@ -791,6 +791,19 @@ class TestDeclaredTraceFiles:
         assert "trace_files" in suffix
         assert evidence.status == "incident"
 
+    def test_incident_names_the_knob_when_declared_patterns_matched_nothing(self, tmp_path: Path):
+        class _Trace(TestDeclaredTraceFiles._FakeTrace):
+            def write_incident(self, reason, **_kw):
+                path = tmp_path / "trace_incident.txt"
+                path.write_text(reason)
+                return path
+
+        suffix, evidence = vr._finalize_trace(
+            _Trace(None), None, None, trace_files=["missing.vcd"], search_dirs=[tmp_path]
+        )
+        assert "[flows.sim].trace_files ['missing.vcd']" in suffix
+        assert evidence.status == "incident"
+
 
 def test_trace_file_round_trips_through_the_cli():
     args = vr._parse_args(["--bin-dir", "b", "--top", "t", "--trace", "--trace-file=fpu.vcd"])

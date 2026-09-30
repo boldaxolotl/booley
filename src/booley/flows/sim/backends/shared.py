@@ -169,6 +169,11 @@ def format_idle_note(idle_s: float, line_count: int) -> str:
     return f" — last output {idle_s:.0f}s ago, {line_count} line(s) total"
 
 
+# The dump name Booley itself arranges: Icarus's ``booley_vcd_dump`` module
+# hardcodes ``$dumpfile("dump.vcd")`` and cocotb passes it via ``--trace-file``.
+BOOLEY_DUMP_VCD_NAME = "dump.vcd"
+
+
 def trace_file_stamp(path: Path) -> tuple[int, int, int] | None:
     """Return a cheap trace identity for freshness checks."""
     try:
