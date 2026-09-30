@@ -7217,6 +7217,8 @@ def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
 
     assert not c.warned
     assert any("is committed" in m for m in c.passed)
+
+
 def test_ticket_board_layout_probe_fails_when_git_cannot_be_asked(tmp_path, monkeypatch):
     """Doctor FAILs a board whose tracked-state check Git could not answer."""
     from booley.ticket_board import legacy_layout
