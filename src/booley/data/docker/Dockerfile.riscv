@@ -109,7 +109,7 @@ RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
 # header-hygiene fixes and fails to compile on GCC 13 (Ubuntu 24.04's default)
 # with "uint64_t not declared". Use tested snapshots of official upstream
 # master, always pinned by full SHA. Before moving the pin, require upstream
-# Ubuntu 24.04 evidence plus this image build, make check, the PicoRV32 demo,
+# Ubuntu 26.04 evidence plus this image build, make check, the PicoRV32 demo,
 # and Spike differential flows. See docs/research/spike-release-channel.md.
 # The explicit checks make a broken build fail the image loudly.
 # ---------------------------------------------------------------------------
