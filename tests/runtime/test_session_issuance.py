@@ -1938,3 +1938,19 @@ def test_extracted_image_contract_requires_en_us_locale(tmp_path: Path) -> None:
         match="lacks the required en_US",
     ):
         eda_requirements.validate_image_observations(tmp_path)
+
+
+@pytest.mark.parametrize("section", ["remoteEnv", "containerEnv"])
+def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, section):
+    project, spec, path, _stamp = issued
+    assert (
+        spec[section]["BOOLEY_COMPILER_CACHE_ROOT"]
+        == "/booley-project/.runtime/compiler-cache/ccache"
+    )
+    spec[section].pop("BOOLEY_COMPILER_CACHE_ROOT")
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.validate(project, spec, path)
+    # An old Sandbox authenticates against its own stamp; the environment
+    # check must then name the actionable fix, not a generic key diff.
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="refresh the Sandbox"):
+        runtime_spec._validate_environment(spec, None)
