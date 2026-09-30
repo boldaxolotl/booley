@@ -268,7 +268,7 @@ across runs.
 booley flow sim --target sim_soc --coverage
 ```
 
-Then call the `coverage_analyst` MCP tool with
+Then call the `coverage_analyst` Specialist from your connected agent session with
 `campaign="<reports>/sim/12/targets/sim_soc/coverage.json"` for waiver candidates
 and testbench improvements (advisory only). The verdict card prints the exact
 `coverage.json` path to pass as `campaign`.
@@ -353,7 +353,7 @@ or runs.
 `coverage_analyst` explains one Campaign: what is uncovered, likely reasons,
 which tests to add, and possible waiver candidates for human review.
 
-Call the `coverage_analyst` MCP tool with `campaign="<exact coverage.json>"`.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact coverage.json>"`.
 
 It never runs simulation, changes Criteria, or approves waivers. See
 [USAGE.md](USAGE.md#coverage_analyst).

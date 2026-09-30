@@ -719,7 +719,7 @@ result to the Coverage Analyst for an explanation:
 booley flow sim --target sim_counter --coverage
 ```
 
-Then call the `coverage_analyst` MCP tool with
+Then call the `coverage_analyst` Specialist from your connected agent session with
 `campaign="<reports>/sim/12/targets/sim_counter/coverage.json"`.
 
 In a Ticket, add a [coverage criterion](CONFIG.md#native-coverage-configuration)
