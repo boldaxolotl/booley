@@ -682,8 +682,10 @@ result to the Coverage Analyst for an explanation:
 
 ```bash
 booley flow sim --target sim_counter --coverage
-booley flow coverage_analyst --campaign <reports>/sim/12/targets/sim_counter/coverage.json
 ```
+
+Then call the `coverage_analyst` Specialist from your connected agent session with
+`campaign="<reports>/sim/12/targets/sim_counter/coverage.json"`.
 
 In a Ticket, add a [coverage criterion](CONFIG.md#native-coverage-configuration)
 for each Target that needs one. Only a passing coverage run satisfies it. The
