@@ -3448,13 +3448,10 @@ async def _dispatch_booley_mcp_tool(
 
 
 def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> int:
-    """Whole-campaign sim watchdog derived from its sequential work units."""
-    from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
-    from booley.flows.sim.flow import (
-        _TRACE_CLEANUP_MARGIN_S,
-        _resolve_sim_campaign_work_units,
-        _resolve_sim_timeout_ms,
-    )
+    """Whole-invocation Simulation watchdog with mode-aware stage budgets."""
+    from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
+    from booley.flows.sim.config import resolve_sim_build_timeout_ms
+    from booley.flows.sim.flow import _resolve_sim_campaign_work_units, _resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
     work_dir_raw = arguments.get("work_dir")
@@ -3464,8 +3461,11 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         timeout_ms = _resolve_sim_timeout_ms(work_dir)
     else:
         timeout_ms = resolve_timeout_ms("sim", None, requested)
+    build_timeout_ms = resolve_sim_build_timeout_ms(work_dir)
+    run_s = max(1, timeout_ms // 1000)
+    build_s = max(1, build_timeout_ms // 1000)
     raw_target = str(arguments.get("target") or "").strip()
-    target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
+    target_count = _target_count(arguments)
     mode = normalize_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
     try:
         work_units = _resolve_sim_campaign_work_units(
@@ -3477,18 +3477,45 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count
-
-    if mode is SimulationMode.SIMULATE and _ticket_baseline_required("cycle_count_"):
-        work_units *= 2
-    trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0
-    call_margin_s = 0 if arguments.get("trace") else 30
-    return BudgetPlan(
-        timeout_ms=timeout_ms,
+    planned_s = _sim_planned_timeout_seconds(
+        arguments,
+        mode=mode,
+        target_count=target_count,
         work_units=work_units,
-        setup_grace_per_unit_s=0,
-        finalize_grace_s=trace_margin_s + call_margin_s,
-        execution_floor_s=default,
-    ).outer_timeout_s
+        run_s=run_s,
+        build_s=build_s,
+    )
+    return max(default, planned_s)
+
+
+def _sim_planned_timeout_seconds(
+    arguments: dict[str, Any],
+    *,
+    mode: Any,
+    target_count: int,
+    work_units: int,
+    run_s: int,
+    build_s: int,
+) -> int:
+    """Sum child stage limits plus finalization slack for one Simulation call."""
+    from booley.flows.base import DEFAULT_TIMEOUT_S
+    from booley.flows.sim.flow import _TRACE_CLEANUP_MARGIN_S
+    from booley.flows.sim.mode import SimulationMode
+
+    if mode.elaborates_only:
+        sweep_s = run_s if mode is SimulationMode.ELAB_ONLY_STANDALONE else 0
+        return target_count * build_s + sweep_s + 30
+    if arguments.get("coverage"):
+        runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + _TRACE_CLEANUP_MARGIN_S)
+        targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
+        return runs_s + targets_s + 30
+    baseline_scale = 2 if _ticket_baseline_required("cycle_count_") else 1
+    run_units = work_units * baseline_scale
+    build_units = target_count * baseline_scale
+    planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
+    if arguments.get("trace"):
+        planned_s += _TRACE_CLEANUP_MARGIN_S * run_units
+    return planned_s + 30
 
 
 def _target_count(arguments: dict[str, Any]) -> int:

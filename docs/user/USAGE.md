@@ -637,7 +637,7 @@ Deterministic end-to-end orchestration; no LLM:
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
 
-Every Flow's options, results, and reports are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md); `booley flow <name> --help` prints them too.
+Every Flow's options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), and its report files in [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md); `booley flow <name> --help` prints the options too.
 
 **Specialists**
 
@@ -698,13 +698,14 @@ problem. In a container terminal:
 
 ```bash
 booley flow                                  # list the Flows
-booley targets --for-flow sim                # Targets a Flow can use
+booley targets --for sim                     # Targets a Flow can use
 booley flow sim --target sim_soc --test reset
 booley flow sim --help                       # every option
 ```
 
 [FLOW_REFERENCE.md](FLOW_REFERENCE.md) has the full details: options, exit
-codes, results, reports, and output files.
+codes, and results. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md) defines the
+report files.
 
 **Coverage.** Coverage is collected only when you ask for it. Then pass the
 result to the Coverage Analyst for an explanation:

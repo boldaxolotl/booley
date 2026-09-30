@@ -568,7 +568,7 @@ def test_run_rejects_non_fpga_axis_before_setup(
 
     with pytest.raises(
         IncompatibleTargetError,
-        match=r"booley targets --for-flow fpga",
+        match=r"booley targets --for fpga",
     ):
         flow._run()
 

@@ -377,10 +377,13 @@ def test_timeout_before_terminal_record_has_no_verdict() -> None:
     outcome = classify_build_outcome(
         _result("still compiling", rc=-1, timed_out=True),
         "abc123",
+        timeout_s=7,
     )
 
     assert outcome.verdict is None
     assert outcome.failure_kind == "infrastructure"
+    assert outcome.reason == ("build timed out after 7 s (raise [flows.sim].build_timeout_ms)")
+    assert outcome.output.startswith(outcome.reason)
 
 
 def test_signal_style_build_exit_has_no_design_verdict() -> None:
@@ -574,7 +577,8 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
     )
     monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", lambda *a, **k: prepared)
     monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
-    monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 7000)
+    monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 3_600_000)
+    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
     captured: list[list[str]] = []
 
     def execute(command: list[str], *, timeout: int) -> SubprocessResult:
@@ -599,6 +603,34 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
     assert result.log_path
     log = tmp_path / result.log_path
     assert log.read_text(encoding="utf-8") == result.outcome.output
+
+
+def test_elaboration_plan_discloses_build_budget_as_its_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 3_600_000)
+    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
+    monkeypatch.setattr(flow, "_elab_only_dry_command", lambda _target: ["make"])
+    monkeypatch.setattr(flow, "_target_sim_env", lambda _target: {})
+
+    unit = flow._elaboration_work_unit("sim_dut")
+
+    assert unit.timeout_ms == 7000
+    assert unit.recipe["build_timeout_ms"] == 7000
+
+
+def test_elaboration_resolves_build_budget_from_project_config(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".booley_project"
+    config_dir.mkdir()
+    (config_dir / "booley.toml").write_text(
+        "[flows.sim]\nbuild_timeout_ms = 7000\n",
+        encoding="utf-8",
+    )
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+
+    assert flow._effective_build_timeout_ms() == 7000
 
 
 def test_setup_failure_archives_current_error_without_reusing_old_log(
@@ -638,6 +670,28 @@ def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(
     assert (tmp_path / target_pointer).read_text(encoding="utf-8").endswith("target output")
     assert sweep_pointer is not None
     assert (tmp_path / sweep_pointer).read_text(encoding="utf-8").endswith("sweep output")
+
+
+def test_elab_only_dry_run_renders_setup_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    monkeypatch.setattr(
+        flow,
+        "_target_handle",
+        lambda _target: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.flow.simulation_setup_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            SimulationBuildPreparationError("cgroup denied")
+        ),
+    )
+
+    assert flow._elab_only_dry_command("sim_dut") == [
+        "ERROR: sim elab-only dry-run: cgroup denied"
+    ]
 
 
 def test_elab_only_branch_skips_test_and_cocotb_discovery(

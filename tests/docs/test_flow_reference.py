@@ -1,7 +1,8 @@
-"""Keep the public Flow reference aligned with executable interfaces."""
+"""Keep the public Flow reference and report schemas aligned with executable interfaces."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -29,6 +30,8 @@ from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"
+REPORTS = REPO_ROOT / "docs" / "internals" / "FLOW_REPORTS.md"
+MCP_TOOLS = REPO_ROOT / "docs" / "internals" / "MCP-TOOLS.md"
 FLOW_TYPES = (
     SimulateFlow,
     LintFlow,
@@ -38,25 +41,28 @@ FLOW_TYPES = (
 FlowT = TypeVar("FlowT", bound=BooleyFlow)
 
 
-def _reference_text() -> str:
-    return REFERENCE.read_text(encoding="utf-8")
+def _reference_text(doc: Path = REFERENCE) -> str:
+    return doc.read_text(encoding="utf-8")
 
 
-def _flow_section(flow_name: str) -> str:
-    text = _reference_text()
+def _flow_section(flow_name: str, doc: Path = REFERENCE) -> str:
+    """Return the top-level ``## `<flow>` `` chapter of *doc*."""
+    text = _reference_text(doc)
     start = text.index(f"## `{flow_name}`")
     end = text.find("\n## ", start + 1)
     return text[start:] if end < 0 else text[start:end]
 
 
-def _shared_section() -> str:
-    return _reference_text().split("\n## `sim`", maxsplit=1)[0]
+def _shared_section(doc: Path = REFERENCE) -> str:
+    """Return everything in *doc* before its first per-Flow chapter."""
+    return _reference_text(doc).split("\n## `sim`", maxsplit=1)[0]
 
 
 def _documented_fields(flow_name: str) -> set[str]:
+    """Identifiers named in code spans of the report-schema chapter for a Flow."""
     code_spans = re.findall(
         r"(?<!`)`([^`\n]+)`(?!`)",
-        _shared_section() + _flow_section(flow_name),
+        _shared_section(REPORTS) + _flow_section(flow_name, REPORTS),
     )
     return {
         identifier
@@ -98,9 +104,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 @pytest.mark.parametrize("flow_type", FLOW_TYPES, ids=lambda flow_type: flow_type.name)
 def test_flow_reference_lists_every_long_cli_option(flow_type: type[Any]) -> None:
     flow = flow_type()
+    # Hidden (help=SUPPRESS) deprecated aliases are deliberately undocumented.
     parser_options = {
         option
         for action in build_parser(flow)._actions
+        if action.help != argparse.SUPPRESS
         for option in action.option_strings
         if option.startswith("--")
     }
@@ -123,18 +131,21 @@ def test_flow_reference_distinguishes_target_owned_synth_mode() -> None:
 
 
 def test_flow_reference_uses_the_executable_target_filter() -> None:
-    assert "`booley targets --for-flow <flow>`" in _shared_section()
-    assert "booley targets --for <flow>" not in _reference_text()
+    assert "`booley targets --for <flow>`" in _shared_section()
+    assert "booley targets --for-flow <flow>" not in _reference_text()
 
 
 def test_sim_campaign_resume_granularity_stays_documented() -> None:
     section = _flow_section("sim")
-    assert "Cocotb interruption retries its whole batch" in section
-    assert "coverage interruption" in section
+    assert "One resume continues one Target" in section
+    assert "| HDL | one test |" in section
+    assert "| cocotb | the whole batch |" in section
     assert "distinct nested Coverage Campaign" in section
-    assert "maximum-32 `observations` preview" in section
-    assert "`observation_total`" in section
-    assert "`observations_truncated`" in section
+    assert "Resume never\n  re-runs failures" in section
+    mcp = _reference_text(MCP_TOOLS)
+    assert "maximum-32 `observations` preview" in mcp
+    assert "`observation_total`" in mcp
+    assert "`observations_truncated`" in mcp
 
 
 def test_sim_configured_skip_control_stays_documented() -> None:
@@ -144,6 +155,17 @@ def test_sim_configured_skip_control_stays_documented() -> None:
     assert "overrides those entries" in section
     assert "fails preflight instead of passing vacuously" in section
     assert "all-skip target fails preflight" in config
+
+
+def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
+    shared = " ".join(_shared_section().split())
+    config = " ".join((REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+
+    assert "[flows.sim].build_timeout_ms" in shared
+    assert "recipe `build_timeout_ms`" in shared
+    assert "Standalone units" in shared and "have no build field" in shared
+    assert "defaults to `3600000` (one hour)" in config
+    assert "independent fixed 600-second budget" in config
 
 
 def test_sim_test_fields_stay_documented() -> None:
@@ -227,7 +249,9 @@ def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
 
 def test_lint_warning_row_fields_stay_documented() -> None:
     warning_row = next(
-        line for line in _flow_section("lint").splitlines() if line.startswith("| `warnings[]` |")
+        line
+        for line in _flow_section("lint", REPORTS).splitlines()
+        if line.startswith("| `warnings[]` |")
     )
     assert "`targets`" in warning_row
     assert "`eda_tools`" in warning_row

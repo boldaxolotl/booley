@@ -41,7 +41,12 @@ from booley.flows.sim.verilator_coverage import (
 )
 
 from .codec import SimulationCampaignIntegrityError, encode_executable_snapshot
-from .coordinator import CampaignFailureContext, SerialWorkExecutor, WorkExecutionRequest
+from .coordinator import (
+    CampaignFailureContext,
+    SerialWorkExecutor,
+    WorkExecutionRequest,
+    simulation_options_from_policy,
+)
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
@@ -313,12 +318,9 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             raise SimulationCampaignIntegrityError(
                 "coverage plan is missing for campaign Target"
             ) from exc
-        options = SimulationOptions(
+        options = simulation_options_from_policy(
+            request.policy,
             trace=cast(bool, request.manifest.document["workload"]["trace"]),
-            timeout_ms=round(request.policy.timeout_seconds * 1000)
-            if request.policy.timeout_seconds is not None
-            else None,
-            result_verbosity=request.policy.result_verbosity,
         )
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         source_recipe = cast(Mapping[str, object], workload["source_recipe"])

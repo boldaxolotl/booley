@@ -50,9 +50,10 @@ _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 # Docs render: user docs link to the full per-Flow reference instead of
 # repeating the control summaries that `booley cheat` carries.
 _FLOW_REFERENCE_POINTER = (
-    "Every Flow's options, results, and reports are in "
-    "[FLOW_REFERENCE.md](FLOW_REFERENCE.md); `booley flow <name> --help` "
-    "prints them too."
+    "Every Flow's options and results are in "
+    "[FLOW_REFERENCE.md](FLOW_REFERENCE.md), and its report files in "
+    "[FLOW_REPORTS.md](../internals/FLOW_REPORTS.md); `booley flow <name> --help` "
+    "prints the options too."
 )
 
 _FLOW_KEY_CONTROLS: dict[str, str] = {

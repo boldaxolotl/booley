@@ -7,11 +7,13 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Final
 
+from booley.core.boundary import BoundaryError, require_int
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
 from booley.targets.flow_names import config_section
 
 DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3
 DEFAULT_SIM_TIMEOUT_MS: Final[int] = default_timeout_ms("sim")
+DEFAULT_SIM_BUILD_TIMEOUT_MS: Final[int] = 3_600_000
 _RUN_CWD_FIELDS = frozenset({"campaign", "target", "test", "attempt"})
 
 
@@ -25,7 +27,8 @@ def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
         return {}
     if not config:
         return {}
-    return config_section(config.get("flows", {}), "sim")
+    flows = config.get("flows", {})
+    return config_section(flows, "sim") if isinstance(flows, Mapping) else {}
 
 
 def resolve_run_cwd(work_dir: Path | str | None = None) -> str:
@@ -97,6 +100,18 @@ def resolve_sim_timeout_ms(work_dir: Path | str | None = None) -> int:
     """Return the Project-owned default simulator timeout in milliseconds."""
     path = Path(work_dir) if work_dir is not None else None
     return resolve_timeout_ms("sim", path, None)
+
+
+def resolve_sim_build_timeout_ms(work_dir: Path | str | None = None) -> int:
+    """Return the Project-owned simulator-image build timeout in milliseconds."""
+    field = "[flows.sim].build_timeout_ms"
+    configured = _sim_config(work_dir).get("build_timeout_ms")
+    if configured is None:
+        return DEFAULT_SIM_BUILD_TIMEOUT_MS
+    timeout_ms = require_int(configured, field=field)
+    if timeout_ms <= 0:
+        raise BoundaryError(f"{field} must be a positive integer, got {timeout_ms!r}")
+    return timeout_ms
 
 
 def resolve_sim_time_grace_s(work_dir: Path | str | None = None) -> float:
