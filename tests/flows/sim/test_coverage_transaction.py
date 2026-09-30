@@ -871,3 +871,85 @@ def gated_ticket_plan(tmp_path):
         ),
     )
     return plan, state, state_path
+
+
+def _gap_plan(tmp_path):
+    context = project(tmp_path)
+    (tmp_path / "rtl/unused.sv").write_text("module unused; endmodule\n")
+    core = tmp_path / "counter.core"
+    core.write_text(
+        core.read_text().replace(
+            "files: [rtl/counter.sv]", "files: [rtl/counter.sv, rtl/unused.sv]"
+        )
+    )
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    from booley.flows.sim.verilator_declarations import (
+        Declaration,
+        DeclarationInventory,
+        DeclarationSource,
+    )
+
+    sources = tuple(
+        DeclarationSource(
+            r["path"], (r["path"],), r["sha256"], "systemVerilogSource", False, False
+        )
+        for r in plan.source_closure["rtl"]
+    )
+    inventory = DeclarationInventory(
+        (PINNED_VERILATOR.tag, PINNED_VERILATOR.commit),
+        "producing-generation:1",
+        sources,
+        tuple(sorted(Declaration("MODULE", s.path, s.path, s.path, 1, 1) for s in sources)),
+    )
+
+    class Execution(NativeExecution):
+        def build(self, request):
+            return SimulationBuildResult(True, collector=PINNED_VERILATOR, declarations=inventory)
+
+    return plan, Execution()
+
+
+def test_direct_publication_preserves_source_gaps_and_card_preview(tmp_path):
+    from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
+    from booley.flows.sim.coverage_source_gaps import source_gap_summary
+
+    plan, execution = _gap_plan(tmp_path)
+    outcome = run_coverage_target(plan, execution, Progress())
+    assert outcome.exit_code == 0
+    loaded = load_coverage_campaign(outcome.campaign_path)
+    assert source_gap_summary(loaded.campaign).paths == ("rtl/unused.sv",)
+    session = CoverageEvidenceSession(loaded.campaign, None)
+    assert session.query({"view": "zero_point_sources"})["paths"] == ["rtl/unused.sv"]
+    flow = SimulateFlow()
+    from booley.flows.sim.request import SimRequest
+
+    flow.context._args = SimRequest(work_dir=tmp_path)
+    assert "RTL sources without coverage points: 1" in flow._coverage_result([outcome]).report_text
+    assert "rtl/unused.sv" in flow._coverage_result([outcome]).report_text
+    owned = _coverage_owned_files(
+        outcome.campaign_path.parent, outcome.campaign_path.parent, loaded
+    )
+    assert (outcome.campaign_path.parent / "declarations/inventory.json").absolute() in owned
+
+
+def test_compact_inventory_tampering_is_an_integrity_failure(tmp_path):
+    plan, execution = _gap_plan(tmp_path)
+    outcome = run_coverage_target(plan, execution, Progress())
+    assert outcome.exit_code == 0
+    inventory = outcome.campaign_path.parent / "declarations/inventory.json"
+    inventory.write_text("{}")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        load_coverage_campaign(outcome.campaign_path)
+
+
+def test_incomplete_collection_never_accuses_module_sources(tmp_path):
+    from booley.flows.sim.coverage_source_gaps import GAP_CODE, INCOMPLETE_CODE
+
+    plan, execution = _gap_plan(tmp_path)
+    execution.missing = True
+    outcome = run_coverage_target(plan, execution, Progress())
+    campaign = load_coverage_campaign(outcome.campaign_path).campaign
+    assert outcome.exit_code == 2
+    assert not any(f.code in {GAP_CODE, INCOMPLETE_CODE} for f in campaign.findings)
+    assert any(a.kind == "declaration_inventory" for a in campaign.artifacts)

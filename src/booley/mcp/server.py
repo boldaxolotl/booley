@@ -143,7 +143,8 @@ _STATUS_MCP_TOOL_DESCRIPTION = "Show whether Booley Interactive Mode is ready in
 _COVERAGE_EVIDENCE_TOOL_NAME = "coverage_evidence"
 _COVERAGE_EVIDENCE_TOOL_DESCRIPTION = (
     "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
-    "Coverage Analyst. Start with view='overview'; use view='points' for filtered exact "
+    "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' "
+    "to page through RTL sources with no native records, and view='points' for filtered exact "
     "Coverage Points and view='source' for verified excerpts associated with previously "
     "returned point_refs."
 )
@@ -2188,7 +2189,10 @@ def _coverage_evidence_tool_def() -> dict[str, Any] | None:
         "schema": {
             "type": "object",
             "properties": {
-                "view": {"type": "string", "enum": ["overview", "points", "source"]},
+                "view": {
+                    "type": "string",
+                    "enum": ["overview", "points", "source", "zero_point_sources"],
+                },
                 "metric": {"type": "string"},
                 "source": {"type": "string"},
                 "covered": {"type": "boolean"},

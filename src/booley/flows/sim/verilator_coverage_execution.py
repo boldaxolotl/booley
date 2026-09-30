@@ -86,6 +86,8 @@ from .verilator_coverage import (
     VerilatorCollectorIdentity,
     collect,
 )
+from .verilator_declaration_build import capture_build_declarations
+from .verilator_declarations import DeclarationInventory
 
 _PROVENANCE_PATH = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
 _VERSION_RE = re.compile(r"\bVerilator (?P<version>[0-9]+\.[0-9]+)\b")
@@ -150,6 +152,7 @@ class VerilatorCoverageExecution:
         if identity is None:
             return SimulationBuildResult(False, version_output, infrastructure_error=True)
         try:
+            inspection = TargetCatalog.build(self._handle.project_root).inspect(self._handle)
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
             with SimulationBuildSession(self._handle, request.variant.name) as session:
@@ -170,10 +173,28 @@ class VerilatorCoverageExecution:
                 if result.success:
                     self._artifact_paths = session.authorize_fresh_image(prepared, inputs)
                     self._build_variant = request.variant.name
+                    result = replace(
+                        result,
+                        declarations=self._declarations(prepared, inspection, identity, inputs),
+                    )
                 return result
         except SimulationBuildSlotError as exc:
             self._prepared = None
             return SimulationBuildResult(False, str(exc), infrastructure_error=True)
+
+    def _declarations(
+        self,
+        prepared: PreparedSimulationBuild,
+        inspection: TargetInspection,
+        identity: VerilatorCollectorIdentity,
+        inputs: dict[str, str],
+    ) -> DeclarationInventory:
+        return capture_build_declarations(
+            prepared,
+            inspection,
+            compiler=(identity.tag, identity.commit),
+            build_inputs=inputs,
+        )
 
     def _prepare_build(
         self, request: SimulationBuildRequest, *, build_root: Path | None = None

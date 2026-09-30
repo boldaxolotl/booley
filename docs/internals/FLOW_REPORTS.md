@@ -224,6 +224,31 @@ In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 exit code. `coverage_campaign` points to the Target-level reference once it
 has been written.
 
+New coverage builds also publish `declarations/inventory.json`, registered as
+artifact kind `declaration_inventory` with `contract_version:
+booley.verilator-declarations/v1` and `discovery_status: complete|incomplete`.
+It records declaration kinds/names/locations, producing compiler and build
+identity, source aliases/roles/hashes, diagnostics, raw evidence references,
+and native source presence captured before record-class filtering. This uses
+the existing artifact envelope; old Campaigns remain readable and mean
+"discovery not recorded" when the artifact is absent.
+
+`COV_RTL_SOURCE_WITHOUT_POINTS` findings address exact paths through
+`/source_closure/rtl/<index>/path`. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE` suppresses
+source-gap accusations for that Target. These warnings do not change collection,
+evaluation, Criteria, percentages, or exit codes. The verdict card previews three
+escaped paths; the Analyst overview previews 50 and `zero_point_sources` pages
+through the complete sorted list with `limit` (1–100) and `cursor`. Report-only
+access works without current Project source files. Invalid advisory pointers
+are counted as unusable evidence without invalidating point scoring.
+
+Raw compiler dumps are bounded diagnostic artifacts under `build-evidence/`,
+kind `declaration_raw`. Their hashes bind them to the compact inventory; they are
+not executable snapshot inputs or Analyst context. Compact inventory and findings
+survive native-only pruning; full Campaign pruning removes all these artifacts.
+Raw diagnostics may follow build-evidence retention independently; interpreting
+the compact inventory does not require raw dumps or the old build generation.
+
 ### Coverage retention
 
 `python -m booley.flows.sim.campaign_retention` deletes the evidence of one

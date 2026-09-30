@@ -159,7 +159,7 @@ def _analysis_prompt(
         {
             **envelope.model_campaign,
             "evidence_access": (
-                "Use the coverage_evidence tool for overview, points, and verified source "
+                "Use the coverage_evidence tool for overview, zero_point_sources, points, and verified source "
                 "excerpts. Begin with overview, retrieve only evidence needed for the "
                 "analysis, and cite only point_ref values returned by the tool."
             ),
