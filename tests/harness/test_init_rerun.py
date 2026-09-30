@@ -19,6 +19,7 @@ with a stubbed image build.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -761,3 +762,175 @@ class TestProjectGitignoreBackfill:
         assert "tickets/board/" not in lines
         assert "tickets/state/" not in lines
         assert "tickets/logs/" in lines
+
+
+# ---------------------------------------------------------------------------
+# Windows filesystem evidence for #609 (runs in the Windows CI shards)
+# ---------------------------------------------------------------------------
+
+
+def _git(repository: Path, *args: str) -> str:
+    """Run one Git command in *repository* and return its stdout."""
+    result = subprocess.run(
+        ["git", "-C", str(repository), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout
+
+
+def _crlf_project_data(project_dir: Path) -> list[str]:
+    """Tracked or untracked Project data whose working-tree copy has CRLF.
+
+    ``git ls-files --eol`` reports ``w/crlf`` (or ``w/mixed``) for such files;
+    ignored runtime state is out of scope.
+    """
+    listing = _git(project_dir, "ls-files", "--eol", "--cached", "--others", "--exclude-standard")
+    return [line for line in listing.splitlines() if "w/crlf" in line or "w/mixed" in line]
+
+
+_IDENTITY = ("-c", "user.name=t", "-c", "user.email=t@t")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Windows link and text-mode semantics")
+class TestWindowsProjectDataLineEndings:
+    """Real Project Initialization on the Windows filesystem (#609).
+
+    Nothing that writes files is stubbed: init creates the project data, the
+    guidance links, and runs the line-ending repair against real Git. Only
+    host services (bootstrap, image, auth, Runtime) are stubbed by ``repo``.
+    ``force_hardlink_fallback`` makes the guidance symlink attempt fail the way
+    it does without Developer Mode (CI runners are admin, so symlinks would
+    otherwise succeed) and exercises the hardlink fallback from #609.
+    """
+
+    @pytest.fixture(params=[True, False], ids=["hardlink-fallback", "native-links"])
+    def force_hardlink_fallback(
+        self, request: pytest.FixtureRequest, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> bool:
+        if request.param:
+            original_symlink_to = Path.symlink_to
+            project_root = os.path.normcase(repo.resolve())
+
+            def no_developer_mode(link: Path, *args: object, **kwargs: object) -> None:
+                """Refuse only the root guidance symlinks, as Windows does sans Developer Mode."""
+                is_guidance = link.name in ("AGENTS.md", "CLAUDE.md") and (
+                    os.path.normcase(link.parent.resolve()) == project_root
+                )
+                if is_guidance:
+                    raise OSError(1314, "A required privilege is not held by the client")
+                return original_symlink_to(link, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "symlink_to", no_developer_mode)
+
+        current_image = LifecycleResult(
+            selected_reference="booley-sandbox",
+            selected_id="sha256:test-image",
+            status=ImageLifecycleStatus.CURRENT,
+        )
+
+        def current_image_step(ctx: InitContext, _bootstrap: object = None) -> LifecycleResult:
+            ctx.record("docker_image", "skip", "current")
+            return current_image
+
+        monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image_step)
+        monkeypatch.setattr(
+            init_cmd,
+            "_step_auth",
+            lambda ctx, *_args, **_kwargs: ctx.record("auth", "skip", "current"),
+        )
+        return request.param
+
+    @staticmethod
+    def _check_only(root: Path) -> int:
+        args = _init_args()
+        args.check_only = True
+        reset_cache()
+        return init_cmd.run_init(args, root)
+
+    def _assert_safe_and_linked(self, repo: Path, *, hardlink: bool) -> None:
+        project_dir = repo / ".booley_project"
+        canonical = project_dir / "AGENTS.md"
+        assert b"\r" not in canonical.read_bytes()
+        assert _crlf_project_data(project_dir) == []
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            entry = repo / name
+            assert entry.samefile(canonical), name
+            if hardlink:
+                assert not entry.is_symlink(), name
+        if hardlink:
+            assert canonical.stat().st_nlink == 3
+        assert self._check_only(repo) == 0
+
+    def test_clean_windows_init_writes_lf_project_data_and_passes_check_only(
+        self, repo: Path, force_hardlink_fallback: bool
+    ) -> None:
+        project_dir = repo / ".booley_project"
+        project_dir.mkdir()
+        # booley-setup Step 3 authors the canonical guidance; init links it.
+        (project_dir / "AGENTS.md").write_bytes(b"# Guidance\n\nUse LF.\n")
+
+        assert _run_full_init(repo) == 0
+        self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
+
+        # Committing the scaffolds keeps them LF in the index and worktree.
+        _git(project_dir, "add", "-A")
+        _git(project_dir, *_IDENTITY, "commit", "-qm", "setup")
+        eol = _git(project_dir, "ls-files", "--eol")
+        assert "booley.toml" in eol
+        assert "i/crlf" not in eol
+        self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
+
+    def test_crlf_project_data_behind_guidance_links_is_repaired(
+        self,
+        repo: Path,
+        force_hardlink_fallback: bool,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        project_dir = repo / ".booley_project"
+        project_dir.mkdir()
+        _git(project_dir, "init", "-q")
+        (project_dir / "AGENTS.md").write_bytes(b"# Guidance\n\nUse LF.\n")
+        (project_dir / "booley.toml").write_bytes(
+            b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
+        )
+        (project_dir / "notes.md").write_bytes(b"# Notes\n")
+        _git(project_dir, "add", "-A")
+        _git(project_dir, *_IDENTITY, "commit", "-qm", "project data")
+
+        # 1. A Windows checkout with Git for Windows' default autocrlf=true:
+        #    every tracked Project data file lands with CRLF, index clean.
+        _git(project_dir, "config", "core.autocrlf", "true")
+        for name in _git(project_dir, "ls-files").splitlines():
+            (project_dir / name).unlink()
+        _git(project_dir, "checkout", "--", ".")
+        assert b"\r\n" in (project_dir / "AGENTS.md").read_bytes()
+
+        # 2. An uncommitted user edit makes the line-ending repair refuse, so
+        #    init reports setup incomplete (#611) -- yet the guidance step still
+        #    links the root guidance to the CRLF canonical file.
+        with (project_dir / "notes.md").open("ab") as notes:
+            notes.write(b"work in progress\r\n")
+        assert _run_full_init(repo) == 2
+        assert "refusing to normalize" in capsys.readouterr().out
+        canonical = project_dir / "AGENTS.md"
+        assert b"\r\n" in canonical.read_bytes()
+        assert (repo / "AGENTS.md").samefile(canonical)
+        if force_hardlink_fallback:
+            assert not (repo / "AGENTS.md").is_symlink()
+            assert canonical.stat().st_nlink == 3
+        assert self._check_only(repo) != 0
+
+        # 3. The user commits the edit and re-runs init, as init instructs. The
+        #    Booley-created hardlinks no longer block the repair (#609).
+        _git(project_dir, "add", "notes.md")
+        _git(project_dir, *_IDENTITY, "commit", "-qm", "notes")
+        capsys.readouterr()
+        assert _run_full_init(repo) == 0
+        output = capsys.readouterr().out
+        if force_hardlink_fallback:
+            assert "released guidance hardlink AGENTS.md" in output
+        assert _git(project_dir, "config", "--local", "core.autocrlf").strip() == "false"
+        self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)

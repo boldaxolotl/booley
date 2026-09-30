@@ -298,6 +298,19 @@ def test_persist_selection_preserves_existing_config_text(tmp_path):
     assert updated.endswith('[agent]\nprovider = "claude"\nauth = "api_key"\n')
 
 
+def test_persist_selection_writes_project_data_with_lf(tmp_path):
+    """Windows text mode must not turn booley.toml into CRLF project data (#609)."""
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    config = project_dir / "booley.toml"
+    config.write_bytes(b"# user comment\n[flows.sim]\nenabled = false\n")
+    selection = init_cmd.AgentSelection("claude", "api_key", True, True)
+
+    assert init_cmd._step_agent_config(InitContext(project_root=tmp_path), selection, config)
+
+    assert b"\r\n" not in config.read_bytes()
+
+
 def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeypatch):
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()

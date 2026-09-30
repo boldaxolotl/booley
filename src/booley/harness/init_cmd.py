@@ -677,7 +677,7 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         return False
     content = path.read_text(encoding="utf-8") if path.is_file() else ""
     updated = _insert_agent_fields(content, fields)
-    path.write_text(updated, encoding="utf-8")
+    path.write_text(updated, encoding="utf-8", newline="\n")
     ok(f"recorded [agent] {selection.provider}/{selection.auth} in {path}")
     ctx.record("agent_config", "ok", f"{selection.provider}/{selection.auth}")
     return True
