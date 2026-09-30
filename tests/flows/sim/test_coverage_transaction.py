@@ -461,14 +461,17 @@ def test_collector_errors_are_durable_command_errors_without_changing_simulation
     assert json.loads(outcome.simulation_path.read_text())["passed"] is True
 
 
-@pytest.mark.parametrize("gated", [False, True])
-def test_invalid_waivers_block_only_requested_evaluation(tmp_path, gated):
-    from fractions import Fraction
-
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
-
-    context = project(tmp_path)
+def _run_with_waivers(
+    tmp_path: Path,
+    waiver_config,
+    *,
+    invocation: str,
+    gated: bool = False,
+    no_waivers: bool = False,
+    prepare=None,
+):
+    """Run ``sim_0`` once under ``reports/sim/<invocation>``; return (context, plan, outcome)."""
+    context = prepare() if prepare is not None else project(tmp_path)
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),
         (CoverageThreshold("line", Fraction(100)),),
@@ -477,15 +480,101 @@ def test_invalid_waivers_block_only_requested_evaluation(tmp_path, gated):
     context = replace(
         context,
         criteria={"coverage_sim_0": criterion} if gated else {},
-        waiver_config=CoverageWaiverConfig("rtl_repository", "../unsafe"),
+        waiver_config=waiver_config,
     )
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
-    outcome = run_coverage_target(plan, NativeExecution(), Progress())
-    assert outcome.exit_code == (2 if gated else 0)
-    document = json.loads(outcome.campaign_path.read_text())
-    assert document["evaluation"]["status"] == ("blocked" if gated else "not_requested")
-    assert document["collection"]["status"] == "complete"
+    request = CoverageInvocationRequest(("sim_0",), no_waivers=no_waivers, diagnostic=no_waivers)
+    prepared = prepare_coverage_invocation(request, context)
+    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim" / invocation)
+    return plan, run_coverage_target(plan, NativeExecution(), Progress())
+
+
+def test_ungated_run_applies_approved_waivers_and_no_waivers_reports_raw(tmp_path):
+    import hashlib
+
+    from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
+    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
+
+    context = project(tmp_path)
+    _plan, first = _run_with_waivers(tmp_path, None, invocation="1", prepare=lambda: context)
+    assert first.exit_code == 0
+    point_id = load_coverage_campaign(first.campaign_path).campaign.points[0].id
+    digest = hashlib.sha256((tmp_path / "rtl/counter.sv").read_bytes()).hexdigest()
+    waiver_file = tmp_path / "project-data/coverage-waivers/rtl/counter.sv.toml"
+    waiver_file.parent.mkdir(parents=True)
+    waiver_file.write_text(
+        f'''schema = "booley.coverage-waivers/v1"
+source = "rtl/counter.sv"
+source_sha256 = "sha256:{digest}"
+
+[[approval]]
+id = "counter-line"
+target = "acme:demo:counter:1#sim_0"
+point_id = "{point_id}"
+reason = "excluded"
+justification = "Reserved behavior is intentionally excluded."
+approved_by = "verification-owner@example.test"
+approved_at = "2026-08-31T09:00:00Z"
+approval_ref = "review:CR-1042"
+''',
+        encoding="utf-8",
+    )
+    config = CoverageWaiverConfig("project_data_repository", "coverage-waivers")
+
+    _plan, second = _run_with_waivers(tmp_path, config, invocation="2", prepare=lambda: context)
+    assert second.exit_code == 0
+    loaded = load_coverage_campaign(second.campaign_path)
+    assert loaded.campaign.evaluation["status"] == "not_requested"
+    assert loaded.campaign.points[0].disposition["kind"] == "waived"
+    rollup = loaded.campaign.rollups[0]
+    assert (rollup.eligible_points, rollup.waived_points, rollup.percent) == (0, 1, None)
+    session = CoverageEvidenceSession(loaded.campaign, None)
+    matched = session.query({"view": "points", "disposition": "waived"})["matched_points"]
+    assert matched == 1
+
+    _plan, third = _run_with_waivers(
+        tmp_path, config, invocation="3", no_waivers=True, prepare=lambda: context
+    )
+    assert third.exit_code == 0
+    raw = load_coverage_campaign(third.campaign_path).campaign
+    assert raw.evaluation["status"] == "not_requested"
+    assert raw.points[0].disposition["kind"] == "eligible"
+    assert (raw.rollups[0].eligible_points, raw.rollups[0].waived_points) == (1, 0)
+
+
+@pytest.mark.parametrize("invalid", ["unsafe_directory", "malformed_file"])
+def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
+    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
+    from booley.flows.sim.request import SimRequest
+
+    results = {}
+    for gated in (False, True):
+        root = tmp_path / f"gated-{gated}"
+        root.mkdir()
+        context = project(root)
+        if invalid == "unsafe_directory":
+            config = CoverageWaiverConfig("rtl_repository", "../unsafe")
+        else:
+            bad = root / "project-data/coverage-waivers/rtl/counter.sv.toml"
+            bad.parent.mkdir(parents=True)
+            bad.write_text("this is = not [valid toml\n", encoding="utf-8")
+            config = CoverageWaiverConfig("project_data_repository", "coverage-waivers")
+        _plan, outcome = _run_with_waivers(
+            root, config, invocation="1", gated=gated, prepare=lambda context=context: context
+        )
+        assert outcome.exit_code == 2
+        document = json.loads(outcome.campaign_path.read_text())
+        assert document["evaluation"]["status"] == "blocked"
+        assert document["collection"]["status"] == "complete"
+        flow = SimulateFlow()
+        flow.context._args = SimRequest(work_dir=root)
+        assert "--no-waivers" in flow._coverage_result([outcome]).report_text
+        results[gated] = [
+            (item["code"], item["pointer"], item["message"])
+            for item in document["evaluation"]["diagnostics"]
+        ]
+    assert results[False] and results[False] == results[True]
+    if invalid == "unsafe_directory":
+        assert results[False][0][0] == "COV_WAIVER_DIRECTORY_UNSAFE"
 
 
 def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):

@@ -135,8 +135,9 @@ set. Invalid-set cases start from both valid unreachable approvals on sim_waiver
 and alter one named field, preserving the second valid approval to prove that no
 subset is applied. Make every corruption in a separate owned directory copy.
 The excluded-with-proof case changes one reason to excluded while keeping proof.
-For ungated bypass, use a non-readable owned approval directory with a malformed
-file and confirm its contents/permissions are the same before and after.
+For the `--no-waivers` bypass, use a non-readable owned approval directory with a
+malformed file and confirm its contents/permissions are the same before and
+after. A plain ungated run over it must block with rc2.
 
 ## Filesystem publication faults: precise interception and reversal
 
