@@ -227,7 +227,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "`MINOR` findings. A terminal `_done` review reports findings without "
         "triggering fixes; `_clean` requires every finding to be verified fixed "
         "or explicitly waived with user-visible justification.",
-        'Call the `reviewer` MCP tool with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.',
+        'Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.',
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -243,7 +243,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
     lines.extend(
         [
             "",
-            'MCP arguments: required `scope="<file,...>"` selects files; '
+            'Arguments: required `scope="<file,...>"` selects files; '
             '`steer=["<context>"]` adds review context; `dry_run=true` validates and previews '
             "without invoking an agent. The `spec` focus needs specification text: "
             "Ticket Mode resolves its mounted ticket or linked spec automatically, "
@@ -265,7 +265,7 @@ def _render_mutation_tester_reference() -> list[str]:
         "",
         "**Mutation campaign modes:**",
         "",
-        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode MCP arguments |",
+        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |",
         "|----------|-----------------------------------------|------------------------|",
         "| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |",
         '| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |',
@@ -274,7 +274,7 @@ def _render_mutation_tester_reference() -> list[str]:
         "`dry_run=true` validates Target metadata and prints the source-size breakdown "
         "and proposed auto count without invoking an agent or simulator.",
         "",
-        'Call the `mutation_tester` MCP tool: `scope="<rtl-file,...>"` chooses mutation sites; '
+        'Call the `mutation_tester` Specialist from your connected agent session: `scope="<rtl-file,...>"` chooses mutation sites; '
         '`target="<sim-target>"` chooses exactly one complete runnable Target suite; '
         '`steer=["<context>"]` biases mutation selection. A valid lock '
         "is reused on later runs, so new steering takes effect only with "
@@ -288,7 +288,7 @@ def _render_coverage_analyst_reference() -> list[str]:
     return [
         "#### `coverage_analyst`",
         "",
-        'Call the `coverage_analyst` MCP tool with `campaign="<exact-coverage.json>" '
+        'Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` '
         'and optional `instruction="<question>"`. The read-only Analyst explains retained '
         "native evidence and proposes advisory next steps. It does not run "
         "Simulation, read waveforms, evaluate Criteria, or approve waivers. "
@@ -309,7 +309,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
     lines = [
         "LLM-backed sub-agents running in scoped, isolated workspaces:",
         "",
-        "Invoke Specialists through MCP tools from your connected agent session. "
+        "Ask your connected agent session to invoke a Specialist by name with the arguments below. "
         "Specialists currently have no public CLI; "
         "[public Specialist CLI support is tracked in #783]"
         "(https://github.com/boldaxolotl/booley/issues/783).",

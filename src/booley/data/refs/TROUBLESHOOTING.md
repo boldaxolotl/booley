@@ -674,7 +674,7 @@ to compensate for an incorrect project-data path or for native-only pruning.
 
 ### Coverage Analyst input and model availability
 
-Call the `coverage_analyst` MCP tool with
+Call the `coverage_analyst` Specialist from your connected agent session with
 `campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
 Target names, `latest`, the point-store path, waveforms, and legacy
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid

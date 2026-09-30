@@ -99,7 +99,7 @@ Key Flow-specific controls:
 <!-- BEGIN GENERATED: specialists -->
 LLM-backed sub-agents running in scoped, isolated workspaces:
 
-Invoke Specialists through MCP tools from your connected agent session. Specialists currently have no public CLI; [public Specialist CLI support is tracked in #783](https://github.com/boldaxolotl/booley/issues/783).
+Ask your connected agent session to invoke a Specialist by name with the arguments below. Specialists currently have no public CLI; [public Specialist CLI support is tracked in #783](https://github.com/boldaxolotl/booley/issues/783).
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
@@ -109,12 +109,12 @@ Invoke Specialists through MCP tools from your connected agent session. Speciali
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` MCP tool with `campaign="<exact-coverage.json>" and optional `instruction="<question>"`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. A terminal `_done` review reports findings without triggering fixes; `_clean` requires every finding to be verified fixed or explicitly waived with user-visible justification.
-Call the `reviewer` MCP tool with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
+Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -126,7 +126,7 @@ Call the `reviewer` MCP tool with `scope="<file,...>"`, `category="<category>"`,
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-MCP arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while Interactive Mode uses `spec="<path>"`.
+Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while Interactive Mode uses `spec="<path>"`.
 
 #### `mutation_tester`
 
@@ -134,7 +134,7 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 **Mutation campaign modes:**
 
-| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode MCP arguments |
+| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |
 |----------|-----------------------------------------|------------------------|
 | Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
 | Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
@@ -142,7 +142,7 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 `dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
 
-Call the `mutation_tester` MCP tool: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+Call the `mutation_tester` Specialist from your connected agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: specialists -->
 
 Booley validates exact replacements and compiles each in isolation. It emits a
@@ -156,52 +156,52 @@ variants, and the first public test that killed each detected mutant.
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | MCP tool `sim --mode elab-only` | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | MCP tool `sim --mode elab-only-standalone` | pre-sim |
-| `lint_clean_{target}` | The Target's linter passes with no unwaived findings | MCP tool `lint` | pre-sim |
+| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim` (`mode="elab-only"`) | pre-sim |
+| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim` (`mode="elab-only-standalone"`) | pre-sim |
+| `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
 
 #### RTL Code Review
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | MCP tool `reviewer --category rtl --focus bugs` | pre-sim |
-| `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | MCP tool `reviewer --category rtl --focus protocol` | pre-sim |
-| `review_rtl_spec` | RTL review: spec compliance (RTL matches the ticket/spec, no more, no less) | MCP tool `reviewer --category rtl --focus spec` | pre-sim |
-| `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | MCP tool `reviewer --category rtl --focus code_style` | post-sim |
-| `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | MCP tool `reviewer --category rtl --focus optimization` | post-sim |
-| `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | MCP tool `reviewer --category rtl --focus security` | post-sim |
+| `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) | pre-sim |
+| `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) | pre-sim |
+| `review_rtl_spec` | RTL review: spec compliance (RTL matches the ticket/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
+| `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) | post-sim |
+| `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) | post-sim |
+| `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) | post-sim |
 
 #### Testbench Review
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | MCP tool `reviewer --category tb --focus quality` | pre-sim |
+| `review_tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer` (`category="tb"`, `focus="quality"`) | pre-sim |
 
 #### Simulation
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `cycle_count_{target,test}` | A named test passes and its observed Cycle Count meets every declared threshold | MCP tool `sim` | sim loop |
-| `sim_pass_{target}` | RTL simulation passes all tests | MCP tool `sim` | sim loop |
+| `cycle_count_{target,test}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` | sim loop |
+| `sim_pass_{target}` | RTL simulation passes all tests | `sim` | sim loop |
 
 #### Coverage
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `coverage_{target}` | Native Coverage Campaign policy for one Simulation Target | MCP tool `sim --coverage` | post-sim |
+| `coverage_{target}` | Native Coverage Campaign policy for one Simulation Target | `sim` (`coverage=true`) | post-sim |
 
 #### Verification Quality
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `mutation_score_{target}` | Mutation testing achieves minimum kill rate | MCP tool `mutation_tester` | post-sim |
+| `mutation_score_{target}` | Mutation testing achieves minimum kill rate | `mutation_tester` | post-sim |
 
 #### Implementation & PPA
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `fpga_impl_ok_{target}` | FPGA implementation completes within resource/timing budgets | MCP tool `fpga` | post-sim |
-| `synthesis_ok_{target}` | ASIC synthesis completes within area/timing budgets | MCP tool `synth` | post-sim |
+| `fpga_impl_ok_{target}` | FPGA implementation completes within resource/timing budgets | `fpga` | post-sim |
+| `synthesis_ok_{target}` | ASIC synthesis completes within area/timing budgets | `synth` | post-sim |
 <!-- END GENERATED: criteria -->
 
 **Threshold parameters:**

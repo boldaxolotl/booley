@@ -153,7 +153,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
         assert criterion in rendered
         assert args.split("--focus ", maxsplit=1)[1] in rendered
     assert (
-        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode MCP arguments |"
+        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |"
         in rendered
     )
     assert "| Default fixed |" in rendered
@@ -170,12 +170,13 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     assert "regen_lock=true" in rendered
 
 
-def test_specialist_examples_use_mcp_arguments_without_public_cli_flags() -> None:
+def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
     rendered = render_specialists_reference()
     assert "Specialists currently have no public CLI" in rendered
+    assert "MCP" not in rendered
     assert "https://github.com/boldaxolotl/booley/issues/783" in rendered
     for name in ("coverage_analyst", "reviewer", "mutation_tester"):
-        assert f"Call the `{name}` MCP tool" in rendered
+        assert f"Call the `{name}` Specialist from your connected agent session" in rendered
     assert "--" not in "\n".join(
         line for line in rendered.splitlines() if not line.startswith("|---")
     )
