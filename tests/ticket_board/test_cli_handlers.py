@@ -693,3 +693,25 @@ class TestCmdEndpointTable:
         rc = _cmd_timing(tio, Namespace(slug="routed", by_endpoint=True, save=False))
         assert rc == 0
         assert "sim" in capsys.readouterr().out
+
+
+def test_reset_prints_canonical_slug_state_and_baseline_disposition(tmp_path, capsys):
+    _, _, tio = _blocked_ticket(tmp_path)
+    before = tio.load_basis("blocked-again")
+    capsys.readouterr()
+    assert cli_handlers._cmd_reset(tio, Namespace(slug="blocked-again.md")) == 0
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "Reset Ticket blocked-again: state=queued; Ticket baseline worktrees restored.\n"
+    )
+    assert captured.err == ""
+    assert tio.inspect_ticket("blocked-again")["status"] == "queued"
+    assert tio.load_basis("blocked-again") == before
+
+
+def test_reset_failure_preserves_error_and_exit_status(tmp_path, capsys):
+    tio = TicketIO(tickets_dir=tmp_path / "tickets")
+    assert cli_handlers._cmd_reset(tio, Namespace(slug="missing")) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: ticket 'missing' not found\n"
