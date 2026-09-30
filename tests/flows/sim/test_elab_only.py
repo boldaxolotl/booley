@@ -165,7 +165,8 @@ def test_elab_only_rejects_run_stage_arguments(
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", mode, *extra])
 
-    result = flow._run()
+    with flow.context.publication_resources:
+        result = flow._run()
 
     assert result is not None
     assert result.exit_code == EXIT_ERROR
@@ -178,7 +179,8 @@ def test_standalone_requires_elab_only(tmp_path: Path) -> None:
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--standalone"])
 
-    result = flow._run()
+    with flow.context.publication_resources:
+        result = flow._run()
 
     assert result is not None
     assert result.exit_code == EXIT_ERROR
@@ -194,7 +196,8 @@ def test_elab_only_disabled_result_keeps_mode(
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "elab-only"])
     monkeypatch.setattr(flow, "_flow_enabled", lambda: False)
 
-    result = flow._run()
+    with flow.context.publication_resources:
+        result = flow._run()
 
     assert result.exit_code == EXIT_ERROR
     assert result.detail["mode"] == "elab_only"
@@ -213,7 +216,8 @@ def test_elab_only_target_resolution_error_keeps_mode(
         lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="bad target"),
     )
 
-    result = flow._run()
+    with flow.context.publication_resources:
+        result = flow._run()
 
     assert result.exit_code == EXIT_ERROR
     assert result.detail["mode"] == "elab_only"
@@ -266,7 +270,8 @@ def test_standalone_mode_runs_target_elaboration_before_sweep(
         lambda *_args: McpToolResult(exit_code=EXIT_SUCCESS),
     )
 
-    result = flow._run_elab_only()
+    with flow.context.publication_resources:
+        result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_SUCCESS
     assert events == ["target-elaboration", "standalone-sweep"]
@@ -449,7 +454,8 @@ def test_campaign_continues_and_applies_error_fail_pass_precedence(
 
     monkeypatch.setattr(flow, "_run_one_elab_only", run_one)
 
-    result = flow._run_elab_only()
+    with flow.context.publication_resources:
+        result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_ERROR
     assert calls == targets
@@ -495,7 +501,8 @@ def test_missing_executable_is_typed_in_elab_only_result(
         ),
     )
 
-    result = flow._run_elab_only()
+    with flow.context.publication_resources:
+        result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_ERROR
     assert result.detail["mode"] == "elab_only"
@@ -523,7 +530,10 @@ def test_elab_only_terminalizes_after_later_target_crash(
 
     monkeypatch.setattr(flow, "_run_one_elab_only", run_one)
 
-    with pytest.raises(RuntimeError, match="elaboration interruption"):
+    with (
+        pytest.raises(RuntimeError, match="elaboration interruption"),
+        flow.context.publication_resources,
+    ):
         flow._run_elab_only()
 
     progress_path = next((tmp_path / "reports/sim").glob("*/progress.json"))
@@ -593,7 +603,8 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
 
     monkeypatch.setattr(flow, "_execute_boundary", execute)
 
-    result = flow._run_one_elab_only("sim_dut")
+    with flow.context.publication_resources:
+        result = flow._run_one_elab_only("sim_dut")
 
     assert result.outcome.passed
     assert captured[0][:2] == ["sh", "-c"]
@@ -650,7 +661,8 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
 
     monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fail_setup)
 
-    result = flow._run_one_elab_only("sim_dut")
+    with flow.context.publication_resources:
+        result = flow._run_one_elab_only("sim_dut")
 
     assert result.outcome.verdict is None
     assert result.outcome.failure_kind == "infrastructure"
@@ -665,8 +677,9 @@ def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(
 ) -> None:
     flow = _flow_with_state(tmp_path, ["standalone"])
 
-    target_pointer = flow._persist_elab_only_log("standalone", "target output")
-    sweep_pointer = flow._persist_standalone_log("sweep output")
+    with flow.context.publication_resources:
+        target_pointer = flow._persist_elab_only_log("standalone", "target output")
+        sweep_pointer = flow._persist_standalone_log("sweep output")
 
     assert target_pointer != sweep_pointer
     assert (tmp_path / target_pointer).read_text(encoding="utf-8").endswith("target output")
@@ -723,7 +736,8 @@ def test_elab_only_branch_skips_test_and_cocotb_discovery(
         lambda targets: pytest.fail("Cocotb validation ran in elab-only mode"),
     )
 
-    result = flow._run()
+    with flow.context.publication_resources:
+        result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
 
