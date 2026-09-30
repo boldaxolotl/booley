@@ -20,12 +20,16 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.core.boundary import as_positive_int
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.agent_execution import configure_agent_call
+
+if TYPE_CHECKING:
+    from booley.harness.models import AgentResult
 
 try:
     import resource  # POSIX-only; no Windows equivalent for RUSAGE_CHILDREN
@@ -42,9 +46,39 @@ PROBE_FILENAME = "developer_probe.json"
 # Decision 12: "1g fallback until measured").
 FALLBACK_BYTES = 1024**3
 
-_PROBE_TIMEOUT_S = 300
+# Public: Doctor quotes the budget in its start-of-check announcement.
+PROBE_TIMEOUT_S = 300
 # The cheapest real agent call: a single trivial turn with MCP tools disabled.
 _PROBE_PROMPT = "Health probe: reply with the single word OK and stop."
+
+
+@dataclass(frozen=True)
+class ProbeUsage:
+    """Tokens and cost one probe agent call spent."""
+
+    input_tokens: int
+    cached_tokens: int
+    output_tokens: int
+    cost_usd: float
+
+    @classmethod
+    def from_result(cls, result: AgentResult) -> ProbeUsage:
+        """Copy the spend fields off an agent result."""
+        return cls(
+            input_tokens=result.input_tokens,
+            cached_tokens=result.cached_tokens,
+            output_tokens=result.output_tokens,
+            cost_usd=result.cost_usd,
+        )
+
+
+@dataclass(frozen=True)
+class ProbeMeasurement:
+    """A successful probe: peak child RSS, whether it is exact, and the spend."""
+
+    peak_rss_bytes: int
+    exact: bool
+    usage: ProbeUsage
 
 
 class ProbeError(RuntimeError):
@@ -55,11 +89,23 @@ class ProbeError(RuntimeError):
     would fail the same way at launch) from environment limitations of the
     probe (no process accounting, no RSS reading). Doctor reports the former
     loud and degrades only the latter to a SKIP.
+
+    ``agent_called`` is True once the agent call was entered (tokens may have
+    been spent); ``usage`` is the known spend, or None when it is unknown.
     """
 
-    def __init__(self, message: str, *, agent_failure: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        agent_failure: bool = False,
+        agent_called: bool = False,
+        usage: ProbeUsage | None = None,
+    ) -> None:
         super().__init__(message)
         self.agent_failure = agent_failure
+        self.agent_called = agent_called
+        self.usage = usage
 
 
 def probe_path(project_dir: Path) -> Path:
@@ -104,10 +150,10 @@ def record_measurement(project_dir: Path, peak_rss_bytes: int) -> Path:
 def measure_developer_rss(
     project_root: Path,
     *,
-    timeout_s: int = _PROBE_TIMEOUT_S,
+    timeout_s: int = PROBE_TIMEOUT_S,
     getrusage: Callable[[int], Any] | None = None,
-) -> tuple[int, bool]:
-    """Spawn a short probe agent; return ``(peak_rss_bytes, exact)``.
+) -> ProbeMeasurement:
+    """Spawn a short probe agent; return a :class:`ProbeMeasurement`.
 
     Both agent backends run their CLI/SDK as a child process, so
     ``getrusage(RUSAGE_CHILDREN).ru_maxrss`` (KiB on Linux) captures the
@@ -164,14 +210,22 @@ def measure_developer_rss(
         raise ProbeError(
             f"probe agent failed: {exc}",
             agent_failure=not isinstance(exc, UsageLimitError),
+            agent_called=True,
         ) from exc
+    usage = ProbeUsage.from_result(result)
     try:
         after = getrusage(_RUSAGE_CHILDREN).ru_maxrss
     except Exception as exc:  # fail-soft by contract
-        raise ProbeError(f"probe agent failed: {exc}") from exc
+        raise ProbeError(f"probe agent failed: {exc}", agent_called=True, usage=usage) from exc
 
     if result.timed_out:
-        raise ProbeError(f"probe agent timed out after {timeout_s}s")
+        raise ProbeError(
+            f"probe agent timed out after {timeout_s}s", agent_called=True, usage=usage
+        )
     if after <= 0:
-        raise ProbeError("no child RSS observed around the probe agent call")
-    return (int(after) * 1024, after > before)
+        raise ProbeError(
+            "no child RSS observed around the probe agent call",
+            agent_called=True,
+            usage=usage,
+        )
+    return ProbeMeasurement(peak_rss_bytes=int(after) * 1024, exact=after > before, usage=usage)

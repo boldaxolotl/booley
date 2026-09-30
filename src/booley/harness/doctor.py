@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import booley
 from booley.agent_workspace.isolation import get_category_dirs
@@ -107,6 +107,9 @@ from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, Targe
 from booley.targets.flow_names import config_section
 from booley.ticket_board.board_layout import required_board_directories
 from booley.ticket_board.legacy_layout import legacy_layout_problems, migration_pointer
+
+if TYPE_CHECKING:
+    from booley.harness import developer_probe
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -194,6 +197,8 @@ _ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
     }
 )
 _MCP_PROBE_TIMEOUT_S = 60
+# Budget for the one Sandbox container that resolves every selected Target.
+_CORE_RESOLVE_TIMEOUT_S = 600
 
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
@@ -290,11 +295,15 @@ class _DoctorProfile:
     """Policy for one Doctor invocation."""
 
     agent_checks: bool = True
+    deep: bool = False
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> _DoctorProfile:
         """Resolve CLI policy once at Doctor's boundary."""
-        return cls(agent_checks=not getattr(args, "skip_agent_checks", False))
+        return cls(
+            agent_checks=not getattr(args, "skip_agent_checks", False),
+            deep=bool(getattr(args, "deep", False)),
+        )
 
     @property
     def records_health_evidence(self) -> bool:
@@ -317,6 +326,54 @@ class DoctorRunResult:
         return self.counts["fail"] == 0 and self.counts["warn"] == 0
 
 
+def _format_minutes(seconds: int) -> str:
+    """Render a timeout budget as whole minutes, rounded up."""
+    return f"{max(1, -(-seconds // 60))} min"
+
+
+def _announce_long_check(label: str, expectation: str) -> None:
+    """Print a start line before a long deep check and flush.
+
+    Progress, not a finding: it is not counted. The flush matters because Doctor
+    output is often redirected to a file or pipe, where block buffering would
+    hide the line until the check had already finished.
+    """
+    print(f"  RUN   {label} ({expectation})", flush=True)
+
+
+@dataclass(frozen=True)
+class _AgentCallRecord:
+    """One Booley-owned agent call made by Doctor; ``usage`` None means unknown."""
+
+    label: str
+    usage: developer_probe.ProbeUsage | None
+
+
+def _agent_usage_summary(calls: list[_AgentCallRecord]) -> str:
+    """One-line token/cost summary of Doctor's agent-backed checks."""
+    if not calls:
+        return "Agent-backed checks: no agent call ran (0 tokens, $0.00)."
+    known = [call.usage for call in calls if call.usage is not None]
+    unknown = len(calls) - len(known)
+    input_tokens = sum(usage.input_tokens for usage in known)
+    cached_tokens = sum(usage.cached_tokens for usage in known)
+    output_tokens = sum(usage.output_tokens for usage in known)
+    cost_usd = sum(usage.cost_usd for usage in known)
+    noun = "agent call" if len(calls) == 1 else "agent calls"
+    cost = (
+        f"cost ${cost_usd:.4f}"
+        if cost_usd > 0 or not (input_tokens or output_tokens)
+        else "cost not reported by the agent backend"
+    )
+    text = (
+        f"Agent-backed checks: {len(calls)} {noun}, {input_tokens:,} input tokens "
+        f"({cached_tokens:,} cached), {output_tokens:,} output tokens, {cost}"
+    )
+    if unknown:
+        text += f"; usage unknown for {unknown} failed call{'s' if unknown != 1 else ''}"
+    return text + "."
+
+
 @dataclass
 class _Reporter:
     """Severity tiers, strongest to weakest.
@@ -337,6 +394,7 @@ class _Reporter:
     concise: bool = False
     _reported_warning_keys: set[tuple[str, str | None, str]] | None = None
     findings: list[DoctorFinding] | None = None
+    agent_calls: list[_AgentCallRecord] | None = None
 
     @classmethod
     def create(
@@ -356,7 +414,13 @@ class _Reporter:
             concise=concise,
             _reported_warning_keys=set(),
             findings=[],
+            agent_calls=[],
         )
+
+    def record_agent_call(self, record: _AgentCallRecord) -> None:
+        """Remember an agent call so the deep summary can report its spend."""
+        assert self.agent_calls is not None
+        self.agent_calls.append(record)
 
     def diagnostics(self, report: DiagnosticReport) -> None:
         """Render an owner's observations without reimplementing its decisions."""
@@ -470,6 +534,9 @@ class _Reporter:
             print(yellow(summary))
         else:
             print(green(summary))
+        if self.profile.deep:
+            assert self.agent_calls is not None
+            print(f"  {_agent_usage_summary(self.agent_calls)}")
         if self.counts["warn"]:
             print(
                 yellow("  Resolve or explicitly waive every warning before calling setup clean.")
@@ -860,7 +927,9 @@ def _run_deep_phase(
     # is exact only while no bigger child (a real sim/synth run) has been
     # reaped yet.
     if reporter.agent_check_enabled("developer authorization probe"):
-        _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
+        record = _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
+        if record is not None:
+            reporter.record_agent_call(record)
     _run_deep_checks(
         project,
         flow_runtime,
@@ -1480,7 +1549,7 @@ def _run_developer_probe(
     _pass: Check,
     _skip: Check,
     _fail: Fail,
-) -> None:
+) -> _AgentCallRecord | None:
     """ADR 0028 Decision 12: measure the invariant's developer term.
 
     ``--deep``-only and in-container-only: the number that matters is the
@@ -1492,6 +1561,9 @@ def _run_developer_probe(
     the same way at launch — and is reported as a FAIL, not hidden in a SKIP
     (the 2026-07-23 expired-creds incident sailed through a green doctor
     exactly this way). Doctor must never crash on the probe.
+
+    Returns a record of the agent call (with its spend, or None usage when
+    unknown) or None when no agent call was attempted.
     """
     from booley.harness import developer_probe
     from booley.runtime import runtime_context
@@ -1501,13 +1573,20 @@ def _run_developer_probe(
             "developer memory probe: runs in-container "
             "(it measures the in-container agent footprint)"
         )
-        return
+        return None
+    _announce_long_check(
+        "agent-backed check: developer memory and authorization probe",
+        "one light-tier agent turn; usually seconds, times out after "
+        f"{_format_minutes(developer_probe.PROBE_TIMEOUT_S)}",
+    )
     try:
-        peak, exact = developer_probe.measure_developer_rss(
-            project.project_root,
-        )
-        path = developer_probe.record_measurement(project.project_dir, peak)
+        measurement = developer_probe.measure_developer_rss(project.project_root)
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract (Decision 12); SKIP, never crash
+        record = (
+            _AgentCallRecord("developer probe", getattr(exc, "usage", None))
+            if getattr(exc, "agent_called", False)
+            else None
+        )
         if getattr(exc, "agent_failure", False):
             _fail(
                 f"developer probe agent could not complete a trivial call — every "
@@ -1515,15 +1594,23 @@ def _run_developer_probe(
                 "check agent auth at THIS Sandbox location (booley auth, or claude login + "
                 "container recreate); see the harness log for the agent's error",
             )
-            return
+            return record
         _skip(f"developer memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
-        return
-    bound = "" if exact else " (upper bound)"
+        return record
+    record = _AgentCallRecord("developer probe", measurement.usage)
+    try:
+        path = developer_probe.record_measurement(project.project_dir, measurement.peak_rss_bytes)
+    except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
+        _skip(f"developer memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
+        return record
+    bound = "" if measurement.exact else " (upper bound)"
     _pass(
-        f"developer peak RSS measured: {resource_policy.format_memory(peak)}{bound} — "
+        "developer peak RSS measured: "
+        f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound} — "
         f"recorded to {path}"
     )
     _pass("developer backend live authorization check completed successfully")
+    return record
 
 
 def _booley_dockerfile() -> Path | None:
@@ -5068,6 +5155,10 @@ def _run_core_resolve_checks(
 
     image = _sandbox_image(project)
     if docker_exe and _docker_image_exists_by_name(image):
+        _announce_long_check(
+            f".core resolvability of {len(refs)} Target(s) in the Sandbox",
+            f"FuseSoC configure; timeout {_format_minutes(_CORE_RESOLVE_TIMEOUT_S)}",
+        )
         _run_core_resolve_in_docker(
             project,
             docker_exe,
@@ -5084,6 +5175,10 @@ def _run_core_resolve_checks(
             "fusesoc not on host PATH (build the image with 'booley init')"
         )
         return
+    _announce_long_check(
+        f".core resolvability of {len(refs)} Target(s) on the host",
+        "FuseSoC configure; no timeout",
+    )
     for selector, ref in sorted(refs.items()):
         build_key = hashlib.sha256(selector.encode()).hexdigest()[:16]
         build_root = project.project_root / ".booley_project" / ".runtime" / "doctor" / build_key
@@ -5158,12 +5253,12 @@ def _run_core_resolve_in_docker(
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=_CORE_RESOLVE_TIMEOUT_S,
             check=False,
         )
     except subprocess.TimeoutExpired:
         _fail(
-            ".core resolvability timed out after 600s in sandbox",
+            f".core resolvability timed out after {_CORE_RESOLVE_TIMEOUT_S}s in sandbox",
             "check the .core / depends graph for a resolution hang",
         )
         return
@@ -5224,14 +5319,19 @@ def _run_deep_checks(
         if not targets:
             _skip(f"{flow_name} deep check skipped - no Doctor Target selected")
             continue
+        timeout_s = _deep_timeout_s(project, flow_name)
         for target in targets:
+            _announce_long_check(
+                f"{flow_name} deep check [{target}]",
+                f"real EDA run; timeout {_format_minutes(timeout_s)}",
+            )
             _run_flow_check(
                 project,
                 flow_name,
                 target=target,
                 dry_run=False,
                 flow_runtime=flow_runtime,
-                timeout_s=_deep_timeout_s(project, flow_name),
+                timeout_s=timeout_s,
                 verbose=verbose,
                 _pass=_pass,
                 _warn=_warn,
@@ -5543,6 +5643,7 @@ def _run_one_selftest(
     if prepared is None:
         return
     cmd, env, timeout_s = prepared
+    _announce_long_check(label, f"real EDA run; timeout {_format_minutes(timeout_s)}")
     result = _execute_selftest(project, cmd, env, timeout_s, label, flow_name, _fail=_fail)
     if result is None:
         return

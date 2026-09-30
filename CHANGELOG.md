@@ -39,6 +39,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- The Project `AGENTS.md` template now limits Doctor during task work: Flows
+  plus at most plain `booley doctor`, with `booley doctor --deep` reserved for
+  Project Setup, `/booley-heal`, and Booley version changes. Existing Projects
+  keep the old bullet ("Keep `booley doctor` green ... fix every finding ...")
+  until it is replaced. During the upgrade review, replace that bullet in
+  `<project_dir>/AGENTS.md` (and any tracked root copy) with the "Doctor during
+  task work" bullet from the packaged `booley-setup/AGENTS_TEMPLATE.md`.
+
 - `--timeout-ms` and `[flows.sim].timeout_ms` no longer lengthen an Elaboration
   Check Target build. Projects whose simulator-image builds need more than one
   hour must set `[flows.sim].build_timeout_ms` explicitly.
@@ -105,6 +113,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   upgrades never rewrite retained authority in place.
 
 ### Bug fixes
+
+- `booley doctor --deep` now prints a flushed `RUN` line before each long
+  check (the agent-backed developer probe, every deep Flow smoke, every
+  self-test case, and `.core` resolution) with its timeout, so redirected
+  output shows progress. The summary adds a line with the agent-backed checks'
+  token count and cost, and the probe's notice no longer calls itself a
+  Specialist analysis.
 
 - `python -m booley.ticket_board validate-logs <slug>` now renders its normal
   Markdown and machine-readable JSON diagnostics for executable Tickets with
