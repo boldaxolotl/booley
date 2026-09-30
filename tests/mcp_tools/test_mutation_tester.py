@@ -814,6 +814,51 @@ def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monk
         assert f"cache_dir={expected / 'pytest'}" in environment["PYTEST_ADDOPTS"]
 
 
+def test_mutant_build_uses_managed_compiler_cache(tmp_path: Path, monkeypatch):
+    """Mutant builds compile through the Project cache like ordinary Simulation."""
+    from booley.flows.sim.compiler_cache import CompilerCachePolicy
+    from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE
+
+    captured: list[dict[str, str]] = []
+    policy = CompilerCachePolicy(True, tmp_path / "data" / COMPILER_CACHE_RELATIVE, "5G")
+
+    def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
+        return PreparedSimulationBuild(
+            target=handle.selector,
+            target_identity=handle.identity,
+            resolved=SimpleNamespace(build_root=Path(build_root), toplevel="tb"),
+            work_root=Path(build_root),
+            build_root=Path(build_root),
+            eda_tool="verilator",
+            toplevel="tb",
+            make_argv=("make", "-C", str(build_root)),
+            environment=policy.environment(),
+            compiler_cache=policy,
+        )
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append(kwargs["env"])
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.prepare_simulation_build", _fake_prepare
+    )
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: "/ccache")
+    (tmp_path / "data").mkdir()
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+
+    endpoint._run_elab("default", tmp_path, build_dir)
+
+    [environment] = captured
+    assert environment["OBJCACHE"] == "ccache"
+    assert environment["CCACHE_DIR"] == str(policy.root)
+    assert policy.root.is_dir()
+
+
 def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
     captured: list[list[str]] = []
 

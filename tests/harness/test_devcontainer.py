@@ -133,16 +133,21 @@ class TestBuildSpec:
         with pytest.raises(ValueError, match="unknown app"):
             dc.build_devcontainer_spec("emacs")
 
-    def test_no_fixed_container_env_omits_container_env(self):
+    def test_cache_identity_is_container_wide_without_eda_environment(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE)
-        assert "containerEnv" not in spec
+        assert spec["containerEnv"] == {
+            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache"
+        }
 
     def test_fixed_container_env_is_literal_host_policy(self):
         spec = dc.build_devcontainer_spec(
             dc.APP_NONE,
             fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
         )
-        assert spec["containerEnv"] == {"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"}
+        assert spec["containerEnv"] == {
+            "XILINXD_LICENSE_FILE": "2100@booley-license-xilinx",
+            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
+        }
 
     def test_local_timezone_is_forwarded_to_runtime_processes(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE, local_timezone="Asia/Tbilisi")
