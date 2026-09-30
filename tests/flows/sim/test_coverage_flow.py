@@ -2537,6 +2537,36 @@ def test_default_coverage_manifest_omits_no_waivers(tmp_path, monkeypatch):
     assert run("raw", no_waivers=True)["no_waivers"] is True
 
 
+def test_ungated_invalid_waivers_exit_2_with_no_waivers_hint(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    _configure_missing_waiver_directory(tmp_path)
+
+    def run(name: str, **options):
+        return SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+            SimRequest(
+                target="sim_0",
+                work_dir=tmp_path,
+                coverage=True,
+                report_dir=tmp_path / name,
+                **options,
+            )
+        )
+
+    blocked = run("default")
+    assert blocked.exit_code == 2
+    assert _coverage_evaluation_status(tmp_path / "default", "sim_0") == "blocked"
+    assert "evaluation BLOCKED (COV_WAIVER_DIRECTORY_MISSING)" in blocked.outcome.report_text
+    assert "--no-waivers" in blocked.outcome.report_text
+
+    raw = run("raw", no_waivers=True)
+    assert raw.exit_code == 0
+    assert _coverage_evaluation_status(tmp_path / "raw", "sim_0") == "not_requested"
+
+
 def _install_coverage_criterion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Install a ``coverage_sim_0`` Criterion whose suite (``all``) matches reset/wrap."""
     from booley.criteria.state import CriterionEntry

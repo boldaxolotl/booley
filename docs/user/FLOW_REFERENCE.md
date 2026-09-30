@@ -345,13 +345,18 @@ and testbench improvements (advisory only). The verdict card prints the exact
 
 #### Collecting vs. gating
 
+- Every coverage run applies the approved waivers: waived points are reported
+  `waived` and counted in `waived_points`, and they are left out of the eligible
+  points and percentages. An invalid approval file, or an approval that does not
+  match the collected points, blocks that Target's evaluation and exits 2, with
+  or without a Criterion. Fix the approvals or use `--no-waivers`. When
+  collection is incomplete (already exit 2), approvals are not matched against
+  the partial points and nothing is waived.
 - **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
   with evaluation `not_requested`. Use it to explore.
-- **Gated** (Ticket with a `coverage_<target>` Criterion): Booley also applies
-  approved waivers and checks the thresholds. Only a persisted `pass` satisfies
-  the Criterion.
-- **Raw numbers** (`--no-waivers`): applies no approved waivers. Ungated runs
-  currently never apply waivers, so the flag changes nothing there yet. With a
+- **Gated** (Ticket with a `coverage_<target>` Criterion): Booley also checks
+  the thresholds. Only a persisted `pass` satisfies the Criterion.
+- **Raw numbers** (`--no-waivers`): applies no approved waivers. With a
   Coverage Criterion it needs `--diagnostic`; otherwise Booley exits 2 before
   anything builds. The thresholds are then evaluated on raw numbers, and no
   Criteria are recorded.

@@ -486,6 +486,23 @@ def _coverage_report_suffix(campaign: CoverageCampaign) -> str:
     return f"coverage collection {collection_status} · evaluation {evaluation_status}"
 
 
+def _waiver_block_hint_lines(campaign: CoverageCampaign) -> list[str]:
+    """Suggest raw numbers when approved waivers, not the evidence, blocked evaluation."""
+    evaluation = campaign.evaluation
+    if evaluation["status"] != "blocked":
+        return []
+    if any(
+        str(item.get("code", "")).startswith("COV_WAIVER_")
+        for item in evaluation["diagnostics"]
+        if isinstance(item, Mapping)
+    ):
+        return [
+            "  approved coverage waivers are invalid; fix them or rerun with "
+            "--no-waivers for raw coverage"
+        ]
+    return []
+
+
 def _resolved_coverage_campaigns(
     outcomes: Sequence[CampaignOutcome],
 ) -> dict[str, CoverageCampaign]:
@@ -535,6 +552,7 @@ def _campaign_report_lines(
                 reasons.append(reason)
         report_lines = [line, *(f"  {reason}" for reason in reasons)]
         if getattr(outcome, "coverage_reference", None) is not None:
+            report_lines.extend(_waiver_block_hint_lines(campaign))
             report_lines.extend(source_gap_report_lines(campaign))
             report_lines.extend(_coverage_pre_sim_lines(selector, campaign))
         lines.append("\n".join(report_lines))
@@ -3328,6 +3346,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
             if outcome.campaign_path.is_file():
                 campaign = load_coverage_campaign(outcome.campaign_path).campaign
+                lines.extend(_waiver_block_hint_lines(campaign))
                 lines.extend(source_gap_report_lines(campaign))
             tests = detail.get("tests")
             for test in tests if isinstance(tests, list) else ():
