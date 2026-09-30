@@ -1,4 +1,4 @@
-"""Runtime execution works with caller-owned paths and notification behavior."""
+"""Runtime execution works with caller-owned paths and provider retries."""
 
 from __future__ import annotations
 
@@ -59,13 +59,9 @@ def _successful_result():
     )
 
 
-@pytest.mark.parametrize("notification_fails", [False, True])
-def test_public_claude_call_retries_with_injected_policy(
-    tmp_path, monkeypatch, notification_fails
-):
+def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
     calls = []
     destinations = []
-    notified = Mock(side_effect=OSError("offline") if notification_fails else None)
 
     async def query(*, prompt, options):
         calls.append(prompt)
@@ -100,13 +96,11 @@ def test_public_claude_call_retries_with_injected_policy(
         transcript_path=tmp_path / "raw" / "agent.jsonl",
         label="reviewer",
         artifact_paths=resolve,
-        notify_rate_limit=notified,
     )
     result = asyncio.run(claude.ClaudeSDKBackend().call(params))
     assert result.output == "done"
     assert calls == ["work", "work"]
     assert [p.name for p in destinations] == ["reviewer.jsonl", "reviewer-retry2.jsonl"]
-    notified.assert_called_once_with("seven_day", claude.RATE_LIMIT_FALLBACK_BACKOFF_S, None)
     sleep.assert_awaited_once_with(claude.RATE_LIMIT_FALLBACK_BACKOFF_S)
     for name in ("reviewer", "reviewer-retry2"):
         assert (

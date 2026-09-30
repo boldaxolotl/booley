@@ -259,7 +259,7 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     # reset
     p = sub.add_parser(
         "reset",
-        help="Reset a ticket (move to queue, clear state, wipe logs, delete worktree+branch)",
+        help="Reset a Ticket (queue, archive run artifacts, restore Ticket baseline worktrees)",
     )
     p.add_argument("slug", help="Ticket slug")
     p.add_argument(

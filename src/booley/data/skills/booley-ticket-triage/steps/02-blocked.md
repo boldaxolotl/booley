@@ -135,7 +135,8 @@ approval of those exact edits authorizes applying them; do not ask again.
 - **Requested review**: `board review --request` gives the Human an unaccepted view of
   the current blocked work and unmet gates when interactive verification is wanted.
 - **Reset (clean execution retry)**: `reset` archives the current run artifacts,
-  recreates the worktree and branch from the same immutable Ticket baseline,
+  discards implementation state and restores all participant worktrees and
+  branches from the same immutable Ticket baseline,
   and re-runs from the beginning. It takes **no feedback** (any feedback you
   compose is lost). Use only when the worktree is known-bad and a fresh
   execution against the original Ticket baseline is required.
@@ -192,8 +193,8 @@ For an unblock retry:
   tightening. Then run:
 
   ```bash
-  booley board amend "$SLUG" --changes-file "$FILE" --preview
-  booley board amend "$SLUG" --changes-file "$FILE" --apply --expected-preview "$DIGEST"
+  python -m booley.ticket_board amend "$SLUG" --changes-file "$FILE" --preview
+  python -m booley.ticket_board amend "$SLUG" --changes-file "$FILE" --apply --expected-preview "$DIGEST"
   ```
 
   Show the preview before apply, including the zero-mandatory outcome when

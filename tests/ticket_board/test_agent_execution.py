@@ -1,4 +1,4 @@
-"""Execution composition retains existing layout and notification policy in both modes."""
+"""Execution composition retains existing layout in both modes."""
 
 from pathlib import Path
 
@@ -6,7 +6,6 @@ import pytest
 
 from booley.core.models import AgentCallParams
 from booley.ticket_board.agent_execution import configure_agent_call, resolve_agent_artifacts
-from booley.ticket_board.notifications import notify_rate_limit
 from booley.ticket_board.paths import session_jobs_dir
 
 
@@ -45,8 +44,7 @@ def test_runtime_override_without_logs_does_not_enable_persistence(tmp_path, mon
 def test_composition_does_not_mutate_params_and_resolves_each_attempt(tmp_path):
     original = AgentCallParams(prompt="work", model="test", cwd=tmp_path, label="reviewer")
     configured = configure_agent_call(original)
-    assert original.artifact_paths is None and original.notify_rate_limit is None
-    assert configured.notify_rate_limit is notify_rate_limit
+    assert original.artifact_paths is None
     source = tmp_path / ".runtime" / "transcripts" / "reviewer-retry2.jsonl"
     paths = configured.artifact_paths(source)
     assert paths.prompt_json == source.with_suffix(".prompt.json")

@@ -742,3 +742,16 @@ def test_setup_plan_template_records_tech_cell_evidence_not_cell_names_only():
     ):
         assert required in template
     assert "cell-name list alone" in template
+
+
+def test_triage_reset_retains_baseline_and_routes_contract_changes_to_reauthoring():
+    reference = _compact_skill_text("booley-ticket-triage", "flow-specialist-reference.md")
+    blocked = _compact_skill_text("booley-ticket-triage", "steps/02-blocked.md")
+    assert "restores all participant worktrees at the same immutable Ticket baseline" in reference
+    assert "it preserves that baseline" in reference
+    assert (
+        "To change Target definitions or source baselines, return the Ticket to draft" in reference
+    )
+    assert "validate, and enqueue a new generation" in reference
+    assert "Current lifecycle commands reject unsupported legacy Tickets" in reference
+    assert "discards implementation state and restores all participant worktrees" in blocked

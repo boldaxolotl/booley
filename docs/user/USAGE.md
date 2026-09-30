@@ -10,7 +10,7 @@ with AI coding agents to follow it.
 3. [Two ways to work](#choose-a-mode)
 4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
 5. [Ticket Mode](#ticket-driven-workflow): [creating Tickets](#creating-tickets), [acceptance criteria](#acceptance-criteria), [Scope](#scope), [when a Ticket finishes](#where-the-work-lands-on_success), [reviewing results](#ticket-board-lifecycle)
-6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [push notifications](#push-notifications), [without VS Code](#entering-the-sandbox-without-vs-code)
+6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [without VS Code](#entering-the-sandbox-without-vs-code)
 7. [Auth & billing](#auth--billing)
 8. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 9. Reference: [Flows & Specialists](#booley-flows--specialists), [Criteria catalog](#criteria-catalog), [CLI](#cli-reference)
@@ -506,41 +506,6 @@ interrupted. The agent can cancel a Job if you ask it to.
 > agents from overwriting each other, see
 > [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-interactive-agents-keep-clobbering-each-others-edits).
 
-### Push Notifications
-
-Booley can send a notification to your phone when a Ticket needs you. Pick a
-private topic name on [ntfy.sh](https://ntfy.sh), subscribe to it in the ntfy
-app, and add it to your project's `booley.toml`:
-
-```toml
-[notifications]
-ntfy_topic = "your-private-topic"
-# Optional: leave out events to get all of them, or use [] for none.
-events = ["blocked", "review", "done", "doctor", "rate_limit"]
-```
-
-| Event | Sent when |
-| --- | --- |
-| `blocked` | a Ticket needs your input |
-| `review` | a Ticket is ready for review |
-| `done` | a Ticket is done |
-| `doctor` | the automatic health check found something new |
-| `rate_limit` | an agent Booley started (the Developer Agent or a Specialist, not your chat) hit a Claude usage limit, and Booley is waiting for it to reset. Not sent for Codex. |
-
-The container blocks ntfy.sh by default. To allow it, add it to your
-[host configuration](CONFIG.md#host-configuration-configtoml), keeping any
-entries already there:
-
-```toml
-[interactive]
-egress_allowlist = ["ntfy.sh"]
-```
-
-Then stop the containers of all your projects, run `booley bootstrap` on the
-host, and start them again. This applies to every project on the machine.
-Notifications are best-effort: a lost one is not retried and never affects a
-Ticket. Set `NTFY_DISABLE=1` to turn them off in tests.
-
 ### Entering the Sandbox without VS Code
 
 **Reopen in Container** needs VS Code. Without it (in CI, or when a script or
@@ -648,6 +613,8 @@ Every Flow's options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), 
 
 LLM-backed sub-agents running in scoped, isolated workspaces:
 
+Ask your connected agent session to invoke a Specialist by name with the arguments below. Specialists currently have no public CLI; [public Specialist CLI support is tracked in #783](https://github.com/boldaxolotl/booley/issues/783).
+
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
 | `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
@@ -656,12 +623,12 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 
 #### `coverage_analyst`
 
-Call `coverage_analyst --campaign <exact-coverage.json> [--instruction <question>]`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The read-only Analyst explains retained native evidence and proposes advisory next steps. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. A terminal `_done` review reports findings without triggering fixes; `_clean` requires every finding to be verified fixed or explicitly waived with user-visible justification.
-Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
+Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -673,7 +640,7 @@ Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Controls: required `--scope <file,...>` selects files; repeatable `--steer` adds review context; `--dry-run` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while standalone mode uses `--spec <path>`.
+Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while Interactive Mode uses `spec="<path>"`.
 
 #### `mutation_tester`
 
@@ -681,15 +648,15 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 **Mutation campaign modes:**
 
-| Campaign | Ticket Mode (`mandatory` or `optional`) | Standalone CLI options |
+| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |
 |----------|-----------------------------------------|------------------------|
-| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal options)_ — the same 10-of-10 campaign |
-| Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |
-| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |
+| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
+| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
+| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
 
-`--dry-run` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
+`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
 
-Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses exactly one complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+Call the `mutation_tester` Specialist from your connected agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
 `tb_coder` also exists but is hidden until it is ready (see
@@ -717,8 +684,10 @@ result to the Coverage Analyst for an explanation:
 
 ```bash
 booley flow sim --target sim_counter --coverage
-booley flow coverage_analyst --campaign <reports>/sim/12/targets/sim_counter/coverage.json
 ```
+
+Then call the `coverage_analyst` Specialist from your connected agent session with
+`campaign="<reports>/sim/12/targets/sim_counter/coverage.json"`.
 
 In a Ticket, add a [coverage criterion](CONFIG.md#native-coverage-configuration)
 for each Target that needs one. Only a passing coverage run satisfies it. The
@@ -737,26 +706,26 @@ is also where a project can add its own.
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --mode elab-only` | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --mode elab-only-standalone` | pre-sim |
+| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim` (`mode="elab-only"`) | pre-sim |
+| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim` (`mode="elab-only-standalone"`) | pre-sim |
 | `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
 
 #### RTL Code Review
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer --category rtl --focus bugs` | pre-sim |
-| `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer --category rtl --focus protocol` | pre-sim |
-| `review_rtl_spec` | RTL review: spec compliance (RTL matches the ticket/spec, no more, no less) | `reviewer --category rtl --focus spec` | pre-sim |
-| `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer --category rtl --focus code_style` | post-sim |
-| `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer --category rtl --focus optimization` | post-sim |
-| `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer --category rtl --focus security` | post-sim |
+| `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) | pre-sim |
+| `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) | pre-sim |
+| `review_rtl_spec` | RTL review: spec compliance (RTL matches the ticket/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
+| `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) | post-sim |
+| `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) | post-sim |
+| `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) | post-sim |
 
 #### Testbench Review
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
+| `review_tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer` (`category="tb"`, `focus="quality"`) | pre-sim |
 
 #### Simulation
 
@@ -769,7 +738,7 @@ is also where a project can add its own.
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `coverage_{target}` | Native Coverage Campaign policy for one Simulation Target | `sim --coverage` | post-sim |
+| `coverage_{target}` | Native Coverage Campaign policy for one Simulation Target | `sim` (`coverage=true`) | post-sim |
 
 #### Verification Quality
 

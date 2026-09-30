@@ -140,7 +140,7 @@ def test_sim_campaign_resume_granularity_stays_documented() -> None:
     assert "One resume continues one Target" in section
     assert "| HDL | one test |" in section
     assert "| cocotb | the whole batch |" in section
-    assert "distinct nested Coverage Campaign" in section
+    assert "Start a new `booley flow sim --coverage` run instead" in section
     assert "Resume never\n  re-runs failures" in section
     mcp = _reference_text(MCP_TOOLS)
     assert "maximum-32 `observations` preview" in mcp
@@ -189,33 +189,35 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
     sim._compile_command_str = lambda _target: "make sim"  # type: ignore[method-assign]
     sim._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
     sim._artifacts_for = lambda _result: {}  # type: ignore[method-assign]
-    sim._write_target_report(
-        TargetResult(
-            target="sim_demo",
-            target_identity="vendor:library:demo:1.0#sim_demo",
-            tb_top="tb",
-            eda_tool="verilator",
-            passed=True,
-            tests=[SimTestResult(name="reset", passed=True)],
+    with sim.context.publication_resources:
+        sim._write_target_report(
+            TargetResult(
+                target="sim_demo",
+                target_identity="vendor:library:demo:1.0#sim_demo",
+                tb_top="tb",
+                eda_tool="verilator",
+                passed=True,
+                tests=[SimTestResult(name="reset", passed=True)],
+            )
         )
-    )
     _assert_documented("sim", _read_json(report_dir / "sim/1/targets/sim_demo/simulation.json"))
 
 
 def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:
     sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
-    sim._write_elab_only_target_report(
-        ElabOnlyTargetResult(
-            target="sim_demo",
-            target_identity="vendor:library:demo:1.0#sim_demo",
-            eda_tool="verilator",
-            toplevel="demo",
-            compile_command="make",
-            fileset={"rtl": ["demo.sv"], "tb": ["tb_demo.sv"]},
-            outcome=BuildOutcome(True, "pass", None, elapsed_s=0.1),
-            log_path="run.log",
+    with sim.context.publication_resources:
+        sim._write_elab_only_target_report(
+            ElabOnlyTargetResult(
+                target="sim_demo",
+                target_identity="vendor:library:demo:1.0#sim_demo",
+                eda_tool="verilator",
+                toplevel="demo",
+                compile_command="make",
+                fileset={"rtl": ["demo.sv"], "tb": ["tb_demo.sv"]},
+                outcome=BuildOutcome(True, "pass", None, elapsed_s=0.1),
+                log_path="run.log",
+            )
         )
-    )
     _assert_documented("sim", _read_json(report_dir / "sim/1/targets/sim_demo/simulation.json"))
 
 

@@ -699,6 +699,25 @@ def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, objec
     }
 
 
+def _is_coverage_manifest(manifest: SimulationCampaignManifest) -> bool:
+    """True when resume dispatches the coverage aggregate executor."""
+    items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+    return bool(items) and items[0]["kind"] == "coverage_aggregate"
+
+
+def _unfinished_coverage_work(
+    manifest: SimulationCampaignManifest, status: CampaignRecoveryStatus
+) -> tuple[str, ...]:
+    """Coverage work-item ids without a recorded result; empty for other Campaigns."""
+    if not _is_coverage_manifest(manifest):
+        return ()
+    unfinished = set(status.pending) | set(status.interrupted)
+    items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+    return tuple(
+        cast(str, item["work_item_id"]) for item in items if item["work_item_id"] in unfinished
+    )
+
+
 def _fresh_campaign_recovery_detail(
     validated: ValidatedResumeManifest,
     observed: CampaignRecoveryStatus,
@@ -1911,6 +1930,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if isinstance(prepared, EndpointOutcome):
                 return prepared
             targets, resume, selected_targets, test_names_map = prepared
+            if (
+                resume is not None
+                and (refusal := self._refuse_unfinished_coverage_resume(resume)) is not None
+            ):
+                return refusal
             if resume is None:
                 selection_error = self._validate_prepared_selection(
                     list(selected_targets), dict(test_names_map)
@@ -1931,6 +1955,46 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if rejection is not None:
             return rejection
         return PreparedSimulationEndpoint(targets, resume, selected_targets, test_names_map)
+
+    def _refuse_unfinished_coverage_resume(
+        self, validated: ValidatedResumeManifest
+    ) -> EndpointOutcome | None:
+        """Refuse resuming a coverage Campaign whose collection has no result.
+
+        A resumed attempt builds privately and re-runs every test, so it costs
+        the same as a new run.  Publication-only resumes (collection complete)
+        are untouched, as are all non-coverage Campaigns.
+        """
+        manifest = validated.manifest
+        if not _is_coverage_manifest(manifest):
+            return None
+        try:
+            status = SimulationCampaign().inspect_resume(validated)
+        except (OSError, ValueError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign integrity failure: {exc}",
+            )
+        unfinished = _unfinished_coverage_work(manifest, status)
+        if not unfinished:
+            return None
+        item_id = unfinished[0]
+        state = "interrupted" if item_id in status.interrupted else "pending"
+        selector = cast(Mapping[str, str], manifest.document["target"])["selector"]
+        workload = cast(Mapping[str, object], manifest.document["workload"])
+        trace = " --trace" if workload["trace"] is True else ""
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=(
+                f"sim: cannot resume coverage Simulation Campaign {status.manifest_path}: "
+                f"its coverage collection has no recorded result (work item {item_id} is "
+                f"{state}; the run was interrupted or is still running). Resuming would "
+                "rebuild and re-run every test, so start a new run instead:\n"
+                f"  booley flow sim --target {shlex.quote(selector)} --coverage{trace}\n"
+                "Add the original --test/--tests-file selection if you used one."
+            ),
+            detail=_campaign_recovery_detail(status),
+        )
 
     def _validate_prepared_selection(
         self, targets: list[str], test_names_map: dict[str, list[str]]
@@ -2579,10 +2643,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         invocation: Path,
         admission: AdmissionContext,
     ) -> tuple[CampaignOutcome, Exception | None]:
-        items = cast(tuple[Mapping[str, object], ...], validated.manifest.document["work_items"])
         coverage_plan = (
             self._resume_coverage_target_plan(validated)
-            if items and items[0]["kind"] == "coverage_aggregate"
+            if _is_coverage_manifest(validated.manifest)
             else None
         )
         progress = (
@@ -2675,11 +2738,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         names = tuple(name for group in groups for name in group)
         execution = self._simulation_execution()
         preview = execution.preview(handle, NamedTests(names) if names else DefaultSelection())
-        if items and items[0]["kind"] == "coverage_aggregate":
+        is_coverage = _is_coverage_manifest(manifest)
+        if is_coverage:
             preview = replace(preview, groups=(names,))
         disclosures = (
             ()
-            if items and items[0]["kind"] == "coverage_aggregate"
+            if is_coverage
             else tuple(execution.plan_campaign_group(handle, group) for group in groups)
         )
         suite = cast(Mapping[str, object], manifest.document["required_suite"])

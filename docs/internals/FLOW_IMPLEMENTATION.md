@@ -1009,23 +1009,39 @@ sealed, approving, editing, adding, deleting, or replacing an approval file or
 one of its referenced formal proof artifacts requires `return-to-draft`; the new
 Ticket generation records a fresh protected-input baseline.
 
-The canonical Target directory holds the V4 `coverage.json` manifest, required
-`coverage-points.jsonl.gz`, `simulation.json`, `native/raw/`, `native/merged/`,
-and hook sidecars. The manifest is the canonical entry point and contains
-provenance, overall rollups, deterministic source-file rollups, percentages,
-collection, evaluation, and scoring state without inline Coverage Points. The
+The canonical Target directory holds `simulation.json` and a
+`booley.coverage-campaign-reference/v1` `coverage.json`, not the Coverage Campaign
+manifest or point store. Its `coverage_campaign.path_base` is `origin_target`;
+resolve `coverage_campaign.path` against that directory to
+`campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
+The nested Coverage Campaign directory holds the current manifest, required
+`coverage-points.jsonl.gz`, `native/raw/`,
+`native/merged/`, and `hooks/` sidecars when collected. Native paths in the
+manifest are relative to that **Coverage Campaign directory**.
+
+The nested manifest contains provenance, overall rollups, deterministic
+source-file rollups, percentages, collection, evaluation, and scoring state
+without inline Coverage Points. The
 [Flow reports reference](FLOW_REPORTS.md#coverage-campaign-files) defines
 scoring and retained diagnostic evidence. Source rollups cover line, branch,
 expression, and toggle with overall eligibility and waiver policy;
-they never aggregate by instance hierarchy. It integrity-binds the compressed JSON
-Lines point store. Readers accept valid V3/V4 and reject score-bearing invalid V3
-and all V1/V2. Native paths in the Campaign are relative to that Target directory.
+they never aggregate by instance hierarchy. The manifest integrity-binds the
+compressed JSON Lines point store. Manifest summary/deep readers validate the current Campaign manifest at the
+resolved nested path; the Target reference is a separate schema. The Coverage
+Analyst requires the canonical Target-level reference and matching completed
+`simulation.json`; it resolves and authenticates the nested manifest internally
+and does not accept the nested path as its input.
 `booley.simulation-report/v2` artifact
 references use `report_invocation` or `reports_root`, resolved from the containing
 `report.json`; cross-root resume references instead use `external_origin_target`,
 resolved from an explicitly supplied origin Target directory. Resume reports do
 not publish a duplicate Target projection. No flat per-Target compatibility report is
-written in any Simulation mode. The separate report-driven Analyst consumes the
+written in any Simulation mode. Endpoint reporting separately overwrites
+`<reports>/<name>.json` (for example `sim.json`) with a last-writer-wins copy of
+its newest numbered `report.json`. This backward-compatibility copy is mutable;
+a later failure can replace Campaign pointers with empty `detail`. Consumers
+must retain numbered `<reports>/<name>/<N>/...` paths, never use this copy as
+stable Campaign authority. The separate report-driven Analyst consumes the
 exact completed Target Campaign without publishing policy evidence.
 
 #### Persistence and recovery
@@ -1155,7 +1171,7 @@ rewritten by retention, and a Campaign lock never recreates a renamed Campaign r
 ### Coverage Analysis after Simulation
 
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its V3/V4 integrity-linked point store, rejects collector-error or incompatible
+its integrity-linked point store, rejects collector-error or incompatible
 collection before provider invocation, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native

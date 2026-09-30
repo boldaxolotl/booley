@@ -11,10 +11,20 @@ For triage, detect the execution path from ticket frontmatter or by checking for
 
 ## Reset
 
-The `reset` command performs a full reset of the ticket back to queue. The old
-`reset-to` command (which accepted specific stage targets) has been removed. Use
-`python -m booley.ticket_board reset $SLUG --reason "<correction reason>"` or
-`booley board reset $SLUG --reason "<correction reason>"`.
+`reset` archives the current run artifacts and queues the Ticket for a clean
+retry. For a current Ticket, it discards implementation state and restores all
+participant worktrees at the same immutable Ticket baseline; it preserves that
+baseline. A successful command prints the canonical slug, `queued` state, and
+workspace disposition. Use `booley board reset $SLUG --reason "<correction reason>"`.
+
+To change Target definitions or source baselines, return the Ticket to draft,
+correct the authoring inputs, validate, and enqueue a new generation. For an
+approved requirement relaxation within the supported operations, use amendment.
+See `steps/02-blocked.md` for those recovery paths.
+
+Old unsealed/legacy reset behavior discarded disposable worktrees and branches.
+Current lifecycle commands reject unsupported legacy Tickets: recreate them
+instead. `contract-seal`, `revise-contract`, and `reset-to` are retired commands.
 
 ## Available Booley Flows and Specialists
 

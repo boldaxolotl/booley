@@ -90,7 +90,7 @@ cocotb).
 
 ```bash
 booley flow sim --target sim_soc                          # full registered suite
-booley flow sim --target sim_soc --test reset --test irq  # exact tests, in order
+booley flow sim --target sim_soc --test reset --test irq  # exact tests (see ordering below)
 booley flow sim --target sim_soc --tests-file smoke.txt   # names from a file
 booley flow sim --target sim_soc --test irq --trace       # capture a waveform
 booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Verilator only)
@@ -109,6 +109,14 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 
 Test selection rules:
 
+- Coverage selections use deterministic sorted test-name order, regardless of
+  the `--test` or `--tests-file` input order. This stabilizes Campaign identity
+  and run numbering: `--test gap --test full --coverage` assigns
+  `run:001:full`, then `run:002:gap`.
+- Plain selections preserve explicit input order; an unfiltered suite follows
+  the registry order in `tests.toml`. HDL tests are scheduled in that order.
+  cocotb batches filter the selected set within one simulator process; cocotb
+  controls the order in which test functions execute.
 - Every named test must exist in every selected Target; unknown, duplicate, or
   empty selections fail before anything runs.
 - A plain run (no `--test`/`--tests-file`) honors the `skip` entries in
@@ -143,12 +151,28 @@ only reports its verdict and exit code; it records no Criteria.
 
 Within a Ticket, a `sim` run can satisfy these Criteria:
 
-- `sim_pass_<target>`: requires every test in the Target's Required Simulation
-  Suite to pass. Passing a hand-picked subset does not count.
+- `sim_pass_*`: declared under `SIM` for either the Target's complete Required
+  Simulation Suite (`all: pass`) or individual named tests (`smoke: pass`).
+  Passing a hand-picked subset does not satisfy an `all` Criterion.
 - `cycle_count_<target>_<test>`: checks one named test. It passes when that test
   passes and its reported Cycle Count meets every threshold the Ticket declares
   (see [Threshold parameters](USAGE.md#threshold-parameters)).
 - `elab_pass_<target>`: see [Elaboration checks](#elaboration-checks).
+
+For example, a Ticket can require two tests independently:
+
+```yaml
+CRITERIA_MANDATORY:
+  SIM:
+    sim_core:
+      smoke: pass
+      regression: pass
+```
+
+Each named test has its own Criterion, evaluated from that test's results.
+Run it with `booley flow sim --target sim_core --test smoke`, or include it in
+a full-suite run. To additionally require the complete suite, add `all: pass`
+under the same Target.
 
 ### Elaboration checks
 
@@ -174,8 +198,8 @@ checked and exit `2` takes precedence over `1`.
 
 ### Resuming an interrupted run
 
-Resume is for long, heavy runs, such as a multi-hour regression or a large
-coverage collection, where re-running tests that already finished is expensive.
+Resume is for long, heavy runs, such as a multi-hour regression, where
+re-running tests that already finished is expensive.
 For a short run, just start it again.
 
 Every simulation run records its plan and results in a durable Simulation
@@ -199,11 +223,13 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
   |---|---|---|
   | HDL | one test | Only tests without a recorded result run again. |
   | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
-  | `--coverage` | the whole collection | Rebuilds and re-runs every test into a distinct nested Coverage Campaign. |
+  | `--coverage` | the whole collection | Refused (exit `2`) until the collection has a recorded result; then only publication is finished. |
 
-- Resuming a coverage run saves time only when the collection already finished
-  and the interruption hit while results were being published. Otherwise it
-  costs the same as a new run.
+- Resuming a coverage run whose collection never finished is refused with exit
+  `2`, before anything builds or runs, and `--dry-run` reports the same
+  refusal. Start a new `booley flow sim --coverage` run instead. Resume
+  finishes a coverage run only when the interruption hit while results were
+  being published.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources or suite changed since the original
@@ -250,14 +276,12 @@ across runs.
 ```bash
 # 1. Collect coverage for the full suite
 booley flow sim --target sim_soc --coverage
-
-# 2. Ask the Coverage Analyst for waiver candidates and for how to improve the
-#    testbench to raise coverage (advisory only)
-booley flow coverage_analyst \
-  --campaign <reports>/sim/12/targets/sim_soc/coverage.json
 ```
 
-The verdict card prints the exact `coverage.json` path to use in step 2.
+Then call the `coverage_analyst` Specialist from your connected agent session with
+`campaign="<reports>/sim/12/targets/sim_soc/coverage.json"` for waiver candidates
+and testbench improvements (advisory only). The verdict card prints the exact
+`coverage.json` path to pass as `campaign`.
 
 #### Requirements
 
@@ -320,28 +344,47 @@ results in the report even when another Target decides the exit code.
 
 #### Where the evidence lives
 
-Each Target gets its own Campaign under the run's numbered report directory:
+Each Target gets its own reference and nested Coverage Campaign under the run's
+numbered report directory (qualified Target selectors are percent-encoded):
 
 ```text
 <reports>/sim/<N>/targets/<target>/
-  coverage.json              the Campaign: rollups, per-file rollups, verdicts
-  coverage-points.jsonl.gz   every coverage point (read through coverage.json)
-  simulation.json            the matching simulation results
-  native/                    raw and merged Verilator databases
+  coverage.json              booley.coverage-campaign-reference/v1 pointer
+  simulation.json            the matching Target simulation results
+  campaign/
+    manifest.json            the enclosing Simulation Campaign
+    work-items/<item>/attempts/<attempt>/coverage-campaign/
+      coverage.json          current Coverage Campaign manifest
+      coverage-points.jsonl.gz
+      native/raw/            per-test Verilator databases
+      native/merged/         merged Verilator database
+      hooks/                 hook evidence, when collected
 ```
 
-Always pass the exact `coverage.json` path to consumers; never edit or pass the
-point store directly. There is no "latest Campaign" and no merging across Targets
-or runs.
+The Target reference's `coverage_campaign.path` resolves from the origin Target
+directory, as declared by `coverage_campaign.path_base: origin_target`. The
+nested manifest binds the point store and contains rollups and verdicts; its
+native artifact paths are relative to the **Coverage Campaign directory**.
+
+Pass the numbered Target-level `coverage.json` reference to the Coverage Analyst.
+It authenticates the nested Campaign and matching completed Simulation evidence;
+it does not accept the nested manifest directly. Manifest summary/deep readers
+in `booley.flows.sim.coverage_campaign_store` take the resolved Campaign manifest,
+not the reference. Never edit or pass the point store directly, and keep the
+reference and enclosing Simulation Campaign together.
+
+`<reports>/sim.json` is a mutable, last-writer-wins compatibility copy of the
+newest invocation's `report.json`. It may contain Campaign pointers, but it is
+not a stable Campaign selection: a later failed run can replace it with empty
+`detail`. Use the numbered `<reports>/sim/<N>/...` paths for consumers. Booley
+never infers a latest Campaign or merges coverage across Targets or runs.
 
 #### Analyzing a Campaign
 
 `coverage_analyst` explains one Campaign: what is uncovered, likely reasons,
 which tests to add, and possible waiver candidates for human review.
 
-```bash
-booley flow coverage_analyst --campaign <exact coverage.json>
-```
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact coverage.json>"`.
 
 It never runs simulation, changes Criteria, or approves waivers. See
 [USAGE.md](USAGE.md#coverage_analyst).

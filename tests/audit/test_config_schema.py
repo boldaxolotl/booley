@@ -393,3 +393,17 @@ def test_config_schema_domains_do_not_depend_on_presentation_layers() -> None:
         assert not {
             module for module in imports if any(module.startswith(prefix) for prefix in forbidden)
         }
+
+
+@pytest.mark.parametrize(
+    "legacy",
+    [{"ntfy_topic": "probe", "events": ["done"]}, {"ntfy_topic": 42, "events": False}, []],
+)
+def test_legacy_notifications_are_ignored_with_nonblocking_warning(legacy):
+    audit = project_schema.audit_known_tables({"notifications": legacy})
+    assert audit.is_valid
+    assert len(audit.findings) == 1
+    finding = audit.findings[0]
+    assert finding.severity is config_common.ConfigFindingSeverity.WARN
+    assert finding.subject == "notifications"
+    assert "ignored" in finding.message and "delete this table" in finding.message

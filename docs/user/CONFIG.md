@@ -76,10 +76,10 @@ Project identity, Flow selection, and agent configuration live in
 `[project]` carries the project `name` and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about ticket file-existence checks rather than identity. `[notifications]`
-configures the ntfy.sh topic and event selection; see
-[Push Notifications](USAGE.md#push-notifications) for setup and the required
-host egress permission. Everything else is
-detailed below, starting with the shared `enabled` flow setting.
+is retired and ignored; delete the table and see
+[Troubleshooting](TROUBLESHOOTING.md#push-notifications-stopped-arriving) for manual host egress
+cleanup. Everything else is detailed below, starting with the shared `enabled`
+flow setting.
 
 ### Booley Flow execution: `enabled`
 
@@ -1546,7 +1546,7 @@ them makes cocotb fail to import the testbench at all. Copy the project's own
 pin set (`tox.ini` / `requirements.txt`) wholesale.
 
 **Wholesale is still not always enough.** Old pin sets were written for old
-Pythons, and the sandbox runs Python 3.13:
+Pythons, and the sandbox runs Python 3.14:
 
 - **`distutils` is gone** (removed in Python 3.12). Packages of the cocotb-1.x
   era still do `from distutils.spawn import find_executable` — `cocotb-test`

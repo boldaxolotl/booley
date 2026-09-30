@@ -194,12 +194,6 @@ def _isolate_host_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_ntfy(monkeypatch):
-    """Silence all ntfy.sh notifications during tests."""
-    monkeypatch.setattr("booley.ticket_board.operations.ntfy_send", lambda *a, **kw: None)
-
-
-@pytest.fixture(autouse=True)
 def _set_project_dir(tmp_path, monkeypatch):
     """Prevent resolve_project_dir() from failing in ticket_board tests."""
     from booley.runtime.project_dir import reset_cache

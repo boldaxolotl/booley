@@ -17,6 +17,17 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [CONTEXT.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTEXT.md).
 
+## Push notifications stopped arriving
+
+Booley no longer sends ntfy push notifications. Legacy `[notifications]` settings
+in `.booley_project/booley.toml` are ignored and can be deleted; Doctor reports a
+nonblocking warning for the obsolete table. If you manually added `ntfy.sh` to
+the host `egress_allowlist` solely for this feature, remove that entry while
+preserving entries needed for other authorized purposes. Stop your Project
+containers, run `booley bootstrap` on the host, and restart them to apply the
+policy change. Local Ticket status, logs, review briefings, Doctor reports, and
+provider rate-limit wait/retry behavior remain available.
+
 ## VS Code says “A mount config is invalid” while reopening the container
 
 Booley validates every host bind in the current generated spec before Docker
@@ -26,7 +37,7 @@ source and its container target; restore that source, or run `booley init
 
 A rebuild may otherwise select a stopped VS Code container whose old bind list
 still mentions a deleted skill, credential file, tool installation, mask
-directory, or editor-injected socket. During `booley session prepare`, Booley
+directory, or editor-injected socket. When preparing the Sandbox for attachment, Booley
 now removes such a stopped container (without deleting named volumes) so Dev
 Containers creates one from the current spec. When exactly one running legacy
 VS Code container is authenticated to this Project, Booley stops it by immutable
@@ -327,10 +338,10 @@ mismatches show up when building a core's boot software:
 
 Don't stop at "a RISC-V toolchain exists in the image". **Test the project's
 exact compile flags** against the sandbox compiler on one real file before
-writing config:
+writing config. Run the probe directly in the Sandbox shell:
 
 ```bash
-booley shell -- riscv-none-elf-gcc -march=<theirs> ...
+riscv-none-elf-gcc -march=<theirs> ...
 ```
 
 Better to plan for it during setup planning (Step 0 of the
@@ -595,9 +606,16 @@ with `booley projects forget /exact/deleted/project`.
 ## Coverage Campaign diagnostics and retention
 
 Coverage collection requires explicit `sim --coverage` / `--cov` or MCP
-`coverage: true`. V3 keeps overall and per-source-file percentages and evaluation in the
-`coverage.json` manifest and exact points in required
-`coverage-points.jsonl.gz`. Report retention is explicit: native-only pruning
+`coverage: true`. The numbered Target's `coverage.json` is a
+`booley.coverage-campaign-reference/v1` pointer. Resolve its
+`coverage_campaign.path` from that origin Target directory
+(`coverage_campaign.path_base: origin_target`) to the selected attempt's
+`campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
+That nested Campaign manifest keeps overall and per-source-file
+percentages and evaluation, with exact points in its required sibling
+`coverage-points.jsonl.gz`. Native paths resolve from the nested Coverage Campaign
+directory, which also holds `native/raw/`, `native/merged/`, and collected hook
+evidence. Report retention is explicit: native-only pruning
 keeps both Campaign files, `simulation.json`, and hook evidence; full
 invocation pruning removes all reports and prevents re-analysis. See the
 [exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
@@ -612,10 +630,12 @@ Simulation starts a new numbered invocation when rerun without an exact
 named manifest; Booley never guesses a “latest” Simulation Campaign. A resume
 still creates a new compatibility invocation while authoritative results remain
 beside the original manifest. Ordinary HDL retries only interrupted work items;
-Cocotb retries the whole interrupted batch; native coverage retries the whole
-serial collection/merge aggregate into a distinct nested Coverage Campaign.
-Neither Cocotb nor coverage resumes or overwrites an interrupted native result
-database. Legacy and elaboration-only invocations are not resumable. Empty
+Cocotb retries the whole interrupted batch; native coverage never retries its
+collection: a resume, or its `--dry-run` preview, of a coverage Campaign whose
+collection has no recorded result exits `2`; start a new
+`booley flow sim --coverage` run. A coverage resume only finishes an
+interrupted publication. Neither Cocotb nor coverage resumes or overwrites an
+interrupted native result database. Legacy and elaboration-only invocations are not resumable. Empty
 `.pruned-N` directories reserve historical invocation numbers and should be
 retained.
 
@@ -672,17 +692,29 @@ retry the same exact `--full`
 selection with `--project-data <resolved-project-data>`. Do not add that option
 to compensate for an incorrect project-data path or for native-only pruning.
 
+`<reports>/sim.json` is a mutable last-writer compatibility copy of the newest
+invocation report, not a stable Campaign pointer. A later failed run can
+replace its `detail` with an empty object. Select evidence through the numbered
+`<reports>/sim/<N>/...` paths instead.
+
 ### Coverage Analyst input and model availability
 
-Pass `coverage_analyst --campaign <reports>/sim/<number>/targets/<target>/coverage.json`.
+Call the `coverage_analyst` Specialist from your connected agent session with
+`campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
 Target names, `latest`, the point-store path, waveforms, and legacy
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
-point store makes a V3 Campaign unusable for analysis. V1 and V2 Campaigns are
-not readable; recollect coverage with the current Booley version. A missing or incomplete
+point store makes a Campaign unusable for analysis. Recollect unsupported
+Campaigns with the current Booley version. A missing or incomplete
 matching `simulation.json` means that Target is
 not ready for analysis; another Target still running does not block a completed one.
 Native-payload pruning preserves analysis. Full-invocation pruning removes the
 Campaign, so select another retained invocation or collect new evidence.
+
+The Analyst requires that canonical Target-level reference with matching completed
+`simulation.json`; it does not accept the resolved nested manifest. The manifest
+summary/deep readers in `booley.flows.sim.coverage_campaign_store` instead take
+the resolved nested Campaign manifest, which is distinct from the Target
+reference schema.
 
 Missing, changed, unsafe, or mismatched Target sources produce report-only analysis.
 Stealth-mode projects also use report-only analysis because resolving their sources

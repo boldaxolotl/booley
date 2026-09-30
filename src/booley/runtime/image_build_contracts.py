@@ -10,6 +10,11 @@ from pathlib import Path
 from booley.runtime import docker_base_contract
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 
+# The B-Wave crate entries stay here even though the binary is now built in the
+# wheel overlay.  The overlay's identity is the wheel-source fingerprint (which
+# covers only src/booley, pyproject.toml and VERSION) plus its parent
+# substrate's compatibility key, so dropping the crate inputs would let a crate
+# edit reuse a stale overlay binary.
 _STANDARD_SUBSTRATE_INPUTS = (
     "crates/bwave/Cargo.toml",
     "crates/bwave/Cargo.lock",
