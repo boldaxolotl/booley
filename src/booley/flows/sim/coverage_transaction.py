@@ -273,8 +273,7 @@ def _publish(
 
 
 def _evaluate(plan: CoverageTargetPlan, campaign: CoverageCampaign) -> CoverageCampaign:
-    if plan.criterion is None:
-        return campaign
+    """Evaluate the Campaign; approved waivers load in every run unless ``--no-waivers``."""
     assert plan.roots is not None
     try:
         waivers = load_approved_waiver_set(plan.waiver_config, plan.roots, plan.known_targets)

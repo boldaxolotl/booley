@@ -276,17 +276,20 @@ def _empty_denominator_diagnostics(
 
 
 def _ungated_campaign(
-    campaign: CoverageCampaign, approved_waivers: ApprovedWaiverSet
+    campaign: CoverageCampaign, diagnostics: list[dict[str, str]]
 ) -> EvaluatedCoverageCampaign:
-    if approved_waivers.waivers:
-        raise ValueError("ungated coverage evaluation requires an empty approved waiver set")
+    """Report a Campaign with no Criterion.
+
+    Approved waivers have already been applied by the caller: they need no
+    Criterion, only thresholds do. Waiver match findings block evaluation.
+    """
     evaluation = {
-        "status": "not_requested",
+        "status": "blocked" if diagnostics else "not_requested",
         "criterion_fingerprint": None,
         "suite": {"status": "not_evaluated"},
         "thresholds": {},
         "metrics": [],
-        "diagnostics": [],
+        "diagnostics": diagnostics,
     }
     return replace(campaign, evaluation=_freeze_mapping(evaluation))
 
@@ -325,15 +328,15 @@ def evaluate_coverage_campaign(
     approved_waivers: ApprovedWaiverSet,
 ) -> EvaluatedCoverageCampaign:
     """Return a new immutable Campaign with deterministic policy evidence."""
-    if criterion is None:
-        return _ungated_campaign(campaign, approved_waivers)
-    required_tests = campaign.declared_tests if criterion.tests is None else criterion.tests
     waiver_match = approved_waivers.match(campaign)
     matched_set = replace(approved_waivers, waivers=waiver_match.waivers)
     campaign = _apply_waivers(campaign, matched_set)
     diagnostics = [
         _diagnostic(item.code, item.pointer, item.message) for item in waiver_match.findings
     ]
+    if criterion is None:
+        return _ungated_campaign(campaign, diagnostics)
+    required_tests = campaign.declared_tests if criterion.tests is None else criterion.tests
     diagnostics.extend(_evidence_diagnostics(campaign, criterion, required_tests))
     if (
         campaign.collection.get("status") == "complete"

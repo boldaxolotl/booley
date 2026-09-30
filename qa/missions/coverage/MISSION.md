@@ -142,7 +142,7 @@ Try:
   directory, symlink, bad schema, duplicate table, zeroed source/proof digest, point from another source,
   wrong Target, TB point, missing proof file, proof path escape, proof on `excluded`, missing `approved_by`,
   Analyst `waiver_candidates` pasted in → blocked, neither applied.
-- Ungated run with an unreadable malformed approval dir → no reads, `not_requested`, dir unchanged.
+- Ungated run with an unreadable malformed approval dir → `blocked`, rc2, waiver diagnostics, and a `--no-waivers` hint. The same run with `--no-waivers` → no reads, `not_requested`, dir unchanged.
 Look for: partial application, symlink/path escapes, hardcoded project-data path.
 Depends on: baseline.waiver.
 

@@ -11,6 +11,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Interface changes
 
+- `sim --coverage` now applies approved coverage waivers without a Coverage
+  Criterion too: waived points are reported `waived`, counted in `waived_points`,
+  and left out of the eligible points and percentages; evaluation stays
+  `not_requested`. Invalid or unmatched approvals, including a configured but
+  missing directory, now block such runs with exit 2 instead of being ignored;
+  fix them or pass `--no-waivers` for raw numbers.
+  ([#993](https://github.com/boldaxolotl/Booley/issues/993))
 - Add `booley specialist <name> [args...]` for visible registered Specialists,
   with listing and help on the host and execution inside the Sandbox.
 - Specialist MCP calls now reject `model` and `max_turns`; these remain CLI-only.

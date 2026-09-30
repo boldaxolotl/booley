@@ -326,21 +326,62 @@ def test_ungated_campaign_is_not_requested_and_preserves_observations() -> None:
     assert evaluated.runs[0].simulation_verdict == "fail"
 
 
-def test_ungated_campaign_rejects_nonempty_waiver_input() -> None:
-    waiver = ApprovedWaiver(
-        target=_TARGET,
-        point_id="point-0",
+def _approval(point_id: str, *, target: DurableTargetIdentity = _TARGET) -> ApprovedWaiver:
+    return ApprovedWaiver(
+        target=target,
+        point_id=point_id,
         source="rtl/counter.sv",
         reason="excluded",
-        waiver_id="waiver:point-0",
-        waiver_file="rtl/counter.sv/point-0.toml",
-        waiver_fingerprint="sha256:point-0",
-        provenance=MappingProxyType({}),
+        waiver_id=f"waiver:{point_id}",
+        waiver_file=f"rtl/counter.sv/{point_id}.toml",
+        waiver_fingerprint=f"sha256:{point_id}",
+        provenance=MappingProxyType({"approval": f"{point_id}.toml"}),
     )
-    waivers = replace(_empty_waivers(), waivers=(waiver,))
 
-    with pytest.raises(ValueError, match="requires an empty approved waiver set"):
-        evaluate_coverage_campaign(_campaign(), None, waivers)
+
+def test_ungated_campaign_applies_matched_waivers() -> None:
+    waivers = replace(_empty_waivers(), waivers=(_approval("point-1"),))
+
+    evaluated = evaluate_coverage_campaign(_campaign(), None, waivers)
+
+    assert evaluated.evaluation["status"] == "not_requested"
+    assert evaluated.evaluation["diagnostics"] == ()
+    assert [point.disposition["kind"] for point in evaluated.points] == ["eligible", "waived"]
+    assert evaluated.points[1].disposition == {
+        "kind": "waived",
+        "reason": "excluded",
+        "waiver_id": "waiver:point-1",
+        "waiver_file": "rtl/counter.sv/point-1.toml",
+        "waiver_fingerprint": "sha256:point-1",
+        "provenance": {"approval": "point-1.toml"},
+    }
+    assert evaluated.rollups[0].eligible_points == 1
+    assert evaluated.rollups[0].waived_points == 1
+
+
+def test_ungated_campaign_blocks_on_unmatched_waiver() -> None:
+    waivers = replace(_empty_waivers(), waivers=(_approval("point-9"),))
+
+    evaluated = evaluate_coverage_campaign(_campaign(), None, waivers)
+
+    assert evaluated.evaluation["status"] == "blocked"
+    assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
+        "COV_WAIVER_POINT_STALE"
+    ]
+    assert evaluated.evaluation["criterion_fingerprint"] is None
+    assert all(point.disposition["kind"] == "eligible" for point in evaluated.points)
+
+
+def test_ungated_partial_normalization_leaves_waivers_unmatched() -> None:
+    """The matcher skips approvals on partial point sets; ungated runs inherit that."""
+    campaign = replace(_campaign(), normalization=MappingProxyType({"status": "partial"}))
+    waivers = replace(_empty_waivers(), waivers=(_approval("point-1"),))
+
+    evaluated = evaluate_coverage_campaign(campaign, None, waivers)
+
+    assert evaluated.evaluation["status"] == "not_requested"
+    assert evaluated.evaluation["diagnostics"] == ()
+    assert all(point.disposition["kind"] == "eligible" for point in evaluated.points)
 
 
 def test_blocked_diagnostics_are_aggregated_in_stable_order() -> None:
