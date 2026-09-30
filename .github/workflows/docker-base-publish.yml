@@ -7,6 +7,7 @@ on:
       - .dockerignore
       - pyproject.toml
       - src/booley/data/docker/Dockerfile.base
+      - src/booley/data/docker/base_package_inventory.py
       - src/booley/data/docker/agent-clis-package.json
       - src/booley/data/docker/agent-clis-package-lock.json
       - src/booley/data/docker/claude-managed-settings.json
@@ -92,6 +93,27 @@ jobs:
             'command -v yosys openroad iverilog verilator verible-verilog-lint'
           docker run --rm "${BASE_IMAGE}" python -c \
             'import cocotb, edalize, fusesoc, numpy'
+
+      # The embedded inventory must match the exact published digest's current
+      # package state before :main can point at it (#829).
+      - name: Export and verify exact base package inventory
+        env:
+          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/base-package-inventory"
+          docker pull "${BASE_IMAGE}"
+          python .github/scripts/image_package_inventory.py \
+            --image "${BASE_IMAGE}" --verify-current-state \
+            --output "${RUNNER_TEMP}/base-package-inventory/base-package-inventory.json" \
+            --evidence "${RUNNER_TEMP}/base-package-inventory/evidence.json"
+
+      - name: Retain base package inventory evidence
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: base-package-inventory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/base-package-inventory/
+          if-no-files-found: error
 
       - name: Promote verified base to main consumption tag
         env:

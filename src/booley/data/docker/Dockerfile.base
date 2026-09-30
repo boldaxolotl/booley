@@ -379,6 +379,26 @@ USER agent
 # non-existent directory would create it as root and prevent agent writes).
 RUN mkdir -p /home/agent/.codex /home/agent/.claude
 
+# Resolved package inventory (#829): the final runtime base's installed dpkg
+# packages plus exact Python and pip versions. This layer must stay after every
+# apt/pip change above. Derived images inherit these bytes unchanged; they never
+# regenerate the file or override its label. `python -I` keeps user-site and
+# PYTHON* overrides out of the collection.
+USER root
+COPY src/booley/data/docker/base_package_inventory.py /usr/local/libexec/booley/base_package_inventory.py
+RUN install -d -m 0755 -o root -g root /usr/local/libexec/booley /usr/local/share/booley \
+    && chown root:root /usr/local/libexec/booley/base_package_inventory.py \
+    && chmod 0644 /usr/local/libexec/booley/base_package_inventory.py \
+    && python -I /usr/local/libexec/booley/base_package_inventory.py generate \
+        --output /usr/local/share/booley/base-package-inventory.json \
+    && python -I /usr/local/libexec/booley/base_package_inventory.py verify \
+        /usr/local/share/booley/base-package-inventory.json \
+    && chown root:root /usr/local/share/booley/base-package-inventory.json \
+    && chmod 0644 /usr/local/share/booley/base-package-inventory.json
+USER agent
+RUN python -I /usr/local/libexec/booley/base_package_inventory.py validate \
+        /usr/local/share/booley/base-package-inventory.json
+
 ARG BOOLEY_BASE_SOURCE_REVISION=unknown
 ARG BOOLEY_BASE_CONTRACT=unknown
 ARG BOOLEY_BASE_BUILT_AT=unknown
@@ -386,6 +406,7 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       org.opencontainers.image.revision=${BOOLEY_BASE_SOURCE_REVISION} \
       org.opencontainers.image.created=${BOOLEY_BASE_BUILT_AT} \
       io.booley.runtime-base.contract=${BOOLEY_BASE_CONTRACT} \
+      io.booley.runtime-base.package-inventory=/usr/local/share/booley/base-package-inventory.json \
       io.booley.openroad.source-revision=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8 \
       io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66 \
       io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 \
