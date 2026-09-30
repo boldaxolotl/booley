@@ -8,11 +8,15 @@ import shlex
 from pathlib import Path
 
 import yaml
+from tests.sandbox_image_contract import logical_instructions
 from tests.sidecar_image_helpers import DIND_IMAGE
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
 _DOCKER_DIR = _DOCKERFILE.parent
 _BASE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.base"
+_SUBSTRATE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.substrate"
+_WHEEL_DOCKERFILE = _DOCKER_DIR / "Dockerfile.wheel"
+_LIBEXEC_BWAVE = "/usr/local/libexec/booley/bwave"
 
 
 def _workflow(path: str) -> dict:
@@ -176,6 +180,43 @@ def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
     assert "COPY --from=bwave-builder" not in bwave_region
     assert "install -m 0755 /tmp/bwave/bwave /usr/local/libexec/booley/bwave" in bwave_region
     assert 'ln /usr/local/libexec/booley/bwave "$BWAVE_BIN_DIR/bwave"' in bwave_region
+
+
+def test_split_recipes_create_bwave_paths_in_one_overlay_layer() -> None:
+    """Issue #828: an exported layer cannot hold a hard link to a lower layer."""
+    substrate = logical_instructions(_SUBSTRATE_DOCKERFILE.read_text(encoding="utf-8"))
+    wheel = logical_instructions(_WHEEL_DOCKERFILE.read_text(encoding="utf-8"))
+    legacy = logical_instructions(_DOCKERFILE.read_text(encoding="utf-8"))
+
+    # The substrate carries no native B-Wave: the link partner would be stranded.
+    assert not [i for i in substrate if "bwave-builder" in i.value]
+    assert not [i for i in substrate if "/usr/local/libexec/booley" in i.value]
+    assert not [i for i in substrate if i.keyword == "ENV" and "BOOLEY_BWAVE_BIN" in i.value]
+
+    # Exactly one overlay RUN installs the binary and links the package-data path.
+    installs = [i for i in wheel if i.keyword == "RUN" and "install -m 0755" in i.value]
+    assert len(installs) == 1
+    run = installs[0]
+    assert "--mount=type=bind,from=bwave-builder" in run.value
+    assert f"install -m 0755 /tmp/bwave/bwave {_LIBEXEC_BWAVE}" in run.value
+    assert f'ln {_LIBEXEC_BWAVE} "$BWAVE_BIN_DIR/bwave"' in run.value
+    assert not [i for i in wheel if i.keyword == "COPY" and "--from=bwave-builder" in i.value]
+    assert not [
+        i
+        for i in wheel
+        if i is not run and i.keyword == "RUN" and f"ln {_LIBEXEC_BWAVE}" in i.value
+    ]
+
+    env = next(i for i in wheel if i.keyword == "ENV" and "BOOLEY_BWAVE_BIN" in i.value)
+    assert env.value == f"BOOLEY_BWAVE_BIN={_LIBEXEC_BWAVE}"
+    assert env.line > run.line
+
+    # The overlay builder stage matches the legacy recipe so BuildKit shares its cache.
+    def builder_stage(instructions: tuple) -> list[tuple[str, str]]:
+        start = next(n for n, i in enumerate(instructions) if "AS bwave-builder" in i.value)
+        return [(i.keyword, i.value) for i in instructions[start : start + 3]]
+
+    assert builder_stage(wheel) == builder_stage(legacy)
 
 
 def test_ci_captures_docker_cache_and_layer_evidence() -> None:
