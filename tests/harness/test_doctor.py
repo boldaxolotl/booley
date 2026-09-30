@@ -7499,3 +7499,134 @@ def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch
         "RUN   .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
         in capsys.readouterr().out
     )
+
+
+class _FixCollector(_Collector):
+    """Collector that keeps each WARN's ``fix`` hint next to its message."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fixes: list[str] = []
+
+    def _warn(self, msg: str, fix: str = "") -> None:
+        super()._warn(msg, fix)
+        self.fixes.append(fix)
+
+
+class TestSimDumpDeclared:
+    """#884: an owned C++ main's hardcoded dump must be declared in trace_files."""
+
+    _MAIN = """\
+#include "verilated_vcd_c.h"
+int main(int argc, char** argv) {{
+  VerilatedVcdC* tfp = new VerilatedVcdC;
+  {body}
+}}
+"""
+
+    def _check(
+        self,
+        tmp_path: Path,
+        body: str,
+        *,
+        trace_config: str = "",
+        options: str = "[--timing, --exe]",
+        tool: str = "verilator",
+        cpp: str | None = None,
+    ) -> _FixCollector:
+        from booley.runtime.project_dir import reset_cache
+
+        reset_cache()
+        (tmp_path / "sim").mkdir(exist_ok=True)
+        (tmp_path / "sim" / "main.cpp").write_text(
+            cpp if cpp is not None else self._MAIN.format(body=body), encoding="utf-8"
+        )
+        (tmp_path / "rtl").mkdir(exist_ok=True)
+        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+        project = tmp_path / ".booley_project"
+        project.mkdir(exist_ok=True)
+        (project / "booley.toml").write_text(
+            f'[flows.sim]\nrun_cwd = "."\n{trace_config}', encoding="utf-8"
+        )
+        core = _write_core(
+            tmp_path,
+            f"""\
+CAPI=2:
+name: ::demo:0
+filesets:
+  rtl: {{files: [rtl/dut.sv: {{file_type: systemVerilogSource}}]}}
+  tb_cpp: {{files: [sim/main.cpp: {{file_type: cppSource}}]}}
+targets:
+  sim_x:
+    flow: sim
+    flow_options: {{tool: {tool}, verilator_options: {options}}}
+    filesets: [rtl, tb_cpp]
+    toplevel: dut
+""",
+        )
+        refs = {"sim_x": TargetCatalog.build(core.parent).select("sim_x")}
+        collector = _FixCollector()
+        doctor._check_sim_dump_declared(tmp_path, refs, collector._pass, collector._warn)
+        return collector
+
+    def test_undeclared_dump_warns_with_exact_fix(self, tmp_path: Path):
+        c = self._check(tmp_path, 'tfp->open("sim.vcd");')
+        assert len(c.warned) == 1
+        assert "sim.vcd" in c.warned[0] and "sim_x" in c.warned[0]
+        assert c.fixes == ['add to [flows.sim] in booley.toml: trace_files = ["sim.vcd"]']
+        assert not c.passed
+
+    @pytest.mark.parametrize("declared", ['["sim.vcd"]', '["*.vcd"]'])
+    def test_declared_dump_passes(self, tmp_path: Path, declared: str):
+        c = self._check(
+            tmp_path, 'tfp->open("sim.vcd");', trace_config=f"trace_files = {declared}\n"
+        )
+        assert not c.warned
+        assert len(c.passed) == 1
+
+    @pytest.mark.parametrize(
+        "body",
+        ["tfp->open(dump.c_str());", '// tfp->open("sim.vcd");', '/* tfp->open("sim.vcd"); */'],
+    )
+    def test_non_literal_or_commented_open_is_silent(self, tmp_path: Path, body: str):
+        c = self._check(tmp_path, body)
+        assert not c.warned and not c.passed
+
+    def test_existing_entries_are_preserved_in_fix(self, tmp_path: Path):
+        c = self._check(
+            tmp_path, 'tfp->open("wave.fst");', trace_config='trace_files = ["other.vcd"]\n'
+        )
+        assert c.fixes == [
+            'add to [flows.sim] in booley.toml: trace_files = ["other.vcd", "wave.fst"]'
+        ]
+
+    def test_star_does_not_cross_directories(self, tmp_path: Path):
+        c = self._check(
+            tmp_path, 'tfp->open("nested/sim.vcd");', trace_config='trace_files = ["*.vcd"]\n'
+        )
+        assert len(c.warned) == 1
+        c = self._check(
+            tmp_path, 'tfp->open("nested/sim.vcd");', trace_config='trace_files = ["**/*.vcd"]\n'
+        )
+        assert not c.warned and len(c.passed) == 1
+
+    def test_unrelated_absolute_pattern_does_not_cover(self, tmp_path: Path):
+        c = self._check(
+            tmp_path,
+            'tfp->open("sim.vcd");',
+            trace_config='trace_files = ["/unrelated/sim.vcd"]\n',
+        )
+        assert len(c.warned) == 1
+
+    def test_auto_main_target_is_left_to_trace_unavailable(self, tmp_path: Path):
+        c = self._check(tmp_path, 'tfp->open("sim.vcd");', options="[--main, --timing]")
+        assert not c.warned and not c.passed
+
+    def test_open_without_a_verilator_tracer_is_ignored(self, tmp_path: Path):
+        cpp = 'int main() { std::ifstream f; f.open("fixture.vcd"); }\n'
+        c = self._check(tmp_path, "", cpp=cpp)
+        assert not c.warned and not c.passed
+
+    def test_icarus_target_is_ignored(self, tmp_path: Path):
+        c = self._check(tmp_path, 'tfp->open("sim.vcd");', tool="icarus", options="[]")
+        assert not c.warned and not c.passed

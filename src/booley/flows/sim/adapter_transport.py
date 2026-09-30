@@ -341,6 +341,13 @@ def read_adapter_result(identity: AdapterTransportIdentity) -> AdapterResult:
         raise AdapterTransportError("adapter pass contradicts a per-test verdict")
     if not inconclusive and any(test.verdict == "inconclusive" for test in test_results):
         raise AdapterTransportError("adapter result contradicts per-test inconclusive evidence")
+    if (
+        failure_kind == "artifact"
+        and inconclusive
+        and not passed
+        and any(test.verdict == "pass" for test in test_results)
+    ):
+        raise AdapterTransportError("adapter trace failure contradicts a passing test")
     if termination == "completed" and any(
         test.termination != "completed" for test in test_results
     ):
@@ -557,7 +564,8 @@ def _native_adapter_result(
         verdict=assessment.verdict,
         returncode=returncode,
         sva_errors=assessment.sva_errors,
-        inconclusive=inconclusive,
+        inconclusive=assessment.inconclusive,
+        trace_missing=trace_missing,
         detail=effective_detail,
         termination=termination,
     )
@@ -603,16 +611,24 @@ def _native_test_results(
     returncode: int,
     sva_errors: int,
     inconclusive: bool,
+    trace_missing: bool,
     detail: str,
     termination: RunTermination,
 ) -> tuple[AdapterTestResult, ...]:
+    """Map native evidence to per-test verdicts.
+
+    ``inconclusive`` is the simulator's own verdict (no sentinel). A missing
+    requested waveform only downgrades a would-be pass: timeouts, aborts and
+    functional failures keep precedence so a trace problem never masks them.
+    """
+    passing = verdict is True and returncode == 0 and sva_errors == 0
     normalized = (
         "timeout"
         if termination.kind == "timeout"
         else "fail"
         if termination.aborted
-        else "pass"
-        if verdict is True and returncode == 0 and sva_errors == 0
+        else ("inconclusive" if trace_missing else "pass")
+        if passing
         else "inconclusive"
         if inconclusive
         else "fail"

@@ -35,7 +35,6 @@ from booley.flows.sim.execution.telemetry import (
 )
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
-    _INCONCLUSIVE_NO_WAVEFORM,
     _TRACE_OK_RE,
     TargetResult,
     _append_batch_output_lines,
@@ -2941,7 +2940,10 @@ class TestInconclusiveReason:
                     name="smoke",
                     passed=False,
                     inconclusive=True,
-                    inconclusive_reason=_INCONCLUSIVE_NO_WAVEFORM,
+                    inconclusive_reason=(
+                        "trace requested but no fresh .fst store or convertible .vcd "
+                        "was produced; declare it in [flows.sim].trace_files"
+                    ),
                 )
             ],
         )

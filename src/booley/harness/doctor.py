@@ -54,6 +54,8 @@ from booley.flows.sim.config import (
     LITERAL_RUN_CWD_REMEDY,
     literal_run_cwd_error,
     parse_run_cwd_template,
+    resolve_run_cwd,
+    resolve_trace_files,
 )
 from booley.fusesoc import (
     core_security,
@@ -62,6 +64,7 @@ from booley.fusesoc import (
 )
 from booley.harness import (
     doctor_deep,
+    doctor_sim_dump as sim_dump,
     doctor_stamp,
     host_diagnostics,
     nangate_pdk,
@@ -113,7 +116,13 @@ from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import CoreSources, FuseSocError, TargetHandle, TargetRef
+from booley.targets.domain import (
+    CoreSources,
+    FuseSocError,
+    TargetHandle,
+    TargetInspection,
+    TargetRef,
+)
 from booley.targets.flow_names import config_section
 from booley.ticket_board.board_layout import required_board_directories
 from booley.ticket_board.legacy_layout import legacy_layout_problems, migration_pointer
@@ -270,14 +279,17 @@ class _CoreAuditInputs:
     ) -> None:
         self.catalog = catalog
         self.refs = refs
-        self._sources: dict[str, fusesoc_registry.CoreSources] = {}
+        self._inspections: dict[str, TargetInspection] = {}
+
+    def inspection_for(self, name: str) -> TargetInspection:
+        """Return one Target inspection, reading it once per audit."""
+        if name not in self._inspections:
+            self._inspections[name] = self.catalog.inspect(self.refs[name])
+        return self._inspections[name]
 
     def sources_for(self, name: str) -> fusesoc_registry.CoreSources:
         """Return one Target partition, reading it once per audit."""
-        if name not in self._sources:
-            handle = self.refs[name]
-            self._sources[name] = self.catalog.inspect(handle).sources
-        return self._sources[name]
+        return self.inspection_for(name).sources
 
 
 def _warning_sink(
@@ -3791,6 +3803,7 @@ def _check_target_sources(
         _inputs=inputs,
     )
     _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
 
 
 def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
@@ -4376,6 +4389,107 @@ def _check_sim_traceable(
             "main that opens the matching VCD/FST tracer and drop --main from "
             "verilator_options (mirror a traceable sim Target's tb_cpp fileset)."
         )
+
+
+def _owned_main_verilator_sims(refs: dict) -> list[tuple[str, TargetHandle]]:
+    """Verilator sim Targets that own their C++ ``main()`` (no auto ``--main``)."""
+    owned: list[tuple[str, TargetHandle]] = []
+    for name, ref in sorted(refs.items()):
+        if ref.flow != "sim" or (ref.eda_tool or "").lower() != "verilator":
+            continue
+        try:
+            doc = fusesoc_registry.read_core(ref.core_file)
+        except fusesoc_registry.FuseSocError:
+            continue  # a malformed .core is the .core-schema check's to report
+        opts = fusesoc_registry.core_target_flow_option(doc, name, "verilator_options") or []
+        if not {str(o) for o in opts} & _VERILATOR_AUTO_MAIN_FLAGS:
+            owned.append((name, ref))
+    return owned
+
+
+def _check_sim_dump_declared(
+    root: Path,
+    refs: dict,
+    _pass: Check,
+    _warn: Check,
+    *,
+    _inputs: _CoreAuditInputs | None = None,
+) -> None:
+    """Warn when an owned C++ main's hardcoded dump is not in ``trace_files``.
+
+    ``sim --trace`` adopts a Verilator owned-main dump only when
+    ``[flows.sim].trace_files`` declares it (the trace overlay injects nothing for
+    Verilator), so an undeclared ``tfp->open("sim.vcd")`` makes every traced run
+    inconclusive. The C++ sources are scanned textually
+    (:mod:`booley.harness.doctor_sim_dump`): a non-literal open, a macro or a
+    generated source yields silence, never a false WARN. Targets built with
+    ``--main``/``--binary`` own no ``main()`` and are the ``sim.trace-unavailable``
+    check's business. A file that mentions a Verilator tracer *and* unrelatedly
+    ``.open("x.vcd")``s something is an accepted false positive.
+    """
+    candidates = _owned_main_verilator_sims(refs)
+    if not candidates:
+        return
+    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
+    patterns = resolve_trace_files(root)
+    run_cwd = resolve_run_cwd(root)
+    is_template = bool(_safe_run_cwd_fields(run_cwd))
+    undeclared: dict[str, list[str]] = {}
+    scanned = 0
+    for name, _ref in candidates:
+        try:
+            literals = sim_dump.owned_main_dump_literals(root, inputs.inspection_for(name))
+        except (fusesoc_registry.FuseSocError, OSError):
+            continue
+        if not literals:
+            continue
+        scanned += 1
+        missing = [
+            literal
+            for literal in literals
+            if not sim_dump.literal_is_declared(
+                literal,
+                patterns,
+                project_root=root,
+                run_cwd=run_cwd,
+                run_cwd_is_template=is_template,
+            )
+        ]
+        if missing:
+            undeclared[name] = missing
+    if undeclared:
+        _warn_undeclared_dumps(_warn, undeclared, patterns)
+    elif scanned:
+        _pass(
+            f"{scanned} Verilator sim Target(s) declare their C++ main's dump "
+            "in [flows.sim].trace_files"
+        )
+
+
+def _safe_run_cwd_fields(run_cwd: str) -> tuple[str, ...]:
+    """Return ``run_cwd`` placeholders; an invalid template counts as none."""
+    try:
+        return parse_run_cwd_template(run_cwd)
+    except ValueError:
+        return ()
+
+
+def _warn_undeclared_dumps(
+    warn_sink: Check,
+    undeclared: dict[str, list[str]],
+    patterns: list[str],
+) -> None:
+    """Emit the single aggregated ``sim.trace-dump-undeclared`` WARN."""
+    detail = "; ".join(
+        f"{name} opens {', '.join(lits)}" for name, lits in sorted(undeclared.items())
+    )
+    literals = sorted({lit for lits in undeclared.values() for lit in lits})
+    _warning_sink(warn_sink, "sim.trace-dump-undeclared", subject=", ".join(sorted(undeclared)))(
+        f"Verilator sim Target(s) write a waveform that [flows.sim].trace_files does "
+        f"not declare ({detail}) — `sim --trace` cannot adopt it, so traced runs "
+        "come back inconclusive",
+        sim_dump.trace_files_fix(patterns, literals),
+    )
 
 
 # A SystemVerilog interface port on a module's port list, e.g.

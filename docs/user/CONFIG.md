@@ -400,7 +400,8 @@ the file land". Booley looks for the artifacts *it* asked for — `trace.fst` /
 `trace.fifo` / `trace.vcd` in the build dir, plus the bwave cache. A testbench
 that owns its C++ `main()` typically ignores all that and writes a hardcoded
 name into whatever its working directory is, so a perfectly good waveform is
-reported as `--trace requested but no waveform was produced`. Declare it:
+reported as inconclusive with `trace requested but no fresh .fst store or
+convertible .vcd was produced`. Declare it:
 
 ```toml
 [flows.sim]

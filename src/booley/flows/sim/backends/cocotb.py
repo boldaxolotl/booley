@@ -91,6 +91,7 @@ from booley.flows.sim.backends.cocotb_results import (
     results_payload,
 )
 from booley.flows.sim.backends.shared import (
+    BOOLEY_DUMP_VCD_NAME,
     RunTermination,
     append_child_cpu_marker,
     child_cpu_snapshot,
@@ -336,7 +337,7 @@ def _adapter_test_results(
 # The dump/trace file name in the run cwd — identical for both EDA tools: Icarus's
 # booley_vcd_dump module hardcodes $dumpfile("dump.vcd"); Verilator's cocotb
 # main receives it via --trace-file.
-_DEFAULT_VCD_NAME = "dump.vcd"
+_DEFAULT_VCD_NAME = BOOLEY_DUMP_VCD_NAME
 
 # The results file name, pinned inside the work dir (never guessed —
 # COCOTB_RESULTS_FILE is always set explicitly, ADR 0034 / C1).
