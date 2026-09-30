@@ -50,7 +50,7 @@ def _run_evidence(run_id: str = "producer-1") -> dict:
 
 def _flow(root: Path) -> FpgaImplFlow:
     flow = FpgaImplFlow()
-    flow.parse_args(["--target", "fpga_demo", "--work-dir", str(root), "--timeout", "1000"])
+    flow.parse_args(["--target", "fpga_demo", "--work-dir", str(root), "--timeout-ms", "1000"])
     flow._project_root = root
     return flow
 

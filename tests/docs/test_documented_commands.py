@@ -6,7 +6,7 @@ import argparse
 import re
 import shlex
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -40,6 +40,23 @@ def _ticket_parser() -> argparse.ArgumentParser:
 @cache
 def _flow_names() -> set[str]:
     return {tool.name for tool in discover_mcp_tools() if tool.kind == "flow"}
+
+
+@cache
+def _specialist_modules() -> set[str]:
+    return {
+        "booley." + Path(tool.path).with_suffix("").as_posix().replace("/", ".")
+        for tool in discover_mcp_tools()
+        if tool.kind == "specialist" and not Path(tool.path).is_absolute()
+    }
+
+
+@pytest.mark.parametrize("path_type", [PurePosixPath, PureWindowsPath])
+def test_specialist_module_names_are_portable(monkeypatch, path_type) -> None:
+    monkeypatch.setitem(globals(), "Path", path_type)
+    modules = _specialist_modules.__wrapped__()
+    assert "booley.specialists.reviewer" in modules
+    assert "booley.specialists.tb_coder" not in modules
 
 
 def _commands(text: str) -> list[tuple[int, list[str]]]:
@@ -110,6 +127,8 @@ def _command_error(tokens: list[str]) -> str | None:
                 return f"unknown Flow {name}"
         return _subcommand_error(_public_parser(), tokens[1:])
     module = tokens[2]
+    if module in _specialist_modules():
+        return None
     if module == "booley.ticket_board":
         return _subcommand_error(_ticket_parser(), tokens[3:])
     if module == "booley.flows.sim.campaign_retention":

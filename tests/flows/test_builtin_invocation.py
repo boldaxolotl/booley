@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
@@ -175,17 +174,14 @@ def test_builtin_parsers_accept_canonical_timeout(
 
 
 @pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_deprecated_timeout_alias_normalizes_once(
+def test_removed_timeout_alias_is_rejected(
     flow_type: type[BooleyFlow],
     _name: str,
     _default_ms: int,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.WARNING):
-        args = flow_type().parse_args(["--target", "demo", "--timeout", "2500"])
-
-    assert args.timeout_ms == 2500
-    assert caplog.messages == ["--timeout is deprecated; use --timeout-ms"]
+    with pytest.raises(SystemExit) as error:
+        flow_type().parse_args(["--target", "demo", "--timeout", "2500"])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "nan", "words"])

@@ -31,6 +31,13 @@ from tests.flows.sim.coverage_campaign_test_support import (
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
+@pytest.fixture(autouse=True)
+def sandbox_execution(monkeypatch):
+    monkeypatch.setattr(
+        "booley.runtime.runtime_context.container_only_error", lambda _command: None
+    )
+
+
 def persist_campaign(root: Path):
     document = _valid_document()
     campaign = decode_coverage_campaign(

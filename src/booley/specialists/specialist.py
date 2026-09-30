@@ -139,12 +139,33 @@ class Specialist(McpTool):
             help="Maximum agent conversation turns",
         )
         parser.add_argument(
-            "--timeout",
-            type=int,
-            default=self.default_timeout,
-            help="Agent timeout in seconds",
+            "--timeout-ms",
+            type=parse_positive_int_arg,
+            default=self.default_timeout * 1000,
+            help="Agent model-call timeout in positive milliseconds",
         )
         self._add_agent_args(parser)
+
+    def _pre_state_gate(self) -> McpToolResult | None:
+        """Refuse host or disabled execution before loading state or admission."""
+        from booley.mcp.endpoint_config import get_endpoint_config
+        from booley.runtime import runtime_context
+
+        error = runtime_context.container_only_error(f"booley specialist {self.name}")
+        if error is not None:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=error)
+        config, _ = get_endpoint_config(Path(self.args.work_dir))
+        entry = config.get(self.name)
+        if isinstance(entry, dict) and entry.get("enabled") is False:
+            return McpToolResult(
+                exit_code=EXIT_ERROR, report_text=f"Specialist {self.name!r} is disabled."
+            )
+        return None
+
+    def timeout_seconds(self, timeout_ms: int | None = None) -> int:
+        """Convert model-call milliseconds to the provider's whole seconds."""
+        milliseconds = self.args.timeout_ms if timeout_ms is None else timeout_ms
+        return (milliseconds + 999) // 1000
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         """Hook for subclasses to add additional arguments."""
@@ -452,7 +473,7 @@ class Specialist(McpTool):
             system_prompt=self._system_prompt(),
             output_format=self._output_format(),
             max_turns=self.args.max_turns,
-            timeout_seconds=self.args.timeout,
+            timeout_seconds=self.timeout_seconds(),
             transcript_path=self._transcript_path(),
             label=self.name,
             needs_skills=self._needs_skills(),
@@ -474,27 +495,27 @@ class Specialist(McpTool):
         if validation_err is not None:
             return validation_err
 
-        if self.args.timeout < self.min_timeout:
+        if self.args.timeout_ms < self.min_timeout * 1000:
             logger.warning(
-                "%s: --timeout %ds below minimum %ds, clamping",
+                "%s: --timeout-ms %dms below minimum %ds, clamping",
                 self.name,
-                self.args.timeout,
+                self.args.timeout_ms,
                 self.min_timeout,
             )
-            self.args.timeout = self.min_timeout
+            self.args.timeout_ms = self.min_timeout * 1000
 
         params = self._agent_call_params()
         tier = self._resolve_tier(self.args.model)
         logger.info(
-            "Invoking agent %s (model=%s, tier=%s, effort=%s, max_turns=%s, timeout=%ds)",
+            "Invoking agent %s (model=%s, tier=%s, effort=%s, max_turns=%s, timeout=%dms)",
             self.name,
             params.model,
             tier,
             params.reasoning_effort or "default",
             self.args.max_turns,
-            self.args.timeout,
+            self.args.timeout_ms,
         )
-        self.emit_progress(f"invoking agent ({tier}, timeout={self.args.timeout}s)")
+        self.emit_progress(f"invoking agent ({tier}, timeout={self.args.timeout_ms}ms)")
 
         try:
             result = self._invoke_agent(params)

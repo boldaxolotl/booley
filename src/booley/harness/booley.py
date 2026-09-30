@@ -135,6 +135,7 @@ COMMAND_LOCATIONS = {
     "upgrade": CommandLocation.EITHER,
     "targets": CommandLocation.MIXED,
     "flow": CommandLocation.MIXED,
+    "specialist": CommandLocation.MIXED,
     "feedback": CommandLocation.MIXED,
     "cleanup": CommandLocation.MIXED,
 }
@@ -874,6 +875,13 @@ def _add_flow_subparser(sub) -> None:
     )
 
 
+def _add_specialist_subparser(sub) -> None:
+    """Add direct Specialist selection and verbatim endpoint arguments."""
+    parser = sub.add_parser("specialist", help="Run a Specialist directly inside the Sandbox")
+    parser.add_argument("endpoint_name", nargs="?", help="Specialist to run (omit to list)")
+    parser.add_argument("endpoint_args", nargs=argparse.REMAINDER, help="Specialist arguments")
+
+
 def _add_session_subparser(sub) -> None:
     """Add lifecycle controls for the Sandbox."""
     root_opt = _project_root_parent()
@@ -958,6 +966,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_bootstrap_subparser(sub)
     _add_init_subparser(sub)
     _add_flow_subparser(sub)
+    _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
 
     # Feedback spans runtime contexts: logging is in-container, submission host-only.
@@ -1841,46 +1850,48 @@ def _flow_listing(flows: list[McpToolInfo]) -> str:
     )
 
 
-def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
-    """Run a deterministic Flow in-process.
-
-    The endpoint's own entry point performs admission and returns its exit code.
-    """
-    mcp_tools = _discover_project_mcp_tools(project_root)
+def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
+    """List or select a registered endpoint, with wrong-command guidance."""
     from booley.targets.flow_names import canonical
 
+    choices = [item for item in endpoints if item.kind == kind]
+    heading = "Flows" if kind == "flow" else "Specialists"
     raw_name = getattr(args, "endpoint_name", None)
-    flows = [item for item in mcp_tools if item.kind == "flow"]
     if raw_name is None:
-        print(f"Available Flows:\n{_flow_listing(flows)}")
+        print(f"Available {heading}:\n{_flow_listing(choices)}")
         return 0
-
-    name = canonical(raw_name)
-    info = next(
-        (flow for flow in flows if flow.name == name),
-        None,
+    name = canonical(raw_name) if kind == "flow" else raw_name
+    info = next((item for item in choices if item.name == name), None)
+    if info is not None:
+        return info
+    other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
+    suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
+    print(
+        f"ERROR: {name!r} is not a {kind} for booley {kind}.{suggestion}"
+        f"\n\nAvailable {heading}:\n{_flow_listing(choices)}",
+        file=sys.stderr,
     )
-    if info is None:
+    return 2
+
+
+def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
+    """Forward to existing execution, attaching Ticket adapters only to Flows."""
+    try:
+        endpoint_cls = _load_mcp_tool_class(info)
+    except Exception as exc:  # noqa: BLE001 — report failures at the Project plugin boundary
         print(
-            f"ERROR: {name!r} is not a flow.\n\nAvailable Flows:\n{_flow_listing(flows)}",
+            f"ERROR: could not load endpoint {info.name!r} from {info.path}: {exc}",
             file=sys.stderr,
         )
         return 2
-
-    endpoint_cls = _load_mcp_tool_class(info)
     if endpoint_cls is None:
-        print(
-            f"ERROR: could not load endpoint {name!r} from {info.path}.",
-            file=sys.stderr,
-        )
+        print(f"ERROR: could not load endpoint {info.name!r} from {info.path}.", file=sys.stderr)
         return 2
-
-    # Strip an optional separator before forwarding endpoint arguments.
     argv = list(getattr(args, "endpoint_args", []) or [])
     if argv and argv[0] == "--":
         argv = argv[1:]
     endpoint = endpoint_cls()
-    if os.environ.get("BOOLEY_TICKET_FILE"):
+    if flow and os.environ.get("BOOLEY_TICKET_FILE"):
         from booley.flows.base import BuiltinFlow, FlowMechanics
         from booley.ticket_board.flow_execution import TicketBoardFlowExecution
 
@@ -1890,6 +1901,32 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
         if isinstance(endpoint, FlowMechanics):
             endpoint.configure_flow_execution(adapter)
     return endpoint.main(argv)
+
+
+def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
+    """Run a deterministic Flow through its existing entry point."""
+    info = _select_endpoint(args, _discover_project_mcp_tools(project_root), "flow")
+    return info if isinstance(info, int) else _dispatch_endpoint(args, info, flow=True)
+
+
+def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
+    """Run a visible Specialist through its existing entry point."""
+    from booley.mcp.endpoint_config import get_endpoint_config
+    from booley.mcp.registry import discover_mcp_tools
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    config, flows = get_endpoint_config(project_root)
+    try:
+        project_tools = resolve_checkout_project_dir(project_root) / "mcp_tools"
+    except FileNotFoundError:
+        project_tools = None
+    endpoints = discover_mcp_tools(
+        project_mcp_tools_dir=project_tools,
+        mcp_tool_config=config,
+        flow_config=flows,
+    )
+    info = _select_endpoint(args, endpoints, "specialist")
+    return info if isinstance(info, int) else _dispatch_endpoint(args, info, flow=False)
 
 
 def _target_detail_payload(
@@ -1987,6 +2024,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "session": _cmd_session,
     "targets": _cmd_targets,
     "flow": _cmd_flow,
+    "specialist": _cmd_specialist,
     "feedback": _cmd_feedback,
     "cleanup": cleanup_cli.run,
     "upgrade": upgrade_cli.run,

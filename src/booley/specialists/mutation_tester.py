@@ -970,7 +970,7 @@ replacement must differ, and every proposal must remain a single source edit.
         if self.args.count == "auto":
             source_size_budget = compute_source_size_budget(scope_files, work_dir)
             formula_count = source_size_budget["formula_count"]
-            timeout = getattr(self.args, "timeout", 1800)
+            timeout = self.timeout_seconds()
             budget_cap = max(3, timeout // 150)
             count = min(formula_count, budget_cap)
             auto_mode = True
@@ -1360,7 +1360,7 @@ replacement must differ, and every proposal must remain a single source edit.
             system_prompt=None,
             output_format=None,
             max_turns=self.args.max_turns,
-            timeout_seconds=int(self.args.timeout * 0.8),
+            timeout_seconds=self.timeout_seconds((self.args.timeout_ms * 4 + 4) // 5),
             transcript_path=_make_transcript_path(
                 self.args.transcript_dir,
                 f"mutation_creator_round{attempt}",

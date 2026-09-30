@@ -334,9 +334,9 @@ def _argv_label(argv: list[str]) -> str:
     back to the executable's basename.
     """
     for i, part in enumerate(argv):
-        if part == "flow" and i + 1 < len(argv):
+        if part in {"flow", "specialist"} and i + 1 < len(argv):
             return argv[i + 1]
-        if part.startswith("booley.flows."):
+        if part.startswith(("booley.flows.", "booley.specialists.")):
             return part.rsplit(".", 1)[-1]
     return Path(argv[0]).name if argv else "unknown"
 

@@ -3981,7 +3981,7 @@ class TestTimeoutResolution:
             "[flows.synth]\ntimeout_ms = 5400000\n",
             encoding="utf-8",
         )
-        flow = self._flow(tmp_path, ["--timeout", "900000"])
+        flow = self._flow(tmp_path, ["--timeout-ms", "900000"])
         assert flow._timeout_ms() == 900000
 
 
