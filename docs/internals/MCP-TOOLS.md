@@ -827,9 +827,13 @@ The `sim` input takes test names as an array, not the former scalar shape:
 {"target":"sim_soc","test":["reset","interrupts"]}
 ```
 
-MCP has no `tests_file` or `skip` property. It accepts the same exact ordered
-test names directly in `test`; `resume_from` names one manifest and conflicts
-with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
+MCP has no `tests_file` or `skip` property. It accepts exact test names directly
+in `test`. Coverage selections use deterministic sorted test-name order for
+Campaign identity and run numbering, regardless of array order. Plain
+selections preserve array order (an omitted `test` follows the registry order);
+HDL tests are scheduled in that order, while cocotb controls test-function
+execution order within its filtered batch. `resume_from` names one manifest
+and conflicts with `target`, `test`, explicit `mode`, `coverage`, and `trace`.
 
 Structured campaign output reports `grade`, `complete`, aggregate
 `observation_counts`, and a maximum-32 `observations` preview. Every preview
