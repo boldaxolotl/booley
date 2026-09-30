@@ -234,27 +234,51 @@ def test_validate_keeps_probe_and_layer_failures_in_evidence(
     ]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Sandbox Image probe requires Linux bash")
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="Coreutils contract requires Linux GNU commands"
+)
 @pytest.mark.parametrize("command", ["stat", "date", "sort", "cp"])
 def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str) -> None:
-    replacement = tmp_path / command
-    replacement.write_text(
-        "#!/bin/sh\nprintf '%s\\n' 'uutils coreutils 0.8.0'\n", encoding="utf-8"
-    )
-    replacement.chmod(0o755)
     contract = image_contract.load_contract(CONTRACT, "standard")
     probe = next(
         probe
         for probe in contract["probes"]
         if probe["name"] == "GNU coreutils defaults and shell compatibility"
     )
-    result = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", probe["command"]],
-        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+    # An explicit environment excludes inherited BASH_ENV and other startup hooks.
+    default_path = f"/usr/local/bin{os.pathsep}{os.defpath}"
+    environment = {"PATH": default_path, "HOME": str(tmp_path), "LANG": "C", "LC_ALL": "C"}
+    identity = subprocess.run(
+        ["stat", "--version"],
+        env=environment,
         capture_output=True,
         text=True,
+        timeout=5,
         check=False,
-        timeout=10,
     )
-
-    assert result.returncode != 0, result.stdout
+    if "GNU coreutils" not in identity.stdout:
+        pytest.skip("GNU coreutils host prerequisite unavailable; run in the Sandbox Image")
+    marker = f"non-GNU replacement: {command}"
+    for replace_command in (False, True):
+        if replace_command:
+            replacement = tmp_path / command
+            replacement.write_text(
+                f"#!/bin/sh\nprintf '%s\\n' '{marker}' >&2\n"
+                "printf '%s\\n' 'uutils coreutils 0.8.0'\n",
+                encoding="utf-8",
+            )
+            replacement.chmod(0o755)
+            environment["PATH"] = f"{tmp_path}{os.pathsep}{default_path}"
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", probe["command"]],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if replace_command:
+            assert result.returncode != 0, result.stdout
+            assert marker in result.stderr, result.stderr
+        else:
+            assert result.returncode == 0, result.stderr

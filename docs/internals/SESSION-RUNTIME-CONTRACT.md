@@ -61,7 +61,7 @@ not satisfy them.
 
 A paired `linux/amd64` build on 2026-09-30 used the pinned Ubuntu 26.04 parent
 and this Dockerfile's complete runtime apt install steps, with and without the
-GNU default links. Docker `.Size` was 1,301,248,803 bytes for the control and
+GNU default links. Docker `.Size` was 1,301,249,803 bytes for the control and
 1,301,268,870 bytes for GNU defaults: +19,067 bytes. GNU binaries were already
 present as a dependency of the uutils selector. This measures the runtime
 installation change, not a rebuilt complete Sandbox Image; existing complete
