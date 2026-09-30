@@ -16,6 +16,9 @@ _OVERLAY_DOCKERFILE = "src/booley/data/docker/Dockerfile.wheel"
 _RISCV_DOCKERFILE = "src/booley/data/docker/Dockerfile.riscv"
 _BUILD_ACTION = "docker/build-push-action@"
 _VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
+_INVENTORY_EXPORTER = ".github/scripts/image_package_inventory.py"
+_INVENTORY_LABEL = "io.booley.runtime-base.package-inventory"
+_INVENTORY_PATH = "/usr/local/share/booley/base-package-inventory.json"
 
 
 @dataclass(frozen=True)
@@ -289,6 +292,7 @@ def validate_sources(sources: ContractSources) -> tuple[str, ...]:
     errors.extend(_test_graph_errors(sources.test_workflow))
     errors.extend(_release_graph_errors(sources.release_workflow))
     errors.extend(_runtime_role_errors(sources))
+    errors.extend(_package_inventory_errors(sources))
     return tuple(errors)
 
 
@@ -793,3 +797,141 @@ def _version_pair_errors(
             f"disagrees with {locator}={evidence!r}"
         ]
     return []
+
+
+def _exporter_commands(step: WorkflowStep) -> list[list[str]]:
+    run = str(step.value.get("run", ""))
+    return [
+        fields
+        for line in run.replace("\\\n", " ").splitlines()
+        if _INVENTORY_EXPORTER in (fields := _shell_fields(line, comments=True))
+    ]
+
+
+def _package_inventory_errors(sources: ContractSources) -> list[str]:
+    """#829: the base embeds the inventory; every image lane exports it."""
+    errors = _inventory_dockerfile_errors(sources)
+    for validator in (_base_inventory_errors, _test_inventory_errors, _release_inventory_errors):
+        try:
+            errors.extend(validator(sources))
+        except ValueError as error:
+            errors.append(f"package inventory: {error}")
+    return errors
+
+
+def _inventory_dockerfile_errors(sources: ContractSources) -> list[str]:
+    role = "package inventory"
+    errors: list[str] = []
+    labels = [
+        instruction.value
+        for instruction in logical_instructions(sources.base_dockerfile)
+        if instruction.keyword == "LABEL"
+    ]
+    if not any(f"{_INVENTORY_LABEL}={_INVENTORY_PATH}" in label.split() for label in labels):
+        errors.append(f"{role}: Dockerfile.base must label {_INVENTORY_LABEL}={_INVENTORY_PATH}")
+    for name, contents in (
+        ("Dockerfile.substrate", sources.candidate_dockerfile),
+        ("Dockerfile.wheel", sources.overlay_dockerfile),
+        ("Dockerfile.riscv", sources.riscv_dockerfile),
+    ):
+        if _INVENTORY_LABEL in contents or _INVENTORY_PATH in contents:
+            errors.append(f"{role}: {name} must inherit, not regenerate or relabel, the inventory")
+    return errors
+
+
+def _base_inventory_errors(sources: ContractSources) -> list[str]:
+    role = "stable-base publish"
+    workflow = sources.base_workflow
+    job = "build-publish-smoke"
+    build = find_step("docker-base-publish.yml", workflow, job, step_id="build")
+    export = find_step(
+        "docker-base-publish.yml",
+        workflow,
+        job,
+        name="Export and verify exact base package inventory",
+    )
+    promote = find_step(
+        "docker-base-publish.yml",
+        workflow,
+        job,
+        name="Promote verified base to main consumption tag",
+    )
+    errors: list[str] = []
+    if not build.path < export.path < promote.path:
+        errors.append(f"{role}: package inventory must be verified before promotion")
+    digest = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
+    if export.value.get("env", {}).get("BASE_IMAGE") != digest:
+        errors.append(f"{role}: package inventory must consume the build digest")
+    commands = _exporter_commands(export)
+    if len(commands) != 1 or "--verify-current-state" not in commands[0]:
+        errors.append(f"{role}: package inventory must verify the base's current state")
+    return errors
+
+
+def _test_inventory_errors(sources: ContractSources) -> list[str]:
+    role = "test package inventory"
+    workflow = sources.test_workflow
+    local = find_step(
+        "test.yml",
+        workflow,
+        "bwave-smoke",
+        name="Verify and export local runtime-base package inventory",
+    )
+    standard = find_step(
+        "test.yml", workflow, "bwave-smoke", name="Export standard package inventory"
+    )
+    upload = find_step("test.yml", workflow, "bwave-smoke", name="Upload Docker build evidence")
+    errors: list[str] = []
+    if _condition(local.value.get("if")) != ("steps.runtime-base.outputs.build", "==", "true"):
+        errors.append(f"{role}: local base inventory must run only for a locally built base")
+    local_commands = _exporter_commands(local)
+    if len(local_commands) != 1 or not {
+        "--verify-current-state",
+        "booley-runtime-base:ci",
+    } <= set(local_commands[0]):
+        errors.append(f"{role}: local base inventory must verify booley-runtime-base:ci")
+    standard_commands = _exporter_commands(standard)
+    if len(standard_commands) != 1 or "booley-test" not in standard_commands[0]:
+        errors.append(f"{role}: standard inventory must export booley-test")
+    if "--expected-inventory" not in str(standard.value.get("run", "")):
+        errors.append(f"{role}: standard inventory must compare with the local base inventory")
+    if not local.path < standard.path < upload.path:
+        errors.append(f"{role}: inventories must be exported before evidence upload")
+    return errors
+
+
+def _release_inventory_errors(sources: ContractSources) -> list[str]:
+    role = "release package inventory"
+    workflow = sources.release_workflow
+    outputs = workflow["jobs"]["build-and-push"].get("outputs", {})
+    if outputs.get("runtime-base") != "${{ steps.runtime-base.outputs.image }}":
+        return [f"{role}: build-and-push must export its selected runtime-base digest"]
+    standard = find_step(
+        "docker-publish.yml",
+        workflow,
+        "standard-image-contract",
+        name="Export standard and runtime-base package inventories",
+    )
+    errors: list[str] = []
+    if standard.value.get("env", {}).get("RUNTIME_BASE") != (
+        "${{ needs.build-and-push.outputs.runtime-base }}"
+    ):
+        errors.append(f"{role}: standard inventory must compare with the selected base digest")
+    for job, step in (
+        ("standard-image-contract", standard),
+        (
+            "riscv-image-contract",
+            find_step(
+                "docker-publish.yml",
+                workflow,
+                "riscv-image-contract",
+                name="Validate exact RISC-V candidate",
+            ),
+        ),
+    ):
+        commands = _exporter_commands(step)
+        if len(commands) != 2 or "--expected-inventory" not in commands[1]:
+            errors.append(
+                f"{role}: {job} must export parent and derived inventories and compare them"
+            )
+    return errors
