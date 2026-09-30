@@ -6,7 +6,7 @@ import argparse
 import re
 import shlex
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -45,10 +45,18 @@ def _flow_names() -> set[str]:
 @cache
 def _specialist_modules() -> set[str]:
     return {
-        "booley." + str(Path(tool.path).with_suffix("")).replace("/", ".")
+        "booley." + Path(tool.path).with_suffix("").as_posix().replace("/", ".")
         for tool in discover_mcp_tools()
         if tool.kind == "specialist" and not Path(tool.path).is_absolute()
     }
+
+
+@pytest.mark.parametrize("path_type", [PurePosixPath, PureWindowsPath])
+def test_specialist_module_names_are_portable(monkeypatch, path_type) -> None:
+    monkeypatch.setitem(globals(), "Path", path_type)
+    modules = _specialist_modules.__wrapped__()
+    assert "booley.specialists.reviewer" in modules
+    assert "booley.specialists.tb_coder" not in modules
 
 
 def _commands(text: str) -> list[tuple[int, list[str]]]:
