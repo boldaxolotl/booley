@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import ntpath
 import os
+import re
 import subprocess
 import sys
 import time
 import tomllib
+import warnings
 from pathlib import Path
 
 import pytest
@@ -897,3 +899,48 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     metrics = jobs["ci-metrics"]
     assert metrics["needs"] == "ci-required"
     assert metrics["if"] == "always()"
+
+
+def _apply_suite_warning_filters() -> None:
+    """Install pyproject's pytest warning filters the way pytest applies them."""
+    from _pytest.config import parse_warning_filter
+
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    for spec in project["tool"]["pytest"]["ini_options"]["filterwarnings"]:
+        warnings.filterwarnings(*parse_warning_filter(spec, escape=False))
+
+
+def test_tool_owned_sqlite_finalizer_warning_is_ignored() -> None:
+    """A late-finalized coverage.py SQLite connection must not fail a green shard."""
+    observed = (
+        "Exception ignored in: <sqlite3.Connection object at 0x7f6240eee890>\n"
+        "Enable tracemalloc to get traceback where the object was allocated."
+    )
+    with warnings.catch_warnings():
+        _apply_suite_warning_filters()
+        warnings.warn(pytest.PytestUnraisableExceptionWarning(observed), stacklevel=1)
+
+
+def test_other_unraisable_exceptions_still_fail_the_suite() -> None:
+    """The SQLite ignore must stay narrow: other leaked finalizers remain errors."""
+    with warnings.catch_warnings():
+        _apply_suite_warning_filters()
+        with pytest.raises(pytest.PytestUnraisableExceptionWarning):
+            warnings.warn(
+                pytest.PytestUnraisableExceptionWarning(
+                    "Exception ignored in: <_io.FileIO name='x' mode='rb' closefd=True>"
+                ),
+                stacklevel=1,
+            )
+
+
+def test_booley_never_uses_sqlite() -> None:
+    """The SQLite unraisable ignore is safe only while Booley owns no connections."""
+    offenders = [
+        str(path.relative_to(REPOSITORY_ROOT))
+        for root in ("src", "tests")
+        for path in (REPOSITORY_ROOT / root).rglob("*.py")
+        if re.search(r"^\s*(import|from)\s+sqlite3\b", path.read_text(encoding="utf-8"), re.M)
+    ]
+
+    assert offenders == []
