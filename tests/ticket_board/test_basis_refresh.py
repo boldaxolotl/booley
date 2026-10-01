@@ -479,7 +479,7 @@ def _stub_refresh_recovery(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         basis_refresh, "_operation_path", lambda _root, operation: operations / operation
     )
-    monkeypatch.setattr(basis_refresh, "resolve_project_dir", lambda root: root)
+    monkeypatch.setattr("booley.runtime.worktree_paths.resolve_project_dir", lambda root: root)
     monkeypatch.setattr(basis_refresh, "_converted_ticket", lambda *_args: _fake_document())
     monkeypatch.setattr(
         basis_refresh,

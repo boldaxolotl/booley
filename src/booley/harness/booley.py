@@ -1464,7 +1464,8 @@ def _show_blocked_dossier(project_root: Path, slug: str) -> int:
 
     dossier = render_blocked_dossier(project_root, slug)
     if not dossier.ready:
-        print(f"ERROR: {dossier.message}; run booley board review {slug}", file=sys.stderr)
+        advice = f"; run booley board review {slug}" if dossier.status == "stale" else ""
+        print(f"ERROR: {dossier.message}{advice}", file=sys.stderr)
         return 2
     print(dossier.message)
     return 0

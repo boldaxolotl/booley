@@ -13,6 +13,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _select_worktree_state(tmp_path: Path, monkeypatch, request):
+    from booley.core.project_dir import reset_cache
+
+    state = tmp_path / ".booley_project"
+    if "rejects_cwd_outside_git_root" in request.node.name:
+        return
+    state.mkdir(exist_ok=True)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    reset_cache()
+
+
 def _init_git_repository(repository: Path) -> None:
     repository.mkdir()
     _git(repository, "init")
@@ -500,7 +512,9 @@ class TestWorktreeCreateScript:
         _git(project_root, "switch", "master")
         project_data = project_root / ".booley_project"
         project_data.mkdir()
-        monkeypatch.setattr(workspace, "resolve_project_dir", lambda _root: project_data)
+        monkeypatch.setattr(
+            "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: project_data
+        )
         expected_wt = project_data / "worktrees" / "ticket"
         _git(project_root, "worktree", "add", "--detach", str(expected_wt), authoring_sha)
         ticket_ref = f"refs/heads/{branch}"
@@ -536,7 +550,9 @@ class TestWorktreeCreateScript:
         _git(project_root, "branch", branch)
         project_data = project_root / ".booley_project"
         project_data.mkdir()
-        monkeypatch.setattr(workspace, "resolve_project_dir", lambda _root: project_data)
+        monkeypatch.setattr(
+            "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: project_data
+        )
         expected_wt = project_data / "worktrees" / "ticket"
         _git(project_root, "worktree", "add", "--detach", str(expected_wt), authoring_sha)
         marker = expected_wt / "preserve.txt"
@@ -990,7 +1006,7 @@ class TestWorkspaceRun:
         fake_git_dir = project_root / ".fake-gitdir" / ctx.slug
         fake_git_dir.mkdir(parents=True)
         (wt / ".git").write_text(f"gitdir: {fake_git_dir}\n", encoding="utf-8")
-        hook = project_root / ".booley" / "project" / "hooks" / "post-setup.sh"
+        hook = project_root / ".booley_project" / "hooks" / "post-setup.sh"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
 
@@ -1674,3 +1690,30 @@ class TestResyncFallback:
 
         result = await run(ctx)
         assert result.block_reason is None
+
+
+def test_init_repairs_live_links_even_when_creation_policy_is_already_current(
+    tmp_path, monkeypatch
+):
+    from booley.harness.setup import git_hooks
+    from booley.harness.setup.common import InitContext
+
+    root = tmp_path / "project"
+    _init_git_repository(root)
+    _git(root, "config", "worktree.useRelativePaths", "true")
+    repaired = []
+    monkeypatch.setattr(
+        git_hooks,
+        "_repair_live_ticket_worktrees",
+        lambda ctx: repaired.append(ctx.project_root) or [],
+    )
+    ctx = InitContext(project_root=root, show_step_banners=False)
+    git_hooks._step_worktree_link_policy(
+        ctx, host_git_version=(2, 53, 0), sandbox_git_version=(2, 53, 0), project_dir=root
+    )
+    assert repaired == [root]
+    checked = InitContext(project_root=root, check_only=True, show_step_banners=False)
+    git_hooks._step_worktree_link_policy(
+        checked, host_git_version=(2, 53, 0), sandbox_git_version=(2, 53, 0), project_dir=root
+    )
+    assert repaired == [root]

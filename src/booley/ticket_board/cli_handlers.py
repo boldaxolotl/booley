@@ -11,8 +11,8 @@ import json
 import sys
 from pathlib import Path
 
-from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp
+from booley.runtime.worktree_paths import ticket_workspace_path
 
 from .amendment import AmendmentError, apply_amendment, preview_amendment
 from .amendment_proposal import AmendmentProposalError
@@ -126,7 +126,7 @@ def _print_acceptance_state(entry) -> None:
 
 
 def _print_ticket_overview(entry, tio, slug: str, ticket_file: Path, logs_dir: Path) -> None:
-    worktree = resolve_project_dir(tio._project_root) / "worktrees" / slug
+    worktree = ticket_workspace_path(tio._project_root, slug)
     worktree_note = "" if worktree.is_dir() else "  (absent)"
     print(f"ticket:    {slug}")
     print(f"status:    {entry.get('status', '')}")

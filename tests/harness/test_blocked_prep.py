@@ -460,3 +460,47 @@ async def _prepared_inputs(ctx: bp.BlockedContext, tmp_path: Path) -> bp.SourceI
     assert outcome.ready
     manifest = json.loads((ctx.runtime_dir / "blocked-manifest.json").read_text())
     return bp._manifest_inputs(manifest["source_inputs"])
+
+
+def test_failed_manifest_is_failure_not_stale(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    monkeypatch.setattr(bp, "_resolve_context", lambda *_args: ctx)
+    ctx.runtime_dir.mkdir(parents=True)
+    (ctx.runtime_dir / "blocked-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": bp.BLOCKED_PACKAGE_VERSION,
+                "status": "failed",
+                "error": "RuntimeError: worktree/head collection failed: not a git repository",
+            }
+        )
+    )
+    outcome = bp.render_blocked_dossier(tmp_path, "demo")
+    assert outcome.status == "failed"
+    assert "worktree/head collection failed" in outcome.message
+
+
+@pytest.mark.asyncio
+async def test_live_git_collection_failure_is_failed_and_retry_recovers(
+    tmp_path: Path, monkeypatch
+):
+    ctx = _context(tmp_path)
+    monkeypatch.setattr(bp, "_resolve_context", lambda *_args: ctx)
+
+    async def invoke(_ctx, _evidence):
+        return AgentResult(structured=_diagnosis())
+
+    monkeypatch.setattr(bp, "_invoke", invoke)
+    assert (await bp.prepare_blocked_dossier(tmp_path, "demo")).ready
+    collect = bp._collect_live_inputs
+
+    def broken(_ctx):
+        raise RuntimeError("worktree/head: not a git repository")
+
+    monkeypatch.setattr(bp, "_collect_live_inputs", broken)
+    failed = bp.render_blocked_dossier(tmp_path, "demo")
+    assert failed.status == "failed"
+    assert "worktree/head" in failed.message
+    assert "after resolving" in failed.message.lower()
+    monkeypatch.setattr(bp, "_collect_live_inputs", collect)
+    assert (await bp.prepare_blocked_dossier(tmp_path, "demo")).ready

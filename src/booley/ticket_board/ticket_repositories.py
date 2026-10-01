@@ -42,6 +42,7 @@ from booley.runtime.project_repositories import (
 from booley.runtime.project_repositories import (
     run_git as _git,
 )
+from booley.runtime.worktree_paths import worktree_creation_config
 
 PROJECT_BRANCH_PREFIX = "booley-ticket/"
 
@@ -176,7 +177,7 @@ class TicketWorkspace:
         branch = project_ticket_branch(self.request.ticket_slug)
         base = _ticket_base_branch(source, self.request.base)
         _prepare_destination(destination)
-        _git_or_raise(source, "worktree", "prune")
+        _git_or_raise(source, "config", "gc.worktreePruneExpire", "never")
         _attach_branch(
             source,
             destination,
@@ -184,6 +185,7 @@ class TicketWorkspace:
             base,
             resume=self.request.mode is WorkspaceMode.RESUME,
             expected_sha=self.request.expected_sha,
+            project_root=self.request.project_root,
         )
         _set_local_upstream(source, branch, base)
         return destination
@@ -402,7 +404,6 @@ def remove_project_worktree(project_root: Path, ticket_worktree: Path) -> None:
     if source is None or not (nested / ".git").is_file():
         return
     _git(source, "worktree", "remove", "--force", str(nested))
-    _git(source, "worktree", "prune")
 
 
 def merge_project_ticket_branch(project_root: Path, slug: str, message: str) -> tuple[bool, str]:
@@ -435,7 +436,6 @@ def cleanup_project_ticket_branch(project_root: Path, slug: str) -> bool:
         result = _git(repository, "worktree", "remove", "--force", str(checkout))
         if result.returncode != 0:
             return False
-    _git(repository, "worktree", "prune")
     if not _branch_exists(repository, branch):
         return True
     return _git(repository, "branch", "-D", branch).returncode == 0
@@ -487,6 +487,7 @@ def _attach_branch(
     *,
     resume: bool,
     expected_sha: str = "",
+    project_root: Path | None = None,
 ) -> None:
     branch_sha = _ref_sha(source, f"refs/heads/{branch}")
     base_sha = _ref_sha(source, f"refs/heads/{base}")
@@ -502,7 +503,13 @@ def _attach_branch(
     args = ("worktree", "add", str(destination), branch)
     if not branch_sha:
         args = ("worktree", "add", "-b", branch, str(destination), base)
-    result = _git(source, *args)
+    _git_or_raise(source, "config", "gc.worktreePruneExpire", "never")
+    config = (
+        worktree_creation_config(project_root)
+        if project_root is not None
+        else ("-c", "worktree.useRelativePaths=false")
+    )
+    result = _git(source, *config, *args)
     if result.returncode != 0:
         raise TicketWorkspaceError(
             f"could not create paired project worktree (rc={result.returncode}): "
@@ -524,8 +531,8 @@ def _prepare_basis_project_checkout(
         )
     destination = ticket_project_worktree(request.worktree)
     _prepare_destination(destination)
-    _git_or_raise(source, "worktree", "prune")
-    _attach_existing_branch(source, destination, branch)
+    _git_or_raise(source, "config", "gc.worktreePruneExpire", "never")
+    _attach_existing_branch(source, destination, branch, project_root=request.project_root)
     _verify_existing_worktree(
         destination,
         source,
@@ -536,8 +543,16 @@ def _prepare_basis_project_checkout(
     return destination
 
 
-def _attach_existing_branch(source: Path, destination: Path, branch: str) -> None:
-    result = _git(source, "worktree", "add", str(destination), branch)
+def _attach_existing_branch(
+    source: Path, destination: Path, branch: str, *, project_root: Path | None = None
+) -> None:
+    config = (
+        worktree_creation_config(project_root)
+        if project_root is not None
+        else ("-c", "worktree.useRelativePaths=false")
+    )
+    _git_or_raise(source, "config", "gc.worktreePruneExpire", "never")
+    result = _git(source, *config, "worktree", "add", str(destination), branch)
     if result.returncode != 0:
         raise TicketWorkspaceError(
             f"could not attach paired project worktree (rc={result.returncode}): "
@@ -652,7 +667,10 @@ def _merge_in_temporary_worktree(
     message: str,
 ) -> tuple[bool, str]:
     path = Path(tempfile.mkdtemp(prefix="booley_project_merge_"))
-    add = _git(repository, "worktree", "add", str(path), base)
+    _git_or_raise(repository, "config", "gc.worktreePruneExpire", "never")
+    add = _git(
+        repository, "-c", "worktree.useRelativePaths=false", "worktree", "add", str(path), base
+    )
     if add.returncode != 0:
         safe_rmtree(path, protect_git_root=False)
         return False, add.stderr.strip()

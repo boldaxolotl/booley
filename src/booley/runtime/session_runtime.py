@@ -1284,7 +1284,9 @@ def _quiesce_legacy_vscode_container(
     for name, raw in _strict_running_interactive_states():
         if not _inspected_container_serves_workspace(name, raw, workspace):
             continue
-        if _project_data_mount_root_is_pinned(raw, workspace, pending_project_data):
+        if _project_data_mount_root_is_pinned(
+            raw, workspace, pending_project_data, issuance=issuance
+        ):
             continue
         state = _decode_container_inspect(raw)
         assert state is not None
@@ -1365,6 +1367,42 @@ def _strict_running_interactive_states() -> list[tuple[str, str]]:
         ],
         inventory_error="cannot inventory running Sandbox containers",
     )
+
+
+def assert_worktree_repair_safe(workspace: Path) -> None:
+    """Refuse host metadata migration while an incompatible Sandbox is active."""
+    from types import SimpleNamespace
+
+    for name, raw in _strict_running_interactive_states():
+        state = _decode_container_inspect(raw)
+        assert state is not None
+        mounts = state.get("Mounts")
+        if not isinstance(mounts, list):
+            raise SessionError(f"cannot inspect mounts of running Sandbox {name!r}")
+        root_mount = next(
+            (row for row in mounts if isinstance(row, dict) and row.get("Destination") == "/work"),
+            None,
+        )
+        if root_mount is None or not isinstance(root_mount.get("Source"), str):
+            raise SessionError(f"cannot identify workspace of running Sandbox {name!r}")
+        source = host_path_from_docker_mount(root_mount["Source"])
+        if source != workspace.resolve():
+            continue
+        if any(
+            isinstance(row, dict) and str(row.get("Destination", "")).startswith("/booley-project")
+            for row in mounts
+        ) or not _project_data_mount_root_is_pinned(
+            raw,
+            workspace,
+            workspace.resolve() / ".booley_project",
+            issuance=SimpleNamespace(
+                project_data_layout="canonical-alias", image_id=state.get("Image")
+            ),
+        ):
+            raise SessionError(
+                f"worktree repair deferred: running Sandbox {name!r} uses an incompatible layout; "
+                "regenerate and recreate the Sandbox before running booley init again"
+            )
 
 
 def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
@@ -1682,7 +1720,7 @@ def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) 
 
 
 def _project_data_mount_root_is_pinned(
-    raw: str, workspace: Path, pending_project_data: Path
+    raw: str, workspace: Path, pending_project_data: Path, *, issuance: Issuance | None = None
 ) -> bool:
     local_source = workspace.resolve() / ".booley_project"
     if pending_project_data != local_source:
@@ -1692,7 +1730,17 @@ def _project_data_mount_root_is_pinned(
     if not isinstance(mounts, list) or any(not isinstance(item, dict) for item in mounts):
         return False
     by_target = {item.get("Destination"): item for item in mounts}
-    project_data = by_target.get("/booley-project")
+    canonical_alias = issuance is not None and issuance.project_data_layout == "canonical-alias"
+    if canonical_alias:
+        from booley.runtime.project_image import project_data_alias_capable
+
+        if not project_data_alias_capable(issuance.image_id) or any(
+            isinstance(target, str)
+            and (target == "/booley-project" or target.startswith("/booley-project/"))
+            for target in by_target
+        ):
+            by_target = {}
+    project_data = by_target.get("/work/.booley_project" if canonical_alias else "/booley-project")
     if not _writable_bind(project_data):
         return False
     raw_source = project_data.get("Source", "")

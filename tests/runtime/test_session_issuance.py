@@ -98,7 +98,11 @@ def _stub_preview_dependencies(
     monkeypatch.setattr(runtime_spec, "_pin_project_data_mount", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_pin_devcontainer_mount", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_seal_with_requirements", lambda *_args: "digest")
-    monkeypatch.setattr(runtime_spec, "_prospective_issuance", lambda *_args: SimpleNamespace())
+    monkeypatch.setattr(
+        runtime_spec,
+        "_prospective_issuance",
+        lambda *_args: SimpleNamespace(project_data_layout="legacy"),
+    )
     return captured
 
 
@@ -149,7 +153,7 @@ def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
     project.mkdir()
     inputs = runtime_spec.SessionSpecInputs(project, (), (), None, None)
     spec = {"image": "sha256:pinned", "runArgs": []}
-    prospective = SimpleNamespace()
+    prospective = SimpleNamespace(project_data_layout="legacy")
     prepared = runtime_spec.PreparedSessionSpec(spec, "digest", inputs, prospective)
     leased = SimpleNamespace(build=SimpleNamespace(), runtime=SimpleNamespace())
     requirements = SimpleNamespace()
@@ -193,7 +197,7 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    prospective = SimpleNamespace()
+    prospective = SimpleNamespace(project_data_layout="legacy")
     prepared = runtime_spec.PreparedSessionSpec(
         {"image": "sha256:pinned", "runArgs": []},
         "digest",
@@ -409,7 +413,11 @@ def _concurrent_licensed_project(
     monkeypatch.setattr(runtime_spec, "_pin_project_data_mount", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_pin_devcontainer_mount", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_seal_with_requirements", lambda *_args: "digest")
-    monkeypatch.setattr(runtime_spec, "_prospective_issuance", lambda *_args: SimpleNamespace())
+    monkeypatch.setattr(
+        runtime_spec,
+        "_prospective_issuance",
+        lambda *_args: SimpleNamespace(project_data_layout="legacy"),
+    )
     monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", lambda _root: ())
     return project
 
@@ -1954,3 +1962,30 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
     # check must then name the actionable fix, not a generic key diff.
     with pytest.raises(runtime_spec.RuntimeSpecError, match="refresh the Sandbox"):
         runtime_spec._validate_environment(spec, None)
+
+
+def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(issued, monkeypatch):
+    from booley.runtime import project_image
+
+    project, _legacy, _path, _stamp = issued
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    assert not any("target=/booley-project," in mount for mount in spec["mounts"])
+    expected_source = docker_mount_path(project / ".booley_project")
+    assert f"source={expected_source},target=/work/.booley_project,type=bind" in spec["mounts"]
+    path = dc.write_devcontainer(project, spec)
+    stamp = runtime_spec.issue(project, spec, path)
+    assert stamp.project_data_layout == "canonical-alias"
+    assert runtime_spec.validate(project, spec, path) == stamp
+    spec["mounts"].insert(
+        1, f"source={expected_source},target=/booley-project/hidden,type=bind,readonly"
+    )
+    path = dc.write_devcontainer(project, spec)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
+        runtime_spec.issue(project, spec, path)

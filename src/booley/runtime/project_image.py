@@ -24,6 +24,7 @@ import hashlib
 import logging
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from booley.config.sandbox import (
@@ -52,7 +53,17 @@ MANAGED_PROJECT_PARENT = "booley-project-parent"
 
 def is_managed_sandbox_image(project_root: Path, image: str) -> bool:
     """Return whether Booley owns the selected image's provenance contract."""
-    return image in {BASE_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)}
+    return image in {BASE_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)} or (
+        image.startswith(project_layout_prefix(project_root))
+        and re.fullmatch(r"[0-9a-f]{16}", image.removeprefix(project_layout_prefix(project_root)))
+        is not None
+    )
+
+
+def project_layout_prefix(project_root: Path) -> str:
+    """Namespace internal layout tags by the complete Project root identity."""
+    owner = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()[:24]
+    return f"{project_image_name(project_root)}-layout-{owner}-"
 
 
 # Packages the base sandbox image pins and manages (ADR 0019). A project
@@ -523,3 +534,136 @@ def docker_image_id(image: str) -> str | None:
     raise DockerImageError(
         f"could not inspect Docker image {image!r}: {detail or f'Docker exited {result.returncode}'}"
     )
+
+
+@lru_cache(maxsize=256)
+def project_data_alias_capable(image_id: str) -> bool:
+    """Probe an immutable final image for its root-owned canonical state alias."""
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        return False
+    script = (
+        "import os,stat; p='/booley-project'; "
+        "s=os.lstat(p); r=os.stat('/'); "
+        "assert stat.S_ISLNK(s.st_mode) and s.st_uid == 0; "
+        "assert os.readlink(p) == '/work/.booley_project'; "
+        "assert r.st_uid == 0 and not r.st_mode & 0o022; print('canonical-alias')"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--pull=never",
+                "--network=none",
+                "--user=0:0",
+                "--entrypoint=python3",
+                image_id,
+                "-c",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "canonical-alias"
+
+
+def inspect_layout_image(image: str) -> dict:
+    """Read bounded Docker configuration and immutable identity for a layout build."""
+    import json
+
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        rows = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise RuntimeError(f"cannot inspect Project-data layout image {image}: {exc}") from exc
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise RuntimeError(f"invalid Project-data layout image inspection: {image}")
+    return rows[0]
+
+
+def layout_image_user(parent: dict) -> str:
+    """Return a safe USER build argument while retaining default-root semantics."""
+    config = parent.get("Config")
+    user = config.get("User", "") if isinstance(config, dict) else None
+    if not isinstance(user, str) or (
+        user and re.fullmatch(r"[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?", user) is None
+    ):
+        raise RuntimeError("Project-data layout parent has an unsupported User configuration")
+    return user or "root"
+
+
+def verify_layout_image(parent: dict, candidate: dict) -> None:
+    """Reject changed runtime configuration or a substituted Docker parent."""
+    original, actual = parent.get("Config"), candidate.get("Config")
+    if not isinstance(original, dict) or not isinstance(actual, dict):
+        raise RuntimeError("Project-data layout image configuration is missing")
+    from booley.runtime import image_provenance as provenance
+
+    mutable_labels = {
+        provenance.LABEL_SCHEMA,
+        provenance.LABEL_ARTIFACT_ROLE,
+        provenance.LABEL_EFFECTIVE_INPUTS,
+        provenance.LABEL_RECIPE_FINGERPRINT,
+        provenance.LABEL_PARENT_ARTIFACT,
+        provenance.LABEL_PARENT_ARTIFACT_KIND,
+        provenance.LABEL_BUILD_ORIGIN,
+        provenance.LABEL_LOGICAL_SELECTION_FINGERPRINT,
+    }
+    original_labels = original.get("Labels") or {}
+    actual_labels = actual.get("Labels") or {}
+    if not isinstance(original_labels, dict) or not isinstance(actual_labels, dict):
+        raise RuntimeError("Project-data layout image labels are invalid")
+    retained = {key: value for key, value in original_labels.items() if key not in mutable_labels}
+    resulting = {key: value for key, value in actual_labels.items() if key not in mutable_labels}
+    if retained != resulting:
+        raise RuntimeError("Project-data layout derivative changed parent payload labels")
+    for key in ("Architecture", "Os", "Variant"):
+        if parent.get(key) != candidate.get(key):
+            raise RuntimeError("Project-data layout derivative changed parent platform")
+    left, right = dict(original), dict(actual)
+    left.pop("Labels", None)
+    right.pop("Labels", None)
+    if not left.get("User") and right.get("User") == "root":
+        left["User"] = "root"
+    if left != right:
+        raise RuntimeError("Project-data layout derivative changed parent runtime configuration")
+    before = parent.get("RootFS", {}).get("Layers")
+    after = candidate.get("RootFS", {}).get("Layers")
+    if (
+        not isinstance(before, list)
+        or not isinstance(after, list)
+        or after[: len(before)] != before
+    ):
+        raise RuntimeError("Project-data layout derivative has a substituted parent")
+    image_id = candidate.get("Id")
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--pull=never",
+            "--network=none",
+            "--entrypoint=sh",
+            "--user=0:0",
+            image_id,
+            "-c",
+            'test -d /booley-project && ! test -L /booley-project && test "$(stat -c %u /booley-project)" = 0',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if result.returncode:
+        raise RuntimeError("Project-data layout derivative lacks its root-owned alias directory")

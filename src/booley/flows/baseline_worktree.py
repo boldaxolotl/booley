@@ -40,6 +40,7 @@ from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
 )
+from booley.runtime.worktree_paths import worktree_creation_config, worktree_state_dir
 from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
@@ -144,13 +145,14 @@ def baseline_worktree(
 
 def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
     short = git_short_sha(ref, project_root)
-    worktree = project_root / ".booley_project" / f".baseline-wt-{os.getpid()}-{short}"
+    worktree = worktree_state_dir(project_root) / f".baseline-wt-{os.getpid()}-{short}"
     worktree.parent.mkdir(parents=True, exist_ok=True)
-    _git(project_root, "worktree", "prune", timeout=30)
+    _git(project_root, "config", "gc.worktreePruneExpire", "never", timeout=30)
     result = _git(
         project_root,
         "-c",
         "submodule.recurse=false",
+        *worktree_creation_config(project_root),
         "worktree",
         "add",
         "--detach",
@@ -188,7 +190,7 @@ def _cleanup_baseline_worktree(
             worktree,
             (result.stderr or result.stdout or "").strip(),
         )
-    _git(project_root, "worktree", "prune", timeout=30)
+    _git(project_root, "config", "gc.worktreePruneExpire", "never", timeout=30)
 
 
 def _install_paired_project_baseline(
@@ -210,10 +212,13 @@ def _install_paired_project_baseline(
         else _paired_project_base_sha(repository.worktree)
     )
     destination = wt_dir / ".booley_project"
+    source = repository.worktree.resolve()
+    _git(source, "config", "gc.worktreePruneExpire", "never", timeout=30)
     add = _git(
-        repository.worktree,
+        source,
         "-c",
         "submodule.recurse=false",
+        *worktree_creation_config(project_root),
         "worktree",
         "add",
         "--detach",
@@ -268,7 +273,6 @@ def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
             baseline,
             (result.stderr or result.stdout or "").strip(),
         )
-    _git(repository.worktree, "worktree", "prune", timeout=30)
 
 
 def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
@@ -302,7 +306,7 @@ def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:
     would produce silently-wrong baseline metrics, the one thing delta mode
     exists to prevent.
     """
-    src = state_cores_dir(project_root)
+    src = worktree_state_dir(project_root) / "cores"
     if not src.is_dir():
         return
     project_root = Path(os.path.normpath(str(project_root)))

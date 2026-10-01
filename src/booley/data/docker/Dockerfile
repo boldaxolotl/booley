@@ -118,5 +118,13 @@ LABEL org.opencontainers.image.version=${BOOLEY_VERSION} \
       io.booley.payload.fingerprint=${BOOLEY_PAYLOAD_FINGERPRINT} \
       booley.build-fingerprint=${BOOLEY_PAYLOAD_FINGERPRINT}
 
+USER root
+RUN if test -e /booley-project || test -L /booley-project; then \
+        test -L /booley-project && test "$(readlink /booley-project)" = /work/.booley_project; \
+    else ln -s /work/.booley_project /booley-project; fi \
+    && chown -h root:root /booley-project \
+    && test "$(stat -c %u /)" = 0 \
+    && test "$(readlink /booley-project)" = /work/.booley_project
+
 USER agent
 WORKDIR /work

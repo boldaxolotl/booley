@@ -35,6 +35,7 @@ from booley.harness.setup.guidance_links import (
 )
 from booley.runtime.git import _git_common_dir
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.worktree_paths import worktree_state_dir
 from booley.targets.catalog import TargetCatalog
 
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
@@ -280,6 +281,11 @@ def _worktree_metadata_problems(worktree: Path) -> tuple[str, ...]:
         reverse = (administration / "gitdir").read_text(encoding="utf-8").strip()
         if _absolute_git_path(reverse):
             problems.append("absolute reverse gitdir")
+        reverse_path = Path(reverse)
+        if not reverse_path.is_absolute():
+            reverse_path = administration / reverse_path
+        if reverse_path.resolve() != (worktree / ".git").resolve() or not reverse_path.is_file():
+            problems.append("unresolvable reverse gitdir")
     except OSError:
         return ("unreadable worktree registration",)
     for key in ("core.worktree", "core.hooksPath"):
@@ -290,7 +296,7 @@ def _worktree_metadata_problems(worktree: Path) -> tuple[str, ...]:
 
 
 def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
-    root = project.project_dir / "worktrees"
+    root = worktree_state_dir(project.project_root, project_dir=project.project_dir) / "worktrees"
     if not root.is_dir():
         return ()
     worktrees: list[Path] = []

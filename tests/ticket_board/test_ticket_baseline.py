@@ -1218,7 +1218,7 @@ def test_worktree_discovery_collapses_bind_mount_aliases(
 
     monkeypatch.setattr(Path, "samefile", samefile)
 
-    assert worktree_for_ref(mounted_root, "refs/heads/demo") == first
+    assert worktree_for_ref(mounted_root, "refs/heads/demo") == second
 
 
 def test_worktree_discovery_rejects_existing_path_with_wrong_git_identity(
@@ -2500,12 +2500,14 @@ def test_return_to_draft_relocates_standalone_submodules(
     repair = worktree_relocation._repair_registration
     interrupted = False
 
-    def interrupt_once(repository: Path, ref: str, destination: Path) -> None:
+    def interrupt_once(
+        repository: Path, ref: str, destination: Path, *, relative_paths: bool | None = None
+    ) -> None:
         nonlocal interrupted
         if not interrupted:
             interrupted = True
             raise worktree_relocation.WorktreeRelocationError("after atomic rename")
-        repair(repository, ref, destination)
+        repair(repository, ref, destination, relative_paths=relative_paths)
 
     monkeypatch.setattr(worktree_relocation, "_repair_registration", interrupt_once)
     with pytest.raises(draft_transition.DraftTransitionError, match="after atomic rename"):

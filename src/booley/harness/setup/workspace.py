@@ -16,12 +16,13 @@ from booley.runtime.filesystem_utils import copy_booley_tree, safe_rmtree
 from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
-from booley.runtime.project_dir import checkout_project_dir_relative_to, resolve_project_dir
+from booley.runtime.project_dir import checkout_project_dir_relative_to
 from booley.runtime.project_prepare import PreparationResult, prepare_project
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
 )
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.ticket_board.git_status import parse_porcelain_v1_z
 from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
@@ -232,7 +233,7 @@ def _remove_stale_worktree(project_root: Path, worktree_path: Path) -> None:
     except (OSError, ValueError):
         logger.warning("Could not fully remove stale worktree %s", worktree_path)
     subprocess.run(
-        ["git", "worktree", "prune"],
+        ["git", "worktree", "prune", "--expire=never"],
         cwd=project_root,
         capture_output=True,
         check=False,
@@ -798,11 +799,36 @@ def _validate_materialized_ticket_baseline(
 def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
     project_root = ctx.project_root
     _prune_stale_worktree_locks(project_root)
-    expected_wt = (
-        resolve_project_dir(project_root) / "worktrees" / ctx.slug
-        if ctx.ticket_baseline is not None
-        else project_root / ".booley_project" / "worktrees" / ctx.slug
+    expected_wt = ticket_workspace_path(project_root, ctx.slug)
+    detached = (
+        subprocess.run(
+            ["git", "-C", str(expected_wt), "symbolic-ref", "--quiet", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        ).returncode
+        == 1
+        if expected_wt.is_dir()
+        else False
     )
+    if (expected_wt / ".git").is_file() and ctx.ticket_baseline is not None and not detached:
+        from booley.runtime.worktree_repair import WorktreeRepairError, repair_ticket_workspace
+        from booley.ticket_board.helpers import tickets_dir_from_project_root
+        from booley.ticket_board.io import TicketIO
+
+        basis = ctx.ticket_baseline
+        tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+        try:
+            with tio._ticket_lock(ctx.slug, review_operation=True):
+                project_ref = (
+                    basis.participant("project").ticket_ref if basis.project_sha else None
+                )
+                repair_ticket_workspace(
+                    project_root, expected_wt, basis.participant("outer").ticket_ref, project_ref
+                )
+        except WorktreeRepairError as exc:
+            return StepResult(block_reason=str(exc))
     if not _try_reuse_worktree(ctx, project_root, expected_wt):
         fail = _create_fresh_worktree(ctx, expected_wt)
         if fail:

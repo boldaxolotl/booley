@@ -22,6 +22,16 @@ from booley.flows.baseline_worktree import (
 from booley.runtime.submodule_materialization import materialize_submodules
 
 
+@pytest.fixture(autouse=True)
+def _select_worktree_state(tmp_path: Path, monkeypatch):
+    from booley.core.project_dir import reset_cache
+
+    state = tmp_path / ".booley_project"
+    state.mkdir(exist_ok=True)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    reset_cache()
+
+
 def test_ticket_adapter_resolves_paired_project_basis_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -347,7 +357,7 @@ def test_absolute_in_project_symlink_is_rebased_onto_the_worktree(tmp_path: Path
         assert (copied / "top.v").read_text(encoding="utf-8") == "baseline\n"
 
 
-def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path) -> None:
+def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path, monkeypatch) -> None:
     """A link to a shared tree outside the project names the same thing from
     either worktree; rebasing it would invent a path that does not exist."""
     repo = tmp_path / "repo"
@@ -359,6 +369,10 @@ def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path) -> None:
     core_dir = repo / ".booley_project" / "cores" / "ip"
     core_dir.mkdir(parents=True)
     (core_dir / "vendor").symlink_to(shared)
+    from booley.core.project_dir import reset_cache
+
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(repo / ".booley_project"))
+    reset_cache()
 
     with baseline_worktree(repo, "HEAD") as wt:
         copied = wt / ".booley_project" / "cores" / "ip" / "vendor"

@@ -77,7 +77,7 @@ def test_capacity_plan_projects_only_build_steps_by_role(tmp_path: Path) -> None
         node("reuse", lifecycle.ImageRole.RUNTIME_BASE),
         node("heavy", lifecycle.ImageRole.PROJECT_OVERLAY),
         node("pull", lifecycle.ImageRole.WHEEL_OVERLAY),
-        node("thin", lifecycle.ImageRole.WHEEL_OVERLAY),
+        node("thin", lifecycle.ImageRole.PROJECT_DATA_LAYOUT),
     )
     steps = tuple(
         SimpleNamespace(action=action)
@@ -364,6 +364,10 @@ class TransactionBuilder:
             labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
         if node.role is lifecycle.ImageRole.WHEEL_OVERLAY:
             labels[lifecycle.LABEL_WHEEL_SHA256] = "e" * 64
+        elif node.role is lifecycle.ImageRole.PROJECT_DATA_LAYOUT:
+            labels[lifecycle.LABEL_WHEEL_SHA256] = (
+                self.docker.label(parent_reference, lifecycle.LABEL_WHEEL_SHA256) or ""
+            )
         self.docker.images[candidate_reference] = (image_id, labels)
         self.built.append((node.role, parent_id))
         return candidate_reference
@@ -3572,3 +3576,210 @@ def test_runtime_identity_and_ancestry_edge_guards(
     assert lifecycle._node_provenance_reason(node, docker).code == "wrong-origin"
     child = replace(node, parent="missing-parent")
     assert lifecycle._node_ancestry_reason(child, docker).code == "parent-changed"
+
+
+def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuses(
+    tmp_path, monkeypatch
+):
+    root = _project(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
+    initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    assert initial.nodes[-1].role is lifecycle.ImageRole.WHEEL_OVERLAY
+    builder = TransactionBuilder(docker)
+    prepared = lifecycle.prepare(initial, docker=docker, builder=builder)
+    terminal = prepared.plan.nodes[-1]
+    assert terminal.role is lifecycle.ImageRole.PROJECT_DATA_LAYOUT
+    assert terminal.parent == initial.nodes[-1].reference
+    assert terminal.payload == initial.nodes[-1].payload
+    assert terminal.wheel_source_fingerprint == "wheel"
+    assert terminal.acquisition_policy is lifecycle.ArtifactPolicy.LOCAL_ONLY
+    assert terminal.reference != lifecycle.BASE_IMAGE
+    assert builder.built[-1][1] == prepared.candidates[-2].image_id
+    assert prepared.candidates[-1].wheel_sha256 == prepared.candidates[-2].wheel_sha256
+    lifecycle.validate(prepared, docker=docker)
+    committed = lifecycle.commit(prepared, docker=docker)
+    assert committed.selected_reference == terminal.reference
+    assert committed.wheel_sha256 == "e" * 64
+    repeated = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    assert repeated.selected_reference == terminal.reference
+    assert all(step.action is lifecycle.PlanAction.REUSE for step in repeated.steps)
+    second = TransactionBuilder(docker)
+    replay = lifecycle.prepare(repeated, docker=docker, builder=second)
+    lifecycle.validate(replay, docker=docker)
+    assert second.built == []
+    assert replay.candidates[-1].image_id == committed.selected_id
+
+
+def test_layout_identity_changes_for_parent_topology_recipe_and_project(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    parent = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
+    first = lifecycle._layout_node(root, parent, "sha256:" + "a" * 64)
+    changed_parent = lifecycle._layout_node(root, parent, "sha256:" + "b" * 64)
+    assert changed_parent.reference != first.reference
+    monkeypatch.setattr(
+        "booley.runtime.project_dir.resolve_project_dir", lambda _root: tmp_path / "different"
+    )
+    assert lifecycle._layout_node(root, parent, "sha256:" + "a" * 64).reference != first.reference
+    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    assert (
+        lifecycle._layout_node(tmp_path / "other-project", parent, "sha256:" + "a" * 64).reference
+        != first.reference
+    )
+    monkeypatch.setattr(lifecycle, "resolve_recipe_fingerprint", lambda *_args: "different-recipe")
+    assert lifecycle._layout_node(root, parent, "sha256:" + "a" * 64).reference != first.reference
+
+
+def test_release_layout_child_retains_verified_parent_policy_and_zero_build_check(
+    tmp_path, monkeypatch
+):
+    root = _project(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
+    monkeypatch.setattr(lifecycle, "_expected_image_build_contracts", lambda: contracts)
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    parent = lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
+    _stage_registry_candidate(
+        docker, parent, parent.reference, label_overrides={lifecycle.LABEL_WHEEL_SHA256: "f" * 64}
+    )
+    policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    planned = lifecycle.plan(
+        lifecycle.ProjectImageScope(root), docker=docker, artifact_policy=policy
+    )
+    assert planned.nodes[0].acquisition_policy is policy
+    assert planned.nodes[-1].acquisition_policy is lifecycle.ArtifactPolicy.LOCAL_ONLY
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    assert prepared.plan.acquisition_policy is policy
+    lifecycle.validate(prepared, docker=docker)
+    committed = lifecycle.commit(prepared, docker=docker)
+    before = list(docker.mutations)
+    checked = lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root),
+        lifecycle.Intent.CHECK,
+        docker=docker,
+        artifact_policy=policy,
+    )
+    assert checked.status is lifecycle.Status.CURRENT
+    assert checked.selected_reference == committed.selected_reference
+    assert checked.wheel_sha256 == "f" * 64
+    assert docker.mutations == before
+    docker.images.pop(checked.selected_reference)
+    missing = lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root),
+        lifecycle.Intent.CHECK,
+        docker=docker,
+        artifact_policy=policy,
+    )
+    assert missing.status is lifecycle.Status.STALE
+    assert docker.mutations == before
+
+
+def test_obsolete_layout_cleanup_is_project_scoped_and_retains_running_artifacts(tmp_path):
+    roots = [tmp_path / "one" / "same-name", tmp_path / "two" / "same-name"]
+    prefix = lifecycle.project_image.project_layout_prefix(roots[0])
+    other_prefix = lifecycle.project_image.project_layout_prefix(roots[1])
+    assert prefix != other_prefix
+    selected, obsolete, active, foreign = (
+        prefix + "1" * 16,
+        prefix + "2" * 16,
+        prefix + "3" * 16,
+        other_prefix + "2" * 16,
+    )
+
+    def record(identity, suffix):
+        return (
+            identity,
+            {
+                lifecycle.LABEL_SCHEMA: lifecycle.PROVENANCE_SCHEMA,
+                lifecycle.LABEL_ARTIFACT_ROLE: lifecycle.ImageRole.PROJECT_DATA_LAYOUT.value,
+                lifecycle.LABEL_EFFECTIVE_INPUTS: suffix * 64,
+            },
+        )
+
+    docker = FakeDocker(
+        {
+            selected: record("selected-id", "1"),
+            obsolete: record("obsolete-id", "2"),
+            active: record("active-id", "3"),
+            foreign: record("foreign-id", "2"),
+        }
+    )
+    docker.used_image_ids = frozenset({"active-id"})
+    checked = lifecycle._reconcile_layout_tag_cleanup(
+        roots[0], selected, lifecycle.Intent.CHECK, docker
+    )
+    assert checked.pending == (obsolete,)
+    assert checked.retained_required == (active,)
+    assert docker.mutations == []
+    cleaned = lifecycle._reconcile_layout_tag_cleanup(
+        roots[0], selected, lifecycle.Intent.ENSURE, docker
+    )
+    assert cleaned.removed == (obsolete,)
+    assert docker.image_id(selected) == "selected-id"
+    assert docker.image_id(active) == "active-id"
+    assert docker.image_id(foreign) == "foreign-id"
+
+
+@pytest.mark.parametrize(
+    "user, expected",
+    [("", "root"), ("root", "root"), ("agent", "agent"), ("1000:1000", "1000:1000")],
+)
+def test_layout_parent_user_preserves_supported_identity(user, expected):
+    assert lifecycle.project_image.layout_image_user({"Config": {"User": user}}) == expected
+
+
+@pytest.mark.parametrize("user", ["agent\nUSER root", "$(id)", "agent root", None])
+def test_layout_parent_user_refuses_unsafe_identity(user):
+    with pytest.raises(RuntimeError, match="unsupported User"):
+        lifecycle.project_image.layout_image_user({"Config": {"User": user}})
+
+
+def test_layout_config_retains_default_user_and_rejects_payload_substitution(monkeypatch):
+    import copy
+
+    parent = {
+        "Config": {
+            "User": "",
+            "WorkingDir": "/work",
+            "Env": ["A=B"],
+            "Labels": {"payload": "original"},
+        },
+        "RootFS": {"Layers": ["parent"]},
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Id": "parent",
+    }
+    candidate = copy.deepcopy(parent)
+    candidate["Config"]["User"] = "root"
+    candidate["RootFS"]["Layers"].append("layout")
+    candidate["Id"] = "candidate"
+    monkeypatch.setattr(
+        lifecycle.project_image.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    lifecycle.project_image.verify_layout_image(parent, candidate)
+    candidate["Config"]["Labels"]["payload"] = "substituted"
+    with pytest.raises(RuntimeError, match="payload labels"):
+        lifecycle.project_image.verify_layout_image(parent, candidate)
+    candidate["Config"]["Labels"]["payload"] = "original"
+    candidate["Config"]["WorkingDir"] = "/other"
+    with pytest.raises(RuntimeError, match="runtime configuration"):
+        lifecycle.project_image.verify_layout_image(parent, candidate)
+    candidate["Config"]["WorkingDir"] = "/work"
+    candidate["RootFS"]["Layers"] = ["foreign", "layout"]
+    with pytest.raises(RuntimeError, match="substituted parent"):
+        lifecycle.project_image.verify_layout_image(parent, candidate)

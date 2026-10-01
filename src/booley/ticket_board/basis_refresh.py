@@ -15,9 +15,9 @@ from booley.core.models import TargetPlan
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
-    resolve_project_dir,
     runtime_dir,
 )
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from booley.ticket_board.ticket_repositories import paired_project_repository
@@ -345,7 +345,7 @@ def _resume_prepared_refresh(
         raise BasisRefreshError(str(exc)) from exc
     operation = _operation_path(root, journal.operation_id)
     candidate = operation / "new-outer"
-    canonical = resolve_project_dir(root) / "worktrees" / slug
+    canonical = ticket_workspace_path(root, slug)
     outer = candidate if candidate.is_dir() else canonical
     paired = paired_project_repository(outer) if outer.is_dir() else None
     has_project = any(row.role == "project" for row in basis.participants)

@@ -164,12 +164,16 @@ def remove_worktree(wt_path: str) -> None:
 
 def prune_worktrees() -> None:
     """Run git worktree prune."""
-    git("worktree", "prune")
+    git("worktree", "prune", "--expire=never")
 
 
-def add_worktree(path: str, branch: str, timeout: int = 30) -> tuple[bool, str]:
+def add_worktree(
+    path: str, branch: str, timeout: int = 30, *, relative_paths: bool = False
+) -> tuple[bool, str]:
     """Create a worktree at *path* on *branch*.  Returns (ok, stderr)."""
-    r = git("worktree", "add", path, branch, timeout=timeout)
+    git("config", "gc.worktreePruneExpire", "never")
+    config = () if relative_paths else ("-c", "worktree.useRelativePaths=false")
+    r = git(*config, "worktree", "add", path, branch, timeout=timeout)
     if not r:
         return False, "git timed out or not found"
     return r.returncode == 0, r.stderr.strip()

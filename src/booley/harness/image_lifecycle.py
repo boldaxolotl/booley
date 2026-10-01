@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from booley.runtime import image_lifecycle as runtime_lifecycle
 from booley.runtime import project_image
@@ -76,6 +78,15 @@ class _LegacyBuildAdapter:
         force: bool,
         source: ArtifactSource,
     ) -> str | None:
+        if node.role is ImageRole.PROJECT_DATA_LAYOUT:
+            adapter = _IncrementalBuildAdapter(
+                self.project_root, self.docker, verbose=self.verbose
+            )
+            return adapter.prepare(
+                node,
+                candidate_reference=f"booley-lifecycle-{uuid4().hex}-layout:candidate",
+                parent_reference=node.parent,
+            )
         if source is ArtifactSource.VERIFIED_RELEASE_PULL:
             return self._pull_release(node)
         self._build_local(node, force=force)
@@ -180,7 +191,7 @@ def _capacity_request(node: ImageNode, *, output_tag: str | None = None) -> Dock
     """Project one BUILD node into validated Docker capacity facts."""
     estimate = (
         BuildEstimateClass.THIN_OVERLAY
-        if node.role is ImageRole.WHEEL_OVERLAY
+        if node.role in {ImageRole.WHEEL_OVERLAY, ImageRole.PROJECT_DATA_LAYOUT}
         else BuildEstimateClass.HEAVYWEIGHT
     )
     labels = [
@@ -259,14 +270,84 @@ class _IncrementalBuildAdapter:
             raise ImageLifecycleError(
                 f"could not resolve prepared parent {parent_reference!r} for {node.reference}"
             )
-        self._materialize_managed_project_recipe(node)
-        self._build_role(context, node, candidate_reference, parent_reference, parent_id)
+        if node.role is ImageRole.PROJECT_DATA_LAYOUT:
+            self._build_layout(context, node, candidate_reference, parent_id)
+        else:
+            self._materialize_managed_project_recipe(node)
+            self._build_role(context, node, candidate_reference, parent_reference, parent_id)
         failures = [result.detail for result in context.results if result.status == "err"]
         if failures:
             raise ImageLifecycleError("; ".join(failures))
         if self.docker.image_id(candidate_reference) is None:
             raise ImageLifecycleError(f"candidate build produced no image {candidate_reference!r}")
         return candidate_reference
+
+    def _build_layout(
+        self, context, node: ImageNode, candidate: str, parent_id: str | None
+    ) -> None:
+        from booley.harness.setup import docker_image
+
+        if parent_id is None:
+            raise ImageLifecycleError(
+                "Project-data layout parent is unavailable; run init or refresh"
+            )
+        parent = project_image.inspect_layout_image(parent_id)
+        if parent.get("Id") != parent_id:
+            raise ImageLifecycleError("Project-data layout parent identity changed")
+        user = project_image.layout_image_user(parent)
+        labels = parent.get("Config", {}).get("Labels", {}) or {}
+        wheel_sha = labels.get(runtime_lifecycle.LABEL_WHEEL_SHA256)
+        if (
+            not wheel_sha
+            or labels.get(runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT)
+            != node.wheel_source_fingerprint
+        ):
+            raise ImageLifecycleError("Project-data layout parent has no matching wheel identity")
+        self._wheel_sha256 = wheel_sha
+        tag = f"127.0.0.1:1/booley-layout-{uuid4().hex}:parent"
+        self.docker.tag(parent_id, tag)
+        try:
+            with tempfile.TemporaryDirectory(prefix="booley-layout-context-") as directory:
+                if self.docker.image_id(tag) != parent_id:
+                    raise ImageLifecycleError(
+                        "Project-data layout parent tag changed before build"
+                    )
+                current = _capacity_request(node, output_tag=candidate)
+                index = self._next_request_index
+                matching = (
+                    index < len(self._requests)
+                    and self._requests[index].managed_image == node.reference
+                )
+                tail = self._requests[index + int(matching) :]
+                spec = docker_image._DockerBuildSpec(
+                    dockerfile=node.recipe,
+                    context=Path(directory),
+                    exists=False,
+                    image=candidate,
+                    build_contexts=(("booley-layout-parent", f"docker-image://{tag}"),),
+                    build_args=("--build-arg", f"BOOLEY_LAYOUT_USER={user}"),
+                    parent_artifact=parent_id,
+                    labels=tuple(self._build_labels(node)),
+                    network="none",
+                    capacity_request=current,
+                    capacity_plan=DockerBuildPlan((current, *tail)),
+                    build_note="preparing Project-data directory layout",
+                )
+                result = docker_image._docker_build_image(context, spec)
+                if result != 0 or self.docker.image_id(tag) != parent_id:
+                    raise ImageLifecycleError(
+                        "local-only Project-data layout build failed or parent was substituted"
+                    )
+                project_image.verify_layout_image(
+                    parent, project_image.inspect_layout_image(candidate)
+                )
+                if matching:
+                    self._next_request_index += 1
+        except RuntimeError as exc:
+            raise ImageLifecycleError(str(exc)) from exc
+        finally:
+            if self.docker.image_id(tag) == parent_id:
+                self.docker.remove_tag(tag)
 
     def _pull_complete_release(self, node: ImageNode) -> str:
         from booley.harness.setup.docker_image import _try_pull_image, remote_tag
@@ -537,6 +618,19 @@ def reconcile(
         root = scope.project_root.resolve()
     else:
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
+    if (
+        isinstance(scope, ProjectImageScope)
+        and intent is not Intent.CHECK
+        and runtime_lifecycle._external_data_layout(root)
+    ):
+        selected = runtime_lifecycle._selected_reference(root)
+        selected_id = docker.image_id(selected)
+        if (
+            selected_id
+            and selected in {BASE_IMAGE, *FLAVOR_RECIPES, project_image.project_image_name(root)}
+            and project_image.project_data_alias_capable(selected_id)
+        ):
+            return reconcile_planned(scope, intent, verbose=verbose)
     builder = (
         None
         if intent is Intent.CHECK

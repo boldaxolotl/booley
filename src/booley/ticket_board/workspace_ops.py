@@ -17,10 +17,10 @@ from booley.core.differences import format_differences
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
-    resolve_project_dir,
     runtime_dir,
 )
 from booley.runtime.project_prepare import prepare_project
+from booley.runtime.worktree_paths import ticket_workspace_path, worktree_creation_config
 from booley.runtime.worktree_relocation import (
     WorktreeRelocationError,
     refresh_relative_worktree_config,
@@ -141,6 +141,7 @@ class _OpenAttachment:
     worktree: Path
     branch: str
     base_sha: str
+    project_root: Path | None = None
     branch_created: bool = False
     worktree_attached: bool = False
     partial_path: bool = False
@@ -243,7 +244,14 @@ def _strict_branch_sha(repository: Path, branch: str) -> str | None:
     )
 
 
-def _attach_worktree(repository: Path, destination: Path, branch: str, base_ref: str) -> str:
+def _attach_worktree(
+    repository: Path,
+    destination: Path,
+    branch: str,
+    base_ref: str,
+    *,
+    project_root: Path | None = None,
+) -> str:
     base_sha = _full_commit(repository, base_ref)
     existing_sha = _branch_sha(repository, branch)
     if existing_sha and existing_sha != base_sha:
@@ -257,7 +265,8 @@ def _attach_worktree(repository: Path, destination: Path, branch: str, base_ref:
     args = ("worktree", "add", str(destination), branch)
     if not existing_sha:
         args = ("worktree", "add", "-b", branch, str(destination), base_sha)
-    _require_git(repository, *args)
+    _require_git(repository, "config", "gc.worktreePruneExpire", "never")
+    _require_git(repository, *worktree_creation_config(project_root or repository), *args)
     return base_sha
 
 
@@ -348,9 +357,11 @@ def _create_attachment(attachment: _OpenAttachment) -> None:
             raise
         attachment.branch_created = True
     attachment.worktree.parent.mkdir(parents=True, exist_ok=True)
+    _require_git(attachment.repository, "config", "gc.worktreePruneExpire", "never")
     try:
         _require_git(
             attachment.repository,
+            *worktree_creation_config(attachment.project_root or attachment.repository),
             "worktree",
             "add",
             str(attachment.worktree),
@@ -590,7 +601,7 @@ def ensure_ticket_workspace(
     if not isinstance(branch, str) or not branch:
         raise TicketBaselineOperationError("ticket has no destination branch")
     generation = _draft_generation(root, slug)
-    outer = resolve_project_dir(root) / "worktrees" / slug
+    outer = ticket_workspace_path(root, slug)
     workspace = open_authoring_generation(root, Path(ticket_path), slug, fields, generation, outer)
     try:
         materialize_planned_dependencies(
@@ -632,6 +643,8 @@ def open_authoring_generation(
         )
     outer_attachment = _plan_open_attachment(root, outer, ticket_branch, outer_base)
     project_attachment = _project_open_attachment(project_plan, outer, ticket_branch)
+    if project_attachment is not None:
+        project_attachment.project_root = root
     _validate_open_bases(root, branch, outer_base, project_plan)
     try:
         _create_attachment(outer_attachment)
@@ -662,7 +675,7 @@ def relocate_refresh_workspace(
     has_project: bool,
 ) -> None:
     """Move a prepared refresh workspace into its canonical authoring location."""
-    canonical = resolve_project_dir(root) / "worktrees" / slug
+    canonical = ticket_workspace_path(root, slug)
     branch = _generation_branch(generation, slug)
     project_source = resolve_inner_project_repo(root)
     holding = operation / "new-project-moving"
@@ -691,7 +704,7 @@ def discard_refresh_workspace(
     """Remove worktrees and generation refs owned by an abandoned Basis Refresh."""
     branch = _generation_branch(generation, slug)
     project_source = resolve_inner_project_repo(root)
-    canonical = resolve_project_dir(root) / "worktrees" / slug
+    canonical = ticket_workspace_path(root, slug)
     candidate = operation / "new-outer"
     for outer in (canonical, candidate):
         if not _worktree_owns_branch(root, outer, branch):
@@ -766,7 +779,7 @@ def load_refresh_source_workspace(
     operation: Path,
 ) -> AuthoringWorkspace:
     """Load the pristine old basis workspace, reconstructing it when necessary."""
-    canonical = resolve_project_dir(root) / "worktrees" / slug
+    canonical = ticket_workspace_path(root, slug)
     if canonical.exists():
         return _workspace_from_basis_checkout(root, canonical, basis)
     _require_unexecuted_refresh_refs(root, basis, slug)
@@ -922,6 +935,8 @@ def _resume_project_attachment(
         _prepare_workspace_project(root, outer, ticket, slug)
         return paired.worktree
     attachment = _project_open_attachment(project, outer, ticket_branch)
+    if attachment is not None:
+        attachment.project_root = root
     if attachment is None:  # Defensive: project is known to be present above.
         raise TicketBaselineOperationError("paired project attachment could not be planned")
     try:
@@ -1144,7 +1159,7 @@ def _prepare_basis(
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     if effective_fields is not None:
         fields = dict(effective_fields)
-    outer = workspace or (resolve_project_dir(root) / "worktrees" / slug)
+    outer = workspace or (ticket_workspace_path(root, slug))
     if not outer.is_dir():
         raise TicketBaselineOperationError(f"Ticket Workspace is not open: {outer}")
     project, outer_changes, project_changes, outer_base, project_base = _authoring_changes(
@@ -1190,7 +1205,7 @@ def _prepare_converted_basis(
 ) -> tuple[_BasisPreparation, TicketSpec]:
     """Prepare baseline inputs from the one human Ticket conversion boundary."""
     root = project_root.resolve()
-    outer = workspace or (resolve_project_dir(root) / "worktrees" / slug)
+    outer = workspace or (ticket_workspace_path(root, slug))
     if not outer.is_dir():
         raise TicketBaselineOperationError(f"Ticket Workspace is not open: {outer}")
     _prepare_workspace_project(root, outer, ticket, slug)
@@ -1764,7 +1779,7 @@ def _prepare_basis_inputs(
 
 
 def _authoring_repositories(root: Path, slug: str) -> dict[str, Path]:
-    outer = resolve_project_dir(root) / "worktrees" / slug
+    outer = ticket_workspace_path(root, slug)
     repositories = {"outer": outer}
     paired = paired_project_repository(outer)
     if paired is not None:
@@ -1943,7 +1958,7 @@ def _apply_basis_reset(
     outer_participant = basis.participant("outer")
     outer_branch = outer_participant.ticket_ref.removeprefix("refs/heads/")
     _attach_worktree(root, outer, outer_branch, outer_participant.authoring_sha)
-    _restore_project_workspace(source, outer, basis)
+    _restore_project_workspace(source, outer, basis, project_root=root)
     errors = validate_basis_refs(
         root,
         basis,
@@ -1973,7 +1988,7 @@ def preflight_basis_reset(
         slug=slug,
         destination_branch=requested_branch,
     )
-    outer = resolve_project_dir(root) / "worktrees" / slug
+    outer = ticket_workspace_path(root, slug)
     paired = paired_project_repository(outer) if outer.is_dir() else None
     _validate_reset_worktrees(root, source, outer, paired, basis)
     reset_participants = _reset_participants(root, source, basis, heads)
@@ -2045,13 +2060,17 @@ def _restore_project_workspace(
     source: Path | None,
     outer: Path,
     basis: TicketBaseline,
+    *,
+    project_root: Path,
 ) -> None:
     if source is None:
         return
     participant = basis.participant("project")
     branch = participant.ticket_ref.removeprefix("refs/heads/")
     destination = ticket_project_worktree(outer)
-    _attach_worktree(source, destination, branch, participant.authoring_sha)
+    _attach_worktree(
+        source, destination, branch, participant.authoring_sha, project_root=project_root
+    )
     base_branch = participant.destination_ref.removeprefix("refs/heads/")
     _require_git(source, "branch", f"--set-upstream-to={base_branch}", branch)
 

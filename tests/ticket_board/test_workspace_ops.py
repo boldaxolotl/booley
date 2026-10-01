@@ -114,7 +114,9 @@ def _authoring_workspace(
     ticket = root / "ticket.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("---\nbranch: main\nscope: []\ncriteria: {}\n---\nbody\n", encoding="utf-8")
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: project_data
+    )
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "load_basis_publication", lambda *_args: None)
     monkeypatch.setattr(workspace_ops, "_pin_authoring_bases", lambda *_args: ("a" * 40, ""))
@@ -478,7 +480,9 @@ def test_ensure_workspace_rejects_moved_branch_and_existing_path(
     ticket.write_text(_draft_ticket(), encoding="utf-8")
     project_data = tmp_path / "project-data"
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: project_data
+    )
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
 
     def moved_generation_branch(_repository: Path, branch: str) -> str:
@@ -563,7 +567,9 @@ def test_current_and_project_branch_validation(
 
     project = tmp_path / "project"
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path / "data"
+    )
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: project)
     monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: None)
     with pytest.raises(workspace_ops.TicketBaselineOperationError, match="does not exist"):
@@ -577,7 +583,9 @@ def test_preflight_project_repository_validates_destination_ref(
     ticket = tmp_path / "ticket.md"
     ticket.write_text(_draft_ticket(extra="project_destination_ref: main\n"), encoding="utf-8")
     monkeypatch.setattr(workspace_ops, "runtime_dir", lambda _root: tmp_path / ".runtime")
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path / "data"
+    )
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: tmp_path)
     with pytest.raises(workspace_ops.TicketBaselineOperationError, match="full refs/heads"):
         workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket")
@@ -627,6 +635,8 @@ def test_create_attachment_records_partial_path_and_moved_destination(
     monkeypatch.setattr(workspace_ops, "_strict_branch_sha", lambda *_args: "a" * 40)
 
     def fail_add(*_args: object, **_kwargs: object) -> str:
+        if "config" in _args:
+            return ""
         attachment.worktree.mkdir()
         raise workspace_ops.TicketBaselineOperationError("attach failed")
 
@@ -839,7 +849,9 @@ def test_draft_generation_reuses_valid_descriptor(
     expected = workspace_ops.AuthoringWorkspace(
         tmp_path / "outer", None, "a" * 40, "", "0123456789abcdef"
     )
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path
+    )
     monkeypatch.setattr(workspace_ops, "open_authoring_generation", lambda *_args: expected)
     assert workspace_ops.ensure_ticket_workspace(tmp_path, ticket, "ticket") == expected
 
@@ -910,7 +922,9 @@ def test_reset_project_source_validation_rejects_repository_mismatches(
         "pin_basis_refs",
         lambda *_args, **_kwargs: {"outer": "a" * 40, "project": "c" * 40},
     )
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path / "data"
+    )
     plan = workspace_ops.preflight_basis_reset(tmp_path, "ticket", paired, "main")
     assert plan.project_source == tmp_path
 
@@ -944,7 +958,8 @@ def test_missing_refresh_workspace_rejects_advanced_execution_ref(
         )
     )
     monkeypatch.setattr(
-        workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "project-data"
+        "booley.runtime.worktree_paths.resolve_project_dir",
+        lambda _root: tmp_path / "project-data",
     )
 
     with pytest.raises(
@@ -1000,7 +1015,9 @@ def test_refresh_workspace_relocation_and_discard_cover_owned_state(
     workspace = workspace_ops.AuthoringWorkspace(outer, None, "a" * 40, "", "0" * 16)
     commands: list[tuple[object, ...]] = []
     removals: list[Path] = []
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: project_data)
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: project_data
+    )
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: False)
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda _outer: None)
@@ -1081,7 +1098,9 @@ def test_refresh_relocation_rejects_participant_changes(
     canonical = tmp_path / "data/worktrees/ticket"
     canonical.mkdir(parents=True)
     workspace = workspace_ops.AuthoringWorkspace(tmp_path / "new", None, "a" * 40, "", "0" * 16)
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path / "data"
+    )
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda _root: None)
     monkeypatch.setattr(workspace_ops, "_worktree_owns_branch", lambda *_args: True)
     monkeypatch.setattr(workspace_ops, "_restore_refresh_project", lambda *_args: None)
@@ -1144,7 +1163,9 @@ def test_load_refresh_source_rebuilds_invalid_cached_checkout(
     expected = workspace_ops.AuthoringWorkspace(checkout, None, "a" * 40, "")
     calls: list[str] = []
     attempts = iter((False, True))
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path / "data")
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path / "data"
+    )
     monkeypatch.setattr(workspace_ops, "_require_unexecuted_refresh_refs", lambda *_args: None)
     monkeypatch.setattr(
         workspace_ops, "safe_rmtree", lambda path, **_kwargs: calls.append(f"rm:{path}")
@@ -1464,7 +1485,9 @@ def test_refresh_materialization_failure_remains_actionable(
 ) -> None:
     from booley.ticket_board.ticket_baseline import TicketBaselineError
 
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path
+    )
     monkeypatch.setattr(workspace_ops, "_require_unexecuted_refresh_refs", lambda *_args: None)
     monkeypatch.setattr(
         workspace_ops,
@@ -1495,7 +1518,9 @@ def test_baseline_preparation_requires_open_workspace_and_destination(
 ) -> None:
     ticket = tmp_path / "ticket.md"
     ticket.write_text("---\nbranch: main\n---\nbody\n", encoding="utf-8")
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: tmp_path
+    )
     with pytest.raises(workspace_ops.TicketBaselineOperationError, match="not open"):
         workspace_ops._prepare_basis(tmp_path, ticket, "ticket")
     with pytest.raises(workspace_ops.TicketBaselineOperationError, match="destination branch"):
@@ -1564,7 +1589,9 @@ def test_refresh_relocation_rejects_missing_checkout_and_repository_mismatch(
     workspace = workspace_ops.AuthoringWorkspace(
         tmp_path / "missing", None, "a" * 40, "", "1" * 32
     )
-    monkeypatch.setattr(workspace_ops, "resolve_project_dir", lambda *_args: tmp_path)
+    monkeypatch.setattr(
+        "booley.runtime.worktree_paths.resolve_project_dir", lambda *_args: tmp_path
+    )
     monkeypatch.setattr(workspace_ops, "resolve_inner_project_repo", lambda *_args: None)
     monkeypatch.setattr(workspace_ops, "_stage_refresh_project", lambda *_args: None)
     monkeypatch.setattr(workspace_ops, "paired_project_repository", lambda *_args: None)
@@ -1708,7 +1735,9 @@ def test_reset_reports_failed_postcondition(
     plan = _reset_plan(tmp_path, basis, tmp_path / "outer")
     monkeypatch.setattr(workspace_ops, "_remove_authoring_worktrees", lambda *_args: None)
     monkeypatch.setattr(workspace_ops, "_attach_worktree", lambda *_args: None)
-    monkeypatch.setattr(workspace_ops, "_restore_project_workspace", lambda *_args: None)
+    monkeypatch.setattr(
+        workspace_ops, "_restore_project_workspace", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         workspace_ops, "validate_basis_refs", lambda *_args, **_kwargs: ["head moved"]
     )

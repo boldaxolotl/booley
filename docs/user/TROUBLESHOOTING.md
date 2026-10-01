@@ -398,10 +398,15 @@ there. (Background on the two modes: [USAGE.md](https://github.com/boldaxolotl/B
 /work/.booley_project/worktrees/axi-fix  0000000 [detached HEAD] prunable
 ```
 
-Ticket Workspaces are host-addressable only when both the host and the Sandbox
-use Git 2.48 or newer. Run `booley init` after upgrading; new worktrees then use
+Ticket Workspaces in the default in-checkout layout are host-addressable when
+both the host and the Sandbox use Git 2.48 or newer and the Sandbox has been
+regenerated and recreated with the compatible Project-data alias layout. Run
+`booley init` after upgrading and recreating the Sandbox; new worktrees then use
 relative metadata, so host `git status` and `git worktree list` work normally.
-Existing worktrees are not rewritten.
+Init and the next Ticket activation or blocked/review preparation repair existing
+links only after proving their recorded repository and Ticket ownership. Repair
+is deferred while an incompatible Sandbox is running; ownership or missing
+registration errors require resolving the reported problem before retrying.
 
 With an older or unverified Git, new worktrees keep the container-only fallback,
 and `prunable` on the host is expected. **Do not "clean it up"**: a host-side

@@ -30,9 +30,9 @@ from booley.core.boundary import (
 )
 from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
-    resolve_project_dir,
     runtime_dir,
 )
+from booley.runtime.worktree_paths import relative_worktree_paths, ticket_workspace_path
 from booley.runtime.worktree_relocation import (
     WorktreeMove,
     WorktreeRelocationError,
@@ -451,28 +451,38 @@ def _worktree_for_ref(repository: Path, ref: str) -> Path:
     return path
 
 
-def _move_worktree(repository: Path, ref: str, destination: Path) -> None:
+def _move_worktree(
+    repository: Path, ref: str, destination: Path, *, project_root: Path | None = None
+) -> None:
     source = _worktree_for_ref(repository, ref)
     if source.resolve() == destination.resolve():
         return
     if source.exists() and destination.exists():
         raise DraftTransitionError(f"worktree destination already exists: {destination}")
     try:
-        relocate_worktree(repository, ref, source, destination)
+        relocate_worktree(
+            repository,
+            ref,
+            source,
+            destination,
+            relative_paths=relative_worktree_paths(project_root or repository),
+        )
     except WorktreeRelocationError as exc:
         raise DraftTransitionError(str(exc)) from exc
 
 
-def _move_worktree_if_present(repository: Path, ref: str, destination: Path) -> None:
+def _move_worktree_if_present(
+    repository: Path, ref: str, destination: Path, *, project_root: Path | None = None
+) -> None:
     if _find_worktree_for_ref(repository, ref) is not None:
-        _move_worktree(repository, ref, destination)
+        _move_worktree(repository, ref, destination, project_root=project_root)
 
 
 def _preflight_relocation(
     root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> None:
     operation = _operation_dir(root, journal.operation_id)
-    canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
+    canonical_outer = ticket_workspace_path(root, journal.slug)
     project_repository = resolve_inner_project_repo(root)
     old_outer = basis.participant("outer")
     new_ref = f"refs/heads/{_generation_branch(journal.generation, journal.slug)}"
@@ -518,7 +528,7 @@ def _relocate_worktrees(
     root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
     operation = _operation_dir(root, journal.operation_id)
-    canonical_outer = resolve_project_dir(root) / "worktrees" / journal.slug
+    canonical_outer = ticket_workspace_path(root, journal.slug)
     project_repository = resolve_inner_project_repo(root)
     old_outer = basis.participant("outer")
     new_ref = f"refs/heads/{_generation_branch(journal.generation, journal.slug)}"
@@ -529,16 +539,21 @@ def _relocate_worktrees(
         assert project_repository is not None
         old_project = basis.participant("project")
         _move_worktree_if_present(
-            project_repository, old_project.ticket_ref, operation / "old-project"
+            project_repository,
+            old_project.ticket_ref,
+            operation / "old-project",
+            project_root=root,
         )
     _move_worktree_if_present(root, old_outer.ticket_ref, operation / "old-outer")
     if journal.has_project and project_repository is not None:
-        _move_worktree(project_repository, new_ref, operation / "new-project-moving")
+        _move_worktree(
+            project_repository, new_ref, operation / "new-project-moving", project_root=root
+        )
     _move_worktree(root, new_ref, canonical_outer)
     project_path = None
     if journal.has_project and project_repository is not None:
         project_path = ticket_project_worktree(canonical_outer)
-        _move_worktree(project_repository, new_ref, project_path)
+        _move_worktree(project_repository, new_ref, project_path, project_root=root)
     outer_base = _git(canonical_outer, "rev-parse", "HEAD")
     project_base = _git(project_path, "rev-parse", "HEAD") if project_path else ""
     return AuthoringWorkspace(
@@ -553,7 +568,7 @@ def _relocate_worktrees(
 def _published_worktrees(
     root: Path, journal: DraftTransitionJournal, basis: TicketBaseline
 ) -> AuthoringWorkspace:
-    outer = resolve_project_dir(root) / "worktrees" / journal.slug
+    outer = ticket_workspace_path(root, journal.slug)
     project = ticket_project_worktree(outer) if journal.has_project else None
     outer_base = _git(outer, "rev-parse", "HEAD")
     project_base = _git(project, "rev-parse", "HEAD") if project else ""

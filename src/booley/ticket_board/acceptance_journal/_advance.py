@@ -21,7 +21,8 @@ from typing import TYPE_CHECKING, Literal
 
 from booley.core.differences import format_differences
 from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots
-from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
+from booley.runtime.project_dir import checkout_project_dir_relative_to
+from booley.runtime.worktree_paths import worktree_creation_config, worktree_state_dir
 
 from ..git_ops import worktree_blocking_changes, worktree_is_clean
 from ..target_finalization import (
@@ -909,8 +910,10 @@ def _add_finalization_worktrees(
     has_project: bool,
     journal: AcceptanceJournal,
 ) -> Path | None:
+    _require_git(root, "config", "gc.worktreePruneExpire", "never")
     _require_git(
         root,
+        *worktree_creation_config(root),
         "worktree",
         "add",
         "--detach",
@@ -926,8 +929,10 @@ def _add_finalization_worktrees(
         except (FileNotFoundError, ValueError) as exc:
             raise AcceptanceOperationError(str(exc)) from exc
         project_checkout = temporary / project_relative
+        _require_git(project_repository, "config", "gc.worktreePruneExpire", "never")
         _require_git(
             project_repository,
+            *worktree_creation_config(root),
             "worktree",
             "add",
             "--detach",
@@ -1099,7 +1104,28 @@ def _remove_finalization_worktrees(
     temporary: Path,
     project_repository: Path | None,
     project_checkout: Path | None,
+    *,
+    journal: AcceptanceJournal,
 ) -> None:
+    from booley.runtime.worktree_repair import repair_acceptance_worktrees
+
+    rows = []
+    if (temporary / ".git").is_file():
+        rows.append((root, temporary, _commit(root, journal.candidates["outer"].staging_ref)))
+    if (
+        project_checkout is not None
+        and project_repository is not None
+        and (project_checkout / ".git").is_file()
+    ):
+        rows.append(
+            (
+                project_repository,
+                project_checkout,
+                _commit(project_repository, journal.candidates["project"].staging_ref),
+            )
+        )
+    if rows:
+        repair_acceptance_worktrees(root, tuple(rows))
     if project_checkout is not None and project_repository is not None:
         _git(project_repository, "worktree", "remove", "--force", str(project_checkout))
     _git(root, "worktree", "remove", "--force", str(temporary))
@@ -1108,7 +1134,12 @@ def _remove_finalization_worktrees(
 
 
 def _finalization_directory(root: Path, journal: AcceptanceJournal) -> Path:
-    return runtime_dir(root) / "acceptance-worktrees" / str(journal["transaction"])
+    return (
+        worktree_state_dir(root)
+        / ".runtime"
+        / "acceptance-worktrees"
+        / str(journal["transaction"])
+    )
 
 
 def _retained_project_checkout(root: Path, temporary: Path, has_project: bool) -> Path | None:
@@ -1185,14 +1216,22 @@ def _finalize_all(
             transaction.root, transaction.project_repository, by_role, journal
         )
         _remove_finalization_worktrees(
-            transaction.root, temporary, transaction.project_repository, project_checkout
+            transaction.root,
+            temporary,
+            transaction.project_repository,
+            project_checkout,
+            journal=journal,
         )
         return
     _reject_unjournaled_keepalives(
         transaction.root, transaction.project_repository, by_role, journal
     )
     _remove_finalization_worktrees(
-        transaction.root, temporary, transaction.project_repository, project_checkout
+        transaction.root,
+        temporary,
+        transaction.project_repository,
+        project_checkout,
+        journal=journal,
     )
     temporary.parent.mkdir(parents=True, exist_ok=True)
     temporary.mkdir()
@@ -1215,6 +1254,7 @@ def _finalize_all(
                 temporary,
                 transaction.project_repository,
                 project_checkout,
+                journal=journal,
             )
 
 
