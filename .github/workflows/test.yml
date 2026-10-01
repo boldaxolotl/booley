@@ -1033,7 +1033,7 @@ jobs:
           needs.changes.outputs.riscv_image == 'true' &&
           inputs.riscv_measurement == 'warm'
         id: riscv-warm-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/riscv-buildkit-cache
           key: riscv-tooling-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}-${{ steps.riscv-cache-parent.outputs.fingerprint }}
