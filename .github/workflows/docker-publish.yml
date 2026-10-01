@@ -420,14 +420,17 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Bootstrap refuses virtual environments and compares the host wheel's
-      # payload fingerprint with the image, so install the exact release wheel
+      # Model a PyPI user: bootstrap refuses virtual environments, and only an
+      # official-release wheel adopts the verified published image instead of
+      # building locally. Stamp it exactly as publish.yml does and install it
       # into the isolated home's user site with the base interpreter.
-      - name: Download exact release wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-wheel
-          path: dist/
+      - name: Build official-release wheel from the candidate
+        run: |
+          pip install build==1.6.1
+          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.OFFICIAL_RELEASE)'
+          trap 'rm -f src/booley/_build_commit.py' EXIT
+          rm -rf build/
+          python -m build --wheel --outdir dist/
       - name: Prepare isolated uid-1000 host
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}

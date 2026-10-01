@@ -579,15 +579,17 @@ def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -
 
 def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
     job = _workflow(".github/workflows/docker-publish.yml")["jobs"]["host-doctor-runtime"]
-    download = _named_step(job, "Download exact release wheel")
+    wheel = _named_step(job, "Build official-release wheel from the candidate")["run"]
     prepare = _named_step(job, "Prepare isolated uid-1000 host")["run"]
     validate = _named_step(job, "Run isolated host validation")
 
-    assert download["with"] == {"name": "release-wheel", "path": "dist/"}
+    # Only an official-release wheel adopts the verified published image; a
+    # runtime-image or development wheel would try to build it locally.
+    assert "profile=BuildProfile.OFFICIAL_RELEASE" in wheel
+    assert "python -m build --wheel --outdir dist/" in wheel
     assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
     assert 'mkdir -p "${root}/home" "${root}/evidence" "${root}/project"' in prepare
-    # Bootstrap refuses venvs and fingerprints the wheel against the image, so
-    # the host must run the exact release wheel from the base interpreter.
+    # Bootstrap refuses venvs, so the host runs the wheel from the base interpreter.
     assert (
         'PYTHONUSERBASE="${root}/home/.local" python -m pip install --user dist/booley_rtl-*.whl'
     ) in prepare
