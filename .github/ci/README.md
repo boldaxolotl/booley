@@ -101,18 +101,54 @@ Use the `Tests` workflow's `riscv_measurement` dispatch input for controlled
 samples. Main and manual runs otherwise skip the RISC-V lane unless the last
 commit changed its inputs, so every arm except `automatic` forces the lane on
 dispatch (for example `gh workflow run test.yml --ref main -f
-riscv_measurement=cold`). `baseline` keeps the default build path. `warm`
-enables Docker's containerd image store, then restores a tooling-input- and
-stable-base-scoped local BuildKit cache through GitHub's branch-aware cache
-service. The daemon-backed builder therefore retains access to the exact local
-candidate parent while supporting local cache import/export. Pull-request
-caches cannot replace the trusted default-branch entry. A cache miss seeds a
-later rerun and is marked non-representative. Only a restored cache for which
-BuildKit reports an actual tooling cache hit is a warm sample. `cold` adds
-`--no-cache` to both
-candidate builds. `automatic` retains the baseline
-`--builder default --load` path and path gating; the input cannot be set on
-pull requests. Before considering a reusable tooling carrier, collect at least
+riscv_measurement=cold`). All controlled arms (`baseline`, `warm`, and `cold`)
+use pinned Docker v28.0.4 with the containerd image store and the daemon-backed
+`--builder default --load` path. This gives every arm the same image-store/load
+boundary and retains access to the exact local candidate parent.
+
+`baseline` adds no explicit RISC-V cache import/export. `warm` restores a
+tooling-input-, stable-base-, and standard-parent-content-scoped local BuildKit cache through GitHub's
+branch-aware cache service. Pull-request caches cannot replace the trusted
+default-branch entry. The cache key includes the standard candidate
+runtime-content fingerprint: changing its configuration or layer ancestry gets a
+new key rather than an immutable stale cache hit. The fingerprint hashes the
+inspected runtime configuration, RootFS layer diff IDs, architecture, and OS.
+It excludes the containerd index's timestamped attestations, which can change
+between otherwise identical builds, and does not depend on exporter-specific
+config-digest metadata. The candidate's inspected image ID remains
+in the retained provenance evidence. A cache miss seeds a later rerun and is
+marked non-representative. Only a restored cache for which BuildKit reports an actual
+tooling cache hit is a warm sample. `cold` adds `--no-cache` to both candidate
+builds and does not restore or export the RISC-V cache. `automatic` retains the
+hosted-runner Docker setup, `--builder default --load` path, and path gating;
+the measurement input cannot be set on pull requests.
+
+For the decision sample, use the published stable-base path and verify the
+same standard parent runtime-content fingerprint across runs. A locally rebuilt stable
+base stamps a fresh creation time and can change parent identity on every run;
+warm dispatches on that path fail before building/exporting an unusable cache.
+Use `cold` to exercise that path's correctness.
+Compare controlled arms at the same candidate SHA, stable-base digest, Docker
+version, storage driver, and runner architecture; retain the image-size report's
+Docker/storage environment evidence with each sample. Alternate cold and warm
+runs to limit runner/time drift, excluding warm seed runs and any sample with
+incomplete phase evidence. Use at least two controlled cold runs and three
+restored warm runs for the five-run decision sample. The controlled `baseline`
+is an uncached-import reference on containerd, not the classic-store production
+baseline. Analyze `automatic` runs separately; do not attribute an image-store
+switch to tooling-cache savings.
+
+The controlled experiment establishes cache effects within containerd. Before
+using it to justify a production carrier rollout, separately retain ordinary
+`automatic` run totals and critical-path headroom on the classic store. Missing
+classic-store transfer attribution does not invalidate those aggregate totals,
+but it prevents a phase-level load claim. Bound the production prediction by
+observed classic-store headroom, report the Docker setup/store effect separately,
+and obtain a matched classic/containerd comparison before extrapolating the
+controlled cache savings to production. If that comparison cannot isolate the
+store effect, the production go/no-go remains unresolved.
+
+Before considering a reusable tooling carrier, collect at least
 five complete representative runs, including two cold runs. Compare runs with
 the same stable base path and report the median and range for every phase and
 parallel lane, workflow queue time, critical-path elapsed time, runner minutes,
