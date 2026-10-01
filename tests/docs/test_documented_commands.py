@@ -24,6 +24,7 @@ HIDDEN_COMMAND_ALLOWLIST: set[tuple[str, ...]] = set()
 HISTORICAL_COMMANDS = {
     ("src/booley/data/refs/CHANGELOG.md", "booley flow elab"),
     ("src/booley/data/refs/CHANGELOG.md", "booley board prepare-review"),
+    ("src/booley/data/refs/CHANGELOG.md", "booley feedback preview"),
 }
 
 
