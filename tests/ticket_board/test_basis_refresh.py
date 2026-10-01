@@ -826,6 +826,13 @@ def test_recover_refresh_finishes_matching_ticket_and_rejects_disagreement(
 ) -> None:
     basis, journal, _journal_path, _operation = _prepared_refresh_fixture(tmp_path)
     finished: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        basis_refresh,
+        "_recover_published_refresh",
+        lambda root, slug, journal: basis_refresh.finish_basis_refresh(
+            root, slug, journal.operation_id
+        ),
+    )
     monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: journal)
     monkeypatch.setattr(
         basis_refresh,

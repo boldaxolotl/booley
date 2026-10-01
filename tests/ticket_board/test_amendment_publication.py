@@ -611,7 +611,8 @@ def test_publication_interruption_rolls_forward_once(
     history = tio.logs_dir / "blocked-again/amendments" / f"{result['operation_id']}.json"
     assert history.exists()
     assert amendment.pending_amendment(root, "blocked-again") is None
-    assert len(list(history.parent.glob("*.json"))) == 2
+    assert len(list(history.parent.glob("*.json"))) == 3
+    assert (history.parent / f"{result['operation_id']}.prior-evidence.json").exists()
 
 
 def test_pre_generated_identity_journal_recovers(
@@ -727,9 +728,7 @@ def test_numeric_reuse_requires_original_producer_success(tmp_path: Path) -> Non
         assert entry.met is expected
 
 
-def test_numeric_preview_reports_reused_evidence_without_changing_state(tmp_path: Path) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl/design.sv").write_text("module design; endmodule\n")
+def _numeric_preview_baseline():
     basis = TicketBaseline(
         (
             BasisParticipant(
@@ -741,6 +740,13 @@ def test_numeric_preview_reports_reused_evidence_without_changing_state(tmp_path
             ),
         )
     )
+    from dataclasses import replace
+
+    basis = replace(basis, machine={"generation": "d" * 32})
+    return basis
+
+
+def _numeric_preview_state(tmp_path, basis):
     state_path = tmp_path / "state.json"
     state = DevelopmentState.load(state_path)
     state.criteria["synthesis_ok_synth"] = CriterionEntry(
@@ -763,8 +769,38 @@ def test_numeric_preview_reports_reused_evidence_without_changing_state(tmp_path
             },
         },
     )
+    _record_numeric_preview_evidence(tmp_path, state, basis)
     state.save()
-    proposal = AmendmentProposal(
+    return state_path
+
+
+def _record_numeric_preview_evidence(tmp_path, state, basis):
+    from booley.criteria.state import CriterionChange as EvidenceChange
+    from booley.ticket_board.acceptance_ledger import record_changes
+
+    entry = state.criteria["synthesis_ok_synth"]
+    record_changes(
+        tmp_path,
+        state,
+        [
+            EvidenceChange(
+                "synthesis_ok_synth",
+                entry.met,
+                "observed",
+                entry.detail,
+                entry.mandatory,
+                entry.params,
+            )
+        ],
+        invocation_id="numeric",
+        producer="fpga",
+        execution_id="numeric",
+        ticket_identity=basis.ticket_identity(),
+    )
+
+
+def _numeric_preview_proposal():
+    return AmendmentProposal(
         fields={
             "criteria": {
                 "mandatory": {
@@ -788,6 +824,14 @@ def test_numeric_preview_reports_reused_evidence_without_changing_state(tmp_path
         ),
         scope_added=(),
     )
+
+
+def test_numeric_preview_reports_reused_evidence_without_changing_state(tmp_path: Path) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl/design.sv").write_text("module design; endmodule\n")
+    basis = _numeric_preview_baseline()
+    state_path = _numeric_preview_state(tmp_path, basis)
+    proposal = _numeric_preview_proposal()
     result = amendment._preview_evidence(
         state_path,
         proposal,
