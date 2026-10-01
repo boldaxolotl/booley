@@ -137,8 +137,10 @@ class TestCompareAndSwap:
         assert not op_claim(tio, "t1")
         assert _record(tio) == claimed
 
-    def test_stamp_execution_swaps_only_the_expected_generation(self, tio: TicketIO) -> None:
-        make_ticket_file(tio, "active", "t1")
+    def test_stamp_execution_swaps_only_the_expected_generation(self, tmp_path: Path) -> None:
+        from .test_ticket_baseline import _blocked_ticket
+
+        _root, _ticket, tio = _blocked_ticket(tmp_path, "t1")
         write_state_record(
             tio.tickets_dir, "t1", StateRecord.fresh(TicketState.RUNNING, execution_id="a")
         )

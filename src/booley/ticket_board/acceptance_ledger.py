@@ -779,7 +779,7 @@ def _legacy_transaction_records(root: Path, transaction_id: str) -> list[dict[st
         records.append(payload)
     if not records:
         raise AcceptanceLedgerError("selected legacy transaction has no evidence")
-    return records
+    return sorted(records, key=lambda record: record["sequence"])
 
 
 def _read_legacy_record(directory: Path) -> dict[str, Any]:
@@ -799,7 +799,7 @@ def _read_legacy_record(directory: Path) -> dict[str, Any]:
     return payload
 
 
-def _active_evidence_records(
+def _validated_evidence_records(
     log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     root = log_dir / "acceptance" / "evidence"
@@ -829,9 +829,160 @@ def _active_evidence_records(
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence in seen:
             raise AcceptanceLedgerError("active Criterion evidence repeats a sequence")
         seen.add(sequence)
-        if payload.get("ticket_identity") != ticket_identity:
-            raise AcceptanceLedgerError("Criterion evidence names another Ticket identity")
+        _validate_observation_identity(payload.get("ticket_identity"), ticket_identity)
+        _validate_observation(payload)
     return records
+
+
+def _active_evidence_records(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    return [
+        payload
+        for payload in _validated_evidence_records(log_dir, state, ticket_identity)
+        if payload["ticket_identity"] == ticket_identity
+    ]
+
+
+def historical_ticket_identities(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Return distinct identities only after validating selected historical observations."""
+    identities = []
+    for row in _validated_evidence_records(log_dir, state, ticket_identity):
+        identity = row["ticket_identity"]
+        if identity != ticket_identity and identity not in identities:
+            identities.append(identity)
+    return identities
+
+
+def _validate_observation_identity(value: object, current: Mapping[str, Any]) -> None:
+    if not current:
+        if not isinstance(value, dict):
+            raise AcceptanceLedgerError("Criterion evidence has malformed Ticket identity")
+        return
+    if not isinstance(value, dict) or not value:
+        raise AcceptanceLedgerError(
+            "Criterion evidence names another Ticket identity: missing identity"
+        )
+    _identity(value, value.get("generation"))
+    if "schema" in value:
+        from .ticket_baseline import TicketBaselineError, ticket_baseline_from_machine
+
+        try:
+            ticket_baseline_from_machine(value)
+        except (TicketBaselineError, ValueError) as exc:
+            raise AcceptanceLedgerError(
+                "Criterion evidence has malformed Ticket identity"
+            ) from exc
+    authored = value.get("authored_sha256")
+    if authored is not None and (
+        not isinstance(authored, str) or re.fullmatch(r"[0-9a-f]{64}", authored) is None
+    ):
+        raise AcceptanceLedgerError("Criterion evidence has malformed authored identity")
+    baseline = value.get("baseline")
+    if baseline is not None:
+        if not isinstance(baseline, dict) or not baseline:
+            raise AcceptanceLedgerError("Criterion evidence has malformed baseline identity")
+        for participant in baseline.values():
+            if (
+                not isinstance(participant, dict)
+                or not isinstance(participant.get("commit"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", participant["commit"]) is None
+            ):
+                raise AcceptanceLedgerError("Criterion evidence has malformed baseline identity")
+    for key in ("authored_sha256", "baseline"):
+        if key in current and (key not in value or not isinstance(value[key], type(current[key]))):
+            raise AcceptanceLedgerError("Criterion evidence has malformed Ticket identity")
+
+
+def _validate_observation(payload: Mapping[str, Any]) -> None:
+    if (
+        "acceptance_basis" in payload
+        or not isinstance(payload.get("criterion"), str)
+        or payload.get("role") not in {"baseline", "candidate"}
+        or not isinstance(payload.get("met"), bool)
+        or not isinstance(payload.get("mandatory"), bool)
+        or not isinstance(payload.get("params"), dict)
+        or not isinstance(payload.get("detail"), dict)
+    ):
+        raise AcceptanceLedgerError("corrupt Criterion evidence: invalid observation")
+
+
+def current_evidence_records(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Read validated observations for one identity without replaying history."""
+    return _read_evidence_records(log_dir, state, ticket_identity)
+
+
+def _verify_amendment_prefix(
+    records: list[dict], changes: list[CriterionChange], ticket_identity: Mapping[str, Any]
+) -> None:
+    for record, change in zip(records, changes[: len(records)], strict=True):
+        if any(
+            record.get(key) != value
+            for key, value in {
+                "ticket_identity": dict(ticket_identity),
+                "criterion": change.key,
+                "met": change.met,
+                "mandatory": change.mandatory,
+                "params": change.params,
+                "detail": change.detail,
+            }.items()
+        ):
+            raise AcceptanceLedgerError("amendment observation changed during retry")
+
+
+def record_amendment_observations(
+    log_dir: Path,
+    state: DevelopmentState,
+    changes: list[CriterionChange],
+    *,
+    operation_id: str,
+    ticket_identity: Mapping[str, Any],
+) -> None:
+    """Publish and select idempotent generic observations of validated retained proof."""
+    transaction = hashlib.sha256(
+        _canonical(
+            {
+                "operation_id": operation_id,
+                "ticket_identity": dict(ticket_identity),
+            }
+        )
+    ).hexdigest()
+    root = log_dir / "acceptance" / "evidence"
+    if root.exists():
+        for directory in root.glob(f"*.tx.{transaction}"):
+            if not (directory / "record.json").exists():
+                for temporary in directory.glob(".record.json.*.tmp"):
+                    temporary.unlink()
+                try:
+                    directory.rmdir()
+                except OSError as exc:
+                    raise AcceptanceLedgerError(
+                        f"invalid amendment proof reservation {directory}: {exc}"
+                    ) from exc
+    if root.exists() and list(root.glob(f"*.tx.{transaction}")):
+        records = _legacy_transaction_records(root, transaction)
+        if len(records) > len(changes):
+            raise AcceptanceLedgerError("incomplete amendment observation transaction")
+        _verify_amendment_prefix(records, changes, ticket_identity)
+    else:
+        records = []
+    if len(records) < len(changes):
+        record_changes(
+            log_dir,
+            state,
+            changes[len(records) :],
+            invocation_id=operation_id,
+            producer="amendment",
+            execution_id=operation_id,
+            ticket_identity=ticket_identity,
+            transaction_id=transaction,
+        )
+    if changes and transaction not in state.acceptance_transactions:
+        state.acceptance_transactions.append(transaction)
 
 
 def _plain_legacy_records(root: Path) -> list[dict[str, Any]]:
@@ -1169,6 +1320,28 @@ def record_changes(
     return tuple(refs)
 
 
+def _validate_current_proof(
+    log_dir: Path, state: DevelopmentState, identity: Mapping[str, Any]
+) -> None:
+    if not identity:
+        return
+    current = {row["criterion"] for row in _read_evidence_records(log_dir, state, identity)}
+    root = log_dir / "acceptance" / "evidence"
+    if not root.exists():
+        return
+    historical = set()
+    for path in root.glob("*/record.json"):
+        if re.fullmatch(r"[0-9]{9}(?:\.tx\.[0-9a-f]{64})?", path.parent.name) is None:
+            continue
+        row = _read_json_document(path, _MAX_RECORD_BYTES, "Criterion evidence")
+        if row.get("ticket_identity") != identity:
+            historical.add(row.get("criterion"))
+    for name in historical - current:
+        entry = state.criteria.get(name)
+        if entry is not None and entry.met:
+            raise AcceptanceLedgerError(f"Criterion {name!r} is missing current-generation proof")
+
+
 def freeze_acceptance(
     log_dir: Path,
     state: DevelopmentState,
@@ -1181,6 +1354,7 @@ def freeze_acceptance(
     """Freeze and select one Criteria Satisfaction Record for the current Ticket epoch."""
     identity = dict(ticket_identity or {})
     _validate_state_projection(log_dir, state, identity)
+    _validate_current_proof(log_dir, state, identity)
     payload = {
         "schema": SCHEMA_VERSION,
         "slug": state.slug,
