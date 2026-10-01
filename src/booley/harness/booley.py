@@ -230,16 +230,9 @@ def find_project_root() -> Path:
 
     Falls back to $RTL_PROJECT_ROOT env var if set.
     """
-    env = os.environ.get("RTL_PROJECT_ROOT")
-    if env:
-        return Path(env).resolve()
-    p = Path.cwd().resolve()
-    while p != p.parent:
-        if (p / ".git").exists() and p.name != ".booley":
-            return p
-        p = p.parent
-    # Last resort: cwd
-    return Path.cwd().resolve()
+    from booley.runtime.project_discovery import discover_project_root
+
+    return discover_project_root()
 
 
 def find_venv_python(project_root: Path) -> str:
@@ -1282,11 +1275,19 @@ def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
 
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.board_layout import StateRecordError
+    from booley.ticket_board.io import TicketValidationError
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
     from booley.ticket_board.ticket_history import TicketHistoryError
 
     try:
         return _run_board_command(args, project_root)
-    except (LegacyBoardLayoutError, StateRecordError, TicketHistoryError) as exc:
+    except (
+        LegacyBoardLayoutError,
+        StateRecordError,
+        TicketHistoryError,
+        TicketValidationError,
+        TicketAncestryVerificationError,
+    ) as exc:
         # A broken state record fails closed: say which one instead of a traceback.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -2698,6 +2699,22 @@ def _host_install_authority_error(command: str | None) -> str | None:
     return host_install_error(skills_dir())
 
 
+def _command_project_root(command: str) -> Path:
+    """Feedback retains its explicitly supported source-checkout routing."""
+    from booley.core.checkout_role import is_booley_source_checkout
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    try:
+        return find_project_root()
+    except ProjectRootDiscoveryError:
+        if command == "feedback":
+            current = Path.cwd().resolve()
+            for parent in (current, *current.parents):
+                if is_booley_source_checkout(parent):
+                    return parent
+        raise
+
+
 def _dispatch_main() -> int:
     """Parse CLI, handle early exits, set up runtime, and run the ticket loop."""
     args = _parse_cli()
@@ -2717,7 +2734,7 @@ def _dispatch_main() -> int:
     project_root = (
         Path(args.project_root).resolve()
         if hasattr(args, "project_root") and args.project_root
-        else find_project_root()
+        else _command_project_root(command)
     )
     source_rejection = _reject_source_project_command(command, project_root)
     if source_rejection is not None:
@@ -2758,9 +2775,11 @@ def _run_ticket_command(args: argparse.Namespace, project_root: Path) -> int:
 
 def main() -> int:
     """Run the CLI with one rendering boundary for lifecycle contention."""
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
     try:
         return _dispatch_main()
-    except LifecycleLockError as exc:
+    except (LifecycleLockError, ProjectRootDiscoveryError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

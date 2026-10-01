@@ -28,46 +28,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _has_git_worktree_marker(path: Path) -> bool:
-    """Whether *path* has real Git metadata, not just an empty ``.git`` mount."""
-    marker = path / ".git"
-    try:
-        if marker.is_dir():
-            return (marker / "HEAD").is_file()
-        return marker.is_file() and marker.read_text(
-            encoding="utf-8", errors="replace"
-        ).startswith("gitdir:")
-    except OSError:
-        return False
-
-
 def resolve_project_root(fallback_dir: Path | None = None) -> Path:
-    """Resolve project root from RTL_PROJECT_ROOT env var or cwd walk-up.
+    """Resolve env, checkout, fallback, then cwd without eager import selection."""
+    from booley.runtime.project_discovery import discover_project_root
 
-    Priority: env var → CWD walk-up → fallback → CWD.
-    CWD walk-up runs before fallback so that local execution (debugger
-    agents running sims from a worktree) resolves to the project root
-    rather than to the Booley package directory encoded in SCRIPT_DIR.
-    """
-    if "RTL_PROJECT_ROOT" in os.environ:
-        return Path(os.environ["RTL_PROJECT_ROOT"]).resolve()
-    # Walk up from cwd to find a real worktree root. Merely finding a path named
-    # .git is insufficient: sandbox launchers may mount an empty sentinel at a
-    # broad ancestor such as /tmp/.git, which must not capture every project
-    # beneath it.
-    p = Path.cwd().resolve()
-    while p != p.parent:
-        if _has_git_worktree_marker(p) and p.name != ".booley":
-            return p
-        p = p.parent
-    if fallback_dir is not None:
-        return fallback_dir.resolve()
-    return Path.cwd().resolve()
-
-
-PROJECT_ROOT = resolve_project_root()
-
-RTL_DIR = PROJECT_ROOT / "rtl"  # DEPRECATED: use get_rtl_dir() for configurable path
+    root = discover_project_root(required=True)
+    return root if root is not None else (fallback_dir or Path.cwd()).resolve()
 
 
 # ============================================================================
@@ -156,7 +122,7 @@ def _load_rtl_config(project_root: Path | None = None) -> dict | None:
     if _TOML_CACHE is not None:
         return _TOML_CACHE
     project_path = resolve_toml(resolve_project_dir())
-    root_path = resolve_toml(PROJECT_ROOT)
+    root_path = resolve_toml(resolve_project_root())
     toml_path = project_path if project_path.exists() else root_path
     if not toml_path.exists():
         return None
@@ -195,7 +161,7 @@ def _core_source_dirs(
     ``fusesoc_registry.source_dirs_from_core`` directly and get the hard
     ADR 0039 no-``.core`` error instead of a guessed partition.
     """
-    root = project_root or PROJECT_ROOT
+    root = project_root or resolve_project_root()
     try:
         from booley.fusesoc.fusesoc_registry import source_dirs_from_core
 
@@ -211,7 +177,7 @@ def get_rtl_dir(project_root: Path | None = None) -> Path:
     repo yields its directory. When *project_root* is given the ``.core`` under
     that root is read, so worktrees can't shadow each other.
     """
-    root = project_root or PROJECT_ROOT
+    root = project_root or resolve_project_root()
     rtl_dirs, _tb, _incl = _core_source_dirs(project_root)
     return root / rtl_dirs[0] if rtl_dirs else root / "rtl"
 
@@ -228,7 +194,7 @@ def get_tb_source_dirs(project_root: Path | None = None) -> list[str]:
 
 def get_sim_output_dir(project_root: Path | None = None) -> Path:
     """Simulation output directory from [flows.sim].output_dir (fallback: 'util/sim')."""
-    root = project_root or PROJECT_ROOT
+    root = project_root or resolve_project_root()
     cfg = _load_rtl_config(project_root)
     if cfg:
         from booley.targets.flow_names import config_section
@@ -240,7 +206,7 @@ def get_sim_output_dir(project_root: Path | None = None) -> Path:
 
 def get_syn_output_dir(project_root: Path | None = None) -> Path:
     """Synthesis output directory from [flows.synth].output_dir (fallback: 'util/syn')."""
-    root = project_root or PROJECT_ROOT
+    root = project_root or resolve_project_root()
     cfg = _load_rtl_config(project_root)
     if cfg:
         from booley.targets.flow_names import config_section
@@ -311,7 +277,7 @@ def get_rtl_prefixes(project_root: Path | None = None) -> tuple[str, ...]:
     dirs = list(_core_source_dirs(project_root)[0])
     if "fw" not in {d.rstrip("/\\") for d in dirs}:
         dirs.append("fw")
-    return source_dir_prefixes(dirs, project_root or PROJECT_ROOT)
+    return source_dir_prefixes(dirs, project_root or resolve_project_root())
 
 
 def get_tb_prefixes(project_root: Path | None = None) -> tuple[str, ...]:
@@ -320,7 +286,9 @@ def get_tb_prefixes(project_root: Path | None = None) -> tuple[str, ...]:
     Directory entries yield trailing '/' and '\\' variants; file entries (ADR
     0026 flat repos) yield an exact-path prefix. Fallback: ('tb/', 'tb\\\\').
     """
-    return source_dir_prefixes(_core_source_dirs(project_root)[1], project_root or PROJECT_ROOT)
+    return source_dir_prefixes(
+        _core_source_dirs(project_root)[1], project_root or resolve_project_root()
+    )
 
 
 def get_tb_dirs() -> tuple[list[Path], list[Path]]:
@@ -329,23 +297,23 @@ def get_tb_dirs() -> tuple[list[Path], list[Path]]:
     Returns (tb_source_dirs, tb_include_dirs) as resolved absolute paths, keeping
     only entries that resolve to real directories (a flat-repo file entry has no
     directory of its own, mirroring the old ``[sources.*]`` behaviour). Falls
-    back to [PROJECT_ROOT / "tb"] when nothing resolves.
+    back to [resolve_project_root() / "tb"] when nothing resolves.
     """
     _rtl, tb_names, tb_incl = _core_source_dirs()
 
     source_dirs: list[Path] = []
     for d in tb_names:
-        p = PROJECT_ROOT / d
+        p = resolve_project_root() / d
         if p.is_dir():
             source_dirs.append(p.resolve())
     if not source_dirs:
-        fallback = PROJECT_ROOT / "tb"
+        fallback = resolve_project_root() / "tb"
         if fallback.is_dir():
             source_dirs.append(fallback.resolve())
 
     include_dirs: list[Path] = []
     for d in tb_incl:
-        p = PROJECT_ROOT / d
+        p = resolve_project_root() / d
         if p.is_dir():
             include_dirs.append(p.resolve())
 
@@ -373,7 +341,7 @@ def derive_work_dir(
     from defines.
 
     Args:
-        project_root: Repository root (``PROJECT_ROOT``).
+        project_root: Repository root (``resolve_project_root()``).
         flow_name: ``"sim"`` or ``"syn"`` — selects the output subtree.
         config: Config name (e.g. ``"config_c"``, ``"config_a_prot"``).
         top_module: Override top module (appended as suffix when not the default).
@@ -423,7 +391,7 @@ def check_paths(
     from_env = "RTL_PROJECT_ROOT" in os.environ
     checks: dict = {}
 
-    # 1. PROJECT_ROOT source
+    # 1. resolve_project_root() source
     checks["project_root"] = {
         "path": str(project_root),
         "source": "env" if from_env else "script-relative",

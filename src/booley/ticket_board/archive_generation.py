@@ -100,7 +100,12 @@ def _participant(
     sha = _ref_sha(repository, ref)
     if sha is not None and baseline is not None:
         result = _git(repository, "merge-base", "--is-ancestor", baseline, sha)
-        if result.returncode != 0:
+        if result.returncode not in (0, 1):
+            raise ArchiveGenerationError(
+                f"cannot verify ancestry in {repository} (rc {result.returncode}, "
+                f"{baseline} -> {sha}): {result.stderr.strip()}"
+            )
+        if result.returncode == 1:
             raise ArchiveGenerationError(
                 f"{role} {ref} no longer descends from Ticket baseline {baseline}"
             )

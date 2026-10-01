@@ -2581,3 +2581,104 @@ def test_paired_submodule_move(tmp_path: Path) -> None:
     assert (published / "dep/.git").is_dir()
     assert _git(published / "dep", "status", "--porcelain") == ""
     assert not draft_transition.transition_pending(root, slug)
+
+
+def test_board_show_matches_outer_and_project_data_cwd(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+
+    from booley.harness.booley import _cmd_board, find_project_root
+
+    root, data, tio = _paired_basis_project(tmp_path)
+    slug = "root-parity"
+    ticket = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Root parity", ticket_type="feature", branch="main", scope=["README.md"]
+        ),
+    )
+    assert ticket is not None
+    assert tio.enqueue_ticket(slug)
+    basis = tio.load_basis(slug)
+    missing = subprocess.run(
+        ["git", "cat-file", "-e", basis.outer_sha],
+        cwd=data,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert missing.returncode != 0
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    args = Namespace(board_command="show", slug=slug, all=False, no_open_diffs=True)
+    capsys.readouterr()
+    monkeypatch.chdir(root)
+    outer_code = _cmd_board(args, find_project_root())
+    outer_output = capsys.readouterr()
+    monkeypatch.chdir(data)
+    assert _cmd_board(args, find_project_root()) == outer_code == 0
+    assert capsys.readouterr() == outer_output
+
+
+@pytest.mark.parametrize("command", ["show", "review", "move"])
+def test_invalid_authored_ticket_board_routes_exit_two(tmp_path, monkeypatch, capsys, command):
+    from argparse import Namespace
+
+    from booley.harness.booley import _cmd_board
+
+    root, data, _tio = _basis_project(tmp_path)
+    path = data / "tickets" / "board" / "invalid.md"
+    path.write_text("---\nsummary: invalid\ntype: nonsense\n---\n")
+    args = Namespace(
+        board_command=command,
+        slug="invalid",
+        all=False,
+        no_open_diffs=True,
+        reason="",
+        request=False,
+        target="queue",
+        feedback="",
+        force=False,
+        repair=False,
+    )
+    assert _cmd_board(args, root) == 2
+    assert "invalid" in capsys.readouterr().err
+
+
+def test_real_git_failure_promotion_keeps_waiting_without_policy(tmp_path, monkeypatch, capsys):
+    from booley.ticket_board import operations, ticket_baseline
+
+    root, _data, tio = _basis_project(tmp_path)
+    slug = "waiting-verification"
+    ticket_path = _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Waiting verification",
+            ticket_type="feature",
+            branch="main",
+            scope=["README.md"],
+        ),
+    )
+    assert ticket_path is not None and tio.enqueue_ticket(slug)
+    record = read_state_record(tio.tickets_dir, slug)
+    write_state_record(tio.tickets_dir, slug, record.with_state(TicketState.WAITING))
+    ticket = tio.inspect_ticket(slug)
+    before_document = ticket_path.read_bytes()
+    before_refs = _git(root, "show-ref")
+    real_run = subprocess.run
+
+    def fail_ancestry(command, **kwargs):
+        if "--is-ancestor" in command:
+            return subprocess.CompletedProcess(command, 128, "", "fatal: missing object")
+        return real_run(command, **kwargs)
+
+    capsys.readouterr()
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", fail_ancestry)
+    assert operations._promote_waiting_ticket(tio, ticket) is None
+    assert ticket_state(tio.tickets_dir, slug) is TicketState.WAITING
+    assert ticket_path.read_bytes() == before_document
+    assert _git(root, "show-ref") == before_refs
+    output = capsys.readouterr().err
+    assert "cannot verify ancestry" in output
+    assert "acceptance-input-change-required" not in output

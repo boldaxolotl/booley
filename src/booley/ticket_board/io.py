@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class TicketValidationError(ValueError):
+    """An externally authored Ticket failed document validation."""
+
+
 @dataclass
 class TicketFileSpec:
     """Metadata for creating a ticket file on disk."""
@@ -261,7 +265,7 @@ class TicketIO:
             result = convert_ticket_document(path.read_text(encoding="utf-8"), context)
         if result.document is None:
             details = "; ".join(item.message for item in result.diagnostics)
-            raise ValueError(f"Ticket {path.name} is invalid: {details}")
+            raise TicketValidationError(f"Ticket {path.name} is invalid: {details}")
         return result.document
 
     @staticmethod

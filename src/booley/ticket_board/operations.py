@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from booley.core.differences import format_differences
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import format_human_datetime
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 
 logger = logging.getLogger(__name__)
@@ -1011,6 +1012,9 @@ def _promote_waiting_ticket(tio: Any, ticket: dict[str, Any]) -> dict[str, str] 
             ),
             before_move=refresh_basis,
         )
+    except TicketAncestryVerificationError as exc:
+        print(f"Error: cannot promote '{slug}': {exc}", file=sys.stderr)
+        ok = False
     except ValueError as exc:
         state["failed"] = True
         print(
@@ -1052,6 +1056,9 @@ def _refresh_waiting_basis(tio, ticket, slug, updates, state) -> bool:
             candidate = tio._prepare_spec_fields(path, {"machine": journal.machine})
             reconcile_refresh_runtime(tio, slug, candidate, journal)
             state["operation"] = operation
+    except TicketAncestryVerificationError as exc:
+        print(f"Error: cannot promote '{slug}': {exc}", file=sys.stderr)
+        return False
     except BasisRefreshError as exc:
         state["failed"] = True
         print(

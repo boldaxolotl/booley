@@ -84,6 +84,10 @@ _AUTHORED_DEFAULTS: dict[str, Any] = {
 }
 
 
+class TicketAncestryVerificationError(RuntimeError):
+    """Git could not establish ancestry; no policy verdict is available."""
+
+
 class TicketBaselineError(ValueError):
     """A Ticket baseline or its machine metadata is malformed."""
 
@@ -1392,7 +1396,12 @@ def _descendant_commit(
         timeout=30,
         check=False,
     )
-    if ancestor.returncode != 0:
+    if ancestor.returncode not in (0, 1):
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} (rc {ancestor.returncode}, "
+            f"{recorded_sha} -> {ref or commit}): {ancestor.stderr.strip()}"
+        )
+    if ancestor.returncode == 1:
         identity = ref or commit
         raise TicketBaselineError(
             f"{BLOCK_REASON}: {identity} no longer descends from recorded "

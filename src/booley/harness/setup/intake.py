@@ -34,6 +34,7 @@ from booley.ticket_board.paths import (
 )
 from booley.ticket_board.scanner import find_ticket_file
 from booley.ticket_board.ticket_baseline import (
+    TicketAncestryVerificationError,
     TicketBaseline,
     TicketBaselineError,
     requires_return_to_draft,
@@ -192,6 +193,8 @@ def _load_context_basis(
             tickets_dir_from_project_root(project_root),
             project_root=project_root,
         ).load_basis(slug, runtime_ticket_path=ticket_path)
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=slug) from exc
     except TicketBaselineError as exc:
         raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
@@ -402,6 +405,8 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
         document = TicketIO(
             tickets_dir_from_project_root(project_root), project_root=project_root
         ).load_document(slug, runtime_ticket_path=ticket_path)
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=slug) from exc
     except (TicketBaselineError, OSError, ValueError) as exc:
         raise FatalError(f"Ticket conversion or baseline failed: {exc}", slug=slug) from exc
     ctx = _build_context(project_root, ticket_path, slug, document, progress)

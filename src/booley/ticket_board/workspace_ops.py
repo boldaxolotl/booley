@@ -1780,7 +1780,7 @@ def _require_ancestor(repository: Path, ancestor: str, descendant: str, message:
         raise TicketBaselineOperationError(message)
     detail = (result.stderr or result.stdout).strip()
     raise TicketBaselineOperationError(
-        f"git merge-base --is-ancestor failed in {repository} (rc={result.returncode}): {detail}"
+        f"cannot verify ancestry in {repository} (rc={result.returncode}, {ancestor} -> {descendant}): {detail}"
     )
 
 

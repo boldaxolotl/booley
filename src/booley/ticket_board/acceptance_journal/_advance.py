@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Literal
 from booley.core.differences import format_differences
 from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 
 from ..git_ops import worktree_blocking_changes, worktree_is_clean
 from ..target_finalization import (
@@ -143,7 +144,9 @@ def _is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
     result = _git(repository, "merge-base", "--is-ancestor", ancestor, descendant)
     if result.returncode not in {0, 1}:
         detail = (result.stderr or result.stdout).strip()
-        raise AcceptanceOperationError(f"could not compare Git history in {repository}: {detail}")
+        raise AcceptanceOperationError(
+            f"cannot verify ancestry in {repository} (rc {result.returncode}, {ancestor} -> {descendant}): {detail}"
+        )
     return result.returncode == 0
 
 
@@ -340,7 +343,7 @@ def _validate_source_surface(
                 raise TicketBaselineError(
                     "Ticket baseline selectors changed: " + "; ".join(selector_errors)
                 )
-        except TicketBaselineError as exc:
+        except (TicketAncestryVerificationError, TicketBaselineError) as exc:
             raise AcceptanceOperationError(str(exc)) from exc
 
 
@@ -649,7 +652,7 @@ def _validate_candidate_surface(
         # This is a fresh composite of the prepared candidate commits, never a
         # reused live Ticket Workspace, so exact basis semantics apply.
         assert_inputs_unchanged(transaction.basis, outer)
-    except TicketBaselineError as exc:
+    except (TicketAncestryVerificationError, TicketBaselineError) as exc:
         raise AcceptanceOperationError(str(exc)) from exc
 
 

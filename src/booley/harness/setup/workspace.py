@@ -23,6 +23,7 @@ from booley.runtime.submodule_materialization import (
     materialize_project_submodules,
 )
 from booley.ticket_board.git_status import parse_porcelain_v1_z
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
     project_repository_scope,
@@ -518,7 +519,14 @@ def _attach_clean_detached_basis_branch(
         ["merge-base", "--is-ancestor", "HEAD", expected_ref],
         timeout=10,
     )
-    if ancestry.returncode != 0:
+    if ancestry.returncode not in (0, 1):
+        return StepResult(
+            block_reason=(
+                f"cannot verify ancestry in {worktree_path} (rc {ancestry.returncode}, "
+                f"Ticket baseline ref {expected_ref!r}): {ancestry.stderr.strip()}"
+            )
+        )
+    if ancestry.returncode == 1:
         detail = ancestry.stderr.strip()
         suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
         return StepResult(
@@ -563,7 +571,14 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
         ["merge-base", "--is-ancestor", basis.outer_sha, "HEAD"],
         timeout=10,
     )
-    if ancestry.returncode != 0:
+    if ancestry.returncode not in (0, 1):
+        return StepResult(
+            block_reason=(
+                f"cannot verify ancestry in {worktree_path} (rc {ancestry.returncode}, "
+                f"Ticket baseline ref {expected_ref!r}): {ancestry.stderr.strip()}"
+            )
+        )
+    if ancestry.returncode == 1:
         detail = ancestry.stderr.strip()
         suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
         return StepResult(
@@ -790,7 +805,7 @@ def _validate_materialized_ticket_baseline(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except (OSError, TicketBaselineError) as exc:
+    except (OSError, TicketBaselineError, TicketAncestryVerificationError) as exc:
         return StepResult(block_reason=str(exc))
     return None
 
@@ -865,7 +880,7 @@ def _prepare_ticket_checkout(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except TicketBaselineError as exc:
+    except (TicketAncestryVerificationError, TicketBaselineError) as exc:
         return StepResult(block_reason=str(exc))
 
 

@@ -16,6 +16,7 @@ from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_repositories import paired_project_repository
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 
 from . import acceptance_ledger
 from .acceptance_targets import resolve_commit
@@ -53,7 +54,13 @@ class TicketAcceptanceRecorder:
                 resolve_checkout_project_dir(root) / "tickets", project_root=root
             ).load_basis(slug, runtime_ticket_path=Path(ticket_file))
             return basis.ticket_identity()
-        except (TicketBaselineError, TicketSlugError, OSError, ValueError) as exc:
+        except (
+            TicketAncestryVerificationError,
+            TicketBaselineError,
+            TicketSlugError,
+            OSError,
+            ValueError,
+        ) as exc:
             from booley.flows.execution_persistence import AcceptanceRecordingError
 
             raise AcceptanceRecordingError(str(exc)) from exc
@@ -148,7 +155,7 @@ class TicketBoardFlowExecution(TicketAcceptanceRecorder):
             return ResolvedFlowAcceptance(tuple(basis.bindings), paired, ticket_backed=True)
         except TicketSlugError as exc:
             return self._blocked(f"{BLOCK_REASON}: {exc}")
-        except (OSError, TicketBaselineError) as exc:
+        except (OSError, TicketBaselineError, TicketAncestryVerificationError) as exc:
             return self._blocked(str(exc))
 
     def _load_basis(self) -> tuple[TicketBaseline, Path, str, Path]:

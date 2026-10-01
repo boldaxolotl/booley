@@ -45,6 +45,7 @@ from booley.ticket_board.paths import (
     ticket_runtime_dir,
     ticket_runtime_file,
 )
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 
 from . import terminal, ticket_cli
 from .auto_retry import maybe_auto_retry, record_crash
@@ -1693,6 +1694,9 @@ def _block_changed_ticket_baseline(ctx: TicketContext, run_index: int) -> bool:
             slug=ctx.slug,
             ticket_path=ctx.ticket_path,
         )
+    except TicketAncestryVerificationError as exc:
+        fail_ticket(ctx, str(exc), "developer", run_index=run_index)
+        return True
     except (OSError, TicketBaselineError) as exc:
         block_ticket(ctx, str(exc), "developer", run_index=run_index)
         return True
