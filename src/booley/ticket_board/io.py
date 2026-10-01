@@ -132,6 +132,13 @@ class TicketIO:
             _orch_env = "BOOLEY_DEVELOPER_PID"
         return os.environ.get(_orch_env) or str(os.getpid())
 
+    @staticmethod
+    def _stamp_lock_pid(lock_file, pid: str | int) -> None:
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(pid))
+        lock_file.flush()
+
     def _acquire_lock(self, lock_file, slug, lock_path, pid_to_stamp):
         """Spin-wait to acquire OS-level file lock and stamp PID."""
         deadline = time.monotonic() + self.LOCK_TIMEOUT
@@ -139,10 +146,7 @@ class TicketIO:
             try:
                 lock_fd(lock_file)
                 if pid_to_stamp is not None:
-                    lock_file.seek(0)
-                    lock_file.truncate()
-                    lock_file.write(pid_to_stamp)
-                    lock_file.flush()
+                    self._stamp_lock_pid(lock_file, pid_to_stamp)
                 return
             except BlockingIOError as lock_err:
                 if time.monotonic() >= deadline:
@@ -706,12 +710,10 @@ class TicketIO:
             prepared_ticket = self._prepare_spec_fields(file_path, spec_updates)
             self._publish_spec_fields(file_path, prepared_ticket)
             self.commit_state(file_path.stem, destination, updated_progress)
-            lock_file.seek(0)
-            lock_file.truncate()
-            lock_file.write(
-                str(updated_progress.get("execution_owner_pid") or self._resolve_developer_pid())
+            self._stamp_lock_pid(
+                lock_file,
+                updated_progress.get("execution_owner_pid") or self._resolve_developer_pid(),
             )
-            lock_file.flush()
 
             if transition:
                 self._append_transition_unlocked(slug, *transition)
@@ -814,10 +816,7 @@ class TicketIO:
             ):
                 return None
             log_dir = self._init_ticket_locked(ticket_path, slug, execution_id, owner_pid)
-            lock_file.seek(0)
-            lock_file.truncate()
-            lock_file.write(str(requested_owner))
-            lock_file.flush()
+            self._stamp_lock_pid(lock_file, requested_owner)
 
         return {"slug": slug, "logs_dir": str(log_dir)}
 
@@ -870,10 +869,7 @@ class TicketIO:
             progress["execution_owner_pid"] = owner_pid
             progress["last_update"] = now_iso()
             self.commit_state(file_path.stem, TicketState.RUNNING, progress)
-            lock_file.seek(0)
-            lock_file.truncate()
-            lock_file.write(str(owner_pid))
-            lock_file.flush()
+            self._stamp_lock_pid(lock_file, owner_pid)
         return True
 
     # Git branch names derived from slugs must fit in filesystem paths;

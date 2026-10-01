@@ -458,7 +458,6 @@ def reconcile_refresh_runtime(
     tio: Any, slug: str, candidate: bytes, journal: BasisRefreshJournal
 ) -> None:
     """Publish the existing pre-execution runtime under the locked refresh authority."""
-    from booley.criteria.state import DevelopmentState
     from booley.runtime.pid import is_pid_alive
 
     from .paths import existing_runtime_file, ticket_log_dir
@@ -478,18 +477,30 @@ def reconcile_refresh_runtime(
         old = _converted_text(Path(tio._project_root), snapshot.read_text(), slug)
         if old.generated.get("machine") == journal.machine:
             return
-    history = capture_runtime(tio, slug, journal.operation_id, "basis-refreshes")
     path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
+    if not snapshot.exists() and not path.exists() and not (log / "acceptance").exists():
+        return
+    history = capture_runtime(tio, slug, journal.operation_id, "basis-refreshes")
     if path.exists():
-        state = DevelopmentState.load(path)
-        state.acceptance_transactions = []
-        for entry in state.criteria.values():
-            if entry.met:
-                entry.met = False
-                entry.stale = True
-        state.save()
+        _reconcile_refresh_state(log, path, identity)
     retire_foreign_pointers(log, history, journal.operation_id, identity)
     atomic_replace_bytes(snapshot, candidate, mode=0o644)
+
+
+def _reconcile_refresh_state(log: Path, path: Path, identity: dict) -> None:
+    from booley.criteria.state import DevelopmentState
+
+    from .acceptance_ledger import current_evidence_records
+    from .runtime_identity import current_transaction_selection
+
+    state = DevelopmentState.load(path)
+    current = {row["criterion"] for row in current_evidence_records(log, state, identity)}
+    state.acceptance_transactions = current_transaction_selection(log, state, identity)
+    for name, entry in state.criteria.items():
+        if name not in current and entry.met:
+            entry.met = False
+            entry.stale = True
+    state.save()
 
 
 def finish_basis_refresh(root: Path, slug: str, operation_id: str) -> None:

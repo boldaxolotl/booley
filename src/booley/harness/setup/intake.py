@@ -20,7 +20,6 @@ from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.board_layout import (
     StateRecordError,
     document_state,
-    documents_in_state,
     read_state_record,
     ticket_document_path,
 )
@@ -387,7 +386,7 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     ticket_path = _resolve_ticket_path(project_root, ticket_path_or_slug)
     slug = ticket_path.stem
-    if _board_state(project_root, ticket_path) is TicketState.WAITING:
+    if _board_state(project_root, ticket_path) in {TicketState.WAITING, TicketState.QUEUED}:
         ticket_path = _promote_waiting_for_intake(project_root, ticket_path, slug)
         _validate_intake_ticket(project_root, ticket_path, slug)
     else:
@@ -424,8 +423,6 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
 def _promote_waiting_before_auto_select(project_root: Path) -> None:
     tickets_dir = tickets_dir_from_project_root(project_root)
-    if not documents_in_state(tickets_dir, TicketState.WAITING):
-        return
     from booley.ticket_board.operations import op_promote_waiting
 
     op_promote_waiting(TicketIO(tickets_dir, project_root=project_root))
@@ -443,7 +440,18 @@ def _board_state(project_root: Path, ticket_path: Path) -> TicketState | None:
 
 
 def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str) -> Path:
-    if _board_state(project_root, ticket_path) is not TicketState.WAITING:
+    status = _board_state(project_root, ticket_path)
+    if status is TicketState.QUEUED:
+        from booley.ticket_board.basis_refresh import (
+            load_basis_refresh,
+            recover_published_basis_refreshes,
+        )
+
+        if load_basis_refresh(project_root, slug) is not None:
+            tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+            recover_published_basis_refreshes(project_root, [tio.find_ticket(slug)])
+        return ticket_path
+    if status is not TicketState.WAITING:
         return ticket_path
     from booley.ticket_board.operations import op_promote_waiting
 

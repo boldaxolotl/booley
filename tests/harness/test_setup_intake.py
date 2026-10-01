@@ -534,6 +534,7 @@ async def test_automatic_intake_promotes_waiting_before_selection(
     monkeypatch.setattr(operations, "op_promote_waiting", promote)
     monkeypatch.setattr(intake, "_auto_select_ticket", select)
     monkeypatch.setattr(intake, "_resolve_and_validate", lambda *_: (queued, "ticket"))
+    monkeypatch.setattr(intake, "_validate_intake_ticket", lambda *_: None)
     monkeypatch.setattr(intake, "_promote_waiting_for_intake", lambda _r, path, _s: path)
     monkeypatch.setattr(intake.TicketIO, "load_document", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(intake.ticket_cli, "parse_ticket", lambda *_: {"fields": {}, "body": ""})

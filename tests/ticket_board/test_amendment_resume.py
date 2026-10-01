@@ -126,6 +126,11 @@ def _simulation_ticket(tmp_path: Path):
         append_step="setup",
         transition=("running:init", "running:setup", "test", "step complete"),
     )
+    state = _initialize_simulation_state(tio)
+    return root, ticket, tio, state, parse_frontmatter
+
+
+def _initialize_simulation_state(tio):
     document = tio.load_document("amended")
     from booley.ticket_board.criteria_projection import project_ticket_criteria
 
@@ -140,14 +145,10 @@ def _simulation_ticket(tmp_path: Path):
         flow_key_aliases=projection.aliases,
     )
     state.save()
-    return root, ticket, tio, state, parse_frontmatter
+    return state
 
 
-def _publish_simulation(
-    root, tio, state, identity, directory, current=425, invalidate_cycle=False
-):
-    from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
-    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+def _simulation_outcome(directory, current):
     from tests.flows.sim.test_campaign_phase2 import _cycle_outcome
 
     outcome = _cycle_outcome(directory, current=current)
@@ -170,10 +171,17 @@ def _publish_simulation(
         }
     ]
     outcome = replace(outcome, acceptance_facts=AcceptanceFacts(facts))
+    return outcome
+
+
+def _publish_simulation(
+    root, tio, state, identity, directory, current=425, invalidate_cycle=False
+):
+    from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
+    from booley.ticket_board.flow_execution import TicketBoardFlowExecution
+
+    outcome = _simulation_outcome(directory, current)
     recorder = TicketBoardFlowExecution(log_dir=tio.logs_dir / "amended", ticket_identity=identity)
-    from booley.criteria.categories import verification_fingerprint_categories
-    from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
-    from booley.flows.criterion_freshness import build_criterion_freshness
     from booley.ticket_board.ticket_baseline import ticket_baseline_from_machine, worktree_for_ref
 
     checkout = worktree_for_ref(
@@ -182,22 +190,6 @@ def _publish_simulation(
     assert checkout is not None
     state.work_dir = str(checkout)
     state.save()
-
-    def stamp(change, selector):
-        detail = {
-            **change.detail,
-            SOURCE_FINGERPRINT_DETAIL_KEY: build_criterion_freshness(
-                checkout,
-                target=selector,
-                categories=tuple(verification_fingerprint_categories(change.key)),
-            ).to_detail(),
-        }
-
-        if invalidate_cycle and change.key.startswith("cycle_count_"):
-            stamp = detail[SOURCE_FINGERPRINT_DETAIL_KEY]
-            category = stamp["categories"][0]
-            stamp["fingerprint"][category]["digest"] = "expired source fingerprint"
-        return detail
 
     result = SimulationAcceptanceCoordinator().reconcile(
         outcome,
@@ -208,11 +200,34 @@ def _publish_simulation(
             state,
             recorder,
             "simulation",
-            detail_stamper=stamp,
+            detail_stamper=lambda change, selector: _simulation_detail(
+                change, selector, checkout, invalidate_cycle
+            ),
         ),
     )
     assert result.committed
     return result
+
+
+def _simulation_detail(change, selector, checkout, invalidate_cycle):
+    from booley.criteria.categories import verification_fingerprint_categories
+    from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+    from booley.flows.criterion_freshness import build_criterion_freshness
+
+    detail = {
+        **change.detail,
+        SOURCE_FINGERPRINT_DETAIL_KEY: build_criterion_freshness(
+            checkout,
+            target=selector,
+            categories=tuple(verification_fingerprint_categories(change.key)),
+        ).to_detail(),
+    }
+
+    if invalidate_cycle and change.key.startswith("cycle_count_"):
+        stamp = detail[SOURCE_FINGERPRINT_DETAIL_KEY]
+        category = stamp["categories"][0]
+        stamp["fingerprint"][category]["digest"] = "expired source fingerprint"
+    return detail
 
 
 def _apply_simulation_amendment(tio, cycle, kind):
@@ -229,24 +244,11 @@ def _apply_simulation_amendment(tio, cycle, kind):
     return apply_amendment(tio, "amended", request, preview["digest"])
 
 
-def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
+def _mount_amended_execution(ctx, state, snapshot, checkout, monkeypatch):
     from booley.flows.request import FlowRequest
-    from booley.mcp.submit_run_report import SubmitRunReportMcpTool
     from booley.runtime.endpoint_execution import EndpointOutcome
-    from booley.ticket_board.acceptance_ledger import read_acceptance
     from booley.ticket_board.flow_execution import TicketBoardFlowExecution
-    from booley.ticket_board.operations import op_handoff
-    from booley.ticket_board.paths import human_log_file
-    from booley.ticket_board.ticket_baseline import worktree_for_ref
 
-    snapshot = tio.logs_dir / "amended/ticket.md"
-    basis = tio.load_basis("amended")
-    identity = basis.ticket_identity()
-    cycle = next(
-        name for name, entry in state.criteria.items() if "cycle_count_max" in entry.params
-    )
-    checkout = worktree_for_ref(ctx.project_root, basis.participant("outer").ticket_ref)
-    assert checkout is not None
     for key, value in {
         "BOOLEY_TICKET_FILE": snapshot,
         "BOOLEY_SLUG": "amended",
@@ -260,22 +262,11 @@ def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
         FlowRequest(target="sim", work_dir=checkout)
     )
     assert not isinstance(validation, EndpointOutcome), validation
-    state = DevelopmentState.load(state._file_path)
-    _publish_simulation(
-        ctx.project_root,
-        tio,
-        state,
-        identity,
-        directory,
-        current=375 if kind == "scope_add" else 425,
-    )
-    state = DevelopmentState.load(state._file_path)
-    if kind.startswith("threshold"):
-        assert state.criteria[cycle].params["cycle_count_max"] == 450
-        assert state.criteria[cycle].met
-    elif kind == "make_optional":
-        assert state.criteria[cycle].mandatory is False
-    # Fresh final report uses the actual endpoint and all its finalization gates.
+
+
+def _submit_execution_report(checkout):
+    from booley.mcp.submit_run_report import SubmitRunReportMcpTool
+
     code = SubmitRunReportMcpTool().main(
         [
             "--work-dir",
@@ -293,9 +284,43 @@ def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
         ]
     )
     assert code == 0
+
+
+def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.operations import op_handoff
+    from booley.ticket_board.paths import human_log_file
+    from booley.ticket_board.ticket_baseline import worktree_for_ref
+
+    snapshot = tio.logs_dir / "amended/ticket.md"
+    basis = tio.load_basis("amended")
+    identity = basis.ticket_identity()
+    cycle = next(
+        name for name, entry in state.criteria.items() if "cycle_count_max" in entry.params
+    )
+    checkout = worktree_for_ref(ctx.project_root, basis.participant("outer").ticket_ref)
+    assert checkout is not None
+    _mount_amended_execution(ctx, state, snapshot, checkout, monkeypatch)
+    state = DevelopmentState.load(state._file_path)
+    _publish_simulation(
+        ctx.project_root,
+        tio,
+        state,
+        identity,
+        directory,
+        current=375 if kind == "scope_add" else 425,
+    )
+    state = DevelopmentState.load(state._file_path)
+    if kind.startswith("threshold"):
+        assert state.criteria[cycle].params["cycle_count_max"] == 450
+        assert state.criteria[cycle].met
+    elif kind == "make_optional":
+        assert state.criteria[cycle].mandatory is False
+    _submit_execution_report(checkout)
     human_log_file(tio.logs_dir, "amended", "run.log").write_text("Completed\n")
     assert op_handoff(tio, "amended", expected_execution_id=ctx.execution_id)
     assert tio.read_progress("amended")["step"] == "summary"
+    assert tio.find_ticket("amended")["status"] == "review"
     frozen = read_acceptance(snapshot.parent).snapshot
     assert frozen is not None and frozen.ticket_identity == identity
     return frozen
@@ -343,11 +368,18 @@ async def test_amended_ticket_resumes_simulation_and_reaches_review(
     assert identity != old
     fields, _ = parse_frontmatter(snapshot.read_text())
     if kind == "scope_add":
-        assert "EXTRA.md" in fields["scope"]
+        from booley.harness.scope_policy import ScopeTier, classify_path
+
+        assert classify_path(fields["scope"], "EXTRA.md") is ScopeTier.OWNED
+        assert classify_path(ctx.scope_raw, "EXTRA.md") is ScopeTier.OWNED
     state = DevelopmentState.load(state._file_path)
     if kind.startswith("threshold"):
         assert state.criteria[cycle].met is (kind == "threshold_reuse")
     frozen = _finish_amended_execution(tio, state, ctx, kind, tmp_path / "fresh", monkeypatch)
+    _assert_retired_simulation_history(state, result, frozen, snapshot, applied)
+
+
+def _assert_retired_simulation_history(state, result, frozen, snapshot, applied):
     assert (
         result.transaction_id
         not in DevelopmentState.load(state._file_path).acceptance_transactions
@@ -496,6 +528,14 @@ def test_live_owner_is_not_erased_by_identity_reads_or_activation(tmp_path: Path
         process.wait(timeout=5)
 
 
+def _retained_proof_changes():
+    state = DevelopmentState()
+    state.slug = "retained"
+    state.init_criteria({"first": True, "second": True})
+    changes = state.set_criterion("first", True) + state.set_criterion("second", True)
+    return state, changes
+
+
 @pytest.mark.parametrize("boundary", ["record", "state"])
 def test_amendment_proof_transaction_recovers_without_duplicate_observations(
     tmp_path: Path,
@@ -507,10 +547,7 @@ def test_amendment_proof_transaction_recovers_without_duplicate_observations(
     from booley.ticket_board import acceptance_ledger
     from booley.ticket_board.acceptance_ledger import record_amendment_observations
 
-    state = DevelopmentState()
-    state.slug = "retained"
-    state.init_criteria({"first": True, "second": True})
-    changes = state.set_criterion("first", True) + state.set_criterion("second", True)
+    state, changes = _retained_proof_changes()
     identity = {"generation": "a" * 32}
     write_once = acceptance_ledger._write_once
     writes = 0
@@ -550,18 +587,11 @@ def test_amendment_proof_transaction_recovers_without_duplicate_observations(
     assert len(state.acceptance_transactions) == 1
 
 
-def test_amendment_retires_old_acceptance_selection_but_keeps_immutable_snapshot(
-    tmp_path: Path,
-) -> None:
+def _select_old_acceptance(tio, log):
     import json
 
-    from booley.ticket_board.acceptance_ledger import read_acceptance
     from booley.ticket_board.persistence import atomic_replace_bytes
 
-    _root, ticket, tio = _blocked_ticket(tmp_path)
-    log = tio.logs_dir / "blocked-again"
-    snapshot = log / "ticket.md"
-    snapshot.write_bytes(ticket.read_bytes())
     state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
     state.slug = "blocked-again"
     state.init_criteria({"review_rtl_bugs_clean": True})
@@ -590,6 +620,19 @@ def test_amendment_retires_old_acceptance_selection_but_keeps_immutable_snapshot
                 json.dumps({"ticket_identity": old, "ticket_generation": old["generation"]}) + "\n"
             ).encode(),
         )
+    return state, frozen
+
+
+def test_amendment_retires_old_acceptance_selection_but_keeps_immutable_snapshot(
+    tmp_path: Path,
+) -> None:
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+
+    _root, ticket, tio = _blocked_ticket(tmp_path)
+    log = tio.logs_dir / "blocked-again"
+    snapshot = log / "ticket.md"
+    snapshot.write_bytes(ticket.read_bytes())
+    state, frozen = _select_old_acceptance(tio, log)
     request = _optional_request()
     preview = preview_amendment(tio, "blocked-again", request)
     result = apply_amendment(tio, "blocked-again", request, preview["digest"])
@@ -623,13 +666,24 @@ def test_amendment_retires_old_acceptance_selection_but_keeps_immutable_snapshot
     assert len(newer.evidence) == 1
 
 
+def _legacy_history(snapshot, result):
+    import json
+
+    history = snapshot.parent / "amendments" / f"{result['operation_id']}.json"
+    row = json.loads(history.read_text())
+    row.pop("old_ticket_identity")
+    row.pop("new_ticket_identity")
+    history.write_text(
+        json.dumps(row)
+    )  # legacy history binds identity through verified old_basis_id
+    return history
+
+
 @pytest.mark.asyncio
 async def test_successful_old_amendment_runtime_is_repaired_without_pending_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import json
-
     from booley.harness.setup.intake import run
     from booley.runtime.project_dir import reset_cache
     from booley.ticket_board.lifecycle import TicketState
@@ -663,13 +717,7 @@ async def test_successful_old_amendment_runtime_is_repaired_without_pending_jour
     snapshot.write_bytes(old_bytes)  # reproduce the prior publisher's successful stale snapshot
     state.acceptance_transactions = [transaction]
     state.save()
-    history = snapshot.parent / "amendments" / f"{result['operation_id']}.json"
-    row = json.loads(history.read_text())
-    row.pop("old_ticket_identity")
-    row.pop("new_ticket_identity")
-    history.write_text(
-        json.dumps(row)
-    )  # legacy history binds identity through verified old_basis_id
+    history = _legacy_history(snapshot, result)
     ctx = await run(str(snapshot), root)
     current = tio.load_basis(ctx.slug, runtime_ticket_path=snapshot).ticket_identity()
     rebuilt = DevelopmentState.load(state._file_path)

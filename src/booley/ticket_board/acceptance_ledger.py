@@ -799,7 +799,7 @@ def _read_legacy_record(directory: Path) -> dict[str, Any]:
     return payload
 
 
-def _active_evidence_records(
+def _validated_evidence_records(
     log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     root = log_dir / "acceptance" / "evidence"
@@ -831,7 +831,29 @@ def _active_evidence_records(
         seen.add(sequence)
         _validate_observation_identity(payload.get("ticket_identity"), ticket_identity)
         _validate_observation(payload)
-    return [payload for payload in records if payload["ticket_identity"] == ticket_identity]
+    return records
+
+
+def _active_evidence_records(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    return [
+        payload
+        for payload in _validated_evidence_records(log_dir, state, ticket_identity)
+        if payload["ticket_identity"] == ticket_identity
+    ]
+
+
+def historical_ticket_identities(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Return distinct identities only after validating selected historical observations."""
+    identities = []
+    for row in _validated_evidence_records(log_dir, state, ticket_identity):
+        identity = row["ticket_identity"]
+        if identity != ticket_identity and identity not in identities:
+            identities.append(identity)
+    return identities
 
 
 def _validate_observation_identity(value: object, current: Mapping[str, Any]) -> None:
@@ -933,7 +955,14 @@ def record_amendment_observations(
     if root.exists():
         for directory in root.glob(f"*.tx.{transaction}"):
             if not (directory / "record.json").exists():
-                directory.rmdir()  # only an empty, operation-owned reservation is recoverable
+                for temporary in directory.glob(".record.json.*.tmp"):
+                    temporary.unlink()
+                try:
+                    directory.rmdir()
+                except OSError as exc:
+                    raise AcceptanceLedgerError(
+                        f"invalid amendment proof reservation {directory}: {exc}"
+                    ) from exc
     if root.exists() and list(root.glob(f"*.tx.{transaction}")):
         records = _legacy_transaction_records(root, transaction)
         if len(records) > len(changes):
@@ -1302,6 +1331,8 @@ def _validate_current_proof(
         return
     historical = set()
     for path in root.glob("*/record.json"):
+        if re.fullmatch(r"[0-9]{9}(?:\.tx\.[0-9a-f]{64})?", path.parent.name) is None:
+            continue
         row = _read_json_document(path, _MAX_RECORD_BYTES, "Criterion evidence")
         if row.get("ticket_identity") != identity:
             historical.add(row.get("criterion"))

@@ -12,6 +12,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import BoundaryError, require_dict
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
@@ -19,6 +20,7 @@ from booley.flows.source_fingerprint import compute_source_fingerprint
 from .acceptance_ledger import (
     AcceptanceLedgerError,
     current_evidence_records,
+    historical_ticket_identities,
     read_acceptance,
     record_amendment_observations,
 )
@@ -70,23 +72,31 @@ def capture_evidence(log: Path, history: Path, operation_id: str, identity: dict
     atomic_write_once(path, (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode())
 
 
+def _runtime_document(path: Path, description: str) -> dict[str, Any]:
+    try:
+        return require_dict(json.loads(path.read_text(encoding="utf-8")), field=description)
+    except (OSError, UnicodeError, json.JSONDecodeError, BoundaryError) as exc:
+        raise TicketBaselineError(f"invalid {description} {path}: {exc}") from exc
+
+
 def _retire_pointer(path: Path, history: Path, operation_id: str) -> None:
     destination = history / f"{operation_id}.{path.parent.name}-{path.name}"
     atomic_write_once(destination, path.read_bytes())
     path.unlink()
 
 
-def retire_foreign_pointers(log: Path, history: Path, operation_id: str, identity: dict) -> None:
-    """Retire selected old-generation pointers while retaining immutable packages."""
+def _foreign_pointer_paths(log: Path, identity: dict) -> list[Path]:
+    """Validate selected pointers and identify foreign ones without mutation."""
+    paths = []
     accepted = read_acceptance(log)
     if accepted.kind == "corrupt":
         raise AcceptanceLedgerError(accepted.reason)
     if accepted.snapshot is not None and accepted.snapshot.ticket_identity != identity:
-        _retire_pointer(log / "acceptance" / "accepted.json", history, operation_id)
+        paths.append(log / "acceptance" / "accepted.json")
     for path in (log / ".runtime/triage-prep/manifest.json", log / "review/entry.json"):
         if not path.exists():
             continue
-        row = json.loads(path.read_text(encoding="utf-8"))
+        row = _runtime_document(path, "selected review pointer")
         pointer_identity = row.get("ticket_identity")
         if pointer_identity is None:
             generation = row.get("ticket_generation")
@@ -100,6 +110,14 @@ def retire_foreign_pointers(log: Path, history: Path, operation_id: str, identit
             ticket_baseline_from_machine(pointer_identity)
             if pointer_identity == identity:
                 continue
+        paths.append(path)
+
+    return paths
+
+
+def retire_foreign_pointers(log: Path, history: Path, operation_id: str, identity: dict) -> None:
+    """Retire selected old-generation pointers while retaining immutable packages."""
+    for path in _foreign_pointer_paths(log, identity):
         _retire_pointer(path, history, operation_id)
 
 
@@ -119,19 +137,18 @@ def refresh_snapshot(tio: Any, slug: str) -> None:
             document = tio._convert_ticket(snapshot, slug, "executable")
             machine = document.generated.get("machine")
             parsed = ticket_baseline_from_machine(machine)
-            if parsed.ticket_identity() == basis.ticket_identity():
-                return
             reason = "another identity"
         except (TicketBaselineError, ValueError, OSError):
             reason = "malformed"
-    if parsed is not None:
-        _repair_completed_amendment(tio, slug, board, basis, parsed)
+    _repair_completed_amendment(tio, slug, board, basis, parsed)
+    if parsed is not None and parsed.ticket_identity() == basis.ticket_identity():
+        return
     atomic_replace_bytes(snapshot, board.read_bytes(), mode=0o644)
     logger.info("Refreshed runtime Ticket snapshot for %s (%s)", slug, reason)
 
 
-def _fresh_source(detail: dict, checkout: Path) -> bool:
-    stamp = detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
+def source_proof_is_fresh(stamp: object, checkout: Path) -> bool:
+    """Validate one source stamp and compare every declared fingerprint category."""
     if not isinstance(stamp, dict) or not isinstance(stamp.get("fingerprint"), dict):
         return False
     categories = stamp.get("categories")
@@ -180,7 +197,9 @@ def _trusted_observation(row: dict | None, original: Any, checkout: Path) -> boo
         and row["mandatory"] == original.mandatory
         and row["met"] == original.met
     )
-    return matches and _fresh_source(row["detail"], checkout)
+    return matches and source_proof_is_fresh(
+        row["detail"].get(SOURCE_FINGERPRINT_DETAIL_KEY), checkout
+    )
 
 
 def _reference_digests(rows: list[dict], name: str) -> list[dict]:
@@ -259,7 +278,7 @@ def publish_retained_observations(
     )
 
 
-def _current_selection(log: Path, state: DevelopmentState, identity: dict) -> list[str]:
+def current_transaction_selection(log: Path, state: DevelopmentState, identity: dict) -> list[str]:
     """Keep mixed legacy transactions only when they contain current observations."""
     records = current_evidence_records(log, state, identity)
     sequences = {row["sequence"] for row in records}
@@ -286,30 +305,118 @@ def _project_repaired_state(
         state.criteria[name].params = projection.params.get(name, {})
 
 
+def _amendment_ancestry(log: Path, basis: Any) -> tuple[dict, set[str]]:
+    amendment = basis.ticket_identity()["amendment"]
+    history = _runtime_document(
+        log / "amendments" / f"{amendment['operation_id']}.json", "amendment history"
+    )
+    if history.get("new_basis_id") != basis.basis_id:
+        raise TicketBaselineError(
+            "historical amendment disagrees with the current runtime identity"
+        )
+    ancestors = set()
+    parent = history.get("old_basis_id")
+    histories = [
+        _runtime_document(path, "amendment history")
+        for path in (log / "amendments").glob("????????????????????????????????.json")
+    ]
+    for _ in range(len(histories) + 1):
+        if not isinstance(parent, str) or parent in ancestors:
+            break
+        ancestors.add(parent)
+        previous = next((row for row in histories if row.get("new_basis_id") == parent), None)
+        if previous is None:
+            break
+        parent = previous.get("old_basis_id")
+    return history, ancestors
+
+
+def _historical_identity(
+    log: Path, state: DevelopmentState, basis: Any, old: Any, history: dict, ancestors: set[str]
+) -> dict | None:
+    identities = historical_ticket_identities(log, state, basis.ticket_identity())
+    candidates = [old.ticket_identity()] if old is not None else []
+    if isinstance(history.get("old_ticket_identity"), dict):
+        candidates.append(history["old_ticket_identity"])
+    candidates.extend(identities)
+    for candidate in candidates:
+        parsed = ticket_baseline_from_machine(candidate)
+        if parsed.basis_id in ancestors:
+            return candidate
+    return None
+
+
+def _repair_current_criteria(
+    log: Path,
+    prior: DevelopmentState,
+    state: DevelopmentState,
+    basis: Any,
+    old_identity: dict | None,
+    operation: str,
+    checkout: Path,
+) -> None:
+    current = current_evidence_records(log, state, basis.ticket_identity())
+    current_keys = {row["criterion"] for row in current}
+    protected = {
+        name: deepcopy(state.criteria[name]) for name in current_keys if name in state.criteria
+    }
+    if old_identity is None:
+        changes = []
+        for name, entry in state.criteria.items():
+            if name not in current_keys and entry.met:
+                entry.met = False
+                entry.stale = True
+    else:
+        changes = retained_observations(log, prior, state, old_identity, operation, checkout)
+    report = state.criteria.get("_report_submitted")
+    if report is not None and "_report_submitted" not in current_keys:
+        report.met = False
+        report.stale = True
+    state.criteria.update(protected)
+    state.acceptance_transactions = current_transaction_selection(
+        log, state, basis.ticket_identity()
+    )
+    changes = [change for change in changes if change.key not in current_keys]
+    if changes:
+        record_amendment_observations(
+            log,
+            state,
+            changes,
+            operation_id=operation + ".repair",
+            ticket_identity=basis.ticket_identity(),
+        )
+
+
 def _repair_completed_amendment(tio: Any, slug: str, board: Path, basis: Any, old: Any) -> None:
-    """Repair an already-successful old publisher using its verified historical identity."""
+    """Repair old successful publishers using immutable amendment ancestry and proof."""
     amendment = basis.ticket_identity().get("amendment")
     if not isinstance(amendment, dict):
         return
     log = ticket_log_dir(tio.logs_dir, slug)
     operation = amendment["operation_id"]
-    history_path = log / "amendments" / f"{operation}.json"
-    if not history_path.exists():
+    if not (log / "amendments" / f"{operation}.json").exists():
         return
-    history = json.loads(history_path.read_text())
-    if (
-        old.ticket_identity()["generation"] != amendment["previous_generation"]
-        or history.get("old_basis_id") != old.basis_id
-    ):
-        raise TicketBaselineError("historical amendment disagrees with the old runtime identity")
+    history, ancestors = _amendment_ancestry(log, basis)
     path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
     if not path.exists():
         return
     from .ticket_baseline import worktree_for_ref
 
     state = DevelopmentState.load(path)
-    current = current_evidence_records(log, state, basis.ticket_identity())
-    current_keys = {row["criterion"] for row in current}
+    identity = basis.ticket_identity()
+    current_keys = {row["criterion"] for row in current_evidence_records(log, state, identity)}
+    current_selection = current_transaction_selection(log, state, identity)
+    missing_proof = any(
+        entry.met and not name.startswith("_") and name not in current_keys
+        for name, entry in state.criteria.items()
+    )
+    if (
+        not missing_proof
+        and current_selection == state.acceptance_transactions
+        and not _foreign_pointer_paths(log, identity)
+    ):
+        return
+    old_identity = _historical_identity(log, state, basis, old, history, ancestors)
     prior_path = log / "amendments" / f"{operation}.prior-state.json"
     prior = DevelopmentState.load(prior_path if prior_path.exists() else path)
     history_dir = capture_runtime(tio, slug, operation + ".repair", "amendments")
@@ -317,18 +424,6 @@ def _repair_completed_amendment(tio: Any, slug: str, board: Path, basis: Any, ol
     checkout = worktree_for_ref(Path(tio._project_root), basis.participant("outer").ticket_ref)
     if checkout is None:
         raise TicketBaselineError("historical amendment execution checkout is unavailable")
-    protected = {
-        name: deepcopy(state.criteria[name]) for name in current_keys if name in state.criteria
-    }
-    changes = retained_observations(log, prior, state, old.ticket_identity(), operation, checkout)
-    state.criteria.update(protected)
-    state.acceptance_transactions = _current_selection(log, state, basis.ticket_identity())
-    record_amendment_observations(
-        log,
-        state,
-        [change for change in changes if change.key not in current_keys],
-        operation_id=operation + ".repair",
-        ticket_identity=basis.ticket_identity(),
-    )
+    _repair_current_criteria(log, prior, state, basis, old_identity, operation, checkout)
     retire_foreign_pointers(log, history_dir, operation + ".repair", basis.ticket_identity())
     state.save()

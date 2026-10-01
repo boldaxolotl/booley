@@ -485,25 +485,31 @@ def _preview_evidence(
             change.criterion: {"result": "unknown", "evidence": "rerun"}
             for change in proposal.changes
         }
+    from .runtime_identity import retained_observations
+
     state = DevelopmentState.load(path)
-    result: dict[str, Any] = {}
+    candidate = deepcopy(state)
+    changed = {change.criterion: change for change in proposal.changes}
     for change in proposal.changes:
-        prior = state.criteria.get(change.criterion)
-        if prior is None:
-            result[change.criterion] = {"result": "unknown", "evidence": "rerun"}
-            continue
-        row = {"result": "met" if prior.met else "unmet"}
-        if change.thresholds:
-            candidate = deepcopy(prior)
+        entry = candidate.criteria.get(change.criterion)
+        if entry is not None and change.thresholds:
             for param in change.thresholds:
-                candidate.params[param] = params[change.criterion][param]
-            _reevaluate_changed_entry(candidate, basis, {"basis": basis.as_dict()}, checkout)
-            row["evidence"] = "reuse" if not candidate.stale else "rerun"
-            row["after_result"] = "met" if candidate.met else "unmet"
-        else:
-            row["evidence"] = "unchanged"
-            row["after_result"] = row["result"]
-        result[change.criterion] = row
+                entry.params[param] = params[change.criterion][param]
+            _reevaluate_changed_entry(entry, basis, {"basis": basis.as_dict()}, checkout)
+    log = path.parent.parent if path.parent.name == ".runtime" else path.parent
+    retained_observations(log, state, candidate, basis.ticket_identity(), "preview", checkout)
+    result: dict[str, Any] = {}
+    for name, prior in state.criteria.items():
+        if name.startswith("_"):
+            continue
+        entry = candidate.criteria[name]
+        thresholds = bool(changed.get(name) and changed[name].thresholds)
+        evidence = "rerun" if entry.stale else ("reuse" if thresholds else "unchanged")
+        result[name] = {
+            "result": "met" if prior.met else "unmet",
+            "evidence": evidence,
+            "after_result": "met" if entry.met else "unmet",
+        }
     return result
 
 
@@ -926,36 +932,13 @@ def _rebuild_state(
     state.save()
 
 
-def _amendment_source_matches(stamp: Any, checkout: Path) -> bool:
-    from booley.flows.source_fingerprint import compute_source_fingerprint
-
-    if (
-        not isinstance(stamp, dict)
-        or not isinstance(stamp.get("fingerprint"), dict)
-        or not isinstance(stamp.get("categories"), list)
-        or not stamp["categories"]
-        or not all(isinstance(category, str) for category in stamp["categories"])
-    ):
-        return False
-    target = stamp.get("target")
-    try:
-        current = compute_source_fingerprint(
-            checkout, target=target if isinstance(target, str) else None
-        )
-        return all(
-            stamp["fingerprint"].get(category, {}).get("digest")
-            == current.get(category, {}).get("digest")
-            for category in stamp["categories"]
-        )
-    except (OSError, ValueError, AttributeError):
-        return False
-
-
 def _reevaluate_changed_entry(
     entry: Any, basis: TicketBaseline, journal: dict[str, Any], checkout: Path
 ) -> None:
     from booley.criteria.state import DevelopmentState
     from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+
+    from .runtime_identity import source_proof_is_fresh
 
     detail = entry.detail if isinstance(entry.detail, dict) else {}
     stamp = detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
@@ -970,7 +953,7 @@ def _reevaluate_changed_entry(
         and type(campaign_cycles) is int
         and campaign_cycles >= 0
     )
-    reusable = reusable and _amendment_source_matches(stamp, checkout)
+    reusable = reusable and source_proof_is_fresh(stamp, checkout)
     entry.met = bool(reusable)
     entry.stale = not reusable
     if reusable:
@@ -1002,7 +985,7 @@ def _amendment_outcomes(tio: Any, journal: dict[str, Any]) -> dict[str, dict[str
             continue
         detail = entry.detail if isinstance(entry.detail, dict) else {}
         evaluation = detail.get("amendment_evaluation", {})
-        evidence = "unchanged"
+        evidence = "rerun" if entry.stale else "unchanged"
         if changed.get(name, {}).get("thresholds"):
             evidence = "reuse" if evaluation.get("reused") else "rerun"
         outcomes[name] = {
