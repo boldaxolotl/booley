@@ -153,10 +153,34 @@ def test_publication_topology_verifies_development_context_is_absent() -> None:
 
 
 def test_runtime_image_workflow_does_not_attest_a_pypi_release_wheel() -> None:
-    workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    """Images carry runtime-image wheels; only the host check models a PyPI user."""
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+    official = set()
+    for name, job in workflow["jobs"].items():
+        runs = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+        if "BuildProfile.OFFICIAL_RELEASE" in runs:
+            official.add(name)
 
-    assert "BuildProfile.OFFICIAL_RELEASE" not in workflow
-    assert "profile=BuildProfile.RUNTIME_IMAGE" in workflow
+    # build-and-push stamps the runtime-image wheel; the RISC-V build reuses it.
+    build_runs = "\n".join(
+        str(step.get("run", "")) for step in workflow["jobs"]["build-and-push"]["steps"]
+    )
+    assert "profile=BuildProfile.RUNTIME_IMAGE" in build_runs
+    riscv_inputs = [
+        step["with"]["name"]
+        for step in workflow["jobs"]["build-and-push-riscv"]["steps"]
+        if "download-artifact" in str(step.get("uses", ""))
+    ]
+    assert riscv_inputs == ["release-wheel"]
+
+    # The host check installs its official-release wheel locally and never
+    # uploads it, so no image or artifact can carry a PyPI release attestation.
+    assert official == {"host-doctor-runtime"}
+    host_steps = workflow["jobs"]["host-doctor-runtime"]["steps"]
+    uploads = [step for step in host_steps if "upload-artifact" in str(step.get("uses", ""))]
+    assert all("dist" not in str(step["with"]["path"]) for step in uploads)
 
 
 def test_release_topology_splits_validation_by_image_dependency() -> None:
