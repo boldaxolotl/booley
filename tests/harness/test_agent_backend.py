@@ -695,6 +695,27 @@ async def test_codex_agent_text_cannot_identify_a_usage_limit(
     subprocess_call.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["stderr", "stdout"])
+async def test_codex_no_output_provider_failure_is_terminal(tmp_path, monkeypatch, source):
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend as cb
+    from booley.runtime.agent_errors import AgentProviderError
+
+    detail = "Codex could not start: configuration was rejected."
+    raw = detail if source == "stdout" else ""
+    stderr = detail if source == "stderr" else ""
+    subprocess_call = AsyncMock(return_value=(raw, stderr, 1))
+    monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+
+    with pytest.raises(AgentProviderError, match="configuration was rejected") as raised:
+        await CodexBackend().call(AgentCallParams(prompt="work", model="test", cwd=tmp_path))
+
+    assert raised.value.provider == "codex"
+    subprocess_call.assert_awaited_once()
+
+
 # ===========================================================================
 # Codex backend — prompt building
 # ===========================================================================
