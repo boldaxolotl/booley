@@ -12,6 +12,7 @@ import os
 import stat
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -341,6 +342,18 @@ def _crlf_worktree_files(project_root: Path) -> list[str] | None:
     return _parse_crlf_mismatches(proc.stdout)
 
 
+def pending_normalization_paths(
+    project_root: Path, project_dir: Path | None = None
+) -> tuple[Path, ...]:
+    """Absolute tracked paths that a repair run would normalize to LF."""
+    discovery = discover_line_ending_repositories(project_root, project_dir)
+    paths: list[Path] = []
+    for repository in discovery.repositories:
+        names = _crlf_worktree_files(repository.root) or []
+        paths.extend(repository.root / name for name in names)
+    return tuple(paths)
+
+
 def read_autocrlf_setting(project_root: Path, *, local: bool = False) -> AutocrlfSetting | None:
     """Read effective or repo-local ``core.autocrlf`` and its presence."""
     command = ["git", "-C", str(project_root), "config"]
@@ -396,7 +409,8 @@ def _eol_policy_is_user_owned(project_root: Path) -> bool:
 def _worktree_is_clean(project_root: Path) -> bool | None:
     """Is the host-side working tree free of tracked uncommitted changes?
 
-    Sampled *before* init touches anything, because the CRLF fix itself moves
+    Sampled *before* init touches anything (see
+    :func:`sample_worktree_cleanliness`), because the CRLF fix itself moves
     this answer: with ``core.autocrlf=true`` the clean filter hides the CRLF
     from ``git status`` on the host, and flipping the knob can expose those
     same files as modified. Only the pre-fix reading tells us whether the user
@@ -708,10 +722,12 @@ def _rewrite_from_stage(  # noqa: PLR0911 -- each refusal is a pre-write safety 
     replacement: Path,
     expected: _CandidateSnapshot,
 ) -> str | None:
-    """Atomically publish one still-identical tracked-file replacement."""
+    """Publish only a still-identical replacement that changes line endings alone."""
     path = project_root / name
     try:
         replacement_bytes = replacement.read_bytes()
+        if path.read_bytes().replace(b"\r\n", b"\n") != replacement_bytes:
+            return f"refusing to discard content edits during line-ending repair: {name!r}"
     except OSError as exc:
         return f"could not normalize {name!r}: {exc}"
     staged, error = _stage_atomic_content(path, replacement_bytes, mode=expected.file.mode)
@@ -975,6 +991,7 @@ def _read_worktree_observations(
 
 def _plan_repository(
     repository: LineEndingRepository,
+    baseline_clean: bool | None = None,
 ) -> tuple[_RepositoryPlan | None, tuple[LineEndingObservation, ...]]:
     effective, local, observations = _read_required_policy(repository)
     crlf_paths, phantom_paths, worktree_observations = _read_worktree_observations(repository)
@@ -987,7 +1004,12 @@ def _plan_repository(
         observations.append(
             _observation(LineEndingObservationCode.CANDIDATE_UNSAFE, detail=candidate_error)
         )
-    clean = _worktree_is_clean(repository.root) if crlf_paths else True
+    if not crlf_paths:
+        clean: bool | None = True
+    elif baseline_clean is not None:
+        clean = baseline_clean
+    else:
+        clean = _worktree_is_clean(repository.root)
     needs_policy = bool(crlf_paths) or effective.value or not local.is_set or local.value
     owns_policy = _eol_policy_is_user_owned(repository.root)
     attributes: _FileIdentity | None = None
@@ -1273,8 +1295,10 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
     return tuple(actions)
 
 
-def _repair_repository(repository: LineEndingRepository) -> RepositoryLineEndingReport:
-    plan, initial_observations = _plan_repository(repository)
+def _repair_repository(
+    repository: LineEndingRepository, baseline_clean: bool | None = None
+) -> RepositoryLineEndingReport:
+    plan, initial_observations = _plan_repository(repository, baseline_clean)
     if plan is None:
         return RepositoryLineEndingReport(
             repository,
@@ -1292,20 +1316,45 @@ def _repair_repository(repository: LineEndingRepository) -> RepositoryLineEnding
     return RepositoryLineEndingReport(repository, status, final.observations, actions)
 
 
+def sample_worktree_cleanliness(
+    project_root: Path, project_dir: Path | None = None
+) -> dict[Path, bool | None]:
+    """Record whether each Project repository is clean before init writes anything.
+
+    Init itself edits tracked Project data (for example the ``[agent]``
+    selection in ``booley.toml``) before the line-ending repair runs. Those LF
+    edits are Booley's own, not user work, so the repair judges "uncommitted
+    changes" against this pre-write baseline. A repository dirty here still
+    refuses normalization. None = Git could not answer for that repository.
+    """
+    discovery = discover_line_ending_repositories(project_root, project_dir)
+    return {
+        repository.root: _worktree_is_clean(repository.root)
+        for repository in discovery.repositories
+    }
+
+
 def reconcile_project_line_endings(
     project_root: Path,
     project_dir: Path | None = None,
     *,
     mode: LineEndingMode,
+    clean_baseline: Mapping[Path, bool | None] | None = None,
 ) -> LineEndingReport:
-    """Inspect or reconcile every distinct repository supplying Project files."""
+    """Inspect or reconcile every distinct repository supplying Project files.
+
+    ``clean_baseline`` comes from :func:`sample_worktree_cleanliness` taken
+    before the caller wrote Project data. Repair uses it instead of the
+    current ``git status`` for each repository it covers.
+    """
     discovery = discover_line_ending_repositories(project_root, project_dir)
     if not discovery.repositories and not discovery.failures:
         return LineEndingReport(LineEndingStatus.NOT_APPLICABLE, (), ())
+    baseline = clean_baseline or {}
     reports = tuple(
         _inspection_report(repository)
         if mode is LineEndingMode.INSPECT
-        else _repair_repository(repository)
+        else _repair_repository(repository, baseline.get(repository.root))
         for repository in discovery.repositories
     )
     unsafe = bool(discovery.failures) or any(

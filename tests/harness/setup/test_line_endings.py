@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.harness.setup import line_endings
 from booley.harness.setup.line_endings import (
     LineEndingActionKind,
@@ -154,6 +156,24 @@ def test_stale_plan_never_overwrites_intervening_worktree_edit(tmp_path: Path):
         if action.kind is LineEndingActionKind.NORMALIZE_FILES
     )
     assert normalize.state is LineEndingActionState.FAILED
+
+
+@pytest.mark.parametrize("ending", [b"\r\n", b"\n"])
+def test_clean_baseline_never_discards_later_content_edits(tmp_path: Path, ending: bytes):
+    _crlf_repo(tmp_path)
+    baseline = line_endings.sample_worktree_cleanliness(tmp_path)
+    assert baseline[tmp_path] is True
+    edited = b"module a;\r\n  localparam KEEP = 1;" + ending + b"endmodule\r\n"
+    (tmp_path / "a.v").write_bytes(edited)
+    index_before = _git(tmp_path, "ls-files", "--stage", "-z").stdout
+
+    report = reconcile_project_line_endings(
+        tmp_path, mode=LineEndingMode.REPAIR, clean_baseline=baseline
+    )
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (tmp_path / "a.v").read_bytes() == edited
+    assert _git(tmp_path, "ls-files", "--stage", "-z").stdout == index_before
 
 
 def test_stale_index_input_refuses_worktree_replacement(tmp_path: Path):

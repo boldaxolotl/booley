@@ -2083,3 +2083,399 @@ class TestLineEndingsAutoFix:
         _step_line_endings(inspection, project_dir)
         assert inspection.results[-1].status == "warn"
         assert _print_summary(inspection) == 1
+
+    @staticmethod
+    def _hardlinked_guidance_project(tmp_path: Path) -> Path:
+        """Project whose CRLF canonical guidance carries Booley's root hardlinks."""
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        _run_git(project_dir, "config", "core.autocrlf", "true")
+        TestLineEndingsStep._add_file(project_dir, "AGENTS.md", b"guidance\n")
+        _git_commit(project_dir)
+        canonical = project_dir / "AGENTS.md"
+        canonical.unlink()
+        _run_git(project_dir, "checkout", "--", "AGENTS.md")
+        assert canonical.read_bytes() == b"guidance\r\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            os.link(canonical, tmp_path / name)
+        return project_dir
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_init_releases_own_guidance_hardlinks_for_normalization(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from booley.harness.init_cmd import (
+            _print_summary,
+            _release_guidance_for_line_endings,
+            _step_guidance_links,
+        )
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        canonical = project_dir / "AGENTS.md"
+
+        ctx = _ctx(tmp_path)
+        assert _release_guidance_for_line_endings(ctx, project_dir)
+        _step_line_endings(ctx, project_dir)
+        _step_guidance_links(ctx)
+
+        assert [(r.name, r.status) for r in ctx.results] == [
+            ("line_endings", "ok"),
+            ("guidance_links", "ok"),
+        ]
+        assert canonical.read_bytes() == b"guidance\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+        assert _print_summary(ctx) == 0
+        capsys.readouterr()
+
+        inspection = _ctx(tmp_path, check_only=True)
+        _step_line_endings(inspection, project_dir)
+        _step_guidance_links(inspection)
+        assert [r.status for r in inspection.results] == ["ok", "ok"]
+        assert _print_summary(inspection) == 0
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_check_only_leaves_guidance_hardlinks_in_place(self, tmp_path: Path) -> None:
+        from booley.harness.init_cmd import _release_guidance_for_line_endings
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+
+        assert not _release_guidance_for_line_endings(_ctx(tmp_path, check_only=True), project_dir)
+        assert (tmp_path / "AGENTS.md").samefile(project_dir / "AGENTS.md")
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_foreign_hardlink_to_guidance_still_blocks_normalization(self, tmp_path: Path) -> None:
+        from booley.harness.init_cmd import _release_guidance_for_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        canonical = project_dir / "AGENTS.md"
+        foreign = tmp_path / "notes-mirror.md"
+        os.link(canonical, foreign)
+
+        ctx = _ctx(tmp_path)
+        assert _release_guidance_for_line_endings(ctx, project_dir)
+        _step_line_endings(ctx, project_dir)
+
+        assert ctx.results[-1].status == "err"
+        assert "hard-linked tracked path 'AGENTS.md'" in ctx.results[-1].detail
+        assert canonical.read_bytes() == b"guidance\r\n"
+        assert foreign.samefile(canonical)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_combined_step_discards_stale_guidance_plan_after_release(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The preflight plan saw the detached links; the step must re-plan."""
+        from booley.harness.init_cmd import _step_line_endings_and_guidance
+        from booley.harness.setup.guidance_links import plan_guidance_links
+
+        # Project-dir resolution is process-cached; start from this project.
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("booley.core.project_dir._cache", None)
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        canonical = project_dir / "AGENTS.md"
+        stale_plan = plan_guidance_links(tmp_path, project_dir)
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings_and_guidance(ctx, stale_plan)
+
+        assert [(r.name, r.status) for r in ctx.results] == [
+            ("line_endings", "ok"),
+            ("guidance_links", "ok"),
+        ]
+        assert canonical.read_bytes() == b"guidance\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+        assert "released guidance hardlink CLAUDE.md" in capsys.readouterr().out
+
+    def test_release_ignores_canonical_without_hardlinks(self, tmp_path: Path) -> None:
+        from booley.harness.init_cmd import _release_guidance_for_line_endings
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            (tmp_path / name).unlink()
+
+        assert not _release_guidance_for_line_endings(_ctx(tmp_path), project_dir)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_partial_release_failure_restores_the_removed_guidance_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.init_cmd import _step_line_endings_and_guidance
+        from booley.harness.setup.guidance_links import plan_guidance_links
+
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("booley.core.project_dir._cache", None)
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        canonical = project_dir / "AGENTS.md"
+        plan = plan_guidance_links(tmp_path, project_dir)
+        original_unlink = Path.unlink
+
+        def locked_claude(path: Path, *args: object, **kwargs: object) -> None:
+            if path == tmp_path / "CLAUDE.md":
+                raise PermissionError("guidance is open in another application")
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", locked_claude)
+        ctx = _ctx(tmp_path)
+        _step_line_endings_and_guidance(ctx, plan)
+
+        assert ctx.results[0].status == "err"
+        assert ctx.results[-1].status == "ok"
+        assert canonical.read_bytes() == b"guidance\r\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_linked_project_data_guidance_is_repaired(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.init_cmd import (
+            _plan_existing_guidance,
+            _sample_line_ending_baseline,
+            _step_line_endings_and_guidance,
+            init_project_dir_scope,
+        )
+
+        original_dir = self._hardlinked_guidance_project(tmp_path)
+        project_dir = tmp_path / "project-data"
+        original_dir.rename(project_dir)
+        try:
+            original_dir.symlink_to(project_dir, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable")
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("booley.core.project_dir._cache", None)
+        ctx = _ctx(tmp_path)
+        plan, ready = _plan_existing_guidance(ctx)
+        assert ready and plan is not None
+
+        with init_project_dir_scope(tmp_path):
+            baseline = _sample_line_ending_baseline(ctx)
+            _step_line_endings_and_guidance(ctx, plan, baseline)
+
+        assert all(result.status == "ok" for result in ctx.results)
+        canonical = project_dir / "AGENTS.md"
+        assert canonical.read_bytes() == b"guidance\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+        inspection = _ctx(tmp_path, check_only=True)
+        _step_line_endings_and_guidance(inspection, None)
+        assert all(result.status == "ok" for result in inspection.results)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_release_keeps_links_when_canonical_needs_no_normalization(
+        self, tmp_path: Path
+    ) -> None:
+        from booley.harness.init_cmd import _release_guidance_for_line_endings
+
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        TestLineEndingsStep._add_file(project_dir, "AGENTS.md", b"guidance\n")
+        _git_commit(project_dir)
+        canonical = project_dir / "AGENTS.md"
+        os.link(canonical, tmp_path / "AGENTS.md")
+
+        assert not _release_guidance_for_line_endings(_ctx(tmp_path), project_dir)
+        assert (tmp_path / "AGENTS.md").samefile(canonical)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_release_warns_and_keeps_links_when_inspection_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from booley.harness import init_cmd
+
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+
+        def unreadable(*_args: object) -> tuple[Path, ...]:
+            raise OSError("index unreadable")
+
+        monkeypatch.setattr(init_cmd, "pending_normalization_paths", unreadable)
+
+        assert not init_cmd._release_guidance_for_line_endings(_ctx(tmp_path), project_dir)
+        assert "could not release guidance hardlinks" in capsys.readouterr().out
+        assert (tmp_path / "AGENTS.md").samefile(project_dir / "AGENTS.md")
+
+    @staticmethod
+    def _crlf_config_project(tmp_path: Path) -> Path:
+        """Project data checked out CRLF (autocrlf=true) with no [agent] table."""
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        _run_git(project_dir, "config", "core.autocrlf", "true")
+        TestLineEndingsStep._add_file(project_dir, "booley.toml", b"[flows.sim]\nenabled = true\n")
+        TestLineEndingsStep._add_file(project_dir, "notes.md", b"notes\n")
+        _git_commit(project_dir)
+        for name in ("booley.toml", "notes.md"):
+            (project_dir / name).unlink()
+        _run_git(project_dir, "checkout", "--", ".")
+        assert (project_dir / "notes.md").read_bytes() == b"notes\r\n"
+        return project_dir
+
+    @staticmethod
+    def _write_agent_selection(tmp_path: Path, project_dir: Path) -> None:
+        from booley.harness.init_cmd import AgentSelection, _step_agent_config
+
+        selection = AgentSelection("claude", "auto", True, True)
+        assert _step_agent_config(_ctx(tmp_path), selection, project_dir / "booley.toml")
+
+    def test_baseline_lets_repair_ignore_booleys_own_config_edit(self, tmp_path: Path) -> None:
+        from booley.harness.setup.git_hooks import _step_line_endings
+        from booley.harness.setup.line_endings import sample_worktree_cleanliness
+
+        project_dir = self._crlf_config_project(tmp_path)
+        baseline = sample_worktree_cleanliness(tmp_path, project_dir)
+        assert baseline[project_dir] is True
+        self._write_agent_selection(tmp_path, project_dir)
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, project_dir, clean_baseline=baseline)
+
+        assert ctx.results[-1].status == "ok"
+        assert (project_dir / "notes.md").read_bytes() == b"notes\n"
+        config = (project_dir / "booley.toml").read_bytes()
+        assert b"\r" not in config
+        assert config.endswith(b'[agent]\nprovider = "claude"\nauth = "auto"\n')
+
+    def test_without_baseline_booleys_config_edit_blocks_repair(self, tmp_path: Path) -> None:
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        project_dir = self._crlf_config_project(tmp_path)
+        self._write_agent_selection(tmp_path, project_dir)
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, project_dir)
+
+        assert ctx.results[-1].status == "err"
+        assert ctx.results[-1].detail == "project-data: dirty tree"
+
+    def test_baseline_still_refuses_a_tree_the_user_left_dirty(self, tmp_path: Path) -> None:
+        """#611: user work present before init keeps the repair refused."""
+        from booley.harness.setup.git_hooks import _step_line_endings
+        from booley.harness.setup.line_endings import sample_worktree_cleanliness
+
+        project_dir = self._crlf_config_project(tmp_path)
+        with (project_dir / "notes.md").open("ab") as notes:
+            notes.write(b"user work\r\n")
+        baseline = sample_worktree_cleanliness(tmp_path, project_dir)
+        assert baseline[project_dir] is False
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, project_dir, clean_baseline=baseline)
+
+        assert ctx.results[-1].status == "err"
+        assert ctx.results[-1].detail == "project-data: dirty tree"
+        assert (project_dir / "notes.md").read_bytes() == b"notes\r\nuser work\r\n"
+
+
+class TestDetachGuidanceHardlinks:
+    """Only Booley's untracked root hardlinks to the canonical file are released."""
+
+    @staticmethod
+    def _canonical(tmp_path: Path) -> Path:
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        canonical = project_dir / "AGENTS.md"
+        canonical.write_bytes(b"guidance\n")
+        return canonical
+
+    def test_missing_or_unlinked_canonical_detaches_nothing(self, tmp_path: Path) -> None:
+        from booley.harness.setup.guidance_links import detach_guidance_hardlinks
+
+        project_dir = tmp_path / ".booley_project"
+        assert detach_guidance_hardlinks(tmp_path, project_dir) == ()
+        self._canonical(tmp_path)
+        (tmp_path / "AGENTS.md").write_bytes(b"guidance\n")  # a copy, not a link
+        assert detach_guidance_hardlinks(tmp_path, project_dir) == ()
+        assert (tmp_path / "AGENTS.md").is_file()
+
+    def test_unstatable_canonical_detaches_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.setup import guidance_links
+
+        canonical = self._canonical(tmp_path)
+        original_stat = Path.stat
+
+        def failing_stat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+            if path == canonical:
+                raise PermissionError("denied")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "is_file", lambda _path: True)
+        monkeypatch.setattr(Path, "stat", failing_stat)
+        assert guidance_links.detach_guidance_hardlinks(tmp_path, canonical.parent) == ()
+
+    @pytest.mark.parametrize("failure", ["exit", "timeout", "os-error"])
+    def test_unreadable_tracking_preserves_root_hardlinks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        from booley.harness.setup import guidance_links
+
+        _git_init(tmp_path)
+        canonical = self._canonical(tmp_path)
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            os.link(canonical, tmp_path / name)
+        _run_git(tmp_path, "add", "-f", "AGENTS.md", "CLAUDE.md")
+        original_run = subprocess.run
+
+        def unreadable(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if "ls-files" not in args:
+                return original_run(args, **kwargs)
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(args, 10)
+            if failure == "os-error":
+                raise OSError("Git unavailable")
+            return subprocess.CompletedProcess(args, 128, "", "index unreadable")
+
+        monkeypatch.setattr(subprocess, "run", unreadable)
+        assert guidance_links.detach_guidance_hardlinks(tmp_path, canonical.parent) == ()
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_skips_symlinks_tracked_entries_and_unreadable_entries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.setup import guidance_links
+
+        _git_init(tmp_path)
+        canonical = self._canonical(tmp_path)
+        os.link(canonical, tmp_path / "AGENTS.md")
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "add", "-f", "AGENTS.md"],
+            capture_output=True,
+            check=True,
+        )
+        try:
+            (tmp_path / "CLAUDE.md").symlink_to(canonical)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+
+        assert guidance_links.detach_guidance_hardlinks(tmp_path, canonical.parent) == ()
+        assert (tmp_path / "AGENTS.md").samefile(canonical)
+        assert (tmp_path / "CLAUDE.md").is_symlink()
+
+        (tmp_path / "CLAUDE.md").unlink()
+        os.link(canonical, tmp_path / "CLAUDE.md")
+
+        def vanished(_path: Path, _other: Path) -> bool:
+            raise FileNotFoundError("raced away")
+
+        monkeypatch.setattr(Path, "samefile", vanished)
+        assert guidance_links.detach_guidance_hardlinks(tmp_path, canonical.parent) == ()
+        assert (tmp_path / "CLAUDE.md").exists()
