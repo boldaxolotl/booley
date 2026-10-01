@@ -271,6 +271,12 @@ filterwarnings = [
     # Boundary tests deliberately exercise an explicit-but-not-yet-created
     # BOOLEY_PROJECT_DIR. The warning is the behavior under test, not test debt.
     "ignore:BOOLEY_PROJECT_DIR=.* does not exist; using anyway:UserWarning",
+    # Coverage.py's per-thread SQLite data connections can be finalized by the
+    # garbage collector after pytest's last unraisable-exception sweep, failing
+    # an all-green coverage shard at shutdown. Booley never imports sqlite3
+    # (tests/test_pytest_configuration.py enforces that), so only tool-owned
+    # connections match. The "." stands for the ":" the filter syntax reserves.
+    "ignore:Exception ignored in. <sqlite3.Connection object:pytest.PytestUnraisableExceptionWarning",
 ]
 
 # ---------------------------------------------------------------------------
