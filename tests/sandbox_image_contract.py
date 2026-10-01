@@ -293,6 +293,7 @@ def validate_sources(sources: ContractSources) -> tuple[str, ...]:
     errors.extend(_release_graph_errors(sources.release_workflow))
     errors.extend(_runtime_role_errors(sources))
     errors.extend(_package_inventory_errors(sources))
+    errors.extend(_riscv_layer_contract_errors(sources.release_workflow))
     return tuple(errors)
 
 
@@ -935,3 +936,56 @@ def _release_inventory_errors(sources: ContractSources) -> list[str]:
                 f"{role}: {job} must export parent and derived inventories and compare them"
             )
     return errors
+
+
+_STANDARD_SUBSTRATE_REF = (
+    "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
+    "${{ needs.build-and-push.outputs.substrate-digest }}"
+)
+
+
+def _riscv_layer_contract_errors(workflow: dict[str, Any]) -> list[str]:
+    """Dockerfile.riscv derives from the standard substrate (#628/#664).
+
+    The wheel-overlaid standard image carries overlay layers the RISC-V image
+    never has, so its RootFS prefix must be checked against the substrate.
+    """
+    role = "riscv layer contract"
+    try:
+        step = find_step(
+            "docker-publish.yml",
+            workflow,
+            "riscv-image-contract",
+            name="Validate exact RISC-V candidate",
+        )
+    except ValueError as error:
+        return [f"{role}: {error}"]
+    errors: list[str] = []
+    if step.value.get("env", {}).get("STANDARD_SUBSTRATE") != _STANDARD_SUBSTRATE_REF:
+        errors.append(
+            f"{role}: STANDARD_SUBSTRATE must name the standard build's substrate digest"
+        )
+    commands = [
+        _shell_fields(line, comments=True)
+        for line in str(step.value.get("run", "")).replace("\\\n", " ").splitlines()
+    ]
+    # `docker image inspect` reads only local images, so the substrate is pulled.
+    if ["docker", "pull", "${STANDARD_SUBSTRATE}"] not in commands:
+        errors.append(f"{role}: the substrate must be fetched with docker pull")
+    contract_runs = [
+        fields
+        for fields in commands
+        if any(field.endswith("image_contract.py") for field in fields)
+    ]
+    if len(contract_runs) != 1 or not _flag_value_is(
+        contract_runs[0], "--base-image", "${STANDARD_SUBSTRATE}"
+    ):
+        errors.append(f"{role}: image_contract.py --base-image must be ${{STANDARD_SUBSTRATE}}")
+    return errors
+
+
+def _flag_value_is(fields: list[str], flag: str, expected: str) -> bool:
+    return any(
+        field == flag and index + 1 < len(fields) and fields[index + 1] == expected
+        for index, field in enumerate(fields)
+    )
