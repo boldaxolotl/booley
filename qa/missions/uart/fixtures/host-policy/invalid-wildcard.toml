@@ -1,2 +1,2 @@
-[interactive]
+[sandbox]
 egress_allowlist = ["*.example.invalid"]

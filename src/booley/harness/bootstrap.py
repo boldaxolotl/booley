@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from booley.config.host_config import HostConfigError, InteractiveHostPolicy, load_host_policy
+from booley.config.host_config import HostConfigError, SandboxHostPolicy, load_host_policy
 from booley.harness import host_sidecars, nangate_pdk
 from booley.harness.image_lifecycle import (
     HostImageScope,
@@ -74,7 +74,7 @@ class BootstrapResult:
 
     intent: Intent
     findings: tuple[BootstrapFinding, ...]
-    policy: InteractiveHostPolicy | None = None
+    policy: SandboxHostPolicy | None = None
     base_image: LifecycleResult | None = None
 
     @property
@@ -104,8 +104,9 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
 ) -> BootstrapResult:
     """Inspect or converge Host Bootstrap resources in their fixed order."""
     findings: list[BootstrapFinding] = []
+
     try:
-        policy = load_host_policy()
+        policy = _load_bootstrap_policy(findings)
     except HostConfigError as exc:
         return BootstrapResult(
             intent,
@@ -145,10 +146,17 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
     return _reconcile_bootstrap_images(intent, findings, policy, verbose=verbose)
 
 
+def _load_bootstrap_policy(findings: list[BootstrapFinding]) -> SandboxHostPolicy:
+    def record_deprecation(message: str) -> None:
+        findings.append(BootstrapFinding("host-config", BootstrapState.WARNING, message))
+
+    return load_host_policy(on_deprecation=record_deprecation)
+
+
 def _reconcile_bootstrap_images(
     intent: Intent,
     findings: list[BootstrapFinding],
-    policy: InteractiveHostPolicy,
+    policy: SandboxHostPolicy,
     *,
     verbose: bool,
 ) -> BootstrapResult:

@@ -25,3 +25,25 @@ A parser-only check cannot establish Sandbox, session-cap, or egress behavior.
 List the case directories and sessions in `resources.md`. Stop the run-owned
 sessions and reconcile the Docker inventory before deleting case directories.
 Keep the failed attempt and restoration artifacts separately under `evidence/`.
+
+For migration cases, use `legacy.toml` and `both-tables.toml` in separate case
+users. From an initialized disposable Project, run the released
+`booley init --check-only` and `booley doctor --concise` on the host with the
+case's `XDG_CONFIG_HOME`. Capture the actual command output and exit codes, and
+compare the host config bytes before and after both commands.
+
+- `legacy.toml`: both commands must show the deprecation warning and the exact
+  `[sandbox]` replacement preserving 600 seconds, two Sandboxes and the named
+  egress host. Replace the case-owned legacy table with the printed replacement;
+  repeat both commands and require the host-table warning to disappear.
+- `both-tables.toml`: both commands must say `[interactive]` is ignored. The
+  effective cap is one, timeout is the default 7200 seconds, and there is no
+  additional egress hostname; legacy fields must not be merged. Verify the cap
+  and denied extra egress with the same runtime controls described above.
+- Put `max_sessions = 2` under Project `booley.toml [sandbox]` while retaining
+  its valid image/memory settings. Init must reject it before Project mutation;
+  Doctor must name the host config destination. Restore the Project fixture and
+  repeat successfully. Save the unchanged Project bytes and inventory evidence.
+
+Parser and adapter tests validate these authored fixtures, but do not replace
+the real CLI evidence required for this Mission.

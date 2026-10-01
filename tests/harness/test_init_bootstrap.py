@@ -292,14 +292,15 @@ def test_check_only_continues_project_planning_and_returns_pending(
     assert not (tmp_path / ".booley_project").exists()
 
 
+@pytest.mark.parametrize("table", ["interactive", "sandbox"])
 def test_retired_project_policy_fails_before_project_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], table: str
 ) -> None:
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
     config = project_dir / "booley.toml"
     config.write_text(
-        "[interactive]\nidle_timeout_seconds = 600\nmax_sessions = 2\n",
+        f"[{table}]\nidle_timeout_seconds = 600\nmax_sessions = 2\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(

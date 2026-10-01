@@ -210,6 +210,11 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "booley.toml [sandbox].mode is retired; the Sandbox is always Docker",
             "delete [sandbox].mode",
         )
+    from booley.config.host_config import retired_project_policy_message
+
+    migration = retired_project_policy_message({"sandbox": sandbox})
+    if migration:
+        return failure(migration, migration)
     return ConfigTableAudit()
 
 
@@ -226,7 +231,7 @@ def audit_interactive_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         )
     from booley.config.host_config import retired_project_policy_message
 
-    migration = retired_project_policy_message(data)
+    migration = retired_project_policy_message({"interactive": interactive})
     if migration:
         return failure(migration, migration)
     if "app" not in interactive:
