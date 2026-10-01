@@ -372,14 +372,21 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert steps.index(restore) > group_index
 
 
-def test_warm_riscv_measurement_enables_cache_capable_image_store() -> None:
+def test_controlled_riscv_measurements_share_cache_capable_image_store() -> None:
     workflow = _test_workflow()
     steps = workflow["jobs"]["bwave-smoke"]["steps"]
     docker_setup = next(
         step for step in steps if step.get("name") == "Enable cache-capable Docker image store"
     )
 
-    assert "inputs.riscv_measurement == 'warm'" in docker_setup["if"]
+    assert " ".join(docker_setup["if"].split()) == (
+        "needs.changes.outputs.riscv_image == 'true' && "
+        "github.event_name == 'workflow_dispatch' && "
+        'contains(fromJSON(\'["baseline", "warm", "cold"]\'), inputs.riscv_measurement)'
+    )
+    assert steps.index(docker_setup) < next(
+        index for index, step in enumerate(steps) if step.get("id") == "base-contract"
+    )
     assert docker_setup["uses"].startswith("docker/setup-docker-action@")
     assert docker_setup["with"]["version"] == "v28.0.4"
     assert docker_setup["with"]["set-host"] is True

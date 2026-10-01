@@ -26,7 +26,8 @@ on:
       riscv_measurement:
         description: >-
           RISC-V timing arm (automatic = path-gated; baseline, warm, and cold
-          always build the RISC-V image; cold disables BuildKit cache)
+          use the same containerd image store and always build the RISC-V image;
+          cold disables BuildKit cache)
         type: choice
         default: automatic
         options:
@@ -764,13 +765,16 @@ jobs:
           path: dist/
 
       # The hosted runner's classic image store cannot export a local BuildKit
-      # cache. Warm measurements use Docker's supported containerd image store
-      # so the daemon-backed builder retains access to the exact local candidate
-      # while gaining local cache import/export support.
+      # cache or expose a distinct load boundary. All controlled measurement
+      # arms use the same pinned Docker and containerd image store so warm/cold
+      # differences measure cache behavior rather than a different daemon.
+      # Automatic CI retains its hosted-runner setup. The default builder still
+      # consumes the exact local candidate and supports local cache import/export.
       - name: Enable cache-capable Docker image store
         if: >-
           needs.changes.outputs.riscv_image == 'true' &&
-          inputs.riscv_measurement == 'warm'
+          github.event_name == 'workflow_dispatch' &&
+          contains(fromJSON('["baseline", "warm", "cold"]'), inputs.riscv_measurement)
         uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
         with:
           version: v28.0.4 # Match the measured hosted-runner baseline.

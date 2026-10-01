@@ -101,18 +101,32 @@ Use the `Tests` workflow's `riscv_measurement` dispatch input for controlled
 samples. Main and manual runs otherwise skip the RISC-V lane unless the last
 commit changed its inputs, so every arm except `automatic` forces the lane on
 dispatch (for example `gh workflow run test.yml --ref main -f
-riscv_measurement=cold`). `baseline` keeps the default build path. `warm`
-enables Docker's containerd image store, then restores a tooling-input- and
-stable-base-scoped local BuildKit cache through GitHub's branch-aware cache
-service. The daemon-backed builder therefore retains access to the exact local
-candidate parent while supporting local cache import/export. Pull-request
-caches cannot replace the trusted default-branch entry. A cache miss seeds a
-later rerun and is marked non-representative. Only a restored cache for which
-BuildKit reports an actual tooling cache hit is a warm sample. `cold` adds
-`--no-cache` to both
-candidate builds. `automatic` retains the baseline
-`--builder default --load` path and path gating; the input cannot be set on
-pull requests. Before considering a reusable tooling carrier, collect at least
+riscv_measurement=cold`). All controlled arms (`baseline`, `warm`, and `cold`)
+use pinned Docker v28.0.4 with the containerd image store and the daemon-backed
+`--builder default --load` path. This gives every arm the same image-store/load
+boundary and retains access to the exact local candidate parent.
+
+`baseline` adds no explicit RISC-V cache import/export. `warm` restores a
+tooling-input- and stable-base-scoped local BuildKit cache through GitHub's
+branch-aware cache service. Pull-request caches cannot replace the trusted
+default-branch entry. A cache miss seeds a later rerun and is marked
+non-representative. Only a restored cache for which BuildKit reports an actual
+tooling cache hit is a warm sample. `cold` adds `--no-cache` to both candidate
+builds and does not restore or export the RISC-V cache. `automatic` retains the
+hosted-runner Docker setup, `--builder default --load` path, and path gating;
+the measurement input cannot be set on pull requests.
+
+Compare controlled arms at the same candidate SHA, stable-base path, Docker
+version, storage driver, and runner architecture; retain the image-size report's
+Docker/storage environment evidence with each sample. Alternate cold and warm
+runs to limit runner/time drift, excluding warm seed runs and any sample with
+incomplete phase evidence. Use at least two controlled cold runs and three
+restored warm runs for the five-run decision sample. The controlled `baseline`
+is an uncached-import reference on containerd, not the classic-store production
+baseline. Analyze `automatic` runs separately; do not attribute an image-store
+switch to tooling-cache savings.
+
+Before considering a reusable tooling carrier, collect at least
 five complete representative runs, including two cold runs. Compare runs with
 the same stable base path and report the median and range for every phase and
 parallel lane, workflow queue time, critical-path elapsed time, runner minutes,
