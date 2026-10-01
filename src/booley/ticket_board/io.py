@@ -305,11 +305,6 @@ class TicketIO:
         if pending_amendment(self._project_root, slug) is not None:
             raise TicketBaselineError("amendment publication is pending; execution is not ready")
 
-        if load_basis_refresh(self._project_root, slug) is not None:
-            raise TicketBaselineError(
-                "Basis Refresh publication is pending; execution is not ready"
-            )
-
         board_path, status = find_ticket_file(
             self.tickets_dir, slug, project_root=self._project_root
         )
@@ -320,6 +315,11 @@ class TicketIO:
         except ValueError as exc:
             raise TicketBaselineError(str(exc)) from exc
         basis = load_ticket_baseline_from_document(self._project_root, slug, board_document)
+        if load_basis_refresh(self._project_root, slug) is not None:
+            raise TicketBaselineError(
+                "Basis Refresh publication is pending; execution is not ready"
+            )
+
         if runtime_ticket_path is None:
             return basis
         snapshot_path = Path(runtime_ticket_path)

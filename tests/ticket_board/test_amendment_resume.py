@@ -13,6 +13,24 @@ from .test_amendment_publication import _optional_request
 from .test_ticket_baseline import _blocked_ticket
 
 
+@pytest.fixture(autouse=True)
+def _restore_execution_environment(monkeypatch: pytest.MonkeyPatch):
+    """Restore environment values even when production creates previously absent keys."""
+    import os
+
+    from booley.runtime.project_dir import reset_cache
+
+    for key in ("BOOLEY_LOGS_DIR", "BOOLEY_RUNTIME_DIR"):
+        value = os.environ.get(key)
+        # setenv records absence; delenv on an absent key records no undo action.
+        monkeypatch.setenv(key, value or "")
+        if value is None:
+            monkeypatch.delenv(key)
+    reset_cache()
+    yield
+    reset_cache()
+
+
 def test_amendment_refreshes_existing_mounted_ticket(tmp_path: Path, monkeypatch) -> None:
     from booley.evidence.review_receipt import ReviewInvocation, build_review_contract_detail
 
