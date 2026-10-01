@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from booley.evidence.review_vocabulary import (
+    PERSISTED_REVIEWER_DISPOSITIONS,
+    REVIEW_DISPOSITIONS,
+    REVIEWER_TO_PACKAGE,
+)
+
 
 def _entry_detail(entry: Any) -> Mapping[str, Any]:
     if isinstance(entry, Mapping):
@@ -19,6 +25,20 @@ def _finding_row(
     finding: Mapping[str, Any],
     disposition: str,
 ) -> dict[str, Any]:
+    status = finding.get("status", "")
+    original = finding.get("disposition", "")
+    if (
+        "disposition" not in finding
+        and isinstance(status, str)
+        and status in PERSISTED_REVIEWER_DISPOSITIONS
+    ):
+        original = status
+    elif (
+        isinstance(original, str)
+        and original in REVIEW_DISPOSITIONS
+        and (not status or (isinstance(status, str) and status in REVIEW_DISPOSITIONS))
+    ):
+        original = ""
     return {
         "criterion": criterion,
         "finding_id": str(finding.get("finding_id", "")),
@@ -26,7 +46,9 @@ def _finding_row(
         "file": str(finding.get("file", "")),
         "line": finding.get("line", 0),
         "summary": str(finding.get("summary", "")),
-        "disposition": disposition,
+        "disposition": REVIEWER_TO_PACKAGE.get(disposition, disposition),
+        "reviewer_disposition": original,
+        "status": status,
         "kind": str(finding.get("kind", "")),
         "ticket_clause": str(finding.get("ticket_clause", "")),
         "evidence": str(finding.get("evidence", "")),
