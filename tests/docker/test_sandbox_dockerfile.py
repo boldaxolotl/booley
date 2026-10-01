@@ -84,7 +84,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     )
     assert "COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/" in base
     assert "COPY --from=openroad-artifacts /opt/or-tools/include/" not in base
-    assert "ARG VERIBLE_VERSION=v0.0-4163-g6cce8f19" in base
+    assert "ARG VERIBLE_VERSION=v0.0-4296-g0f262651" in base
     assert "verible-verilog-lint --version" in base
     assert "COPY dist/booley_rtl-*.whl" not in base
     assert "COPY crates/bwave/" not in base
@@ -99,7 +99,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.263"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.285"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -302,15 +302,15 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
     assert (
         'readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:'
-        '9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f"' in evidence_script
+        '82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56"' in evidence_script
     )
     assert (
         'readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:'
-        'c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"' in evidence_script
+        '9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"' in evidence_script
     )
     assert (
-        'readonly DOCKER_CLI="docker:29.8.0-cli@sha256:'
-        'eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66"' in evidence_script
+        'readonly DOCKER_CLI="docker:29.8.2-cli@sha256:'
+        'b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"' in evidence_script
     )
     assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
     assert archive_script.count(":py313") >= 3
@@ -349,8 +349,8 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
     assert (
-        "FROM docker:29.8.0-cli@sha256:"
-        "eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66"
+        "FROM docker:29.8.2-cli@sha256:"
+        "b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"
     ) in reaper
     assert "apk add" not in reaper
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
@@ -363,11 +363,11 @@ def test_sidecars_pin_python_3_14_7_without_changing_distributions() -> None:
 
     assert (
         "FROM python:3.14.7-slim-bookworm@sha256:"
-        "9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f" in egress
+        "82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56" in egress
     )
     alpine = (
         "FROM python:3.14.7-alpine3.24@sha256:"
-        "c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"
+        "9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"
     )
     assert alpine in flexnet
     assert alpine in reaper
@@ -397,8 +397,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.263"' in lock
-    assert '"@openai/codex": "0.153.4"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.285"' in lock
+    assert '"@openai/codex": "0.159.3"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -407,9 +407,9 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
 
-    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.263"
+    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.285"
     assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.153.4-linux-x64"
+        "npm:@openai/codex@0.159.3-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
@@ -451,7 +451,7 @@ def test_agent_runtime_uses_verified_node_and_executable_policy_probe() -> None:
     probe = Path("tests/docker/agent_policy_probe.py").read_text(encoding="utf-8")
 
     assert (
-        "ARG NODE_SHA256=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2"
+        "ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
         in dockerfile
     )
     assert "--expected-npm 11.19.0" in workflow
@@ -495,7 +495,7 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
 def test_release_build_dependency_is_pinned() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
-    assert "pip install build==1.6.0" in workflow
+    assert "pip install build==1.6.1" in workflow
 
 
 def test_local_build_script_resolves_compatible_stable_base() -> None:

@@ -16,7 +16,7 @@
 # final image's Ubuntu 26.04 (2.43), so the binary's symbol requirements
 # (max GLIBC_2.34) resolve there. A newer builder base could link against
 # symbols the runtime does not have and fail at exec time, not at build time.
-FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS bwave-builder
+FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS bwave-builder
 COPY crates/bwave/ /build/bwave/
 RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
         --manifest-path /build/bwave/Cargo.toml
@@ -92,7 +92,7 @@ RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \
 # discovery, its duplicate bundle remains absent, and the native system CLI
 # plus invariant integrations remain available alongside the application.
 RUN test -x "$(command -v claude)" \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.263" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.285" \
     && python -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)'
 
 
