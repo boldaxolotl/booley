@@ -36,7 +36,15 @@ def _finding_row(
     elif (
         isinstance(original, str)
         and original in REVIEW_DISPOSITIONS
-        and (not status or (isinstance(status, str) and status in REVIEW_DISPOSITIONS))
+        and (
+            not status
+            or (
+                isinstance(status, str)
+                and status
+                in REVIEW_DISPOSITIONS
+                | {"still_present", "project_policy", "out_of_diff_scope", "impasse_deferred"}
+            )
+        )
     ):
         original = ""
     return {

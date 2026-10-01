@@ -306,3 +306,37 @@ def test_legacy_package_only_rows_remain_valid(disposition):
     )[0]
     assert row["reviewer_disposition"] == ""
     assert ReviewDispositionRow.parse(row).disposition == disposition
+
+
+@pytest.mark.parametrize(
+    "status, disposition, expected",
+    [
+        ("still_present", "open", "open"),
+        ("project_policy", "excluded", "excluded"),
+        ("out_of_diff_scope", "excluded", "excluded"),
+        ("impasse_deferred", "waived", "waived"),
+    ],
+)
+def test_legacy_package_disposition_with_clean_lifecycle_remains_valid(
+    status, disposition, expected
+):
+    collection = "pending" if status == "still_present" else "resolved"
+    row = collect_review_dispositions(
+        {
+            "review_rtl_bugs_clean": {
+                "detail": {
+                    collection: [
+                        {
+                            "severity": "MINOR",
+                            "summary": "legacy finding",
+                            "status": status,
+                            "disposition": disposition,
+                            "justification": "accepted",
+                        }
+                    ]
+                }
+            }
+        }
+    )[0]
+    assert row["reviewer_disposition"] == ""
+    assert ReviewDispositionRow.parse(row).disposition == expected
