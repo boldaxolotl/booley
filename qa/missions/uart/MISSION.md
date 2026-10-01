@@ -213,6 +213,9 @@ Try:
   endpoint denied).
 - Each `invalid-{scheme,path,port,ip,wildcard,key}.toml` is rejected before bootstrap changes
   anything, with file bytes unchanged. Then `fixtures/host-policy/recovery.toml` succeeds.
+- Run `legacy.toml` and `both-tables.toml` through real init and Doctor commands
+  as specified in the fixture README; verify migration output, unchanged host
+  bytes, canonical-only precedence, and rejection of host keys in Project `[sandbox]`.
 - Observed provider, relay and egress routes match the declared policy.
 Look for: typos accepted silently, a partial bootstrap after a rejection.
 

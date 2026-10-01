@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.host_config import (
+    HOST_POLICY_MIGRATION_GUIDANCE,
     HostConfigError,
-    InteractiveHostPolicy,
+    SandboxHostPolicy,
     host_config_path,
     load_host_policy,
 )
@@ -153,9 +154,9 @@ def vscode_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[Sandbox, .
     return _project_vscode_sandboxes(root, _vscode_inventory({root}, run))
 
 
-def _policy() -> InteractiveHostPolicy:
+def _policy() -> SandboxHostPolicy:
     try:
-        return load_host_policy()
+        return load_host_policy(on_deprecation=logger.warning)
     except HostConfigError as exc:
         raise AdmissionError(str(exc)) from exc
 
@@ -434,7 +435,7 @@ def _report_recovery_capacity(run: Run) -> None:
         return
     if len(live) >= policy.max_sessions:
         logger.warning(
-            "Sandbox recovery is restoring work at or above interactive.max_sessions=%d; "
+            "Sandbox recovery is restoring work at or above sandbox.max_sessions=%d; "
             "ordinary starts remain blocked until capacity is freed",
             policy.max_sessions,
         )
@@ -450,12 +451,12 @@ def _age(started_at: datetime, now: datetime) -> str:
 
 
 def _refusal(
-    policy: InteractiveHostPolicy,
+    policy: SandboxHostPolicy,
     live: tuple[Sandbox, ...],
     claims: tuple[PendingStartClaim, ...],
     now: datetime,
 ) -> str:
-    lines = [f"Sandbox start refused: host is at interactive.max_sessions={policy.max_sessions}."]
+    lines = [f"Sandbox start refused: host is at sandbox.max_sessions={policy.max_sessions}."]
     for item in sorted(live, key=lambda value: (value.project_root, value.name)):
         started = item.started_at or item.created_at
         lines.append(f"- {item.name}: Project {item.project_root} (age {_age(started, now)})")
@@ -466,7 +467,8 @@ def _refusal(
         argv = ["booley", "session", "down", "--project-root", root]
         command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         lines.append(f"Free capacity with `{command}`.")
-    lines.append(f"Or raise [interactive].max_sessions in {host_config_path()}.")
+    lines.append(f"Or raise [sandbox].max_sessions in {host_config_path()}.")
+    lines.append(HOST_POLICY_MIGRATION_GUIDANCE)
     return "\n".join(lines)
 
 

@@ -217,7 +217,7 @@ def test_retired_project_interactive_policy_names_host_replacement() -> None:
     finding = audit.findings[0]
     assert "~/.config" not in finding.message  # the diagnostic uses the actionable absolute path
     assert str(host_config_path()) in finding.message
-    assert "[interactive]\nidle_timeout_seconds = 600\nmax_sessions = 2" in finding.message
+    assert "[sandbox]\nidle_timeout_seconds = 600\nmax_sessions = 2" in finding.message
 
 
 def test_agent_audit_uses_authoritative_provider_and_auth_parsers() -> None:
@@ -407,3 +407,25 @@ def test_legacy_notifications_are_ignored_with_nonblocking_warning(legacy):
     assert finding.severity is config_common.ConfigFindingSeverity.WARN
     assert finding.subject == "notifications"
     assert "ignored" in finding.message and "delete this table" in finding.message
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [("max_sessions", 2), ("idle_timeout_seconds", 600), ("egress_allowlist", ["foo.test"])],
+)
+def test_project_sandbox_rejects_host_policy_with_migration(key: str, value: object) -> None:
+    audit = project_schema.audit_sandbox_table({"sandbox": {"memory": "8g", key: value}})
+    assert not audit.is_valid
+    message = audit.findings[0].message
+    assert str(host_config_path()) in message
+    assert "booley.toml [sandbox]" in message
+    assert "[sandbox]\n" in message
+    assert key in message
+    assert "memory" not in message
+    assert "preserving all existing settings" in message
+
+
+def test_project_sandbox_accepts_project_fields() -> None:
+    assert project_schema.audit_sandbox_table(
+        {"sandbox": {"memory": "8g", "image": "project-image", "pip_requirements": ["req.txt"]}}
+    ).is_valid

@@ -11,6 +11,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Interface changes
 
+- Host `config.toml` uses `[sandbox]` and `SandboxHostPolicy` for the policy
+  shared by Ticket Mode and Interactive Mode. Legacy `[interactive]` host files
+  still load with a migration warning; when both tables exist, `[sandbox]`
+  supplies the entire policy without merging. Rename the legacy table while
+  preserving all settings. Host-only keys in Project `booley.toml [sandbox]`
+  are rejected with migration guidance.
+  ([#976](https://github.com/boldaxolotl/Booley/issues/976))
+
 - `sim --coverage` now applies approved coverage waivers without a Coverage
   Criterion too: waived points are reported `waived`, counted in `waived_points`,
   and left out of the eligible points and percentages; evaluation stays

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,15 +17,20 @@ from booley.core.user_paths import config_dir
 DEFAULT_IDLE_TIMEOUT_SECONDS = 7200
 DEFAULT_MAX_SESSIONS = 4
 HOST_CONFIG_FILENAME = "config.toml"
+HOST_POLICY_MIGRATION_GUIDANCE = (
+    "If the host config uses legacy [interactive], rename it to [sandbox] first, "
+    "preserving all existing settings. Update the existing [sandbox] table "
+    "instead of adding a second policy table."
+)
 
-_TOP_LEVEL_KEYS = frozenset({"interactive"})
-_INTERACTIVE_KEYS = frozenset({"idle_timeout_seconds", "max_sessions", "egress_allowlist"})
+_TOP_LEVEL_KEYS = frozenset({"sandbox", "interactive"})
+_SANDBOX_KEYS = frozenset({"idle_timeout_seconds", "max_sessions", "egress_allowlist"})
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
-class InteractiveHostPolicy:
-    """Global Interactive Mode policy applied to the local Docker daemon."""
+class SandboxHostPolicy:
+    """Global Sandbox Policy applied to the local Docker daemon."""
 
     idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS
     max_sessions: int = DEFAULT_MAX_SESSIONS
@@ -47,11 +53,13 @@ def host_config_path() -> Path:
     return config_dir() / HOST_CONFIG_FILENAME
 
 
-def load_host_policy(path: Path | None = None) -> InteractiveHostPolicy:
+def load_host_policy(
+    path: Path | None = None, *, on_deprecation: Callable[[str], None] | None = None
+) -> SandboxHostPolicy:
     """Load the optional host policy without creating or rewriting its file."""
     resolved = path or host_config_path()
     if not resolved.exists():
-        return InteractiveHostPolicy()
+        return SandboxHostPolicy()
     try:
         with resolved.open("rb") as stream:
             document = tomllib.load(stream)
@@ -59,30 +67,48 @@ def load_host_policy(path: Path | None = None) -> InteractiveHostPolicy:
         raise HostConfigError(resolved, "", f"malformed TOML: {exc}") from exc
     except OSError as exc:
         raise HostConfigError(resolved, "", f"cannot read file: {exc}") from exc
-    return _parse_document(document, resolved)
+    policy = _parse_document(document, resolved)
+    if on_deprecation is not None and "interactive" in document:
+        on_deprecation(_legacy_host_policy_message(document, resolved))
+    return policy
 
 
-def _parse_document(document: object, path: Path) -> InteractiveHostPolicy:
+def _parse_document(document: object, path: Path) -> SandboxHostPolicy:
     root = _table(document, path, "root")
     _reject_unknown(root, _TOP_LEVEL_KEYS, path, "root")
-    raw_interactive = root.get("interactive", {})
-    interactive = _table(raw_interactive, path, "interactive")
-    _reject_unknown(interactive, _INTERACTIVE_KEYS, path, "interactive")
-    return InteractiveHostPolicy(
+    table = "sandbox" if "sandbox" in root else "interactive"
+    section = _table(root.get(table, {}), path, table)
+    _reject_unknown(section, _SANDBOX_KEYS, path, table)
+    return SandboxHostPolicy(
         idle_timeout_seconds=_positive_int(
-            interactive,
+            section,
             "idle_timeout_seconds",
             DEFAULT_IDLE_TIMEOUT_SECONDS,
             path,
+            table,
         ),
         max_sessions=_positive_int(
-            interactive,
+            section,
             "max_sessions",
             DEFAULT_MAX_SESSIONS,
             path,
+            table,
         ),
-        egress_allowlist=_egress_allowlist(interactive, path),
+        egress_allowlist=_egress_allowlist(section, path, table),
     )
+
+
+def _legacy_host_policy_message(document: Mapping[str, Any], path: Path) -> str:
+    if "sandbox" in document:
+        return (
+            f"{path}: [interactive] is deprecated and ignored because [sandbox] is present. "
+            "Remove [interactive]; [sandbox] supplies the entire Sandbox Policy (no merge)."
+        )
+    section = document["interactive"]
+    lines = [f"{path}: [interactive] is deprecated; replace it with:", "[sandbox]"]
+    lines.extend(f"{key} = {_toml_value(section[key])}" for key in sorted(section))
+    lines.append("Booley will not rewrite the host config automatically.")
+    return "\n".join(lines)
 
 
 def _table(value: object, path: Path, field: str) -> dict[str, Any]:
@@ -101,29 +127,31 @@ def _reject_unknown(
         raise HostConfigError(path, field, f"unknown key(s): {joined}")
 
 
-def _positive_int(section: Mapping[str, Any], key: str, default: int, path: Path) -> int:
+def _positive_int(
+    section: Mapping[str, Any], key: str, default: int, path: Path, table: str
+) -> int:
     if key not in section:
         return default
     try:
-        value = require_int(section[key], field=f"interactive.{key}")
+        value = require_int(section[key], field=f"{table}.{key}")
     except BoundaryError as exc:
-        raise HostConfigError(path, f"interactive.{key}", "must be an integer") from exc
+        raise HostConfigError(path, f"{table}.{key}", "must be an integer") from exc
     if value <= 0:
-        raise HostConfigError(path, f"interactive.{key}", "must be positive")
+        raise HostConfigError(path, f"{table}.{key}", "must be positive")
     return value
 
 
-def _egress_allowlist(section: Mapping[str, Any], path: Path) -> tuple[str, ...]:
+def _egress_allowlist(section: Mapping[str, Any], path: Path, table: str) -> tuple[str, ...]:
     raw = section.get("egress_allowlist", [])
     try:
-        values = require_list(raw, field="interactive.egress_allowlist")
+        values = require_list(raw, field=f"{table}.egress_allowlist")
     except BoundaryError as exc:
         raise HostConfigError(
-            path, "interactive.egress_allowlist", "must be an array of hostnames"
+            path, f"{table}.egress_allowlist", "must be an array of hostnames"
         ) from exc
     domains: list[str] = []
     for index, value in enumerate(values):
-        field = f"interactive.egress_allowlist[{index}]"
+        field = f"{table}.egress_allowlist[{index}]"
         hostname = as_str(value)
         if hostname is None:
             raise HostConfigError(path, field, "must be a hostname string")
@@ -153,32 +181,40 @@ def _hostname(value: str, path: Path, field: str) -> str:
 def retired_project_policy_message(
     document: Mapping[str, Any], *, destination: Path | None = None
 ) -> str | None:
-    """Return the exact migration instruction for retired Project policy fields."""
-    raw = document.get("interactive")
-    if not isinstance(raw, Mapping):
-        return None
-    retired = [key for key in _INTERACTIVE_KEYS if key in raw]
-    if not retired:
-        return None
+    """Return migration instructions for host policy misplaced in Project config."""
     target = destination or host_config_path()
-    lines = [
-        f"booley.toml [interactive] host policy is retired; move these fields to {target}:",
-        "[interactive]",
-    ]
-    for key in sorted(retired):
-        lines.append(f"{key} = {_toml_value(raw[key])}")
-    lines.append(
-        "Remove the moved fields from the Project booley.toml; Booley will not migrate them automatically."
-    )
-    return "\n".join(lines)
+    messages: list[str] = []
+    for table in ("interactive", "sandbox"):
+        raw = document.get(table)
+        if not isinstance(raw, Mapping):
+            continue
+        misplaced = sorted(_SANDBOX_KEYS.intersection(raw))
+        if not misplaced:
+            continue
+        reason = (
+            "host policy is retired" if table == "interactive" else "contains host-only policy"
+        )
+        lines = [
+            f"booley.toml [{table}] {reason}; move these fields to {target}:",
+            "[sandbox]",
+        ]
+        lines.extend(f"{key} = {_toml_value(raw[key])}" for key in misplaced)
+        lines.extend(
+            (
+                HOST_POLICY_MIGRATION_GUIDANCE,
+                "Remove the moved fields from the Project booley.toml; "
+                "Booley will not migrate them automatically.",
+            )
+        )
+        messages.append("\n".join(lines))
+    return "\n\n".join(messages) or None
 
 
 def _toml_value(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     return str(value)
