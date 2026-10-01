@@ -60,18 +60,18 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "cryptography==50.0.1",
+    "cryptography==50.0.2",
     "hypothesis>=6.0",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-xdist==3.8.0",
     "pytest-timeout==2.4.0",
     "pytest-cov==7.1.0",
-    "diff-cover==10.5.1",
+    "diff-cover==10.6.0",
 ]
 quality = [
     "pyright==1.1.414",
-    "ruff==0.16.8",
+    "ruff==0.16.9",
 ]
 mutation = [
     "mutmut==3.8.0",
@@ -79,7 +79,7 @@ mutation = [
 dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
     # guard and the trusted CI scanner.
-    "cryptography==50.0.1",
+    "cryptography==50.0.2",
     "hypothesis>=6.0",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
@@ -96,14 +96,14 @@ dev = [
     "pytest-cov==7.1.0",
     # CI quality gates. Exact pins keep local and hosted results reproducible;
     # the quality extra repeats these pins for a smaller hosted install.
-    "diff-cover==10.5.1",
+    "diff-cover==10.6.0",
     "pyright==1.1.414",
     "mutmut==3.8.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
     # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
-    "ruff==0.16.8",
+    "ruff==0.16.9",
 ]
 
 [project.scripts]

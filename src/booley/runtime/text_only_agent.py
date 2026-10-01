@@ -1,6 +1,6 @@
 """Fail-closed Codex composition with no built-in execution capabilities.
 
-Codex 0.153.4 registers apply_patch from model metadata independently of shell
+Codex 0.159.3 registers apply_patch from model metadata independently of shell
 feature flags. A private exact-model catalog removes that metadata; explicit
 startup overrides remove the remaining tool registration gates. No user/project
 MCP configuration or skills are inherited into the empty analysis workspace.
