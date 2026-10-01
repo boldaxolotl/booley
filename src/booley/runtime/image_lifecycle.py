@@ -584,7 +584,15 @@ def _project_node(
     )
 
 
-def _nodes(project_root: Path, selected: str, docker: DockerPort) -> tuple[ImageNode, ...]:
+def _nodes(
+    project_root: Path,
+    selected: str,
+    docker: DockerPort,
+    *,
+    release_only: bool = False,
+) -> tuple[ImageNode, ...]:
+    if release_only and (selected == BASE_IMAGE or selected in FLAVOR_RECIPES):
+        return (_published_release_node(selected, _expected_image_build_contracts()),)
     payload = PayloadProvenance(
         PROVENANCE_SCHEMA,
         _expected_version(),
@@ -818,11 +826,17 @@ def _source_graph_project(project_root: Path, selected: str, substrate: ImageNod
     )
 
 
-def _complete_release_node(selected: str, contracts: ImageBuildContracts) -> ImageNode:
+def _published_release_node(selected: str, contracts: ImageBuildContracts) -> ImageNode:
+    """Model a shipped Sandbox Image exactly as the release workflow publishes it.
+
+    Published images are complete wheel overlays on a registry substrate. They
+    carry no payload or logical-selection label, so verification matches the
+    planned path's verified-pull provenance (``_prepared_provenance``).
+    """
     wheel_source = _expected_wheel_source_fingerprint()
     if wheel_source is None:
         raise ImageLifecycleError("installed release has no wheel-source fingerprint")
-    node = _graph_node(
+    return _graph_node(
         reference=selected,
         role=ImageRole.WHEEL_OVERLAY,
         recipe=docker_data_dir() / "Dockerfile.wheel",
@@ -832,8 +846,17 @@ def _complete_release_node(selected: str, contracts: ImageBuildContracts) -> Ima
         policy=ArtifactPolicy.VERIFIED_RELEASE_ONLY,
         image_build_contracts=contracts,
     )
+
+
+def _complete_release_node(selected: str, contracts: ImageBuildContracts) -> ImageNode:
+    node = _published_release_node(selected, contracts)
     fingerprint = _release_selection_fingerprint(selected, contracts)
     return replace(node, logical_selection_fingerprint=fingerprint)
+
+
+def _release_only(shipped_sources: tuple[ArtifactSource, ...]) -> bool:
+    """Official releases may only adopt verified published images."""
+    return ArtifactSource.LOCAL_BUILD not in shipped_sources
 
 
 def _release_selection_fingerprint(
@@ -1415,7 +1438,12 @@ def _schema_two_parent_current(
     if node.reference == BASE_IMAGE:
         return _base_parent_current(origin or "", recorded_parent, docker)
     if node.parent is None:
-        return False
+        # A complete published image's parent is its registry substrate digest.
+        return (
+            node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY
+            and origin == "registry"
+            and normalize_registry_digest(recorded_parent) is not None
+        )
     if kind == PARENT_ARTIFACT_LOCAL_IMAGE_ID:
         return (
             is_local_image_id(recorded_parent) and docker.image_id(node.parent) == recorded_parent
@@ -1682,7 +1710,7 @@ def _check_result(
             ),
             *legacy_diagnostics,
         ),
-        payload_fingerprint=nodes[-1].payload.fingerprint,
+        payload_fingerprint=nodes[-1].payload.fingerprint or nodes[-1].wheel_source_fingerprint,
     )
 
 
@@ -1790,7 +1818,11 @@ def _reconcile_host(
         _expected_version(),
         _expected_payload_fingerprint(),
     )
-    nodes = _with_parent_artifacts((_base_node(payload),), docker)
+    nodes = (
+        (_published_release_node(BASE_IMAGE, _expected_image_build_contracts()),)
+        if _release_only(shipped_sources)
+        else _with_parent_artifacts((_base_node(payload),), docker)
+    )
     stale, legacy_diagnostics = _inspect_nodes(nodes, docker, shipped_sources)
     if intent is Intent.CHECK:
         result = _check_result(
@@ -1848,7 +1880,7 @@ def _reconcile_project(
             Status.CURRENT,
             payload_fingerprint=scope.base.payload_fingerprint,
         )
-    nodes = _nodes(root, selected, docker)
+    nodes = _nodes(root, selected, docker, release_only=_release_only(shipped_sources))
     if scope.base is not None:
         _verify_host_base(scope.base, docker)
     return _reconcile_project_nodes(
@@ -1950,7 +1982,9 @@ def _verified_result(
         Status.CHANGED if changed else Status.CURRENT,
         changed_images=changed,
         diagnostics=() if changed else legacy_diagnostics,
-        payload_fingerprint=selected_node.payload.fingerprint,
+        payload_fingerprint=(
+            selected_node.payload.fingerprint or selected_node.wheel_source_fingerprint
+        ),
         requires_spec_reseed=bool(changed),
         requires_runtime_recreation=bool(changed),
     )
