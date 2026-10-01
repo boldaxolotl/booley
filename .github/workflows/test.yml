@@ -998,6 +998,20 @@ jobs:
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
+      # The measurement cache follows the actual standard candidate ancestry.
+      # A recipe-only key can permanently restore stale tooling after a parent
+      # change because Actions caches are immutable on exact hits.
+      - name: Identify warm RISC-V parent image
+        if: >-
+          needs.changes.outputs.riscv_image == 'true' &&
+          inputs.riscv_measurement == 'warm'
+        id: riscv-cache-parent
+        shell: bash
+        run: |
+          parent_id="$(docker image inspect --format '{{.Id}}' booley-standard-substrate:ci)"
+          test -n "${parent_id}"
+          echo "image_id=${parent_id}" >> "${GITHUB_OUTPUT}"
+
       # Default-branch caches are readable from feature branches, while caches
       # saved by a pull request remain scoped to that branch and cannot replace
       # the trusted default-branch entry. A miss seeds a later warm rerun but is
@@ -1010,7 +1024,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/riscv-buildkit-cache
-          key: riscv-tooling-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}
+          key: riscv-tooling-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}-${{ steps.riscv-cache-parent.outputs.image_id }}
 
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.

@@ -387,10 +387,33 @@ def test_controlled_riscv_measurements_share_cache_capable_image_store() -> None
     assert steps.index(docker_setup) < next(
         index for index, step in enumerate(steps) if step.get("id") == "base-contract"
     )
+    assert steps.index(docker_setup) < next(
+        index
+        for index, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith("docker/setup-buildx-action@")
+    )
     assert docker_setup["uses"].startswith("docker/setup-docker-action@")
     assert docker_setup["with"]["version"] == "v28.0.4"
     assert docker_setup["with"]["set-host"] is True
     assert "containerd-snapshotter" in docker_setup["with"]["daemon-config"]
+
+
+def test_warm_riscv_cache_tracks_exact_candidate_parent() -> None:
+    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
+    parent = next(step for step in steps if step.get("id") == "riscv-cache-parent")
+    cache = next(step for step in steps if step.get("id") == "riscv-warm-cache")
+    assert parent["if"] == cache["if"]
+    assert "docker image inspect --format '{{.Id}}' booley-standard-substrate:ci" in parent["run"]
+    assert 'echo "image_id=${parent_id}" >> "${GITHUB_OUTPUT}"' in parent["run"]
+    assert steps.index(parent) < steps.index(cache)
+    assert steps.index(parent) > next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Build standard wheel overlay"
+    )
+    assert "${{ steps.riscv-cache-parent.outputs.image_id }}" in cache["with"]["key"]
+    assert cache["with"]["key"].startswith("riscv-tooling-v2-")
+    assert "restore-keys" not in cache["with"]
 
 
 def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None:
