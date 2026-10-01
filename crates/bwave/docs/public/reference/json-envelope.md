@@ -9,7 +9,7 @@ commands; only the `data` field varies.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.15/crates/bwave/schema/bwave.json",
+  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.3.0/crates/bwave/schema/bwave.json",
   "command": "<subcommand>",
   "data":    { ... },
   "warnings": ["..."]
@@ -18,7 +18,7 @@ commands; only the `data` field varies.
 
 | Field | Type | Notes |
 |---|---|---|
-| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the release tag (currently `v0.2.15`). |
+| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the release tag (currently `v0.3.0`). |
 | `command` | string | Subcommand name. Currently one of `list`, `value`, `find`, `stats`. |
 | `data` | object | Per-command payload. See per-command docs for the shape. |
 | `warnings` | array of string | Diagnostics that text mode would emit to stderr as `# WARNING: ...` lines. Empty array on clean runs. |
@@ -167,8 +167,8 @@ A clean run has `"warnings": []`.
 
 ## Schema versioning
 
-The `$schema` URL is pinned to the release tag. v0.2
-emits `.../v0.2.15/crates/bwave/schema/bwave.json`. Future releases
+The `$schema` URL is pinned to the release tag. v0.3
+emits `.../v0.3.0/crates/bwave/schema/bwave.json`. Future releases
 will bump the URL alongside any schema changes; older
 URLs will continue to resolve to their historical
 schema documents.
