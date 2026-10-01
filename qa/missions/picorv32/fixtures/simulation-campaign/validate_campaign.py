@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
+
+# Direct script execution must find repository-owned QA helpers without installation.
+sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
+from qa.shared.campaign_artifacts import validate_manifest_reference
 
 
 def _load(path: Path) -> tuple[dict[str, object], bytes]:
@@ -45,39 +50,6 @@ def _manifest_digest(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
 
 
-def _file_digest(raw: bytes) -> str:
-    """Return the digest typed artifact references use (exact file bytes)."""
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _validate_manifest_reference(
-    reference: object,
-    *,
-    projection_path: Path,
-    manifest_path: Path,
-    manifest_raw: bytes,
-    campaign_id: object,
-) -> None:
-    """Authenticate the projection's typed ``campaign_manifest`` artifact reference."""
-    _need(
-        isinstance(reference, dict), "compatibility manifest backlink is not an artifact reference"
-    )
-    _need(reference.get("path_base") == "origin_target", "manifest backlink base differs")
-    _need(
-        reference.get("kind") == "simulation_campaign_manifest",
-        "manifest backlink kind differs",
-    )
-    _need(reference.get("owner") == campaign_id, "manifest backlink owner differs")
-    # ``origin_target`` is the Target directory that holds simulation.json.
-    target = projection_path.parent / str(reference.get("path", ""))
-    _need(target.resolve() == manifest_path.resolve(), "compatibility manifest backlink differs")
-    _need(reference.get("bytes") == len(manifest_raw), "manifest backlink size differs")
-    _need(
-        reference.get("sha256") == _file_digest(manifest_raw),
-        "manifest backlink digest differs",
-    )
-
-
 def validate_backlinks(
     manifest_path: Path,
     summary_path: Path,
@@ -98,7 +70,7 @@ def validate_backlinks(
         projection.get("campaign_id") == campaign_id,
         "projection identifies a different Simulation Campaign",
     )
-    _validate_manifest_reference(
+    validate_manifest_reference(
         projection.get("campaign_manifest"),
         projection_path=projection_path,
         manifest_path=manifest_path,

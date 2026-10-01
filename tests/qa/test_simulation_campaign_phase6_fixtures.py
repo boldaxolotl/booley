@@ -410,6 +410,22 @@ def test_acceptance_recovery_validator_rejects_hostile_mutations(
         _module().validate_acceptance_recovery(*_acceptance_args(evidence))
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [("kind", "simulation_result", "kind differs"), ("bytes", 0, "size differs")],
+)
+def test_acceptance_recovery_rejects_invalid_manifest_reference(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
+    evidence = _acceptance_evidence(tmp_path)
+    _mutate_json(
+        evidence["simulation"],
+        lambda document: document["campaign_manifest"].update({field: value}),
+    )
+    with pytest.raises(ValueError, match=message):
+        _module().validate_acceptance_recovery(*_acceptance_args(evidence))
+
+
 def _mutate_first_record(
     evidence: dict[str, object], mutation: Callable[[dict[str, object]], None]
 ) -> None:

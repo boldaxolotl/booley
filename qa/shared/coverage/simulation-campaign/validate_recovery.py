@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
+
+# Direct script execution must find repository-owned QA helpers without installation.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from qa.shared.campaign_artifacts import validate_manifest_reference
 
 
 def _need(condition: bool, message: str) -> None:
@@ -339,24 +344,6 @@ def _validate_state_transition(
     _validate_criteria_projection(archived, recovered, envelope)
 
 
-def _validate_projection_manifest(
-    simulation: dict[str, object],
-    simulation_path: Path,
-    manifest_path: Path,
-    campaign_id: object,
-) -> None:
-    """Authenticate the projection's typed ``campaign_manifest`` artifact reference."""
-    reference = simulation.get("campaign_manifest")
-    _need(isinstance(reference, dict), "projection manifest is not an artifact reference")
-    _need(reference.get("path_base") == "origin_target", "projection manifest base differs")
-    _need(reference.get("owner") == campaign_id, "projection manifest owner differs")
-    # ``origin_target`` is the Target directory that holds simulation.json.
-    target = simulation_path.parent / str(reference.get("path", ""))
-    _need(target.resolve() == manifest_path.resolve(), "projection manifest differs")
-    raw = manifest_path.read_bytes()
-    _need(reference.get("sha256") == _digest(raw), "projection manifest digest differs")
-
-
 def validate_acceptance_recovery(
     manifest_path: Path,
     result_paths: list[Path],
@@ -380,7 +367,13 @@ def validate_acceptance_recovery(
     )
     simulation, _ = _load(simulation_path)
     _need(simulation.get("complete") is True, "simulation projection is not complete")
-    _validate_projection_manifest(simulation, simulation_path, manifest_path, campaign_id)
+    validate_manifest_reference(
+        simulation.get("campaign_manifest"),
+        projection_path=simulation_path,
+        manifest_path=manifest_path,
+        manifest_raw=manifest_path.read_bytes(),
+        campaign_id=campaign_id,
+    )
 
 
 def validate_corrupt_terminal(
