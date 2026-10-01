@@ -18,6 +18,7 @@ it never imports back from ``init_cmd``.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 from booley.harness.bootstrap import (
@@ -299,11 +300,22 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
     return detail
 
 
-def _step_line_endings(ctx: InitContext, project_dir: Path | None = None) -> None:
-    """Render the shared line-ending report for Project Initialization."""
+def _step_line_endings(
+    ctx: InitContext,
+    project_dir: Path | None = None,
+    *,
+    clean_baseline: Mapping[Path, bool | None] | None = None,
+) -> None:
+    """Render the shared line-ending report for Project Initialization.
+
+    ``clean_baseline`` is the per-repository cleanliness sampled before init
+    wrote any Project data, so Booley's own earlier edits do not block repair.
+    """
     ctx.step_banner("line endings")
     mode = LineEndingMode.INSPECT if ctx.check_only else LineEndingMode.REPAIR
-    report = reconcile_project_line_endings(ctx.project_root, project_dir, mode=mode)
+    report = reconcile_project_line_endings(
+        ctx.project_root, project_dir, mode=mode, clean_baseline=clean_baseline
+    )
     if report.status is LineEndingStatus.NOT_APPLICABLE:
         skip("project root is not a git repo — line-endings check skipped")
         ctx.record("line_endings", "skip", "not a git repo")
