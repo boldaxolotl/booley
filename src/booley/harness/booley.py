@@ -396,9 +396,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # usage line; subparsers added without `help=` stay out of the listing.
     sub = parser.add_subparsers(
         dest="command",
-        metavar=(
-            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,projects,upgrade,targets,flow,feedback,cleanup}"
-        ),
+        metavar=f"{{{','.join(COMMAND_LOCATIONS)}}}",
     )
 
     run_p = sub.add_parser(
