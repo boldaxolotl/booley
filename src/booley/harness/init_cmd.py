@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,7 +127,15 @@ from booley.harness.setup.git_hooks import (
     _step_worktree_link_policy,
     _step_worktree_prune_guard,
 )
-from booley.harness.setup.guidance_links import ensure_guidance_links, plan_guidance_links
+from booley.harness.setup.guidance_links import (
+    detach_guidance_hardlinks,
+    ensure_guidance_links,
+    plan_guidance_links,
+)
+from booley.harness.setup.line_endings import (
+    pending_normalization_paths,
+    sample_worktree_cleanliness,
+)
 from booley.harness.setup.plan import InitPlan, InitPreconditionError
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
@@ -232,7 +241,8 @@ def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
     added = [
         name
         for name, body in skeletons.items()
-        if guarded_write(project_dir / name, body, dry_run=ctx.check_only) is WriteOutcome.WRITTEN
+        if guarded_write(project_dir / name, body, dry_run=ctx.check_only, newline="\n")
+        is WriteOutcome.WRITTEN
     ]
     if not added:
         return
@@ -259,7 +269,7 @@ def _backfill_project_gitignore(project_dir: Path, ctx: InitContext) -> None:
         if ctx.check_only:
             warn(f"would add {gitignore.name} (covers {', '.join(PROJECT_GITIGNORE_PATTERNS)})")
             return
-        guarded_write(gitignore, PROJECT_GITIGNORE)
+        guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
         ok(f"added {gitignore} (ignores {', '.join(PROJECT_GITIGNORE_PATTERNS)})")
         return
 
@@ -283,7 +293,7 @@ def _backfill_project_gitignore(project_dir: Path, ctx: InitContext) -> None:
         + "\n# Added by booley init — transient Booley state.\n"
         + "".join(f"{p}\n" for p in missing)
     )
-    gitignore.write_text(existing + addition, encoding="utf-8")
+    gitignore.write_text(existing + addition, encoding="utf-8", newline="\n")
     ok(f"added {len(missing)} missing ignore pattern(s) to {gitignore}: {', '.join(missing)}")
 
 
@@ -312,7 +322,7 @@ def _backfill_fusesoc_ignore(project_dir: Path, ctx: InitContext) -> None:
     the fix (or one whose marker a user deleted).
     """
     marker = project_dir / "FUSESOC_IGNORE"
-    outcome = guarded_write(marker, FUSESOC_IGNORE_BODY, dry_run=ctx.check_only)
+    outcome = guarded_write(marker, FUSESOC_IGNORE_BODY, dry_run=ctx.check_only, newline="\n")
     if outcome is not WriteOutcome.WRITTEN:
         return
     if ctx.check_only:
@@ -359,7 +369,7 @@ def _step_project_dir(ctx: InitContext) -> None:
         target.chmod(0o700)
 
     gitignore = target / ".gitignore"
-    guarded_write(gitignore, PROJECT_GITIGNORE)
+    guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
 
     # booley.toml + tests.toml skeletons (idempotent, never overwrites).
     _backfill_config_skeletons(target, ctx)
@@ -671,7 +681,7 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         return False
     content = path.read_text(encoding="utf-8") if path.is_file() else ""
     updated = _insert_agent_fields(content, fields)
-    path.write_text(updated, encoding="utf-8")
+    path.write_text(updated, encoding="utf-8", newline="\n")
     ok(f"recorded [agent] {selection.provider}/{selection.auth} in {path}")
     ctx.record("agent_config", "ok", f"{selection.provider}/{selection.auth}")
     return True
@@ -1975,7 +1985,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
     """
     ctx.step_banner("guidance links")
 
-    project_dir = ctx.project_root / ".booley_project"
+    project_dir = project_dir_for_init(ctx.project_root)
     if not (project_dir / "AGENTS.md").is_file():
         skip("no AGENTS.md yet — run the booley-setup skill (Step 3, guidance)")
         ctx.record("guidance_links", "skip", "no guidance file")
@@ -2074,16 +2084,71 @@ def _line_ending_project_dir(project_root: Path) -> Path | None:
         return None
 
 
+def _release_guidance_for_line_endings(ctx: InitContext, project_dir: Path | None) -> bool:
+    """Detach Booley's own guidance hardlinks when the canonical file needs LF.
+
+    The Windows guidance fallback hardlinks the root ``AGENTS.md``/``CLAUDE.md``
+    to the canonical file, and line-ending repair rightly refuses to rewrite a
+    hardlinked path. Those links are Booley's, so release them first; the
+    guidance step right after line endings recreates them against the
+    normalized file. Other hardlinks still block the repair.
+    """
+    if ctx.check_only or project_dir is None:
+        return False
+    canon = project_dir / "AGENTS.md"
+    try:
+        if not canon.is_file() or canon.stat().st_nlink < 2:
+            return False
+        pending = pending_normalization_paths(ctx.project_root, project_dir)
+        if not any(path.is_file() and path.samefile(canon) for path in pending):
+            return False
+        detached = detach_guidance_hardlinks(ctx.project_root, canon.parent)
+    except OSError as exc:
+        warn(f"could not release guidance hardlinks for line-ending repair: {exc}")
+        return False
+    for link in detached:
+        info(f"released guidance hardlink {link.name} for line-ending repair")
+    return bool(detached)
+
+
+def _sample_line_ending_baseline(ctx: InitContext) -> dict[Path, bool | None] | None:
+    """Record Project repository cleanliness before init writes Project data.
+
+    Check-only never repairs, so it needs no baseline.
+    """
+    if ctx.check_only:
+        return None
+    project_dir = project_dir_for_init(ctx.project_root)
+    return sample_worktree_cleanliness(
+        ctx.project_root, project_dir if project_dir.is_dir() else None
+    )
+
+
+def _step_line_endings_and_guidance(
+    ctx: InitContext,
+    guidance_plan: InitPlan | None,
+    clean_baseline: Mapping[Path, bool | None] | None = None,
+) -> None:
+    """Normalize line endings, then recreate the root guidance links.
+
+    ``clean_baseline`` (from :func:`_sample_line_ending_baseline`) lets the
+    repair ignore Booley's own earlier LF edits to tracked Project data while
+    still refusing a tree the user had left dirty.
+    """
+    project_dir = _line_ending_project_dir(ctx.project_root)
+    if _release_guidance_for_line_endings(ctx, project_dir):
+        guidance_plan = None  # the preflight plan observed the detached links
+    _step_line_endings(ctx, project_dir, clean_baseline=clean_baseline)
+    _step_guidance_links(ctx, guidance_plan)
+
+
 def _plan_existing_guidance(ctx: InitContext) -> tuple[InitPlan | None, bool]:
     """Inspect existing guidance links and report whether init may proceed."""
-    canon = ctx.project_root / ".booley_project" / "AGENTS.md"
-    if not canon.is_file():
+    project_dir = project_dir_for_init(ctx.project_root)
+    if not (project_dir / "AGENTS.md").is_file():
         return None, True
     try:
-        guidance_plan = plan_guidance_links(
-            ctx.project_root,
-            ctx.project_root / ".booley_project",
-        )
+        guidance_plan = plan_guidance_links(ctx.project_root, project_dir)
     except (OSError, FileNotFoundError, ValueError) as exc:
         err(f"initialization filesystem inspection failed: {exc}")
         ctx.record("filesystem_plan", "err", "inspection failed")
@@ -2176,10 +2241,12 @@ def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
 
 def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> None:
     """Reconcile pruning safety and the two-sided worktree-link policy."""
-    _step_worktree_prune_guard(ctx)
+    project_dir = project_dir_for_init(ctx.project_root)
+    _step_worktree_prune_guard(ctx, project_dir=project_dir)
     _step_worktree_link_policy(
         ctx,
         sandbox_git_version=_sandbox_git_version(runtime_image_id),
+        project_dir=project_dir,
     )
 
 
@@ -2196,6 +2263,8 @@ def _run_project_init_steps(
         if not _step_agent_config(ctx, selection, agent_config_path):
             return _print_summary(ctx)
         return _run_seed(ctx, selection)
+
+    line_ending_baseline = _sample_line_ending_baseline(ctx)  # before any Project write
 
     # A refusal to scaffold aborts the run — the user asked
     # for a fresh scaffold and must decide, not get a half-initialized mix.
@@ -2218,8 +2287,7 @@ def _run_project_init_steps(
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_policies(ctx, runtime_image_id)
-    _step_line_endings(ctx, _line_ending_project_dir(ctx.project_root))
-    _step_guidance_links(ctx, guidance_plan)
+    _step_line_endings_and_guidance(ctx, guidance_plan, line_ending_baseline)
     _step_interactive(
         ctx,
         nangate_pdk_root=pdk_root,
