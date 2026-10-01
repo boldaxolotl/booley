@@ -722,10 +722,12 @@ def _rewrite_from_stage(  # noqa: PLR0911 -- each refusal is a pre-write safety 
     replacement: Path,
     expected: _CandidateSnapshot,
 ) -> str | None:
-    """Atomically publish one still-identical tracked-file replacement."""
+    """Publish only a still-identical replacement that changes line endings alone."""
     path = project_root / name
     try:
         replacement_bytes = replacement.read_bytes()
+        if path.read_bytes().replace(b"\r\n", b"\n") != replacement_bytes:
+            return f"refusing to discard content edits during line-ending repair: {name!r}"
     except OSError as exc:
         return f"could not normalize {name!r}: {exc}"
     staged, error = _stage_atomic_content(path, replacement_bytes, mode=expected.file.mode)

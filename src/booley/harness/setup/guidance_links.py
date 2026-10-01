@@ -129,7 +129,9 @@ def detach_guidance_hardlinks(project_root: Path, project_dir: Path) -> tuple[Pa
     line-ending repair refuses. Only untracked root entries sharing the
     canonical file's identity are removed; their content lives on in the
     canonical file, and :func:`ensure_guidance_links` recreates them. Tracked
-    files, symlinks, and copies are left alone.
+    files, symlinks, and copies are left alone. Failed probes or removals leave
+    the affected entry intact; completed removals are still returned so the
+    caller can discard its stale plan and restore those links.
     """
     canon = project_dir / CANON_NAME
     try:
@@ -145,9 +147,17 @@ def detach_guidance_hardlinks(project_root: Path, project_dir: Path) -> tuple[Pa
                 continue
         except OSError:
             continue
-        if _is_git_tracked(project_root, link):
+        tracked = _read_tracking_status(project_root, link)
+        if tracked is None:
+            logger.warning("could not inspect guidance tracking; preserving %s", link)
             continue
-        link.unlink()
+        if tracked:
+            continue
+        try:
+            link.unlink()
+        except OSError as exc:
+            logger.warning("could not release guidance hardlink %s: %s", link, exc)
+            continue
         detached.append(link)
     return tuple(detached)
 
@@ -165,14 +175,19 @@ def guidance_entry_current(project_root: Path, entry: Path, canon: Path) -> bool
 
 
 def _is_git_tracked(project_root: Path, entry: Path) -> bool:
-    """Return whether *entry* is tracked by the repository at *project_root*."""
+    """Whether an entry is tracked, including guidance in non-Git directories."""
+    return _read_tracking_status(project_root, entry) is True
+
+
+def _read_tracking_status(project_root: Path, entry: Path) -> bool | None:
+    """Distinguish untracked entries from an unavailable tracking inspection."""
     try:
         rel = entry.relative_to(project_root).as_posix()
     except ValueError:
         return False
     try:
         result = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", "--", rel],
+            ["git", "ls-files", "--stage", "--", rel],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -180,8 +195,10 @@ def _is_git_tracked(project_root: Path, entry: Path) -> bool:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+        return None
+    if result.returncode != 0:
+        return None
+    return bool(result.stdout.strip())
 
 
 def _portable_target(project_root: Path, canon: Path) -> Path:

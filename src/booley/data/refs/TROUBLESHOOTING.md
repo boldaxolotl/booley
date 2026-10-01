@@ -236,14 +236,18 @@ experiment, not a setup requirement.
 
   Files already on disk with CRLF are a separate matter. From a clean tracked
   tree, init stages Git-filtered LF replacements, verifies that the affected
-  files have not changed since inspection, then rewrites their content in place
-  and reconciles Git's cached metadata for only those paths. This preserves
+  files have not changed since inspection and that replacements change only
+  CRLF to LF, then atomically replaces them and reconciles Git's cached metadata
+  for only those paths. Content edits made while init runs are preserved and
+  reported as unsafe. This preserves
   filesystem metadata, leaves the index content unchanged, and leaves untracked
   and unaffected tracked files alone. Init refuses dirty trees, Git-protected
   affected paths, and hard-linked candidates. The one exception is Booley's own
   Windows guidance fallback: when the root `AGENTS.md`/`CLAUDE.md` are untracked
-  hardlinks to `.booley_project/AGENTS.md`, init releases them, normalizes the
-  canonical file, and recreates the links. Any other hardlink to a candidate
+  hardlinks to the resolved Project directory's `AGENTS.md`, init releases them,
+  normalizes the canonical file, and recreates the links. Failed tracking
+  inspections preserve the links; a partial release is reconciled even if
+  another link is locked. Any other hardlink to a candidate
   still blocks the repair. If reconciliation remains unsafe,
   normal init reports setup incomplete and names the affected repository and
   refusal; `--check-only` reports pending work without changing files. Commit

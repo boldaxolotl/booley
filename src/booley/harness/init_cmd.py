@@ -1985,7 +1985,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
     """
     ctx.step_banner("guidance links")
 
-    project_dir = ctx.project_root / ".booley_project"
+    project_dir = project_dir_for_init(ctx.project_root)
     if not (project_dir / "AGENTS.md").is_file():
         skip("no AGENTS.md yet — run the booley-setup skill (Step 3, guidance)")
         ctx.record("guidance_links", "skip", "no guidance file")
@@ -2093,9 +2093,9 @@ def _release_guidance_for_line_endings(ctx: InitContext, project_dir: Path | Non
     guidance step right after line endings recreates them against the
     normalized file. Other hardlinks still block the repair.
     """
-    if ctx.check_only:
+    if ctx.check_only or project_dir is None:
         return False
-    canon = ctx.project_root / ".booley_project" / "AGENTS.md"
+    canon = project_dir / "AGENTS.md"
     try:
         if not canon.is_file() or canon.stat().st_nlink < 2:
             return False
@@ -2118,8 +2118,9 @@ def _sample_line_ending_baseline(ctx: InitContext) -> dict[Path, bool | None] | 
     """
     if ctx.check_only:
         return None
+    project_dir = project_dir_for_init(ctx.project_root)
     return sample_worktree_cleanliness(
-        ctx.project_root, _line_ending_project_dir(ctx.project_root)
+        ctx.project_root, project_dir if project_dir.is_dir() else None
     )
 
 
@@ -2143,14 +2144,11 @@ def _step_line_endings_and_guidance(
 
 def _plan_existing_guidance(ctx: InitContext) -> tuple[InitPlan | None, bool]:
     """Inspect existing guidance links and report whether init may proceed."""
-    canon = ctx.project_root / ".booley_project" / "AGENTS.md"
-    if not canon.is_file():
+    project_dir = project_dir_for_init(ctx.project_root)
+    if not (project_dir / "AGENTS.md").is_file():
         return None, True
     try:
-        guidance_plan = plan_guidance_links(
-            ctx.project_root,
-            ctx.project_root / ".booley_project",
-        )
+        guidance_plan = plan_guidance_links(ctx.project_root, project_dir)
     except (OSError, FileNotFoundError, ValueError) as exc:
         err(f"initialization filesystem inspection failed: {exc}")
         ctx.record("filesystem_plan", "err", "inspection failed")
@@ -2243,10 +2241,12 @@ def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
 
 def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> None:
     """Reconcile pruning safety and the two-sided worktree-link policy."""
-    _step_worktree_prune_guard(ctx)
+    project_dir = project_dir_for_init(ctx.project_root)
+    _step_worktree_prune_guard(ctx, project_dir=project_dir)
     _step_worktree_link_policy(
         ctx,
         sandbox_git_version=_sandbox_git_version(runtime_image_id),
+        project_dir=project_dir,
     )
 
 

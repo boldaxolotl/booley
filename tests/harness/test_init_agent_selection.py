@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import warnings
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -29,6 +31,15 @@ def test_unattended_first_init_records_compatible_defaults(tmp_path, monkeypatch
 
     assert resolved == init_cmd.AgentSelection("claude", "auto", True, True)
     assert config == init_cmd.project_dir_for_init(tmp_path) / "booley.toml"
+
+
+def test_initial_line_ending_baseline_does_not_warn_for_uncreated_data(tmp_path):
+    ctx = InitContext(project_root=tmp_path)
+    with init_cmd.init_project_dir_scope(tmp_path), warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert init_cmd._sample_line_ending_baseline(ctx) == {}
+    assert caught == []
+    assert not init_cmd.project_dir_for_init(tmp_path).exists()
 
 
 def test_seed_agent_config_uses_resolved_project_directory(tmp_path, monkeypatch):
@@ -92,36 +103,31 @@ def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monke
     assert parent_config.read_text(encoding="utf-8") == original
 
 
-def test_nested_child_run_init_isolates_every_project_write(tmp_path, monkeypatch):
-    parent_project_dir = tmp_path / ".booley_project"
+@pytest.mark.parametrize("relocated_parent", [False, True])
+@pytest.mark.parametrize("child_guidance", [False, True])
+def test_nested_child_run_init_isolates_every_project_write(
+    tmp_path, monkeypatch, relocated_parent, child_guidance
+):
+    parent_project_dir = tmp_path / ("project-data" if relocated_parent else ".booley_project")
     parent_config = parent_project_dir / "booley.toml"
     parent_config.parent.mkdir()
     original = '[agent]\nprovider = "claude"\nauth = "auto"\n'
     parent_config.write_text(original, encoding="utf-8")
+    parent_guidance = parent_project_dir / "AGENTS.md"
+    parent_guidance.write_bytes(b"# Parent Project\r\n")
+    if relocated_parent:
+        (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "project-data"\n')
     child = tmp_path / "child"
     child.mkdir()
+    if child_guidance:
+        (child / "AGENTS.md").write_bytes(b"# Child Project\n")
+    parent_git_config = _initialize_nested_git_repositories(parent_project_dir, child)
+    parent_entries = set(parent_project_dir.iterdir())
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(parent_config.parent))
     init_cmd.reset_cache()
     assert init_cmd.resolve_project_dir() == parent_config.parent.resolve()
 
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
-    )
-    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
-    monkeypatch.setattr(init_cmd, "_step_interactive", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(init_cmd, "_step_project_inventory", lambda _ctx: None)
-    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
-
-    from booley.runtime import lifecycle_lock, session_refresh
-
-    monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", lambda _purpose: nullcontext())
-    monkeypatch.setattr(
-        session_refresh,
-        "shared_recovery_blocks_command",
-        lambda *, read_only: False,
-    )
+    _stub_nested_init_services(tmp_path, monkeypatch)
 
     assert (
         init_cmd.run_init(
@@ -141,8 +147,61 @@ def test_nested_child_run_init_isolates_every_project_write(tmp_path, monkeypatc
     assert 'auth = "subscription"' in content
     assert (child_config.parent / "tickets").is_dir()
     assert parent_config.read_text(encoding="utf-8") == original
-    assert set(parent_project_dir.iterdir()) == {parent_config}
+    assert set(parent_project_dir.iterdir()) == parent_entries
+    assert (parent_project_dir / ".git" / "config").read_bytes() == parent_git_config
+    assert parent_guidance.read_bytes() == b"# Parent Project\r\n"
+    assert not (child / "CLAUDE.md").exists()
+    if child_guidance:
+        assert (child / "AGENTS.md").read_bytes() == b"# Child Project\n"
+    else:
+        assert not (child / "AGENTS.md").exists()
     assert init_cmd.resolve_project_dir() == parent_project_dir.resolve()
+
+
+def _stub_nested_init_services(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
+    )
+    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
+    monkeypatch.setattr(init_cmd, "_step_interactive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(init_cmd, "_step_project_inventory", lambda _ctx: None)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
+
+    from booley.runtime import lifecycle_lock, session_refresh
+
+    monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", lambda _purpose: nullcontext())
+    monkeypatch.setattr(
+        session_refresh,
+        "shared_recovery_blocks_command",
+        lambda *, read_only: False,
+    )
+
+
+def _initialize_nested_git_repositories(parent_project_dir, child):
+    """Use real Git so an escaped repair would alter the parent's policy or files."""
+    commands = (
+        (parent_project_dir, "init", "-q"),
+        (child, "init", "-q"),
+        (parent_project_dir, "config", "core.autocrlf", "true"),
+        (parent_project_dir, "add", "-A"),
+        (
+            parent_project_dir,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "parent project",
+        ),
+    )
+    for root, *args in commands:
+        subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=10
+        )
+    return (parent_project_dir / ".git" / "config").read_bytes()
 
 
 def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):

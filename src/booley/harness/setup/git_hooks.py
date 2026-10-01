@@ -353,13 +353,16 @@ WORKTREE_PRUNE_VALUE = "never"
 WORKTREE_RELATIVE_KEY = "worktree.useRelativePaths"
 
 
-def worktree_policy_repositories(project_root: Path) -> tuple[Path, ...]:
+def worktree_policy_repositories(
+    project_root: Path, *, project_dir: Path | None = None
+) -> tuple[Path, ...]:
     """Return durable repositories that create Ticket Workspaces."""
     repositories = [project_root]
-    try:
-        project_dir = resolve_checkout_project_dir(project_root)
-    except FileNotFoundError:
-        return tuple(repositories)
+    if project_dir is None:
+        try:
+            project_dir = resolve_checkout_project_dir(project_root)
+        except FileNotFoundError:
+            return tuple(repositories)
     if project_dir != project_root and is_standalone_git_repository(project_dir):
         repositories.append(project_dir)
     return tuple(repositories)
@@ -449,12 +452,13 @@ def _step_worktree_link_policy(
     *,
     sandbox_git_version: tuple[int, int, int] | None,
     host_git_version: tuple[int, int, int] | None = None,
+    project_dir: Path | None = None,
 ) -> None:
     """Reconcile portable worktree creation after two-sided capability proof."""
     ctx.step_banner("worktree link policy")
     host_version = host_git_version if host_git_version is not None else _host_git_version()
     capable = _worktree_policy_capable(host_version, sandbox_git_version)
-    repositories = worktree_policy_repositories(ctx.project_root)
+    repositories = worktree_policy_repositories(ctx.project_root, project_dir=project_dir)
     incompatible = [repo for repo in repositories if _repository_uses_relative_extension(repo)]
     if not capable and incompatible:
         warn(
@@ -521,7 +525,7 @@ def read_worktree_prune_expire(project_root: Path) -> str | None:
     return value or None
 
 
-def _step_worktree_prune_guard(ctx: InitContext) -> None:
+def _step_worktree_prune_guard(ctx: InitContext, *, project_dir: Path | None = None) -> None:
     """Keep automatic pruning disabled in every Ticket Workspace repository."""
     ctx.step_banner("worktree prune guard")
 
@@ -538,7 +542,7 @@ def _step_worktree_prune_guard(ctx: InitContext) -> None:
         ctx.record("worktree_prune_guard", "skip", "not a git repo")
         return
 
-    repositories = worktree_policy_repositories(ctx.project_root)
+    repositories = worktree_policy_repositories(ctx.project_root, project_dir=project_dir)
     pending = [
         repository
         for repository in repositories

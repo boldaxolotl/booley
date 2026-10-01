@@ -2206,6 +2206,72 @@ class TestLineEndingsAutoFix:
         assert not _release_guidance_for_line_endings(_ctx(tmp_path), project_dir)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_partial_release_failure_restores_the_removed_guidance_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.init_cmd import _step_line_endings_and_guidance
+        from booley.harness.setup.guidance_links import plan_guidance_links
+
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("booley.core.project_dir._cache", None)
+        project_dir = self._hardlinked_guidance_project(tmp_path)
+        canonical = project_dir / "AGENTS.md"
+        plan = plan_guidance_links(tmp_path, project_dir)
+        original_unlink = Path.unlink
+
+        def locked_claude(path: Path, *args: object, **kwargs: object) -> None:
+            if path == tmp_path / "CLAUDE.md":
+                raise PermissionError("guidance is open in another application")
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", locked_claude)
+        ctx = _ctx(tmp_path)
+        _step_line_endings_and_guidance(ctx, plan)
+
+        assert ctx.results[0].status == "err"
+        assert ctx.results[-1].status == "ok"
+        assert canonical.read_bytes() == b"guidance\r\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
+    def test_linked_project_data_guidance_is_repaired(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.init_cmd import (
+            _plan_existing_guidance,
+            _sample_line_ending_baseline,
+            _step_line_endings_and_guidance,
+            init_project_dir_scope,
+        )
+
+        original_dir = self._hardlinked_guidance_project(tmp_path)
+        project_dir = tmp_path / "project-data"
+        original_dir.rename(project_dir)
+        try:
+            original_dir.symlink_to(project_dir, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable")
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("booley.core.project_dir._cache", None)
+        ctx = _ctx(tmp_path)
+        plan, ready = _plan_existing_guidance(ctx)
+        assert ready and plan is not None
+
+        with init_project_dir_scope(tmp_path):
+            baseline = _sample_line_ending_baseline(ctx)
+            _step_line_endings_and_guidance(ctx, plan, baseline)
+
+        assert all(result.status == "ok" for result in ctx.results)
+        canonical = project_dir / "AGENTS.md"
+        assert canonical.read_bytes() == b"guidance\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+        inspection = _ctx(tmp_path, check_only=True)
+        _step_line_endings_and_guidance(inspection, None)
+        assert all(result.status == "ok" for result in inspection.results)
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_release_keeps_links_when_canonical_needs_no_normalization(
         self, tmp_path: Path
     ) -> None:
@@ -2353,6 +2419,33 @@ class TestDetachGuidanceHardlinks:
         monkeypatch.setattr(Path, "is_file", lambda _path: True)
         monkeypatch.setattr(Path, "stat", failing_stat)
         assert guidance_links.detach_guidance_hardlinks(tmp_path, canonical.parent) == ()
+
+    @pytest.mark.parametrize("failure", ["exit", "timeout", "os-error"])
+    def test_unreadable_tracking_preserves_root_hardlinks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        from booley.harness.setup import guidance_links
+
+        _git_init(tmp_path)
+        canonical = self._canonical(tmp_path)
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            os.link(canonical, tmp_path / name)
+        _run_git(tmp_path, "add", "-f", "AGENTS.md", "CLAUDE.md")
+        original_run = subprocess.run
+
+        def unreadable(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if "ls-files" not in args:
+                return original_run(args, **kwargs)
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(args, 10)
+            if failure == "os-error":
+                raise OSError("Git unavailable")
+            return subprocess.CompletedProcess(args, 128, "", "index unreadable")
+
+        monkeypatch.setattr(subprocess, "run", unreadable)
+        assert guidance_links.detach_guidance_hardlinks(tmp_path, canonical.parent) == ()
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_skips_symlinks_tracked_entries_and_unreadable_entries(
