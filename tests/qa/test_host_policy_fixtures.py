@@ -29,3 +29,33 @@ def test_policy_positive_controls_have_distinct_documented_values():
     assert load_host_policy(ROOT / "egress.toml").egress_allowlist == (
         "qa-allowed.example.invalid",
     )
+
+
+@pytest.mark.parametrize(
+    "name, cap, timeout, egress",
+    [
+        ("legacy", 2, 600, ("qa-allowed.example.invalid",)),
+        ("both-tables", 1, 7200, ()),
+    ],
+)
+def test_authored_migration_cases_have_expected_policy_and_warning(
+    tmp_path: Path,
+    name: str,
+    cap: int,
+    timeout: int,
+    egress: tuple[str, ...],
+) -> None:
+    path = tmp_path / "config.toml"
+    original = (ROOT / f"{name}.toml").read_bytes()
+    path.write_bytes(original)
+    messages: list[str] = []
+    policy = load_host_policy(path, on_deprecation=messages.append)
+    assert (policy.max_sessions, policy.idle_timeout_seconds, policy.egress_allowlist) == (
+        cap,
+        timeout,
+        egress,
+    )
+    assert len(messages) == 1
+    assert "[interactive] is deprecated" in messages[0]
+    assert ("ignored" in messages[0]) == (name == "both-tables")
+    assert path.read_bytes() == original

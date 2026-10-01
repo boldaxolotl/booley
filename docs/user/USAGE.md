@@ -39,6 +39,9 @@ Booley offers two kinds of capability:
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
 and keeps the agent away from the rest of your computer.
 
+Sandbox limits and network egress for both execution modes are host-owned
+`[sandbox]` settings; see [Host configuration](CONFIG.md#host-configuration-configtoml).
+
 **Where you type.** This guide uses three places:
 
 | Place | What goes there | Example |

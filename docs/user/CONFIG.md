@@ -27,7 +27,7 @@ tell the `/booley-feedback` skill in your agent chat. See
 
 Contents:
 
-- [Host configuration](#host-configuration-configtoml): global Interactive Mode policy
+- [Host configuration](#host-configuration-configtoml): global Sandbox Policy
 - [booley.toml](#booleytoml): project identity, Flow selection, agent config
 - [Design description (`.core`) and tests (`tests.toml`)](#design-description-core-and-tests-teststoml)
 - [Cocotb Targets](#cocotb-targets-python-testbenches): Python testbenches, and
@@ -44,7 +44,7 @@ Optional global policy lives at `~/.config/booley/config.toml` (or beneath
 created automatically:
 
 ```toml
-[interactive]
+[sandbox]
 idle_timeout_seconds = 7200
 max_sessions = 4
 egress_allowlist = []
@@ -56,7 +56,19 @@ limits, and invalid egress entries stop Host Bootstrap before mutation. Egress
 entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
 are rejected.
 
-This policy applies to the whole Docker daemon, not the current Project. The
+The former host table `[interactive]` is deprecated but still loads when
+`[sandbox]` is absent. Init and Doctor warn with the exact `[sandbox]`
+replacement. If both tables exist, `[sandbox]` supplies the entire policy;
+`[interactive]` is ignored, with a warning, and no values are merged. Rename
+the legacy host table to `[sandbox]` and remove it when both are present.
+
+Host `config.toml [sandbox]` and Project `booley.toml [sandbox]` have different
+keys: host limits and egress belong only in the host file; Project image and
+memory settings belong only in the Project file. Init and Doctor reject
+host-only keys placed in Project `[sandbox]`.
+
+This Sandbox Policy applies to the whole Docker daemon, across all Projects
+and both Ticket Mode and Interactive Mode. The
 timeout and admission cap cover all Booley Sandboxes, and every extra
 egress hostname becomes reachable from every Project. The former Project
 `booley.toml [interactive]` policy fields are retired; init and Doctor print a
@@ -814,6 +826,10 @@ exhaustion, and Developer budget expiry all fall through to triage unchanged;
 retrying those just reproduces them.
 
 ### Sandbox (`[sandbox]`)
+
+This is the Project table in `booley.toml`. Host-wide `idle_timeout_seconds`,
+`max_sessions`, and `egress_allowlist` belong in
+[`config.toml [sandbox]`](#host-configuration-configtoml).
 
 One container, one memory limit:
 

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.config.host_config import HostConfigError, InteractiveHostPolicy
+from booley.config.host_config import HostConfigError, SandboxHostPolicy
 from booley.harness import bootstrap, bootstrap_cli
 from booley.runtime import issuance_invalidation
 from booley.runtime.docker_capacity import (
@@ -51,7 +51,7 @@ def _wire_current(
     calls: list[str] = []
     monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: ())
     monkeypatch.setattr(bootstrap.host_sidecars, "plan_image_builds", lambda _intent: ())
-    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
     monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
         bootstrap,
@@ -191,7 +191,7 @@ def test_bootstrap_threads_aggregate_plan_through_every_build(
 def test_noncanonical_install_stops_before_host_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
     monkeypatch.setattr(
         bootstrap,
         "host_install_error",
@@ -212,8 +212,8 @@ def test_noncanonical_install_stops_before_host_mutation(
 def test_invalid_config_stops_before_any_other_probe(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    def invalid():
-        raise HostConfigError(tmp_path / "config.toml", "interactive.max_sessions", "bad")
+    def invalid(**_kwargs: object):
+        raise HostConfigError(tmp_path / "config.toml", "sandbox.max_sessions", "bad")
 
     monkeypatch.setattr(bootstrap, "load_host_policy", invalid)
     monkeypatch.setattr(
@@ -254,7 +254,7 @@ def test_opt_out_prunes_qa_before_failing_prerequisites(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(bootstrap, "load_host_policy", InteractiveHostPolicy)
+    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
     monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
         bootstrap,
@@ -1541,3 +1541,46 @@ def test_cli_renders_each_exit_class(
     output = capsys.readouterr().out
     assert status == result.exit_status
     assert expected_message in output
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+@pytest.mark.parametrize("intent", [Intent.CHECK, Intent.ENSURE])
+def test_host_policy_migration_warning_reaches_init_and_doctor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    canonical: bool,
+    intent: Intent,
+) -> None:
+    from booley.config.host_config import host_config_path, load_host_policy
+    from booley.harness import host_diagnostics, init_cmd
+
+    _wire_current(monkeypatch)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = host_config_path()
+    path.parent.mkdir()
+    text = "[interactive]\nidle_timeout_seconds = 600\nmax_sessions = 2\n"
+    if canonical:
+        text += "[sandbox]\nmax_sessions = 3\n"
+    path.write_text(text)
+    monkeypatch.setattr(bootstrap, "load_host_policy", load_host_policy)
+    result = bootstrap.reconcile_bootstrap(intent)
+    assert result.ready
+    assert result.exit_status == 0
+    assert result.policy.max_sessions == (3 if canonical else 2)
+    warning = next(f for f in result.findings if f.state is bootstrap.BootstrapState.WARNING)
+    expected = (
+        "[interactive] is deprecated and ignored"
+        if canonical
+        else "[sandbox]\nidle_timeout_seconds = 600\nmax_sessions = 2"
+    )
+    assert expected in warning.detail
+    ctx = init_cmd.InitContext(project_root=tmp_path, verbose=False)
+    init_cmd._record_bootstrap(ctx, result)
+    assert expected in capsys.readouterr().out
+    report = host_diagnostics.Findings()
+    host_diagnostics._add_bootstrap(result, report)
+    assert any(
+        f.severity.value == "warn" and expected in f.message for f in report.report().findings
+    )
+    assert path.read_text() == text
