@@ -112,6 +112,71 @@ def _assert_both_reject(root: Path, path: Path, capsys, expected: str) -> None:
     assert expected in " ".join(DirectTicketOps().validate_ticket(root, str(path))["errors"])
 
 
+_FIRMWARE_HOOK = """#!/bin/sh
+# Mirrors a firmware build: the generated image is gitignored, so only the
+# post-setup hook can make it exist in a freshly materialized checkout.
+if [ -n "$FIRMWARE_HOOK_FAIL" ]; then echo "firmware build broke" >&2; exit 3; fi
+if [ -n "$FIRMWARE_HOOK_SKIP" ]; then exit 0; fi
+mkdir -p firmware
+printf '00000013\\n' > firmware/firmware.hex
+"""
+
+
+def _firmware_provider(root: Path, board: TicketIO) -> Path:
+    """Publish a Ticket whose LINT Target needs a hook-generated user input."""
+    hook = root / ".booley_project/hooks/post-setup.sh"
+    hook.parent.mkdir(parents=True)
+    hook.write_text(_FIRMWARE_HOOK, encoding="utf-8")
+    (root / ".gitignore").write_text("/firmware/firmware.hex\n", encoding="utf-8")
+    core = root / "ticket_mode_smoke.core"
+    content = core.read_text(encoding="utf-8")
+    content = content.replace(
+        "\ntargets:\n",
+        "  firmware:\n    files:\n      - firmware/firmware.hex: {file_type: user}\n"
+        "\ntargets:\n"
+        "  lint_firmware:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl, firmware]\n    toplevel: dut\n",
+    )
+    core.write_bytes(content.encode("utf-8"))
+    _git(root, "add", "-A")
+    _git(root, "add", "-f", str(hook))
+    _git(root, "commit", "-qm", "firmware hook")
+    assert not (root / "firmware/firmware.hex").exists()
+    path = board.create_ticket_document("firmware", _ticket("lint_firmware"))
+    assert path is not None
+    assert board.enqueue_ticket("firmware")
+    assert read_state_record(board.tickets_dir, "firmware").state is TicketState.QUEUED
+    return ticket_document_path(board.tickets_dir, "firmware")
+
+
+def test_published_validation_runs_post_setup_hook(project, capsys) -> None:
+    root, board = project
+    path = _firmware_provider(root, board)
+
+    _assert_both_valid(root, path, capsys)
+    assert not (root / "firmware/firmware.hex").exists()
+
+
+def test_published_validation_rejects_input_hook_did_not_generate(
+    project, capsys, monkeypatch
+) -> None:
+    root, board = project
+    path = _firmware_provider(root, board)
+    monkeypatch.setenv("FIRMWARE_HOOK_SKIP", "1")
+
+    _assert_both_reject(root, path, capsys, "firmware/firmware.hex (file_type='user')")
+
+
+def test_published_validation_reports_post_setup_hook_failure(
+    project, capsys, monkeypatch
+) -> None:
+    root, board = project
+    path = _firmware_provider(root, board)
+    monkeypatch.setenv("FIRMWARE_HOOK_FAIL", "1")
+
+    _assert_both_reject(root, path, capsys, "post-setup hook failed (rc=3)")
+
+
 def test_published_new_target_uses_pinned_authoring_checkout(project, capsys) -> None:
     root, board = project
     path = _provider(root, board)
