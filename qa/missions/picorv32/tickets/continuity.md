@@ -7,8 +7,8 @@ nothing else. Stage the result under the ignored Project-data path
 
 Submit it with the client's form, using that Sandbox path:
 
-- Codex: `$booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
-- Claude: `/booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
+- Codex: `$booley-ticket-create --agent --no-confirm --input-file /booley-project/tmp/qa-inputs/<run-id>/ticket-1/packet.md`
+- Claude: `/booley-ticket-create --agent --no-confirm --input-file /booley-project/tmp/qa-inputs/<run-id>/ticket-1/packet.md`
 
 These are skill invocations, not shell commands. Ticket Create derives and authors the
 New Target definition and its owned test table from the live Project.
