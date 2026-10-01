@@ -269,3 +269,78 @@ def test_waiting_refresh_without_prepared_journal_is_blocked(
     assert _state(board, "missing-refresh-journal") is TicketState.BLOCKED
     assert waiting.read_bytes() == before
     assert "prepared waiting Ticket metadata is unavailable" in capsys.readouterr().err
+
+
+def _interrupt_refresh_snapshot(patch, snapshot):
+    replace_bytes = basis_refresh.atomic_replace_bytes
+
+    def interrupt_snapshot(path, content, **kwargs):
+        replace_bytes(path, content, **kwargs)
+        if path == snapshot:
+            raise OSError("runtime interrupted")
+
+    patch.setattr(basis_refresh, "atomic_replace_bytes", interrupt_snapshot)
+
+
+@pytest.mark.parametrize("interruption", ["snapshot", "finish"])
+def test_refresh_reconciles_existing_unexecuted_runtime_and_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: str,
+) -> None:
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board.acceptance_ledger import record_changes
+    from booley.ticket_board.paths import runtime_file
+    from booley.ticket_board.ticket_baseline import TicketBaselineError
+
+    project, board = _git_project(tmp_path, monkeypatch)
+    ticket = _enqueue_waiting(project, board, "runtime-refresh")
+    old = board.load_basis("runtime-refresh").ticket_identity()
+    snapshot = board.logs_dir / "runtime-refresh/ticket.md"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_bytes(ticket.read_bytes())
+    state = DevelopmentState.load(
+        runtime_file(board.logs_dir, "runtime-refresh", "booley_state.json")
+    )
+    state.slug = "runtime-refresh"
+    state.init_criteria({"review_rtl_bugs_clean": True})
+    changes = state.set_criterion("review_rtl_bugs_clean", False)
+    record_changes(
+        snapshot.parent,
+        state,
+        changes,
+        invocation_id="partial",
+        producer="review",
+        execution_id="partial",
+        ticket_identity=old,
+        transaction_id="c" * 64,
+    )
+    state.acceptance_transactions = ["c" * 64]
+    state.save()
+    machine, journal = _write_prepared_refresh(project, board, "runtime-refresh", "a" * 32)
+    with monkeypatch.context() as patch:
+        if interruption == "snapshot":
+            _interrupt_refresh_snapshot(patch, snapshot)
+        else:
+            patch.setattr(
+                basis_refresh,
+                "finish_basis_refresh",
+                lambda *_args: (_ for _ in ()).throw(OSError("runtime interrupted")),
+            )
+        with pytest.raises(OSError, match="runtime interrupted"):
+            op_promote_waiting(board)
+    with pytest.raises(TicketBaselineError, match="publication is pending"):
+        board.load_basis("runtime-refresh")
+    if interruption == "snapshot":
+        assert op_promote_waiting(board)
+    else:
+        # The ordinary promotion entry point recovers a queued, already-published refresh.
+        assert op_promote_waiting(board) == []
+    identity = board.load_basis("runtime-refresh", runtime_ticket_path=snapshot).ticket_identity()
+    assert identity == machine and identity != old
+    rebuilt = DevelopmentState.load(state._file_path)
+    assert rebuilt.acceptance_transactions == []
+    assert (
+        snapshot.parent / "basis-refreshes" / f"{journal.operation_id}.prior-state.json"
+    ).exists()
+    assert len(list((snapshot.parent / "acceptance/evidence").glob("*/record.json"))) == 1
