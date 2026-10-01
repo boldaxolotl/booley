@@ -62,6 +62,11 @@ replacement. If both tables exist, `[sandbox]` supplies the entire policy;
 `[interactive]` is ignored, with a warning, and no values are merged. Rename
 the legacy host table to `[sandbox]` and remove it when both are present.
 
+Host `config.toml [sandbox]` and Project `booley.toml [sandbox]` have different
+keys: host limits and egress belong only in the host file; Project image and
+memory settings belong only in the Project file. Init and Doctor reject
+host-only keys placed in Project `[sandbox]`.
+
 This Sandbox Policy applies to the whole Docker daemon, across all Projects
 and both Ticket Mode and Interactive Mode. The
 timeout and admission cap cover all Booley Sandboxes, and every extra
@@ -821,6 +826,10 @@ exhaustion, and Developer budget expiry all fall through to triage unchanged;
 retrying those just reproduces them.
 
 ### Sandbox (`[sandbox]`)
+
+This is the Project table in `booley.toml`. Host-wide `idle_timeout_seconds`,
+`max_sessions`, and `egress_allowlist` belong in
+[`config.toml [sandbox]`](#host-configuration-configtoml).
 
 One container, one memory limit:
 

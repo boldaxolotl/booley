@@ -17,6 +17,11 @@ from booley.core.user_paths import config_dir
 DEFAULT_IDLE_TIMEOUT_SECONDS = 7200
 DEFAULT_MAX_SESSIONS = 4
 HOST_CONFIG_FILENAME = "config.toml"
+HOST_POLICY_MIGRATION_GUIDANCE = (
+    "If the host config uses legacy [interactive], rename it to [sandbox] first, "
+    "preserving all existing settings. Update the existing [sandbox] table "
+    "instead of adding a second policy table."
+)
 
 _TOP_LEVEL_KEYS = frozenset({"sandbox", "interactive"})
 _SANDBOX_KEYS = frozenset({"idle_timeout_seconds", "max_sessions", "egress_allowlist"})
@@ -176,24 +181,33 @@ def _hostname(value: str, path: Path, field: str) -> str:
 def retired_project_policy_message(
     document: Mapping[str, Any], *, destination: Path | None = None
 ) -> str | None:
-    """Return the exact migration instruction for retired Project policy fields."""
-    raw = document.get("interactive")
-    if not isinstance(raw, Mapping):
-        return None
-    retired = [key for key in _SANDBOX_KEYS if key in raw]
-    if not retired:
-        return None
+    """Return migration instructions for host policy misplaced in Project config."""
     target = destination or host_config_path()
-    lines = [
-        f"booley.toml [interactive] host policy is retired; move these fields to {target}:",
-        "[sandbox]",
-    ]
-    for key in sorted(retired):
-        lines.append(f"{key} = {_toml_value(raw[key])}")
-    lines.append(
-        "Remove the moved fields from the Project booley.toml; Booley will not migrate them automatically."
-    )
-    return "\n".join(lines)
+    messages: list[str] = []
+    for table in ("interactive", "sandbox"):
+        raw = document.get(table)
+        if not isinstance(raw, Mapping):
+            continue
+        misplaced = sorted(_SANDBOX_KEYS.intersection(raw))
+        if not misplaced:
+            continue
+        reason = (
+            "host policy is retired" if table == "interactive" else "contains host-only policy"
+        )
+        lines = [
+            f"booley.toml [{table}] {reason}; move these fields to {target}:",
+            "[sandbox]",
+        ]
+        lines.extend(f"{key} = {_toml_value(raw[key])}" for key in misplaced)
+        lines.extend(
+            (
+                HOST_POLICY_MIGRATION_GUIDANCE,
+                "Remove the moved fields from the Project booley.toml; "
+                "Booley will not migrate them automatically.",
+            )
+        )
+        messages.append("\n".join(lines))
+    return "\n\n".join(messages) or None
 
 
 def _toml_value(value: object) -> str:

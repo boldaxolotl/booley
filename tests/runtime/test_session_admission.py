@@ -96,7 +96,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=1),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
     with pytest.raises(session_admission.AdmissionError) as caught:
         session_admission.admit_start(
@@ -124,7 +124,7 @@ def test_pending_editor_claim_takes_the_last_slot_and_is_idempotent(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=1),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
 
     def run(_argv: list[str], **_kwargs):
@@ -148,7 +148,7 @@ def test_headless_start_does_not_consume_own_editor_claim_below_cap(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     docker = _Docker({})
 
@@ -165,7 +165,7 @@ def test_live_editor_makes_claim_idempotent(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     docker = _Docker(
         {"editor-id": _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")}
@@ -180,9 +180,9 @@ def test_invalid_host_policy_is_an_admission_error(
     project = tmp_path / "project"
     project.mkdir()
 
-    def invalid_policy() -> session_admission.SandboxHostPolicy:
+    def invalid_policy(**_kwargs: object) -> session_admission.SandboxHostPolicy:
         raise session_admission.HostConfigError(
-            tmp_path / "host.toml", "interactive.max_sessions", "invalid host policy"
+            tmp_path / "host.toml", "sandbox.max_sessions", "invalid host policy"
         )
 
     monkeypatch.setattr(session_admission, "load_host_policy", invalid_policy)
@@ -276,7 +276,7 @@ def test_malformed_live_inspection_fails_closed(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
 
     with pytest.raises(session_admission.AdmissionError, match="incomplete inspection"):
@@ -310,7 +310,7 @@ def test_running_exact_target_is_idempotent_at_cap(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=1),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
     session_admission.admit_start(project, target_name="headless", run=run)
 
@@ -325,7 +325,7 @@ def test_claim_reconciliation_uses_observed_container_state_not_cross_clock(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
 
     assert session_admission.claim_vscode_start(
@@ -349,7 +349,7 @@ def test_claim_for_moved_project_can_be_reconciled_and_cleared(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=docker)
     project.rmdir()
@@ -394,7 +394,7 @@ def test_unrelated_stopped_sandbox_is_not_in_admission_boundary(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=1),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
 
     session_admission.admit_start(project, target_name="headless", run=docker)
@@ -407,7 +407,7 @@ def test_corrupt_claim_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=_Docker({}))
     claim_path = next(session_admission._store().root.glob("*.json"))
@@ -425,7 +425,7 @@ def test_unreadable_claim_json_fails_closed(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=_Docker({}))
     claim_path = next(session_admission._store().root.glob("*.json"))
@@ -453,7 +453,7 @@ def test_claim_candidate_disappearing_during_inspect_fails_closed(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=2),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=_Docker({}))
 
@@ -481,9 +481,39 @@ def test_recovery_reports_when_it_will_restore_at_capacity(
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
-        lambda: session_admission.SandboxHostPolicy(max_sessions=1),
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
 
     session_admission.admit_start(project, target_name="recovery", recovery=True, run=docker)
 
     assert "recovery is restoring work at or above" in caplog.text
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_runtime_reports_legacy_host_policy_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    canonical: bool,
+) -> None:
+    from booley.config.host_config import host_config_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = host_config_path()
+    path.parent.mkdir()
+    original = '[interactive]\nmax_sessions = 1\nidle_timeout_seconds = 600\negress_allowlist = ["foo.test"]\n'
+    if canonical:
+        original += "[sandbox]\nmax_sessions = 2\n"
+    path.write_text(original)
+    policy = session_admission._policy()
+    assert "[interactive] is deprecated" in caplog.text
+    if canonical:
+        assert "ignored" in caplog.text
+    else:
+        assert "idle_timeout_seconds = 600" in caplog.text
+        assert 'egress_allowlist = ["foo.test"]' in caplog.text
+    refusal = session_admission._refusal(policy, (), (), datetime(2026, 10, 1, tzinfo=UTC))
+    assert "rename it to [sandbox] first" in refusal
+    assert "preserving all existing settings" in refusal
+    assert "instead of adding a second policy table" in refusal
+    assert path.read_text() == original

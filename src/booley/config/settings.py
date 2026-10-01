@@ -142,7 +142,7 @@ from .host_config import load_host_policy
 def load_interactive_config(project_root: Path | None = None) -> InteractiveConfig:
     """Load global policy; *project_root* is ignored for compatibility."""
     del project_root
-    return load_host_policy()
+    return load_host_policy(on_deprecation=logger.warning)
 
 
 # --- [developer.limits] config ---

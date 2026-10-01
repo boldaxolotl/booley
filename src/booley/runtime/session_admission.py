@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.host_config import (
+    HOST_POLICY_MIGRATION_GUIDANCE,
     HostConfigError,
     SandboxHostPolicy,
     host_config_path,
@@ -155,7 +156,7 @@ def vscode_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[Sandbox, .
 
 def _policy() -> SandboxHostPolicy:
     try:
-        return load_host_policy()
+        return load_host_policy(on_deprecation=logger.warning)
     except HostConfigError as exc:
         raise AdmissionError(str(exc)) from exc
 
@@ -467,6 +468,7 @@ def _refusal(
         command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         lines.append(f"Free capacity with `{command}`.")
     lines.append(f"Or raise [sandbox].max_sessions in {host_config_path()}.")
+    lines.append(HOST_POLICY_MIGRATION_GUIDANCE)
     return "\n".join(lines)
 
 

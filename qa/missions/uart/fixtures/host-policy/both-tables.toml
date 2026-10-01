@@ -1,0 +1,7 @@
+[interactive]
+idle_timeout_seconds = 600
+max_sessions = 2
+egress_allowlist = ["qa-allowed.example.invalid"]
+
+[sandbox]
+max_sessions = 1

@@ -2116,7 +2116,7 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
 
 
 def _project_config_migration_preflight(ctx: InitContext, path: Path) -> bool:
-    """Reject retired Project policy before any Project filesystem mutation."""
+    """Reject misplaced host policy before any Project filesystem mutation."""
     if not path.is_file():
         return True
     try:
