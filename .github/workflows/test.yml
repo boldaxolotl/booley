@@ -26,7 +26,8 @@ on:
       riscv_measurement:
         description: >-
           RISC-V timing arm (automatic = path-gated; baseline, warm, and cold
-          always build the RISC-V image; cold disables BuildKit cache)
+          use the same containerd image store and always build the RISC-V image;
+          cold disables BuildKit cache)
         type: choice
         default: automatic
         options:
@@ -764,13 +765,16 @@ jobs:
           path: dist/
 
       # The hosted runner's classic image store cannot export a local BuildKit
-      # cache. Warm measurements use Docker's supported containerd image store
-      # so the daemon-backed builder retains access to the exact local candidate
-      # while gaining local cache import/export support.
+      # cache or expose a distinct load boundary. All controlled measurement
+      # arms use the same pinned Docker and containerd image store so warm/cold
+      # differences measure cache behavior rather than a different daemon.
+      # Automatic CI retains its hosted-runner setup. The default builder still
+      # consumes the exact local candidate and supports local cache import/export.
       - name: Enable cache-capable Docker image store
         if: >-
           needs.changes.outputs.riscv_image == 'true' &&
-          inputs.riscv_measurement == 'warm'
+          github.event_name == 'workflow_dispatch' &&
+          contains(fromJSON('["baseline", "warm", "cold"]'), inputs.riscv_measurement)
         uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
         with:
           version: v28.0.4 # Match the measured hosted-runner baseline.
@@ -812,6 +816,16 @@ jobs:
             --resolver remote --resolve-image "${PUBLISHED_BASE}" \
             --github-output "${GITHUB_OUTPUT}"
           echo "build=false" >> "${GITHUB_OUTPUT}"
+
+      # Locally rebuilt bases stamp a fresh creation time, so a warm measurement
+      # cannot reuse their parent config and would only fill the cache quota.
+      - name: Reject warm measurements with a locally rebuilt stable base
+        if: >-
+          inputs.riscv_measurement == 'warm' &&
+          steps.runtime-base.outputs.build == 'true'
+        run: |
+          echo 'Warm RISC-V measurements require the published stable-base path.' >&2
+          exit 1
 
       # A PR that changes a stable-base input must test that candidate without
       # publishing untrusted layers. Reuse the trusted main-branch cache, but do
@@ -994,6 +1008,22 @@ jobs:
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
+      # Runtime config and layer diff IDs identify the effective parent without
+      # timestamped attestations or exporter-dependent config-digest metadata.
+      - name: Identify warm RISC-V parent image
+        if: >-
+          needs.changes.outputs.riscv_image == 'true' &&
+          inputs.riscv_measurement == 'warm'
+        id: riscv-cache-parent
+        shell: bash
+        run: |
+          parent_runtime="$(docker image inspect \
+            --format '{{json .Config}} {{json .RootFS}} {{.Architecture}} {{.Os}}' \
+            booley-standard-substrate:ci)"
+          test -n "${parent_runtime}"
+          parent_fingerprint="$(printf '%s' "${parent_runtime}" | sha256sum)"
+          echo "fingerprint=${parent_fingerprint%% *}" >> "${GITHUB_OUTPUT}"
+
       # Default-branch caches are readable from feature branches, while caches
       # saved by a pull request remain scoped to that branch and cannot replace
       # the trusted default-branch entry. A miss seeds a later warm rerun but is
@@ -1006,7 +1036,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/riscv-buildkit-cache
-          key: riscv-tooling-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}
+          key: riscv-tooling-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}-${{ steps.riscv-cache-parent.outputs.fingerprint }}
 
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
