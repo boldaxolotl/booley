@@ -27,45 +27,12 @@ def docker_image():
     inspect = _run(["docker", "image", "inspect", "--format", "{{.Id}}", image])
     assert inspect.returncode == 0, inspect.stderr
     parent_id = inspect.stdout.strip()
-    recipe_root = Path(__file__).resolve().parents[2] / "src/booley/data/docker"
-    wheel = (recipe_root / "Dockerfile.wheel").read_text()
-    legacy = (recipe_root / "Dockerfile").read_text()
-    alias = wheel[
-        wheel.index("RUN if test -e /booley-project") : wheel.index(
-            "USER agent", wheel.index("RUN if test -e /booley-project")
-        )
-    ]
-    assert alias in legacy
+    alias = _canonical_alias_recipe()
     tag = f"127.0.0.1:1/booley1071-parent-{uuid4().hex}:local"
     output = f"booley1071-alias-test-{uuid4().hex}:local"
     assert _run(["docker", "tag", parent_id, tag]).returncode == 0
     try:
-        with tempfile.TemporaryDirectory(prefix="booley1071-image-") as directory:
-            recipe = Path(directory) / "Dockerfile"
-            recipe.write_text(
-                "FROM booley-layout-parent\nUSER root\n"
-                + alias
-                + "LABEL io.booley.wheel.sha256="
-                + "a" * 64
-                + "\nLABEL io.booley.wheel.source-fingerprint=fixture-source\nUSER agent\n"
-            )
-            build = _run(
-                [
-                    "docker",
-                    "build",
-                    "--pull=false",
-                    "--network=none",
-                    "--progress=plain",
-                    "--build-context",
-                    f"booley-layout-parent=docker-image://{tag}",
-                    "-f",
-                    str(recipe),
-                    "-t",
-                    output,
-                    directory,
-                ]
-            )
-            assert build.returncode == 0, build.stderr
+        _build_alias_fixture(alias, tag, output)
         alias_id = _run(
             ["docker", "image", "inspect", "--format", "{{.Id}}", output]
         ).stdout.strip()
@@ -155,11 +122,12 @@ for path in ['/work/.booley_project/worktrees/demo', '/booley-project/worktrees/
 
 
 @pytest.mark.slow
-def test_external_directory_layout_uses_actual_guarded_builder(tmp_path: Path, docker_image):
+def test_external_directory_layout_uses_actual_guarded_builder(
+    tmp_path: Path, docker_image, monkeypatch
+):
     from booley.harness import image_lifecycle as harness
     from booley.runtime import image_lifecycle as lifecycle
     from booley.runtime import project_image
-    from booley.runtime.paths import docker_data_dir
 
     root = tmp_path / "project"
     root.mkdir()
@@ -168,20 +136,12 @@ def test_external_directory_layout_uses_actual_guarded_builder(tmp_path: Path, d
     (external / "proof").write_text("external-state\n")
     parent_id = docker_image[1]
     parent = project_image.inspect_layout_image(parent_id)
-    labels = parent["Config"]["Labels"]
-    output = f"booley1071-external-layout-{uuid4().hex}:local"
-    node = lifecycle.ImageNode(
-        output,
-        docker_data_dir() / "Dockerfile.project-data-layout",
-        lifecycle.PayloadProvenance(
-            "3", labels[lifecycle.LABEL_VERSION], labels[lifecycle.LABEL_PAYLOAD_FINGERPRINT]
-        ),
-        lifecycle.BuildProvenance("fixture-recipe", parent_id),
-        role=lifecycle.ImageRole.PROJECT_DATA_LAYOUT,
-        parent=parent_id,
-        effective_inputs="fixture-layout-inputs",
-        wheel_source_fingerprint="fixture-source",
-    )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    from booley.core.project_dir import reset_cache
+
+    reset_cache()
+    node = _layout_fixture_node(root, parent_id, parent)
+    output = node.reference
     docker = harness._docker_adapter()
     adapter = harness._IncrementalBuildAdapter(root, docker, verbose=True)
     try:
@@ -190,26 +150,14 @@ def test_external_directory_layout_uses_actual_guarded_builder(tmp_path: Path, d
         child = project_image.inspect_layout_image(output)
         project_image.verify_layout_image(parent, child)
         assert child["Config"]["Labels"][lifecycle.LABEL_WHEEL_SHA256] == "a" * 64
-        result = _run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--pull=never",
-                "--network=none",
-                "--name",
-                next_ci_container_name(),
-                "--entrypoint=python3",
-                "--mount",
-                f"type=bind,source={root},target=/work",
-                "--mount",
-                f"type=bind,source={external},target=/booley-project",
-                output,
-                "-c",
-                "from pathlib import Path; assert not Path('/booley-project').is_symlink(); "
-                "assert Path('/booley-project/proof').read_text() == 'external-state\\n'; "
-                "assert not Path('/work/.booley_project').exists()",
-            ]
+        _assert_layout_logical_selection(output, parent_id, root)
+        result = _external_container(
+            output,
+            root,
+            external,
+            "from pathlib import Path; assert not Path('/booley-project').is_symlink(); "
+            "assert Path('/booley-project/proof').read_text() == 'external-state\\n'; "
+            "assert not Path('/work/.booley_project').exists()",
         )
         assert result.returncode == 0, result.stderr
         assert not (root / ".booley_project").exists()
@@ -293,7 +241,24 @@ def test_blocked_board_review_and_show_repair_actual_legacy_checkout(tmp_path: P
         docker_image[0],
         root,
         state,
-        """
+        _LEGACY_BLOCKED_SETUP,
+        duplicate=True,
+    )
+    assert produce.returncode == 0, produce.stderr
+    result = _container(
+        docker_image[1],
+        root,
+        state,
+        _BLOCKED_REVIEW_SHOW,
+        duplicate=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "fixture failure" in result.stdout
+    host = _run(["git", "-C", str(state / "worktrees/demo"), "status", "--porcelain"])
+    assert host.returncode == 0, host.stderr
+
+
+_LEGACY_BLOCKED_SETUP = """
 import subprocess
 from pathlib import Path
 from booley.ticket_board.io import TicketIO
@@ -327,15 +292,12 @@ assert tio.enqueue_ticket('demo')
 record = read_state_record(tio.tickets_dir, 'demo')
 assert record is not None
 write_state_record(tio.tickets_dir, 'demo', record.with_state(TicketState.BLOCKED))
-""",
-        duplicate=True,
-    )
-    assert produce.returncode == 0, produce.stderr
-    result = _container(
-        docker_image[1],
-        root,
-        state,
-        """
+
+git('worktree', 'repair', '--relative-paths', '/booley-project/worktrees/demo')
+assert '../../../work/.git/' in (state / 'worktrees/demo/.git').read_text()
+"""
+
+_BLOCKED_REVIEW_SHOW = """
 from pathlib import Path
 from types import SimpleNamespace
 from booley.core.models import AgentResult
@@ -354,10 +316,206 @@ args = SimpleNamespace(slug='demo', request=False, reason='', force=False, repai
 assert _cmd_board_review(args, Path('/work')) == 0
 assert _cmd_board_show(args, Path('/work')) == 0
 assert blocked_prep.render_blocked_dossier(Path('/work'), 'demo').ready
-""",
-        duplicate=False,
+"""
+
+
+def _canonical_alias_recipe() -> str:
+    recipe_root = Path(__file__).resolve().parents[2] / "src/booley/data/docker"
+    wheel = (recipe_root / "Dockerfile.wheel").read_text()
+    legacy = (recipe_root / "Dockerfile").read_text()
+    alias = wheel[
+        wheel.index("RUN if test -e /booley-project") : wheel.index(
+            "USER agent", wheel.index("RUN if test -e /booley-project")
+        )
+    ]
+    assert alias in legacy
+    return alias
+
+
+def _build_alias_fixture(alias: str, tag: str, output: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="booley1071-image-") as directory:
+        recipe = Path(directory) / "Dockerfile"
+        recipe.write_text(
+            "FROM booley-layout-parent\nUSER root\n"
+            + alias
+            + "LABEL io.booley.wheel.sha256="
+            + "a" * 64
+            + "\nLABEL io.booley.wheel.source-fingerprint=fixture-source\n"
+            + "LABEL io.booley.sandbox.selection-fingerprint="
+            + "c" * 64
+            + "\nUSER agent\n"
+        )
+        build = _run(
+            [
+                "docker",
+                "build",
+                "--pull=false",
+                "--network=none",
+                "--progress=plain",
+                "--build-context",
+                f"booley-layout-parent=docker-image://{tag}",
+                "-f",
+                str(recipe),
+                "-t",
+                output,
+                directory,
+            ]
+        )
+        assert build.returncode == 0, build.stderr
+
+
+def _layout_fixture_node(root: Path, parent_id: str, parent: dict):
+    from booley.runtime import image_lifecycle as lifecycle
+    from booley.runtime.paths import docker_data_dir
+
+    labels = parent["Config"]["Labels"]
+    upstream = lifecycle.ImageNode(
+        parent_id,
+        docker_data_dir() / "Dockerfile.wheel",
+        lifecycle.PayloadProvenance(
+            "3", labels[lifecycle.LABEL_VERSION], labels[lifecycle.LABEL_PAYLOAD_FINGERPRINT]
+        ),
+        lifecycle.BuildProvenance(labels[lifecycle.LABEL_RECIPE_FINGERPRINT], None),
+        role=lifecycle.ImageRole.WHEEL_OVERLAY,
+        wheel_source_fingerprint="fixture-source",
+        logical_selection_fingerprint=labels[lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT],
     )
+    return lifecycle._layout_node(root, upstream, parent_id)
+
+
+def _assert_layout_logical_selection(output: str, parent_id: str, root: Path) -> None:
+    from booley.runtime import image_identity, project_image
+
+    def inspect(reference):
+        return image_identity.decode_image_metadata(
+            reference, [project_image.inspect_layout_image(reference)]
+        )
+
+    assert (
+        image_identity.compare_logical_selection(
+            output, parent_id, inspect, project_root=root
+        ).status
+        is image_identity.Status.MATCH
+    )
+
+
+def _external_container(image: str, root: Path, external: Path, script: str):
+    source = Path(__file__).resolve().parents[2] / "src"
+    return _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--pull=never",
+            "--network=none",
+            f"--user={os.getuid()}:{os.getgid()}",
+            "--name",
+            next_ci_container_name(),
+            "--entrypoint=python3",
+            "--mount",
+            f"type=bind,source={root},target=/work",
+            "--mount",
+            f"type=bind,source={external},target=/booley-project",
+            "--mount",
+            f"type=bind,source={source},target=/opt/booley-test-src,readonly",
+            "-e",
+            "PYTHONPATH=/opt/booley-test-src",
+            "-e",
+            "BOOLEY_PROJECT_DIR=/booley-project",
+            image,
+            "-c",
+            script,
+        ]
+    )
+
+
+@pytest.mark.slow
+def test_external_absolute_fallback_supports_blocked_review_and_show(tmp_path: Path, docker_image):
+    root, local = _repository(tmp_path)
+    setup = _LEGACY_BLOCKED_SETUP.split("git('worktree', 'repair'", maxsplit=1)[0]
+    setup += "\ngit('worktree', 'remove', '--force', '/work/.booley_project/worktrees/demo')\n"
+    produced = _container(docker_image[0], root, local, setup, duplicate=True)
+    assert produced.returncode == 0, produced.stderr
+    external = tmp_path / "external"
+    local.rename(external)
+    create = """
+import subprocess
+from pathlib import Path
+from booley.ticket_board.io import TicketIO
+tio = TicketIO(Path('/booley-project/tickets'), project_root=Path('/work'))
+branch = tio._load_basis_unlocked('demo').participant('outer').ticket_ref.removeprefix('refs/heads/')
+subprocess.run(['git', '-C', '/work', '-c', 'worktree.useRelativePaths=false',
+                'worktree', 'add', '/booley-project/worktrees/demo', branch], check=True)
+assert Path('/booley-project/worktrees/demo/.git').read_text().startswith('gitdir: /work/')
+"""
+    result = _external_container(docker_image[0], root, external, create + _BLOCKED_REVIEW_SHOW)
     assert result.returncode == 0, result.stderr
     assert "fixture failure" in result.stdout
+    assert not (root / ".booley_project").exists()
+
+
+@pytest.mark.slow
+def test_host_init_repairs_actual_legacy_relative_metadata(
+    tmp_path: Path, docker_image, monkeypatch
+):
+    from booley.core.project_dir import reset_cache
+    from booley.harness.setup.common import InitContext
+    from booley.harness.setup.git_hooks import _repair_live_ticket_worktrees
+
+    root, state = _repository(tmp_path)
+    produced = _container(docker_image[0], root, state, _LEGACY_BLOCKED_SETUP, duplicate=True)
+    assert produced.returncode == 0, produced.stderr
+    broken = _run(["git", "-C", str(state / "worktrees/demo"), "status", "--porcelain"])
+    assert broken.returncode != 0
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    reset_cache()
+    assert _repair_live_ticket_worktrees(InitContext(project_root=root)) == []
     host = _run(["git", "-C", str(state / "worktrees/demo"), "status", "--porcelain"])
     assert host.returncode == 0, host.stderr
+    listing = _run(["git", "-C", str(root), "worktree", "list", "--porcelain"])
+    assert "prunable" not in listing.stdout
+    reset_cache()
+
+
+@pytest.mark.slow
+def test_layout_cleanup_uses_actual_docker_latest_inventory(tmp_path, docker_image, monkeypatch):
+    from booley.core.project_dir import reset_cache
+    from booley.harness import image_lifecycle as harness
+    from booley.runtime import image_lifecycle as lifecycle
+    from booley.runtime import project_image
+
+    root = tmp_path / "project"
+    root.mkdir()
+    parent_id = docker_image[1]
+    parent = project_image.inspect_layout_image(parent_id)
+    docker = harness._docker_adapter()
+    adapter = harness._IncrementalBuildAdapter(root, docker, verbose=False)
+    references = []
+    try:
+        for name in ("first", "second"):
+            external = tmp_path / name
+            external.mkdir()
+            monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+            reset_cache()
+            node = _layout_fixture_node(root, parent_id, parent)
+            references.append(node.reference)
+            assert (
+                adapter.prepare(
+                    node, candidate_reference=node.reference, parent_reference=parent_id
+                )
+                == node.reference
+            )
+        checked = lifecycle._reconcile_layout_tag_cleanup(
+            root, references[-1], lifecycle.Intent.CHECK, docker
+        )
+        assert checked.pending == (references[0] + ":latest",)
+        cleaned = lifecycle._reconcile_layout_tag_cleanup(
+            root, references[-1], lifecycle.Intent.ENSURE, docker
+        )
+        assert cleaned.removed == checked.pending
+        assert docker.image_id(references[-1]) is not None
+    finally:
+        for reference in references:
+            if docker.image_id(reference) is not None:
+                docker.remove_tag(reference)
+        reset_cache()

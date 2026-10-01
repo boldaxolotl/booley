@@ -193,7 +193,10 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
         request.project_root, request.image
     ):
         comparison = idk.compare_issued_selection(
-            spec_image, request.image, executable=request.docker_exe or "docker"
+            spec_image,
+            request.image,
+            executable=request.docker_exe or "docker",
+            project_root=request.project_root,
         )
     elif immutable_spec:
         comparison = idk.compare_issued_reference(

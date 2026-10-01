@@ -152,15 +152,6 @@ def _resolve_context(project_root: Path, slug: str) -> BlockedContext:
     if worktree is None or not worktree.is_dir():
         conventional = ticket_workspace_path(project_root, slug)
         worktree = conventional.resolve() if conventional.is_dir() else None
-    if worktree is not None and (worktree / ".git").is_file():
-        from booley.runtime.worktree_repair import repair_ticket_workspace
-
-        with tio._ticket_lock(slug, review_operation=True):
-            basis = tio._load_basis_unlocked(slug)
-            project_ref = basis.participant("project").ticket_ref if basis.project_sha else None
-            repair_ticket_workspace(
-                project_root, worktree, basis.participant("outer").ticket_ref, project_ref
-            )
     log_dir = tio.logs_dir / slug
     return BlockedContext(
         project_root=project_root,
@@ -606,6 +597,7 @@ async def prepare_blocked_dossier(
     started = time.monotonic()
     try:
         ctx = _resolve_context(project_root.resolve(), slug)
+        _repair_preparation_workspace(ctx)
         if not force:
             fresh = _fresh(ctx)
             if fresh.ready:
@@ -699,12 +691,21 @@ def render_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
 
 
 def _failure_message(error: str, slug: str) -> str:
-    guidance = (
-        "repair the recorded Git registration after regenerating and recreating the compatible Sandbox"
-        if "git" in error.lower() or "worktree" in error.lower()
-        else "resolve the underlying preparation error"
-    )
     return (
-        f"blocked dossier preparation failed: {error}; {guidance}; "
+        f"blocked dossier preparation failed: {error}; resolve the underlying preparation error; "
         f"after resolving this failure, run booley board review {slug} to prepare a new dossier"
     )
+
+
+def _repair_preparation_workspace(ctx: BlockedContext) -> None:
+    from booley.runtime.worktree_repair import repair_ticket_workspace
+
+    if ctx.worktree is None or not (ctx.worktree / ".git").is_file():
+        return
+    tio = TicketIO(tickets_dir_from_project_root(ctx.project_root), project_root=ctx.project_root)
+    with tio._ticket_lock(ctx.slug, review_operation=True):
+        basis = tio._load_basis_unlocked(ctx.slug)
+        project_ref = basis.participant("project").ticket_ref if basis.project_sha else None
+        repair_ticket_workspace(
+            ctx.project_root, ctx.worktree, basis.participant("outer").ticket_ref, project_ref
+        )

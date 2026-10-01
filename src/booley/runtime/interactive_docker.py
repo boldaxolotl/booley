@@ -219,6 +219,7 @@ def compare_issued_selection(
     configured_reference: str,
     *,
     executable: str = "docker",
+    project_root: Path | None = None,
 ) -> Comparison:
     """Inspect and compare issued/configured selection without mutation."""
     from booley.runtime.image_identity import compare_logical_selection
@@ -226,7 +227,13 @@ def compare_issued_selection(
     def inspect(reference: str) -> ImageMetadata | None:
         return inspect_image_metadata(reference, executable=executable)
 
-    return compare_logical_selection(issued_reference, configured_reference, inspect)
+    return compare_logical_selection(
+        issued_reference,
+        configured_reference,
+        inspect,
+        project_root=project_root,
+        executable=executable,
+    )
 
 
 def compare_issued_reference(

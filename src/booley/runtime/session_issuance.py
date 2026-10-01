@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -1073,13 +1074,10 @@ def _validate_generated_spec(
     project_data_workspace_target = _require_project_data_mount(
         mounts, issuance.project_data_source, project, layout=issuance.project_data_layout
     )
-    if issuance.project_data_layout == "canonical-alias":
-        from booley.runtime.project_image import project_data_alias_capable
-
-        if not project_data_alias_capable(issuance.image_id):
-            raise RuntimeSpecError(
-                "issued image no longer proves the canonical Project-data alias"
-            )
+    if issuance.project_data_layout == "canonical-alias" and not _project_data_alias_capable(
+        issuance.image_id
+    ):
+        raise RuntimeSpecError("issued image no longer proves the canonical Project-data alias")
     _validate_state_volume(mounts, app, project)
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
@@ -1396,20 +1394,16 @@ def _pin_project_data_mount(
     mounts[index] = f"source={expected_source},target=/booley-project,type=bind"
     shadow_target = _project_data_shadow_target(project, project_data)
     if shadow_target is None:
-        from booley.runtime.project_image import project_data_alias_capable
-
-        if project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
+        if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
             raise RuntimeSpecError(
-                "selected image alias hides the external Project-data source; run init or refresh for a compatible directory layout"
+                "selected image alias hides the external Project-data source; managed images require init or refresh; for an explicitly selected external image, select an image with an ordinary /booley-project directory"
             )
         return
     if any(_mount_target(raw) == shadow_target for raw in mounts):
         raise RuntimeSpecError("Project-data workspace view is already mounted")
     shadow_source = expected_source
     mounts.insert(index + 1, f"source={shadow_source},target={shadow_target},type=bind")
-    from booley.runtime.project_image import project_data_alias_capable
-
-    if project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
+    if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
         mounts[:] = [
             raw
             for raw in mounts
@@ -1706,16 +1700,29 @@ def _require_exact_readonly_mount(mounts: list[str], expected: str, *, last: boo
 
 
 def _mount_target(raw: str) -> str:
-    for field in raw.split(","):
-        key, separator, value = field.partition("=")
-        if separator and key == "target":
-            return value
-    return ""
+    return _mount_fields(raw).get("target", "")
 
 
 def _mount_fields(raw: str) -> dict[str, str]:
-    """Parse Booley's generated Docker mount grammar."""
-    return dict(field.split("=", 1) for field in raw.split(",") if "=" in field)
+    """Parse Booley's unquoted lowercase Docker mount grammar without ambiguity."""
+    fields = {}
+    for field in raw.split(","):
+        key, separator, value = field.partition("=")
+        if '"' in field or key != key.lower():
+            raise RuntimeSpecError("mount fields must use canonical lowercase unquoted grammar")
+        if not separator:
+            continue
+        if key == "src":
+            key = "source"
+        if key in {"target", "dst", "destination"}:
+            key = "target"
+            value = posixpath.normpath("/" + value.lstrip("/")) if value.startswith("/") else value
+        if key in fields:
+            raise RuntimeSpecError("mount has conflicting or repeated fields")
+        fields[key] = value
+    if fields.get("type", "") != fields.get("type", "").lower():
+        raise RuntimeSpecError("mount type must use canonical lowercase grammar")
+    return fields
 
 
 def _runtime_authority_error(spec: dict[str, Any], exc: Exception) -> RuntimeSpecError:
@@ -1920,3 +1927,14 @@ def _spec_project_data_layout(spec: dict[str, Any]) -> str:
         if any(_mount_target(raw) == "/booley-project" for raw in mounts)
         else "canonical-alias"
     )
+
+
+def _project_data_alias_capable(image_id: str) -> bool:
+    from booley.runtime.project_image import DockerImageError, project_data_alias_capable
+
+    if not isinstance(image_id, str):
+        raise RuntimeSpecError("Sandbox image identity is unavailable for Project-data proof")
+    try:
+        return project_data_alias_capable(image_id)
+    except DockerImageError as exc:
+        raise RuntimeSpecError(str(exc)) from exc

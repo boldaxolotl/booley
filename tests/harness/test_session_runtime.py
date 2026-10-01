@@ -2797,7 +2797,9 @@ class TestImageDriftWarning:
         monkeypatch.setattr(
             sr.idk,
             "compare_issued_selection",
-            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
+            lambda *_args, **_kwargs: sr.image_identity.Comparison(
+                sr.image_identity.Status.MISMATCH
+            ),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
@@ -2814,7 +2816,9 @@ class TestImageDriftWarning:
         monkeypatch.setattr(
             sr.idk,
             "compare_issued_reference",
-            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
+            lambda *_args, **_kwargs: sr.image_identity.Comparison(
+                sr.image_identity.Status.MISMATCH
+            ),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
@@ -4117,4 +4121,44 @@ def test_host_repair_defers_active_legacy_layout_and_accepts_canonical_pin(tmp_p
         {"Destination": "/booley-project", "Source": str(source), "Type": "bind", "RW": True}
     )
     with pytest.raises(sr.SessionError, match="regenerate and recreate"):
+        sr.assert_worktree_repair_safe(workspace)
+
+
+def test_host_repair_probe_failure_is_a_session_error(tmp_path, monkeypatch):
+    import json
+
+    from booley.runtime import project_image
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    state = {
+        "Image": "sha256:" + "a" * 64,
+        "Mounts": [{"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True}],
+    }
+    monkeypatch.setattr(
+        sr, "_strict_running_interactive_states", lambda: [("fixture", json.dumps([state]))]
+    )
+
+    def unavailable(_image):
+        raise project_image.DockerImageError("Docker alias probe unavailable")
+
+    monkeypatch.setattr(project_image, "project_data_alias_capable", unavailable)
+    with pytest.raises(sr.SessionError, match="alias probe unavailable"):
+        sr.assert_worktree_repair_safe(workspace)
+
+
+@pytest.mark.parametrize("image", [None, [], 123])
+def test_host_repair_malformed_image_identity_is_a_session_error(tmp_path, monkeypatch, image):
+    import json
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    state = {
+        "Image": image,
+        "Mounts": [{"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True}],
+    }
+    monkeypatch.setattr(
+        sr, "_strict_running_interactive_states", lambda: [("fixture", json.dumps([state]))]
+    )
+    with pytest.raises(sr.SessionError, match="image identity is unavailable"):
         sr.assert_worktree_repair_safe(workspace)

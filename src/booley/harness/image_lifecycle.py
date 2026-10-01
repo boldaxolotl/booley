@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path
@@ -84,7 +86,7 @@ class _LegacyBuildAdapter:
             )
             return adapter.prepare(
                 node,
-                candidate_reference=f"booley-lifecycle-{uuid4().hex}-layout:candidate",
+                candidate_reference=f"booley-lifecycle-{os.getpid()}-{uuid4().hex}-layout:candidate",
                 parent_reference=node.parent,
             )
         if source is ArtifactSource.VERIFIED_RELEASE_PULL:
@@ -291,20 +293,8 @@ class _IncrementalBuildAdapter:
             raise ImageLifecycleError(
                 "Project-data layout parent is unavailable; run init or refresh"
             )
-        parent = project_image.inspect_layout_image(parent_id)
-        if parent.get("Id") != parent_id:
-            raise ImageLifecycleError("Project-data layout parent identity changed")
-        user = project_image.layout_image_user(parent)
-        labels = parent.get("Config", {}).get("Labels", {}) or {}
-        wheel_sha = labels.get(runtime_lifecycle.LABEL_WHEEL_SHA256)
-        if (
-            not wheel_sha
-            or labels.get(runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT)
-            != node.wheel_source_fingerprint
-        ):
-            raise ImageLifecycleError("Project-data layout parent has no matching wheel identity")
-        self._wheel_sha256 = wheel_sha
-        tag = f"127.0.0.1:1/booley-layout-{uuid4().hex}:parent"
+        parent = self._validated_layout_parent(node, parent_id)
+        tag = f"127.0.0.1:1/booley-lifecycle-{os.getpid()}-{uuid4().hex}-layout-parent:candidate"
         self.docker.tag(parent_id, tag)
         try:
             with tempfile.TemporaryDirectory(prefix="booley-layout-context-") as directory:
@@ -312,27 +302,7 @@ class _IncrementalBuildAdapter:
                     raise ImageLifecycleError(
                         "Project-data layout parent tag changed before build"
                     )
-                current = _capacity_request(node, output_tag=candidate)
-                index = self._next_request_index
-                matching = (
-                    index < len(self._requests)
-                    and self._requests[index].managed_image == node.reference
-                )
-                tail = self._requests[index + int(matching) :]
-                spec = docker_image._DockerBuildSpec(
-                    dockerfile=node.recipe,
-                    context=Path(directory),
-                    exists=False,
-                    image=candidate,
-                    build_contexts=(("booley-layout-parent", f"docker-image://{tag}"),),
-                    build_args=("--build-arg", f"BOOLEY_LAYOUT_USER={user}"),
-                    parent_artifact=parent_id,
-                    labels=tuple(self._build_labels(node)),
-                    network="none",
-                    capacity_request=current,
-                    capacity_plan=DockerBuildPlan((current, *tail)),
-                    build_note="preparing Project-data directory layout",
-                )
+                spec, matching = self._layout_build_spec(node, candidate, parent, tag, directory)
                 result = docker_image._docker_build_image(context, spec)
                 if result != 0 or self.docker.image_id(tag) != parent_id:
                     raise ImageLifecycleError(
@@ -346,8 +316,60 @@ class _IncrementalBuildAdapter:
         except RuntimeError as exc:
             raise ImageLifecycleError(str(exc)) from exc
         finally:
+            self._remove_layout_parent_tag(context, tag, parent_id)
+
+    def _remove_layout_parent_tag(self, context, tag: str, parent_id: str) -> None:
+        try:
             if self.docker.image_id(tag) == parent_id:
                 self.docker.remove_tag(tag)
+        except (ImageLifecycleError, OSError) as exc:
+            context.record("layout_parent_cleanup", "warn", str(exc))
+
+    def _validated_layout_parent(self, node: ImageNode, parent_id: str) -> dict:
+        try:
+            parent = project_image.inspect_layout_image(parent_id)
+            project_image.layout_image_user(parent)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(str(exc)) from exc
+        if parent.get("Id") != parent_id:
+            raise ImageLifecycleError("Project-data layout parent identity changed")
+        labels = parent.get("Config", {}).get("Labels", {}) or {}
+        wheel_sha = labels.get(runtime_lifecycle.LABEL_WHEEL_SHA256)
+        if (
+            not wheel_sha
+            or labels.get(runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT)
+            != node.wheel_source_fingerprint
+        ):
+            raise ImageLifecycleError("Project-data layout parent has no matching wheel identity")
+        self._wheel_sha256 = wheel_sha
+        return parent
+
+    def _layout_build_spec(self, node, candidate, parent, tag, directory):
+        from booley.harness.setup import docker_image
+
+        parent_id = parent["Id"]
+        user = project_image.layout_image_user(parent)
+        current = _capacity_request(node, output_tag=candidate)
+        index = self._next_request_index
+        matching = (
+            index < len(self._requests) and self._requests[index].managed_image == node.reference
+        )
+        tail = self._requests[index + int(matching) :]
+        spec = docker_image._DockerBuildSpec(
+            dockerfile=node.recipe,
+            context=Path(directory),
+            exists=False,
+            image=candidate,
+            build_contexts=(("booley-layout-parent", f"docker-image://{tag}"),),
+            build_args=("--build-arg", f"BOOLEY_LAYOUT_USER={user}"),
+            parent_artifact=parent_id,
+            labels=tuple(self._build_labels(node, parent_id)),
+            network="none",
+            capacity_request=current,
+            capacity_plan=DockerBuildPlan((current, *tail)),
+            build_note="preparing Project-data directory layout",
+        )
+        return spec, matching
 
     def _pull_complete_release(self, node: ImageNode) -> str:
         from booley.harness.setup.docker_image import _try_pull_image, remote_tag
@@ -413,7 +435,7 @@ class _IncrementalBuildAdapter:
             build_contexts=contexts,
             build_args=build_args,
             parent_artifact=parent_id,
-            labels=tuple(self._build_labels(node)),
+            labels=tuple(self._build_labels(node, parent_id)),
             build_note=f"preparing {node.role.value}",
             capacity_request=current,
             capacity_plan=tail,
@@ -427,7 +449,20 @@ class _IncrementalBuildAdapter:
         if planned_index is not None:
             self._next_request_index += 1
 
-    def _build_labels(self, node: ImageNode) -> list[tuple[str, str]]:
+    def _inherited_wheel_sha(self, node, parent_id) -> str:
+        if node.role is ImageRole.PROJECT_OVERLAY and parent_id is not None:
+            sha = self.docker.label(parent_id, runtime_lifecycle.LABEL_WHEEL_SHA256)
+            fingerprint = self.docker.label(
+                parent_id, runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT
+            )
+            if not sha or fingerprint != node.wheel_source_fingerprint:
+                raise ImageLifecycleError("Project overlay parent has no matching wheel identity")
+            return sha
+        return self._wheel_sha256 or ""
+
+    def _build_labels(
+        self, node: ImageNode, parent_id: str | None = None
+    ) -> list[tuple[str, str]]:
         labels = [
             (runtime_lifecycle.LABEL_SCHEMA, runtime_lifecycle.PROVENANCE_SCHEMA),
             (runtime_lifecycle.LABEL_ARTIFACT_ROLE, node.role.value),
@@ -436,6 +471,8 @@ class _IncrementalBuildAdapter:
             (runtime_lifecycle.LABEL_BUILD_ORIGIN, "local"),
             (runtime_lifecycle.LABEL_VERSION, node.payload.version),
         ]
+        if node.role is ImageRole.PROJECT_DATA_LAYOUT:
+            labels.append((project_image.LABEL_LAYOUT_REFERENCE, node.reference))
         if node.wheel_source_fingerprint is not None:
             labels.append(
                 (
@@ -443,7 +480,9 @@ class _IncrementalBuildAdapter:
                     node.wheel_source_fingerprint,
                 )
             )
-            labels.append((runtime_lifecycle.LABEL_WHEEL_SHA256, self._wheel_sha256 or ""))
+            labels.append(
+                (runtime_lifecycle.LABEL_WHEEL_SHA256, self._inherited_wheel_sha(node, parent_id))
+            )
         if node.runtime_base_contract is not None:
             labels.append(
                 (runtime_lifecycle.LABEL_RUNTIME_BASE_CONTRACT, node.runtime_base_contract)
@@ -618,19 +657,9 @@ def reconcile(
         root = scope.project_root.resolve()
     else:
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    if (
-        isinstance(scope, ProjectImageScope)
-        and intent is not Intent.CHECK
-        and runtime_lifecycle._external_data_layout(root)
-    ):
-        selected = runtime_lifecycle._selected_reference(root)
-        selected_id = docker.image_id(selected)
-        if (
-            selected_id
-            and selected in {BASE_IMAGE, *FLAVOR_RECIPES, project_image.project_image_name(root)}
-            and project_image.project_data_alias_capable(selected_id)
-        ):
-            return reconcile_planned(scope, intent, verbose=verbose)
+    layout_result = _planned_layout_reconciliation(scope, intent, docker, verbose)
+    if layout_result is not None:
+        return layout_result
     builder = (
         None
         if intent is Intent.CHECK
@@ -774,3 +803,22 @@ def reconcile_planned(
     except BaseException:
         abort(prepared)
         raise
+
+
+def _planned_layout_reconciliation(scope, intent, docker, verbose) -> LifecycleResult | None:
+    if not isinstance(scope, ProjectImageScope) or intent is Intent.CHECK:
+        return None
+    root = scope.project_root.resolve()
+    if runtime_lifecycle._external_data_layout(root):
+        selected = runtime_lifecycle._selected_reference(root)
+        selected_id = docker.image_id(selected)
+        if (
+            selected_id
+            and selected in {BASE_IMAGE, *FLAVOR_RECIPES, project_image.project_image_name(root)}
+            and runtime_lifecycle._layout_alias_capable(selected_id)
+        ):
+            try:
+                return reconcile_planned(scope, intent, verbose=verbose)
+            except runtime_lifecycle.IncrementalPlanUnavailableError:
+                pass  # Preserve user-owned recipes through the legacy builder.
+    return None

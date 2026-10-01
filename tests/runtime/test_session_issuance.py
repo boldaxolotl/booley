@@ -1964,7 +1964,17 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
         runtime_spec._validate_environment(spec, None)
 
 
-def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(issued, monkeypatch):
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/booley-project/hidden",
+        "//booley-project/hidden",
+        "/booley-project/../booley-project/hidden",
+    ],
+)
+def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
+    issued, monkeypatch, target
+):
     from booley.runtime import project_image
 
     project, _legacy, _path, _stamp = issued
@@ -1983,9 +1993,95 @@ def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(issue
     stamp = runtime_spec.issue(project, spec, path)
     assert stamp.project_data_layout == "canonical-alias"
     assert runtime_spec.validate(project, spec, path) == stamp
-    spec["mounts"].insert(
-        1, f"source={expected_source},target=/booley-project/hidden,type=bind,readonly"
-    )
+    spec["mounts"].insert(1, f"source={expected_source},target={target},type=bind,readonly")
     path = dc.write_devcontainer(project, spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
         runtime_spec.issue(project, spec, path)
+
+
+@pytest.mark.parametrize("key", ["dst", "destination"])
+def test_canonical_alias_rejects_nonbind_mount_destination_synonyms(issued, monkeypatch, key):
+    from booley.runtime import project_image
+
+    project, _legacy, _path, _stamp = issued
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    spec["mounts"].append(f"type=tmpfs,{key}=//booley-project/hidden")
+    path = dc.write_devcontainer(project, spec)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
+        runtime_spec.issue(project, spec, path)
+
+
+def test_sealing_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypatch):
+    from booley.runtime import project_image
+
+    project, _legacy, _path, _stamp = issued
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+
+    def unavailable(_image):
+        raise project_image.DockerImageError("Docker alias probe unavailable")
+
+    monkeypatch.setattr(project_image, "project_data_alias_capable", unavailable)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="alias probe unavailable"):
+        runtime_spec.seal(project, spec)
+
+
+def test_validation_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypatch):
+    from booley.runtime import project_image
+
+    project, _legacy, _path, _stamp = issued
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    runtime_spec.issue(project, spec, path)
+
+    def unavailable(_image):
+        raise project_image.DockerImageError("Docker alias probe unavailable")
+
+    monkeypatch.setattr(project_image, "project_data_alias_capable", unavailable)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="alias probe unavailable"):
+        runtime_spec.validate(project, spec, path)
+
+
+@pytest.mark.parametrize(
+    "mount",
+    [
+        "type=tmpfs,Target=/booley-project/hidden",
+        'type=tmpfs,"dst=/booley-project/hidden"',
+        "type=tmpfs,target=/safe,dst=/booley-project/hidden",
+    ],
+)
+def test_mount_parser_rejects_noncanonical_or_conflicting_destination_authority(mount):
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec._mount_target(mount)
+
+
+def test_mount_parser_normalizes_source_alias_and_rejects_conflict():
+    fields = runtime_spec._mount_fields("src=/owned,target=/safe,type=bind,readonly")
+    assert fields["source"] == "/owned"
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="conflicting or repeated fields"):
+        runtime_spec._mount_fields("source=/owned,src=/other,target=/safe,type=bind,readonly")
+
+
+def test_mount_surface_rejects_normalized_forbidden_target():
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="forbidden host authority"):
+        runtime_spec._validate_mount_surfaces(
+            ["source=/owned,target=/var/run//docker.sock,type=bind,readonly"], None
+        )

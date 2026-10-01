@@ -504,11 +504,7 @@ def _attach_branch(
     if not branch_sha:
         args = ("worktree", "add", "-b", branch, str(destination), base)
     _git_or_raise(source, "config", "gc.worktreePruneExpire", "never")
-    config = (
-        worktree_creation_config(project_root)
-        if project_root is not None
-        else ("-c", "worktree.useRelativePaths=false")
-    )
+    config = _creation_config(project_root)
     result = _git(source, *config, *args)
     if result.returncode != 0:
         raise TicketWorkspaceError(
@@ -546,11 +542,7 @@ def _prepare_basis_project_checkout(
 def _attach_existing_branch(
     source: Path, destination: Path, branch: str, *, project_root: Path | None = None
 ) -> None:
-    config = (
-        worktree_creation_config(project_root)
-        if project_root is not None
-        else ("-c", "worktree.useRelativePaths=false")
-    )
+    config = _creation_config(project_root)
     _git_or_raise(source, "config", "gc.worktreePruneExpire", "never")
     result = _git(source, *config, "worktree", "add", str(destination), branch)
     if result.returncode != 0:
@@ -715,3 +707,11 @@ def _git_or_raise(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
             f"git {' '.join(args)} failed in {cwd} (rc={result.returncode}): {detail}"
         )
     return result
+
+
+def _creation_config(project_root: Path | None) -> tuple[str, ...]:
+    return (
+        worktree_creation_config(project_root)
+        if project_root is not None
+        else ("-c", "worktree.useRelativePaths=false")
+    )

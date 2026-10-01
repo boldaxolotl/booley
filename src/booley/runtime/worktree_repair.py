@@ -82,66 +82,92 @@ def _prove(owner: Path, checkout: Path, ref: str) -> _Proof:
     if (admin / _text(admin / "commondir")).resolve() != common.resolve():
         raise WorktreeRepairError(f"foreign common Git directory: {admin}")
     candidates = _association_paths(owner, checkout, common)
-    associated = any(
-        Path(os.path.normpath(candidate / pointer)).resolve() == admin.resolve()
-        for candidate in candidates
-    )
-    known_admin = Path("/work/.git/worktrees") / admin.name
-    known_pair = Path("/work/.booley_project/.git/worktrees") / admin.name
-    known_alias_pair = Path("/booley-project/.git/worktrees") / admin.name
-    associated = associated or any(
-        Path(os.path.normpath(candidate / pointer)) == known_admin for candidate in candidates
-    )
-    if owner == worktree_state_dir(owner):
-        associated = (
-            associated
-            or pointer in {known_pair, known_alias_pair}
-            or any(
-                Path(os.path.normpath(candidate / pointer)) in {known_pair, known_alias_pair}
-                for candidate in candidates
-            )
-        )
-    if not associated and pointer != known_admin:
-        raise WorktreeRepairError(f"foreign or unassociated worktree gitfile: {checkout}")
-    reverse = Path(_text(admin / "gitdir"))
-    backlink = reverse if reverse.is_absolute() else Path(os.path.normpath(admin / reverse))
-    if backlink not in tuple(candidate / ".git" for candidate in candidates):
-        raise WorktreeRepairError(f"foreign or unassociated reverse worktree link: {admin}")
-    matches = [
-        path
-        for path in (common / "worktrees").iterdir()
-        if path.is_dir() and _text(path / "HEAD") == f"ref: {ref}"
-    ]
-    if not detached and matches != [admin]:
+    spellings = _administration_spellings(owner, common, admin)
+    _prove_pointer(checkout, pointer, admin, candidates, spellings)
+    _prove_backlink(admin, candidates, spellings)
+    if not detached and _registrations_for_ref(common, ref) != [admin]:
         raise WorktreeRepairError(f"ambiguous owner registration for ref {ref}")
     return _Proof(owner, checkout, admin, ref)
 
 
+def _administration_spellings(owner: Path, common: Path, admin: Path) -> tuple[Path, ...]:
+    if common.resolve() != (owner / ".git").resolve():
+        return (admin,)
+    if owner == worktree_state_dir(owner):
+        return (
+            admin,
+            Path("/work/.booley_project/.git/worktrees") / admin.name,
+            Path("/booley-project/.git/worktrees") / admin.name,
+        )
+    return (admin, Path("/work/.git/worktrees") / admin.name)
+
+
+def _prove_pointer(checkout, pointer, admin, candidates, spellings) -> None:
+    targets = tuple(Path(os.path.normpath(candidate / pointer)) for candidate in candidates)
+    if not any(target.resolve() == admin.resolve() or target in spellings for target in targets):
+        raise WorktreeRepairError(f"foreign or unassociated worktree gitfile: {checkout}")
+
+
+def _prove_backlink(admin, candidates, spellings) -> None:
+    reverse = Path(_text(admin / "gitdir"))
+    targets = tuple(Path(os.path.normpath(spelling / reverse)) for spelling in spellings)
+    expected = tuple(candidate / ".git" for candidate in candidates)
+    if not any(target in expected for target in targets):
+        raise WorktreeRepairError(f"foreign or unassociated reverse worktree link: {admin}")
+
+
+def _registrations_for_ref(common: Path, ref: str) -> list[Path]:
+    matches = []
+    for path in (common / "worktrees").iterdir():
+        if not path.is_dir():
+            continue
+        # An incomplete unrelated registration has no recorded ref to collide.
+        # The selected registration's mandatory metadata was validated above.
+        with contextlib.suppress(WorktreeRepairError):
+            if _text(path / "HEAD") == f"ref: {ref}":
+                matches.append(path)
+    return matches
+
+
 def _metadata_flag(relative: bool) -> tuple[str, ...]:
-    match = re.match(r"git version (\d+)\.(\d+)", _git(Path.cwd(), "--version"))
-    if match is None or tuple(map(int, match.groups())) < (2, 48):
+    from booley.runtime.worktree_paths import _git_supports_relative_paths
+
+    if not _git_supports_relative_paths():
         return ()
     return ("--relative-paths" if relative else "--no-relative-paths",)
 
 
-def repair_ticket_worktree(owner: Path, checkout: Path, ref: str) -> None:
-    """Reconcile a known Ticket checkout without reconstructing lost Git state.
+def _metadata_healthy(proof: _Proof) -> bool:
+    pointer = Path(_text(proof.checkout / ".git").removeprefix("gitdir: "))
+    backlink = Path(_text(proof.administration / "gitdir"))
+    return (proof.checkout / pointer).resolve() == proof.administration.resolve() and (
+        proof.administration / backlink
+    ).resolve() == (proof.checkout / ".git").resolve()
 
-    Callers hold the existing Ticket/repository mutation lock. Relative repair
-    in a Sandbox requires its immutable alias layout; old layouts are deferred.
-    """
-    if not ref.startswith("refs/heads/"):
-        raise WorktreeRepairError(f"expected a recorded Ticket ref, got {ref!r}")
-    owner, checkout = owner.resolve(), checkout.resolve()
-    state = worktree_state_dir(owner)
-    if not checkout.is_relative_to(state / "worktrees"):
-        raise WorktreeRepairError(f"worktree outside the selected Ticket root: {checkout}")
-    if owner == Path("/work") and not relative_worktree_paths(owner):
-        raise WorktreeRepairError(
-            "regenerate and recreate the compatible Sandbox before worktree repair"
-        )
-    proof = _prove(owner, checkout, ref)
-    _apply_proof(proof, relative=relative_worktree_paths(owner))
+
+def _repair_proofs(root: Path, proofs: list[_Proof]) -> None:
+    relative = relative_worktree_paths(root)
+    if root == Path("/work") and not relative:
+        for proof in proofs:
+            pointer = Path(_text(proof.checkout / ".git").removeprefix("gitdir: "))
+            backlink = Path(_text(proof.administration / "gitdir"))
+            if not pointer.is_absolute() or not backlink.is_absolute():
+                raise WorktreeRepairError(
+                    "regenerate and recreate the compatible Sandbox before relative worktree repair"
+                )
+    needs_repair = [proof for proof in proofs if not _metadata_healthy(proof)]
+    if root != Path("/work") and needs_repair:
+        from booley.runtime.session_runtime import SessionError, assert_worktree_repair_safe
+
+        try:
+            assert_worktree_repair_safe(root)
+        except SessionError as exc:
+            raise WorktreeRepairError(str(exc)) from exc
+    for proof in proofs:
+        if proof in needs_repair:
+            _apply_proof(proof, relative=relative)
+        else:
+            _git(proof.owner, "config", "gc.worktreePruneExpire", "never")
 
 
 def _apply_proof(proof: _Proof, *, relative: bool) -> None:
@@ -174,10 +200,6 @@ def repair_ticket_workspace(
         raise WorktreeRepairError(
             f"Ticket checkout is outside its selected worktree root: {checkout}"
         )
-    if root == Path("/work") and not relative_worktree_paths(root):
-        raise WorktreeRepairError(
-            "regenerate and recreate the compatible Sandbox before worktree repair"
-        )
     from booley.core.file_lock import release_file_lock, wait_for_file_lock
 
     lock_path = worktree_state_dir(root) / "worktrees/.locks/_parent_git.lock"
@@ -187,6 +209,8 @@ def repair_ticket_workspace(
         try:
             proofs = [_prove(root, checkout, outer_ref)]
             paired = resolve_checkout_project_dir(checkout)
+            if project_ref is not None and not (paired / ".git").is_file():
+                raise WorktreeRepairError("recorded paired Ticket worktree metadata is missing")
             if paired.is_relative_to(checkout) and (paired / ".git").is_file():
                 owner = resolve_inner_project_repo(root)
                 if owner is None or project_ref is None:
@@ -194,8 +218,7 @@ def repair_ticket_workspace(
                         "paired worktree repair requires its recorded owner and Ticket ref"
                     )
                 proofs.append(_prove(owner.resolve(), paired.resolve(), project_ref))
-            for proof in proofs:
-                _apply_proof(proof, relative=relative_worktree_paths(root))
+            _repair_proofs(root, proofs)
         finally:
             release_file_lock(handle)
 
@@ -233,7 +256,6 @@ def repair_acceptance_worktrees(root: Path, rows: tuple[tuple[Path, Path, str], 
                     )
                 _git(owner, "merge-base", "--is-ancestor", prepared_sha, head)
                 proofs.append(proof)
-            for proof in proofs:
-                _apply_proof(proof, relative=relative_worktree_paths(root))
+            _repair_proofs(root, proofs)
         finally:
             release_file_lock(handle)

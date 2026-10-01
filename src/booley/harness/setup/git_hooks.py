@@ -450,11 +450,12 @@ def _worktree_policy_capable(
 def _repair_live_ticket_worktrees(ctx: InitContext) -> list[str]:
     """Reconcile recorded current generations after running-layout safety proof."""
     from booley.runtime.session_runtime import SessionError, assert_worktree_repair_safe
-    from booley.runtime.worktree_paths import worktree_state_dir
-    from booley.runtime.worktree_repair import repair_ticket_workspace
+    from booley.runtime.worktree_paths import relative_worktree_paths, worktree_state_dir
     from booley.ticket_board.helpers import tickets_dir_from_project_root
     from booley.ticket_board.io import TicketIO
 
+    if not relative_worktree_paths(ctx.project_root):
+        return []
     directory = worktree_state_dir(ctx.project_root) / "worktrees"
     if not directory.is_dir():
         return []
@@ -468,45 +469,56 @@ def _repair_live_ticket_worktrees(ctx: InitContext) -> list[str]:
     tio = TicketIO(tickets_dir_from_project_root(ctx.project_root), project_root=ctx.project_root)
     failures: list[str] = []
     repaired: set[Path] = set()
+    deferred: set[str] = set()
     for document in tio.tickets_dir.rglob("*.md"):
         slug = document.stem
         try:
-            if tio.inspect_ticket(slug) is None:
-                continue
-            with tio._ticket_lock(slug, review_operation=True):
-                basis = tio._load_basis_unlocked(slug)
-                outer = basis.participant("outer")
-                listing = subprocess.run(
-                    ["git", "-C", str(ctx.project_root), "worktree", "list", "--porcelain"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=30,
-                ).stdout
-                candidate = None
-                for line in listing.splitlines():
-                    if line.startswith("worktree "):
-                        raw = Path(line.removeprefix("worktree "))
-                        candidate = directory / raw.name
-                    elif line == f"branch {outer.ticket_ref}" and candidate in linked:
-                        project = next(
-                            (row for row in basis.participants if row.role == "project"), None
-                        )
-                        repair_ticket_workspace(
-                            ctx.project_root,
-                            candidate,
-                            outer.ticket_ref,
-                            project.ticket_ref if project is not None else None,
-                        )
-                        repaired.add(candidate)
+            repaired.update(
+                _repair_recorded_ticket(ctx.project_root, tio, slug, directory, linked)
+            )
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             failures.append(f"{slug}: {exc}")
+            deferred.add(slug)
     for checkout in linked:
-        if checkout not in repaired:
+        if checkout not in repaired and checkout.name not in deferred:
             failures.append(
                 f"{checkout}: no recorded current Ticket owner; metadata was not rewritten"
             )
     return failures
+
+
+def _repair_recorded_ticket(root, tio, slug, directory, linked) -> set[Path]:
+    from booley.runtime.worktree_repair import repair_ticket_workspace
+    from booley.ticket_board.scanner import find_ticket_file
+
+    _path, status = find_ticket_file(tio.tickets_dir, slug, project_root=root)
+    if status in {None, "draft"} or tio.inspect_ticket(slug) is None:
+        return set()
+    repaired = set()
+    with tio._ticket_lock(slug, review_operation=True):
+        basis = tio._load_basis_unlocked(slug)
+        outer = basis.participant("outer")
+        listing = subprocess.run(
+            ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+        candidate = None
+        for line in listing.splitlines():
+            if line.startswith("worktree "):
+                candidate = directory / Path(line.removeprefix("worktree ")).name
+            elif line == f"branch {outer.ticket_ref}" and candidate in linked:
+                project = next((row for row in basis.participants if row.role == "project"), None)
+                repair_ticket_workspace(
+                    root,
+                    candidate,
+                    outer.ticket_ref,
+                    project.ticket_ref if project is not None else None,
+                )
+                repaired.add(candidate)
+    return repaired
 
 
 def _step_worktree_link_policy(

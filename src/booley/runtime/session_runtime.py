@@ -376,7 +376,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
     if not is_local_image_id(spec_image):
         comparison = image_identity.Comparison(image_identity.Status.MISMATCH)
     elif project_image.is_managed_sandbox_image(workspace, expected):
-        comparison = idk.compare_issued_selection(spec_image, expected)
+        comparison = idk.compare_issued_selection(spec_image, expected, project_root=workspace)
     else:
         comparison = idk.compare_issued_reference(spec_image, expected)
     if comparison.status is image_identity.Status.MATCH:
@@ -1401,7 +1401,8 @@ def assert_worktree_repair_safe(workspace: Path) -> None:
         ):
             raise SessionError(
                 f"worktree repair deferred: running Sandbox {name!r} uses an incompatible layout; "
-                "regenerate and recreate the Sandbox before running booley init again"
+                "stop the Sandbox before host metadata repair; regenerate and recreate "
+                "a compatible local Sandbox before resuming portable worktree use"
             )
 
 
@@ -1731,15 +1732,15 @@ def _project_data_mount_root_is_pinned(
         return False
     by_target = {item.get("Destination"): item for item in mounts}
     canonical_alias = issuance is not None and issuance.project_data_layout == "canonical-alias"
-    if canonical_alias:
-        from booley.runtime.project_image import project_data_alias_capable
-
-        if not project_data_alias_capable(issuance.image_id) or any(
+    if canonical_alias and (
+        not _project_data_alias_capable(issuance.image_id)
+        or any(
             isinstance(target, str)
             and (target == "/booley-project" or target.startswith("/booley-project/"))
             for target in by_target
-        ):
-            by_target = {}
+        )
+    ):
+        by_target = {}
     project_data = by_target.get("/work/.booley_project" if canonical_alias else "/booley-project")
     if not _writable_bind(project_data):
         return False
@@ -2481,3 +2482,14 @@ def status(workspace: Path) -> str:
     if not idk.container_exists(name):
         return "absent"
     return "running" if idk.container_running(name) else "stopped"
+
+
+def _project_data_alias_capable(image_id: str) -> bool:
+    from booley.runtime.project_image import DockerImageError, project_data_alias_capable
+
+    if not isinstance(image_id, str):
+        raise SessionError("Sandbox image identity is unavailable for Project-data proof")
+    try:
+        return project_data_alias_capable(image_id)
+    except DockerImageError as exc:
+        raise SessionError(str(exc)) from exc

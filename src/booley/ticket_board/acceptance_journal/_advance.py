@@ -1215,24 +1215,12 @@ def _finalize_all(
         _protect_finalized_candidates(
             transaction.root, transaction.project_repository, by_role, journal
         )
-        _remove_finalization_worktrees(
-            transaction.root,
-            temporary,
-            transaction.project_repository,
-            project_checkout,
-            journal=journal,
-        )
+        _remove_transaction_finalization(transaction, temporary, project_checkout, journal)
         return
     _reject_unjournaled_keepalives(
         transaction.root, transaction.project_repository, by_role, journal
     )
-    _remove_finalization_worktrees(
-        transaction.root,
-        temporary,
-        transaction.project_repository,
-        project_checkout,
-        journal=journal,
-    )
+    _remove_transaction_finalization(transaction, temporary, project_checkout, journal)
     temporary.parent.mkdir(parents=True, exist_ok=True)
     temporary.mkdir()
     journaled = False
@@ -1249,13 +1237,17 @@ def _finalize_all(
         if not journaled:
             journaled = _finalization_was_recorded(transaction, journal)
         if not journaled or protected:
-            _remove_finalization_worktrees(
-                transaction.root,
-                temporary,
-                transaction.project_repository,
-                project_checkout,
-                journal=journal,
-            )
+            _remove_transaction_finalization(transaction, temporary, project_checkout, journal)
+
+
+def _remove_transaction_finalization(transaction, temporary, project_checkout, journal) -> None:
+    _remove_finalization_worktrees(
+        transaction.root,
+        temporary,
+        transaction.project_repository,
+        project_checkout,
+        journal=journal,
+    )
 
 
 def _publish_all(transaction: _AcceptanceTransaction) -> None:

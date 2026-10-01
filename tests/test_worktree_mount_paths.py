@@ -8,7 +8,10 @@ from booley.core.project_dir import reset_cache
 
 
 @pytest.fixture(autouse=True)
-def isolated_project_selection():
+def isolated_project_selection(monkeypatch):
+    from booley.runtime import session_runtime
+
+    monkeypatch.setattr(session_runtime, "assert_worktree_repair_safe", lambda _root: None)
     reset_cache()
     yield
     reset_cache()
@@ -71,7 +74,7 @@ def linked_ticket(tmp_path: Path, monkeypatch):
 
 
 def test_owner_proven_repair_preserves_dirty_index_and_replays(linked_ticket):
-    from booley.runtime.worktree_repair import repair_ticket_worktree
+    from booley.runtime.worktree_repair import repair_ticket_workspace
 
     root, checkout = linked_ticket
     head = _git(checkout, "rev-parse", "HEAD")
@@ -83,8 +86,8 @@ def test_owner_proven_repair_preserves_dirty_index_and_replays(linked_ticket):
     admin = Path(pointer)
     (checkout / ".git").write_text(f"gitdir: /work/.git/worktrees/{admin.name}\n")
     (admin / "gitdir").write_text("/booley-project/worktrees/demo/.git\n")
-    repair_ticket_worktree(root, checkout, "refs/heads/ticket/demo")
-    repair_ticket_worktree(root, checkout, "refs/heads/ticket/demo")
+    repair_ticket_workspace(root, checkout, "refs/heads/ticket/demo")
+    repair_ticket_workspace(root, checkout, "refs/heads/ticket/demo")
     assert _git(checkout, "rev-parse", "HEAD") == head
     assert _git(checkout, "write-tree") == index
     assert (checkout / "source").read_text() == "dirty\n"
@@ -93,18 +96,18 @@ def test_owner_proven_repair_preserves_dirty_index_and_replays(linked_ticket):
 
 
 def test_repair_refuses_foreign_or_unassociated_metadata(linked_ticket):
-    from booley.runtime.worktree_repair import WorktreeRepairError, repair_ticket_worktree
+    from booley.runtime.worktree_repair import WorktreeRepairError, repair_ticket_workspace
 
     root, checkout = linked_ticket
     pointer = (checkout / ".git").read_text()
     with pytest.raises(WorktreeRepairError, match="ref"):
-        repair_ticket_worktree(root, checkout, "refs/heads/foreign")
+        repair_ticket_workspace(root, checkout, "refs/heads/foreign")
     assert (checkout / ".git").read_text() == pointer
 
 
 @pytest.mark.parametrize("mutation", ["malformed", "foreign-pointer", "foreign-backlink", "lost"])
 def test_repair_refuses_unproven_registration_without_mutation(linked_ticket, mutation):
-    from booley.runtime.worktree_repair import WorktreeRepairError, repair_ticket_worktree
+    from booley.runtime.worktree_repair import WorktreeRepairError, repair_ticket_workspace
 
     root, checkout = linked_ticket
     admin = Path((checkout / ".git").read_text().removeprefix("gitdir: ").strip())
@@ -118,18 +121,18 @@ def test_repair_refuses_unproven_registration_without_mutation(linked_ticket, mu
         (checkout / ".git").write_text("gitdir: /work/.git/worktrees/lost-registration\n")
     before = (checkout / ".git").read_bytes()
     with pytest.raises(WorktreeRepairError):
-        repair_ticket_worktree(root, checkout, "refs/heads/ticket/demo")
+        repair_ticket_workspace(root, checkout, "refs/heads/ticket/demo")
     assert (checkout / ".git").read_bytes() == before
     assert (checkout / "source").read_text() == "original\n"
 
 
 def test_old_git_repair_omits_unsupported_mode_flags(monkeypatch):
-    from booley.runtime import worktree_repair
+    from booley.runtime import worktree_paths, worktree_repair
 
-    monkeypatch.setattr(worktree_repair, "_git", lambda *_args: "git version 2.47.3")
+    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: False)
     assert worktree_repair._metadata_flag(True) == ()
     assert worktree_repair._metadata_flag(False) == ()
-    monkeypatch.setattr(worktree_repair, "_git", lambda *_args: "git version 2.48.0")
+    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: True)
     assert worktree_repair._metadata_flag(True) == ("--relative-paths",)
     assert worktree_repair._metadata_flag(False) == ("--no-relative-paths",)
 
@@ -181,3 +184,102 @@ def test_unsupported_git_and_linked_root_use_explicit_creation_fallback(tmp_path
         "-c",
         "worktree.useRelativePaths=false",
     )
+
+
+def test_host_repairs_real_cross_mount_relative_backlink(linked_ticket):
+    from booley.runtime.worktree_repair import repair_ticket_workspace
+
+    root, checkout = linked_ticket
+    admin = Path((checkout / ".git").read_text().removeprefix("gitdir: ").strip())
+    (checkout / ".git").write_text(f"gitdir: ../../../work/.git/worktrees/{admin.name}\n")
+    (admin / "gitdir").write_text(f"../../../../booley-project/worktrees/{checkout.name}/.git\n")
+    repair_ticket_workspace(root, checkout, "refs/heads/ticket/demo")
+    assert _git(checkout, "symbolic-ref", "HEAD") == "refs/heads/ticket/demo"
+    assert "prunable" not in _git(root, "worktree", "list", "--porcelain")
+
+
+def test_unrelated_incomplete_registration_does_not_block_owner_repair(linked_ticket):
+    from booley.runtime.worktree_repair import repair_ticket_workspace
+
+    root, checkout = linked_ticket
+    (root / ".git/worktrees/incomplete").mkdir()
+    repair_ticket_workspace(root, checkout, "refs/heads/ticket/demo")
+    assert _git(checkout, "symbolic-ref", "HEAD") == "refs/heads/ticket/demo"
+
+
+def test_host_repair_defers_before_any_metadata_change_with_active_legacy_sandbox(
+    linked_ticket, monkeypatch
+):
+    from booley.runtime import session_runtime
+    from booley.runtime.worktree_repair import WorktreeRepairError, repair_ticket_workspace
+
+    root, checkout = linked_ticket
+    admin = Path((checkout / ".git").read_text().removeprefix("gitdir: ").strip())
+    (checkout / ".git").write_text(f"gitdir: /work/.git/worktrees/{admin.name}\n")
+    (admin / "gitdir").write_text("/booley-project/worktrees/demo/.git\n")
+    before = (checkout / ".git").read_bytes()
+
+    def unsafe(_root):
+        raise session_runtime.SessionError("running Sandbox uses incompatible layout")
+
+    monkeypatch.setattr(session_runtime, "assert_worktree_repair_safe", unsafe)
+    with pytest.raises(WorktreeRepairError, match="incompatible layout"):
+        repair_ticket_workspace(root, checkout, "refs/heads/ticket/demo")
+    assert (checkout / ".git").read_bytes() == before
+
+
+def test_recorded_paired_metadata_missing_blocks_outer_repair(linked_ticket):
+    from booley.runtime.worktree_repair import WorktreeRepairError, repair_ticket_workspace
+
+    root, checkout = linked_ticket
+    original = (checkout / ".git").read_bytes()
+    with pytest.raises(WorktreeRepairError, match="paired Ticket worktree metadata is missing"):
+        repair_ticket_workspace(
+            root, checkout, "refs/heads/ticket/demo", "refs/heads/ticket/project"
+        )
+    assert (checkout / ".git").read_bytes() == original
+
+
+def test_draft_ticket_does_not_load_executable_basis_during_init(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.harness.setup.git_hooks import _repair_recorded_ticket
+    from booley.ticket_board import scanner
+
+    def unexpected(*_args):
+        raise AssertionError("drafts have no executable basis")
+
+    tio = SimpleNamespace(tickets_dir=tmp_path, inspect_ticket=unexpected)
+    monkeypatch.setattr(
+        scanner, "find_ticket_file", lambda *_args, **_kwargs: (tmp_path / "draft.md", "draft")
+    )
+    assert _repair_recorded_ticket(tmp_path, tio, "draft", tmp_path, []) == set()
+
+
+def test_pending_amendment_reports_one_deferred_reason_not_false_missing_owner(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from booley.harness.setup import git_hooks
+    from booley.runtime import worktree_paths
+    from booley.ticket_board import io
+
+    data = tmp_path / ".booley_project"
+    checkout = data / "worktrees/demo"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: known\n")
+    tickets = data / "tickets"
+    tickets.mkdir()
+    (tickets / "demo.md").write_text("pending amendment\n")
+    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _root: True)
+    monkeypatch.setattr(
+        io, "TicketIO", lambda *_args, **_kwargs: SimpleNamespace(tickets_dir=tickets)
+    )
+
+    def pending(*_args):
+        raise ValueError("amendment publication is pending; execution is not ready")
+
+    monkeypatch.setattr(git_hooks, "_repair_recorded_ticket", pending)
+    result = git_hooks._repair_live_ticket_worktrees(SimpleNamespace(project_root=tmp_path))
+    assert result == ["demo: amendment publication is pending; execution is not ready"]

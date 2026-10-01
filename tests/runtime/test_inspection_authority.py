@@ -74,6 +74,8 @@ def _fake_runtime_transport(monkeypatch):
                 }
             ]
             return subprocess.CompletedProcess(argv, 0, json.dumps(document), "")
+        if argv[1] == "run" and "--entrypoint=python3" in argv and "canonical-alias" in argv[-1]:
+            return subprocess.CompletedProcess(argv, 0, "directory\n", "")
         if argv[1:3] == ["ps", "-aq"]:
             return subprocess.CompletedProcess(argv, int(observations["listing_error"]), "", "")
         pytest.fail(f"unexpected command: {argv}")
@@ -198,3 +200,35 @@ def test_malformed_spec_returns_independent_configuration_and_issuance_failures(
     )
     assert any(f.severity is Severity.FAIL for f in result.configuration.findings)
     assert any(f.severity is Severity.FAIL for f in result.issuance.findings)
+
+
+def test_doctor_issuance_owner_reports_alias_probe_failure_without_mutation(
+    issued_environment, monkeypatch
+):
+    from booley.runtime import project_image
+
+    request, _observations, _calls = issued_environment
+    project = request.project_root
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    session_issuance.pin_image(spec)
+    session_issuance.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    session_issuance.issue(project, spec, path)
+    stamp = session_issuance.stamp_path(project)
+    before = stamp.read_bytes()
+
+    def unavailable(_image):
+        raise project_image.DockerImageError("Docker alias probe unavailable")
+
+    monkeypatch.setattr(project_image, "project_data_alias_capable", unavailable)
+    report = inspection.inspect_runtime(request).issuance
+    assert any(
+        f.severity is Severity.FAIL and "alias probe unavailable" in f.message
+        for f in report.findings
+    )
+    assert stamp.read_bytes() == before

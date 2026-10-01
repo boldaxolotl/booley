@@ -1336,13 +1336,7 @@ def _check_worktree_core_shadow_guard(
     # Authored stealth cores (.booley_project/cores/, ADR 0036) are sources, not
     # shadow threats — they are scanned deliberately and must not be counted.
     stealth_root = project_dir / fusesoc_registry.STATE_CORES_SUBDIR
-    from booley.runtime.worktree_paths import worktree_state_dir
-
-    worktrees = (
-        worktree_state_dir(project_root, project_dir=project_dir)
-        if project_root is not None
-        else project_dir
-    ) / "worktrees"
+    worktrees = _worktree_core_directory(project_dir, project_root)
     shadow_cores = [
         p
         for sub in (worktrees, project_dir)
@@ -1361,6 +1355,17 @@ def _check_worktree_core_shadow_guard(
             ".booley_project/FUSESOC_IGNORE missing; a future ticket worktree's "
             ".core could shadow the repo-root source — run `booley init`"
         )
+
+
+def _worktree_core_directory(project_dir: Path, project_root: Path | None) -> Path:
+    from booley.runtime.worktree_paths import worktree_state_dir
+
+    state = (
+        worktree_state_dir(project_root, project_dir=project_dir)
+        if project_root is not None
+        else project_dir
+    )
+    return state / "worktrees"
 
 
 # State-dir subtrees that legitimately hold transient .core COPIES (worktree /

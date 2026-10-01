@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from booley.core.boundary import (
     BoundaryError,
@@ -380,27 +382,21 @@ def compare_logical_selection(  # noqa: PLR0911 -- tri-state evidence exits stay
     configured_reference: str,
     inspect_issued: Callable[[str], ImageMetadata | None],
     inspect_configured: Callable[[str], ImageMetadata | None] | None = None,
+    *,
+    project_root: Path | None = None,
+    executable: str = "docker",
 ) -> Comparison:
     """Compare selection identity while ignoring local IDs and wheel contents."""
     configured_inspector = inspect_configured or inspect_issued
-    issued = inspect_issued(issued_reference)
-    configured = configured_inspector(configured_reference)
+    issued = _logical_metadata(issued_reference, inspect_issued, project_root, executable)
+    configured = _logical_metadata(
+        configured_reference, configured_inspector, project_root, executable
+    )
     if issued is None or configured is None:
         return Comparison(Status.UNKNOWN)
-    issued_flavor = _sandbox_flavor(issued)
-    configured_flavor = _sandbox_flavor(configured)
-    if (
-        issued_flavor is not None
-        and configured_flavor is not None
-        and issued_flavor != configured_flavor
-    ):
-        return Comparison(
-            Status.MISMATCH,
-            format_differences(
-                {"sandbox_flavor": issued_flavor},
-                {"sandbox_flavor": configured_flavor},
-            ),
-        )
+    flavor_difference = _flavor_difference(issued, configured)
+    if flavor_difference is not None:
+        return flavor_difference
     issued_fingerprint, issued_valid = _selection_fingerprint(issued)
     configured_fingerprint, configured_valid = _selection_fingerprint(configured)
     if not issued_valid or not configured_valid:
@@ -424,10 +420,94 @@ def compare_logical_selection(  # noqa: PLR0911 -- tri-state evidence exits stay
                 {"selection_fingerprint": configured_fingerprint},
             ),
         )
-    left = _selection_projection(issued_reference, inspect_issued)
-    right = _selection_projection(configured_reference, configured_inspector)
+    left = _selection_projection(issued.reference, inspect_issued)
+    right = _selection_projection(configured.reference, configured_inspector)
     if left is None or right is None:
         return Comparison(Status.UNKNOWN)
     if left == right:
         return Comparison(Status.MATCH)
     return Comparison(Status.MISMATCH, _projection_difference(left, right))
+
+
+def _logical_metadata(
+    reference: str,
+    inspect: Callable[[str], ImageMetadata | None],
+    project_root: Path | None,
+    executable: str,
+) -> ImageMetadata | None:
+    """Project a proven layout-only derivative onto its immutable logical parent."""
+    metadata = inspect(reference)
+    if metadata is None or metadata.labels.get(LABEL_ARTIFACT_ROLE) != "project-data-layout":
+        return metadata
+    from booley.runtime import project_image
+
+    if project_root is None:
+        return None
+    try:
+        parent_id = _layout_parent_id(metadata, project_root)
+    except (OSError, ValueError, RuntimeError):
+        parent_id = None
+    if parent_id is None:
+        return None
+    labels = metadata.labels
+    parent = inspect(parent_id)
+    if (
+        parent is None
+        or parent.image_id != parent_id
+        or parent.labels.get(LABEL_ARTIFACT_ROLE) == "project-data-layout"
+        or labels.get(LABEL_LOGICAL_SELECTION_FINGERPRINT)
+        != parent.labels.get(LABEL_LOGICAL_SELECTION_FINGERPRINT)
+    ):
+        return None
+    try:
+        project_image.verify_layout_parent_identity(metadata.image_id, parent_id, executable)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return None
+    return parent
+
+
+def _layout_parent_id(metadata: ImageMetadata, project_root: Path) -> str | None:
+    from booley.runtime import project_image
+    from booley.runtime.image_provenance import resolve_recipe_fingerprint
+    from booley.runtime.paths import docker_data_dir
+
+    labels = metadata.labels
+    scope = labels.get(project_image.LABEL_LAYOUT_REFERENCE, "")
+    inputs = labels.get(LABEL_EFFECTIVE_INPUTS, "")
+    recipe = resolve_recipe_fingerprint((docker_data_dir() / "Dockerfile.project-data-layout",))
+    parent_id = labels.get(LABEL_PARENT_ARTIFACT, "")
+    if (
+        labels.get(LABEL_SCHEMA) != PROVENANCE_SCHEMA
+        or labels.get(LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_LOCAL_IMAGE_ID
+        or labels.get(LABEL_RECIPE_FINGERPRINT) != recipe
+        or re.fullmatch(r".+-booley-sandbox-layout-[0-9a-f]{24}-[0-9a-f]{16}", scope) is None
+        or _SHA256_HEX.fullmatch(inputs) is None
+        or not scope.endswith(inputs[:16])
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", parent_id) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", metadata.image_id) is None
+    ):
+        return None
+    expected_reference, expected_inputs = project_image.layout_identity(
+        project_root, parent_id, recipe
+    )
+    if scope != expected_reference or inputs != expected_inputs:
+        return None
+    return parent_id
+
+
+def _flavor_difference(issued, configured) -> Comparison | None:
+    issued_flavor = _sandbox_flavor(issued)
+    configured_flavor = _sandbox_flavor(configured)
+    if (
+        issued_flavor is not None
+        and configured_flavor is not None
+        and issued_flavor != configured_flavor
+    ):
+        return Comparison(
+            Status.MISMATCH,
+            format_differences(
+                {"sandbox_flavor": issued_flavor},
+                {"sandbox_flavor": configured_flavor},
+            ),
+        )
+    return None
