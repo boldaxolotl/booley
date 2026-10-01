@@ -1294,3 +1294,16 @@ def test_combined_done_findings_and_coverage_choices_are_both_visible(tmp_path):
     assert "historical obligation" in briefing
     assert "wc-offered" in briefing
     assert "decide waivers and approve" in briefing
+
+
+def test_generic_accepted_projection_keeps_one_neutral_note():
+    package = {
+        "inspection": {"disposition": "accepted"},
+        "assessment": {
+            "recommendation": "hold",
+            "decision_blockers": [tp.DONE_FINDINGS_HOLD],
+            "findings": [tp.DONE_FINDINGS_ACCEPTED, tp.DONE_FINDINGS_HOLD],
+        },
+    }
+    projected = tp.accepted_review_presentation(package)
+    assert projected["assessment"]["findings"].count(tp.DONE_FINDINGS_ACCEPTED) == 1

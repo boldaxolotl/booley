@@ -1564,6 +1564,22 @@ async def _handoff_advisory_ticket(ctx: TicketContext, project_root: Path) -> Ti
     ticket_cli.handoff(project_root, ctx.slug, **ownership)
     if ticket_cli.ticket_status(project_root, ctx.slug) != "review":
         raise RuntimeError(f"advisory handoff did not leave {ctx.slug} in review")
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.review_lifecycle import review_command
+
+    if read_acceptance(ctx.logs_dir).kind == "accepted":
+        outcome = await review_command(project_root, ctx.slug)
+        if not outcome.ready or outcome.package_path is None:
+            raise RuntimeError(
+                f"{ctx.slug} is in review with its existing acceptance preserved. {outcome.message}"
+            )
+        terminal.raw(outcome.message)
+        return TicketRunResult(
+            slug=ctx.slug,
+            disposition="review",
+            review_package_path=outcome.package_path,
+            html_path=outcome.html_path,
+        )
     return await _finish_unaccepted_handoff(ctx, project_root, ADVISORY_REVIEW_REASON)
 
 

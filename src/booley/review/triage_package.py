@@ -1573,7 +1573,7 @@ def accepted_review_presentation(
                 for item in findings
             ]
             if human_approved
-            else [*findings, DONE_FINDINGS_ACCEPTED]
+            else list(dict.fromkeys([*findings, DONE_FINDINGS_ACCEPTED]))
         )
     return {
         **package,

@@ -132,10 +132,10 @@ def test_prior_acceptance_is_retained_and_requires_human_recovery(tio, monkeypat
         "booley.ticket_board.operations._bind_existing_handoff_snapshot", lambda *_a: True
     )
     before = read_acceptance(tio.logs_dir / "t1").snapshot
-    assert op_handoff(tio, "t1") is False
+    assert op_handoff(tio, "t1") is True
     assert read_acceptance(tio.logs_dir / "t1").snapshot == before
-    assert "board approve" in capsys.readouterr().err
-    assert tio.find_ticket("t1")["status"] == "running"
+    assert "booley board approve t1" in capsys.readouterr().err
+    assert tio.find_ticket("t1")["status"] == "review"
 
 
 @pytest.mark.parametrize("route", ["requeue", "unblock", "takeover"])
@@ -193,3 +193,24 @@ def test_live_owner_refuses_advisory_publication(tio, monkeypatch):
     monkeypatch.setattr("booley.runtime.pid.is_pid_alive", lambda _pid: True)
     assert not op_handoff(tio, "t1")
     assert not (tio.logs_dir / "t1" / "review" / "advisory-handoff.json").exists()
+
+
+def test_ordinary_review_does_not_require_advisory_quiescence(tio, monkeypatch):
+    from booley.ticket_board.advisory_handoff import renew_advisory_inspection
+
+    def fail(*_args):
+        pytest.fail("ordinary review acquired advisory quiescence")
+
+    monkeypatch.setattr("booley.ticket_board.review_lifecycle._quiescent", fail)
+    renew_advisory_inspection(tio, "t1")
+
+
+def test_provisional_review_ignores_leftover_advisory_marker(tio, monkeypatch):
+    from booley.ticket_board.advisory_handoff import renew_advisory_inspection
+    from booley.ticket_board.provisional_handoff import op_handoff_provisional
+    from tests.ticket_board.test_provisional_handoff import _provisional
+
+    assert op_handoff_provisional(tio, "t1", _provisional())
+    path = tio.logs_dir / "t1" / "review" / "advisory-handoff.json"
+    path.write_text("{")
+    renew_advisory_inspection(tio, "t1")

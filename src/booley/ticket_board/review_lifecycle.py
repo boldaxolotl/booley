@@ -747,14 +747,33 @@ def _approve_review_ticket(
     )
 
 
+def _accepted_handoff_guidance(tio: TicketIO, slug: str) -> str:
+    """Surface durable done findings even when the accepted package predates them."""
+    from booley.evidence.review_dispositions import outstanding_done_findings
+
+    from .advisory_handoff import ADVISORY_REVIEW_REASON
+    from .paths import existing_runtime_file
+
+    guidance = (
+        f"Ticket {slug!r} is already accepted; run booley board approve {slug} to complete it."
+    )
+    state = DevelopmentState.load(existing_runtime_file(tio.logs_dir, slug, "booley_state.json"))
+    findings = outstanding_done_findings(state.criteria)
+    if not findings:
+        return guidance
+    rows = [
+        f"- {row['criterion']}: {row['severity']} {row['file']}:{row['line']}: {row['summary']}"
+        for row in findings
+    ]
+    return "\n".join([ADVISORY_REVIEW_REASON, *rows, guidance])
+
+
 def _verified_accepted_handoff(
     project_root: Path, slug: str, tio: TicketIO, snapshot: Any
 ) -> prep.ReviewPrepOutcome:
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
 
-    guidance = (
-        f"Ticket {slug!r} is already accepted; run booley board approve {slug} to complete it."
-    )
+    guidance = _accepted_handoff_guidance(tio, slug)
     if snapshot is None:
         return prep.ReviewPrepOutcome(
             "failed", "Criteria Satisfaction Record is corrupt: accepted result has no snapshot"

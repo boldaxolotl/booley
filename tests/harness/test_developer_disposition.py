@@ -731,3 +731,47 @@ async def test_done_findings_publish_unaccepted_package_for_either_destination(
         assert "human approval" in request.call_args.kwargs["reason"]
     finally:
         _stop_all(patches)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("package_available", [False, True])
+async def test_advisory_prior_acceptance_returns_review_with_human_recovery(
+    tmp_path, package_available
+):
+    from types import SimpleNamespace
+
+    from booley.harness.developer import _handoff_advisory_ticket
+
+    ctx = _make_ctx(tmp_path)
+    with (
+        patch("booley.harness.developer.ticket_cli.handoff"),
+        patch("booley.harness.developer.ticket_cli.ticket_status", return_value="review"),
+        patch(
+            "booley.ticket_board.acceptance_ledger.read_acceptance",
+            return_value=SimpleNamespace(kind="accepted"),
+        ),
+        patch(
+            "booley.ticket_board.review_lifecycle.review_command", new_callable=AsyncMock
+        ) as review,
+        patch(
+            "booley.ticket_board.review_lifecycle.request_review_command", new_callable=AsyncMock
+        ) as request,
+        patch("booley.harness.developer.terminal.raw"),
+    ):
+        review.return_value = (
+            ReviewPrepOutcome(
+                "fresh", "use booley board approve", package_path=tmp_path / "accepted.json"
+            )
+            if package_available
+            else ReviewPrepOutcome("accepted", "use booley board approve")
+        )
+        if package_available:
+            result = await _handoff_advisory_ticket(ctx, tmp_path)
+            assert result.disposition == "review"
+        else:
+            with pytest.raises(
+                RuntimeError, match="is in review with its existing acceptance preserved"
+            ):
+                await _handoff_advisory_ticket(ctx, tmp_path)
+    review.assert_awaited_once_with(tmp_path, ctx.slug)
+    request.assert_not_awaited()

@@ -2356,15 +2356,26 @@ def test_real_prior_acceptance_never_auto_completes_advisory_findings(
         _git(worktree, "add", "README.md")
         _git(worktree, "commit", "-m", "Change accepted head")
     before = path.read_bytes()
-    assert not op_handoff(tio, "demo")
+    assert op_handoff(tio, "demo") is (kind == "valid")
     assert path.read_bytes() == before
-    assert tio.find_ticket("demo")["status"] == "running"
+    assert tio.find_ticket("demo")["status"] == ("review" if kind == "valid" else "running")
     assert not (log / "review" / "advisory-handoff.json").exists()
     error = capsys.readouterr().err
     assert error
     if kind == "valid":
         assert read_acceptance(log).kind == "accepted"
-        assert "board approve" in error and "board reset" in error
+        assert "booley board review demo" in error
+        assert "booley board approve demo" in error
+        assert op_handoff(tio, "demo", expected_execution_id="first")
+        from booley.ticket_board.review_lifecycle import approve_review_command, review_command
+
+        recovered = asyncio.run(review_command(root, "demo"))
+        assert recovered.status == "accepted", recovered.message
+        assert "human obligation" in recovered.message
+        assert "Current done review findings require explicit human approval" in recovered.message
+        assert path.read_bytes() == before
+        assert approve_review_command(root, "demo", no_merge=True, no_cleanup=True)
+        _assert_closed_done(tio, "demo")
     elif kind == "stale":
         assert "heads changed after acceptance" in error
 
