@@ -8,7 +8,7 @@ import textwrap
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -613,6 +613,107 @@ class TestCodexHealthCheck:
             result = backend.health_check()
             assert result is not None
             assert "not found" in result
+
+
+# ===========================================================================
+# Codex backend — usage limits
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label", ["developer", "reviewer"])
+@pytest.mark.parametrize("partial_output", [False, True])
+@pytest.mark.parametrize("source", ["error", "turn.failed", "stderr", "stderr-preamble"])
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "You\u2019ve hit your usage limit. Try again later.",
+        "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
+        "Your workspace is out of credits. Add credits to continue.",
+    ],
+)
+async def test_codex_usage_limit_propagates_without_retry(
+    tmp_path, monkeypatch, label, partial_output, source, detail
+):
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend as cb
+    from booley.runtime.agent_errors import UsageLimitError
+    from booley.ticket_board.agent_execution import configure_agent_call
+
+    events = []
+    if partial_output:
+        events.append(
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "Working…"}}
+        )
+    if source == "error":
+        events.append({"type": "error", "message": detail})
+    elif source == "turn.failed":
+        events.append({"type": "turn.failed", "error": {"message": detail}})
+    raw = "\n".join(json.dumps(event) for event in events)
+    stderr = detail if source.startswith("stderr") else ""
+    if source == "stderr-preamble":
+        stderr = "startup warning\n" * 80 + stderr
+    subprocess_call = AsyncMock(return_value=(raw, stderr, 1))
+    sleep = AsyncMock()
+    monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(cb.anyio, "sleep", sleep)
+    params = configure_agent_call(
+        AgentCallParams(prompt="work", model="test", cwd=tmp_path, label=label)
+    )
+
+    with pytest.raises(UsageLimitError) as raised:
+        await CodexBackend().call(params)
+
+    assert raised.value.provider == "codex"
+    assert str(raised.value) == (stderr or detail)
+    subprocess_call.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("provider_error", [None, "Provider process stopped"])
+async def test_codex_agent_text_cannot_identify_a_usage_limit(
+    tmp_path, monkeypatch, returncode, provider_error
+):
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend as cb
+
+    text = "I'll investigate usage limit, spend cap, and workspace out-of-credits handling."
+    events = [{"type": "item.completed", "item": {"type": "agent_message", "text": text}}]
+    if provider_error:
+        events.append({"type": "turn.failed", "error": {"message": provider_error}})
+    raw = "\n".join(json.dumps(event) for event in events)
+    subprocess_call = AsyncMock(return_value=(raw, "", returncode))
+    monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+
+    result = await CodexBackend().call(AgentCallParams(prompt="work", model="test", cwd=tmp_path))
+
+    assert result.output == text
+    subprocess_call.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["stderr", "stdout"])
+async def test_codex_no_output_provider_failure_is_terminal(tmp_path, monkeypatch, source):
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend as cb
+    from booley.runtime.agent_errors import AgentProviderError
+
+    detail = "Codex could not start: configuration was rejected."
+    raw = detail if source == "stdout" else ""
+    stderr = detail if source == "stderr" else ""
+    subprocess_call = AsyncMock(return_value=(raw, stderr, 1))
+    monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+
+    with pytest.raises(AgentProviderError, match="configuration was rejected") as raised:
+        await CodexBackend().call(AgentCallParams(prompt="work", model="test", cwd=tmp_path))
+
+    assert raised.value.provider == "codex"
+    subprocess_call.assert_awaited_once()
 
 
 # ===========================================================================
