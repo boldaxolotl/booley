@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,23 +81,37 @@ def test_validator_rejects_duplicate_expected_selection(tmp_path: Path) -> None:
         _validator().validate(manifest, ["quick", "quick"])
 
 
-def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
+def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Write a manifest, summary and v2 projection in the on-disk Target layout."""
+    target = tmp_path / "targets" / "sim_campaign"
+    manifest = target / "campaign" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
     manifest_document = _manifest(["tail", "quick"]) | {"campaign_id": "campaign-1"}
-    manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps(manifest_document, sort_keys=True) + "\n")
-    digest = "sha256:" + hashlib.sha256(manifest.read_bytes().rstrip(b"\n")).hexdigest()
-    summary = tmp_path / "summary.json"
-    summary.write_text(json.dumps({"campaign_id": "campaign-1", "manifest_sha256": digest}) + "\n")
-    projection = tmp_path / "simulation.json"
-    projection.write_text(
-        json.dumps(
-            {
-                "campaign_manifest": str(manifest),
-                "campaign_summary": str(summary),
-            }
-        )
-        + "\n"
+    raw = manifest.read_bytes()
+    summary = manifest.parent / "summary.json"
+    canonical = "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+    summary.write_text(
+        json.dumps({"campaign_id": "campaign-1", "manifest_sha256": canonical}) + "\n"
     )
+    projection = target / "simulation.json"
+    reference = {
+        "path_base": "origin_target",
+        "path": "campaign/manifest.json",
+        "kind": "simulation_campaign_manifest",
+        "owner": "campaign-1",
+        "bytes": len(raw),
+        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+    }
+    projection.write_text(
+        json.dumps({"campaign_id": "campaign-1", "campaign_manifest": reference}) + "\n"
+    )
+    return manifest, summary, projection
+
+
+def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
+    manifest, summary, projection = _campaign_tree(tmp_path)
+    digest = "sha256:" + hashlib.sha256(manifest.read_bytes().rstrip(b"\n")).hexdigest()
 
     assert _validator().validate_backlinks(manifest, summary, projection) == {
         "campaign_id": "campaign-1",
@@ -106,6 +122,68 @@ def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="summary manifest digest differs"):
         _validator().validate_backlinks(manifest, summary, projection)
+
+
+def test_validator_rejects_stale_projection_manifest_reference(tmp_path: Path) -> None:
+    manifest, summary, projection = _campaign_tree(tmp_path)
+    document = json.loads(projection.read_text())
+    document["campaign_manifest"]["sha256"] = "sha256:" + "0" * 64
+    projection.write_text(json.dumps(document) + "\n")
+    with pytest.raises(ValueError, match="manifest backlink digest differs"):
+        _validator().validate_backlinks(manifest, summary, projection)
+    # The pre-v2 string form is no longer a valid backlink.
+    document["campaign_manifest"] = str(manifest)
+    projection.write_text(json.dumps(document) + "\n")
+    with pytest.raises(ValueError, match="not an artifact reference"):
+        _validator().validate_backlinks(manifest, summary, projection)
+
+
+def test_validator_cli_exposes_every_check(tmp_path: Path) -> None:
+    manifest, summary, projection = _campaign_tree(tmp_path)
+    script = str(FIXTURE / "validate_campaign.py")
+    backlinks = subprocess.run(
+        [
+            sys.executable,
+            script,
+            "backlinks",
+            str(manifest),
+            "--summary",
+            str(summary),
+            "--projection",
+            str(projection),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert backlinks.returncode == 0, backlinks.stderr
+    assert json.loads(backlinks.stdout)["campaign_id"] == "campaign-1"
+    before = tmp_path / "before.txt"
+    after = tmp_path / "after.txt"
+    diagnostic = tmp_path / "diagnostic.txt"
+    before.write_text("0001\n")
+    after.write_text("0001\n0002\n")
+    diagnostic.write_text("duplicate test quick\n")
+    rejection = subprocess.run(
+        [
+            sys.executable,
+            script,
+            "rejection",
+            "--exit-code",
+            "2",
+            "--attempts-before",
+            str(before),
+            "--attempts-after",
+            str(after),
+            "--diagnostic",
+            str(diagnostic),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejection.returncode == 2
+    assert "rejection created an attempt" in rejection.stderr
 
 
 def test_validator_checks_resume_rejection_and_criteria_journal(tmp_path: Path) -> None:

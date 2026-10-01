@@ -272,7 +272,19 @@ def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
     archived, failed, recovered = _states(tmp_path, envelope, transaction_id)
     simulation = _write(
         tmp_path / "simulation.json",
-        {"complete": True, "campaign_manifest": str(manifest), "passed": True},
+        {
+            "complete": True,
+            # Typed artifact reference, as simulation-projection/v2 writes it.
+            "campaign_manifest": {
+                "path_base": "origin_target",
+                "path": manifest.name,
+                "kind": "simulation_campaign_manifest",
+                "owner": campaign_id,
+                "bytes": len(manifest.read_bytes()),
+                "sha256": _sha256(manifest.read_bytes()),
+            },
+            "passed": True,
+        },
     )
     return {
         "manifest": manifest,
@@ -394,6 +406,22 @@ def test_acceptance_recovery_validator_rejects_hostile_mutations(
 ) -> None:
     evidence = _acceptance_evidence(tmp_path)
     mutation(evidence)
+    with pytest.raises(ValueError, match=message):
+        _module().validate_acceptance_recovery(*_acceptance_args(evidence))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [("kind", "simulation_result", "kind differs"), ("bytes", 0, "size differs")],
+)
+def test_acceptance_recovery_rejects_invalid_manifest_reference(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
+    evidence = _acceptance_evidence(tmp_path)
+    _mutate_json(
+        evidence["simulation"],
+        lambda document: document["campaign_manifest"].update({field: value}),
+    )
     with pytest.raises(ValueError, match=message):
         _module().validate_acceptance_recovery(*_acceptance_args(evidence))
 
