@@ -1196,8 +1196,8 @@ def _render_review_dispositions(lines: list[str], package: Mapping[str, Any]) ->
             "",
             "#### Review findings and dispositions",
             "",
-            "| ID | Criterion | Severity | Location | Disposition | Finding / justification |",
-            "|----|-----------|----------|----------|-------------|-------------------------|",
+            "| ID | Criterion | Severity | Location | Disposition | Reviewer disposition | Finding / justification |",
+            "|----|-----------|----------|----------|-------------|----------------------|-------------------------|",
         ]
     )
     for row in rows:
@@ -1211,6 +1211,7 @@ def _render_review_dispositions(lines: list[str], package: Mapping[str, Any]) ->
             f"{_markdown_text(row.get('severity', ''))} | "
             f"`{_markdown_text(location)}` | "
             f"{_markdown_text(row.get('disposition', ''))} | "
+            f"{_markdown_text(row.get('reviewer_disposition', ''))} | "
             f"{_markdown_text(explanation)} |"
         )
 

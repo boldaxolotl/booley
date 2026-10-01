@@ -537,7 +537,7 @@ class SubmitRunReportMcpTool(McpTool):
         from booley.evidence.review_dispositions import collect_review_dispositions
 
         rows = collect_review_dispositions(self.state.criteria)
-        visible_dispositions = {"reported", "advisory", "deferred", "out_of_scope", "waived"}
+        visible_dispositions = {"reported", "open", "waived"}
         visible = [row for row in rows if row["disposition"] in visible_dispositions]
         done_criteria = sorted(
             key
@@ -555,9 +555,7 @@ class SubmitRunReportMcpTool(McpTool):
             location = f"{row['file']}:{row['line']}" if row["file"] else "location unavailable"
             label = {
                 "reported": "REPORTED",
-                "advisory": "ADVISORY",
-                "deferred": "DEFERRED",
-                "out_of_scope": "OUT OF SCOPE",
+                "open": "OPEN",
                 "waived": "WAIVED",
             }[row["disposition"]]
             finding_id = f" [{row['finding_id']}]" if row["finding_id"] else ""
@@ -566,6 +564,10 @@ class SubmitRunReportMcpTool(McpTool):
                 f"`{self._report_text(row['criterion'])}` at "
                 f"`{self._report_text(location)}` — {self._report_text(row['summary'])}"
             )
+            if row["reviewer_disposition"]:
+                lines.append(
+                    f"  - Reviewer disposition: {self._report_text(row['reviewer_disposition'])}"
+                )
             if row["ticket_clause"]:
                 lines.append(f"  - Ticket clause: {self._report_text(row['ticket_clause'])}")
             if row["disposition"] == "waived":

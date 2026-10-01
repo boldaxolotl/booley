@@ -498,3 +498,56 @@ def test_configured_tb_policy_does_not_discard_valid_current_finding(
     prompt = reviewer._build_prompt()
     assert "CUSTOM PASS" in prompt
     assert "custom.vcd" in prompt
+
+
+@pytest.mark.parametrize("mode", ["done", "clean"])
+@pytest.mark.parametrize("disposition", ["current", "advisory", "deferred", "out_of_scope"])
+def test_real_reviewer_output_roundtrips_package(reviewer, monkeypatch, mode, disposition):
+    from booley.review.artifact import ReviewPackage
+    from tests.review.test_artifact import _package
+
+    reviewer.state.criteria.clear()
+    key = f"review_rtl_bugs_{mode}"
+    reviewer.state.init_criteria({key: True})
+    output(reviewer, monkeypatch, {"issues": [proposal(disposition=disposition)]})
+    result = reviewer._run()
+    rows = collect_review_dispositions({key: {"detail": result.detail}})
+    package = ReviewPackage.parse({**_package(), "review_dispositions": rows})
+    roundtrip = ReviewPackage.parse(package.to_dict())
+    row = roundtrip.review_dispositions[0]
+    assert row.disposition == ("open" if disposition == "current" else "reported")
+    assert row.reviewer_disposition == disposition
+
+
+@pytest.mark.parametrize("mode", ["done", "clean"])
+def test_real_history_preserves_advisory_under_superseded(reviewer, monkeypatch, mode):
+    from booley.review.artifact import ReviewPackage
+    from tests.review.test_artifact import _package
+
+    reviewer.state.criteria.clear()
+    key = f"review_rtl_bugs_{mode}"
+    reviewer.state.init_criteria({key: True})
+    output(reviewer, monkeypatch, {"issues": [proposal(disposition="advisory")]})
+    first = reviewer._run()
+    assert first.exit_code == 0
+    Path(reviewer.args.work_dir, "rtl/dut.sv").write_text("module dut; wire changed; endmodule\n")
+    output(reviewer, monkeypatch, {"issues": []})
+    monkeypatch.setattr(
+        reviewer,
+        "_invoke_agent_with_resume",
+        lambda _params: MagicMock(output=json.dumps({"findings": []})),
+    )
+    second = reviewer._run()
+    rows = collect_review_dispositions({key: {"detail": second.detail}})
+    assert rows[0]["status"] == "superseded"
+    package = ReviewPackage.parse({**_package(), "review_dispositions": rows})
+    row = ReviewPackage.parse(package.to_dict()).review_dispositions[0]
+    assert row.disposition == "reported"
+    assert row.reviewer_disposition == "advisory"
+
+
+def test_fresh_superseded_proposal_is_rejected(reviewer, monkeypatch):
+    output(reviewer, monkeypatch, {"issues": [proposal(disposition="superseded")]})
+    result = reviewer._run()
+    assert result.exit_code == 2
+    assert result.detail["rejected"]
