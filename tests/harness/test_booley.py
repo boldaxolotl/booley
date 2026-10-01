@@ -24,6 +24,7 @@ from booley.harness import subscription_limit as sl
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board.board_layout import (
     StateRecord,
+    read_state_record,
     state_record_path,
     ticket_document_path,
     write_state_record,
@@ -2054,6 +2055,30 @@ class TestDetectSubscriptionLimit:
             "Error: usage limit reached",
         )
         assert tlr.detect_subscription_limit(project_root) == 3600
+
+    @pytest.mark.parametrize("interrupted", [False, True])
+    def test_codex_limit_cooldown_keeps_failed_ticket_blocked(
+        self, project_root: Path, interrupted: bool
+    ):
+        self._setup_failed_ticket(
+            project_root,
+            "fix-fsm",
+            "Developer Agent error: UsageLimitError: "
+            "You've hit your usage limit. Try again later.",
+        )
+        args = Namespace(slug="fix-fsm", wait=5)
+        with (
+            patch.object(tlr, "interruptible_sleep", return_value=not interrupted) as sleep,
+            patch.object(tlr, "_run_board") as board_command,
+        ):
+            action = tlr._handle_post_run(args, project_root, exit_code=0, elapsed=10)
+
+        assert action == ("break" if interrupted else "continue")
+        sleep.assert_called_once_with(3600)
+        board_command.assert_not_called()
+        record = read_state_record(project_root / TICKETS_REL, "fix-fsm")
+        assert record is not None
+        assert record.state == parse_board_target("blocked")
 
     def test_only_checks_last_entry(self, project_root: Path):
         """Old limit errors in append-only blocked.md should not trigger."""

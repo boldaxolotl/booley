@@ -11,6 +11,8 @@ LIMIT_PATTERNS = [
     re.compile(r"SubscriptionLimitError", re.IGNORECASE),
     re.compile(r"you.?ve reached your .* limit", re.IGNORECASE),
     re.compile(r"quota exceeded", re.IGNORECASE),
+    re.compile(r"you hit your spend cap", re.IGNORECASE),
+    re.compile(r"your workspace is out of credits", re.IGNORECASE),
 ]
 
 CONTEXT_EXHAUSTION_PATTERNS = [
@@ -57,7 +59,7 @@ class AgentProviderError(RuntimeError):
 
 
 class UsageLimitError(Exception):
-    """Daily or subscription usage cap reached; not retryable."""
+    """Provider usage, spending, or credit cap reached; not retryable."""
 
     def __init__(self, message: str, provider: str) -> None:
         self.provider = provider
