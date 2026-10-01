@@ -272,7 +272,19 @@ def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
     archived, failed, recovered = _states(tmp_path, envelope, transaction_id)
     simulation = _write(
         tmp_path / "simulation.json",
-        {"complete": True, "campaign_manifest": str(manifest), "passed": True},
+        {
+            "complete": True,
+            # Typed artifact reference, as simulation-projection/v2 writes it.
+            "campaign_manifest": {
+                "path_base": "origin_target",
+                "path": manifest.name,
+                "kind": "simulation_campaign_manifest",
+                "owner": campaign_id,
+                "bytes": len(manifest.read_bytes()),
+                "sha256": _sha256(manifest.read_bytes()),
+            },
+            "passed": True,
+        },
     )
     return {
         "manifest": manifest,

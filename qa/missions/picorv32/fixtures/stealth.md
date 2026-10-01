@@ -20,4 +20,4 @@ Require: hook exit 1 with the remove-the-footer diagnostic, no new commit, and t
 **Case 3: a plain "Generated with …" footer is judged by its payload.** Supply case 2's message with one extra final line, once per variant:
 
 - `Generated with booley`: rejected like case 1 (exit 1, no commit, raw message unchanged).
-- `Generated with care by the whole team`: accepted. The footer line is kept verbatim, and the rest is redacted as in case 2.
+- `Generated with care by the whole team`: accepted, and the rest is redacted as in case 2. The footer is not rejected, but banned words inside it are still redacted, so with the default vocabulary `Generated` is rewritten. Once #1081 removes `generated` from the defaults, the footer line must be stored verbatim.

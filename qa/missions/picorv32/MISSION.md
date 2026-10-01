@@ -70,16 +70,18 @@ Known B-Wave defects still count as findings.
 ### 3. interactive-repair — Seeded Wishbone fault, diagnosis, repair (~30 min)
 Intent: an Interactive child can find and fix a real bug from traces.
 Try:
-- Save a checkpoint. Inject `fixtures/wishbone-fault.md` yourself: in `picorv32_wb`, change `we`
-  from the OR to the AND of `mem_wstrb[3:0]`. Send `prompts/repair-interactive.md` to the same
-  child.
+- Save a checkpoint. On a run-owned disposable branch, inject `fixtures/wishbone-fault.md`
+  yourself and commit it: in `picorv32_wb`, change `we` from the OR to the AND of
+  `mem_wstrb[3:0]`. Send `prompts/repair-interactive.md` to the same child.
 - Expected: byte stores hit `ERROR`. The trace is non-empty and shows `mem_wstrb`, `we`, `wbm_*`,
-  `mem_valid`, `mem_ready`, and `ram_we`. B-Wave explains the fault, the fix is `assign we =
-  |mem_wstrb;`, sim and lint pass, the local commit is non-empty, and the push is blocked.
+  `mem_valid`, `mem_ready`, and `ram_we`. B-Wave explains the fault, the fix restores an OR
+  reduction of `mem_wstrb[3:0]` (the upstream bytes or `|mem_wstrb`), sim and lint pass, the local
+  repair commit on top of the fault commit is non-empty, and the push is blocked.
 - Before calling a diagnosis wrong, replay the child's exact B-Wave argv, sampling, and clock/reset
   defaults. Restore the checkpoint. Optional: file the fault as a `bug-fix` Ticket on a disposable
   branch.
-Look for: a "repair" that restores HEAD or weakens a test, a push that gets through, lost MCP tools.
+Look for: an empty repair commit, a repair that weakens a test, a push that gets through, lost MCP
+tools.
 
 ### 4. ticket-create — Create both Tickets before running either (~20 min)
 Intent: agent-mode Ticket Create accepts complete packets and routes them to the paired refs.
@@ -88,7 +90,8 @@ Try:
   `refs/heads/`, and `project_destination_ref` to the full nested ref. Stage it under ignored
   `tmp/qa-inputs/`.
 - Run `$booley-ticket-create --agent --no-confirm --input-file <path>` (Claude:
-  `/booley-ticket-create …`). Expect ordered milestones, no clarification request, a board path, and
+  `/booley-ticket-create …`). Inside the Sandbox, pass the path under `/booley-project/` (e.g.
+  `/booley-project/tmp/qa-inputs/<file>`), not `/work/.booley_project/…`. Expect ordered milestones, no clarification request, a board path, and
   `queued`.
 - Read Ticket 1's actual slug and check `dependencies:` in `tickets/evolution.md` against it. If
   they differ, patch your copy and log a `qa-bug`. With Vivado, render `configured_fpga_criterion`
@@ -126,8 +129,9 @@ Try:
 - Save Ticket 2's Basis before Ticket 1 is accepted. After the merge, the automatic refresh should
   pick up the Dhrystone source and `sim_dhry_checked` and move waiting → queued without approval.
 - Refresh negatives (`fixtures/basis-refresh.md`, in disposable copies with Ticket 1 replayed):
-  raising the cell threshold from 11% to 12% returns the Ticket to draft, keeps the old Basis, and
-  starts no agent. Removing the exported `sim_dhry_checked` blocks it without a queue transition.
+  raising the cell threshold from 11% to 12% blocks the Ticket with the drift reason
+  (`acceptance-input-change-required: authored Ticket changed`), keeps the old Basis, and starts no
+  agent. A human then returns it to draft; the return is not automatic. Removing the exported `sim_dhry_checked` blocks it without a queue transition.
 - Run `booley run --ticket <ticket-2-slug>`. All 18 Zbb ops match the ISA manual, and `ENABLE_ZBB`
   defaults to 0 in core, AXI, and WB. The registered PCPI responds in one cycle. The disabled test
   arms MMIO right before the first Zbb op and needs its illegal-instruction trap.
@@ -153,7 +157,10 @@ Try:
   report exactly 438 cycles.
 - Create three Tickets, each with the mandatory `cycle_count: [{target: sim_amend, test:
   amend_smoke, cycle_count_max: 400}]`. Threshold and Scope Tickets: `refactor` on
-  `rtl/amend_counter.sv`, mandatory `sim_pass`, `assign`→`always_comb`, TB untouched.
+  `rtl/amend_counter.sv`, mandatory `sim_pass`, `assign`→`always_comb`, TB untouched,
+  `dependencies: []`. Put the Scope Ticket on its own run-owned destination pair (outer and
+  Project-data, branched from this area's pair) so Ticket Create doesn't treat it as overlapping
+  the Threshold Ticket. Record both pairs in `resources.md`.
 - Optional Ticket: Scope only `docs/amend_note.md`, with an explanation task, so the cap is its sole
   mandatory Criterion. Run each Ticket on the live backend until it genuinely blocks.
 - Take the expanded Criterion name from the sealed Ticket. Preview with `booley-ticket-triage`: cap
@@ -253,7 +260,7 @@ Try:
 - Stealth (`fixtures/stealth.md`, three cases on disposable empty commits): a `Co-Authored-By`
   footer is rejected with the raw message unchanged. Without it, `booley` is redacted and both
   rationale sentences are kept. A final `Generated with booley` is rejected, and `Generated with
-  care by the whole team` is accepted. No Project state reaches outer history. A fresh outer
+  care by the whole team` is accepted (see the fixture for how its words are redacted). No Project state reaches outer history. A fresh outer
   clone shows the documented hidden-state limit.
 - An invalid native core is ignored while authored Targets resolve. Refreshing after an
   authored-core edit updates the projection.
@@ -309,3 +316,7 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
   finishes too fast to interrupt, pass `+slow_steps=<n>`.
 - Bare-metal Spike needs `tohost`/`fromhost` symbols to exit. A Linux `ecall` exit only works under
   `pk`.
+- Stealth cores resolve fileset paths from the repository root, not the core file. A fixture core
+  copied into `.booley_project/cores/<dir>/` must name its files as
+  `.booley_project/cores/<dir>/<file>`, or the Flow fails with `Project compile input is not a
+  file: /work/<file>`.
