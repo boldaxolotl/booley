@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.config.host_config import InteractiveHostPolicy
+from booley.config.host_config import SandboxHostPolicy
 from booley.harness import host_sidecars as sidecars
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.image_lifecycle import Intent
@@ -63,13 +63,13 @@ def _active_session(name: str, project: str = "/projects/test") -> sidecars._Act
 
 
 def test_policy_fingerprint_is_canonical_and_policy_sensitive() -> None:
-    first = InteractiveHostPolicy(600, 2, ("example.com",))
-    same = InteractiveHostPolicy(
+    first = SandboxHostPolicy(600, 2, ("example.com",))
+    same = SandboxHostPolicy(
         idle_timeout_seconds=600,
         max_sessions=2,
         egress_allowlist=("example.com",),
     )
-    changed = InteractiveHostPolicy(600, 3, ("example.com",))
+    changed = SandboxHostPolicy(600, 3, ("example.com",))
     assert sidecars.policy_fingerprint(first) == sidecars.policy_fingerprint(same)
     assert sidecars.policy_fingerprint(first) != sidecars.policy_fingerprint(changed)
 
@@ -363,7 +363,7 @@ def test_reconcile_sidecars_returns_early_for_image_network_and_proxy_errors(
     monkeypatch.setattr(sidecars, "_image_specs", lambda _root: (spec, spec))
     image_error = sidecars.SidecarFinding("image", sidecars.SidecarState.ERROR, "bad")
     monkeypatch.setattr(sidecars, "_reconcile_image", lambda *_args, **_kwargs: image_error)
-    result = sidecars.reconcile_sidecars(InteractiveHostPolicy(), Intent.CHECK)
+    result = sidecars.reconcile_sidecars(SandboxHostPolicy(), Intent.CHECK)
     assert result.findings == (image_error,)
     assert not result.ready
 
@@ -371,14 +371,14 @@ def test_reconcile_sidecars_returns_early_for_image_network_and_proxy_errors(
     network_error = sidecars.SidecarFinding("network", sidecars.SidecarState.ERROR, "bad")
     monkeypatch.setattr(sidecars, "_reconcile_image", lambda *_args, **_kwargs: image_ok)
     monkeypatch.setattr(sidecars, "_reconcile_network", lambda *_args: network_error)
-    result = sidecars.reconcile_sidecars(InteractiveHostPolicy(), Intent.CHECK)
+    result = sidecars.reconcile_sidecars(SandboxHostPolicy(), Intent.CHECK)
     assert result.findings[-1] is network_error
 
     network_ok = sidecars.SidecarFinding("network", sidecars.SidecarState.CURRENT, "ok")
     proxy_error = sidecars.SidecarFinding("proxy", sidecars.SidecarState.ERROR, "bad")
     monkeypatch.setattr(sidecars, "_reconcile_network", lambda *_args: network_ok)
     monkeypatch.setattr(sidecars, "_reconcile_container", lambda *_args: proxy_error)
-    result = sidecars.reconcile_sidecars(InteractiveHostPolicy(), Intent.CHECK)
+    result = sidecars.reconcile_sidecars(SandboxHostPolicy(), Intent.CHECK)
     assert result.findings[-1] is proxy_error
 
 
@@ -389,7 +389,7 @@ def test_reconcile_sidecars_wraps_invalid_image_specs(monkeypatch: pytest.Monkey
         raise sidecars.SidecarError("package missing")
 
     monkeypatch.setattr(sidecars, "_image_specs", fail)
-    result = sidecars.reconcile_sidecars(InteractiveHostPolicy(), Intent.CHECK)
+    result = sidecars.reconcile_sidecars(SandboxHostPolicy(), Intent.CHECK)
     assert result.findings == (
         sidecars.SidecarFinding("sidecar-images", sidecars.SidecarState.ERROR, "package missing"),
     )
@@ -421,7 +421,7 @@ def test_reconcile_sidecars_builds_both_container_specs(monkeypatch: pytest.Monk
         return sidecars.SidecarFinding(spec.resource, sidecars.SidecarState.CURRENT, "ok")
 
     monkeypatch.setattr(sidecars, "_reconcile_container", reconcile)
-    result = sidecars.reconcile_sidecars(InteractiveHostPolicy(), Intent.ENSURE)
+    result = sidecars.reconcile_sidecars(SandboxHostPolicy(), Intent.ENSURE)
     assert result.ready
     assert [spec.resource for spec in seen] == ["proxy", "reaper"]
     assert seen[0].required_network == sidecars.legacy.EGRESS_NETWORK
@@ -775,7 +775,7 @@ def test_active_session_enumeration_validates_rows_and_ownership(
 
 
 def test_run_arguments_include_policy_and_optional_allowlist() -> None:
-    policy = InteractiveHostPolicy(600, 2, ("example.com",))
+    policy = SandboxHostPolicy(600, 2, ("example.com",))
     proxy = sidecars._proxy_run_args(policy, "fingerprint")
     reaper = sidecars._reaper_run_args(policy, "fingerprint")
     assert 'PROXY_ALLOWLIST=["example.com"]' in proxy
@@ -783,7 +783,7 @@ def test_run_arguments_include_policy_and_optional_allowlist() -> None:
     assert "BOOLEY_IDLE_TIMEOUT_SECONDS=600" in reaper
     assert not any("BOOLEY_MAX_SESSIONS=" in arg for arg in reaper)
     assert "PROXY_ALLOWLIST" not in " ".join(
-        sidecars._proxy_run_args(InteractiveHostPolicy(), "fingerprint")
+        sidecars._proxy_run_args(SandboxHostPolicy(), "fingerprint")
     )
 
 

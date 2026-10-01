@@ -127,7 +127,7 @@ def load_submodule_config(project_root: Path) -> SubmoduleConfig:
     return SubmoduleConfig(paths=tuple(raw_paths))
 
 
-# --- Host-owned [interactive] config compatibility exports ---
+# --- Host-owned [sandbox] config compatibility exports ---
 
 from .host_config import (
     DEFAULT_IDLE_TIMEOUT_SECONDS as DEFAULT_INTERACTIVE_IDLE_TIMEOUT_S,  # noqa: F401 - compatibility re-export
@@ -135,7 +135,7 @@ from .host_config import (
 from .host_config import (  # noqa: F401 - compatibility re-export
     DEFAULT_MAX_SESSIONS as DEFAULT_INTERACTIVE_MAX_SESSIONS,
 )
-from .host_config import InteractiveHostPolicy as InteractiveConfig
+from .host_config import SandboxHostPolicy as InteractiveConfig
 from .host_config import load_host_policy
 
 

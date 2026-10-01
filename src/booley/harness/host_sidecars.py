@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
-from booley.config.host_config import InteractiveHostPolicy
+from booley.config.host_config import SandboxHostPolicy
 from booley.core.boundary import (
     BoundaryError,
     as_str,
@@ -151,7 +151,7 @@ class _DockerCli:
             raise SidecarError(f"Docker command failed: {exc}") from exc
 
 
-def policy_fingerprint(policy: InteractiveHostPolicy) -> str:
+def policy_fingerprint(policy: SandboxHostPolicy) -> str:
     """Return the canonical identity stamped on both singleton containers."""
     document = {
         "egress_allowlist": list(policy.egress_allowlist),
@@ -164,7 +164,7 @@ def policy_fingerprint(policy: InteractiveHostPolicy) -> str:
 
 
 def reconcile_sidecars(
-    policy: InteractiveHostPolicy,
+    policy: SandboxHostPolicy,
     intent: Intent,
     *,
     booley_root: Path | None = None,
@@ -188,7 +188,7 @@ def reconcile_sidecars(
 
 
 def _reconcile_containers(
-    policy: InteractiveHostPolicy,
+    policy: SandboxHostPolicy,
     intent: Intent,
     docker: _DockerPort,
 ) -> tuple[SidecarFinding, ...]:
@@ -743,7 +743,7 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
     return tuple(sorted(sessions, key=lambda session: session.name))
 
 
-def _proxy_run_args(policy: InteractiveHostPolicy, fingerprint: str) -> list[str]:
+def _proxy_run_args(policy: SandboxHostPolicy, fingerprint: str) -> list[str]:
     args = _base_run_args(legacy.PROXY_CONTAINER, "egress-proxy", fingerprint)
     args += ["-e", f"PROXY_PORT={legacy.PROXY_PORT}"]
     if policy.egress_allowlist:
@@ -752,7 +752,7 @@ def _proxy_run_args(policy: InteractiveHostPolicy, fingerprint: str) -> list[str
     return args
 
 
-def _reaper_run_args(policy: InteractiveHostPolicy, fingerprint: str) -> list[str]:
+def _reaper_run_args(policy: SandboxHostPolicy, fingerprint: str) -> list[str]:
     args = _base_run_args(legacy.REAPER_CONTAINER, "reaper", fingerprint)
     args += [
         "-v",

@@ -3379,13 +3379,13 @@ def test_at_cap_session_start_reports_status_two_without_success(
         sr,
         command,
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            sr.SessionError("Sandbox start refused: host is at interactive.max_sessions=1")
+            sr.SessionError("Sandbox start refused: host is at sandbox.max_sessions=1")
         ),
     )
 
     assert tlr._cmd_session(args, tmp_path) == 2
     captured = capsys.readouterr()
-    assert "interactive.max_sessions=1" in captured.err
+    assert "sandbox.max_sessions=1" in captured.err
     assert "Sandbox ready" not in captured.out
 
 

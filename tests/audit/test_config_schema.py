@@ -217,7 +217,7 @@ def test_retired_project_interactive_policy_names_host_replacement() -> None:
     finding = audit.findings[0]
     assert "~/.config" not in finding.message  # the diagnostic uses the actionable absolute path
     assert str(host_config_path()) in finding.message
-    assert "[interactive]\nidle_timeout_seconds = 600\nmax_sessions = 2" in finding.message
+    assert "[sandbox]\nidle_timeout_seconds = 600\nmax_sessions = 2" in finding.message
 
 
 def test_agent_audit_uses_authoritative_provider_and_auth_parsers() -> None:
