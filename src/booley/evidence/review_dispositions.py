@@ -182,14 +182,24 @@ def outstanding_done_findings(criteria: Mapping[str, Any]) -> list[dict[str, Any
     Optional Criteria and every severity require human acceptance. An explicitly
     noncurrent disposition or status removes that obligation, never rediscovery.
     """
-    done = {key: entry for key, entry in criteria.items() if key.endswith("_done")}
-    return [
-        row
-        for row in collect_review_dispositions(done)
-        if str(row.get("reviewer_disposition") or row["disposition"]).lower()
-        not in _NONCURRENT_DONE
-        and row["status"].lower() not in _NONCURRENT_DONE
-    ]
+    return [row for row in collect_review_dispositions(criteria) if done_finding_outstanding(row)]
+
+
+def done_finding_outstanding(row: Mapping[str, Any]) -> bool:
+    """Classify normalized rows without changing their vocabulary or raw status."""
+    criterion = row.get("criterion")
+    if (
+        not isinstance(criterion, str)
+        or not criterion.startswith("review_")
+        or not criterion.endswith("_done")
+    ):
+        return False
+    disposition = row.get("reviewer_disposition") or row.get("disposition")
+    status = row.get("status")
+    return not any(
+        isinstance(value, str) and value.lower() in _NONCURRENT_DONE
+        for value in (disposition, status)
+    )
 
 
 def review_report_required(criteria: Mapping[str, Any]) -> bool:

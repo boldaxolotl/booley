@@ -16,7 +16,7 @@ from .acceptance_ledger import read_acceptance
 from .lifecycle import TicketState
 from .paths import existing_human_log_file, existing_runtime_file, ticket_log_dir
 from .persistence import atomic_replace_bytes
-from .review_records import advisory_handoff_path, read_json
+from .review_records import advisory_handoff_path, read_entry, read_json
 
 ADVISORY_REVIEW_REASON = (
     "Current done review findings require explicit human approval before acceptance."
@@ -53,21 +53,31 @@ def advisory_marker_current(tio: Any, slug: str) -> bool:
     if marker is None:
         return False
     if marker["execution_id"] != tio.read_progress(slug)["execution_id"]:
-        raise ValueError("advisory handoff belongs to another execution")
+        return False
     heads = _handoff_basis_heads(tio, slug)
     if heads is None or marker["heads"] != heads:
         raise ValueError("advisory handoff heads changed; inspect or reset the run")
     return True
 
 
-def _prepare(tio: Any, slug: str, execution_id: str) -> bool:
+def _prepare(tio: Any, slug: str, execution_id: str, *, renew_heads: bool = False) -> bool:
     """Fence jobs, strict acceptance and immutable heads before marker publication."""
+    from booley.runtime.pid import is_pid_alive
+
     from .operations import (
         _bind_existing_handoff_snapshot,
         _handoff_basis_heads,
         _handoff_jobs_clear,
     )
 
+    owner = tio.read_progress(slug).get("execution_owner_pid")
+    if (
+        isinstance(owner, int)
+        and str(owner) != str(tio._resolve_developer_pid())
+        and is_pid_alive(owner)
+    ):
+        print("Error: advisory handoff execution owner is still running", file=sys.stderr)
+        return False
     log_dir = ticket_log_dir(tio.logs_dir, slug)
     if not _handoff_jobs_clear(log_dir, slug):
         return False
@@ -79,14 +89,16 @@ def _prepare(tio: Any, slug: str, execution_id: str) -> bool:
         if existing:
             print(
                 f"Error: '{slug}' already has acceptance; inspect it and use board approve "
-                "for authorized recovery, or board reset to discard the run.",
+                "for authorized recovery, or booley board reset to discard the run.",
                 file=sys.stderr,
             )
         return False
-    return _publish_marker(tio, slug, execution_id, heads)
+    return _publish_marker(tio, slug, execution_id, heads, renew_heads=renew_heads)
 
 
-def _publish_marker(tio: Any, slug: str, execution_id: str, heads: dict[str, str]) -> bool:
+def _publish_marker(
+    tio: Any, slug: str, execution_id: str, heads: dict[str, str], *, renew_heads: bool = False
+) -> bool:
     from .criteria_acceptance import check_criteria_acceptance
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
@@ -108,13 +120,15 @@ def _publish_marker(tio: Any, slug: str, execution_id: str, heads: dict[str, str
         raise ValueError("advisory handoff requires outstanding done findings")
     old = read_advisory_marker(log_dir)
     if old is not None:
-        if (
-            old["execution_id"] != execution_id
-            or old["heads"] != heads
-            or old["findings"] != findings
-        ):
-            raise ValueError("stale advisory handoff marker; inspect or reset the run")
-        return True
+        same_execution = old["execution_id"] == execution_id
+        if same_execution and old["heads"] == heads and old["findings"] == findings:
+            return True
+        if read_entry(log_dir) is not None:
+            raise ValueError("selected review inspection prevents advisory marker renewal")
+        if same_execution and not renew_heads:
+            raise ValueError(
+                "stale advisory handoff marker; run booley board review or reset the run"
+            )
     marker = {
         "schema": 1,
         "execution_id": execution_id,
@@ -154,6 +168,24 @@ def op_handoff_advisory(tio: Any, slug: str, *, expected_execution_id: str | Non
         (f"{old_status}:{old_step}", "review:summary", "ticket-execute", ADVISORY_REVIEW_REASON),
         append_step="summary",
         expected_status="running",
-        expected_execution_id=expected_execution_id,
+        expected_execution_id=execution_id,
         before_move=lambda: _prepare(tio, slug, execution_id),
     )
+
+
+def renew_advisory_inspection(tio: Any, slug: str) -> None:
+    """Explicit board review may renew heads before the initial selected inspection."""
+    log_dir = ticket_log_dir(tio.logs_dir, slug)
+    with tio._ticket_lock(slug, review_operation=True):
+        from .review_lifecycle import _quiescent
+
+        _quiescent(tio, slug)
+        marker = read_advisory_marker(log_dir)
+        if marker is None or read_entry(log_dir) is not None:
+            return
+        if marker["execution_id"] != tio.read_progress(slug)["execution_id"]:
+            raise ValueError("advisory marker belongs to another execution")
+        if not _prepare(tio, slug, marker["execution_id"], renew_heads=True):
+            raise ValueError(
+                "cannot renew advisory review; verify Criteria and inspect existing acceptance"
+            )

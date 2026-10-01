@@ -974,29 +974,24 @@ def validate_assessment(value: Any, facts: Mapping[str, Any]) -> dict[str, Any]:
 DONE_FINDINGS_HOLD = (
     "Current done review findings require explicit human approval before acceptance."
 )
-DONE_FINDINGS_ACCEPTED = (
-    "Done review findings were accepted by the Human; the findings remain visible."
-)
+DONE_FINDINGS_ACCEPTED = "Done review findings remain visible in the accepted record."
 
 
 def _enforce_done_findings_blocker(assessment: dict[str, Any], facts: Mapping[str, Any]) -> None:
-    from booley.evidence.review_dispositions import outstanding_done_findings
+    from booley.evidence.review_dispositions import done_finding_outstanding
 
-    criteria = {}
-    for row in facts.get("review_dispositions", []):
-        if not isinstance(row, Mapping):
-            continue
-        key = str(row.get("criterion", ""))
-        criteria.setdefault(key, {"detail": {"issue_list": []}})["detail"]["issue_list"].append(
-            row
-        )
-    if not outstanding_done_findings(criteria):
+    if not any(
+        isinstance(row, Mapping) and done_finding_outstanding(row)
+        for row in facts.get("review_dispositions", [])
+    ):
         return
     inspection = facts.get("inspection")
     accepted = isinstance(inspection, Mapping) and inspection.get("disposition") == "accepted"
     if accepted:
         if DONE_FINDINGS_ACCEPTED not in assessment.setdefault("findings", []):
             assessment["findings"].append(DONE_FINDINGS_ACCEPTED)
+        if DONE_FINDINGS_HOLD not in assessment["findings"]:
+            assessment["findings"].append(DONE_FINDINGS_HOLD)
         return
     assessment["recommendation"] = "hold"
     for field in ("decision_blockers", "findings"):
@@ -1546,7 +1541,9 @@ def _render_decision(lines: list[str], package: Mapping[str, Any]) -> None:
     lines.extend(f"{index}. {_markdown_text(item)}" for index, item in enumerate(blockers, 1))
 
 
-def accepted_review_presentation(package: Mapping[str, Any]) -> dict[str, Any]:
+def accepted_review_presentation(
+    package: Mapping[str, Any], *, human_approved: bool = False
+) -> dict[str, Any]:
     """Project an accepted package without stale pre-acceptance blockers."""
     inspection = package.get("inspection")
     if not isinstance(inspection, Mapping):
@@ -1568,9 +1565,16 @@ def accepted_review_presentation(package: Mapping[str, Any]) -> dict[str, Any]:
     assessment["decision_blockers"] = retained
     findings = list(assessment.get("findings", []))
     if DONE_FINDINGS_HOLD in findings:
-        assessment["findings"] = [
-            DONE_FINDINGS_ACCEPTED if item == DONE_FINDINGS_HOLD else item for item in findings
-        ]
+        assessment["findings"] = (
+            [
+                "Done review findings were accepted by the Human; the findings remain visible."
+                if item == DONE_FINDINGS_HOLD
+                else item
+                for item in findings
+            ]
+            if human_approved
+            else [*findings, DONE_FINDINGS_ACCEPTED]
+        )
     return {
         **package,
         "assessment": assessment,

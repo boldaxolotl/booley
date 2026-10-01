@@ -357,3 +357,15 @@ def test_outstanding_done_rows_include_optional_legacy_and_all_severities() -> N
         "current",
         "legacy",
     ]
+
+
+@pytest.mark.parametrize("status", [None, 1, {}, []])
+def test_raw_legacy_status_remains_conservative_without_crashing(status):
+    from booley.evidence.review_dispositions import outstanding_done_findings
+
+    criteria = {
+        "review_removed_done": {
+            "detail": {"issue_list": [{"summary": "historical", "status": status}]}
+        }
+    }
+    assert outstanding_done_findings(criteria)[0]["status"] == status

@@ -2563,9 +2563,10 @@ class TestOneShotGuard:
         assert detail["review_detail_version"] == 4
         assert detail["receipt_id"]
 
+    @pytest.mark.parametrize("met", [True, False])
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_one_shot_replays_prior_verdict_verbatim(
-        self, mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch
+        self, mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch, met
     ):
         """The replayed report repeats the recorded findings, not just a refusal (F-49)."""
         # This standalone receipt has no Ticket context. An inherited logs dir
@@ -2576,7 +2577,7 @@ class TestOneShotGuard:
         st = DevelopmentState.load(state_file)
         st.set_criterion(
             "review_rtl_bugs_done",
-            met=True,
+            met=met,
             detail={
                 "issues": 1,
                 "issue_list": [
@@ -2589,7 +2590,7 @@ class TestOneShotGuard:
                         "summary": "unused signal",
                     }
                 ],
-                "gate_passed": True,
+                "gate_passed": met,
                 "review_detail_version": 4,
                 "contract": endpoint._review_contract_detail(),
                 SOURCE_FINGERPRINT_DETAIL_KEY: {
@@ -2608,7 +2609,8 @@ class TestOneShotGuard:
         assert "RESULT: REVIEWED WITH FINDINGS (1 minor)" in result.report_text
         assert "rtl/mod_a.sv:42 — unused signal" in result.report_text
         # State is untouched: replaying must not rewrite the recorded verdict.
-        assert DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
+        assert result.criterion_met is True
+        assert result.detail["gate_passed"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -3901,3 +3903,39 @@ def test_diff_ref_option_is_removed() -> None:
                 "HEAD",
             ]
         )
+
+
+@pytest.mark.parametrize("invalid", ["malformed", "provider", "changed", "missing"])
+@patch("booley.specialists.specialist._call_agent_sync")
+def test_incomplete_or_changed_legacy_done_receipt_does_not_replay(
+    mock_agent, state_file, monkeypatch, invalid
+):
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
+    detail = {
+        "review_detail_version": 4,
+        "contract": endpoint._review_contract_detail(),
+        "gate_passed": False,
+        "issue_list": [],
+        SOURCE_FINGERPRINT_DETAIL_KEY: {
+            "categories": ["rtl"],
+            "fingerprint": compute_source_fingerprint(Path.cwd()),
+        },
+    }
+    if invalid == "malformed":
+        detail["issue_list"] = ["invalid"]
+    elif invalid == "provider":
+        detail["error"] = "provider failure"
+    elif invalid == "missing":
+        detail.pop("issue_list")
+    else:
+        detail["contract"]["scope_hashes"] = {"rtl/mod_a.sv": "old"}
+    state = DevelopmentState.load(state_file)
+    state.set_criterion("review_rtl_bugs_done", False, detail=detail)
+    state.save()
+    mock_agent.return_value = _make_agent_result([])
+    endpoint.read_state()
+    result = endpoint._run()
+    assert mock_agent.call_count == 1
+    assert "did NOT re-run" not in result.report_text

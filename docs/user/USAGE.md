@@ -390,7 +390,8 @@ each step waits for the one before it. Leave an action out and it's skipped:
    (one extra AI call). It only applies together with `review`.
 2. **`review`**: parks the Ticket until you approve it. Its branch and working
    copy stay in place so you can inspect them. Nothing below happens until you
-   approve. Without `review`, the Ticket goes straight on to the next step.
+   approve. Without `review`, the Ticket goes straight on to the next step unless
+   current `_done` review findings require explicit Human approval.
 3. **`merge`**: merges the work into the destination branch. Leave it
    out to keep that branch untouched.
 4. **`cleanup`**: deletes the Ticket's branch and working copy, after the merge
@@ -399,7 +400,8 @@ each step waits for the one before it. Leave an action out and it's skipped:
 
 So with `review` in the list, nothing reaches your branch until you've
 approved it. Without `review`, `merge` and `cleanup` run as soon as the
-criteria pass.
+criteria pass, unless current `_done` review findings require explicit Human
+approval first.
 
 **Adding Targets in a Ticket.** Most Tickets use the Targets you already have.
 To add one, mark it where the Ticket mentions it, and include `merge`:

@@ -1802,9 +1802,8 @@ object, even after calling the capability.
             return self._run_clean_mode(crit_key)
 
         # _done mode records terminal review completion, not cleanliness.
-        # Findings remain available in detail; callers that need a blocking
-        # disposition workflow must request the corresponding _clean gate.
-        if self.state and self.state.is_met(crit_key):
+        # Fresh completed legacy receipts may still have an unmet cleanliness gate.
+        if self._done_receipt_completed(crit_key):
             return self._replay_done_verdict(crit_key)
 
         # Run single-focus review
@@ -1821,6 +1820,26 @@ object, even after calling the capability.
 
         elapsed = time.monotonic() - overall_start
         return self._build_result(issues, output_lines, elapsed=elapsed)
+
+    def _done_receipt_completed(self, crit_key: str) -> bool:
+        """Replay only fresh completed review evidence, never incomplete/error detail."""
+        if self.state is None:
+            return False
+        entry = self.state.criteria.get(crit_key)
+        if entry is None or entry.stale:
+            return False
+        detail = entry.detail or {}
+        findings = detail.get("issue_list")
+        return (
+            detail.get("review_detail_version") == REVIEW_DETAIL_VERSION
+            and not detail.get("needs_discovery")
+            and not detail.get("error")
+            and isinstance(findings, list)
+            and all(
+                isinstance(row, dict) and row.get("severity") and row.get("summary")
+                for row in findings
+            )
+        )
 
     # --- _clean mode ---
 

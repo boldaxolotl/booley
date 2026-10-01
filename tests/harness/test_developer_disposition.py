@@ -630,8 +630,26 @@ class TestProvisionalDisposition:
         return mocks, patches, provisional
 
     @pytest.mark.asyncio
-    async def test_provisional_review_publishes_an_unaccepted_inspection(self, tmp_path: Path):
+    @pytest.mark.parametrize("done_findings", [False, True])
+    async def test_provisional_review_publishes_an_unaccepted_inspection(
+        self, tmp_path: Path, done_findings
+    ):
         ctx = _make_ctx(tmp_path)
+        if done_findings:
+            from booley.ticket_board.paths import ticket_runtime_file
+
+            state = DevelopmentState.load(ticket_runtime_file(ctx.logs_dir, "booley_state.json"))
+            state.init_criteria({"review_rtl_bugs_done": False})
+            state.set_criterion(
+                "review_rtl_bugs_done",
+                True,
+                detail={
+                    "issue_list": [
+                        {"disposition": "current", "severity": "MINOR", "summary": "combined"}
+                    ]
+                },
+            )
+            state.save()
         outcome = ReviewPrepOutcome("ready", "prepared", package_path=tmp_path / "package.json")
         mocks, patches, provisional = self._start(tmp_path, handed_off=True, outcome=outcome)
         try:

@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -277,7 +278,13 @@ def _commit(tio: TicketIO, ctx: prep.ReviewPrepContext, operation: dict[str, Any
     assert row is not None
     if row["disposition"] == "accepted" or operation["action"] == "approve":
         _publish_acceptance(ctx, operation)
-    _write(entry_path(ctx.log_dir), {"entry": row, "sha256": digest(row)})
+    record = {"entry": row, "sha256": digest(row)}
+    if operation["action"] == "approve":
+        record["approval"] = {
+            "generation": row["generation"],
+            "accepted_at": operation["accepted_at"],
+        }
+    _write(entry_path(ctx.log_dir), record)
     board = tio.find_ticket(ctx.slug)
     if board is None or board["status"] not in {"blocked", "review"}:
         raise ReviewEntryError("ticket moved during review publication")
@@ -896,8 +903,13 @@ async def _review_existing_ticket(
     project_root: Path, slug: str, tio: TicketIO, *, force: bool
 ) -> prep.ReviewPrepOutcome:
     """Reuse or refresh review material for an existing review Ticket."""
+    from .advisory_handoff import renew_advisory_inspection
     from .provisional_handoff import PROVISIONAL_REVIEW_REASON
 
+    try:
+        renew_advisory_inspection(tio, slug)
+    except (ReviewEntryError, ValueError) as exc:
+        return prep.ReviewPrepOutcome("failed", str(exc))
     if not force and (fresh := _current_review_package(tio, slug)) is not None:
         return fresh
     try:
@@ -995,3 +1007,32 @@ def run_review_command(project_root: Path, slug: str, command: list[str]) -> int
     from .review_execution import run_review_command as execute
 
     return execute(project_root, slug, command)
+
+
+def selected_human_approval(log_dir: Path, inspection: Mapping[str, Any]) -> bool:
+    """Prove approval of this selected generation against its immutable acceptance."""
+    from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
+
+    selected = read_entry(log_dir)
+    accepted = read_acceptance(log_dir)
+    if selected is None or accepted.kind != "accepted" or accepted.snapshot is None:
+        return False
+    approval = (read_json(entry_path(log_dir)) or {}).get("approval")
+    snapshot = accepted.snapshot
+    if not isinstance(approval, dict) or approval != {
+        "generation": inspection.get("generation"),
+        "accepted_at": snapshot.accepted_at,
+    }:
+        return False
+    if (
+        selected["execution_id"] != snapshot.execution_id
+        or selected["heads"] != snapshot.participant_heads
+    ):
+        return False
+    if not (log_dir / "acceptance" / "review-package.json").exists():
+        return False
+    try:
+        validate_review_package_binding(log_dir, snapshot)
+    except AcceptanceLedgerError:
+        return False
+    return True

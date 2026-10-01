@@ -1171,6 +1171,10 @@ def test_normalized_review_facts_write_package(tmp_path, mode, original, report_
         ctx, facts, _assessment(), ctx.log_dir / "explanation.html" if report_enabled else None
     )
     package = tp.load_triage_package(path)
+    if mode == "done":
+        assert (tp.DONE_FINDINGS_HOLD in package["assessment"]["decision_blockers"]) == (
+            original == "current"
+        )
     row = package.review_dispositions[0]
     assert row.disposition == ("open" if original == "current" else "reported")
     assert row.reviewer_disposition == original
@@ -1202,18 +1206,28 @@ def test_current_done_finding_package_requires_human_even_with_agent_approve(tmp
     """Real publication exposes outstanding findings independently of report enablement."""
     ctx = _context(tmp_path)
     facts = _facts(ctx)
-    facts["review_dispositions"] = [
+    from booley.evidence.review_dispositions import collect_review_dispositions
+
+    facts["review_dispositions"] = collect_review_dispositions(
         {
-            "criterion": "review_rtl_bugs_done",
-            "finding_id": "minor",
-            "severity": "MINOR",
-            "file": "rtl/new.sv",
-            "line": 1,
-            "summary": "current finding",
-            "disposition": "current",
-            "status": "current",
+            "review_rtl_bugs_done": {
+                "detail": {
+                    "issue_list": [
+                        {
+                            "criterion": "review_rtl_bugs_done",
+                            "finding_id": "minor",
+                            "severity": "MINOR",
+                            "file": "rtl/new.sv",
+                            "line": 1,
+                            "summary": "current finding",
+                            "disposition": "current",
+                            "status": "current",
+                        }
+                    ]
+                }
+            }
         }
-    ]
+    )
     assessment = _assessment()
     assessment["recommendation"] = "approve"
     path = tp.write_triage_package(ctx, facts, assessment, None)
@@ -1223,7 +1237,7 @@ def test_current_done_finding_package_requires_human_even_with_agent_approve(tmp
     assert "current finding" in tp.render_review_briefing(package, [])
 
 
-def test_explicit_human_acceptance_removes_done_hold_and_keeps_findings():
+def test_generic_acceptance_does_not_claim_human_approval():
     package = {
         "inspection": {"disposition": "unaccepted"},
         "review_dispositions": [{"summary": "still visible"}],
@@ -1236,5 +1250,47 @@ def test_explicit_human_acceptance_removes_done_hold_and_keeps_findings():
     accepted = tp.accepted_review_presentation(package)
     assert accepted["assessment"]["recommendation"] == "approve"
     assert accepted["assessment"]["decision_blockers"] == []
-    assert accepted["assessment"]["findings"] == [tp.DONE_FINDINGS_ACCEPTED]
+    assert "accepted by the Human" not in " ".join(accepted["assessment"]["findings"])
+    assert tp.DONE_FINDINGS_HOLD in accepted["assessment"]["findings"]
     assert accepted["review_dispositions"] == package["review_dispositions"]
+
+
+def test_combined_done_findings_and_coverage_choices_are_both_visible(tmp_path):
+    from booley.evidence.review_dispositions import collect_review_dispositions
+
+    ctx = _context(tmp_path)
+    facts = _facts(ctx)
+    facts["review_dispositions"] = collect_review_dispositions(
+        {
+            "review_old_done": {
+                "detail": {
+                    "issue_list": [
+                        {
+                            "severity": "MINOR",
+                            "summary": "historical obligation",
+                            "disposition": "current",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    facts["waiver_candidates"] = [_waiver_row("wc-offered", "offered", needed=True)]
+    facts["inspection"] = {
+        "schema": 1,
+        "disposition": "unaccepted",
+        "reason": "combined review",
+        "blocked_reason": "",
+        "heads": {},
+        "ticket_generation": "g",
+    }
+    facts["criteria"] = [
+        {**row, "required": "mandatory", "status": "unmet"} for row in facts["criteria"][:1]
+    ]
+    path = tp.write_triage_package(ctx, facts, _assessment(), None)
+    package = tp.load_triage_package(path)
+    briefing = tp.render_review_briefing(package, [])
+    assert tp.DONE_FINDINGS_HOLD in package["assessment"]["decision_blockers"]
+    assert "historical obligation" in briefing
+    assert "wc-offered" in briefing
+    assert "decide waivers and approve" in briefing
