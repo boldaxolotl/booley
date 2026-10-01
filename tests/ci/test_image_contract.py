@@ -245,7 +245,7 @@ def test_validate_keeps_probe_and_layer_failures_in_evidence(
     assert evidence["errors"] == [
         "missing command",
         "hard-link group is carried by 2 exported layers",
-        "derived image RootFS layers do not prefix-match the standard image",
+        "derived image RootFS layers do not prefix-match its base image",
     ]
 
 

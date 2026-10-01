@@ -543,7 +543,7 @@ def validate(
     layer_links, layer_link_errors = _layer_link_audit(image, contract["hard_link_groups"])
     errors.extend(layer_link_errors)
     if base is not None and not layer_contract["prefix_match"]:
-        errors.append("derived image RootFS layers do not prefix-match the standard image")
+        errors.append("derived image RootFS layers do not prefix-match its base image")
     additional_layer_count = layer_contract["additional_layer_count"]
     if base is not None and (additional_layer_count is None or additional_layer_count < 1):
         errors.append("derived image added no RootFS layer")

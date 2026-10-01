@@ -579,12 +579,24 @@ def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -
 
 def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
     job = _workflow(".github/workflows/docker-publish.yml")["jobs"]["host-doctor-runtime"]
+    download = _named_step(job, "Download exact release wheel")
     prepare = _named_step(job, "Prepare isolated uid-1000 host")["run"]
     validate = _named_step(job, "Run isolated host validation")
 
+    assert download["with"] == {"name": "release-wheel", "path": "dist/"}
     assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
     assert 'mkdir -p "${root}/home" "${root}/evidence" "${root}/project"' in prepare
-    assert '"${root}/venv/bin/pip" install .' in prepare
+    # Bootstrap refuses venvs and fingerprints the wheel against the image, so
+    # the host must run the exact release wheel from the base interpreter.
+    assert (
+        'PYTHONUSERBASE="${root}/home/.local" python -m pip install --user dist/booley_rtl-*.whl'
+    ) in prepare
+    assert "venv" not in prepare + validate["run"]
+    assert "pip install ." not in prepare
+    assert '-- "${pythonLocation}/bin/python"' in validate["run"]
+    assert (
+        '--booley "${RUNNER_TEMP}/release-host-doctor/home/.local/bin/booley"' in validate["run"]
+    )
     assert 'sudo chown -R "1000:${doctor_gid}" "${root}"' in prepare
     assert "/usr/bin/booley" not in prepare + validate["run"]
     assert (
