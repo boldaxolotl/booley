@@ -403,17 +403,78 @@ def test_warm_riscv_cache_tracks_exact_candidate_parent() -> None:
     parent = next(step for step in steps if step.get("id") == "riscv-cache-parent")
     cache = next(step for step in steps if step.get("id") == "riscv-warm-cache")
     assert parent["if"] == cache["if"]
-    assert "docker image inspect --format '{{.Id}}' booley-standard-substrate:ci" in parent["run"]
-    assert 'echo "image_id=${parent_id}" >> "${GITHUB_OUTPUT}"' in parent["run"]
+    assert "{{json .Config}} {{json .RootFS}} {{.Architecture}} {{.Os}}" in parent["run"]
+    assert "booley-standard-substrate:ci" in parent["run"]
+    assert "sha256sum" in parent["run"]
     assert steps.index(parent) < steps.index(cache)
     assert steps.index(parent) > next(
         index
         for index, step in enumerate(steps)
         if step.get("name") == "Build standard wheel overlay"
     )
-    assert "${{ steps.riscv-cache-parent.outputs.image_id }}" in cache["with"]["key"]
-    assert cache["with"]["key"].startswith("riscv-tooling-v2-")
+    assert "${{ steps.riscv-cache-parent.outputs.fingerprint }}" in cache["with"]["key"]
+    assert cache["with"]["key"].startswith("riscv-tooling-v3-")
     assert "restore-keys" not in cache["with"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Measurement shell runs on the Linux CI runner")
+@pytest.mark.parametrize(("docker_exit", "empty"), [(0, False), (0, True), (1, False)])
+def test_warm_riscv_parent_fingerprint_fails_on_inspect_error(
+    tmp_path: Path, docker_exit: int, empty: bool
+) -> None:
+    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
+    parent = next(step for step in steps if step.get("id") == "riscv-cache-parent")
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        + ("" if empty else 'echo \'{} {"Layers":["sha256:layer"]} amd64 linux\'\n')
+        + f"exit {docker_exit}\n"
+    )
+    fake_docker.chmod(0o755)
+    output = tmp_path / "output.txt"
+    result = subprocess.run(
+        ["bash", "-e", "-u", "-o", "pipefail", "-c", parent["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_OUTPUT": str(output),
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if docker_exit == 0 and not empty:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text().startswith("fingerprint=")
+        assert len(output.read_text().strip().split("=", 1)[1]) == 64
+    else:
+        assert result.returncode == 1
+        assert not output.exists()
+
+
+def test_warm_riscv_rebuilt_base_fails_before_build_or_cache_export() -> None:
+    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
+    reject = next(
+        step
+        for step in steps
+        if step.get("name") == "Reject warm measurements with a locally rebuilt stable base"
+    )
+    assert " ".join(reject["if"].split()) == (
+        "inputs.riscv_measurement == 'warm' && steps.runtime-base.outputs.build == 'true'"
+    )
+    assert "exit 1" in reject["run"]
+    assert steps.index(reject) > next(
+        index for index, step in enumerate(steps) if step.get("id") == "runtime-base"
+    )
+    assert steps.index(reject) < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Build changed stable runtime base locally"
+    )
+    assert steps.index(reject) < next(
+        index for index, step in enumerate(steps) if step.get("id") == "riscv-warm-cache"
+    )
 
 
 def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None:

@@ -107,21 +107,27 @@ use pinned Docker v28.0.4 with the containerd image store and the daemon-backed
 boundary and retains access to the exact local candidate parent.
 
 `baseline` adds no explicit RISC-V cache import/export. `warm` restores a
-tooling-input-, stable-base-, and exact-standard-parent-scoped local BuildKit cache through GitHub's
+tooling-input-, stable-base-, and standard-parent-content-scoped local BuildKit cache through GitHub's
 branch-aware cache service. Pull-request caches cannot replace the trusted
-default-branch entry. The cache key includes the inspected standard candidate
-image ID: changing its ancestry gets a new key rather than an immutable stale
-cache hit. A cache miss seeds a later rerun and is marked
-non-representative. Only a restored cache for which BuildKit reports an actual
+default-branch entry. The cache key includes the standard candidate
+runtime-content fingerprint: changing its configuration or layer ancestry gets a
+new key rather than an immutable stale cache hit. The fingerprint hashes the
+inspected runtime configuration, RootFS layer diff IDs, architecture, and OS.
+It excludes the containerd index's timestamped attestations, which can change
+between otherwise identical builds, and does not depend on exporter-specific
+config-digest metadata. The candidate's inspected image ID remains
+in the retained provenance evidence. A cache miss seeds a later rerun and is
+marked non-representative. Only a restored cache for which BuildKit reports an actual
 tooling cache hit is a warm sample. `cold` adds `--no-cache` to both candidate
 builds and does not restore or export the RISC-V cache. `automatic` retains the
 hosted-runner Docker setup, `--builder default --load` path, and path gating;
 the measurement input cannot be set on pull requests.
 
 For the decision sample, use the published stable-base path and verify the
-same inspected standard parent image ID across runs. A locally rebuilt stable
+same standard parent runtime-content fingerprint across runs. A locally rebuilt stable
 base stamps a fresh creation time and can change parent identity on every run;
-those runs exercise cold correctness but do not form a restored-warm cohort.
+warm dispatches on that path fail before building/exporting an unusable cache.
+Use `cold` to exercise that path's correctness.
 Compare controlled arms at the same candidate SHA, stable-base digest, Docker
 version, storage driver, and runner architecture; retain the image-size report's
 Docker/storage environment evidence with each sample. Alternate cold and warm

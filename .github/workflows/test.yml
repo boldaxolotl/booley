@@ -817,6 +817,16 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
           echo "build=false" >> "${GITHUB_OUTPUT}"
 
+      # Locally rebuilt bases stamp a fresh creation time, so a warm measurement
+      # cannot reuse their parent config and would only fill the cache quota.
+      - name: Reject warm measurements with a locally rebuilt stable base
+        if: >-
+          inputs.riscv_measurement == 'warm' &&
+          steps.runtime-base.outputs.build == 'true'
+        run: |
+          echo 'Warm RISC-V measurements require the published stable-base path.' >&2
+          exit 1
+
       # A PR that changes a stable-base input must test that candidate without
       # publishing untrusted layers. Reuse the trusted main-branch cache, but do
       # not export the PR's result back into that shared scope.
@@ -998,9 +1008,8 @@ jobs:
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
-      # The measurement cache follows the actual standard candidate ancestry.
-      # A recipe-only key can permanently restore stale tooling after a parent
-      # change because Actions caches are immutable on exact hits.
+      # Runtime config and layer diff IDs identify the effective parent without
+      # timestamped attestations or exporter-dependent config-digest metadata.
       - name: Identify warm RISC-V parent image
         if: >-
           needs.changes.outputs.riscv_image == 'true' &&
@@ -1008,9 +1017,12 @@ jobs:
         id: riscv-cache-parent
         shell: bash
         run: |
-          parent_id="$(docker image inspect --format '{{.Id}}' booley-standard-substrate:ci)"
-          test -n "${parent_id}"
-          echo "image_id=${parent_id}" >> "${GITHUB_OUTPUT}"
+          parent_runtime="$(docker image inspect \
+            --format '{{json .Config}} {{json .RootFS}} {{.Architecture}} {{.Os}}' \
+            booley-standard-substrate:ci)"
+          test -n "${parent_runtime}"
+          parent_fingerprint="$(printf '%s' "${parent_runtime}" | sha256sum)"
+          echo "fingerprint=${parent_fingerprint%% *}" >> "${GITHUB_OUTPUT}"
 
       # Default-branch caches are readable from feature branches, while caches
       # saved by a pull request remain scoped to that branch and cannot replace
@@ -1024,7 +1036,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/riscv-buildkit-cache
-          key: riscv-tooling-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}-${{ steps.riscv-cache-parent.outputs.image_id }}
+          key: riscv-tooling-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.base-contract.outputs.contract }}-${{ hashFiles('src/booley/data/docker/Dockerfile.riscv') }}-${{ steps.riscv-cache-parent.outputs.fingerprint }}
 
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
