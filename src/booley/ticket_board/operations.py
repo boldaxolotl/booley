@@ -244,7 +244,9 @@ def op_activate(
 
     if old_status == "running":
         lock_path = existing_runtime_file(tio.tickets_dir / "logs", slug, "ticket.lock")
-        existing_pid = read_lock_pid(lock_path)
+        existing_pid = (entry.get("execution_owner_pid") if entry else None) or read_lock_pid(
+            lock_path
+        )
         if existing_pid is not None and existing_pid != owner_pid and is_pid_alive(existing_pid):
             return False  # another live runner owns this ticket
         # Dead or missing PID — safe to take over; stamp our PID under lock.
@@ -270,6 +272,17 @@ def op_activate(
     # progress, or a ticket coming back from blocked/failed.
     resumed = old_status in ("blocked", "failed") or bool(entry and entry.get("steps_completed"))
     detail = "picked up (resume)" if resumed else "claimed for execution"
+
+    def repair_snapshot() -> bool:
+        from .runtime_identity import refresh_snapshot
+
+        progress = tio.read_progress(slug)
+        previous = progress.get("execution_owner_pid")
+        if previous and previous != owner_pid and is_pid_alive(previous):
+            return False
+        refresh_snapshot(tio, slug)
+        return True
+
     return _op_move_and_log(
         tio,
         slug,
@@ -281,6 +294,7 @@ def op_activate(
             "ticket-execute",
             detail,
         ),
+        before_move=repair_snapshot,
     )
 
 
@@ -528,12 +542,14 @@ def _bind_existing_handoff_snapshot(
             participant_heads,
             _acceptance_participant_locations(tio, basis),
         )
-        if drift is not None:
-            print(
-                f"Error: cannot hand off '{slug}': "
-                f"{format_stale_acceptance(slug, drift, status='handoff')}",
-                file=sys.stderr,
+        identity_changed = accepted.snapshot.ticket_identity != basis.ticket_identity()
+        if identity_changed or drift is not None:
+            reason = (
+                "accepted snapshot names another Ticket identity"
+                if identity_changed
+                else format_stale_acceptance(slug, drift, status="handoff")
             )
+            print(f"Error: cannot hand off '{slug}': {reason}", file=sys.stderr)
             return False
         try:
             bind_review_package(log_dir, accepted.snapshot)
@@ -1018,6 +1034,7 @@ def _refresh_waiting_basis(tio, ticket, slug, updates, state) -> bool:
         BasisRefreshError,
         load_basis_refresh,
         prepare_waiting_basis_refresh,
+        reconcile_refresh_runtime,
     )
 
     if ticket.get("machine") is None:
@@ -1032,6 +1049,8 @@ def _refresh_waiting_basis(tio, ticket, slug, updates, state) -> bool:
             if journal is None or journal.state != "prepared":
                 raise BasisRefreshError("prepared waiting Ticket metadata is unavailable")
             updates["machine"] = journal.machine
+            candidate = tio._prepare_spec_fields(path, {"machine": journal.machine})
+            reconcile_refresh_runtime(tio, slug, candidate, journal)
             state["operation"] = operation
     except BasisRefreshError as exc:
         state["failed"] = True

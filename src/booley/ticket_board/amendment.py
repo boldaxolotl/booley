@@ -796,19 +796,7 @@ def _publish_refs(
         _write_journal(root, journal)
 
 
-def _publish_board_and_state(
-    tio: Any,
-    journal: dict[str, Any],
-    basis: TicketBaseline,
-    repositories: dict[str, tuple[Path, Path]],
-) -> None:
-    root = Path(tio._project_root).resolve()
-    if journal["phase"] in {"board", "handoff", "queued"}:
-        return
-    ticket, status = find_ticket_file(tio.tickets_dir, journal["slug"])
-    if ticket is None or status != "blocked":
-        raise AmendmentError("blocked Ticket disappeared during publication")
-    current = ticket.read_bytes()
+def _amendment_candidate(root: Path, journal: dict[str, Any], current: bytes) -> bytes:
     source_document = _convert_ticket(root, journal["slug"], current.decode())
     revised_fields = dict(journal["revised_fields"])
     revised_fields["machine"] = journal["machine"]
@@ -819,6 +807,45 @@ def _publish_board_and_state(
     candidate = _serialize_ticket(
         root, journal["slug"], TicketDocument(revised_document.spec, generated)
     )
+    if "candidate_ticket" in journal:
+        candidate = journal["candidate_ticket"].encode()
+        stored = _convert_ticket(root, journal["slug"], candidate.decode())
+        if (
+            stored.generated.get("machine") != journal["machine"]
+            or stored.spec.semantic_digest() != revised_document.spec.semantic_digest()
+        ):
+            raise AmendmentError("stored Board Ticket differs from its amendment journal")
+    elif source_document.generated.get("machine") == journal["machine"]:
+        if source_document.spec.semantic_digest() != revised_document.spec.semantic_digest():
+            raise AmendmentError("published Board Ticket differs from its amendment journal")
+        candidate = current
+    else:
+        journal["candidate_ticket"] = candidate.decode()
+        _write_journal(root, journal)
+    return candidate
+
+
+def _publish_board_and_state(
+    tio: Any,
+    journal: dict[str, Any],
+    basis: TicketBaseline,
+    repositories: dict[str, tuple[Path, Path]],
+) -> None:
+    root = Path(tio._project_root).resolve()
+    ticket, status = find_ticket_file(tio.tickets_dir, journal["slug"])
+    if ticket is None or status not in {"blocked", "queued"}:
+        raise AmendmentError("blocked Ticket disappeared during publication")
+    current = ticket.read_bytes()
+    candidate = _amendment_candidate(root, journal, current)
+    from .runtime_identity import capture_evidence, capture_runtime
+
+    history = capture_runtime(tio, journal["slug"], journal["operation_id"], "amendments")
+    capture_evidence(
+        ticket_log_dir(tio.logs_dir, journal["slug"]),
+        history,
+        journal["operation_id"],
+        journal["old_machine"],
+    )
     if current != candidate:
         original = hashlib.sha256(current).hexdigest()
         if original != journal["ticket_sha256"]:
@@ -827,29 +854,20 @@ def _publish_board_and_state(
     loaded = load_ticket_baseline_from_document(
         root, journal["slug"], _convert_ticket(root, journal["slug"], candidate.decode())
     )
+    snapshot = ticket_log_dir(tio.logs_dir, journal["slug"]) / "ticket.md"
+    atomic_replace_bytes(snapshot, candidate, mode=0o644)
     _rebuild_state(tio, journal, loaded, repositories["outer"][1])
     journal["phase"] = "board"
     _write_journal(root, journal)
 
 
-def _rebuild_state(
-    tio: Any, journal: dict[str, Any], basis: TicketBaseline, checkout: Path
+def _apply_amendment_projection(
+    state: Any, journal: dict[str, Any], basis: TicketBaseline, root: Path, checkout: Path
 ) -> None:
-    from booley.criteria.state import DevelopmentState
-
-    path = existing_runtime_file(tio.logs_dir, journal["slug"], "booley_state.json")
-    prior = (
-        ticket_log_dir(tio.logs_dir, journal["slug"])
-        / "amendments"
-        / (journal["operation_id"] + ".prior-state.json")
-    )
-    if path.exists():
-        atomic_write_once(prior, path.read_bytes())
-    state = DevelopmentState.load(path)
     revised_fields = dict(journal["revised_fields"])
     revised_fields["machine"] = basis.ticket_identity()
     revised = _convert_ticket(
-        Path(tio._project_root),
+        root,
         journal["slug"],
         _render_ticket(revised_fields, journal["body"]),
     )
@@ -866,6 +884,25 @@ def _rebuild_state(
             entry.params[param] = params[name][param]
         if change["thresholds"]:
             _reevaluate_changed_entry(entry, basis, journal, checkout)
+
+
+def _rebuild_state(
+    tio: Any, journal: dict[str, Any], basis: TicketBaseline, checkout: Path
+) -> None:
+    from booley.criteria.state import DevelopmentState
+
+    path = existing_runtime_file(tio.logs_dir, journal["slug"], "booley_state.json")
+    prior = (
+        ticket_log_dir(tio.logs_dir, journal["slug"])
+        / "amendments"
+        / (journal["operation_id"] + ".prior-state.json")
+    )
+    if path.exists() and not prior.exists():
+        atomic_write_once(prior, path.read_bytes())
+    state = DevelopmentState.load(prior if prior.exists() else path)
+    original_state = DevelopmentState.load(prior if prior.exists() else path)
+    state._file_path = path
+    _apply_amendment_projection(state, journal, basis, Path(tio._project_root), checkout)
     report = state.criteria.get("_report_submitted")
     if report is not None:
         report.met = False
@@ -878,7 +915,40 @@ def _rebuild_state(
     state.authorized_zero_mandatory_basis_id = (
         basis.basis_id if not visible_mandatory and conversions else ""
     )
+    from .runtime_identity import publish_retained_observations, retire_foreign_pointers
+
+    log = ticket_log_dir(tio.logs_dir, journal["slug"])
+    old = journal["old_machine"]
+    publish_retained_observations(
+        log, original_state, state, old, basis.ticket_identity(), journal["operation_id"], checkout
+    )
+    retire_foreign_pointers(log, prior.parent, journal["operation_id"], basis.ticket_identity())
     state.save()
+
+
+def _amendment_source_matches(stamp: Any, checkout: Path) -> bool:
+    from booley.flows.source_fingerprint import compute_source_fingerprint
+
+    if (
+        not isinstance(stamp, dict)
+        or not isinstance(stamp.get("fingerprint"), dict)
+        or not isinstance(stamp.get("categories"), list)
+        or not stamp["categories"]
+        or not all(isinstance(category, str) for category in stamp["categories"])
+    ):
+        return False
+    target = stamp.get("target")
+    try:
+        current = compute_source_fingerprint(
+            checkout, target=target if isinstance(target, str) else None
+        )
+        return all(
+            stamp["fingerprint"].get(category, {}).get("digest")
+            == current.get(category, {}).get("digest")
+            for category in stamp["categories"]
+        )
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def _reevaluate_changed_entry(
@@ -886,7 +956,6 @@ def _reevaluate_changed_entry(
 ) -> None:
     from booley.criteria.state import DevelopmentState
     from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
-    from booley.flows.source_fingerprint import compute_source_fingerprint
 
     detail = entry.detail if isinstance(entry.detail, dict) else {}
     stamp = detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
@@ -895,31 +964,20 @@ def _reevaluate_changed_entry(
     reusable = isinstance(status, dict) and status.get("passed") is True
     reusable = reusable and status.get("tool_returncode") == 0 and not status.get("timed_out")
     reusable = reusable and not status.get("infra_error") and not status.get("failure_reasons")
-    if (
-        not isinstance(stamp, dict)
-        or not isinstance(stamp.get("fingerprint"), dict)
-        or not isinstance(stamp.get("categories"), list)
-        or not stamp["categories"]
-    ):
-        reusable = False
-    else:
-        target = stamp.get("target")
-        try:
-            current = compute_source_fingerprint(
-                checkout, target=target if isinstance(target, str) else None
-            )
-            reusable = reusable and all(
-                stamp["fingerprint"].get(category, {}).get("digest")
-                == current.get(category, {}).get("digest")
-                for category in stamp.get("categories", [])
-            )
-        except (OSError, ValueError):
-            reusable = False
+    campaign_cycles = detail.get("cycles")
+    reusable = reusable or (
+        detail.get("cycle_observation") == "observed"
+        and type(campaign_cycles) is int
+        and campaign_cycles >= 0
+    )
+    reusable = reusable and _amendment_source_matches(stamp, checkout)
     entry.met = bool(reusable)
     entry.stale = not reusable
     if reusable:
         evaluator = DevelopmentState()
         evaluator._evaluate_thresholds(entry)
+        if detail.get("cycle_observation") == "observed":
+            detail["evaluation"] = {"cycles": campaign_cycles, "checks": detail.get("checks", [])}
         if any(item.get("skipped") for item in entry.detail.get("checks", [])):
             entry.met = False
             entry.stale = True
@@ -1020,6 +1078,8 @@ def _handoff_record(tio: Any, journal: dict[str, Any], basis: TicketBaseline) ->
         "operation_id": journal["operation_id"],
         "old_basis_id": TicketBaseline.from_mapping(journal["basis"]).basis_id,
         "new_basis_id": basis.basis_id,
+        "old_ticket_identity": journal["old_machine"],
+        "new_ticket_identity": basis.ticket_identity(),
         "reason": journal["reason"],
         "actor": journal["actor"],
         "feedback": journal["feedback"],

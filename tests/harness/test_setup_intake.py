@@ -244,6 +244,9 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(intake, "_is_git_backed", lambda _root: False)
+    # These unit fixtures substitute Board conversion and activation authority.
+    # Real owner-checked snapshot publication is exercised by amendment resume tests.
+    monkeypatch.setattr(intake, "_ensure_ticket_snapshot", lambda *_args: None)
 
     original_load = TicketIO.load_document
 

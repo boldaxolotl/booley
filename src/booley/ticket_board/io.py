@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.core.differences import format_differences
+from booley.runtime.pid import is_pid_alive
 from booley.ticket_board.ticket_repositories import TicketWorkspace, TicketWorkspaceError
 
 if TYPE_CHECKING:
@@ -137,10 +138,11 @@ class TicketIO:
         while True:
             try:
                 lock_fd(lock_file)
-                lock_file.seek(0)
-                lock_file.truncate()
-                lock_file.write(pid_to_stamp)
-                lock_file.flush()
+                if pid_to_stamp is not None:
+                    lock_file.seek(0)
+                    lock_file.truncate()
+                    lock_file.write(pid_to_stamp)
+                    lock_file.flush()
                 return
             except BlockingIOError as lock_err:
                 if time.monotonic() >= deadline:
@@ -152,7 +154,7 @@ class TicketIO:
                 time.sleep(0.2)
 
     @contextlib.contextmanager
-    def _ticket_lock(self, slug, *, review_operation: bool = False):
+    def _ticket_lock(self, slug, *, review_operation: bool = False, stamp_pid: bool = True):
         """Per-ticket OS-level file lock at logs/<slug>/.runtime/ticket.lock.
 
         Uses msvcrt (Windows) or fcntl (Unix) for real byte-range locking.
@@ -163,7 +165,7 @@ class TicketIO:
         lock_path = migrate_runtime_file(log_dir, "ticket.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         locked = False
-        pid_to_stamp = self._resolve_developer_pid()
+        pid_to_stamp = self._resolve_developer_pid() if stamp_pid else None
         with lock_path.open("a+", encoding="utf-8") as lock_file:
             try:
                 self._acquire_lock(lock_file, slug, lock_path, pid_to_stamp)
@@ -172,7 +174,7 @@ class TicketIO:
                     from booley.ticket_board.review_records import assert_idle
 
                     assert_idle(log_dir)
-                yield
+                yield lock_file
             finally:
                 if locked:
                     with contextlib.suppress(OSError):
@@ -286,17 +288,23 @@ class TicketIO:
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
     ) -> TicketBaseline:
         """Load an executable basis from Ticket Board authority and cross-check its snapshot."""
-        with self._ticket_lock(slug, review_operation=True):
+        with self._ticket_lock(slug, review_operation=True, stamp_pid=False):
             return self._load_basis_unlocked(slug, runtime_ticket_path=runtime_ticket_path)
 
     def _load_basis_unlocked(
         self, slug: str, *, runtime_ticket_path: str | Path | None = None
     ) -> TicketBaseline:
         from .amendment import pending_amendment
+        from .basis_refresh import load_basis_refresh
         from .ticket_baseline import TicketBaselineError, load_ticket_baseline_from_document
 
         if pending_amendment(self._project_root, slug) is not None:
             raise TicketBaselineError("amendment publication is pending; execution is not ready")
+
+        if load_basis_refresh(self._project_root, slug) is not None:
+            raise TicketBaselineError(
+                "Basis Refresh publication is pending; execution is not ready"
+            )
 
         board_path, status = find_ticket_file(
             self.tickets_dir, slug, project_root=self._project_root
@@ -653,7 +661,7 @@ class TicketIO:
 
         Returns True on success, False if ticket not found.
         """
-        with self._ticket_lock(slug):
+        with self._ticket_lock(slug, stamp_pid=False) as lock_file:
             # Find ticket inside lock to avoid TOCTOU race
             file_path, source_status = find_ticket_file(
                 self.tickets_dir, slug, project_root=self._project_root
@@ -698,6 +706,12 @@ class TicketIO:
             prepared_ticket = self._prepare_spec_fields(file_path, spec_updates)
             self._publish_spec_fields(file_path, prepared_ticket)
             self.commit_state(file_path.stem, destination, updated_progress)
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(
+                str(updated_progress.get("execution_owner_pid") or self._resolve_developer_pid())
+            )
+            lock_file.flush()
 
             if transition:
                 self._append_transition_unlocked(slug, *transition)
@@ -790,10 +804,20 @@ class TicketIO:
         observed = self._initializable_state(ticket_path, slug)
         if observed is None:
             return None
-        with self._ticket_lock(slug):
-            if not self._still_initializable(ticket_path, slug, observed):
+        requested_owner = owner_pid or int(self._resolve_developer_pid())
+        with self._ticket_lock(slug, stamp_pid=False) as lock_file:
+            previous_owner = self.read_progress(slug).get("execution_owner_pid")
+            if not self._still_initializable(ticket_path, slug, observed) or (
+                previous_owner
+                and previous_owner != requested_owner
+                and is_pid_alive(previous_owner)
+            ):
                 return None
             log_dir = self._init_ticket_locked(ticket_path, slug, execution_id, owner_pid)
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(requested_owner))
+            lock_file.flush()
 
         return {"slug": slug, "logs_dir": str(log_dir)}
 
@@ -827,19 +851,29 @@ class TicketIO:
         expected_execution_id: str,
     ) -> bool:
         """Replace an active ticket's execution generation under its lock."""
-        with self._ticket_lock(slug):
+        from .runtime_identity import refresh_snapshot
+
+        with self._ticket_lock(slug, stamp_pid=False) as lock_file:
             file_path, status = find_ticket_file(
                 self.tickets_dir, slug, project_root=self._project_root
             )
             if file_path is None or status != "running":
                 return False
             progress = self.read_progress(file_path.stem)
+            previous_owner = progress.get("execution_owner_pid")
+            if previous_owner and previous_owner != owner_pid and is_pid_alive(previous_owner):
+                return False
             if progress["execution_id"] != expected_execution_id:
                 return False
+            refresh_snapshot(self, slug)
             progress["execution_id"] = execution_id
             progress["execution_owner_pid"] = owner_pid
             progress["last_update"] = now_iso()
             self.commit_state(file_path.stem, TicketState.RUNNING, progress)
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(owner_pid))
+            lock_file.flush()
         return True
 
     # Git branch names derived from slugs must fit in filesystem paths;

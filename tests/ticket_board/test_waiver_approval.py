@@ -16,7 +16,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.coverage_campaign import decode_coverage_point_id
 from booley.ticket_board import waiver_approval as approval
 from booley.ticket_board import waiver_candidates as store
-from booley.ticket_board.acceptance_ledger import freeze_acceptance
+from booley.ticket_board.acceptance_ledger import freeze_acceptance, record_changes
 from booley.ticket_board.provisional_coverage import describe_waiver_candidates
 from booley.ticket_board.waiver_approval import (
     WaiverDecisionError,
@@ -227,6 +227,44 @@ def test_completion_reads_only_the_plan_the_frozen_record_names(approving) -> No
     promotion_plan_path(inputs.log_dir).unlink()
     with pytest.raises(ValueError, match="disagrees"):
         promotion_plan_for_completion(inputs.log_dir)
+
+
+def test_current_waiver_approval_freezes_with_selected_foreign_history(approving) -> None:
+    inputs = approving
+    _record_uncovered_line(inputs.context, inputs.state_path)
+    apply_waiver_decisions(inputs, WaiverDecisions(frozenset({_offered_id(inputs)})), merge=True)
+    state = DevelopmentState.load(inputs.state_path)
+    name = _metric_key(state, "line")
+    detail = state.criteria[name].detail
+    state.set_criterion(name, False)
+    changes = state.set_criterion(name, True, detail=detail)
+    old = {**inputs.inspection["ticket_identity"], "generation": "a" * 32}
+    record_changes(
+        inputs.log_dir,
+        state,
+        changes,
+        invocation_id="historical-waiver",
+        producer="waiver-approval",
+        execution_id="old-execution",
+        ticket_identity=old,
+        transaction_id="f" * 64,
+    )
+    state.acceptance_transactions.append("f" * 64)
+    frozen = freeze_acceptance(
+        inputs.log_dir,
+        state,
+        execution_id="exec-1",
+        ticket_identity=inputs.inspection["ticket_identity"],
+        participant_heads={"outer": "a" * 40},
+    )
+    records = list((inputs.log_dir / "acceptance/evidence").rglob("record.json"))
+    foreign = {
+        json.loads(path.read_text())["sequence"]
+        for path in records
+        if json.loads(path.read_text())["ticket_identity"] == old
+    }
+    assert foreign
+    assert not foreign.intersection(ref["sequence"] for ref in frozen.evidence)
 
 
 def _git(root: Path, *args: str) -> None:

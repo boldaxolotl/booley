@@ -2871,6 +2871,7 @@ class TestOpPromoteWaiting:
                 "machine": {"generation": "0" * 32},
             },
         )
+        monkeypatch.setattr(basis_refresh, "reconcile_refresh_runtime", lambda *_args: None)
         refreshed = MagicMock()
         refreshed.ticket_identity.return_value = {"generation": "a" * 32}
         monkeypatch.setattr(
@@ -2936,6 +2937,7 @@ class TestOpPromoteWaiting:
                 "machine": {"generation": "0" * 32},
             },
         )
+        monkeypatch.setattr(basis_refresh, "reconcile_refresh_runtime", lambda *_args: None)
         refreshed = MagicMock()
         refreshed.ticket_identity.return_value = {"generation": "a" * 32}
         monkeypatch.setattr(

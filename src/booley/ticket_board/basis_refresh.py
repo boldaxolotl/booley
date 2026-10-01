@@ -454,6 +454,44 @@ def _publish_refresh_basis(
     return basis, prepared
 
 
+def reconcile_refresh_runtime(
+    tio: Any, slug: str, candidate: bytes, journal: BasisRefreshJournal
+) -> None:
+    """Publish the existing pre-execution runtime under the locked refresh authority."""
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.pid import is_pid_alive
+
+    from .paths import existing_runtime_file, ticket_log_dir
+    from .runtime_identity import capture_runtime, retire_foreign_pointers
+
+    owner = tio.read_progress(slug).get("execution_owner_pid")
+    caller = int(tio._resolve_developer_pid())
+    if owner and owner != caller and is_pid_alive(owner):
+        raise BasisRefreshError(f"runtime is owned by live runner {owner}; retry after it stops")
+    identity = ticket_baseline_from_machine(journal.machine).ticket_identity()
+    document = _converted_text(Path(tio._project_root), candidate.decode(), slug)
+    if document.generated.get("machine") != journal.machine:
+        raise BasisRefreshError("runtime candidate disagrees with Basis Refresh journal")
+    log = ticket_log_dir(tio.logs_dir, slug)
+    snapshot = log / "ticket.md"
+    if snapshot.exists():
+        old = _converted_text(Path(tio._project_root), snapshot.read_text(), slug)
+        if old.generated.get("machine") == journal.machine:
+            return
+    history = capture_runtime(tio, slug, journal.operation_id, "basis-refreshes")
+    path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
+    if path.exists():
+        state = DevelopmentState.load(path)
+        state.acceptance_transactions = []
+        for entry in state.criteria.values():
+            if entry.met:
+                entry.met = False
+                entry.stale = True
+        state.save()
+    retire_foreign_pointers(log, history, journal.operation_id, identity)
+    atomic_replace_bytes(snapshot, candidate, mode=0o644)
+
+
 def finish_basis_refresh(root: Path, slug: str, operation_id: str) -> None:
     """Retire refresh journals only after the queued Board pointer is durable."""
     journal = load_basis_refresh(root, slug)
@@ -501,4 +539,20 @@ def recover_published_basis_refreshes(root: Path, tickets: list[dict[str, Any]])
             raise BasisRefreshError(
                 f"queued Ticket {slug!r} disagrees with its Basis Refresh journal"
             )
+        _recover_published_refresh(root, slug, journal)
+
+
+def _recover_published_refresh(root: Path, slug: str, journal: BasisRefreshJournal) -> None:
+    from .io import TicketIO
+    from .scanner import find_ticket_file
+
+    tio = TicketIO(resolve_project_dir(root) / "tickets", project_root=root)
+    with tio._ticket_lock(slug, review_operation=True, stamp_pid=False):
+        board, status = find_ticket_file(tio.tickets_dir, slug, project_root=root)
+        if board is None or status != "queued":
+            raise BasisRefreshError("queued Ticket changed during refresh recovery")
+        document = _converted_ticket(root, board, slug)
+        if document.generated.get("machine") != journal.machine:
+            raise BasisRefreshError("queued Ticket identity changed during refresh recovery")
+        reconcile_refresh_runtime(tio, slug, board.read_bytes(), journal)
         finish_basis_refresh(root, slug, journal.operation_id)

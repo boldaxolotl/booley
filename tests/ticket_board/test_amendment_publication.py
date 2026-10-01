@@ -611,7 +611,8 @@ def test_publication_interruption_rolls_forward_once(
     history = tio.logs_dir / "blocked-again/amendments" / f"{result['operation_id']}.json"
     assert history.exists()
     assert amendment.pending_amendment(root, "blocked-again") is None
-    assert len(list(history.parent.glob("*.json"))) == 2
+    assert len(list(history.parent.glob("*.json"))) == 3
+    assert (history.parent / f"{result['operation_id']}.prior-evidence.json").exists()
 
 
 def test_pre_generated_identity_journal_recovers(
