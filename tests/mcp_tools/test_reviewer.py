@@ -821,12 +821,12 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
-        assert result.criterion_met is False
+        assert result.exit_code == 0
+        assert result.criterion_met is True
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
         st = DevelopmentState.load(state_file)
-        assert not st.is_met("review_rtl_bugs_done")
+        assert st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_endpoint_call_and_prose_only_is_endpoint_error(
@@ -889,7 +889,7 @@ class TestChannelDisagreement:
 
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.detail["issue_list"][0]["kind"] == "code_defect"
         assert result.detail["issue_list"][0]["disposition"] == "current"
         assert result.detail["issue_list"][0]["ticket_clause"] == canonical["ticket_clause"]
@@ -910,7 +910,7 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         # Text channel taken whole — not merged with the agent-capability channel.
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
@@ -2004,11 +2004,11 @@ class TestFullRtlReview:
         assert result.detail["contract"]["ticket_source"] == ""
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_corrective_issues_keep_done_unmet(self, mock_agent, state_file: Path, capsys):
+    def test_corrective_issues_complete_done(self, mock_agent, state_file: Path, capsys):
         mock_agent.return_value = _make_agent_result(
             [
                 _make_issue_dict("CRITICAL"),
-                _make_issue_dict("MINOR"),
+                {**_make_issue_dict("MINOR"), "summary": "A separate minor finding"},
             ]
         )
         endpoint = ReviewerSpecialist()
@@ -2024,18 +2024,20 @@ class TestFullRtlReview:
         )
         endpoint.read_state()
         result = endpoint._run()
-        assert result.exit_code == 1
-        assert result.criterion_met is False
+        assert result.exit_code == 0
+        assert result.criterion_met is True
         assert result.criterion_key == "review_rtl_bugs_done"
         st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done") is False
-        assert st.criteria["review_rtl_bugs_done"].detail["gate_passed"] is False
+        assert st.is_met("review_rtl_bugs_done") is True
+        assert st.criteria["review_rtl_bugs_done"].detail["gate_passed"] is True
         captured = capsys.readouterr()
         assert "RESULT: REVIEWED WITH FINDINGS" in captured.out
         assert "critical" in captured.out
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_corrective_done_findings_remain_open_and_rerun(self, mock_agent, state_file: Path):
+    def test_corrective_done_findings_remain_visible_and_replay(
+        self, mock_agent, state_file: Path
+    ):
         common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
 
         mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
@@ -2043,17 +2045,17 @@ class TestFullRtlReview:
         t1.parse_args(common)
         t1.read_state()
         first = t1._run()
-        assert first.exit_code == 1
-        assert first.criterion_met is False
+        assert first.exit_code == 0
+        assert first.criterion_met is True
 
         t2 = ReviewerSpecialist()
         t2.parse_args(common)
         t2.read_state()
         rerun = t2._run()
-        assert rerun.exit_code == 1
-        assert rerun.criterion_met is False
-        assert "Change the criterion to `_clean`" in rerun.report_text
-        assert mock_agent.call_count == 2
+        assert rerun.exit_code == 0
+        assert rerun.criterion_met is True
+        assert "did NOT re-run" in rerun.report_text
+        assert mock_agent.call_count == 1
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_steering_does_not_hide_open_done_correction(
@@ -2070,12 +2072,16 @@ class TestFullRtlReview:
         t1.read_state()
         t1._run()
 
+        mock_agent.return_value = _make_agent_result([])
         t2 = ReviewerSpecialist()
         t2.parse_args([*common, "--steer", "attempt 1"])
         t2.read_state()
         rerun = t2._run()
-        assert rerun.exit_code == 1
-        assert "_clean" in rerun.report_text
+        assert rerun.exit_code == 0
+        assert "explicit human approval" in rerun.report_text
+        assert rerun.detail["issues"] == 1
+        assert rerun.detail["CRITICAL"] == 1
+        assert "NO FINDINGS" not in rerun.report_text
         assert mock_agent.call_count == 2
 
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -2099,8 +2105,8 @@ class TestFullRtlReview:
         )
         endpoint.read_state()
         result = endpoint._run()
-        assert result.exit_code == 1
-        assert result.criterion_met is False
+        assert result.exit_code == 0
+        assert result.criterion_met is True
         assert result.detail["gate_passed"] is True
 
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -3812,9 +3818,9 @@ class TestDeadEndMessagesNameARealAction:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert "triage" not in result.report_text.lower()
-        assert "_clean" in result.report_text
+        assert "explicit human approval" in result.report_text
         assert mock_agent.call_count == 2
 
     def test_replay_message(self):

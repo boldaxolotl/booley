@@ -166,14 +166,16 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
 
 
 def _awaits_provisional_inspection(tio: TicketIO, slug: str, prior: dict[str, Any] | None) -> bool:
-    """A provisional handoff (ADR 0066) whose unaccepted inspection is not yet published."""
+    """An automatic unaccepted handoff whose inspection is not yet published."""
     from .provisional_handoff import read_provisional_marker
 
     log_dir = tio.logs_dir / slug
+    from .advisory_handoff import advisory_marker_current
+
     return (
         prior is None
         and read_acceptance(log_dir).kind == "unavailable"
-        and read_provisional_marker(log_dir) is not None
+        and (read_provisional_marker(log_dir) is not None or advisory_marker_current(tio, slug))
     )
 
 
@@ -903,9 +905,15 @@ async def _review_existing_ticket(
     except (ReviewEntryError, ValueError) as exc:
         return prep.ReviewPrepOutcome("failed", str(exc))
     if provisional:
-        return await request_review_command(
-            project_root, slug, action="request", reason=PROVISIONAL_REVIEW_REASON
+        from .advisory_handoff import ADVISORY_REVIEW_REASON
+        from .provisional_handoff import read_provisional_marker
+
+        reason = (
+            PROVISIONAL_REVIEW_REASON
+            if read_provisional_marker(tio.logs_dir / slug)
+            else ADVISORY_REVIEW_REASON
         )
+        return await request_review_command(project_root, slug, action="request", reason=reason)
     accepted = read_acceptance(tio.logs_dir / slug)
     if accepted.kind == "corrupt":
         return prep.ReviewPrepOutcome(

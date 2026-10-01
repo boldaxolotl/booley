@@ -80,6 +80,11 @@ appear with its justification.
 
 ## 3. Decision
 
+For current `_done` findings, present every finding and obtain explicit Human
+approval before acceptance. Met review Criteria do not authorize automatic
+approval; preserve the authored outcome and the findings. Explicit approval is
+available when all mandatory Criteria are met.
+
 For a briefing marked **unaccepted**, offer **fix here** / **refresh** /
 **approve when all mandatory Criteria are met** / **hold** / **reset** /
 **archive**. Keep the Ticket in review

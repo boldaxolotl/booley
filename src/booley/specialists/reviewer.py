@@ -483,10 +483,6 @@ class _DoneReviewOutcome:
     counts: dict[str, int]
     gate_passed: bool
 
-    @property
-    def mode_ok(self) -> bool:
-        return not self.corrective_records
-
 
 @dataclass
 class _CleanVerifyContext:
@@ -524,21 +520,24 @@ def _merge_finding_records(
     prior: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Merge advisory history without silently clearing corrective findings."""
+    from booley.evidence.review_dispositions import outstanding_done_findings
+
     merged = {str(item.get("finding_id", "")): dict(item) for item in current}
     for old in prior:
-        finding_id = str(old.get("finding_id", ""))
-        if not finding_id:
-            continue
+        historical = dict(old)
+        finding_id = str(
+            old.get("finding_id") or _finding_record(ReviewIssue.from_dict(old))["finding_id"]
+        )
+        historical["finding_id"] = finding_id
+        outstanding = bool(
+            outstanding_done_findings({"review_history_done": {"detail": {"issue_list": [old]}}})
+        )
         if finding_id in merged:
-            if old.get("disposition") == DISPOSITION_CURRENT:
+            if outstanding:
                 merged[finding_id]["disposition"] = DISPOSITION_CURRENT
                 merged[finding_id]["status"] = DISPOSITION_CURRENT
             continue
-        historical = dict(old)
-        if historical.get("disposition") == DISPOSITION_CURRENT:
-            historical["status"] = DISPOSITION_CURRENT
-        else:
-            historical["status"] = DISPOSITION_SUPERSEDED
+        historical["status"] = DISPOSITION_CURRENT if outstanding else DISPOSITION_SUPERSEDED
         merged[finding_id] = historical
     return list(merged.values())
 
@@ -1957,8 +1956,19 @@ object, even after calling the capability.
         """
         prior = self._get_prior_detail(crit_key) or {}
         issues = [ReviewIssue.from_dict(d) for d in prior.get("issue_list", [])]
-        counts = count_by_severity(issues)
-        gate_passed = bool(prior.get("gate_passed", check_gate(counts)))
+        from booley.evidence.review_dispositions import outstanding_done_findings
+
+        current = outstanding_done_findings({crit_key: {"detail": prior}})
+        counts = count_by_severity([ReviewIssue.from_dict(row) for row in current])
+        gate_passed = True
+        prior = {
+            **prior,
+            "gate_passed": True,
+            "issues": len(current),
+            "observation_count": len(issues),
+            **counts,
+            "review_outcome": "corrective" if current else "advisory" if issues else "no_findings",
+        }
         _status, count_str = _format_status_and_counts(counts, gate_passed)
         outcome = "REVIEWED WITH FINDINGS" if issues else "REVIEWED — NO FINDINGS"
 
@@ -1969,6 +1979,10 @@ object, even after calling the capability.
             f"\nRESULT: {outcome} ({count_str})",
         ]
         lines += [f"  {_format_issue_line(iss)}" for iss in issues]
+        if current:
+            lines.append(
+                "INFO: current done findings require explicit human approval before acceptance."
+            )
         lines.append(
             "\nThis review is already completed for the current source. Calling "
             "`reviewer` again only replays this verdict while the reviewed source remains "
@@ -2679,7 +2693,7 @@ Schema enforcement (applied upstream by the harness):
             output_lines.append(
                 f"INFO: filtered {dropped} proposal(s) outside explicit source scope; preserved in audit evidence"
             )
-        if self._non_corrective_issues:
+        if self._non_corrective_issues and self._criterion_key().endswith("_clean"):
             output_lines.append(
                 f"INFO: preserved {len(self._non_corrective_issues)} advisory/deferred observation(s) without gating this review"
             )
@@ -2715,12 +2729,11 @@ Schema enforcement (applied upstream by the harness):
             if isinstance(raw_prior, list):
                 prior_records = [dict(row) for row in raw_prior if isinstance(row, dict)]
         records = _merge_finding_records(current_records, prior_records)
-        corrective_records = [
-            row
-            for row in records
-            if row.get("disposition") == DISPOSITION_CURRENT
-            and row.get("status") == DISPOSITION_CURRENT
-        ]
+        from booley.evidence.review_dispositions import outstanding_done_findings
+
+        corrective_records = outstanding_done_findings(
+            {crit_key: {"detail": {"issue_list": records}}}
+        )
         return records, corrective_records
 
     def _done_detail(
@@ -2750,13 +2763,14 @@ Schema enforcement (applied upstream by the harness):
 
     def _done_outcome(self, all_issues: list[ReviewIssue]) -> _DoneReviewOutcome:
         records, corrective_records = self._done_finding_records(all_issues)
-        counts = count_by_severity(all_issues)
+        issues = [ReviewIssue.from_dict(row) for row in corrective_records]
+        counts = count_by_severity(issues)
         return _DoneReviewOutcome(
-            issues=all_issues,
+            issues=issues,
             records=records,
             corrective_records=corrective_records,
             counts=counts,
-            gate_passed=check_gate(counts),
+            gate_passed=True,
         )
 
     def _build_result(
@@ -2772,29 +2786,32 @@ Schema enforcement (applied upstream by the harness):
             done_outcome.counts,
             done_outcome.gate_passed,
         )
-        result_label = "REVIEWED WITH FINDINGS" if all_issues else "REVIEWED — NO FINDINGS"
+        result_label = (
+            "REVIEWED WITH FINDINGS" if done_outcome.records else "REVIEWED — NO FINDINGS"
+        )
         output_lines.append(f"\nRESULT: {result_label} ({count_str})")
+        lines = [f"{count_str}, review completed"]
+        lines.extend(
+            f"  {_format_issue_line(ReviewIssue.from_dict(row))} [{row.get('status', 'reported')}]"
+            for row in done_outcome.records
+        )
+        if done_outcome.corrective_records:
+            lines.append(
+                "INFO: current done findings require explicit human approval before acceptance."
+            )
+        historical = len(done_outcome.records) - len(done_outcome.corrective_records)
+        if historical:
+            lines.append(f"INFO: preserved {historical} advisory/historical observation(s).")
+        output_lines.extend(lines[1:])
         report_text = "\n".join(output_lines)
         print(report_text)
         detail = self._done_detail(done_outcome, elapsed=elapsed)
         crit_key = self._criterion_key()
-        self._record_review_detail(crit_key, done_outcome.mode_ok, detail)
-        lines = [
-            f"{count_str}, review {'completed' if done_outcome.mode_ok else 'requires _clean'}"
-        ]
-        lines.extend(f"  {_format_issue_line(issue)}" for issue in all_issues)
-        if not done_outcome.mode_ok:
-            diagnostic = (
-                "This Ticket requested advisory `_done` review, but Reviewer returned "
-                "current corrective work. Change the criterion to `_clean` and resolve "
-                "or explicitly waive the finding."
-            )
-            report_text = f"{report_text}\n\n{diagnostic}"
-            lines.append(diagnostic)
+        self._record_review_detail(crit_key, True, detail)
         return McpToolResult(
-            exit_code=EXIT_SUCCESS if done_outcome.mode_ok else EXIT_FAILURE,
+            exit_code=EXIT_SUCCESS,
             criterion_key=crit_key,
-            criterion_met=done_outcome.mode_ok,
+            criterion_met=True,
             display_lines=lines,
             detail=detail,
             report_text=report_text,

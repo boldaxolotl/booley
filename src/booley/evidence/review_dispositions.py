@@ -160,6 +160,38 @@ def collect_review_dispositions(criteria: Mapping[str, Any]) -> list[dict[str, A
     return _deduplicate_rows(rows)
 
 
+_NONCURRENT_DONE = frozenset(
+    {
+        "advisory",
+        "deferred",
+        "out_of_scope",
+        "superseded",
+        "fixed",
+        "waived",
+        "excluded",
+        "project_policy",
+        "out_of_diff_scope",
+        "impasse_deferred",
+    }
+)
+
+
+def outstanding_done_findings(criteria: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return every unresolved done finding, conservatively including legacy rows.
+
+    Optional Criteria and every severity require human acceptance. An explicitly
+    noncurrent disposition or status removes that obligation, never rediscovery.
+    """
+    done = {key: entry for key, entry in criteria.items() if key.endswith("_done")}
+    return [
+        row
+        for row in collect_review_dispositions(done)
+        if str(row.get("reviewer_disposition") or row["disposition"]).lower()
+        not in _NONCURRENT_DONE
+        and row["status"].lower() not in _NONCURRENT_DONE
+    ]
+
+
 def review_report_required(criteria: Mapping[str, Any]) -> bool:
     """Return whether review evidence requires a user-facing run report."""
     if any(key.startswith("review_") and key.endswith("_done") for key in criteria):

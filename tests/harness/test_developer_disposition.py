@@ -67,6 +67,9 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
         ),
         "block": patch("booley.harness.developer.block_ticket"),
         "fail": patch("booley.harness.developer.fail_ticket"),
+        "status": patch(
+            "booley.harness.developer.ticket_cli.ticket_status", return_value="review"
+        ),
         "handoff": patch("booley.harness.developer.ticket_cli.handoff"),
         "prepare_review": patch(
             "booley.ticket_board.review_lifecycle.prepare_review",
@@ -287,6 +290,7 @@ class TestResolveTicketDisposition:
         ctx = _make_ctx(tmp_path)
         ctx.on_success = on_success
         mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+        mocks["status"].return_value = expected_disposition
         try:
             result = await _resolve_ticket_disposition(
                 ctx, tmp_path / "state.json", tmp_path, 0, _ENDPOINTS
@@ -667,3 +671,45 @@ class TestProvisionalDisposition:
                 )
         finally:
             _stop_all(patches)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destination", ["review", "done"])
+async def test_done_findings_publish_unaccepted_package_for_either_destination(
+    tmp_path, destination
+):
+    from booley.ticket_board.paths import ticket_runtime_file
+
+    ctx = _make_ctx(tmp_path)
+    ctx.on_success = OnSuccess(destination=destination, merge=True, cleanup=True)
+    state_path = ticket_runtime_file(ctx.logs_dir, "booley_state.json")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state = DevelopmentState.load(state_path)
+    state.init_criteria({"sim_pass": True, "review_rtl_bugs_done": False})
+    state.set_criterion("sim_pass", True)
+    state.set_criterion(
+        "review_rtl_bugs_done",
+        True,
+        detail={
+            "issue_list": [{"finding_id": "minor", "severity": "MINOR", "disposition": "current"}]
+        },
+    )
+    state.save()
+    mocks, patches = _patch_disposition_collaborators(CriteriaVerdict(disposition="review"))
+    try:
+        with patch(
+            "booley.ticket_board.review_lifecycle.request_review_command", new_callable=AsyncMock
+        ) as request:
+            request.return_value = ReviewPrepOutcome(
+                "ready", "inspection", package_path=tmp_path / "unaccepted.json"
+            )
+            result = await _resolve_ticket_disposition(ctx, state_path, tmp_path, 0, _ENDPOINTS)
+        assert result.disposition == "review"
+        assert result.review_package_path == tmp_path / "unaccepted.json"
+        assert mocks["handoff"].call_count == 1
+        mocks["prepare_review"].assert_not_called()
+        mocks["verify_review"].assert_not_called()
+        assert request.call_args.kwargs["action"] == "request"
+        assert "human approval" in request.call_args.kwargs["reason"]
+    finally:
+        _stop_all(patches)

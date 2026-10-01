@@ -639,7 +639,7 @@ Call the `coverage_analyst` Specialist from your connected agent session with `c
 
 #### `reviewer`
 
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` records advisory observations; corrective findings require `_clean`, where they must be verified fixed or explicitly waived with user-visible justification.
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` completes review and preserves findings; current findings require human review and explicit approval before acceptance, completion, merge, or cleanup, regardless of the success destination. `_clean` requires current findings to be verified fixed or explicitly waived with user-visible justification.
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 

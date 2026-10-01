@@ -967,7 +967,41 @@ def validate_assessment(value: Any, facts: Mapping[str, Any]) -> dict[str, Any]:
         deviations,
     )
     _enforce_stale_criteria_blocker(assessment, facts)
+    _enforce_done_findings_blocker(assessment, facts)
     return assessment
+
+
+DONE_FINDINGS_HOLD = (
+    "Current done review findings require explicit human approval before acceptance."
+)
+DONE_FINDINGS_ACCEPTED = (
+    "Done review findings were accepted by the Human; the findings remain visible."
+)
+
+
+def _enforce_done_findings_blocker(assessment: dict[str, Any], facts: Mapping[str, Any]) -> None:
+    from booley.evidence.review_dispositions import outstanding_done_findings
+
+    criteria = {}
+    for row in facts.get("review_dispositions", []):
+        if not isinstance(row, Mapping):
+            continue
+        key = str(row.get("criterion", ""))
+        criteria.setdefault(key, {"detail": {"issue_list": []}})["detail"]["issue_list"].append(
+            row
+        )
+    if not outstanding_done_findings(criteria):
+        return
+    inspection = facts.get("inspection")
+    accepted = isinstance(inspection, Mapping) and inspection.get("disposition") == "accepted"
+    if accepted:
+        if DONE_FINDINGS_ACCEPTED not in assessment.setdefault("findings", []):
+            assessment["findings"].append(DONE_FINDINGS_ACCEPTED)
+        return
+    assessment["recommendation"] = "hold"
+    for field in ("decision_blockers", "findings"):
+        if DONE_FINDINGS_HOLD not in assessment.setdefault(field, []):
+            assessment[field].append(DONE_FINDINGS_HOLD)
 
 
 def _enforce_stale_criteria_blocker(assessment: dict[str, Any], facts: Mapping[str, Any]) -> None:
@@ -1047,6 +1081,7 @@ def write_triage_package(
 ) -> Path:
     """Persist one machine-readable package consumed by interactive triage."""
     _enforce_stale_criteria_blocker(assessment, facts)
+    _enforce_done_findings_blocker(assessment, facts)
     inspection = facts.get("inspection")
     if inspection and inspection["disposition"] == "unaccepted":
         assessment = {
@@ -1522,7 +1557,7 @@ def accepted_review_presentation(package: Mapping[str, Any]) -> dict[str, Any]:
         item
         for item in blockers
         if not str(item).startswith("Not accepted:")
-        and item != "Human review is required before approval."
+        and item not in {"Human review is required before approval.", DONE_FINDINGS_HOLD}
     ]
     if (
         assessment.get("recommendation") == "hold"
@@ -1531,6 +1566,11 @@ def accepted_review_presentation(package: Mapping[str, Any]) -> dict[str, Any]:
     ):
         assessment["recommendation"] = "approve"
     assessment["decision_blockers"] = retained
+    findings = list(assessment.get("findings", []))
+    if DONE_FINDINGS_HOLD in findings:
+        assessment["findings"] = [
+            DONE_FINDINGS_ACCEPTED if item == DONE_FINDINGS_HOLD else item for item in findings
+        ]
     return {
         **package,
         "assessment": assessment,

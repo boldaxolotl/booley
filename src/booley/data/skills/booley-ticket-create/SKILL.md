@@ -298,7 +298,9 @@ registered suite; `fail -> pass` requires a named test and matching red/green
 evidence. The Target already identifies its top-level TB. Choose exactly one
 `REVIEW` outcome for each category/focus across mandatory and optional Criteria.
 Use `clean` when completion plus no open findings is required because it implies
-`done`. `SYNTH`, `FPGA`, `CYCLE_COUNT`, and `COVERAGE` produce a separate
+`done`. `done` requires review completion; current findings require human review
+and explicit approval before acceptance, completion, merge, or cleanup, overriding
+a done success destination. `SYNTH`, `FPGA`, `CYCLE_COUNT`, and `COVERAGE` produce a separate
 atomic Criterion for each metric. Put multiple metrics for one Target in one
 mapping, or split them between sections when mandatory/optional status differs.
 Project scalar Criteria use their registered name in uppercase and the value

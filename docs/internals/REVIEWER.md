@@ -11,9 +11,11 @@ disposition and output instructions; category guides contain review checklists.
 Reviewer validates the output schema and explicit source membership. Ticket
 clauses and Project policy inform the agent; phrase matching and Ticket headings
 never discard or rewrite valid dispositions. In-scope `current` findings can
-make a Criterion unmet. `advisory`, `deferred`, and `out_of_scope` findings remain
-observations. A `_done` Criterion records advisory observations; current
-corrective findings require `_clean`. `_clean` requires current findings to be
+make a `_clean` Criterion unmet. `advisory`, `deferred`, and `out_of_scope` findings
+remain observations. A `_done` Criterion completes review regardless of
+dispositions and preserves findings. Current findings require unaccepted human
+review and explicit approval before acceptance, completion, merge, or cleanup,
+regardless of the success destination. `_clean` requires current findings to be
 verified fixed or explicitly waived with user-visible justification.
 
 Filtered source proposals and malformed canonical, `ReportFindings` mirror,

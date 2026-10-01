@@ -1196,3 +1196,45 @@ def test_reviewer_disposition_markdown_is_inert():
     rendered = "\n".join(lines)
     assert "\\<script>\\|bad" in rendered
     assert "bad\ntext" not in rendered
+
+
+def test_current_done_finding_package_requires_human_even_with_agent_approve(tmp_path):
+    """Real publication exposes outstanding findings independently of report enablement."""
+    ctx = _context(tmp_path)
+    facts = _facts(ctx)
+    facts["review_dispositions"] = [
+        {
+            "criterion": "review_rtl_bugs_done",
+            "finding_id": "minor",
+            "severity": "MINOR",
+            "file": "rtl/new.sv",
+            "line": 1,
+            "summary": "current finding",
+            "disposition": "current",
+            "status": "current",
+        }
+    ]
+    assessment = _assessment()
+    assessment["recommendation"] = "approve"
+    path = tp.write_triage_package(ctx, facts, assessment, None)
+    package = tp.load_triage_package(path)
+    assert package["assessment"]["recommendation"] == "hold"
+    assert tp.DONE_FINDINGS_HOLD in package["assessment"]["decision_blockers"]
+    assert "current finding" in tp.render_review_briefing(package, [])
+
+
+def test_explicit_human_acceptance_removes_done_hold_and_keeps_findings():
+    package = {
+        "inspection": {"disposition": "unaccepted"},
+        "review_dispositions": [{"summary": "still visible"}],
+        "assessment": {
+            "recommendation": "hold",
+            "decision_blockers": [tp.DONE_FINDINGS_HOLD],
+            "findings": [tp.DONE_FINDINGS_HOLD],
+        },
+    }
+    accepted = tp.accepted_review_presentation(package)
+    assert accepted["assessment"]["recommendation"] == "approve"
+    assert accepted["assessment"]["decision_blockers"] == []
+    assert accepted["assessment"]["findings"] == [tp.DONE_FINDINGS_ACCEPTED]
+    assert accepted["review_dispositions"] == package["review_dispositions"]
