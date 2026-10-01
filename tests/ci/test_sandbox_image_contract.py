@@ -612,3 +612,50 @@ def test_release_riscv_inventory_must_compare_with_standard() -> None:
     step["run"] = step["run"].replace("--expected-inventory", "--no-comparison")
 
     assert "riscv-image-contract" in _errors(sources, "release package inventory")
+
+
+def test_release_riscv_layers_must_prefix_match_the_standard_substrate() -> None:
+    """Dockerfile.riscv derives from the substrate; the overlaid image can never match."""
+    sources = _sources()
+    step = _step(
+        sources,
+        "release_workflow",
+        "docker-publish.yml",
+        "riscv-image-contract",
+        "Validate exact RISC-V candidate",
+    )
+    step["run"] = step["run"].replace(
+        '--base-image "${STANDARD_SUBSTRATE}"', '--base-image "${BASE_IMAGE}"'
+    )
+
+    assert "--base-image" in _errors(sources, "riscv layer contract")
+
+
+def test_release_riscv_substrate_must_be_the_standard_build_digest() -> None:
+    sources = _sources()
+    step = _step(
+        sources,
+        "release_workflow",
+        "docker-publish.yml",
+        "riscv-image-contract",
+        "Validate exact RISC-V candidate",
+    )
+    step["env"]["STANDARD_SUBSTRATE"] = step["env"]["STANDARD_SUBSTRATE"].replace(
+        "build-and-push.outputs", "build-and-push-riscv.outputs"
+    )
+
+    assert "STANDARD_SUBSTRATE" in _errors(sources, "riscv layer contract")
+
+
+def test_release_riscv_substrate_must_be_pulled_before_inspection() -> None:
+    sources = _sources()
+    step = _step(
+        sources,
+        "release_workflow",
+        "docker-publish.yml",
+        "riscv-image-contract",
+        "Validate exact RISC-V candidate",
+    )
+    step["run"] = step["run"].replace('docker pull "${STANDARD_SUBSTRATE}"\n', "")
+
+    assert "docker pull" in _errors(sources, "riscv layer contract")
