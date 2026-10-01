@@ -41,7 +41,41 @@ def _work_item_names(manifest: dict[str, object]) -> list[str]:
 
 
 def _manifest_digest(raw: bytes) -> str:
+    """Return the canonical digest durable records use (trailing newline excluded)."""
     return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+
+
+def _file_digest(raw: bytes) -> str:
+    """Return the digest typed artifact references use (exact file bytes)."""
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _validate_manifest_reference(
+    reference: object,
+    *,
+    projection_path: Path,
+    manifest_path: Path,
+    manifest_raw: bytes,
+    campaign_id: object,
+) -> None:
+    """Authenticate the projection's typed ``campaign_manifest`` artifact reference."""
+    _need(
+        isinstance(reference, dict), "compatibility manifest backlink is not an artifact reference"
+    )
+    _need(reference.get("path_base") == "origin_target", "manifest backlink base differs")
+    _need(
+        reference.get("kind") == "simulation_campaign_manifest",
+        "manifest backlink kind differs",
+    )
+    _need(reference.get("owner") == campaign_id, "manifest backlink owner differs")
+    # ``origin_target`` is the Target directory that holds simulation.json.
+    target = projection_path.parent / str(reference.get("path", ""))
+    _need(target.resolve() == manifest_path.resolve(), "compatibility manifest backlink differs")
+    _need(reference.get("bytes") == len(manifest_raw), "manifest backlink size differs")
+    _need(
+        reference.get("sha256") == _file_digest(manifest_raw),
+        "manifest backlink digest differs",
+    )
 
 
 def validate_backlinks(
@@ -53,21 +87,25 @@ def validate_backlinks(
     manifest, manifest_raw = _load(manifest_path)
     summary, _summary_raw = _load(summary_path)
     projection, _projection_raw = _load(projection_path)
+    campaign_id = manifest.get("campaign_id")
     digest = _manifest_digest(manifest_raw)
     _need(
-        summary.get("campaign_id") == manifest.get("campaign_id"),
+        summary.get("campaign_id") == campaign_id,
         "summary identifies a different Simulation Campaign",
     )
     _need(summary.get("manifest_sha256") == digest, "summary manifest digest differs")
     _need(
-        Path(str(projection.get("campaign_manifest", ""))).resolve() == manifest_path.resolve(),
-        "compatibility manifest backlink differs",
+        projection.get("campaign_id") == campaign_id,
+        "projection identifies a different Simulation Campaign",
     )
-    _need(
-        Path(str(projection.get("campaign_summary", ""))).resolve() == summary_path.resolve(),
-        "compatibility summary backlink differs",
+    _validate_manifest_reference(
+        projection.get("campaign_manifest"),
+        projection_path=projection_path,
+        manifest_path=manifest_path,
+        manifest_raw=manifest_raw,
+        campaign_id=campaign_id,
     )
-    return {"campaign_id": manifest.get("campaign_id"), "manifest_sha256": digest}
+    return {"campaign_id": campaign_id, "manifest_sha256": digest}
 
 
 def validate_interrupted_resume(
@@ -148,13 +186,78 @@ def validate(manifest_path: Path, expected: list[str]) -> dict[str, object]:
     }
 
 
-def main() -> None:
+def _lines(path: Path) -> list[str]:
+    """Read a newline-separated listing, ignoring blank lines."""
+    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("--expected-test", action="append", required=True)
+    commands = parser.add_subparsers(dest="command", required=True)
+    selection = commands.add_parser("selection", help="exact ordered selection and manifest")
+    selection.add_argument("manifest", type=Path)
+    selection.add_argument("--expected-test", action="append", required=True)
+    backlinks = commands.add_parser("backlinks", help="summary and projection backlinks")
+    backlinks.add_argument("manifest", type=Path)
+    backlinks.add_argument("--summary", type=Path, required=True)
+    backlinks.add_argument("--projection", type=Path, required=True)
+    resume = commands.add_parser("resume", help="completed work immutable across resume")
+    resume.add_argument("--result-before", type=Path, required=True)
+    resume.add_argument("--result-after", type=Path, required=True)
+    for name in ("completed", "interrupted"):
+        for when in ("before", "after"):
+            resume.add_argument(f"--{name}-attempts-{when}", type=int, required=True)
+    rejection = commands.add_parser("rejection", help="fail-closed rejection evidence")
+    rejection.add_argument("--exit-code", type=int, required=True)
+    rejection.add_argument("--attempts-before", type=Path, required=True)
+    rejection.add_argument("--attempts-after", type=Path, required=True)
+    rejection.add_argument("--simulator-started", action="store_true")
+    rejection.add_argument("--diagnostic", type=Path, required=True)
+    journal = commands.add_parser("journal", help="Criteria journal scope")
+    journal.add_argument("--required-test", action="append", required=True)
+    journal.add_argument("--observed-test", action="append", required=True)
+    journal.add_argument("--transactions-before", type=Path, required=True)
+    journal.add_argument("--transactions-after", type=Path, required=True)
+    return parser
+
+
+def _run(args: argparse.Namespace) -> dict[str, object]:
+    if args.command == "selection":
+        return validate(args.manifest, args.expected_test)
+    if args.command == "backlinks":
+        return validate_backlinks(args.manifest, args.summary, args.projection)
+    if args.command == "resume":
+        validate_interrupted_resume(
+            args.result_before,
+            args.result_after,
+            completed_attempts_before=args.completed_attempts_before,
+            completed_attempts_after=args.completed_attempts_after,
+            interrupted_attempts_before=args.interrupted_attempts_before,
+            interrupted_attempts_after=args.interrupted_attempts_after,
+        )
+    elif args.command == "rejection":
+        validate_rejection(
+            exit_code=args.exit_code,
+            attempts_before=_lines(args.attempts_before),
+            attempts_after=_lines(args.attempts_after),
+            simulator_started=args.simulator_started,
+            diagnostic=args.diagnostic.read_text(),
+        )
+    else:
+        validate_criteria_journal(
+            required_suite=args.required_test,
+            observed_tests=args.observed_test,
+            transaction_ids_before=_lines(args.transactions_before),
+            transaction_ids_after=_lines(args.transactions_after),
+        )
+    return {"check": args.command, "valid": True}
+
+
+def main() -> None:
+    parser = _parser()
     args = parser.parse_args()
     try:
-        result = validate(args.manifest, args.expected_test)
+        result = _run(args)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.exit(2, f"Simulation Campaign evidence invalid: {error}\n")
     print(json.dumps(result, sort_keys=True))
