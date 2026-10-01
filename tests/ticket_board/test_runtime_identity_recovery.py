@@ -304,3 +304,60 @@ def test_freeze_ignores_unpublished_temporary_record_directories(tmp_path):
         participant_heads={"outer": "b" * 40},
     )
     assert len(snapshot.evidence) == 1
+
+
+@pytest.mark.parametrize("generation", [None, "a" * 32, "b" * 32])
+def test_generation_only_selected_pointer_is_preserved_or_retired(tmp_path, generation):
+    path = tmp_path / "review/entry.json"
+    path.parent.mkdir()
+    original = json.dumps({"ticket_generation": generation})
+    path.write_text(original)
+    if generation is None:
+        with pytest.raises(TicketBaselineError, match="has no Ticket identity"):
+            retire_foreign_pointers(tmp_path, tmp_path / "history", "op", {"generation": "a" * 32})
+        assert path.read_text() == original
+        return
+    retire_foreign_pointers(tmp_path, tmp_path / "history", "op", {"generation": "a" * 32})
+    if generation == "a" * 32:
+        assert path.read_text() == original
+    else:
+        assert not path.exists()
+        assert (tmp_path / "history/op.review-entry.json").read_text() == original
+
+
+@pytest.mark.parametrize(
+    "patch, expected",
+    [
+        ({"authored_sha256": "invalid"}, "authored identity"),
+        ({"baseline": []}, "baseline identity"),
+        ({"schema": 999}, "malformed Ticket identity"),
+        ({}, "malformed Ticket identity"),
+    ],
+)
+def test_foreign_observation_identity_is_validated_before_filtering(tmp_path, patch, expected):
+    from booley.ticket_board.acceptance_ledger import (
+        AcceptanceLedgerError,
+        historical_ticket_identities,
+    )
+
+    state = DevelopmentState()
+    state.slug = "foreign"
+    state.init_criteria({"sim_pass": True})
+    record_changes(
+        tmp_path,
+        state,
+        state.set_criterion("sim_pass", True),
+        invocation_id="old",
+        producer="sim",
+        execution_id="old",
+        ticket_identity={"generation": "a" * 32},
+    )
+    path = next((tmp_path / "acceptance/evidence").glob("*/record.json"))
+    row = json.loads(path.read_text())
+    row["ticket_identity"].update(patch)
+    path.write_text(json.dumps(row))
+    before = path.read_bytes()
+    current = {"generation": "b" * 32, "authored_sha256": "c" * 64}
+    with pytest.raises(AcceptanceLedgerError, match=expected):
+        historical_ticket_identities(tmp_path, state, current)
+    assert path.read_bytes() == before
