@@ -8,7 +8,7 @@ import textwrap
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -613,6 +613,52 @@ class TestCodexHealthCheck:
             result = backend.health_check()
             assert result is not None
             assert "not found" in result
+
+
+# ===========================================================================
+# Codex backend — usage limits
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label", ["developer", "reviewer"])
+@pytest.mark.parametrize("partial_output", [False, True])
+@pytest.mark.parametrize("source", ["error", "turn.failed", "stderr"])
+async def test_codex_usage_limit_propagates_without_retry(
+    tmp_path, monkeypatch, label, partial_output, source
+):
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend as cb
+    from booley.runtime.agent_errors import UsageLimitError
+    from booley.ticket_board.agent_execution import configure_agent_call
+
+    detail = "You've hit your usage limit. Try again later."
+    events = []
+    if partial_output:
+        events.append(
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "Working…"}}
+        )
+    if source == "error":
+        events.append({"type": "error", "message": detail})
+    elif source == "turn.failed":
+        events.append({"type": "turn.failed", "error": {"message": detail}})
+    raw = "\n".join(json.dumps(event) for event in events)
+    subprocess_call = AsyncMock(return_value=(raw, detail if source == "stderr" else "", 1))
+    sleep = AsyncMock()
+    monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(cb.anyio, "sleep", sleep)
+    params = configure_agent_call(
+        AgentCallParams(prompt="work", model="test", cwd=tmp_path, label=label)
+    )
+
+    with pytest.raises(UsageLimitError, match="usage limit") as raised:
+        await CodexBackend().call(params)
+
+    assert raised.value.provider == "codex"
+    assert str(raised.value) == detail
+    subprocess_call.assert_awaited_once()
+    sleep.assert_not_awaited()
 
 
 # ===========================================================================

@@ -865,12 +865,14 @@ def _codex_check_errors(
     raw_output: str,
 ) -> None:
     """Raise appropriate exceptions for Codex error conditions."""
-    if error_msg and not output:
+    # Progress messages are not a successful result when the usage cap ends the call.
+    if error_msg and (not output or is_usage_limit(error_msg)):
         _raise_for_codex_detail(error_msg, prefix="Codex error")
 
-    if returncode != 0 and not output:
+    if returncode != 0:
         detail = (raw_stderr or raw_output)[:500]
-        _raise_for_codex_detail(detail, prefix=f"Codex exit code {returncode}")
+        if not output or is_usage_limit(detail):
+            _raise_for_codex_detail(detail, prefix=f"Codex exit code {returncode}")
 
 
 def _raise_for_codex_detail(detail: str, *, prefix: str) -> None:

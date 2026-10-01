@@ -543,8 +543,14 @@ does, with either a **subscription** or an **API key**:
 
 Both work everywhere, in Ticket Mode and in Interactive Mode.
 
-- **Subscription:** usage counts against your plan. If you hit its limit,
-  Booley waits and retries the Ticket instead of failing it.
+- **Subscription:** usage counts against your plan. Claude rate-limit events
+  make Booley wait and retry the agent call, within its retry and timeout
+  budgets. Codex usage caps stop the agent call; Booley does not automatically
+  resume it at the reset time. A Developer Agent failure leaves the Ticket
+  blocked. The Ticket runner may pause for a detected limit, but that pause
+  does not requeue an already-blocked Ticket. After your limit resets, use
+  `booley board move <slug> queue` to retry it. A standalone Specialist must be
+  invoked again.
 - **API key:** you pay per token.
 
 If an API key is exported, it is used even when you also have a subscription.
