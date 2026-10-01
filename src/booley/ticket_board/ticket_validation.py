@@ -182,6 +182,10 @@ def _validate_published(
         basis = load_ticket_baseline_from_document(
             project_root, path.stem, document, authoring_checkout=checkout
         )
+        # The pinned checkout is a fresh materialization: run the post-setup
+        # hook so hook-generated (often gitignored) Target inputs exist, exactly
+        # as the executable `--check-ready` path does.
+        prepare_acceptance_checkout(project_root, checkout, slug=path.stem, ticket_path=path)
         placeholders = _published_provider_placeholders(checkout, basis)
     except (TicketBaselineError, PlannedDependencyError, FuseSocError, OSError) as exc:
         return [str(exc)]
