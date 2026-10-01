@@ -487,6 +487,8 @@ def _verify_ticket_baseline(ctx: TicketContext, action: str) -> None:
             slug=ctx.slug,
             destination_branch=ctx.branch,
         )
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=ctx.slug) from exc
     except (RuntimeError, ValueError, OSError) as exc:
         errors = [str(exc)]
     if errors:

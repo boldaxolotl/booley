@@ -50,18 +50,26 @@ def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
             parent.name == "project" and parent.parent.name == ".booley"
         ):
             return parent
+        if parent in checkouts:
+            break
     configured = [os.environ.get("BOOLEY_PROJECT_DIR")]
     if os.environ.get("BOOLEY_CONTAINER") == "1":
         configured.append(PROJECT_DIR_TARGET)
     for value in configured:
-        if value and start.is_relative_to(Path(value).resolve()):
-            return Path(value).resolve()
+        if value:
+            data = Path(value).resolve()
+            if start.is_relative_to(data) and not any(
+                checkout != data and checkout.is_relative_to(data) for checkout in checkouts
+            ):
+                return data
     for checkout in checkouts:
         try:
             data = _checkout_data(checkout).resolve()
         except SourceCheckoutProjectError:
             continue
         if start.is_relative_to(data):
+            if any(p != data and p.is_relative_to(data) for p in checkouts):
+                continue
             return data
     return None
 

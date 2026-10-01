@@ -254,6 +254,47 @@ def test_promotion_reconstructs_paired_basis_before_provider_validation(
     )
 
 
+@pytest.mark.parametrize("returncode", [1, 128])
+def test_provider_refresh_ancestry_failure_preserves_policy_distinction(
+    tmp_path, monkeypatch, capsys, returncode
+):
+    from booley.ticket_board import workspace_ops
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    board = TicketIO(project / "tickets", project_root=root)
+    operations.reconcile_board(board)
+    before_state = read_state_record(project / "tickets", "consumer")
+    before_documents = {path: path.read_bytes() for path in (project / "tickets").rglob("*.md")}
+    before_refs = {repo: _git(repo, "show-ref") for repo in (root, project)}
+    original = workspace_ops._git
+    checks = []
+
+    def git(repository, *args, **kwargs):
+        if args[:2] == ("merge-base", "--is-ancestor"):
+            checks.append(repository)
+            return subprocess.CompletedProcess(args, returncode, "", "fatal: missing object")
+        return original(repository, *args, **kwargs)
+
+    monkeypatch.setattr(workspace_ops, "_git", git)
+    assert operations.op_promote_waiting(board) == []
+    assert checks
+    error = capsys.readouterr().err
+    after_state = read_state_record(project / "tickets", "consumer")
+    if returncode == 128:
+        assert "cannot verify ancestry" in error
+        assert "acceptance-input-change-required" not in error
+        assert after_state == before_state
+        assert after_state.state is TicketState.WAITING
+        assert {path: path.read_bytes() for path in before_documents} == before_documents
+        assert {repo: _git(repo, "show-ref") for repo in before_refs} == before_refs
+        assert not (project / "worktrees/consumer").exists()
+    else:
+        assert "acceptance-input-change-required" in error
+        assert after_state.state is TicketState.BLOCKED
+
+
 def test_reapply_targets_keeps_current_destination_and_approved_candidate(
     tmp_path: Path,
 ) -> None:

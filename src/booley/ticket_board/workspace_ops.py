@@ -70,6 +70,7 @@ from .target_plan import (
 from .ticket_baseline import (
     BLOCK_REASON,
     BasisParticipant,
+    TicketAncestryVerificationError,
     TicketBaseline,
     TicketBaselineError,
     authored_ticket_digest,
@@ -1779,7 +1780,7 @@ def _require_ancestor(repository: Path, ancestor: str, descendant: str, message:
     if result.returncode == 1:
         raise TicketBaselineOperationError(message)
     detail = (result.stderr or result.stdout).strip()
-    raise TicketBaselineOperationError(
+    raise TicketAncestryVerificationError(
         f"cannot verify ancestry in {repository} (rc={result.returncode}, {ancestor} -> {descendant}): {detail}"
     )
 

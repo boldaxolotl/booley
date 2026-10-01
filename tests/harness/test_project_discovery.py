@@ -57,6 +57,51 @@ def test_unrelated_nested_checkout_keeps_identity(tmp_path, monkeypatch):
     assert discover_project_root(nested) == nested
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_ticket_design_worktree_inside_data_keeps_checkout(tmp_path, monkeypatch, explicit):
+    from booley.runtime.project_discovery import discover_project_root
+
+    outer = tmp_path / "checkout"
+    data = outer / ".booley_project"
+    data.mkdir(parents=True)
+    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(outer),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    worktree = data / "worktrees/ticket"
+    subprocess.run(
+        ["git", "-C", str(outer), "worktree", "add", "--detach", str(worktree)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    snapshot = worktree / ".booley_project"
+    snapshot.mkdir()
+    subprocess.run(["git", "init", str(snapshot)], check=True, capture_output=True, timeout=30)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    if explicit:
+        monkeypatch.setenv("RTL_PROJECT_ROOT", str(worktree))
+    else:
+        monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    assert discover_project_root(worktree) == worktree
+    assert discover_project_root(snapshot) == worktree
+
+
 def test_detached_data_refuses_and_explicit_outer_disambiguates(tmp_path, monkeypatch):
     from booley.runtime.project_discovery import ProjectRootDiscoveryError, discover_project_root
 
