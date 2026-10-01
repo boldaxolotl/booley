@@ -30,7 +30,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install authenticated encryption dependency
-        run: python -m pip install cryptography==46.0.5
+        run: python -m pip install cryptography==50.0.2
 
       - name: Fetch pull-request commit
         if: github.event_name == 'pull_request_target'

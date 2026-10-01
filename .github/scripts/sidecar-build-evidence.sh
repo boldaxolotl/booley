@@ -4,10 +4,10 @@
 set -euo pipefail
 
 readonly EVIDENCE_DIR="${RUNNER_TEMP}/docker-build-evidence"
-readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f"
-readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"
-readonly DOCKER_CLI="docker:29.8.0-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66"
-readonly DOCKER_DIND="docker:29.8.0-dind@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e"
+readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56"
+readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"
+readonly DOCKER_CLI="docker:29.8.2-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"
+readonly DOCKER_DIND="docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
 
 mkdir -p "${EVIDENCE_DIR}"
 : > "${EVIDENCE_DIR}/build-commands.txt"

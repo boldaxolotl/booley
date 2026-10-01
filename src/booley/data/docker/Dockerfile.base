@@ -32,8 +32,8 @@ WORKDIR /
 # image's flex/bison/libfl-dev (line ~23) plus cmake/gawk here. Submodules are
 # fetched full (NOT --shallow-submodules): sv-elab/slang pin non-tip commits a
 # shallow submodule fetch can miss.
-ARG YOSYS_VERSION=v0.68
-ARG YOSYS_REF=38e001a6ff74ca434bf4cc02c053f53619160ab0
+ARG YOSYS_VERSION=v0.69
+ARG YOSYS_REF=9f75ca1f9834a39a863915b5dae0c7b1e33533bc
 RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends \
         cmake gawk pkg-config tcl-dev libreadline-dev libffi-dev zlib1g-dev \
@@ -215,8 +215,8 @@ RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
 
 # Verible (pinned prebuilt static binary — the sv2v pattern). Bundled
 # lint EDA tool for .core lint Targets with flow_options.tool: verible (ADR 0033).
-ARG VERIBLE_VERSION=v0.0-4163-g6cce8f19
-ARG VERIBLE_SHA256=ddb9c7ea1fe60146ce2fc9f2f2d7a6c0257d08bf51a98dc0ccb4b47b44161bd8
+ARG VERIBLE_VERSION=v0.0-4296-g0f262651
+ARG VERIBLE_SHA256=8569defb891d2316067613ea00442af28a7a09d405d95b54c0c91f9942d26635
 RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
     -o /tmp/verible.tar.gz \
@@ -230,8 +230,8 @@ RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
 # Node.js 24 LTS + agent CLIs. Download exact publisher artifacts and verify
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
-ARG NODE_VERSION=24.20.0
-ARG NODE_SHA256=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
+ARG NODE_VERSION=24.21.0
+ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 COPY src/booley/data/docker/agent-clis-package.json /opt/agent-clis/package.json
 COPY src/booley/data/docker/agent-clis-package-lock.json /opt/agent-clis/package-lock.json
 RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
@@ -253,8 +253,8 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && test ! -e "$CLAUDE_MUSL" \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.263" \
-    && test "$(codex --version | awk '{print $2}')" = "0.153.4" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.285" \
+    && test "$(codex --version | awk '{print $2}')" = "0.159.3" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
 

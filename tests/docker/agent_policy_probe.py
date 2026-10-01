@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-EXPECTED_CLAUDE = "2.1.263"
-EXPECTED_CODEX = "0.153.4"
+EXPECTED_CLAUDE = "2.1.285"
+EXPECTED_CODEX = "0.159.3"
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"
 CANARY_TEXT = "booley-agent-policy-canary"
@@ -403,7 +403,7 @@ def _assert_codex_policy(root: Path) -> dict[str, str]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--expected-node", default="24.20.0")
+    parser.add_argument("--expected-node", default="24.21.0")
     parser.add_argument("--expected-npm", default="11.19.0")
     parser.add_argument("--evidence", type=Path)
     return parser.parse_args()
