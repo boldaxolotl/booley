@@ -1,7 +1,7 @@
 # Minimal production image for the fixed-destination Xilinx FlexNet relay.
 # Build with the provisioning/licensing package as the context so only the
 # standalone relay enters.
-FROM python:3.14.7-alpine3.24@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc
+FROM python:3.14.7-alpine3.24@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
