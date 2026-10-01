@@ -629,7 +629,7 @@ jobs:
 
       - name: Build wheel and source distribution
         run: |
-          pip install build==1.6.0 twine==7.0.0
+          pip install build==1.6.1 twine==7.0.0
           PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.DEVELOPMENT_WHEEL)'
           trap 'rm -f src/booley/_build_commit.py src/booley/data/development-build-context.tar.gz' EXIT
           python -m build
@@ -1153,7 +1153,7 @@ jobs:
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
               booley-test python /work/tests/docker/agent_policy_probe.py
-              --expected-node 24.20.0 --expected-npm 11.19.0
+              --expected-node 24.21.0 --expected-npm 11.19.0
               --evidence /validation-tmp/agent-policy.json
 
           - name: Run Verible production-image end-to-end test

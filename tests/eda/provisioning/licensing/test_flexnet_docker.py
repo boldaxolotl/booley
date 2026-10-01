@@ -626,7 +626,7 @@ def test_dockerfile_pins_minimal_base_and_runs_as_numeric_user() -> None:
     dockerfile = path.read_text(encoding="utf-8")
     assert (
         "FROM python:3.14.7-alpine3.24@sha256:"
-        "c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc" in dockerfile
+        "9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01" in dockerfile
     )
     assert "USER 65532:65532" in dockerfile
     assert "HEALTHCHECK" in dockerfile
