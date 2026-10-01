@@ -16,6 +16,7 @@ from booley.core.boundary import (
     require_str,
     require_str_value,
 )
+from booley.evidence.review_vocabulary import PERSISTED_REVIEWER_DISPOSITIONS, REVIEW_DISPOSITIONS
 from booley.review.explanation import ExplanationError, StructuredExplanation
 
 PACKAGE_VERSION = 2
@@ -24,7 +25,6 @@ CONTENT_KINDS = frozenset({"regular", "symlink", "submodule"})
 PRESENTATIONS = frozenset({"text", "binary", "unavailable"})
 CRITERION_OUTCOMES = frozenset({"met", "unmet", "not_run"})
 CRITERION_FRESHNESS = frozenset({"current", "stale", "unknown"})
-REVIEW_DISPOSITIONS = frozenset({"reported", "open", "fixed", "waived", "excluded"})
 RECOMMENDATIONS = frozenset({"approve", "reset", "archive", "hold"})
 WAIVER_CANDIDATE_STATUSES = frozenset({"offered", "not_needed", "stale", "invalid"})
 
@@ -306,6 +306,7 @@ class ReviewDispositionRow:
     justification: str
     exclusion_reason: str
     actor: str
+    reviewer_disposition: str = ""
 
     @classmethod
     def parse(cls, value: Any) -> ReviewDispositionRow:
@@ -314,6 +315,14 @@ class ReviewDispositionRow:
         if not isinstance(line, int) or isinstance(line, bool) or line < 0:
             raise ReviewArtifactError("review disposition line must be non-negative integer")
         disposition = _enum(row, "disposition", REVIEW_DISPOSITIONS)
+        try:
+            reviewer_disposition = require_str_value(
+                row.get("reviewer_disposition", ""), field="reviewer_disposition", allow_empty=True
+            )
+        except BoundaryError as exc:
+            raise ReviewArtifactError(str(exc)) from exc
+        if reviewer_disposition and reviewer_disposition not in PERSISTED_REVIEWER_DISPOSITIONS:
+            raise ReviewArtifactError(f"unknown reviewer_disposition: {reviewer_disposition!r}")
         justification = str(row.get("justification", ""))
         if disposition == "waived" and not justification.strip():
             raise ReviewArtifactError("waived review disposition needs justification")
@@ -329,6 +338,7 @@ class ReviewDispositionRow:
             justification=justification,
             exclusion_reason=str(row.get("exclusion_reason", "")),
             actor=str(row.get("actor", "")),
+            reviewer_disposition=reviewer_disposition,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -344,6 +354,7 @@ class ReviewDispositionRow:
             "justification": self.justification,
             "exclusion_reason": self.exclusion_reason,
             "actor": self.actor,
+            "reviewer_disposition": self.reviewer_disposition,
         }
 
 

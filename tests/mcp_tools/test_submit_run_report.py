@@ -1157,3 +1157,27 @@ def test_final_submission_persists_each_file_justification(tmp_path, state_file,
     state = DevelopmentState.load(state_file)
     assert state.criteria["_report_submitted"].detail["file_justifications"] == reason
     assert reason["outside.sv"] in (tmp_path / "logs" / "REPORT.md").read_text()
+
+
+@pytest.mark.parametrize("mode", ["done", "clean"])
+@pytest.mark.parametrize(
+    "disposition", ["current", "advisory", "deferred", "out_of_scope", "superseded"]
+)
+def test_report_displays_normalized_findings(tmp_path, mode, disposition):
+    from booley.mcp.submit_run_report import SubmitRunReportMcpTool
+
+    endpoint = SubmitRunReportMcpTool()
+    endpoint._state = DevelopmentState.load(tmp_path / "state.json")
+    key = f"review_rtl_bugs_{mode}"
+    endpoint.state.init_criteria({key: False})
+    finding = {"severity": "MAJOR", "summary": "visible finding", "disposition": disposition}
+    collection = (
+        "issue_list"
+        if mode == "done"
+        else ("pending" if disposition == "current" else "observations")
+    )
+    endpoint.state.set_criterion(key, True, detail={collection: [finding]})
+    section = endpoint._review_dispositions_section()
+    assert ("OPEN MAJOR" if disposition == "current" else "REPORTED MAJOR") in section
+    assert f"Reviewer disposition: {disposition}" in section
+    assert "NO FINDINGS" not in section

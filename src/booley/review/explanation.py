@@ -235,6 +235,7 @@ def _review_dispositions_table(package: Mapping[str, Any]) -> str:
         f"<td>{escape(str(row['severity']))}</td>"
         f"<td><code>{escape(str(row['file']))}:{escape(str(row['line']))}</code></td>"
         f"<td>{escape(str(row['disposition']))}</td>"
+        f"<td>{escape(str(row.get('reviewer_disposition', '')))}</td>"
         f"<td>{escape(str(row['summary']))}</td>"
         f"<td>{escape(str(row.get('justification', '')))}</td>"
         "</tr>"
@@ -243,7 +244,7 @@ def _review_dispositions_table(package: Mapping[str, Any]) -> str:
     return (
         "<section><h2>Review findings and dispositions</h2><table>"
         "<tr><th>Criterion</th><th>Severity</th><th>Location</th>"
-        "<th>Disposition</th><th>Finding</th><th>Waiver justification</th></tr>"
+        "<th>Disposition</th><th>Reviewer disposition</th><th>Finding</th><th>Waiver justification</th></tr>"
         + body
         + "</table></section>"
     )

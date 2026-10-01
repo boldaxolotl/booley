@@ -33,6 +33,14 @@ from booley.evidence.review_receipt import (
     build_review_contract_detail,
     review_invocation_changed,
 )
+from booley.evidence.review_vocabulary import (
+    ALL_DISPOSITIONS,
+    DISPOSITION_ADVISORY,
+    DISPOSITION_CURRENT,
+    DISPOSITION_DEFERRED,
+    DISPOSITION_OUT_OF_SCOPE,
+    DISPOSITION_SUPERSEDED,
+)
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -98,18 +106,6 @@ VERIFY_STATUS_WAIVED = "WAIVED"
 VERIFY_STATUS_STILL_PRESENT = "STILL_PRESENT"
 ALL_VERIFY_STATUSES = frozenset(
     {VERIFY_STATUS_FIXED, VERIFY_STATUS_WAIVED, VERIFY_STATUS_STILL_PRESENT}
-)
-DISPOSITION_CURRENT = "current"
-DISPOSITION_ADVISORY = "advisory"
-DISPOSITION_DEFERRED = "deferred"
-DISPOSITION_OUT_OF_SCOPE = "out_of_scope"
-ALL_DISPOSITIONS = frozenset(
-    {
-        DISPOSITION_CURRENT,
-        DISPOSITION_ADVISORY,
-        DISPOSITION_DEFERRED,
-        DISPOSITION_OUT_OF_SCOPE,
-    }
 )
 ALL_ISSUE_KINDS = frozenset({"code_defect", "proof_gap", "spec_ambiguity"})
 _NON_CORRECTIVE_DISPOSITIONS = frozenset(
@@ -542,7 +538,7 @@ def _merge_finding_records(
         if historical.get("disposition") == DISPOSITION_CURRENT:
             historical["status"] = DISPOSITION_CURRENT
         else:
-            historical["status"] = "superseded"
+            historical["status"] = DISPOSITION_SUPERSEDED
         merged[finding_id] = historical
     return list(merged.values())
 
@@ -2819,7 +2815,7 @@ Schema enforcement (applied upstream by the harness):
         records = {_finding_record(issue)["finding_id"]: issue for issue in issues}
         for row in old_pending:
             if (
-                row.get("status") not in {"waived", "fixed", "excluded", "superseded"}
+                row.get("status") not in {"waived", "fixed", "excluded", DISPOSITION_SUPERSEDED}
                 and row.get("disposition", "current") == "current"
             ):
                 issue = ReviewIssue.from_dict(row)

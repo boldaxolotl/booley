@@ -297,3 +297,44 @@ def test_review_briefing_keeps_audit_text_inert() -> None:
     assert "\\[click\\]" in rendered
     assert "\\<script>unsafe\\<" in rendered
     assert "[Immutable reviewer evidence](/tmp/evidence%20%5Bone%5D.json)" in rendered
+
+
+@pytest.mark.parametrize(
+    "original", ["", "current", "advisory", "deferred", "out_of_scope", "superseded"]
+)
+def test_original_reviewer_disposition_survives_full_package_roundtrip(original):
+    value = _package()
+    value["review_dispositions"] = [
+        {
+            "criterion": "review_rtl_bugs_done",
+            "severity": "MAJOR",
+            "summary": "finding",
+            "line": 0,
+            "disposition": "reported",
+            "reviewer_disposition": original,
+        }
+    ]
+    parsed = ReviewPackage.parse(value)
+    assert (
+        ReviewPackage.parse(parsed.to_dict()).review_dispositions[0].reviewer_disposition
+        == original
+    )
+    del value["review_dispositions"][0]["reviewer_disposition"]
+    assert ReviewPackage.parse(value).review_dispositions[0].reviewer_disposition == ""
+
+
+@pytest.mark.parametrize("original", [None, 3, [], {}, "unknown"])
+def test_original_reviewer_disposition_rejects_corruption(original):
+    value = _package()
+    value["review_dispositions"] = [
+        {
+            "criterion": "review_rtl_bugs_done",
+            "severity": "MAJOR",
+            "summary": "finding",
+            "line": 0,
+            "disposition": "reported",
+            "reviewer_disposition": original,
+        }
+    ]
+    with pytest.raises(ReviewArtifactError, match="reviewer_disposition"):
+        ReviewPackage.parse(value)

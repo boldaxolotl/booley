@@ -124,3 +124,29 @@ def test_review_audit_is_inert_and_links_only_evidence() -> None:
     assert '<a href="/tmp/evidence%20%5Bone%5D.json">Immutable reviewer evidence</a>' in rendered
     assert 'href="https://invalid' not in rendered
     assert "raw-only" not in rendered
+
+
+@pytest.mark.parametrize(
+    "original", ["current", "advisory", "deferred", "out_of_scope", "superseded", "", "<script>&"]
+)
+def test_html_displays_original_reviewer_disposition_inertly(original):
+    from html import escape
+
+    package = {
+        "slug": "review",
+        "review_dispositions": [
+            {
+                "criterion": "review_rtl_bugs_done",
+                "severity": "MAJOR",
+                "file": "rtl/dut.sv",
+                "line": 0,
+                "disposition": "reported",
+                "reviewer_disposition": original,
+                "summary": "finding",
+            }
+        ],
+    }
+    rendered = render_explanation_html(StructuredExplanation.parse(_value()), package)
+    assert "<th>Reviewer disposition</th>" in rendered
+    assert f"<td>reported</td><td>{escape(original)}</td>" in rendered
+    assert rendered.count("<script>") == 1

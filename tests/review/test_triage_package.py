@@ -10,6 +10,8 @@ from functools import partial
 from pathlib import Path
 from urllib.parse import quote
 
+import pytest
+
 from booley.criteria.freshness import (
     VerificationFreshness,
     evaluate_verification_freshness,
@@ -1129,3 +1131,68 @@ def test_briefing_omits_the_section_without_candidates(tmp_path: Path) -> None:
     package = {**_facts(ctx), "assessment": _assessment(), "html_path": None}
 
     assert "Waiver Candidates" not in tp.render_review_briefing(package, [])
+
+
+@pytest.mark.parametrize("mode", ["done", "clean"])
+@pytest.mark.parametrize(
+    "original", ["current", "advisory", "deferred", "out_of_scope", "superseded"]
+)
+@pytest.mark.parametrize("report_enabled", [True, False])
+def test_normalized_review_facts_write_package(tmp_path, mode, original, report_enabled):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text())
+    collection = (
+        "issue_list"
+        if mode == "done"
+        else ("pending" if original == "current" else "observations")
+    )
+    state["criteria"] = {
+        f"review_rtl_bugs_{mode}": {
+            "mandatory": False,
+            "met": True,
+            "detail": {
+                collection: [
+                    {
+                        "severity": "MAJOR",
+                        "summary": "visible finding",
+                        "disposition": original,
+                        "line": 0,
+                    }
+                ]
+            },
+        }
+    }
+    state_path.write_text(json.dumps(state))
+    if not report_enabled:
+        (ctx.log_dir / "REPORT.md").unlink()
+    facts = _facts(ctx, freshness_eligible=_never_freshness_eligible)
+    path = tp.write_triage_package(
+        ctx, facts, _assessment(), ctx.log_dir / "explanation.html" if report_enabled else None
+    )
+    package = tp.load_triage_package(path)
+    row = package.review_dispositions[0]
+    assert row.disposition == ("open" if original == "current" else "reported")
+    assert row.reviewer_disposition == original
+    rendered = tp.render_review_briefing(package, [])
+    assert "Reviewer disposition" in rendered
+    assert f"{row.disposition} | {original} |" in rendered
+
+
+def test_reviewer_disposition_markdown_is_inert():
+    lines = []
+    tp._render_review_dispositions(
+        lines,
+        {
+            "review_dispositions": [
+                {
+                    "disposition": "open",
+                    "reviewer_disposition": "<script>|bad\ntext",
+                    "summary": "finding",
+                }
+            ]
+        },
+    )
+    rendered = "\n".join(lines)
+    assert "\\<script>\\|bad" in rendered
+    assert "bad\ntext" not in rendered
