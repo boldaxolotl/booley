@@ -548,7 +548,8 @@ Both work everywhere, in Ticket Mode and in Interactive Mode.
   budgets. Codex usage caps stop the agent call; Booley does not automatically
   resume it at the reset time. A Developer Agent failure leaves the Ticket
   blocked. The Ticket runner may pause for a detected limit, but that pause
-  does not requeue an already-blocked Ticket. After your limit resets, use
+  does not requeue an already-blocked Ticket. After the limit resets or you
+  resolve a spending or credit cap, use
   `booley board move <slug> queue` to retry it. A standalone Specialist must be
   invoked again.
 - **API key:** you pay per token.

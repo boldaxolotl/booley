@@ -870,8 +870,11 @@ def _codex_check_errors(
         _raise_for_codex_detail(error_msg, prefix="Codex error")
 
     if returncode != 0:
-        detail = (raw_stderr or raw_output)[:500]
-        if not output or is_usage_limit(detail):
+        # Classify the full provider diagnostic, never agent text in JSONL stdout.
+        if is_usage_limit(raw_stderr):
+            _raise_for_codex_detail(raw_stderr, prefix=f"Codex exit code {returncode}")
+        if not output:
+            detail = (raw_stderr or raw_output)[:500]
             _raise_for_codex_detail(detail, prefix=f"Codex exit code {returncode}")
 
 

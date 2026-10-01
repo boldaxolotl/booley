@@ -623,16 +623,23 @@ class TestCodexHealthCheck:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("label", ["developer", "reviewer"])
 @pytest.mark.parametrize("partial_output", [False, True])
-@pytest.mark.parametrize("source", ["error", "turn.failed", "stderr"])
+@pytest.mark.parametrize("source", ["error", "turn.failed", "stderr", "stderr-preamble"])
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "You\u2019ve hit your usage limit. Try again later.",
+        "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
+        "Your workspace is out of credits. Add credits to continue.",
+    ],
+)
 async def test_codex_usage_limit_propagates_without_retry(
-    tmp_path, monkeypatch, label, partial_output, source
+    tmp_path, monkeypatch, label, partial_output, source, detail
 ):
     from booley.core.models import AgentCallParams
     from booley.runtime import _codex_backend as cb
     from booley.runtime.agent_errors import UsageLimitError
     from booley.ticket_board.agent_execution import configure_agent_call
 
-    detail = "You've hit your usage limit. Try again later."
     events = []
     if partial_output:
         events.append(
@@ -643,7 +650,10 @@ async def test_codex_usage_limit_propagates_without_retry(
     elif source == "turn.failed":
         events.append({"type": "turn.failed", "error": {"message": detail}})
     raw = "\n".join(json.dumps(event) for event in events)
-    subprocess_call = AsyncMock(return_value=(raw, detail if source == "stderr" else "", 1))
+    stderr = detail if source.startswith("stderr") else ""
+    if source == "stderr-preamble":
+        stderr = "startup warning\n" * 80 + stderr
+    subprocess_call = AsyncMock(return_value=(raw, stderr, 1))
     sleep = AsyncMock()
     monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
     monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
@@ -652,13 +662,37 @@ async def test_codex_usage_limit_propagates_without_retry(
         AgentCallParams(prompt="work", model="test", cwd=tmp_path, label=label)
     )
 
-    with pytest.raises(UsageLimitError, match="usage limit") as raised:
+    with pytest.raises(UsageLimitError) as raised:
         await CodexBackend().call(params)
 
     assert raised.value.provider == "codex"
-    assert str(raised.value) == detail
+    assert str(raised.value) == (stderr or detail)
     subprocess_call.assert_awaited_once()
     sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("provider_error", [None, "Provider process stopped"])
+async def test_codex_agent_text_cannot_identify_a_usage_limit(
+    tmp_path, monkeypatch, returncode, provider_error
+):
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend as cb
+
+    text = "I'll investigate usage limit, spend cap, and workspace out-of-credits handling."
+    events = [{"type": "item.completed", "item": {"type": "agent_message", "text": text}}]
+    if provider_error:
+        events.append({"type": "turn.failed", "error": {"message": provider_error}})
+    raw = "\n".join(json.dumps(event) for event in events)
+    subprocess_call = AsyncMock(return_value=(raw, "", returncode))
+    monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+
+    result = await CodexBackend().call(AgentCallParams(prompt="work", model="test", cwd=tmp_path))
+
+    assert result.output == text
+    subprocess_call.assert_awaited_once()
 
 
 # ===========================================================================
