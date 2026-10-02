@@ -1012,7 +1012,10 @@ when relying on this switch.
 When enabled, a commit-msg hook rejects recognized machine-attribution footers,
 then sanitizes the built-in banned-word list out of all other commit-message
 prose. An already-installed hook no-ops at commit time when the flag is off.
-`banned_words` replaces (not extends) the built-in list; `banned_substrings`
+
+The built-in list is `claude`, `anthropic`, `copilot`, `codex`, `openai`,
+`chatgpt`, `gemini`, `booley`, `cursor`, `ticket`, `gpt`, `llm`, and
+`co-authored-by`. `banned_words` replaces (not extends) it; `banned_substrings`
 adds literal substring terms. Both lists are combined case-insensitively without
 duplicates. An absent `banned_words` keeps the built-in vocabulary, while an
 explicit empty list never restores defaults.
@@ -1117,10 +1120,11 @@ allowed_authors = [
 ]
 ```
 
-Unset or `[]` disables the check. Remember that a push carries *every* outgoing
-commit, so an allowlist has to cover your collaborators' historical identities
-too, not just your own — otherwise pushing a branch that contains their work is
-blocked. `BOOLEY_SKIP_PUSH_GUARD=1` skips the scan for one push.
+Unset or `[]` disables the check. The hook skips commits the remote already
+has and checks the rest, including imported upstream history, so the allowlist
+must cover collaborators' and upstream authors' identities too. A malformed
+`booley.toml` or a shallow clone blocks the push. `BOOLEY_SKIP_PUSH_GUARD=1`
+skips the scan for one push.
 
 #### What survives a fresh clone
 
