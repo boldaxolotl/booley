@@ -695,3 +695,28 @@ def test_all_identity_overrides_and_placeholder_unicode_equivalence():
         assert direct.find_banned(text) == loaded.find_banned(text) == [term]
     with pytest.raises(BoundaryError, match="reserved"):
         parse_stealth_vocabulary({"banned_substrings": ["\u0131"]})
+
+
+def test_new_substring_tier_rejects_combined_remote_placeholder():
+    import pytest
+
+    from booley.commit_policy.policy import parse_stealth_vocabulary
+    from booley.core.boundary import BoundaryError
+
+    with pytest.raises(BoundaryError, match="reserved"):
+        parse_stealth_vocabulary({"banned_substrings": [">/<"]})
+
+
+def test_disabled_policy_rejects_invalid_explicit_substring_tier(tmp_path):
+    import pytest
+
+    from booley.commit_policy.policy import stealth_policy
+    from booley.core.boundary import BoundaryError
+
+    directory = tmp_path / ".booley_project"
+    directory.mkdir()
+    (directory / "booley.toml").write_text(
+        '[stealth]\nenabled = false\nbanned_substrings = ["red"]\n'
+    )
+    with pytest.raises(BoundaryError, match="reserved"):
+        stealth_policy(tmp_path)

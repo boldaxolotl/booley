@@ -474,7 +474,7 @@ class TestMainEntryPoint:
     def test_module_cli_honors_current_checkout_stealth_setting(self, tmp_path, monkeypatch):
         import subprocess
 
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
         (project_dir / "booley.toml").write_text("[stealth]\nenabled = false\n", encoding="utf-8")
@@ -521,7 +521,7 @@ def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_p
     import subprocess
     import sys
 
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
     (project_dir / "booley.toml").write_text(
@@ -574,7 +574,9 @@ class TestVendoredStandaloneImport:
         import subprocess
         import sys
 
-        subprocess.run(["git", "init", "-q", str(dst)], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "init", "-q", str(dst)], capture_output=True, check=True, timeout=30
+        )
         project_dir = dst / ".booley_project"
         project_dir.mkdir(exist_ok=True)
         (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
@@ -584,6 +586,7 @@ class TestVendoredStandaloneImport:
             capture_output=True,
             text=True,
             check=False,
+            timeout=30,
         )
 
     def test_flat_run_tool_resolves(self, tmp_path):
@@ -606,7 +609,9 @@ class TestVendoredStandaloneImport:
         import sys
 
         self._vendor(tmp_path, include_runner=True)
-        subprocess.run(["git", "init", "-q", str(tmp_path)], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "init", "-q", str(tmp_path)], capture_output=True, check=True, timeout=30
+        )
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
         (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
@@ -614,7 +619,10 @@ class TestVendoredStandaloneImport:
         # flags. Stage it so `git diff --cached` (run via run_command) sees it.
         (tmp_path / "note.txt").write_text("Co-Authored-By: somebody <x@y.z>\n", encoding="utf-8")
         subprocess.run(
-            ["git", "-C", str(tmp_path), "add", "note.txt"], capture_output=True, check=True
+            ["git", "-C", str(tmp_path), "add", "note.txt"],
+            capture_output=True,
+            check=True,
+            timeout=30,
         )
         proc = subprocess.run(
             [sys.executable, str(tmp_path / "validate_commit_msg.py"), "feat(x): ok"],
@@ -622,6 +630,7 @@ class TestVendoredStandaloneImport:
             capture_output=True,
             text=True,
             check=False,
+            timeout=30,
         )
         assert proc.returncode == 1, proc.stdout + proc.stderr
         assert "co-authored-by" in proc.stderr.lower()

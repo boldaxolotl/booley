@@ -95,6 +95,7 @@ def _reserved_substring(term: str) -> bool:
         "<home>",
         "<remote>",
         "<org>",
+        "<org>/<repo>",
         "<email>",
     )
     pattern = re.compile(re.escape(term), re.IGNORECASE)
@@ -118,7 +119,8 @@ def parse_stealth_vocabulary(
     elif is_str_list(raw_words):
         words = tuple(word for word in raw_words if word)
     else:
-        logger.warning("[stealth] banned_words must be a list of strings — using defaults")
+        fallback = "using defaults" if defaults else "ignoring invalid override"
+        logger.warning("[stealth] banned_words must be a list of strings — %s", fallback)
         words = tuple(_DEFAULT_BANNED_PHRASES) if defaults else ()
     raw_substrings = section.get("banned_substrings", [])
     if not is_str_list(raw_substrings):

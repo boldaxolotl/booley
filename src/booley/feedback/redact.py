@@ -17,9 +17,9 @@ the bare directory name inside it):
 4. Design identifiers — the project name, ``.core`` VLNV/target/toplevel names —
    mapped to stable ``<module-N>`` placeholders so the report stays readable and
    two mentions of the same module still correlate.
-5. Anything the project listed explicitly (``[feedback] redact_extra``, and
-   ``[stealth] banned_words`` when a project has overridden it with its own IP
-   vocabulary).
+5. Anything the project listed explicitly in ``[feedback] redact_extra`` or
+   the ``[stealth] banned_words`` and ``banned_substrings`` tiers. Stealth terms
+   use the shared privacy matcher without importing shipped defaults.
 
 What is deliberately *not* scrubbed, because a report without it is unusable:
 EDA tool names and versions, Booley's own vocabulary, error text, and Python
@@ -115,7 +115,8 @@ class RedactionPlan:
     ``literals`` are normally matched as plain substrings (URLs and identities),
     while keys named by ``path_literals`` require path-token boundaries.
     ``identifiers`` match on word boundaries (module names, which must not
-    match inside a longer name).
+    match inside a longer name). ``stealth_terms`` and ``stealth_substrings``
+    carry explicitly configured privacy terms with their shared matching rules.
     """
 
     literals: dict[str, str] = field(default_factory=dict)
@@ -322,9 +323,10 @@ def build_plan(project_root: Path, project_dir: Path | None = None) -> Redaction
 def apply_plan(text: str, plan: RedactionPlan) -> tuple[str, dict[str, int]]:
     """Redact *text*, returning the result and a hit count per placeholder.
 
-    Idempotent: the placeholders contain none of the secrets, so a second pass
-    finds nothing to do. That matters because the report is re-rendered on every
-    setup re-run and must not accumulate ``<<repo>>`` nesting.
+    Match original text once, without processing newly inserted placeholders.
+    New substring entries cannot match reserved placeholders themselves; legacy
+    token entries and matches across replacement edges can still match on a
+    later call.
     """
     candidates = _plan_spans(text, plan)
     # All rules inspect the original text. Merge overlapping covered regions,
@@ -367,17 +369,26 @@ def _plan_spans(text: str, plan: RedactionPlan) -> list[tuple[int, int, int, str
         for match in pattern.finditer(text)
     ]
     spans.extend(
+        (match.start(), match.end(), len(rules) + 1 + index, placeholder)
+        for index, (pattern, placeholder) in enumerate(plan.patterns)
+        for match in pattern.finditer(text)
+    )
+    # Existing rules consume matches in their established priority order.
+    # A later overlapping identifier must not extend the first replacement.
+    selected: list[tuple[int, int, int, str]] = []
+    for span in sorted(spans, key=lambda item: (item[2], item[0])):
+        start, end, _priority, _placeholder = span
+        if not any(start < old_end and old_start < end for old_start, old_end, _, _ in selected):
+            selected.append(span)
+    # Stealth protects every original occurrence, including portions extending
+    # beyond an existing replacement; only these spans expand covered regions.
+    selected.extend(
         (start, end, len(rules), plan.stealth_terms[term])
         for start, end, term in banned_spans(
             text, tuple(plan.stealth_terms), plan.stealth_substrings
         )
     )
-    spans.extend(
-        (match.start(), match.end(), len(rules) + 1 + index, placeholder)
-        for index, (pattern, placeholder) in enumerate(plan.patterns)
-        for match in pattern.finditer(text)
-    )
-    return spans
+    return selected
 
 
 def _path_literal_pattern(secret: str) -> re.Pattern[str]:

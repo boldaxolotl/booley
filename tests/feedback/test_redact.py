@@ -324,3 +324,27 @@ def test_feedback_overlapping_terms_and_separate_identifier_contract():
         "myquokkafile quokka_config QuokkaRunner <module-1>",
         {"<module-1>": 1},
     )
+
+
+def test_design_identifier_overlap_preserves_first_longest_match():
+    from booley.feedback.redact import RedactionPlan
+
+    plan = RedactionPlan(identifiers={"alpha-beta": "<module-1>", "beta-gamma": "<module-2>"})
+    assert apply_plan("alpha-beta-gamma", plan) == (
+        "<module-1>-gamma",
+        {"<module-1>": 1},
+    )
+
+
+def test_design_identifier_overlap_with_stealth_preserves_unprotected_suffix():
+    from booley.feedback.redact import RedactionPlan
+
+    plan = RedactionPlan(
+        identifiers={"alpha-beta": "<module-1>", "beta-gamma": "<module-2>"},
+        stealth_terms={"quokka": "<redacted>"},
+        stealth_substrings=("quokka",),
+    )
+    assert apply_plan("alpha-beta-gamma myquokkafile", plan) == (
+        "<module-1>-gamma my<redacted>file",
+        {"<module-1>": 1, "<redacted>": 1},
+    )
