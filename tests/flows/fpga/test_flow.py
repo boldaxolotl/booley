@@ -1854,7 +1854,13 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
     assert metrics.route_completed
 
 
-def test_startup_cause_skips_success_summary_and_echoed_tcl():
-    diagnostic = "ERROR: Tcl initialization failed: libncurses.so.5 unavailable"
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "ERROR: Tcl initialization failed: libncurses.so.5 unavailable",
+        "application-specific initialization failed: libncurses.so.5 unavailable",
+    ],
+)
+def test_startup_cause_skips_success_summary_and_echoed_tcl(diagnostic):
     text = '0 Critical Warnings and 0 Errors encountered.\nputs "error"\n' + diagnostic
     assert FpgaImplFlow._first_startup_cause(text) == diagnostic

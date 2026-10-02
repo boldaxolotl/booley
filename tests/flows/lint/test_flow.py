@@ -2519,16 +2519,14 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     from booley.flows.lint.flow import _errored_verdict
 
     executable = "verilator" if family == "verilator" else "verible-verilog-lint"
-    fake = tmp_path / executable
-    fake.write_text(
-        f'#!/bin/sh\necho "{executable}: error while loading shared libraries: libx.so: missing" >&2\nexit 0\n'
-    )
-    fake.chmod(0o755)
+    fake = tmp_path / f"{executable}.py"
+    diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
+    fake.write_text(f"import sys\nprint({diagnostic!r}, file=sys.stderr)\n")
     flow = LintFlow()
     flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
     prepared = SimpleNamespace(
         result=LintConfigResult(target="lite"),
-        command=[str(fake)],
+        command=[sys.executable, str(fake)],
         resolved=SimpleNamespace(configured_eda_tool=family),
         attempt_token="",
     )

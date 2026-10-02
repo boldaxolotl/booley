@@ -910,7 +910,8 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                 if re.search(
                     r"^(?:ERROR|FATAL)(?::|\s)|"
                     r"^[\w.+/-]+:\s*(?:error|fatal)(?::|\s)|"
-                    r"^(?:could not|cannot|failed to|missing)\b",
+                    r"^(?:could not|cannot|failed to|missing)\b|"
+                    r"^application-specific initialization failed:",
                     line,
                     re.IGNORECASE,
                 )
