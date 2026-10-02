@@ -110,7 +110,10 @@ def _publish_marker(
         raise ValueError("durable criteria state is unavailable")
     state = DevelopmentState.load(path)
     verdict = check_criteria_acceptance(
-        path, work_dir=Path(state.work_dir) if state.work_dir else None
+        path,
+        work_dir=Path(state.work_dir) if state.work_dir else None,
+        log_dir=log_dir,
+        ticket_identity=tio._load_basis_unlocked(slug).ticket_identity(),
     )
     if verdict.disposition != "review" or verdict.provisional:
         print(
