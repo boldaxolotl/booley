@@ -516,3 +516,17 @@ def test_campaign_resume_failure_reports_build_timeout_first() -> None:
     assert endpoint.detail["build_stage"]["timed_out"] is True
     assert LAST_LINE in endpoint.report_text
     assert HEAD_LINE not in endpoint.report_text
+
+
+@pytest.mark.parametrize("executable", ["verilator_bin", "iverilog"])
+def test_build_owned_loader_startup_is_infrastructure(executable):
+    text = f"{executable}: error while loading shared libraries: libx.so: missing"
+    outcome = classify_build_outcome(
+        SubprocessResult(
+            returncode=127, stdout=text + "\nBOOLEY_BUILD_STAGE token=abc123 rc=127\n"
+        ),
+        "abc123",
+        timeout_s=600,
+    )
+    assert outcome.failure_kind == "infrastructure"
+    assert "libx.so" in outcome.reason

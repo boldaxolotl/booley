@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -3488,6 +3489,9 @@ def _check_session_binary(
     _fail: Fail,
 ) -> None:
     """PASS/FAIL on *binary* being on the Sandbox PATH."""
+    if flow_name == "fpga" and binary == "vivado":
+        _check_vivado_startup(flow_runtime, _pass=_pass, _skip=_skip, _fail=_fail)
+        return
     label = f"{flow_name}: '{binary}' on the Sandbox PATH"
     if flow_runtime.inside:
         if shutil.which(binary):
@@ -3520,6 +3524,67 @@ def _check_session_binary(
             f"{flow_name}: '{binary}' is not on the issued Sandbox PATH",
             f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
         )
+
+
+def _vivado_startup_command(marker: str) -> list[str]:
+    """Keep the Tcl probe, side files and tool process group Sandbox-local."""
+    script = (
+        "command -v timeout >/dev/null 2>&1 || { echo 'Vivado startup probe requires GNU timeout'; exit 127; }; "
+        "probe_dir=$(mktemp -d) || exit 1; "
+        "trap 'rm -rf -- \"$probe_dir\"' EXIT HUP INT TERM; "
+        'cd "$probe_dir" || exit 1; '
+        f"printf '%s\\n' 'puts {marker}' 'exit 0' > startup.tcl; "
+        "timeout --kill-after=2s 27s vivado -mode batch -nolog -nojournal -source startup.tcl"
+    )
+    return ["sh", "-c", script]
+
+
+def _check_vivado_startup(
+    flow_runtime: _DoctorFlowRuntime, *, _pass: Check, _skip: Check, _fail: Fail
+) -> None:
+    """Require this attempt's Tcl marker from a bounded actual batch startup."""
+    label = "fpga: Vivado batch startup"
+    if not flow_runtime.inside and not flow_runtime.available:
+        _skip(f"{label} - container runtime unavailable")
+        return
+    marker = "BOOLEY_VIVADO_STARTUP_" + secrets.token_hex(16)
+    try:
+        result = subprocess.run(
+            flow_runtime.command(_vivado_startup_command(marker)),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _fail(
+            f"{label}: runtime did not complete within 30s",
+            "check Sandbox transport and Vivado startup",
+        )
+        return
+    except (session_runtime.SessionError, subprocess.SubprocessError, OSError) as exc:
+        _fail(
+            f"{label}: runtime/probe error: {str(exc)[:500]}", "run 'booley init --seed' and retry"
+        )
+        return
+    if result.returncode == 0 and marker in result.stdout.splitlines():
+        _pass(label)
+        return
+    if result.returncode in (124, 137):
+        cause = "Vivado did not start within 27s"
+    else:
+        lines = (result.stdout + "\n" + result.stderr).splitlines()
+        cause = next(
+            (
+                line.strip()[:500]
+                for line in lines
+                if re.search(
+                    r"error|fatal|failed|cannot|missing|requires|not found", line, re.IGNORECASE
+                )
+            ),
+            f"current Tcl startup marker missing (exit {result.returncode})",
+        )
+    _fail(f"{label}: {cause}", "verify Vivado runtime dependencies in the Sandbox Image")
 
 
 def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
