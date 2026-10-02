@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import re
+import stat
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -1389,13 +1390,14 @@ def _legacy_named_ref_exists(repository: Path, ref: str) -> bool:
     try:
         loose = _reference_storage_path(repository, ref)
         try:
-            loose.lstat()
+            metadata = loose.lstat()
         except (FileNotFoundError, NotADirectoryError):
             pass
         else:
-            raise TicketAncestryVerificationError(
-                f"cannot verify ancestry in {repository}: unreadable or corrupt ref {ref!r}"
-            )
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise TicketAncestryVerificationError(
+                    f"cannot verify ancestry in {repository}: unreadable or corrupt ref {ref!r}"
+                )
         _verify_packed_ref_absence(repository, ref)
         return False
     except (OSError, UnicodeError) as exc:

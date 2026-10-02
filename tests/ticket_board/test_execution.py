@@ -64,6 +64,24 @@ class TestSelectMutationConfig:
 
 
 class TestClassifyTickets:
+    @pytest.mark.parametrize("alive", [False, True])
+    def test_error_running_row_preserves_independent_pid_proof(self, tmp_path, monkeypatch, alive):
+        from booley.ticket_board import execution
+
+        lock = tmp_path / "ticket.lock"
+        lock.write_text("12345")
+        monkeypatch.setattr(execution, "existing_runtime_file", lambda *_args: lock)
+        monkeypatch.setattr(execution, "read_lock_pid", lambda _path: 12345)
+        monkeypatch.setattr(execution, "is_pid_alive", lambda _pid: alive)
+        ticket = {
+            "status": "running",
+            "file": "board/t.md",
+            "ticket_error": "cannot verify ancestry",
+        }
+        result = classify_tickets([ticket], logs_dir=tmp_path, done_slugs=())
+        assert result["active" if alive else "orphaned"] == [ticket]
+        assert not result["executable"]
+
     @pytest.mark.parametrize("status", ["running", "waiting", "review", "blocked", "queued"])
     def test_operational_error_preserves_state_without_claiming_or_failing(self, tmp_path, status):
         ticket = {"status": status, "file": "board/t.md", "ticket_error": "cannot verify ancestry"}

@@ -151,6 +151,8 @@ def _check_orphan(t, now, orphan_threshold_min, logs_dir):
                 return True
             return False  # process alive — not orphaned
 
+    if t.get("ticket_error"):
+        return False  # Unverified metadata cannot establish timestamp orphanhood.
     # Fallback: no PID in lock file (legacy) — use timestamp threshold
     last_update = t.get("last_update", "")
     try:
@@ -209,9 +211,8 @@ def _classification_group(
     status = t.get("status", "")
     if status in {"blocked", "review", "waiting"}:
         return status
-    if t.get("ticket_error"):
-        # Missing verified metadata cannot prove an orphan or authorize a claim.
-        return "active" if status == "running" else "blocked"
+    if t.get("ticket_error") and status != "running":
+        return "blocked"
     if status == "queued":
         deps = t.get("dependencies", [])
         if deps and not all(d in done_slugs for d in deps):

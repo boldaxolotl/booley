@@ -543,12 +543,15 @@ def test_legacy_ref_lookup_accepts_valid_packed_commit(tmp_path, monkeypatch, si
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_named_ref_absence_with_existing_namespace_prefix(tmp_path, monkeypatch, legacy):
+@pytest.mark.parametrize("namespace", ["prefix-file", "target-directory"])
+def test_named_ref_absence_with_existing_namespace_prefix(
+    tmp_path, monkeypatch, legacy, namespace
+):
     from booley.ticket_board import ticket_baseline
     from tests.ticket_board.test_basis_refresh import _git, _paired_refresh_repositories
 
     root, _project = _paired_refresh_repositories(tmp_path, monkeypatch)
-    _git(root, "branch", "prefix")
+    _git(root, "branch", "prefix" if namespace == "prefix-file" else "prefix/child")
     original = ticket_baseline.subprocess.run
 
     def git(command, *args, **kwargs):
@@ -557,7 +560,8 @@ def test_named_ref_absence_with_existing_namespace_prefix(tmp_path, monkeypatch,
         return original(command, *args, **kwargs)
 
     monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
-    assert not ticket_baseline._named_ref_exists(root, "refs/heads/prefix/absent")
+    ref = "refs/heads/prefix/absent" if namespace == "prefix-file" else "refs/heads/prefix"
+    assert not ticket_baseline._named_ref_exists(root, ref)
 
 
 def test_legacy_ref_absence_with_sha256_packed_storage(tmp_path, monkeypatch):
