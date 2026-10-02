@@ -908,6 +908,7 @@ def test_report_renders_done_findings_and_every_clean_waiver(
             SOURCE_FINGERPRINT_DETAIL_KEY: review_fingerprint,
         },
     )
+    state.set_criterion("_report_submitted", False)
     state.save()
 
     exit_code, _state = _run_endpoint(
@@ -1181,3 +1182,188 @@ def test_report_displays_normalized_findings(tmp_path, mode, disposition):
     assert ("OPEN MAJOR" if disposition == "current" else "REPORTED MAJOR") in section
     assert f"Reviewer disposition: {disposition}" in section
     assert "NO FINDINGS" not in section
+
+
+def test_recording_failure_does_not_publish_report_gate(tmp_path, state_file, monkeypatch):
+    from booley.flows.execution_persistence import AcceptanceRecordingError
+
+    def fail(*_args, **_kwargs):
+        raise AcceptanceRecordingError("injected recording failure")
+
+    monkeypatch.setattr(SubmitRunReportMcpTool, "_record_acceptance_changes", fail)
+    code, state = _run_endpoint(
+        state_file,
+        tmp_path,
+        "bugfix",
+        ["--summary", "Fixed.", "--root-cause", "Ordering.", "--uncertainties", "None."],
+        monkeypatch,
+    )
+    assert code == EXIT_ERROR
+    assert not state.is_met("_report_submitted")
+
+
+@pytest.mark.parametrize(
+    "boundary", ["confirmation", "state_save", "report_json", "console", "end_event"]
+)
+def test_late_report_failure_keeps_durable_gate_unmet(tmp_path, state_file, monkeypatch, boundary):
+    from booley.flows import endpoint_reporting
+    from booley.ticket_board.report_submission import read_receipt
+
+    calls = 0
+    if boundary == "confirmation":
+        owner, attr = SubmitRunReportMcpTool, "_confirmation_text"
+    elif boundary == "state_save":
+        owner, attr = DevelopmentState, "save"
+    elif boundary == "report_json":
+        owner, attr = SubmitRunReportMcpTool, "write_report"
+    elif boundary == "console":
+        owner, attr = SubmitRunReportMcpTool, "_publish_console_report"
+    else:
+        owner, attr = endpoint_reporting, "_write_display_event"
+    original = getattr(owner, attr)
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(f"injected {boundary}")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, attr, fail_once)
+    code, state = _run_endpoint(
+        state_file,
+        tmp_path,
+        "bugfix",
+        ["--summary", "Fixed.", "--root-cause", "Ordering.", "--uncertainties", "None."],
+        monkeypatch,
+    )
+    assert code == EXIT_ERROR
+    assert not state.is_met("_report_submitted")
+    assert read_receipt(tmp_path)["status"] != "completed"
+
+
+def test_failed_retry_invalidates_previously_met_gate(tmp_path, state_file, monkeypatch):
+    from booley.flows.execution_persistence import AcceptanceRecordingError
+    from booley.ticket_board.report_submission import project_state
+
+    argv = ["--summary", "Fixed.", "--root-cause", "Ordering.", "--uncertainties", "None."]
+    code, first = _run_endpoint(state_file, tmp_path, "bugfix", argv, monkeypatch)
+    assert code == EXIT_SUCCESS and first.is_met("_report_submitted")
+
+    def fail(*_args, **_kwargs):
+        raise AcceptanceRecordingError("retry recording failed")
+
+    monkeypatch.setattr(SubmitRunReportMcpTool, "_record_acceptance_changes", fail)
+    code, second = _run_endpoint(state_file, tmp_path, "bugfix", argv, monkeypatch)
+    assert code == EXIT_ERROR
+    project_state(second, tmp_path)
+    assert not second.is_met("_report_submitted")
+
+
+def test_permanent_state_and_compensation_failure_keeps_receipt_closed(
+    tmp_path, state_file, monkeypatch
+):
+    from booley.ticket_board import report_submission as rs
+
+    prior = DevelopmentState.load(state_file)
+    prior.set_criterion("_report_submitted", True)
+    prior.save()
+
+    def fail_save(_state):
+        raise OSError("persistent state storage failure")
+
+    original = SubmitRunReportMcpTool._record_acceptance_changes
+
+    def fail_compensation(self, changes):
+        if any(change.key == rs.KEY and not change.met for change in changes):
+            raise OSError("persistent compensation failure")
+        return original(self, changes)
+
+    monkeypatch.setattr(DevelopmentState, "save", fail_save)
+    monkeypatch.setattr(SubmitRunReportMcpTool, "_record_acceptance_changes", fail_compensation)
+    code, reloaded = _run_endpoint(
+        state_file,
+        tmp_path,
+        "bugfix",
+        ["--summary", "Fixed.", "--root-cause", "Ordering.", "--uncertainties", "None."],
+        monkeypatch,
+    )
+    assert code == EXIT_ERROR
+    assert reloaded.is_met(
+        rs.KEY
+    )  # Mutable persistence cannot be promised under permanent failure.
+    assert rs.read_receipt(tmp_path)["status"] == "failed"
+    assert not rs.effective_met(tmp_path, True, reloaded.criteria[rs.KEY].detail)
+
+
+def test_missing_report_directory_refuses_submission_and_invalidates_old_gate(
+    tmp_path, state_file, monkeypatch, capsys
+):
+    state = DevelopmentState.load(state_file)
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    worktree = tmp_path / "worktree"
+    _init_repo(worktree)
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BOOLEY_SLUG", "report-test")
+    monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    monkeypatch.setattr("booley.mcp.report_changes.changed_ticket_paths", lambda _: [])
+    code = SubmitRunReportMcpTool().main(
+        [
+            "--work-dir",
+            str(worktree),
+            "--summary",
+            "Fixed.",
+            "--root-cause",
+            "Ordering.",
+            "--uncertainties",
+            "None.",
+            "--file-justifications",
+            "{}",
+        ]
+    )
+    output = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert "configure BOOLEY_LOGS_DIR" in output.out + output.err
+    assert "Traceback" not in output.out + output.err
+    assert not DevelopmentState.load(state_file).is_met("_report_submitted")
+    assert not (tmp_path / "REPORT.md").exists()
+
+
+def test_explicit_report_directory_with_custom_state_has_explicit_reader_context(
+    tmp_path, state_file, monkeypatch
+):
+    from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
+
+    worktree = tmp_path / "worktree"
+    _init_repo(worktree)
+    report_dir = tmp_path / "independent-evidence"
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BOOLEY_SLUG", "report-test")
+    monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    monkeypatch.setattr("booley.mcp.report_changes.changed_ticket_paths", lambda _: [])
+    code = SubmitRunReportMcpTool().main(
+        [
+            "--work-dir",
+            str(worktree),
+            "--report-dir",
+            str(report_dir),
+            "--summary",
+            "Fixed.",
+            "--root-cause",
+            "Ordering.",
+            "--uncertainties",
+            "None.",
+            "--file-justifications",
+            "{}",
+        ]
+    )
+    assert code == EXIT_SUCCESS
+    assert (report_dir / "REPORT.md").is_file()
+    assert check_criteria_acceptance(state_file, ticket_identity={}).disposition == "failed"
+    assert (
+        check_criteria_acceptance(state_file, log_dir=report_dir, ticket_identity={}).disposition
+        == "review"
+    )

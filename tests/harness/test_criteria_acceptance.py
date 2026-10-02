@@ -179,8 +179,8 @@ class TestCheckCriteriaAcceptance:
         assert verdict.disposition == "blocked"
         assert "human input" in verdict.blocked_reason
 
-    def test_stale_blocked_reason_ignored_when_all_mandatory_met(self, tmp_path: Path):
-        """Stale _blocked_reason from prior run must not override a successful re-run."""
+    def test_current_blocked_reason_blocks_when_all_mandatory_met(self, tmp_path: Path):
+        """A current Developer block wins even when mandatory Criteria pass."""
         state = _FakeState(
             criteria={
                 "_blocked_reason": _FakeCriterion(
@@ -194,8 +194,8 @@ class TestCheckCriteriaAcceptance:
             }
         )
         verdict = self._write_state_and_check(tmp_path, state)
-        assert verdict.disposition == "review"
-        assert verdict.blocked_reason == ""
+        assert verdict.disposition == "blocked"
+        assert verdict.blocked_reason == "Stale reason from run-1"
 
     def test_blocked_reason_unmet_ignored(self, tmp_path: Path):
         """_blocked_reason with met=False should NOT trigger blocked disposition."""
@@ -214,7 +214,7 @@ class TestCheckCriteriaAcceptance:
         [
             (True, False, "Need a pin assignment."),
             (False, False, None),
-            (True, True, None),
+            (True, True, "Need a pin assignment."),
         ],
     )
     def test_declared_block_projection_uses_active_policy(
@@ -1133,3 +1133,38 @@ def test_read_only_freshness_evaluator_prefers_version_4_reviewer_receipt(
     assert result.stale
     assert result.changed_categories == ("rtl",)
     assert result.review_dimensions == ("scope",)
+
+
+def test_authorized_zero_mandatory_current_block_wins(tmp_path):
+    from booley.criteria.state import CriterionEntry
+
+    path = tmp_path / "booley_state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria({"optional": False, "_report_submitted": True})
+    state.authorized_zero_mandatory_basis_id = "a" * 64
+    state.set_criterion(
+        "_report_submitted", True, detail={"unmet_optional_criteria": ["optional"]}
+    )
+    state.criteria["_blocked_reason"] = CriterionEntry(
+        met=True, mandatory=False, detail={"reason": "Developer needs the exact timing decision."}
+    )
+    state.save()
+    verdict = check_criteria_acceptance(path)
+    assert verdict.disposition == "blocked"
+    assert verdict.blocked_reason == "Developer needs the exact timing decision."
+
+
+def test_current_block_precedes_unavailable_report_authority(tmp_path):
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board.report_submission import receipt_path
+
+    path = tmp_path / ".runtime/booley_state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria({"implementation_done": True, "_report_submitted": True})
+    state.set_criterion("implementation_done", True)
+    state.set_criterion("_blocked_reason", True, detail={"reason": "Human decision?"})
+    state.save()
+    receipt_path(tmp_path).write_text("not JSON")
+    verdict = check_criteria_acceptance(path)
+    assert verdict.disposition == "blocked"
+    assert verdict.blocked_reason == "Human decision?"

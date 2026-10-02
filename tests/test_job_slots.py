@@ -333,6 +333,128 @@ class TestSingleProcess:
         assert store.refresh(ticket).state == HOLDING
 
 
+def test_same_store_interleaved_submission_preserves_exact_entry_number(root, world, monkeypatch):
+    spawn(world, 100)
+    store = make_store(root, world, SlotCaps(max_heavy=2))
+    # Both threads may select the same sequence before either entry is published.
+    monkeypatch.setattr(store, "_next_seq", lambda _directory: 1)
+    construct = store._new_waiter_token
+    second = None
+    interleaved = False
+
+    def finish_after_other_submission(path, payload, request):
+        nonlocal second, interleaved
+        if not interleaved:
+            interleaved = True
+            second = store.submit(CLASS_HEAVY, pid=100)
+        return construct(path, payload, request)
+
+    monkeypatch.setattr(store, "_new_waiter_token", finish_after_other_submission)
+    first = store.submit(CLASS_HEAVY, pid=100)
+    assert second is not None
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second).state == HOLDING
+    assert store.renew(first), "second promotion must not overwrite the first lease"
+    assert first.path != second.path
+    holders, waiters = store.snapshot(CLASS_HEAVY)
+    assert {token.lease_id for token in holders} == {first.lease_id, second.lease_id}
+    assert not waiters
+    store.release(first)
+    store.release(second)
+    assert store.snapshot(CLASS_HEAVY) == ([], [])
+
+
+@pytest.mark.parametrize("promote_before_publication", [False, True], ids=["waiter", "holder"])
+def test_same_pid_stores_never_reuse_entry_identity(
+    root, world, monkeypatch, promote_before_publication
+):
+    spawn(world, 100)
+    first_store = make_store(root, world, SlotCaps(max_heavy=2, queue_max=0))
+    second_store = make_store(root, world, SlotCaps(max_heavy=2, queue_max=0))
+    monkeypatch.setattr(first_store, "_next_seq", lambda _directory: 1)
+    monkeypatch.setattr(second_store, "_next_seq", lambda _directory: 1)
+    publish = job_slots.os.link
+    second = None
+    interleaved = False
+
+    def publish_after_other_submission(source, target):
+        nonlocal second, interleaved
+        if not interleaved:
+            interleaved = True
+            second = second_store.submit(CLASS_HEAVY, pid=100)
+            if promote_before_publication:
+                assert second_store.refresh(second).state == HOLDING
+        publish(source, target)
+
+    monkeypatch.setattr(job_slots.os, "link", publish_after_other_submission)
+    first = first_store.submit(CLASS_HEAVY, pid=100)
+    assert second is not None
+    assert first_store.refresh(first).state == HOLDING
+    assert second_store.refresh(second).state == HOLDING
+    assert first_store.renew(first) and second_store.renew(second)
+    assert first.path != second.path
+    with pytest.raises(QueueFullError, match="queue is full"):
+        first_store.submit(CLASS_HEAVY, pid=100)
+    first_store.release(first)
+    second_store.release(second)
+    assert first_store.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def test_cancelled_publication_never_deletes_replacement(root, world, monkeypatch):
+    spawn(world, 100)
+    first_store = make_store(root, world, SlotCaps(max_heavy=2))
+    replacement_store = make_store(root, world, SlotCaps(max_heavy=2))
+    for store in (first_store, replacement_store):
+        monkeypatch.setattr(store, "_next_seq", lambda _directory: 1)
+    publish = job_slots.os.link
+    replacement = None
+    interleaved = False
+
+    def cancel_and_replace_after_publication(source, target):
+        nonlocal replacement, interleaved
+        publish(source, target)
+        if not interleaved:
+            interleaved = True
+            assert first_store.cancel_waiter(100)
+            replacement = replacement_store.submit(CLASS_HEAVY, pid=100)
+
+    monkeypatch.setattr(job_slots.os, "link", cancel_and_replace_after_publication)
+    cancelled = first_store.submit(CLASS_HEAVY, pid=100)
+    assert first_store.refresh(cancelled).state == LOST
+    assert replacement is not None and replacement.path != cancelled.path
+    assert replacement_store.refresh(replacement).state == HOLDING
+    assert replacement_store.renew(replacement)
+    replacement_store.release(replacement)
+    assert first_store.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def test_legacy_counter_names_coexist_with_lease_names(root, world, monkeypatch):
+    spawn(world, 100)
+    store = make_store(root, world, SlotCaps(max_heavy=2))
+    legacy = store.submit(CLASS_HEAVY, pid=100)
+    old_path = legacy.path.with_name(
+        job_slots._entry_name("w", legacy.priority, legacy.seq, legacy.pid, 1)
+    )
+    legacy.path.rename(old_path)
+    legacy.path, legacy.n = old_path, 1
+    loaded = store._load_token(old_path)
+    assert loaded is not None and loaded.n == 1 and loaded.lease_id == legacy.lease_id
+    monkeypatch.setattr(store, "_next_seq", lambda _directory: legacy.seq)
+    current = store.submit(CLASS_HEAVY, pid=100)
+    assert current.seq == legacy.seq
+    assert job_slots._parse_entry_name(current.path.name)[4] == current.n
+    assert store._rank(legacy) < store._rank(current)
+    assert store.refresh(loaded).state == HOLDING
+    assert store.refresh(current).state == HOLDING
+    holders, waiters = store.snapshot(CLASS_HEAVY)
+    assert {token.lease_id for token in holders} == {legacy.lease_id, current.lease_id}
+    assert not waiters
+    assert store.renew(loaded) and store.renew(current)
+    store.release(loaded)
+    store.release(current)
+    assert store.snapshot(CLASS_HEAVY) == ([], [])
+
+
 class TestTwoProcessRaces:
     """Simulated interleavings of two claimant processes over one directory."""
 
