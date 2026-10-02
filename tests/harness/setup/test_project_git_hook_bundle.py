@@ -161,3 +161,40 @@ def test_missing_canonical_source_aborts_build(
 
     with pytest.raises(FileNotFoundError, match="canonical hook source"):
         build_project_git_hook_bundle()
+
+
+def test_bundle_identifier_tiers_refresh_from_current_config(tmp_path):
+    project = tmp_path / "project"
+    directory = project / ".booley_project"
+    directory.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(project)], check=True, timeout=30)
+    bundle = directory / BUNDLE_NAME
+    first = build_project_git_hook_bundle()
+    bundle.write_bytes(first.content)
+    assert first.content == build_project_git_hook_bundle().content
+    config = directory / "booley.toml"
+    message = project / "message.txt"
+    for setting, expected in (
+        (
+            'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]',
+            "fix: redacted_config redactedRunner myredactedfile axi_redacted reagent precursor\n",
+        ),
+        (
+            "banned_words = []\nbanned_substrings = []",
+            "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n",
+        ),
+    ):
+        config.write_text("[stealth]\n" + setting + "\n")
+        message.write_text(
+            "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n"
+        )
+        result = subprocess.run(
+            ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert message.read_text() == expected

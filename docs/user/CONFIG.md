@@ -955,8 +955,9 @@ is never a Project, does not read this policy, and must not own
 enabled = false              # setup default; set true to opt in
 # ignore_native_cores = true # use only stealth-authored cores during Booley resolution
 # banned_words = ["claude", "anthropic", "codex", "booley", ...]  # override
-#                            # the built-in list; empty [] disables vocabulary
-#                            # redaction, but structural attribution is rejected
+#                            # the built-in list; [] disables this tier
+# banned_substrings = ["quokka"] # add literal substrings (default: [])
+#                            # structural attribution is still rejected
 # enforce_convention = true  # enforce type(scope): summary subjects
 #                            # (default: off — opt in)
 # max_body_lines = 0         # cap the commit body (0 = subject line only);
@@ -992,7 +993,28 @@ when relying on this switch.
 When enabled, a commit-msg hook rejects recognized machine-attribution footers,
 then sanitizes the built-in banned-word list out of all other commit-message
 prose. An already-installed hook no-ops at commit time when the flag is off.
-`banned_words` replaces (not extends) the built-in list.
+`banned_words` replaces (not extends) the built-in list; `banned_substrings`
+adds literal substring terms. Both lists are combined case-insensitively without
+duplicates. An absent `banned_words` keeps the built-in vocabulary, while an
+explicit empty list never restores defaults.
+
+Matching is case-insensitive. The built-in identity names `booley`, `claude`,
+`anthropic`, `codex`, `openai`, `chatgpt`, `copilot`, and `gemini` match as
+substrings, including when supplied in `banned_words`. Other words use ASCII
+alphanumeric token edges: `_`, `-`, `.`, `/`, and non-ASCII characters separate
+tokens, as do CamelCase, acronym-to-titlecase, and letter/digit transitions.
+Thus `axi_agent`, `XMLAgent`, and `GPT4` match, while `reagent` and `precursor`
+do not. Multiword phrases retain their exact internal spaces or hyphens.
+Custom `banned_words` entries use token matching; `banned_substrings =
+["quokka"]` also matches `myquokkafile`. Redaction replaces only the matched
+original spans, preserving surrounding identifier text.
+
+`banned_substrings` must be a list of strings. Entries that occur inside reserved
+redaction placeholders (`redacted`, `<author>`, `<author-email>`, `<repo>`,
+`<home>`, `<remote>`, `<org>`, `<email>`, `<redacted>`, or `<module-N>` for
+any positive integer N)
+are rejected before publication. After upgrading or configuring this tier,
+run Project Setup or Doctor to reconcile installed Git-hook bundles.
 
 Project Initialization keeps `.booley_project/hooks/` for Project-authored
 `post-setup` and `post-developer` lifecycle hooks. Booley-managed commit and
@@ -1012,8 +1034,8 @@ recognizable redaction debris while preserving ordinary prose such as
 "Generated with care by the whole team" or "Generated with Docker for
 reproducibility."
 
-An empty `banned_words = []` disables vocabulary redaction and therefore cannot
-confirm that an ambiguous plain "Generated with …" line names a protected
+An empty `banned_words = []`, with `banned_substrings` absent or empty, disables
+vocabulary redaction and therefore cannot confirm that an ambiguous plain "Generated with …" line names a protected
 identity. The two structurally unambiguous footer forms remain rejected while
 Stealth Mode is enabled.
 
@@ -1200,7 +1222,8 @@ URLs and their `org/repo` slug, your `git config` name and email, and design
 identifiers scraped from `booley.toml` and your `.core` files (project name,
 Target names, VLNV segments, toplevels) — mapped to stable `<module-N>`
 placeholders so the report still reads coherently. `redact_extra` adds your own
-terms; a project that overrode `[stealth] banned_words` gets those scrubbed too.
+terms; explicitly configured `[stealth] banned_words` and `banned_substrings`
+are scrubbed with their Stealth matching rules too, without shipped defaults.
 
 **Kept, deliberately,** because a report without them is not actionable: EDA tool
 names and versions, error text, tracebacks, and performance/area numbers. Two of

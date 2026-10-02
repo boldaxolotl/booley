@@ -625,3 +625,10 @@ class TestVendoredStandaloneImport:
         )
         assert proc.returncode == 1, proc.stdout + proc.stderr
         assert "co-authored-by" in proc.stderr.lower()
+
+
+def test_identifier_staged_content_is_rejected():
+    with _git_ok("+booley_config = BooleyRunner\n+mybooleyfile = 1\n"):
+        assert any("booley" in error for error in validate_diff())
+    with _git_ok("+reagent = precursor\n"):
+        assert validate_diff() == []

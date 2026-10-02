@@ -258,3 +258,69 @@ def test_apply_plan_on_an_empty_plan_is_a_no_op(tmp_path):
     plan.patterns.clear()
     assert plan.is_empty()
     assert apply_plan("untouched text", plan) == ("untouched text", {})
+
+
+def test_explicit_stealth_tiers_identifier_optout_and_hits(tmp_path):
+    from booley.feedback.redact import apply_plan, build_plan
+
+    root = tmp_path / "public"
+    directory = root / ".booley_project"
+    directory.mkdir(parents=True)
+    (directory / "booley.toml").write_text(
+        '[feedback]\nredact_identifiers = false\n[stealth]\nbanned_words = ["agent", "booley"]\nbanned_substrings = ["quokka"]\n'
+    )
+    plan = build_plan(root)
+    text = "booley_config BooleyRunner myquokkafile axi_agent reagent precursor public"
+    expected = "<redacted>_config <redacted>Runner my<redacted>file axi_<redacted> reagent precursor public"
+    assert apply_plan(text, plan) == (expected, {"<redacted>": 4})
+    assert apply_plan(expected, plan) == (expected, {})
+    assert plan.mapping()["quokka"] == "<redacted>"
+
+
+def test_feedback_explicit_terms_duplicate_module_and_no_defaults(tmp_path):
+    from booley.feedback.redact import apply_plan, build_plan
+
+    root = tmp_path / "quokka"
+    directory = root / ".booley_project"
+    directory.mkdir(parents=True)
+    config = directory / "booley.toml"
+    config.write_text('[stealth]\nbanned_words = ["quokka"]\nbanned_substrings = ["quokka"]\n')
+    plan = build_plan(root)
+    assert apply_plan("quokka myquokkafile QuokkaRunner Booley agent", plan) == (
+        "<module-1> my<module-1>file <module-1>Runner Booley agent",
+        {"<module-1>": 3},
+    )
+    config.write_text("[feedback]\nredact_identifiers = false\n")
+    assert apply_plan("Booley agent quokka", build_plan(root)) == ("Booley agent quokka", {})
+
+
+def test_feedback_shared_parser_rejects_reserved_substrings(tmp_path):
+    import pytest
+
+    from booley.core.boundary import BoundaryError
+    from booley.feedback.redact import build_plan
+
+    directory = tmp_path / ".booley_project"
+    directory.mkdir()
+    (directory / "booley.toml").write_text('[stealth]\nbanned_substrings = ["mod"]\n')
+    with pytest.raises(BoundaryError, match="reserved"):
+        build_plan(tmp_path)
+
+
+def test_feedback_overlapping_terms_and_separate_identifier_contract():
+    from booley.feedback.redact import RedactionPlan, apply_plan
+
+    plan = RedactionPlan(
+        identifiers={"quokka": "<module-1>"},
+        stealth_terms={"okkafi": "<redacted>", "quokka": "<module-1>"},
+        stealth_substrings=("okkafi", "quokka"),
+    )
+    assert apply_plan("myquokkafile quokka", plan) == (
+        "my<module-1>le <module-1>",
+        {"<module-1>": 2},
+    )
+    design_only = RedactionPlan(identifiers={"quokka": "<module-1>"})
+    assert apply_plan("myquokkafile quokka_config QuokkaRunner quokka", design_only) == (
+        "myquokkafile quokka_config QuokkaRunner <module-1>",
+        {"<module-1>": 1},
+    )

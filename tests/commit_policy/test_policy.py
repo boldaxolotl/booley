@@ -529,3 +529,169 @@ def _selective_import_error(blocked_module: str):
         return real_import(name, *args, **kwargs)
 
     return _import
+
+
+class TestIdentifierRegression:
+    def test_identifier_reported_spellings(self):
+        spellings = (
+            "docs_qa/booley_notes.txt",
+            "notes/booley-notes.txt",
+            "notes/mybooleyfile.txt",
+            "booley_config",
+            "BooleyRunner",
+        )
+        assert [find_banned(text) for text in spellings] == [["booley"]] * 5
+
+    def test_identifier_original_spans(self):
+        assert (
+            redact_banned("é booley_config BooleyRunner Ω") == "é redacted_config redactedRunner Ω"
+        )
+
+    def test_identifier_generic_controls(self):
+        assert find_banned("precursor.txt reagent.sv") == []
+        assert "agent" in find_banned("axi_agent XMLAgent reAgent Agent4")
+        assert "gpt" in find_banned("4gpt7 GPT4")
+
+
+class TestVocabularyTiers:
+    def test_config_union_reload_and_empty(self, tmp_path):
+        from booley.commit_policy.policy import stealth_policy
+
+        directory = tmp_path / ".booley_project"
+        directory.mkdir()
+        config = directory / "booley.toml"
+        config.write_text(
+            '[stealth]\nbanned_words = ["Quokka", "booley", "QUOKKA"]\nbanned_substrings = ["quokka", "Narwhal"]\n'
+        )
+        policy = stealth_policy(tmp_path)
+        assert policy.banned_phrases == ("Quokka", "booley", "Narwhal")
+        assert policy.banned_substrings == ("booley", "quokka", "Narwhal")
+        assert policy.find_banned("myquokkafile myBooleyfile NarwhalRunner") == [
+            "Quokka",
+            "booley",
+            "Narwhal",
+        ]
+        config.write_text("[stealth]\nbanned_words = []\n")
+        assert stealth_policy(tmp_path).banned_phrases == ()
+        config.write_text('[stealth]\nbanned_words = []\nbanned_substrings = ["quokka"]\n')
+        assert stealth_policy(tmp_path).find_banned("myquokkafile") == ["quokka"]
+
+    def test_direct_constructor_positional_and_identity(self):
+        from booley.commit_policy.policy import StealthPolicy
+
+        policy = StealthPolicy(True, ("booley", "quokka"), None, False, ())
+        assert policy.banned_substrings == ()
+        assert policy.find_banned("mybooleyfile myquokkafile QuokkaRunner") == ["booley", "quokka"]
+
+    def test_new_tier_rejects_malformed_and_reserved(self):
+        import pytest
+
+        from booley.commit_policy.policy import parse_stealth_vocabulary
+        from booley.core.boundary import BoundaryError
+
+        for value in (
+            "quokka",
+            [1],
+            None,
+            ["red"],
+            ["act"],
+            ["mod"],
+            ["auth"],
+            ["<module-42>"],
+            ["42>"],
+            ["<"],
+            ["ule-"],
+        ):
+            with pytest.raises(BoundaryError, match="banned_substrings"):
+                parse_stealth_vocabulary({"banned_substrings": value})
+
+    def test_literal_overlap_preserves_utf8_and_second_pass(self, tmp_path):
+        directory = tmp_path / ".booley_project"
+        directory.mkdir()
+        (directory / "booley.toml").write_text(
+            '[stealth]\nbanned_words = []\nbanned_substrings = ["quokka", "okkafi", "a+b"]\n'
+        )
+        original = "é myquokkafile_QuokkaRunner a+b aab Ω"
+        expected = "é myredactedle_redactedRunner redacted aab Ω"
+        assert redact_banned(original, tmp_path).encode() == expected.encode()
+        assert redact_banned(expected, tmp_path) == expected
+
+    def test_matching_contract(self):
+        from booley.commit_policy.policy import StealthPolicy
+
+        policy = StealthPolicy(
+            True,
+            ("agent", "cursor", "per review findings", "booley", "anthropic", "claude"),
+            None,
+            False,
+            (),
+        )
+        for text in ("axi_agent", "XMLAgent", "reAgent", "Agent4", "éagentΩ"):
+            assert "agent" in policy.find_banned(text)
+        assert (
+            policy.find_banned("reagent precursor per-review-findings per  review findings") == []
+        )
+        assert policy.find_banned("per review findings") == ["per review findings"]
+        assert policy.find_banned("philanthropic Claudette myBOOLEYfile") == [
+            "booley",
+            "anthropic",
+            "claude",
+        ]
+        assert "cursor" in policy.find_banned("preCursor")
+
+    def test_cache_key_separates_tiers(self):
+        from booley.commit_policy.policy import StealthPolicy
+
+        token = StealthPolicy(True, ("quokka",), None, False, ())
+        substring = StealthPolicy(True, ("quokka",), None, False, (), ("quokka",))
+        assert token.find_banned("myquokkafile") == []
+        assert substring.find_banned("myquokkafile") == ["quokka"]
+
+    def test_source_disabled_ignores_new_tier(self, tmp_path):
+        from booley.commit_policy.policy import StealthPolicy, stealth_policy
+
+        (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+        directory = tmp_path / ".booley_project"
+        directory.mkdir()
+        (directory / "booley.toml").write_text('[stealth]\nbanned_substrings = ["red"]\n')
+        assert stealth_policy(tmp_path) == StealthPolicy(False, (), None, False, ())
+
+
+def test_token_ascii_edges_and_overlapping_repeated_literal(tmp_path):
+    from booley.commit_policy.policy import StealthPolicy
+
+    assert StealthPolicy(True, ("agent",), None, False, ()).find_banned("\u212aagent\u0131") == [
+        "agent"
+    ]
+    directory = tmp_path / ".booley_project"
+    directory.mkdir()
+    (directory / "booley.toml").write_text(
+        '[stealth]\nbanned_words = []\nbanned_substrings = ["aba"]\n'
+    )
+    assert redact_banned("é ababa Ω", tmp_path) == "é redacted Ω"
+
+
+def test_all_identity_overrides_and_placeholder_unicode_equivalence():
+    import pytest
+
+    from booley.commit_policy.policy import StealthPolicy, parse_stealth_vocabulary
+    from booley.core.boundary import BoundaryError
+
+    identities = (
+        "booley",
+        "claude",
+        "anthropic",
+        "codex",
+        "openai",
+        "chatgpt",
+        "copilot",
+        "gemini",
+    )
+    union, substrings = parse_stealth_vocabulary({"banned_words": list(identities)})
+    direct = StealthPolicy(True, identities, None, False, ())
+    loaded = StealthPolicy(True, union, None, False, (), substrings)
+    for term in identities:
+        text = "my" + term.upper() + "file"
+        assert direct.find_banned(text) == loaded.find_banned(text) == [term]
+    with pytest.raises(BoundaryError, match="reserved"):
+        parse_stealth_vocabulary({"banned_substrings": ["\u0131"]})
