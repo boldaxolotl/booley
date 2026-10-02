@@ -29,6 +29,7 @@ from booley.core.boundary import (
     require_list,
     require_str_value,
 )
+from booley.flows.sim.build_session import CacheDecision
 from booley.flows.sim.campaign_durability import (
     durable_create,
     durable_directory,
@@ -522,8 +523,12 @@ class CampaignStore:
                 "Build Result variant disagrees with Simulation Attempt"
             )
         build_root, build_attempt = self._load_result_build_attempt(build_path, build_document)
-        for reference in cast(tuple[Mapping[str, object], ...], build_document["evidence"]):
+        evidence = cast(tuple[Mapping[str, object], ...], build_document["evidence"])
+        for reference in evidence:
             self._authenticate_reference(build_root, reference)
+        if any(item["kind"] == "simulation_build_execution" for item in evidence):
+            # Private builds record it too; older private results carry none.
+            _load_build_execution(build_root, build_document)
         _validate_result_build_attempt(build_attempt, build_document, simulation, attempt)
         bundle = self._load_result_bundle(
             build_root, build_document, build_reference, simulation, attempt, build_attempt
@@ -1078,7 +1083,7 @@ def _validate_build_values(build: Mapping[str, object]) -> None:
     except BoundaryError as exc:
         raise SimulationCampaignIntegrityError("normalized build measurement is invalid") from exc
     if (
-        build["ran"] is not True
+        not (build["ran"] is True or _is_recorded_reuse_hit(build))
         or build["verdict"] != "pass"
         or build["failure_kind"] is not None
         or build["returncode"] != 0
@@ -1088,6 +1093,19 @@ def _validate_build_values(build: Mapping[str, object]) -> None:
         )
     ):
         raise SimulationCampaignIntegrityError("normalized build evidence is not successful")
+
+
+def _is_recorded_reuse_hit(build: Mapping[str, object]) -> bool:
+    """Whether a build record says a retained image served it (``ran`` false, ``hit``).
+
+    The store checks only the recorded decision; the engine verified the image.
+    """
+    decision = build["cache_decision"]
+    return (
+        build["ran"] is False
+        and isinstance(decision, str)
+        and decision.startswith(f"{CacheDecision.HIT};")
+    )
 
 
 def _validate_result_attempt_binding(attempt: SimulationAttempt, result: SimulationResult) -> None:

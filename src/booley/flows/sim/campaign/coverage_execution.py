@@ -341,7 +341,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         declarations = cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"])
         artifacts = _capture_private_image(paths, source_root, directory, declarations)
         result, bundle = _publish_ready_build_result(
-            request, directory, attempt, artifacts, elapsed
+            request, directory, attempt, artifacts, None, elapsed
         )
         snapshot_root = request.attempt_directory / "snapshot"
         snapshot = _create_snapshot(request, directory, result, bundle, snapshot_root)
