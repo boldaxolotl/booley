@@ -67,7 +67,10 @@ def test_status_precedence_and_exit_contract():
     assert readiness.exit_code(readiness.Status.BLOCKED) == 1
 
 
-def test_verification_commands_are_stable(tmp_path):
+def test_verification_commands_are_stable(tmp_path, monkeypatch):
+    monkeypatch.setattr(readiness.sys, "platform", "linux")
+    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path / "cache" / "agent-tools")
+    python = str(tmp_path / "bin/python")
     commands = readiness._verification_commands(tmp_path / "bin/python", tmp_path)
     assert [command.id for command in commands] == [
         "ruff.agent-gate",
@@ -75,16 +78,38 @@ def test_verification_commands_are_stable(tmp_path):
         "ruff.ci-format",
         "pytest.broad",
     ]
-    assert commands[0].argv == (
-        str(tmp_path / "bin/python"),
-        "-m",
-        "ruff",
-        "check",
-        "src/",
-        "tests/",
-    )
+    assert commands[0].argv == (python, "-m", "ruff", "check", "src/", "tests/")
     assert commands[0].required_at == "before-commit"
+    assert commands[-1].argv == (
+        python,
+        "-m",
+        "pytest",
+        "tests/",
+        "-n",
+        "auto",
+        "--maxprocesses=8",
+        "--dist=loadscope",
+        f"--basetemp={readiness.pytest_basetemp(tmp_path)}",
+    )
     assert commands[-1].required_at == "optional-broad-verification"
+
+
+def test_broad_pytest_keeps_default_basetemp_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(readiness.sys, "platform", "win32")
+    commands = readiness._verification_commands(tmp_path / "python.exe", tmp_path)
+    assert commands[-1].argv[-4:] == ("-n", "auto", "--maxprocesses=8", "--dist=loadscope")
+
+
+def test_pytest_basetemp_is_per_checkout_and_outside_it(tmp_path, monkeypatch):
+    cache = tmp_path / "cache" / "agent-tools"
+    monkeypatch.setattr(readiness, "agent_tools_root", lambda: cache)
+    first = readiness.pytest_basetemp(tmp_path / "first")
+    second = readiness.pytest_basetemp(tmp_path / "second")
+    assert first != second
+    assert first.parent == cache
+    assert first.name.startswith("pytest-basetemp-")
+    assert first == readiness.pytest_basetemp(tmp_path / "first")
+    assert not first.is_relative_to(tmp_path / "first")
 
 
 def test_project_runner_pins_match_the_readiness_contract():
