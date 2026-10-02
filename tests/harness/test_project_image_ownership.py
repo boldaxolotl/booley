@@ -367,3 +367,138 @@ def test_external_node_preserves_layout_parent_provenance(tmp_path):
     assert node.logical_selection_fingerprint == "logical-selection"
     assert node.runtime_base_contract == "runtime-contract"
     assert node.standard_substrate_contract == "substrate-contract"
+
+
+class _PreservingDependencyBuilder(TransactionBuilder):
+    def __init__(self, root, docker):
+        super().__init__(docker)
+        self.root = root
+
+    def prepare(self, node, **kwargs):
+        from booley.harness.image_lifecycle import _IncrementalBuildAdapter
+
+        directory = self.root / ".booley_project/docker"
+        before = (directory / "requirements.txt").read_bytes()
+        adapter = _IncrementalBuildAdapter(self.root, self.docker, verbose=False)
+        adapter._materialize_managed_project_recipe(node)
+        if node.role in {
+            lifecycle.ImageRole.PROJECT_SUBSTRATE,
+            lifecycle.ImageRole.PROJECT_OVERLAY,
+        }:
+            with adapter._role_context(node, directory) as (_, context):
+                assert (context / "requirements.txt").read_bytes() == before
+            _, contexts, _ = adapter._role_build_inputs(
+                None, node, None, kwargs["parent_reference"]
+            )
+            assert contexts == (
+                (
+                    node.manual_parent or lifecycle.project_image.MANAGED_PROJECT_PARENT,
+                    f"docker-image://{kwargs['parent_reference']}",
+                ),
+            )
+        return super().prepare(node, **kwargs)
+
+
+@pytest.mark.parametrize("keep", [False, True])
+@pytest.mark.parametrize("legacy_recipe", [False, True])
+@pytest.mark.parametrize("image", [None, "booley-sandbox-riscv"])
+def test_lone_user_requirements_build_and_remain_current(
+    tmp_path, monkeypatch, keep, legacy_recipe, image
+):
+    root = _project(tmp_path, image)
+    docker = FakeDocker({})
+    _bootstrap_base(monkeypatch, docker)
+    directory = root / ".booley_project/docker"
+    directory.mkdir()
+    requirements = directory / "requirements.txt"
+    body = b"# user dependencies\r\nrequests==2.32.0\r\n"
+    if keep:
+        body += b"# booley:keep\r\n"
+    requirements.write_bytes(body)
+    recipe = directory / "Dockerfile"
+    if legacy_recipe:
+        lifecycle.project_image.write_managed_dockerfile(directory)
+    before_recipe = recipe.read_bytes() if recipe.exists() else None
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    assert planned.nodes[-2].role is lifecycle.ImageRole.PROJECT_SUBSTRATE
+    assert lifecycle.planned_result(planned, docker).status is lifecycle.Status.STALE
+    assert (recipe.read_bytes() if recipe.exists() else None) == before_recipe
+    assert requirements.read_bytes() == body
+
+    builder = _PreservingDependencyBuilder(root, docker)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=builder)
+    result = lifecycle.commit(prepared, docker=docker)
+    assert result.selected_reference == project_image_name(root)
+    assert requirements.read_bytes() == body
+    assert recipe.is_file()
+    dependency = prepared.candidates[-2]
+    wheel = prepared.candidates[-1]
+    assert dependency.parent_artifact == prepared.candidates[-3].image_id
+    assert wheel.parent_artifact == dependency.image_id
+    repeated = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    assert lifecycle.planned_result(repeated, docker).status is lifecycle.Status.CURRENT
+    assert all(step.action is lifecycle.PlanAction.REUSE for step in repeated.steps)
+
+
+def test_kept_manual_recipe_and_sibling_survive_convergence(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _bootstrap_base(monkeypatch, docker)
+    directory = root / ".booley_project/docker"
+    directory.mkdir()
+    recipe = directory / "Dockerfile"
+    recipe_body = b"# booley:keep\nFROM booley-sandbox\nCOPY requirements.txt /tmp/deps\n"
+    recipe.write_bytes(recipe_body)
+    requirements = directory / "requirements.txt"
+    requirements_body = b"# booley:keep\nrequests==2.32.0\n"
+    requirements.write_bytes(requirements_body)
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    assert planned.nodes[-1].role is lifecycle.ImageRole.PROJECT_OVERLAY
+    prepared = lifecycle.prepare(
+        planned, docker=docker, builder=_PreservingDependencyBuilder(root, docker)
+    )
+    lifecycle.commit(prepared, docker=docker)
+    assert recipe.read_bytes() == recipe_body
+    assert requirements.read_bytes() == requirements_body
+    assert prepared.candidates[-1].parent_artifact == prepared.candidates[-2].image_id
+    repeated = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    assert lifecycle.planned_result(repeated, docker).status is lifecycle.Status.CURRENT
+
+
+def test_release_overlay_preserves_lone_user_requirements(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(
+        lifecycle.project_image, "project_data_alias_capable", lambda _image: False
+    )
+    release = lifecycle._complete_release_node(
+        lifecycle.BASE_IMAGE, lifecycle._expected_image_build_contracts()
+    )
+    labels = lifecycle._prepared_provenance(release, None)
+    labels.update(
+        {
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST,
+            lifecycle.LABEL_PARENT_ARTIFACT: "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:"
+            + "a" * 64,
+            lifecycle.LABEL_WHEEL_SHA256: "f" * 64,
+        }
+    )
+    docker.images[lifecycle.BASE_IMAGE] = ("sha256:release", labels)
+    directory = root / ".booley_project/docker"
+    directory.mkdir()
+    requirements = directory / "requirements.txt"
+    body = b"# booley:keep\r\nrequests==2.32.0\r\n"
+    requirements.write_bytes(body)
+    scope = lifecycle.ProjectImageScope(root)
+    policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL
+    planned = lifecycle.plan(scope, docker=docker, artifact_policy=policy)
+    assert not (directory / "Dockerfile").exists()
+    prepared = lifecycle.prepare(
+        planned, docker=docker, builder=_PreservingDependencyBuilder(root, docker)
+    )
+    lifecycle.commit(prepared, docker=docker)
+    assert requirements.read_bytes() == body
+    assert prepared.candidates[-1].parent_artifact == "sha256:release"
+    repeated = lifecycle.plan(scope, docker=docker, artifact_policy=policy)
+    assert lifecycle.planned_result(repeated, docker).status is lifecycle.Status.CURRENT

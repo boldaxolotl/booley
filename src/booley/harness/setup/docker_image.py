@@ -664,7 +664,6 @@ def _docker_local_build(
     if inputs is None:
         return
     dockerfile, base_dockerfile, booley_root = inputs
-
     if fingerprint is None:
         fingerprint = _image_build_fingerprint(booley_root)
     try:

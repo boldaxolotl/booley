@@ -6,12 +6,20 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from uuid import uuid4
 
+from booley.core.boundary import BoundaryError, is_str_list, require_dict, require_str_value
 from booley.runtime.docker_build import run_docker_build
-from booley.runtime.docker_capacity import DockerBuildPlan, _plan_from_file
+from booley.runtime.docker_capacity import (
+    BuildEstimateClass,
+    DockerBuildPlan,
+    DockerBuildRequest,
+    _plan_from_file,
+)
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.image_lifecycle import HostImageScope, _prepared_provenance, _source_graph_base
 from booley.runtime.image_provenance import LABEL_RUNTIME_BASE_CONTRACT
@@ -21,19 +29,50 @@ REFERENCE = "booley-runtime-base:local"
 
 
 def _inspect(reference: str) -> dict | None:
-    result = subprocess.run(
-        ["docker", "image", "inspect", reference],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", reference],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"cannot inspect Bootstrap image {reference!r}: {exc}") from exc
     if result.returncode:
-        return None
-    rows = json.loads(result.stdout)
+        detail = (result.stderr or result.stdout).strip()
+        if "no such image" in detail.lower():
+            return None
+        raise RuntimeError(
+            f"cannot inspect Bootstrap image {reference!r}: "
+            f"{detail or f'Docker exited {result.returncode}'}"
+        )
+    try:
+        rows = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid Bootstrap image metadata for {reference!r}: {exc}") from exc
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        raise RuntimeError(f"cannot inspect Bootstrap image {reference!r}")
-    return rows[0]
+        raise RuntimeError(
+            f"invalid Bootstrap image metadata for {reference!r}: expected one image"
+        )
+    return _validated_metadata(rows[0], reference)
+
+
+def _validated_metadata(metadata: dict, reference: str) -> dict:
+    try:
+        require_str_value(metadata.get("Id"), field="Id")
+        config = require_dict(metadata.get("Config"), field="Config")
+        raw_labels = config.get("Labels")
+        labels = require_dict({} if raw_labels is None else raw_labels, field="Config.Labels")
+        for key, value in labels.items():
+            require_str_value(key, field="label name")
+            require_str_value(value, field=f"label {key!r}", allow_empty=True)
+        rootfs = require_dict(metadata.get("RootFS"), field="RootFS")
+        if not is_str_list(rootfs.get("Layers")):
+            raise BoundaryError("RootFS.Layers must be a list of strings")
+    except BoundaryError as exc:
+        raise RuntimeError(f"invalid Bootstrap image metadata for {reference!r}: {exc}") from exc
+    return {**metadata, "Config": {**config, "Labels": labels}}
 
 
 def _labels(root: Path) -> dict[str, str]:
@@ -76,28 +115,82 @@ def _upgrade(root: Path, installed: dict, plan: DockerBuildPlan | None) -> str:
         for key, value in labels.items()
     ):
         return image_id
-    candidate = f"booley-bootstrap-base-{os.getpid()}:candidate"
+    transaction = f"booley-bootstrap-base-{os.getpid()}-{uuid4().hex}"
+    candidate, parent = f"{transaction}:candidate", f"{transaction}:parent"
+    migration_plan = DockerBuildPlan(
+        (
+            DockerBuildRequest(REFERENCE, candidate, BuildEstimateClass.THIN_OVERLAY),
+            *(
+                (request for request in plan.requests if request.output_tag != REFERENCE)
+                if plan
+                else ()
+            ),
+        )
+    )
     try:
+        _tag(image_id, parent)
+        pinned = _inspect(parent)
+        if pinned is None or pinned["Id"] != image_id:
+            raise RuntimeError("Bootstrap metadata migration parent alias changed")
         with tempfile.TemporaryDirectory(prefix="booley-base-metadata-") as directory:
             recipe = Path(directory) / "Dockerfile"
-            recipe.write_text(f"FROM {image_id}\n", encoding="utf-8")
-            if not _build(root, recipe, candidate, plan):
+            recipe.write_text(f"FROM {parent}\n", encoding="utf-8")
+            if not _build(root, recipe, candidate, migration_plan):
                 raise RuntimeError("Bootstrap metadata migration failed")
-        changed = _inspect(candidate)
-        layers = installed.get("RootFS", {}).get("Layers")
-        if changed is None or not layers or changed.get("RootFS", {}).get("Layers") != layers:
-            raise RuntimeError("Bootstrap metadata migration changed filesystem layers")
-        if any(
-            changed.get("Config", {}).get("Labels", {}).get(key) != value
-            for key, value in labels.items()
-        ):
-            raise RuntimeError("Bootstrap metadata migration did not preserve expected provenance")
-        subprocess.run(["docker", "tag", changed["Id"], REFERENCE], check=True, timeout=30)
+        changed = _verified_upgrade(installed, candidate, labels)
+        current = _inspect(REFERENCE)
+        if current is None or current["Id"] != image_id:
+            raise RuntimeError("Bootstrap runtime-base identity changed before migration adoption")
+        _tag(changed["Id"], REFERENCE)
         return changed["Id"]
     finally:
+        _cleanup_migration((candidate, parent), sys.exception())
+
+
+def _verified_upgrade(installed: dict, candidate: str, labels: dict[str, str]) -> dict:
+    changed = _inspect(candidate)
+    layers = installed.get("RootFS", {}).get("Layers")
+    if changed is None or not layers or changed.get("RootFS", {}).get("Layers") != layers:
+        raise RuntimeError("Bootstrap metadata migration changed filesystem layers")
+    if any(changed.get("Config", {}).get("Labels", {}).get(k) != v for k, v in labels.items()):
+        raise RuntimeError("Bootstrap metadata migration did not preserve expected provenance")
+    return changed
+
+
+def _tag(source: str, target: str) -> None:
+    try:
         subprocess.run(
-            ["docker", "image", "rm", candidate], capture_output=True, check=False, timeout=30
+            ["docker", "tag", source, target],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
         )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"cannot tag Bootstrap image {source!r} as {target!r}: {exc}") from exc
+
+
+def _cleanup_migration(references: tuple[str, ...], primary: BaseException | None) -> None:
+    failures = []
+    for reference in references:
+        try:
+            result = subprocess.run(
+                ["docker", "image", "rm", reference],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            if result.returncode and "no such image" not in (result.stderr or "").lower():
+                failures.append(f"{reference}: {result.stderr or result.returncode}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"{reference}: {exc}")
+    if failures:
+        message = "Bootstrap migration cleanup failed: " + "; ".join(failures)
+        if primary is not None:
+            primary.add_note(message)
+        else:
+            raise RuntimeError(message)
 
 
 def acquire(
@@ -144,11 +237,20 @@ def main() -> int:
     parser.add_argument("--plan-file", type=Path)
     parser.add_argument("--current-index", type=int, default=0)
     args = parser.parse_args()
-    plan = _plan_from_file(args.plan_file, args.current_index)[1] if args.plan_file else None
-    with host_lifecycle_lock("host runtime-base maintenance"):
-        image = acquire(
-            args.repo.resolve(), scope=HostImageScope(), rebuild=args.refresh, capacity_plan=plan
-        )
+    try:
+        plan = _plan_from_file(args.plan_file, args.current_index)[1] if args.plan_file else None
+        with host_lifecycle_lock("host runtime-base maintenance"):
+            image = acquire(
+                args.repo.resolve(),
+                scope=HostImageScope(),
+                rebuild=args.refresh,
+                capacity_plan=plan,
+            )
+    except (RuntimeError, OSError, ValueError) as exc:
+        print(f"Bootstrap runtime-base acquisition failed: {exc}", file=sys.stderr)
+        for note in getattr(exc, "__notes__", ()):
+            print(note, file=sys.stderr)
+        return 2
     return 0 if image else 2
 
 

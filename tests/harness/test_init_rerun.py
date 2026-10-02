@@ -748,3 +748,25 @@ class TestWindowsProjectDataLineEndings:
         assert "refusing to normalize" not in capsys.readouterr().out
         assert (project_dir / "booley.toml").read_bytes().endswith(_AGENT_TABLE)
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
+
+
+@pytest.mark.parametrize("stale_sessions", [[], ["booley-session-old"]])
+def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys, stale_sessions):
+    image = pi.project_image_name(repo)
+    changed = LifecycleResult(
+        selected_reference=image,
+        selected_id="sha256:new-image",
+        status=ImageLifecycleStatus.CHANGED,
+        changed_images=(image,),
+    )
+    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: changed)
+    monkeypatch.setattr(sr, "sessions_on_stale_image", lambda root, selected: stale_sessions)
+
+    assert init_cmd._step_image_lifecycle(InitContext(project_root=repo)) is changed
+
+    output = capsys.readouterr().out
+    if stale_sessions:
+        assert "booley-session-old" in output
+        assert "booley session down && booley session up" in output
+    else:
+        assert "booley session down" not in output

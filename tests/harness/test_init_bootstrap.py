@@ -171,7 +171,7 @@ def test_init_force_observes_host_bootstrap_without_refresh(
     assert observed == [(Intent.CHECK, {"verbose": False})]
 
 
-def test_init_without_a_usable_bootstrap_base_keeps_legacy_project_reconciliation(
+def test_init_without_a_usable_bootstrap_base_defers_to_project_planner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     expected = SimpleNamespace()

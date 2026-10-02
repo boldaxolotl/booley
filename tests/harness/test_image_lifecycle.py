@@ -1089,17 +1089,9 @@ def test_incremental_adapter_release_pull_and_project_recipe_paths(
 
     project = _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_SUBSTRATE)
     monkeypatch.setattr(harness_lifecycle, "resolve_checkout_project_dir", lambda _root: tmp_path)
-    monkeypatch.setattr(
-        harness_lifecycle.runtime_lifecycle, "_project_requirements_body", lambda _root: "req"
-    )
-    written: list[tuple[Path, str]] = []
-    monkeypatch.setattr(
-        harness_lifecycle.project_image,
-        "write_project_image_files",
-        lambda path, body, **_kwargs: written.append((path, body)),
-    )
+    project = replace(project, generated_files=(("Dockerfile", "generated recipe"),))
     adapter._materialize_managed_project_recipe(project)
-    assert written == [(tmp_path / "docker", "req")]
+    assert (tmp_path / "docker/Dockerfile").read_text() == "generated recipe"
 
 
 def test_incremental_adapter_handles_noop_build_and_unsupported_role(

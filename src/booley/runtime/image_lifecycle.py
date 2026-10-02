@@ -512,11 +512,26 @@ def _project_requirements_body(project_root: Path) -> str | None:
             "configured sandbox pip requirements are missing: " + ", ".join(missing)
         )
     if not requirements:
-        return None
+        return _user_project_requirements(project_root)
     body, kept, _skipped, _dropped = project_image.consolidated_requirements(
         project_root, requirements
     )
     return body if kept else None
+
+
+def _user_project_requirements(project_root: Path) -> str | None:
+    try:
+        requirements = _direct_project_dir(project_root) / "docker" / "requirements.txt"
+    except FileNotFoundError:
+        return None
+    if not requirements.is_file() or project_image.is_managed_generated_file(requirements):
+        return None
+    try:
+        return requirements.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ImageLifecycleError(
+            f"cannot read Project requirements {requirements}: {exc}"
+        ) from exc
 
 
 def _selected_reference(project_root: Path) -> str:
@@ -541,9 +556,7 @@ def _manual_parent(project_root: Path) -> str | None:
         return None
     if not recipe.is_file():
         return None
-    if project_image.is_managed_generated_file(recipe) and project_image.is_managed_generated_file(
-        recipe.with_name("requirements.txt")
-    ):
+    if project_image.is_managed_generated_file(recipe):
         return None
     observed = project_image.dockerfile_parent_image(recipe)
     normalized = observed or ""
@@ -583,9 +596,7 @@ def _project_recipe_fingerprint(
     dockerfile = docker_dir / "Dockerfile"
     requirements = docker_dir / "requirements.txt"
     overrides = None
-    managed_recipe = project_image.is_managed_generated_file(
-        dockerfile
-    ) and project_image.is_managed_generated_file(requirements)
+    managed_recipe = project_image.is_managed_generated_file(dockerfile)
     if requirements_body is None and managed_recipe and dockerfile.is_file():
         return hashlib.sha256(b"<no-managed-project-image>").hexdigest()
     if requirements_body is not None and managed_recipe:
@@ -593,10 +604,9 @@ def _project_recipe_fingerprint(
             requirements_body,
             parent_image=parent_image,
         )
-        overrides = {
-            "Dockerfile": dockerfile_body.encode(),
-            "requirements.txt": requirements_content.encode(),
-        }
+        overrides = {"Dockerfile": dockerfile_body.encode()}
+        if project_image.is_managed_generated_file(requirements):
+            overrides["requirements.txt"] = requirements_content.encode()
     return resolve_build_context_fingerprint(docker_dir, overrides)
 
 
@@ -803,26 +813,23 @@ def _source_graph_project(project_root: Path, selected: str, substrate: ImageNod
     generated_recipe, requirements_content = project_image.managed_project_image_files(
         requirements_body or "", parent_image=project_image.MANAGED_PROJECT_PARENT
     )
+    files = (("Dockerfile", generated_recipe),)
+    if _user_project_requirements(project_root) is None:
+        files = (*files, ("requirements.txt", requirements_content))
     node = _graph_node(
         reference=f"{selected}-substrate",
         role=ImageRole.PROJECT_SUBSTRATE,
         recipe=dockerfile,
         effective_inputs=resolve_build_context_fingerprint(
             dockerfile.parent,
-            {
-                "Dockerfile": generated_recipe.encode(),
-                "requirements.txt": requirements_content.encode(),
-            },
+            {name: body.encode() for name, body in files},
         ),
         parent=substrate,
         recipe_fingerprint=hashlib.sha256(generated_recipe.encode()).hexdigest(),
     )
     return replace(
         node,
-        generated_files=(
-            ("Dockerfile", generated_recipe),
-            ("requirements.txt", requirements_content),
-        ),
+        generated_files=files,
     )
 
 
@@ -910,6 +917,9 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
     generated_recipe, requirements_content = project_image.managed_project_image_files(
         requirements_body, parent_image=project_image.MANAGED_PROJECT_PARENT
     )
+    files = (("Dockerfile", generated_recipe),)
+    if _user_project_requirements(project_root) is None:
+        files = (*files, ("requirements.txt", requirements_content))
     recipe = docker_data_dir() / "Dockerfile.project-overlay"
     node = _graph_node(
         reference=selected,
@@ -927,10 +937,7 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
 
     return replace(
         node,
-        generated_files=(
-            ("Dockerfile", generated_recipe),
-            ("requirements.txt", requirements_content),
-        ),
+        generated_files=files,
         payload=parent.payload,
         runtime_base_contract=parent.runtime_base_contract,
         standard_substrate_contract=parent.standard_substrate_contract,

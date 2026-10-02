@@ -379,17 +379,12 @@ class _IncrementalBuildAdapter:
         if node.manual_parent is not None:
             return
         root = resolve_checkout_project_dir(self.project_root)
-        if not all(
-            project_image.is_managed_generated_file(root / "docker" / name)
-            for name in ("Dockerfile", "requirements.txt")
-        ):
-            return
-        body = runtime_lifecycle._project_requirements_body(self.project_root)
-        project_image.write_project_image_files(
-            root / "docker",
-            body or "",
-            parent_image=project_image.MANAGED_PROJECT_PARENT,
-        )
+        docker_dir = root / "docker"
+        docker_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in node.generated_files:
+            target = docker_dir / name
+            if project_image.is_managed_generated_file(target):
+                target.write_text(body, encoding="utf-8")
 
     def _build_role(
         self,
