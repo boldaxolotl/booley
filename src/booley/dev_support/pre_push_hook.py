@@ -361,7 +361,7 @@ def _valid_ref_name(ref: str) -> bool:
 def _updates(text, inspection):
     updates = []
     for line in text.splitlines():
-        fields = line.split()
+        fields = line.rsplit(None, 3)
         if len(fields) != 4:
             raise InspectionError("malformed pre-push protocol")
         local_ref, local, remote_ref, old = fields

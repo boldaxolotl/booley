@@ -534,7 +534,7 @@ def _selective_import_error(blocked_module: str):
     return _import
 
 
-def test_default_inventory_is_exhaustively_audited():
+def test_default_inventory_is_exhaustively_audited() -> None:
     assert set(_DEFAULT_BANNED_PHRASES) == {
         "claude",
         "anthropic",
@@ -569,7 +569,7 @@ def test_default_inventory_is_exhaustively_audited():
         "upstream_repository = [",
     ],
 )
-def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path, text):
+def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path: Path, text: str) -> None:
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\n" + text)
@@ -577,7 +577,7 @@ def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path, text):
         validate_push_configuration(tmp_path)
 
 
-def test_validate_push_configuration_absent_and_retired_immutable_pairs(tmp_path):
+def test_validate_push_configuration_absent_and_retired_immutable_pairs(tmp_path: Path) -> None:
     assert validate_push_configuration(tmp_path) is None
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
@@ -589,7 +589,9 @@ def test_validate_push_configuration_absent_and_retired_immutable_pairs(tmp_path
             validate_push_configuration(tmp_path)
 
 
-def test_validate_push_configuration_unreadable_selected_config_refuses(tmp_path, monkeypatch):
+def test_validate_push_configuration_unreadable_selected_config_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\n")
@@ -606,8 +608,8 @@ def test_validate_push_configuration_unreadable_selected_config_refuses(tmp_path
 
 
 def test_validate_push_configuration_source_owner_never_loads_project_config(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.commit_policy import policy
 
     monkeypatch.setattr(policy, "source_checkout_policy_owner", lambda root: True)
@@ -620,7 +622,9 @@ def test_validate_push_configuration_source_owner_never_loads_project_config(
 
 
 @pytest.mark.parametrize("target", ["missing.toml", "booley.toml"])
-def test_validate_push_configuration_broken_config_node_refuses(tmp_path, target):
+def test_validate_push_configuration_broken_config_node_refuses(
+    tmp_path: Path, target: str
+) -> None:
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     try:
@@ -631,7 +635,9 @@ def test_validate_push_configuration_broken_config_node_refuses(tmp_path, target
         validate_push_configuration(tmp_path)
 
 
-def test_validate_push_configuration_stat_error_refuses(tmp_path, monkeypatch):
+def test_validate_push_configuration_stat_error_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     original = Path.stat
@@ -649,7 +655,9 @@ def test_validate_push_configuration_stat_error_refuses(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "repository", ["http://example.test/repo", "git://example.test/repo", "ext::unsafe"]
 )
-def test_validate_push_configuration_unsafe_url_is_not_scp(tmp_path, repository):
+def test_validate_push_configuration_unsafe_url_is_not_scp(
+    tmp_path: Path, repository: str
+) -> None:
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     config.write_text(
@@ -659,7 +667,7 @@ def test_validate_push_configuration_unsafe_url_is_not_scp(tmp_path, repository)
         validate_push_configuration(tmp_path)
 
 
-def test_validate_push_configuration_refuses_file_scp_form(tmp_path):
+def test_validate_push_configuration_refuses_file_scp_form(tmp_path: Path) -> None:
     directory = tmp_path / ".booley_project"
     directory.mkdir()
     (directory / "booley.toml").write_text(

@@ -744,7 +744,9 @@ def test_archive_refuses_a_ticket_with_a_live_owner(tio):
         owner.wait(timeout=10)
 
 
-def test_history_policy_preserves_removed_terms_and_scrubs_retained_metadata(tmp_path):
+def test_history_policy_preserves_removed_terms_and_scrubs_retained_metadata(
+    tmp_path: Path,
+) -> None:
     root, _tio = _repository(tmp_path)
     _policy(root, "")
     ordinary = "fix(core): generated docker verification agent\n\nauto-review automated fix suggested fix\n"

@@ -62,7 +62,7 @@ def test_source_checkout_exemption_overrides_config() -> None:
     assert policy.stealth_policy(source_root) == StealthPolicy(False, (), None, False, ())
 
 
-def test_default_validation_preserves_ordinary_engineering_prose(tmp_path):
+def test_default_validation_preserves_ordinary_engineering_prose(tmp_path: Path) -> None:
     message = "fix(core): generated docker verification agent\n\nauto-review automated fix suggested fix\n"
     assert validate_message(message, project_root=tmp_path) == []
     _configured_project(tmp_path, 'banned_words = ["generated"]\n')

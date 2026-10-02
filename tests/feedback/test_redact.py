@@ -260,7 +260,7 @@ def test_apply_plan_on_an_empty_plan_is_a_no_op(tmp_path):
     assert apply_plan("untouched text", plan) == ("untouched text", {})
 
 
-def test_feedback_custom_generic_vocabulary_stays_independent(project):
+def test_feedback_custom_generic_vocabulary_stays_independent(project: Path) -> None:
     text = "generated docker verification agent"
     assert redact(text, project)[0] == text
     config = project / ".booley_project" / "booley.toml"

@@ -166,20 +166,15 @@ def test_missing_canonical_source_aborts_build(
 
 
 @pytest.mark.parametrize("minimum", [False, True], ids=["current", "minimum-2.37.2"])
-def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(tmp_path, minimum):
+def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(
+    tmp_path: Path, minimum: bool
+) -> None:
     env = _bundled_hook_environment(minimum)
     project = tmp_path / "project"
     project.mkdir()
 
-    def git(*args):
-        return subprocess.run(
-            ["git", "-C", str(project), *args],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        ).stdout.strip()
+    def git(*args: str) -> str:
+        return _bundled_git(project, env, *args)
 
     git("init", "-q", "-b", "main")
     git("config", "user.name", "Real Dev")
@@ -193,17 +188,8 @@ def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(tmp_pa
     bundle = managed / BUNDLE_NAME
     bundle.write_bytes(build_project_git_hook_bundle().content)
 
-    def push(sha):
-        return subprocess.run(
-            [sys.executable, "-I", "-S", str(bundle), "pre-push", "destination", str(destination)],
-            input=f"refs/heads/main {sha} refs/heads/main {'0' * 40}\n",
-            cwd=project,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
+    def push(sha: str) -> subprocess.CompletedProcess[str]:
+        return _bundled_push(project, bundle, destination, env, sha)
 
     result = push(base)
     assert result.returncode == 0, result.stderr
@@ -225,6 +211,32 @@ def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(tmp_pa
     )
     result = push(git("rev-parse", "HEAD"))
     assert result.returncode == 0, result.stderr
+
+
+def _bundled_git(project: Path, env: dict[str, str], *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(project), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout.strip()
+
+
+def _bundled_push(
+    project: Path, bundle: Path, destination: Path, env: dict[str, str], sha: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-I", "-S", str(bundle), "pre-push", "destination", str(destination)],
+        input=f"refs/heads/main {sha} refs/heads/main {'0' * 40}\n",
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
 
 
 def _bundled_hook_environment(minimum):

@@ -636,7 +636,9 @@ class TestVendoredStandaloneImport:
         assert "co-authored-by" in proc.stderr.lower()
 
 
-def test_default_staged_engineering_prose_is_allowed(tmp_path, monkeypatch):
+def test_default_staged_engineering_prose_is_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import subprocess
 
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)

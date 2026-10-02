@@ -634,7 +634,7 @@ def test_specialist_preserves_files_outside_its_selected_paths(monkeypatch):
     assert specialist._resolve_stageable_files(["selected.sv"]) == (["selected.sv"], [])
 
 
-def test_privacy_note_tracks_audited_default_vocabulary():
+def test_privacy_note_tracks_audited_default_vocabulary() -> None:
     note = Specialist.commit_msg_banned_phrase_note().lower()
     for term in (
         "claude",
