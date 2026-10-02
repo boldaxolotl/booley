@@ -74,6 +74,7 @@ from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
 from booley.ticket_board.review_records import ReviewInspection
 from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
+    TicketAncestryVerificationError,
     TicketBaseline,
     TicketBaselineError,
     validate_current_basis_refs,
@@ -396,6 +397,8 @@ def _find_checkout(project_root: Path, ticket_ref: str) -> Path | None:
 def _load_review_basis(tio: TicketIO, slug: str) -> TicketBaseline:
     try:
         return tio.load_basis(slug)
+    except TicketAncestryVerificationError as exc:
+        raise ReviewPrepError(str(exc)) from exc
     except TicketBaselineError as exc:
         raise ReviewPrepError(f"ticket '{slug}' has no valid Ticket baseline: {exc}") from exc
 
@@ -479,6 +482,8 @@ def _resolve_review_repositories(
 ) -> tuple[Path, str, ProjectReviewRepository | None, AcceptanceHeadDrift | None]:
     try:
         current_heads = validate_current_basis_refs(project_root, basis)
+    except TicketAncestryVerificationError as exc:
+        raise ReviewPrepError(str(exc)) from exc
     except TicketBaselineError as exc:
         raise ReviewPrepError(f"Ticket baseline refs are invalid: {exc}") from exc
     outer = basis.participant("outer")

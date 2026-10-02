@@ -262,7 +262,7 @@ def test_git_failures_report_repository_and_operation(
     with pytest.raises(completion.CompletionError, match="git rev-parse HEAD failed"):
         acceptance_impl._require_git(tmp_path, "rev-parse", "HEAD")
 
-    with pytest.raises(completion.CompletionError, match="could not compare Git history"):
+    with pytest.raises(completion.CompletionError, match="cannot verify ancestry"):
         acceptance_impl._is_ancestor(tmp_path, "a" * 40, "b" * 40)
 
     def unavailable_git(*_args, **_kwargs):

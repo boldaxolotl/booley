@@ -20,6 +20,7 @@ from booley.runtime.project_dir import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 from booley.ticket_board.ticket_repositories import paired_project_repository
 
 from .basis_publication import BasisPublicationError
@@ -531,6 +532,8 @@ def discard_basis_refresh(root: Path, slug: str) -> None:
         discard_generation_refs(repositories, slug, journal.generation)
         safe_rmtree(operation, protect_git_root=False)
         _journal_path(root, slug).unlink()
+    except TicketAncestryVerificationError:
+        raise
     except (OSError, RuntimeError, ValueError) as exc:
         raise BasisRefreshError(str(exc)) from exc
 
