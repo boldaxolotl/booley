@@ -2478,3 +2478,62 @@ class TestLintObservability:
         assert (report_dir / "lint_report.json").exists()  # stable latest
         assert (report_dir / "lint" / "1" / "lint_report.json").exists()
         assert (report_dir / "lint" / "2" / "lint_report.json").exists()
+
+
+@pytest.mark.parametrize(
+    "family,executable", [("verilator", "verilator_bin"), ("verible", "verible-verilog-lint")]
+)
+@pytest.mark.parametrize("rc", [0, 127])
+def test_lint_owned_loader_is_infrastructure(family, executable, rc):
+    from booley.flows.lint.flow import LintConfigResult, _classify_lint_failure
+
+    result = LintConfigResult(target="lint_default", returncode=rc)
+    _classify_lint_failure(
+        result, family, f"{executable}: error while loading shared libraries: libx.so: missing"
+    )
+    assert result.error_is_eda_tool_failure
+    assert "libx.so" in result.error
+
+
+def test_lint_silent_success_remains_clean():
+    from booley.flows.lint.flow import LintConfigResult, _classify_lint_failure
+
+    result = LintConfigResult(target="lint_default", returncode=0)
+    _classify_lint_failure(result, "verilator", "")
+    assert not result.error
+
+
+def test_lint_rc0_design_error_remains_design():
+    from booley.flows.lint.flow import LintConfigResult, _classify_lint_failure
+
+    result = LintConfigResult(target="lint_default", returncode=0)
+    _classify_lint_failure(result, "verilator", "%Error: dut.sv:7: syntax error")
+    assert "syntax error" in result.error
+    assert not result.error_is_eda_tool_failure
+
+
+@pytest.mark.parametrize("family", ["verilator", "verible"])
+def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
+    from types import SimpleNamespace
+
+    from booley.flows.lint.flow import _errored_verdict
+
+    executable = "verilator" if family == "verilator" else "verible-verilog-lint"
+    fake = tmp_path / executable
+    fake.write_text(
+        f'#!/bin/sh\necho "{executable}: error while loading shared libraries: libx.so: missing" >&2\nexit 0\n'
+    )
+    fake.chmod(0o755)
+    flow = LintFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    prepared = SimpleNamespace(
+        result=LintConfigResult(target="lite"),
+        command=[str(fake)],
+        resolved=SimpleNamespace(configured_eda_tool=family),
+        attempt_token="",
+    )
+    result = flow._run_lint_target(_target_handle("lite"), prepared=prepared)
+    exit_code, text = _errored_verdict([result])
+    assert exit_code == EXIT_ERROR
+    assert "RESULT: ERROR" in text
+    assert "libx.so" in result.error

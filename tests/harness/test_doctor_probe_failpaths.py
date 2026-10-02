@@ -499,3 +499,124 @@ class TestImageBakesVenueMarker:
         rec = _Rec()
         doctor._check_image_bakes_runtime_marker("docker", self._IMAGE, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_vivado_rc0_init_error_is_fail(monkeypatch, inside):
+    rec = _Rec()
+    runtime = SimpleNamespace(inside=inside, available=True, command=lambda argv: argv)
+    monkeypatch.setattr(doctor.shutil, "which", lambda binary: "/bin/" + binary)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv, 0, "ERROR: Tcl initialization failed: libncurses.so.5", ""
+        )
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    doctor._check_session_binary(
+        "fpga", "vivado", flow_runtime=runtime, _pass=rec.p, _skip=rec.s, _fail=rec.f
+    )
+    assert rec.fails()
+    assert "libncurses.so.5" in rec.fails()[0]
+    assert calls and calls[0][1]["timeout"] == 30
+
+
+@pytest.mark.parametrize("inside", [True, False])
+@pytest.mark.parametrize("mode", ["good", "missing", "stale", "nonzero"])
+def test_actual_vivado_batch_marker_and_owned_directory(tmp_path, monkeypatch, inside, mode):
+    import os
+
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    vivado = fake / "vivado"
+    vivado.write_text(
+        "#!/bin/sh\nmkdir .Xil\ntouch vivado_pid123.str\n"
+        + (
+            "echo BOOLEY_VIVADO_STARTUP_stale\n"
+            if mode == "stale"
+            else "exit 0\n"
+            if mode == "missing"
+            else 'sed -n "s/^puts //p" "$6"\n' + ("exit 1\n" if mode == "nonzero" else "exit 0\n")
+        )
+    )
+    vivado.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    rec = _Rec()
+    runtime = SimpleNamespace(inside=inside, available=True, command=lambda argv: argv)
+    doctor._check_session_binary(
+        "fpga", "vivado", flow_runtime=runtime, _pass=rec.p, _skip=rec.s, _fail=rec.f
+    )
+    assert ("pass" in rec.kinds()) is (mode == "good")
+    assert not (tmp_path / ".Xil").exists()
+    assert not (tmp_path / "vivado_pid123.str").exists()
+    assert set(tmp_path.iterdir()) == {fake}
+
+
+@pytest.mark.parametrize("returncode", [124, 137])
+def test_vivado_inner_timeout_is_distinct(monkeypatch, returncode):
+    rec = _Rec()
+    runtime = SimpleNamespace(inside=True, available=True, command=lambda argv: argv)
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, returncode, "", ""),
+    )
+    doctor._check_session_binary(
+        "fpga", "vivado", flow_runtime=runtime, _pass=rec.p, _skip=rec.s, _fail=rec.f
+    )
+    assert "within 27s" in rec.fails()[0]
+
+
+def test_vivado_outer_timeout_and_unavailable_runtime(monkeypatch):
+    rec = _Rec()
+
+    def timeout(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(doctor.subprocess, "run", timeout)
+    doctor._check_session_binary(
+        "fpga",
+        "vivado",
+        flow_runtime=SimpleNamespace(inside=True, available=True, command=lambda argv: argv),
+        _pass=rec.p,
+        _skip=rec.s,
+        _fail=rec.f,
+    )
+    assert "within 30s" in rec.fails()[0]
+    rec = _Rec()
+    doctor._check_session_binary(
+        "fpga",
+        "vivado",
+        flow_runtime=SimpleNamespace(inside=False, available=False),
+        _pass=rec.p,
+        _skip=rec.s,
+        _fail=rec.f,
+    )
+    assert rec.kinds() == {"skip"}
+
+
+def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch):
+    import os
+
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    pid_file = tmp_path / "child.pid"
+    vivado = fake / "vivado"
+    vivado.write_text(f'#!/bin/sh\nsleep 60 &\necho $! > "{pid_file}"\nwait\n')
+    vivado.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    argv = doctor._vivado_startup_command("BOOLEY_VIVADO_STARTUP_test")
+    assert "timeout --kill-after=2s 27s" in argv[-1]
+    assert "--foreground" not in argv[-1]
+    argv[-1] = argv[-1].replace("27s", "0.2s")
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
+    assert result.returncode == 124
+    pid = int(pid_file.read_text())
+    stat = Path(f"/proc/{pid}/stat")
+    assert not stat.exists() or stat.read_text().split()[2] == "Z"
+    assert set(tmp_path.iterdir()) == {fake, pid_file}

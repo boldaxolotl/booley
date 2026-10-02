@@ -148,6 +148,7 @@ def test_cache_hit_omits_unauthenticated_shared_flow_log(tmp_path: Path, state_f
             "load",
             return_value=CacheHit("fingerprint", "authenticated reports", {}),
         ),
+        patch.object(flow, "_route_evidence", return_value=(True, "")),
         patch.object(flow, "_metrics_from_parsed_reports", return_value=metrics),
     ):
         cached = flow._load_cached_metrics(
@@ -176,6 +177,7 @@ def test_numbered_log_publication_failure_does_not_skip_cache_store(
     with (
         patch.object(flow, "_prepare_fpga_command", return_value=prepared),
         patch.object(flow, "_execute_boundary", return_value=process),
+        patch.object(flow, "_route_evidence", return_value=(True, "")),
         patch.object(flow, "_collect_vivado_evidence", return_value="status: pass"),
         patch(
             "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
@@ -678,6 +680,7 @@ def test_negative_wns_fails_fpga_criterion(
             "_prepare_fpga_command",
             return_value=_PreparedFpgaCommand(["make", "-C", "x"], tmp_path, "", False),
         ),
+        patch.object(flow, "_route_evidence", return_value=(True, "")),
         patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed),
         patch.object(
             flow,
@@ -1397,7 +1400,7 @@ class TestFailureTailSurfacesStderr:
 
 class TestVivadoFailureClassification:
     def test_passing_route_ignores_incidental_missing_program_text(self) -> None:
-        metrics = FpgaMetrics(returncode=0, lut_count=10, ff_count=5)
+        metrics = FpgaMetrics(returncode=0, lut_count=10, ff_count=5, route_completed=True)
         process = SubprocessResult(
             returncode=0,
             stdout="/bin/sh: lsb_release: command not found\n",
@@ -1527,8 +1530,8 @@ class TestFailureCapture:
             (tmp_path / "reports" / "fpga_default.json").read_text(encoding="utf-8")
         )
         # infra_error stays the concise reason — the tail is NOT concatenated in.
-        assert report["infra_error"] == ("Vivado (edalize) did not reach route_design (exit 1).")
-        assert "no rule to make target" not in report["infra_error"]
+        assert "Vivado did not reach route_design" in report["infra_error"]
+        assert "no rule to make target" in report["infra_error"]
         # ...the bulky tail moved to failure_output.
         assert "no rule to make target" in report["metrics"]["failure_output"]
         assert "stderr tail" in report["metrics"]["failure_output"]
@@ -1548,7 +1551,7 @@ class TestFailureCapture:
         assert progress["completed_targets"] == ["default"]
         # The display/report text shows the concise reason and the separate
         # subprocess-output + log lines.
-        assert "did not reach route_design (exit 1)." in result.report_text
+        assert "did not reach route_design" in result.report_text
         assert "subprocess output:" in result.report_text
         assert "default: log:" in result.report_text
 
@@ -1691,3 +1694,149 @@ class TestArtifactDirs:
         for key, rel in flow._artifact_dirs(work_root).items():
             assert not rel.startswith("/"), f"{key} must not be absolute"
             assert (tmp_path / rel).is_dir(), f"{key} does not resolve"
+
+
+@pytest.mark.parametrize(
+    "diagnostic", ["", "ERROR: Tcl initialization failed: libncurses.so.5 unavailable"]
+)
+def test_rc0_startup_without_route_is_infrastructure(diagnostic):
+    metrics = FpgaMetrics(returncode=0)
+    proc = SubprocessResult(returncode=0, stdout=diagnostic)
+    FpgaImplFlow._apply_vivado_failure(FpgaImplFlow(), metrics, proc, "", diagnostic, "")
+    assert metrics.returncode == 2
+    assert "Vivado" in metrics.infra_error
+    assert diagnostic in metrics.infra_error
+
+
+def test_rc0_stderr_syntax_rejection_is_design():
+    diagnostic = "ERROR: [Synth 8-2715] syntax error near endmodule"
+    metrics = FpgaMetrics(returncode=0)
+    proc = SubprocessResult(returncode=0, stderr=diagnostic)
+    FpgaImplFlow._apply_vivado_failure(FpgaImplFlow(), metrics, proc, "", "", diagnostic)
+    assert metrics.returncode == 1
+    assert not metrics.infra_error
+
+
+@pytest.mark.parametrize(
+    "diagnostic,expected",
+    [
+        ("ERROR: Tcl initialization failed: libncurses.so.5 unavailable", 2),
+        ("", 2),
+        ("ERROR: [Synth 8-2715] syntax error near endmodule", 1),
+    ],
+)
+def test_fake_vivado_generated_command_startup(
+    tmp_path, state_file, monkeypatch, diagnostic, expected
+):
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    root = tmp_path / "generated"
+    root.mkdir()
+    fake = root / "vivado"
+    fake.write_text('#!/bin/sh\nprintf "%s\\n" "$FAKE_DIAGNOSTIC"\nexit 0\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(root) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("FAKE_DIAGNOSTIC", diagnostic)
+    from booley.flows import edam as edam_layer
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
+
+    edam = fpga_edam.build_fpga_edam(
+        name="probe",
+        toplevel="dut_top",
+        part="xc7a35tcpg236-1",
+        sv_files=[tmp_path / "rtl/top.sv"],
+        v_files=[],
+        include_dirs=[],
+        xdc_files=[tmp_path / "constraints/timing.xdc"],
+        defines=[],
+        vlogparams={},
+        workspace_root=tmp_path,
+        work_root=root,
+    )
+    edam_layer.configure("vivado", edam, root)
+    prepared = _PreparedFpgaCommand(fpga_edam.fpga_run_command(root, tmp_path), root, "", False)
+    monkeypatch.setattr(flow, "_prepare_fpga_command", lambda target: prepared)
+    result = flow._run()
+    assert result.exit_code == expected
+    report = json.loads((tmp_path / "reports/fpga_default.json").read_text())
+    assert report["implementation"]["status"]["completion"]["route"] is False
+    if expected == 2:
+        assert "Vivado" in report["infra_error"]
+        assert diagnostic in report["infra_error"]
+
+
+@pytest.mark.parametrize("decoy", [True, False])
+def test_route_witness_only_from_fresh_impl_runlog(tmp_path, state_file, decoy):
+    flow = _flow(tmp_path, state_file)
+    impl = tmp_path / "wr/dut.runs/impl_1"
+    impl.mkdir(parents=True)
+    name = "top_timing_summary_routed.rpt" if decoy else "runme.log"
+    (impl / name).write_text("route_design completed successfully\n")
+    completed, error = flow._route_evidence(tmp_path / "wr", min_mtime=time.time() - 1)
+    assert completed is not decoy
+    if not decoy:
+        assert "required report" in error
+    completed, _ = flow._route_evidence(tmp_path / "wr", min_mtime=time.time() + 10)
+    assert not completed
+
+
+@pytest.mark.parametrize(
+    "report", ["top_utilization_placed.rpt", "top_timing_summary_routed.rpt", "top_drc_routed.rpt"]
+)
+@pytest.mark.parametrize("state", ["missing", "empty", "stale"])
+def test_completed_route_missing_required_report_retains_route_fact(
+    tmp_path, state_file, monkeypatch, report, state
+):
+    from booley.flows.fpga.implementation_report import _run
+
+    flow = _flow(tmp_path, state_file)
+    root = tmp_path / "wr"
+    impl = root / "top.runs/impl_1"
+    impl.mkdir(parents=True)
+    for name in [
+        "runme.log",
+        "top_utilization_placed.rpt",
+        "top_timing_summary_routed.rpt",
+        "top_drc_routed.rpt",
+    ]:
+        (impl / name).write_text(
+            "route_design completed successfully" if name == "runme.log" else "data"
+        )
+    selected = impl / report
+    if state == "missing":
+        selected.unlink()
+    elif state == "empty":
+        selected.write_text("")
+    else:
+        os.utime(selected, (0, 0))
+    monkeypatch.setattr(
+        flow,
+        "_prepare_fpga_command",
+        lambda target: _PreparedFpgaCommand(["make"], root, "", False),
+    )
+    monkeypatch.setattr(
+        flow,
+        "_execute_boundary",
+        lambda argv, **kwargs: SubprocessResult(returncode=0, dispatched_unix=time.time() - 1),
+    )
+    metrics = flow._run_single_target("default")
+    assert metrics.returncode == 2
+    assert report.removeprefix("top") in metrics.infra_error
+    assert _run(metrics).completion["route"] is True
+
+
+@pytest.mark.parametrize(
+    "process",
+    [
+        SubprocessResult(returncode=137),
+        SubprocessResult(returncode=-9),
+        SubprocessResult(returncode=0, oom_kill_delta=1),
+        SubprocessResult(returncode=0, timed_out=True),
+    ],
+)
+def test_route_fact_does_not_hide_abnormal_termination(process):
+    metrics = FpgaMetrics(route_completed=True, returncode=0)
+    FpgaImplFlow._apply_vivado_failure(FpgaImplFlow(), metrics, process, "", "", "")
+    assert metrics.returncode == 2
+    assert metrics.infra_error
+    assert metrics.route_completed

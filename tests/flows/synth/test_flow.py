@@ -4483,3 +4483,43 @@ class TestIncompleteResourceResults:
         assert progress["completed_targets"] == ["asic_a"]
         assert progress["pending_targets"] == ["asic_b"]
         assert (invocation_dirs[-1] / "targets" / "asic_a.json").is_file()
+
+
+@pytest.mark.parametrize("executable", ["sv2v", "yosys", "openroad"])
+@pytest.mark.parametrize("returncode", [0, 127])
+def test_authenticated_synth_loader_is_infrastructure(tmp_path, executable, returncode):
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    metrics = SynthMetrics()
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=False,
+        attempt_token="0123456789abcdef0123456789abcdef",
+    )
+    diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
+    flow._apply_boundary_completion(
+        metrics, outcome, SubprocessResult(returncode=returncode, stderr=diagnostic), diagnostic
+    )
+    assert metrics.returncode == 2
+    assert "libx.so" in metrics.infra_error
+    assert not metrics.yosys_complete
+    assert not metrics.timing_complete
+
+
+def test_authenticated_synth_cannot_use_inline_metric_decoy(tmp_path):
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    text = "Chip area for module 'dut': 1000.0"
+    metrics = _parse_synth_output(text, 0.1)
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=False,
+        attempt_token="0123456789abcdef0123456789abcdef",
+    )
+    flow._apply_boundary_completion(
+        metrics, outcome, SubprocessResult(returncode=0, stdout=text), text
+    )
+    assert not metrics.yosys_complete
+    assert not metrics.structural_checks_complete

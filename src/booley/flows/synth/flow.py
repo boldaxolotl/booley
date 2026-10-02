@@ -1402,6 +1402,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             failure = classify_eda_failure(
                 replace(result, stdout=output, stderr=""),
                 expected_token=getattr(outcome, "attempt_token", None),
+                authenticated_build=bool(
+                    re.fullmatch(r"[0-9a-f]{32}", getattr(outcome, "attempt_token", "") or "")
+                ),
             )
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
@@ -1413,7 +1416,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.returncode = 1
             metrics.termination = "eda_tool_failure"
         legacy_inline = (
-            not outcome.yosys_complete
+            not getattr(outcome, "attempt_token", "")
+            and not outcome.yosys_complete
             and metrics.has_metrics
             and bool(result.stdout.strip())
             and "BOOLEY_STAGE:" not in result.stdout
@@ -1446,7 +1450,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """Apply authoritative final-check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
-            not outcome.yosys_complete
+            not getattr(outcome, "attempt_token", "")
+            and not outcome.yosys_complete
             and not structural.complete
             and metrics.has_metrics
             and bool(stdout.strip())

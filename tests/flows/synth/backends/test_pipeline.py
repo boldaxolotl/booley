@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -631,3 +632,120 @@ class TestSv2vRecipeSharesTheArgvBuilder:
         # And it still carries the pieces the transpile actually needs.
         assert "-DSYNTHESIS" in recipe
         assert recipe.endswith("-w sv2v_converted.v")
+
+
+@pytest.mark.parametrize("empty", ["stat_dut.txt", "check_dut.txt", "synth_dut.v"])
+def test_authenticated_empty_required_yosys_output_is_missing(tmp_path, empty):
+    plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+    for name in ["stat_dut.txt", "check_dut.txt", "synth_dut.v", "sv2v_converted.v"]:
+        (plan.build_dir / name).write_text("Found and reported 0 problems.\n")
+    (plan.build_dir / empty).write_text("")
+    outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
+    assert f"kind=missing_output stage=yosys subject={empty}" in outcome.text
+    assert not outcome.yosys_complete
+
+
+@pytest.mark.parametrize(
+    "subject,stage",
+    [
+        ("sv2v_converted.v", "sv2v"),
+        ("stat_dut.txt", "yosys"),
+        ("check_dut.txt", "yosys"),
+        ("synth_dut.v", "yosys"),
+        ("reports/timing/overall.rpt", "openroad"),
+        ("reports/timing/overall.csv.rpt", "openroad"),
+        ("openroad_dut.v", "openroad"),
+    ],
+)
+@pytest.mark.parametrize("state", ["missing", "stale", "empty"])
+def test_all_authenticated_required_artifacts(tmp_path, subject, stage, state):
+    plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+    names = [
+        "sv2v_converted.v",
+        "stat_dut.txt",
+        "check_dut.txt",
+        "synth_dut.v",
+        "reports/timing/overall.rpt",
+        "reports/timing/overall.csv.rpt",
+        "openroad_dut.v",
+    ]
+    for name in names:
+        path = plan.build_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("Found and reported 0 problems.\n")
+    path = plan.build_dir / subject
+    if state == "missing":
+        path.unlink()
+    elif state == "empty":
+        path.write_text("")
+    outcome = syn_make.boundary_output(plan, 0, is_stale=lambda p: state == "stale" and p == path)
+    if state == "empty" and subject.endswith(".csv.rpt"):
+        assert "kind=missing_output" not in outcome.text
+    else:
+        assert f"kind=missing_output stage={stage} subject={subject}" in outcome.text
+    assert outcome.yosys_complete is (stage != "yosys")
+
+
+@pytest.mark.parametrize("failing_stage", ["yosys", "openroad"])
+def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
+    tmp_path, monkeypatch, failing_stage
+):
+    from booley.flows.base import SubprocessResult
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.flows.synth.implementation_report import _run
+
+    liberty = tmp_path / "cells.lib"
+    liberty.write_text("library(cells) {}")
+    monkeypatch.setattr(
+        syn_make.openroad_timing,
+        "openroad_pdk_paths",
+        lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
+    )
+    spec = dataclasses.replace(
+        _spec(tmp_path, mode="physical" if failing_stage == "openroad" else "logical"),
+        liberty=liberty,
+        params={},
+    )
+    plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    scripts = {
+        "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
+        "yosys": "#!/bin/sh\nexit 0\n"
+        if failing_stage == "yosys"
+        else '#!/bin/sh\necho "Chip area for module dut: 1000.0" > stat_dut.txt\necho "Found and reported 0 problems." > check_dut.txt\necho "module dut; endmodule" > synth_dut.v\n',
+        "openroad": "#!/bin/sh\nexit 0\n",
+    }
+    for name, script in scripts.items():
+        path = fake_bin / name
+        path.write_text(script)
+        path.chmod(0o755)
+    started = time.time()
+    result = subprocess.run(
+        ["make", "-C", str(plan.build_dir)],
+        env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    assert f"kind=missing_output stage={failing_stage}" in result.stdout
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "dut", "--work-dir", str(tmp_path)])
+    metrics, _ = flow._interpret_boundary_run(
+        "dut",
+        plan,
+        SubprocessResult(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            dispatched_unix=started,
+        ),
+        0.1,
+    )
+    assert metrics.returncode == 2
+    assert failing_stage in metrics.infra_error
+    flags = _run(metrics, fatal_timing=True).completion
+    assert flags["yosys"] is (failing_stage == "openroad")
+    assert flags["timing"] is False
+    assert flags["ppa"] is False

@@ -531,7 +531,7 @@ def boundary_output(
                 ]
             )
         for stage, subject, contents in required_outputs:
-            if contents is None:
+            if contents is None or (subject != "reports/timing/overall.csv.rpt" and not contents):
                 parts.append(
                     render_failure_marker(plan.attempt_token, "missing_output", stage, subject)
                 )
@@ -541,7 +541,14 @@ def boundary_output(
         text="\n".join(p for p in parts if p),
         diagnostics=diagnostics,
         forced_failure=forced_failure,
-        yosys_complete=stat_text is not None,
+        yosys_complete=all(
+            bool(fresh_text(name))
+            for name in (
+                f"stat_{spec.design_name}.txt",
+                f"check_{spec.design_name}.txt",
+                f"synth_{spec.design_name}.v",
+            )
+        ),
         attempt_token=plan.attempt_token,
     )
 
