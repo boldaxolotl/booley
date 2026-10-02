@@ -16,7 +16,8 @@ from typing import cast
 import pytest
 
 from booley.core.file_lock import LockContentionError, acquire_file_lock
-from booley.flows.sim import build_session
+from booley.flows.run_log import RUN_LOG_NAME
+from booley.flows.sim import build_reuse, build_session
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
@@ -25,6 +26,8 @@ from booley.flows.sim.build_session import (
     project_compile_surface,
     resolve_target_compile_surface,
     simulation_build_slot,
+    snapshot_build_inputs,
+    snapshot_generation_files,
 )
 from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
@@ -318,7 +321,7 @@ def test_tool_identity_closes_over_modules_and_shared_libraries(
     library = tmp_path / "libdependency.so"
     library.write_bytes(b"dependency")
     monkeypatch.setattr(build_session.shutil, "which", lambda name: str(tools[name]))
-    monkeypatch.setattr(build_session, "_elf_dependencies", lambda _path: (library,))
+    monkeypatch.setattr(build_reuse, "elf_dependencies", lambda _path: (library,))
     first = build_session._icarus_tool_identity()
     assert first is not None
     module.write_bytes(b"new module")
@@ -334,20 +337,20 @@ def test_elf_dependency_scan_declines_missing_library(
 ) -> None:
     binary = tmp_path / "compiler"
     binary.write_bytes(b"script")
-    assert build_session._elf_dependencies(binary) is None
+    assert build_reuse.elf_dependencies(binary) is None
     binary.write_bytes(b"\x7fELF")
     monkeypatch.setattr(
         build_session.subprocess,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="lib => not found"),
     )
-    assert build_session._elf_dependencies(binary) is None
+    assert build_reuse.elf_dependencies(binary) is None
     monkeypatch.setattr(
         build_session.subprocess,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="lib => /tmp/lib.so"),
     )
-    assert build_session._elf_dependencies(binary) == (Path("/tmp/lib.so"),)
+    assert build_reuse.elf_dependencies(binary) == (Path("/tmp/lib.so"),)
 
 
 @pytest.mark.parametrize(
@@ -360,8 +363,8 @@ def test_elf_dependency_scan_declines_missing_library(
     ],
 )
 def test_generated_core_behavior_disables_reuse(core: object) -> None:
-    assert build_session._has_generated_core_behavior(core)
-    assert not build_session._has_generated_core_behavior({"targets": {"sim": {}}})
+    assert build_reuse.has_generated_core_behavior(core)
+    assert not build_reuse.has_generated_core_behavior({"targets": {"sim": {}}})
 
 
 def test_source_closure_rejects_include_and_changed_staging(tmp_path: Path) -> None:
@@ -447,30 +450,30 @@ def test_fresh_image_rejects_missing_lease_manifest_and_changed_inputs(tmp_path:
         }
         image.rename(build / "demo")
         manifest.write_text(json.dumps(record), encoding="utf-8")
-        session.verify_fresh_image(prepared)
+        session.verify_image(prepared)
         source.write_bytes(b"changed")
         with pytest.raises(SimulationBuildSlotError, match="inputs changed"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
         source.write_bytes(b"source")
         manifest.write_text(json.dumps({**record, "reusable": True}), encoding="utf-8")
         with pytest.raises(SimulationBuildSlotError, match="identity changed"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
         manifest.write_text(json.dumps(record), encoding="utf-8")
         image = build / "demo"
         image.write_bytes(b"changed")
         with pytest.raises(SimulationBuildSlotError, match="image changed"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
         image.write_bytes(b"image")
         extra = build / "other.vpi"
         extra.write_bytes(b"native module")
         with pytest.raises(SimulationBuildSlotError, match="image set changed"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
         extra.unlink()
         manifest.unlink()
         with pytest.raises(SimulationBuildSlotError, match="cannot verify"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
     with pytest.raises(SimulationBuildSlotError, match="not leased"):
-        session.verify_fresh_image(prepared)
+        session.verify_image(prepared)
 
 
 def test_reuse_closure_declines_dynamic_core_metadata_and_environment(
@@ -498,11 +501,9 @@ def test_reuse_closure_declines_dynamic_core_metadata_and_environment(
         assert build_session._eligible_core_file(prepared, tmp_path) is None
     edam.write_text(json.dumps({"cores": {"one": {"core_file": "demo.core"}}}))
     assert build_session._eligible_core_file(prepared, tmp_path) is None
-    assert build_session._reuse_input_key(prepared, {}, "variant", tmp_path) is None
-    monkeypatch.setenv("MAKEFLAGS", "-j2")
-    assert build_session._reuse_input_key(prepared, {}, "", tmp_path) is None
-    monkeypatch.delenv("MAKEFLAGS")
-    assert build_session._reuse_input_key(prepared, {}, "", tmp_path) is None
+    assert build_session._reuse_input_key(prepared, {}, "variant", tmp_path, {}) is None
+    assert build_session._reuse_input_key(prepared, {}, "", tmp_path, {"MAKEFLAGS": "-j2"}) is None
+    assert build_session._reuse_input_key(prepared, {}, "", tmp_path, {}) is None
 
 
 def test_lease_rejects_symlinked_lock_and_unsafe_cache_pointer(tmp_path: Path) -> None:
@@ -708,12 +709,12 @@ def test_fresh_verification_rejects_other_generation_and_symlinked_manifest(
         build.mkdir()
         prepared = SimpleNamespace(work_root=tmp_path, build_root=build)
         with pytest.raises(SimulationBuildSlotError, match="outside its leased generation"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
         prepared.work_root = work
         manifest = build / ".booley-build-manifest.json"
         manifest.symlink_to(tmp_path / "outside")
         with pytest.raises(SimulationBuildSlotError, match="manifest is a symlink"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX lease inheritance")
@@ -764,3 +765,25 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
         if parent.poll() is None:
             parent.kill()
             parent.wait(timeout=5)
+
+
+def test_generation_snapshot_keeps_reserved_names_the_input_snapshot_ignores(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "g"
+    build = work / "build"
+    build.mkdir(parents=True)
+    for name in ("top.sv", ".booley-adapter-x.json", ".a-1.json", RUN_LOG_NAME):
+        (build / name).write_text(name, encoding="utf-8")
+    (work / ".booley-runtime-inputs").mkdir()
+    (work / ".booley-runtime-inputs" / "fw.hex").write_text("fw", encoding="utf-8")
+    prepared = SimpleNamespace(work_root=work, build_root=build)
+
+    assert set(snapshot_build_inputs(prepared)) == {"build/top.sv"}
+    # Only Booley's live run log is excluded from the Pre-Sim write detector.
+    assert set(snapshot_generation_files(prepared)) == {
+        "build/top.sv",
+        "build/.booley-adapter-x.json",
+        "build/.a-1.json",
+        ".booley-runtime-inputs/fw.hex",
+    }

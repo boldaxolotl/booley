@@ -447,9 +447,11 @@ def test_pre_sim_output_in_run_cwd_keeps_reuse(verilator_env: Path) -> None:
     assert second.builds[0].cache_decision.startswith("hit;")
 
 
-def test_pre_sim_output_in_build_root_forces_rebuild(verilator_env: Path) -> None:
+@pytest.mark.parametrize("name", ["firmware.hex", ".booley-adapter-x.json", ".a-x.json"])
+def test_pre_sim_output_in_build_root_forces_rebuild(verilator_env: Path, name: str) -> None:
+    """Any write into the generation counts, even under a Booley-reserved name."""
     (verilator_env / ".booley_project" / "booley.toml").write_text(
-        '[flows.sim]\npre_run_commands = ["printf fw > \\"$BOOLEY_BUILD_ROOT/firmware.hex\\""]\n',
+        f'[flows.sim]\npre_run_commands = ["printf fw > \\"$BOOLEY_BUILD_ROOT/{name}\\""]\n',
         encoding="utf-8",
     )
     recorder = _Recorder(verilator_env)
@@ -505,3 +507,22 @@ def test_trace_and_plain_each_reuse_their_own_generation(verilator_env: Path) ->
     assert all("booleytrace" in stdout and "+trace" in stdout for stdout in trace_launches)
     assert _flags_line(trace_launches[0]) == _flags_line(trace_launches[1])
     assert _flags_line(trace_launches[0]) != _flags_line(plain_launches[0])
+
+
+def test_race_downgraded_build_costs_only_one_rebuild(
+    verilator_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build the race guard distrusts is not retained; the next one is."""
+    recorder = _Recorder(verilator_env)
+    monkeypatch.setattr(build_reuse, "RACE_MARGIN_NS", 10**18)
+    _assert_passed(_run(verilator_env, recorder))
+    assert not (simulation_build_slot(_select(verilator_env)) / "current.json").exists()
+
+    monkeypatch.setattr(build_reuse, "RACE_MARGIN_NS", 0)
+    second = _run(verilator_env, recorder)
+    third = _run(verilator_env, recorder)
+    _assert_passed(second)
+    _assert_passed(third)
+    assert recorder.builds == 2
+    assert second.builds[0].ran is True
+    assert third.builds[0].cache_decision.startswith("hit;")

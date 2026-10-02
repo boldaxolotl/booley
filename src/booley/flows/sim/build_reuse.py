@@ -5,14 +5,16 @@ shaped it is known and unchanged. The proof has two halves:
 
 * **Before the build** (phase-stable, part of the reuse key): every FuseSoC core
   (:func:`capture_core_closure`), the stock Edalize recipe and its include
-  search directories (:func:`unsupported_verilator_recipe`), the Verilator
-  installation and the C++ toolchain including a fingerprint of its system
-  include trees (:func:`verilator_identity`), and the build-relevant
-  environment (:func:`build_environment_digest`).
+  search directories (:func:`stock_verilator_recipe`), the Verilator
+  installation, the C++ toolchain, the system libraries the recipe links, and
+  a fingerprint of the system include trees (:func:`verilator_identity`), and
+  the build-relevant environment (:func:`build_environment_digest`).
 * **After the build** (the read closure): every file Verilator and the C++
   compiler report having read, from ``<prefix>__ver.d`` and one ``-MMD``
   dependency file per object (:func:`collect_read_closure`). The closure is
-  re-hashed before each reuse (:func:`verify_read_closure`).
+  re-hashed before each reuse (:func:`verify_read_closure`). Generated
+  makefiles must not read environment the key did not hash
+  (:func:`unkeyed_build_environment`).
 
 Every function here declines (returns ``None`` or raises
 :class:`ReadClosureError`) rather than guessing: the cost of a false decline is
@@ -29,19 +31,25 @@ import shlex
 import shutil
 import subprocess
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+from booley.core.boundary import as_dict, as_str
 
 from .compiler_cache import RESERVED as COMPILER_CACHE_MANAGED
 
 # Upper bound on files a read closure may name; a larger closure is not reused.
 MAX_CLOSURE_FILES = 100_000
 # A file outside the generation whose inode changed within this window before
-# input capture (or later) may have changed while the compiler read it.
+# input capture (or later) may have changed while the compiler read it. The
+# window absorbs coarse filesystem timestamps and network-filesystem clock
+# skew. Such a build is only downgraded: a previously retained image stays
+# selectable, and the next build, outside the window, is reusable again.
 RACE_MARGIN_NS = 2_000_000_000
 _SUBPROCESS_TIMEOUT_S = 10
+_ELF_MAGIC = b"\x7fELF"
 # ELF ``e_type`` values of files the dynamic loader maps: ET_EXEC and ET_DYN.
 _LOADABLE_ELF_TYPES = frozenset({2, 3})
 
@@ -79,6 +87,11 @@ _TOOLCHAIN_ENVIRONMENT = frozenset(
         "CPPFLAGS",
         "LDFLAGS",
         "LDLIBS",
+        "LIBS",
+        "LOADLIBES",
+        "VPATH",
+        "MAKEFILES",
+        "GNUMAKEFLAGS",
         "CPATH",
         "C_INCLUDE_PATH",
         "CPLUS_INCLUDE_PATH",
@@ -89,7 +102,8 @@ _TOOLCHAIN_ENVIRONMENT = frozenset(
         "SOURCE_DATE_EPOCH",
     }
 )
-_ENVIRONMENT_PREFIXES = ("VERILATOR", "SYSTEMC", "VM_", "USER_", "OPT")
+# ``VK_``/``VM_`` and ``SC_`` are read by the makefiles Verilator generates.
+_ENVIRONMENT_PREFIXES = ("VERILATOR", "SYSTEMC", "SC_", "VM_", "VK_", "USER_", "OPT")
 _MAKE_REFERENCE = re.compile(r"\$[({]([A-Za-z_][A-Za-z0-9_]*)")
 _MAKE_ASSIGNMENT = re.compile(
     r"^[ \t]*(?:(?:override|export|private)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*(?::{1,3}|[?+!])?=",
@@ -118,7 +132,6 @@ class VerilatorIdentity:
 
     digest: str
     verilator_root: Path
-    verilated_mk: Path
     system_include_dirs: tuple[Path, ...]
     # Resolved files whose content the digest covers (e.g. a ``verilator_bin``
     # the install tree links to from outside it).
@@ -134,6 +147,34 @@ class VerilatorIdentity:
             path.is_relative_to(root) for root in self.allowed_roots(project_root)
         )
 
+    def makefiles(self) -> tuple[Path, ...]:
+        """The installation's makefiles (``verilated.mk`` and what it includes)."""
+        return tuple(sorted((self.verilator_root / "include").glob("*.mk")))
+
+
+@dataclass(frozen=True)
+class VerilatorRecipe:
+    """What a stock flow-API recipe links from outside its generation."""
+
+    # One entry per ``-l`` option the linker resolves on its system search
+    # path: the file names it tries (``libfoo.so``, ``libfoo.a``).
+    system_libraries: tuple[tuple[str, ...], ...] = ()
+
+
+@dataclass
+class _RecipeScan:
+    """Paths and libraries one ``.vc`` recipe names."""
+
+    # Search directories and file operands; each must stay in the generation.
+    paths: list[str] = field(default_factory=list)
+    library_dirs: list[str] = field(default_factory=list)
+    libraries: list[tuple[str, ...]] = field(default_factory=list)
+
+    def extend(self, other: _RecipeScan) -> None:
+        self.paths += other.paths
+        self.library_dirs += other.library_dirs
+        self.libraries += other.libraries
+
 
 def hash_file(path: Path) -> str:
     """Return the SHA-256 hex digest of one regular file."""
@@ -144,10 +185,15 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _elf_header(path: Path) -> bytes:
+    """Read the identification and ``e_type`` fields of an ELF header."""
+    with path.open("rb") as stream:
+        return stream.read(18)
+
+
 def is_elf(path: Path) -> bool:
     """Report whether *path* starts with the ELF magic number."""
-    with path.open("rb") as stream:
-        return stream.read(4) == b"\x7fELF"
+    return _elf_header(path)[:4] == _ELF_MAGIC
 
 
 def elf_dependencies(path: Path) -> tuple[Path, ...] | None:
@@ -223,35 +269,53 @@ def capture_core_closure(edam_path: Path, project_root: Path) -> dict[str, str] 
         return None
 
 
-def unsupported_verilator_recipe(build_root: Path) -> bool:
-    """Decline anything but the stock Edalize flow recipe with contained search dirs.
+def stock_verilator_recipe(build_root: Path) -> VerilatorRecipe | None:
+    """Accept only the stock Edalize flow recipe with contained search paths.
 
     Include lookups that *miss* never appear in a dependency file. Requiring
-    every Verilog and C++ search directory to live inside the generation keeps
-    those negative lookups covered by the staged-input snapshot: a new file in
-    a search directory is a new staged input and changes the key.
+    every Verilog and C++ search directory and every library or object operand
+    to live inside the generation keeps those lookups covered by the
+    staged-input snapshot: a new file in a search directory is a new staged
+    input and changes the key. ``-l`` libraries not found in a contained
+    ``-L`` directory are returned for :func:`verilator_identity` to hash.
+    Returns ``None`` for any other recipe.
     """
     try:
         recipe = _flow_recipe((build_root / "Makefile").read_text(encoding="utf-8"))
         if recipe is None:
-            return True
+            return None
         vc_name, make_options = recipe
         if any(
             _MAKE_OPTION.fullmatch(option) is None or _TOOLCHAIN_OVERRIDE.search(option)
             for option in make_options
         ):
-            return True
+            return None
         vc_path = Path(vc_name)
         if vc_path.is_absolute() or ".." in vc_path.parts:
-            return True
+            return None
         tokens = shlex.split((build_root / vc_path).read_text(encoding="utf-8"), comments=True)
     except (OSError, UnicodeError, ValueError):
-        return True
-    directories = _search_directories(tokens)
-    if directories is None:
-        return True
+        return None
+    scan = _scan_vc_tokens(tokens)
     root = build_root.resolve()
-    return any(not (build_root / item).resolve().is_relative_to(root) for item in directories)
+    if scan is None or any(
+        not (build_root / item).resolve().is_relative_to(root) for item in scan.paths
+    ):
+        return None
+    return VerilatorRecipe(_system_libraries(scan, build_root))
+
+
+def _system_libraries(scan: _RecipeScan, build_root: Path) -> tuple[tuple[str, ...], ...]:
+    """Drop libraries a contained ``-L`` directory provides; the linker searches those first."""
+    return tuple(
+        names
+        for names in scan.libraries
+        if not any(
+            (build_root / directory / name).is_file()
+            for directory in scan.library_dirs
+            for name in names
+        )
+    )
 
 
 def _flow_recipe(text: str) -> tuple[str, list[str]] | None:
@@ -288,55 +352,81 @@ def _flow_recipe(text: str) -> tuple[str, list[str]] | None:
     return vc_name, make_options
 
 
-def _search_directories(tokens: list[str]) -> list[str] | None:
-    """Return every Verilog/C++ search or link directory, or decline."""
-    directories: list[str] = []
+# Linked operands a ``.vc`` file may name directly.
+_LINKED_OPERAND = re.compile(r".+\.(?:a|o|so(?:\.[0-9]+)*)")
+
+
+def _scan_vc_tokens(tokens: list[str]) -> _RecipeScan | None:
+    """Collect every Verilog/C++ search path and linked library, or decline."""
+    scan = _RecipeScan()
     index = 0
     while index < len(tokens):
         token = tokens[index]
         if token in {"-f", "-F", "-v"}:
             return None  # nested option files and library files escape this scan
         if token.startswith("+incdir+"):
-            directories += [item for item in token[len("+incdir+") :].split("+") if item]
+            scan.paths += [item for item in token[len("+incdir+") :].split("+") if item]
         elif token in {"-y", "-I"} and index + 1 < len(tokens):
             index += 1
-            directories.append(tokens[index])
+            scan.paths.append(tokens[index])
         elif token.startswith("-I") and len(token) > 2:
-            directories.append(token[2:])
+            scan.paths.append(token[2:])
         elif token in {"-CFLAGS", "-LDFLAGS"} and index + 1 < len(tokens):
             index += 1
-            nested = _compiler_directories(shlex.split(tokens[index]))
+            nested = _scan_compiler_flags(shlex.split(tokens[index]))
             if nested is None:
                 return None
-            directories += nested
+            scan.extend(nested)
+        elif not token.startswith(("-", "+")) and _LINKED_OPERAND.fullmatch(token):
+            scan.paths.append(token)  # a library or object Verilator links
         index += 1
-    return directories
+    return scan
 
 
-def _compiler_directories(flags: list[str]) -> list[str] | None:
-    """Return include and library directories named by compiler/linker flags."""
-    directories: list[str] = []
+def _scan_compiler_flags(flags: list[str]) -> _RecipeScan | None:
+    """Collect include/library directories and libraries from compiler flags."""
+    scan = _RecipeScan()
     index = 0
-    for_next = {"-I", "-isystem", "-iquote", "-idirafter", "-L", "-include"}
+    for_next = {"-I", "-isystem", "-iquote", "-idirafter", "-L", "-include", "-l"}
     while index < len(flags):
         flag = flags[index]
+        value = None
         if flag in for_next:
             if index + 1 >= len(flags):
                 return None
             index += 1
-            directories.append(flags[index])
-        elif flag.startswith(("-I", "-L")) and len(flag) > 2:
-            directories.append(flag[2:])
+            value = flags[index]
+        elif flag.startswith(("-I", "-L", "-l")) and len(flag) > 2:
+            flag, value = flag[:2], flag[2:]
         elif flag.startswith(("-isystem", "-iquote", "-idirafter")):
             return None  # glued spellings are rare; decline instead of parsing
         elif not flag.startswith("-"):
-            directories.append(flag)  # a library or object operand
+            scan.paths.append(flag)  # a library or object operand
+        if value is not None:
+            _record_flag_value(scan, flag, value)
         index += 1
-    return directories
+    return scan
 
 
-def verilator_identity(environment: Mapping[str, str]) -> VerilatorIdentity | None:
-    """Hash the Verilator installation and the C++ toolchain it drives."""
+def _record_flag_value(scan: _RecipeScan, flag: str, value: str) -> None:
+    if flag == "-l":
+        # ``-l:name`` names one file; ``-lname`` tries the shared library first.
+        names = (value[1:],) if value.startswith(":") else (f"lib{value}.so", f"lib{value}.a")
+        scan.libraries.append(names)
+        return
+    scan.paths.append(value)
+    if flag == "-L":
+        scan.library_dirs.append(value)
+
+
+def verilator_identity(
+    environment: Mapping[str, str], system_libraries: tuple[tuple[str, ...], ...] = ()
+) -> VerilatorIdentity | None:
+    """Hash the Verilator installation and the C++ toolchain it drives.
+
+    *system_libraries* are the recipe's ``-l`` libraries the linker finds on
+    its own search path (:attr:`VerilatorRecipe.system_libraries`).
+    """
     try:
         located = _verilator_root(environment)
         if located is None:
@@ -353,25 +443,20 @@ def verilator_identity(environment: Mapping[str, str]) -> VerilatorIdentity | No
             if resolved is None:
                 return None
             paths.append(resolved)
-        texts: list[str] = []
-        include_dirs: list[Path] = []
-        for name, command in sorted(tools.items()):
-            closure = _tool_closure(name, command, environment, include_dirs)
-            if closure is None:
-                return None
-            tool_paths, tool_texts = closure
-            paths += tool_paths
-            texts += tool_texts
+        toolchain = _toolchain_closure(tools, environment, system_libraries)
+        if toolchain is None:
+            return None
+        paths += toolchain.paths
         file_digest = _hash_paths_with_dependencies(paths)
         if file_digest is None:
             return None
-        system_dirs = tuple(sorted(set(include_dirs)))
+        system_dirs = tuple(sorted(set(toolchain.include_dirs)))
         digest = hashlib.sha256()
         digest.update(file_digest.encode("ascii"))
-        digest.update(json.dumps(texts).encode("utf-8"))
+        digest.update(json.dumps(toolchain.texts).encode("utf-8"))
         digest.update(_stat_fingerprint(system_dirs).encode("ascii"))
         tool_files = frozenset(path.resolve() for path in paths)
-        return VerilatorIdentity(digest.hexdigest(), root, verilated_mk, system_dirs, tool_files)
+        return VerilatorIdentity(digest.hexdigest(), root, system_dirs, tool_files)
     except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
         return None
 
@@ -427,18 +512,45 @@ def _verilated_mk_tools(text: str) -> dict[str, list[str]]:
     return tools
 
 
-def _tool_closure(
-    name: str,
-    command: list[str],
+@dataclass(frozen=True)
+class _ToolClosure:
+    """Files, probe output, and system include directories of one tool."""
+
+    paths: list[Path]
+    texts: list[str]
+    include_dirs: list[Path] = field(default_factory=list)
+
+
+def _toolchain_closure(
+    tools: Mapping[str, list[str]],
     environment: Mapping[str, str],
-    include_dirs: list[Path],
-) -> tuple[list[Path], list[str]] | None:
-    """Return files and probe texts that identify one toolchain command."""
+    system_libraries: tuple[tuple[str, ...], ...],
+) -> _ToolClosure | None:
+    """Combine every ``verilated.mk`` tool with the system libraries it links."""
+    combined = _ToolClosure([], [])
+    for name, command in sorted(tools.items()):
+        closure = _tool_closure(name, command, environment)
+        if closure is None:
+            return None
+        combined.paths.extend(closure.paths)
+        combined.texts.extend(closure.texts)
+        combined.include_dirs.extend(closure.include_dirs)
+    libraries = _library_files(tools["LINK"], environment, system_libraries)
+    if libraries is None:
+        return None
+    combined.paths.extend(libraries)
+    return combined
+
+
+def _tool_closure(
+    name: str, command: list[str], environment: Mapping[str, str]
+) -> _ToolClosure | None:
+    """Return the files and probe texts that identify one toolchain command."""
     program = _which(command[0], environment)
     if program is None:
         return None
-    if name not in {"CXX", "LINK"}:
-        return [program], [f"{name}={shlex.join(command)}"]
+    if name not in _REQUIRED_TOOLS:
+        return _ToolClosure([program], [f"{name}={shlex.join(command)}"])
     paths = [program]
     texts = [f"{name}={shlex.join(command)}"]
     for query in (
@@ -464,8 +576,31 @@ def _tool_closure(
     dirs = _system_include_dirs(command, environment)
     if dirs is None:
         return None
-    include_dirs += dirs
-    return paths, texts
+    return _ToolClosure(paths, texts, dirs)
+
+
+def _library_files(
+    link: list[str],
+    environment: Mapping[str, str],
+    system_libraries: tuple[tuple[str, ...], ...],
+) -> list[Path] | None:
+    """Resolve each system ``-l`` library through the link driver, or decline.
+
+    Every candidate the driver finds is hashed (a shared and a static flavor
+    both, when both exist), so whichever one the linker picks is covered.
+    """
+    found: list[Path] = []
+    for names in system_libraries:
+        resolved = []
+        for name in names:
+            output = _run([*link, f"-print-file-name={name}"], environment)
+            candidate = Path(output.strip()) if output is not None else None
+            if candidate is not None and candidate.is_absolute() and candidate.is_file():
+                resolved.append(candidate.resolve())
+        if not resolved:
+            return None
+        found += resolved
+    return found
 
 
 def _system_include_dirs(command: list[str], environment: Mapping[str, str]) -> list[Path] | None:
@@ -513,9 +648,8 @@ def _hash_paths_with_dependencies(paths: Iterable[Path]) -> str | None:
 
 def _is_loadable_elf(path: Path) -> bool:
     """Report an ELF executable or shared object; relocatable objects have no deps."""
-    with path.open("rb") as stream:
-        header = stream.read(18)
-    if len(header) < 18 or header[:4] != b"\x7fELF":
+    header = _elf_header(path)
+    if len(header) < 18 or header[:4] != _ELF_MAGIC:
         return False
     byteorder = "little" if header[5] == 1 else "big"
     return int.from_bytes(header[16:18], byteorder) in _LOADABLE_ELF_TYPES
@@ -551,23 +685,56 @@ def build_environment_digest(
     """Hash only environment entries that can reach the Verilator build.
 
     Make imports every environment entry as a variable, so the relevant names
-    are the ones the pre-build Makefile and ``verilated.mk`` reference or
-    assign, plus toolchain names and Verilator's own prefixes.
+    are the ones the pre-build Makefile and the installation's makefiles
+    reference or assign, plus toolchain names and Verilator's own prefixes.
     Names Booley's compiler cache manages are excluded: they live in the
     Target build environment, which the key hashes separately.
     """
-    names = set(_TOOLCHAIN_ENVIRONMENT)
-    for path in (build_root / "Makefile", identity.verilated_mk):
-        text = path.read_text(encoding="utf-8")
-        names.update(_MAKE_REFERENCE.findall(text))
-        names.update(_MAKE_ASSIGNMENT.findall(text))
+    names = keyed_environment_names(build_root, identity)
     selected = {
         name: value
         for name, value in environment.items()
-        if (name in names or name.startswith(_ENVIRONMENT_PREFIXES))
-        and name not in COMPILER_CACHE_MANAGED
+        if _is_keyed(name, names) and name not in COMPILER_CACHE_MANAGED
     }
     return hashlib.sha256(json.dumps(sorted(selected.items())).encode("utf-8")).hexdigest()
+
+
+def keyed_environment_names(build_root: Path, identity: VerilatorIdentity) -> set[str]:
+    """Environment names the key hashes, besides the prefixed families."""
+    names = set(_TOOLCHAIN_ENVIRONMENT)
+    for path in (build_root / "Makefile", *identity.makefiles()):
+        names |= _make_variable_names(path.read_text(encoding="utf-8"))
+    return names
+
+
+def unkeyed_build_environment(
+    build_root: Path, identity: VerilatorIdentity, environment: Mapping[str, str]
+) -> list[str]:
+    """Return set environment names generated makefiles read but the key skipped.
+
+    The makefiles Verilator writes (``V<top>.mk`` and friends) do not exist
+    when the key is computed. Any variable they reference or assign that is
+    set in *environment* yet was not hashed could change the build unseen.
+    """
+    keyed = keyed_environment_names(build_root, identity)
+    generated: set[str] = set()
+    for path in sorted(build_root.glob("*.mk")):
+        generated |= _make_variable_names(path.read_text(encoding="utf-8"))
+    return sorted(
+        name
+        for name in generated
+        if name in environment
+        and not _is_keyed(name, keyed)
+        and name not in COMPILER_CACHE_MANAGED
+    )
+
+
+def _make_variable_names(text: str) -> set[str]:
+    return {*_MAKE_REFERENCE.findall(text), *_MAKE_ASSIGNMENT.findall(text)}
+
+
+def _is_keyed(name: str, names: set[str]) -> bool:
+    return name in names or name.startswith(_ENVIRONMENT_PREFIXES)
 
 
 # --------------------------------------------------------------------------
@@ -690,12 +857,14 @@ def verify_read_closure(
     raw: object, work_root: Path, identity: VerilatorIdentity, project_root: Path
 ) -> bool:
     """Re-hash a recorded read closure under the same path policy."""
-    if not isinstance(raw, dict) or not raw or len(raw) > MAX_CLOSURE_FILES:
+    closure = as_dict(raw)
+    if not closure or len(closure) > MAX_CLOSURE_FILES:
         return False
     work = work_root.resolve()
     try:
-        for key, digest in raw.items():
-            if not isinstance(key, str) or not isinstance(digest, str):
+        for raw_key, digest in closure.items():
+            key = as_str(raw_key)
+            if key is None or as_str(digest) is None:
                 return False
             path = _closure_path(key, work, identity, project_root)
             if path is None or hash_file(path) != digest:
@@ -734,6 +903,7 @@ __all__ = [
     "RACE_MARGIN_NS",
     "ReadClosureError",
     "VerilatorIdentity",
+    "VerilatorRecipe",
     "build_environment_digest",
     "capture_core_closure",
     "collect_read_closure",
@@ -741,8 +911,10 @@ __all__ = [
     "has_generated_core_behavior",
     "hash_file",
     "is_elf",
+    "keyed_environment_names",
     "parse_depfile",
-    "unsupported_verilator_recipe",
+    "stock_verilator_recipe",
+    "unkeyed_build_environment",
     "verify_read_closure",
     "verilator_identity",
 ]

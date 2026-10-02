@@ -268,14 +268,19 @@ retained simulator image of the same Target variant (plain, traced, or a
 coverage variant) was built from identical inputs. Each Simulation result's
 build entry records the `cache_decision` (`hit`, `changed source, recipe, or tool`,
 `reuse unsupported`, and so on). A Verilator image qualifies when the Target uses the stock Edalize
-recipe and every Verilog and C++ include or library directory it names lies in
-the staged build tree. Its key covers the staged sources and FuseSoC cores, the
-Verilator installation, the C++ toolchain and its system headers, and the
+recipe and every Verilog and C++ include or library directory, and every library
+or object file it links, lies in the staged build tree. Its key covers the staged
+sources and FuseSoC cores, the Verilator installation, the C++ toolchain and its
+system headers, the system libraries named by `-l` options, and the
 build-relevant environment. Before reuse, Booley re-hashes every file
 Verilator and the C++ compiler reported reading, so a changed RTL file, include,
-flag, or DPI source always rebuilds. Pre-Sim Commands that only write run-time
-inputs, such as firmware in `$BOOLEY_RUN_CWD`, keep reuse; output written into
-the build tree forces a fresh build. Cocotb Targets always build fresh.
+flag, or DPI source always rebuilds. A build is not retained when a file outside
+the build tree that it read changed within about two seconds of the build
+starting, or when the makefiles Verilator generates read an environment
+variable the key did not cover; the next unaffected build is retained again.
+For both simulators, Pre-Sim Commands that only write run-time inputs, such as
+firmware in `$BOOLEY_RUN_CWD`, keep reuse; anything they write into the build
+tree forces a fresh build. Cocotb Targets always build fresh.
 
 ### Simulation & pass/fail sentinels (`[flows.sim]`)
 

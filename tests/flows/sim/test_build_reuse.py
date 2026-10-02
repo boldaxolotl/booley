@@ -22,7 +22,8 @@ from booley.flows.sim.build_reuse import (
     capture_core_closure,
     collect_read_closure,
     parse_depfile,
-    unsupported_verilator_recipe,
+    stock_verilator_recipe,
+    unkeyed_build_environment,
     verify_read_closure,
     verilator_identity,
 )
@@ -50,7 +51,7 @@ def _identity(root: Path, include: Path | None = None) -> VerilatorIdentity:
     if not verilated_mk.exists():
         verilated_mk.write_text("CXX = g++\nLINK = g++\n", encoding="utf-8")
     dirs = (include.resolve(),) if include is not None else ()
-    return VerilatorIdentity("tool", verilator_root.resolve(), verilated_mk, dirs)
+    return VerilatorIdentity("tool", verilator_root.resolve(), dirs)
 
 
 # --------------------------------------------------------------------------
@@ -117,13 +118,14 @@ _CONTAINED_VC = (
         (_CONTAINED_VC, "-j8 VM_PARALLEL_BUILDS=1"),
         (_CONTAINED_VC + "--trace\n-LDFLAGS -lpthread\n", "OPT_FAST=-O2"),
         (_CONTAINED_VC, ""),
+        (_CONTAINED_VC + "lib/libdpi.a\n", ""),
     ],
 )
 def test_stock_recipe_with_contained_search_dirs_is_supported(
     tmp_path: Path, vc: str, make_options: str
 ) -> None:
     _stock_recipe(tmp_path / "b", vc, make_options=make_options)
-    assert unsupported_verilator_recipe(tmp_path / "b") is False
+    assert stock_verilator_recipe(tmp_path / "b") is not None
 
 
 @pytest.mark.parametrize(
@@ -134,6 +136,9 @@ def test_stock_recipe_with_contained_search_dirs_is_supported(
         (_CONTAINED_VC + "-CFLAGS -I/opt/include\n", ""),
         (_CONTAINED_VC + '-CFLAGS "-isystem /opt/include"\n', ""),
         (_CONTAINED_VC + "-LDFLAGS /opt/lib/libdpi.a\n", ""),
+        (_CONTAINED_VC + "/opt/lib/libdpi.so\n", ""),
+        (_CONTAINED_VC + "../outside/libdpi.a\n", ""),
+        (_CONTAINED_VC + '-LDFLAGS "-L/opt/lib -ldpi"\n', ""),
         (_CONTAINED_VC + "-f other.vc\n", ""),
         (_CONTAINED_VC + "-y /opt/rtl\n", ""),
         (_CONTAINED_VC, "CXX=clang++"),
@@ -145,7 +150,24 @@ def test_recipe_gate_declines_uncontained_search_and_toolchain_overrides(
     tmp_path: Path, vc: str, make_options: str
 ) -> None:
     _stock_recipe(tmp_path / "b", vc, make_options=make_options)
-    assert unsupported_verilator_recipe(tmp_path / "b") is True
+    assert stock_verilator_recipe(tmp_path / "b") is None
+
+
+def test_recipe_reports_libraries_the_linker_finds_outside_the_generation(
+    tmp_path: Path,
+) -> None:
+    build = tmp_path / "b"
+    _stock_recipe(build, _CONTAINED_VC + '-LDFLAGS "-Llib -lstaged -lz -l m -l:libspecial.so.1"\n')
+    (build / "lib").mkdir()
+    (build / "lib" / "libstaged.a").write_bytes(b"!<arch>\n")
+    recipe = stock_verilator_recipe(build)
+    assert recipe is not None
+    # ``libstaged`` is a staged input; the others resolve on the system path.
+    assert recipe.system_libraries == (
+        ("libz.so", "libz.a"),
+        ("libm.so", "libm.a"),
+        ("libspecial.so.1",),
+    )
 
 
 @pytest.mark.parametrize(
@@ -165,7 +187,7 @@ def test_recipe_gate_declines_non_stock_makefiles(tmp_path: Path, change: Any) -
     _stock_recipe(build_root, _CONTAINED_VC)
     makefile = build_root / "Makefile"
     makefile.write_text(change(makefile.read_text(encoding="utf-8")), encoding="utf-8")
-    assert unsupported_verilator_recipe(build_root) is True
+    assert stock_verilator_recipe(build_root) is None
 
 
 # --------------------------------------------------------------------------
@@ -356,7 +378,7 @@ def test_environment_digest_tracks_only_build_relevant_names(tmp_path: Path) -> 
     build = tmp_path / "b"
     _stock_recipe(build, _CONTAINED_VC)
     identity = _identity(tmp_path)
-    identity.verilated_mk.write_text(
+    (identity.verilator_root / "include" / "verilated.mk").write_text(
         "CXX = g++\nLINK = g++\nCPPFLAGS += $(EXTRA_FROM_VERILATED_MK)\n", encoding="utf-8"
     )
     base = {"PATH": "/usr/bin", "HOME": "/home/a", "TERM": "xterm"}
@@ -373,6 +395,42 @@ def test_environment_digest_tracks_only_build_relevant_names(tmp_path: Path) -> 
         ("EDALIZE_LAUNCHER", "valgrind"),
     ):
         assert build_environment_digest({**base, name: value}, build, identity) != digest, name
+
+
+def test_environment_digest_covers_installation_makefiles_and_generated_families(
+    tmp_path: Path,
+) -> None:
+    build = tmp_path / "b"
+    _stock_recipe(build, _CONTAINED_VC)
+    identity = _identity(tmp_path)
+    (identity.verilator_root / "include" / "verilated_extra.mk").write_text(
+        "CPPFLAGS += $(FROM_INCLUDED_MK)\n", encoding="utf-8"
+    )
+    base = {"PATH": "/usr/bin"}
+    digest = build_environment_digest(base, build, identity)
+    # Names the makefiles Verilator generates read, plus Make's own inputs.
+    for name in (
+        "FROM_INCLUDED_MK",
+        "LIBS",
+        "LOADLIBES",
+        "SC_LIBS",
+        "VK_USER_OBJS",
+        "VPATH",
+        "MAKEFILES",
+    ):
+        assert build_environment_digest({**base, name: "x"}, build, identity) != digest, name
+
+
+def test_generated_makefiles_reading_unkeyed_environment_are_reported(tmp_path: Path) -> None:
+    build = tmp_path / "b"
+    _stock_recipe(build, _CONTAINED_VC)
+    identity = _identity(tmp_path)
+    (build / "Vtop.mk").write_text(
+        "CXXFLAGS += $(MY_FLAGS)\nLIBS += $(VK_USER_OBJS)\nSTRANGE ?= 1\n", encoding="utf-8"
+    )
+    environment = {"MY_FLAGS": "-O0", "VK_USER_OBJS": "a.o", "STRANGE": "2", "OTHER": "x"}
+    assert unkeyed_build_environment(build, identity, environment) == ["MY_FLAGS", "STRANGE"]
+    assert unkeyed_build_environment(build, identity, {"OTHER": "x"}) == []
 
 
 def _fake_install(tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -396,7 +454,10 @@ def _fake_install(tmp_path: Path) -> tuple[Path, dict[str, str]]:
             "if args and args[0].startswith('-print-prog-name='):\n"
             "    print(sys.argv[0])\n"
             "elif args and args[0].startswith('-print-file-name='):\n"
-            "    print(args[0].split('=', 1)[1])\n"
+            "    import os\n"
+            "    name = args[0].split('=', 1)[1]\n"
+            f"    found = os.path.join({str(tmp_path / 'syslib')!r}, name)\n"
+            "    print(found if os.path.isfile(found) else name)\n"
             "elif '-E' in args:\n"
             "    sys.stderr.write('#include <...> search starts here:\\n "
             f"{include}\\nEnd of search list.\\n')\n"
@@ -444,6 +505,24 @@ def test_toolchain_identity_covers_install_compiler_and_system_headers(tmp_path:
 
 
 @posix_only
+def test_toolchain_identity_hashes_linked_system_libraries(tmp_path: Path) -> None:
+    _root, environment = _fake_install(tmp_path)
+    syslib = tmp_path / "syslib"
+    syslib.mkdir()
+    (syslib / "libz.a").write_bytes(b"archive v1")
+    libz = (("libz.so", "libz.a"),)
+    before = verilator_identity(environment, libz)
+    assert before is not None
+    assert (syslib / "libz.a").resolve() in before.tool_files
+    assert verilator_identity(environment) != before
+    (syslib / "libz.a").write_bytes(b"archive v2")
+    after = verilator_identity(environment, libz)
+    assert after is not None and after.digest != before.digest
+    # A library the linker cannot be shown to find is never guessed at.
+    assert verilator_identity(environment, (("libnone.so", "libnone.a"),)) is None
+
+
+@posix_only
 def test_toolchain_identity_declines_without_compiler_or_installation(tmp_path: Path) -> None:
     root, environment = _fake_install(tmp_path)
     (root / "include" / "verilated.mk").write_text("AR = ar\n", encoding="utf-8")
@@ -482,30 +561,28 @@ def test_generation_path_never_reaches_the_target_environment_key(tmp_path: Path
 
 
 @pytest.mark.parametrize(
-    ("variant", "cocotb", "closure", "launcher"),
+    ("environment", "cocotb", "closure"),
     [
-        ("doctor-selftest-bad", "", {"c": "d"}, ""),
-        ("trace-doctor-selftest-bad", "", {"c": "d"}, ""),
-        ("", "tests.test_top", {"c": "d"}, ""),
-        ("", "", None, ""),
-        ("", "", {"c": "d"}, "valgrind"),
+        ({"BOOLEY_INTERNAL_SELFTEST_KIND": "bad"}, "", {"c": "d"}),
+        ({}, "tests.test_top", {"c": "d"}),
+        ({}, "", None),
+        ({"EDALIZE_LAUNCHER": "valgrind"}, "", {"c": "d"}),
+        ({"MAKEFLAGS": "-j2"}, "", {"c": "d"}),
     ],
+    ids=["doctor-bad", "cocotb", "unproven-cores", "launcher", "makeflags"],
 )
 def test_verilator_key_declines_ineligible_builds(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    variant: str,
+    environment: dict[str, str],
     cocotb: str,
     closure: dict[str, str] | None,
-    launcher: str,
 ) -> None:
-    monkeypatch.setenv("EDALIZE_LAUNCHER", launcher)
-    monkeypatch.setattr(build_reuse, "verilator_identity", lambda _env: pytest.fail("probed"))
+    monkeypatch.setattr(build_reuse, "verilator_identity", lambda *_args: pytest.fail("probed"))
     prepared = cast(
         Any,
         SimpleNamespace(resolved=SimpleNamespace(cocotb_module=cocotb), core_closure=closure),
     )
-    assert _verilator_reuse_key(prepared, {}, variant, tmp_path) is None
+    assert _verilator_reuse_key(prepared, {}, environment) is None
 
 
 def _keyed_generation(
@@ -522,6 +599,7 @@ def _keyed_generation(
     (work / "Vtop.cpp").write_text("// generated\n", encoding="utf-8")
     (work / "Vtop.o").write_bytes(b"o")
     (work / "Vtop.d").write_text("Vtop.o: Vtop.cpp\n", encoding="utf-8")
+    (work / "Makefile").write_text("# stock recipe (key pinned below)\n", encoding="utf-8")
     identity = _identity(tmp_path)
     monkeypatch.setattr(
         "booley.flows.sim.build_session._verilator_reuse_key",
@@ -534,6 +612,7 @@ def _keyed_generation(
         target_identity=session.handle.identity,
         toplevel="top",
         resolved=SimpleNamespace(cocotb_module=""),
+        environment={},
     )
     inputs = {"src/top.sv": _sha(source)}
     return prepared, inputs
@@ -560,8 +639,11 @@ def test_keyed_verilator_image_records_its_read_closure_and_promotes(
         assert set(manifest["read_closure"]) == {"work:src/top.sv", "work:Vtop.cpp"}
         assert (session.slot / "current.json").is_file()
         session.verify_image(prepared)
+        manifest_path = prepared.build_root / ".booley-build-manifest.json"
+        manifest_path.write_text(json.dumps({**manifest, "input_key": None}), encoding="utf-8")
         with pytest.raises(SimulationBuildSlotError, match="identity changed"):
-            session.verify_fresh_image(prepared)
+            session.verify_image(prepared)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         assert session._read_closure_matches(prepared.work_root, manifest, prepared)
         (prepared.work_root / "Vtop.cpp").write_text("// tampered\n", encoding="utf-8")
@@ -585,7 +667,6 @@ def test_unprovable_read_closure_downgrades_without_failing_the_build(
         assert manifest["reusable"] is False
         assert "lack dependency records" in manifest["reason"]
         assert not (session.slot / "current.json").exists()
-        session.verify_fresh_image(prepared)
         session.verify_image(prepared)
 
 
@@ -633,3 +714,42 @@ def test_closure_may_name_exact_toolchain_files_outside_every_root(tmp_path: Pat
     assert not verify_read_closure(
         {**closure, f"abs:{sibling.resolve()}": _sha(sibling)}, work, pinned, project
     )
+
+
+@posix_only
+def test_declined_key_clears_the_previous_verilator_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = SimulationBuildSession(_handle(tmp_path))
+    with session:
+        prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
+        session._captured_ns[prepared.work_root] = _settled_capture_ns()
+        manifest = {"read_closure": {"work:src/top.sv": inputs["src/top.sv"]}}
+        assert session.reusable_key(prepared, inputs, hooks=False) == "key"
+        assert session._read_closure_matches(prepared.work_root, manifest, prepared)
+
+        assert session.reusable_key(prepared, inputs, hooks=True) is None
+        assert not session._read_closure_matches(prepared.work_root, manifest, prepared)
+        assert session._fresh_read_closure(prepared, "key")[0] is None
+
+
+@posix_only
+def test_generated_makefile_reading_unkeyed_environment_downgrades(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOOLEY_TEST_UNKEYED", "-DSURPRISE")
+    session = SimulationBuildSession(_handle(tmp_path))
+    with session:
+        prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
+        (prepared.build_root / "Vtop.mk").write_text(
+            "CXXFLAGS += $(BOOLEY_TEST_UNKEYED)\n", encoding="utf-8"
+        )
+        captured = session.capture_inputs(prepared)
+        session._captured_ns[prepared.work_root] = _settled_capture_ns()
+        key = session.reusable_key(prepared, captured, hooks=False)
+        session.authorize_fresh_image(prepared, inputs, key)
+
+        manifest = _manifest(prepared)
+        assert manifest["reusable"] is False
+        assert "BOOLEY_TEST_UNKEYED" in manifest["reason"]
+        assert not (session.slot / "current.json").exists()

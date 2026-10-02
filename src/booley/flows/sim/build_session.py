@@ -16,11 +16,13 @@ import subprocess
 import time
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
+from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
 import yaml
 
+from booley.core.boundary import as_dict, as_str
 from booley.core.build_paths import work_root_for
 from booley.core.file_lock import (
     release_file_lock,
@@ -30,21 +32,34 @@ from booley.core.file_lock import (
 )
 from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
-from booley.fusesoc import fusesoc_registry
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
 from . import build_reuse
 from . import edam as sim_edam
 from .build import PreparedSimulationBuild
-from .build_reuse import elf_dependencies as _elf_dependencies
-from .build_reuse import has_generated_core_behavior as _has_generated_core_behavior
-from .build_reuse import hash_file as _hash_file
-from .build_reuse import is_elf as _is_elf
+from .build_reuse import hash_file
 
 
 class SimulationBuildSlotError(RuntimeError):
     """A Simulation build slot cannot be used safely."""
+
+
+class CacheDecision(StrEnum):
+    """Why a build was, or was not, served by the slot's retained image."""
+
+    UNEXAMINED = "unexamined"
+    HIT = "hit"
+    REUSE_UNSUPPORTED = "reuse unsupported"
+    MISSING_PROVENANCE = "missing provenance"
+    MALFORMED_PROVENANCE = "malformed provenance"
+    MALFORMED_MANIFEST = "malformed manifest"
+    SCHEMA_MISMATCH = "schema mismatch"
+    WRONG_TARGET = "wrong Target"
+    CHANGED_KEY = "changed source, recipe, or tool"
+    CHANGED_SOURCE = "changed source"
+    CHANGED_ARTIFACT = "changed artifact"
 
 
 _GENERATION_DIR = "g"
@@ -75,24 +90,47 @@ def _runtime_artifacts(prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
     return images
 
 
+_RUNTIME_INPUTS_DIR = ".booley-runtime-inputs"
+# Files Booley itself writes into a generation around a build or launch.
+_RESERVED_PREFIXES = (".booley-adapter-", ".a-")
+
+
 def snapshot_build_inputs(prepared: PreparedSimulationBuild) -> dict[str, str]:
     """Snapshot files already present in a newly resolved generation."""
+    return _hash_generation(prepared, skip_reserved=True)
+
+
+def snapshot_generation_files(prepared: PreparedSimulationBuild) -> dict[str, str]:
+    """Hash every generation file except the live run log, reserved names included.
+
+    Pre-Sim Command detection uses this stricter view, so a hook cannot hide a
+    write into the generation behind a name :func:`snapshot_build_inputs`
+    deliberately ignores.
+    """
+    return _hash_generation(prepared, skip_reserved=False)
+
+
+def _hash_generation(prepared: PreparedSimulationBuild, *, skip_reserved: bool) -> dict[str, str]:
     root = prepared.work_root
+    # The reserved-name filter already drops every run log by name.
+    run_log = None if skip_reserved else prepared.build_root / RUN_LOG_NAME
     hashes: dict[str, str] = {}
     try:
         for path in sorted(root.rglob("*")):
-            if ".booley-runtime-inputs" in path.parts:
+            if skip_reserved and _RUNTIME_INPUTS_DIR in path.parts:
                 continue
             if path.is_symlink():
                 raise SimulationBuildSlotError(f"symlinked generated build input: {path}")
-            if path.is_dir():
+            if path.is_dir() or path == run_log:
                 continue
-            if path.name == RUN_LOG_NAME or path.name.startswith((".booley-adapter-", ".a-")):
+            if skip_reserved and (
+                path.name == RUN_LOG_NAME or path.name.startswith(_RESERVED_PREFIXES)
+            ):
                 continue
             if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
                 raise SimulationBuildSlotError(f"unsafe generated build input: {path}")
             relative = path.relative_to(root).as_posix()
-            hashes[relative] = _hash_file(path)
+            hashes[relative] = hash_file(path)
         return hashes
     except OSError as exc:
         raise SimulationBuildSlotError(f"cannot read generated build input: {exc}") from exc
@@ -142,11 +180,11 @@ def project_compile_surface(
                 continue
             if not path.is_file():
                 raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
-            result[identity] = _hash_file(path)
+            result[identity] = hash_file(path)
         for path in surface.optional_paths:
             identity = _compile_input_identity(surface.project_root, path)
             if path.is_file():
-                result[identity] = _hash_file(path)
+                result[identity] = hash_file(path)
             elif path.is_symlink() or path.exists():
                 raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
             else:
@@ -169,9 +207,9 @@ def _icarus_tool_identity() -> str | None:
     paths.extend(path for path in ivl.rglob("*") if path.is_file())
     try:
         for path in tuple(paths):
-            if not _is_elf(path):
+            if not build_reuse.is_elf(path):
                 continue
-            dependencies = _elf_dependencies(path)
+            dependencies = build_reuse.elf_dependencies(path)
             if dependencies is None:
                 return None
             paths.extend(dependencies)
@@ -181,7 +219,7 @@ def _icarus_tool_identity() -> str | None:
                 return None
             digest.update(str(path).encode("utf-8"))
             digest.update(str(path.resolve()).encode("utf-8"))
-            digest.update(_hash_file(path).encode("ascii"))
+            digest.update(hash_file(path).encode("ascii"))
         return digest.hexdigest()
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -206,7 +244,7 @@ def _python_recipe_identity() -> str | None:
                 for path in sorted(package.rglob("*.py")):
                     digest.update(name.encode("utf-8"))
                     digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-                    digest.update(_hash_file(path).encode("ascii"))
+                    digest.update(hash_file(path).encode("ascii"))
         return digest.hexdigest()
     except OSError:
         return None
@@ -223,7 +261,7 @@ def _has_unsupported_source(prepared: PreparedSimulationBuild, core_file: Path) 
         original = core_file.parent.joinpath(*parts[2:])
         if not original.is_file() or original.is_symlink():
             return True
-        if _hash_file(original) != _hash_file(source):
+        if hash_file(original) != hash_file(source):
             raise SimulationBuildSlotError(
                 f"Project source changed during FuseSoC preparation: {original}"
             )
@@ -282,7 +320,7 @@ def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -
         return None
     core_data = yaml.safe_load(core_file.read_text(encoding="utf-8"))
     if (
-        _has_generated_core_behavior(core_data)
+        build_reuse.has_generated_core_behavior(core_data)
         or _has_unsupported_source(prepared, core_file)
         or _has_unsupported_icarus_recipe(prepared)
     ):
@@ -290,11 +328,22 @@ def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -
     return core_file
 
 
+def _json_digest(value: object) -> str:
+    """Return the SHA-256 of *value*'s canonical JSON encoding."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _recipe_package_versions() -> dict[str, str]:
+    """Versions of the packages that write and interpret the build recipe."""
+    return {name: importlib.metadata.version(name) for name in ("fusesoc", "edalize")}
+
+
 def _reuse_input_key(
     prepared: PreparedSimulationBuild,
     inputs: Mapping[str, str],
     variant: str,
     project_root: Path,
+    environment: Mapping[str, str],
 ) -> str | None:
     """Recognize the closed, ordinary Icarus recipe; decline all others."""
     if (
@@ -304,7 +353,7 @@ def _reuse_input_key(
         or any(item.file_type.lower() == "user" for item in prepared.resolved.files)
     ):
         return None
-    if any(os.environ.get(name) for name in ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS")):
+    if any(environment.get(name) for name in _REUSE_DECLINING_ENVIRONMENT):
         return None
     try:
         core_file = _eligible_core_file(prepared, project_root)
@@ -314,25 +363,19 @@ def _reuse_input_key(
         recipe = _python_recipe_identity()
         if tool is None or recipe is None:
             return None
-        versions = {name: importlib.metadata.version(name) for name in ("fusesoc", "edalize")}
-        environment = hashlib.sha256(
-            json.dumps(sorted(os.environ.items())).encode("utf-8")
-        ).hexdigest()
         record = {
             "schema": 1,
             "target": prepared.target_identity,
             "inputs": dict(inputs),
-            "core": _hash_file(core_file),
+            "core": hash_file(core_file),
             "core_path": str(core_file),
             "tool": tool,
             "recipe": recipe,
-            "versions": versions,
-            "environment": environment,
-            "target_environment": hashlib.sha256(
-                json.dumps(sorted(prepared.environment.items())).encode("utf-8")
-            ).hexdigest(),
+            "versions": _recipe_package_versions(),
+            "environment": _json_digest(sorted(environment.items())),
+            "target_environment": _json_digest(sorted(prepared.environment.items())),
         }
-        return hashlib.sha256(json.dumps(record, sort_keys=True).encode("utf-8")).hexdigest()
+        return _json_digest(record)
     except (
         OSError,
         KeyError,
@@ -343,60 +386,42 @@ def _reuse_input_key(
         return None
 
 
-# Doctor's deliberately broken self-test image must never be retained.
-_DOCTOR_BAD_VARIANT = "doctor-selftest-bad"
+# Make variables that can rewrite either recipe out of sight; reuse declines.
 _REUSE_DECLINING_ENVIRONMENT = ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS")
 
 
 def _verilator_reuse_key(
     prepared: PreparedSimulationBuild,
     inputs: Mapping[str, str],
-    variant: str,
-    project_root: Path,
+    environment: Mapping[str, str],
 ) -> tuple[str, build_reuse.VerilatorIdentity] | None:
     """Key a stock Edalize Verilator recipe by its complete pre-build identity.
 
-    Trace and coverage variants each own a slot, so the variant only gates
-    eligibility. Unlike Icarus, includes, dependency cores and C++/DPI sources
-    are accepted: the post-build read closure proves what was actually read.
+    Trace and coverage variants each own a slot, so the variant needs no
+    gate; Doctor's deliberately broken self-test image is never retained.
+    Unlike Icarus, includes, dependency cores and C++/DPI sources are
+    accepted: the post-build read closure proves what was actually read.
     """
     if (
-        _DOCTOR_BAD_VARIANT in variant
-        or prepared.resolved.cocotb_module
+        prepared.resolved.cocotb_module
         or prepared.core_closure is None
-        or any(os.environ.get(name) for name in _REUSE_DECLINING_ENVIRONMENT)
+        or selftest_overlay.bad_selftest_requested(environment)
+        or any(environment.get(name) for name in _REUSE_DECLINING_ENVIRONMENT)
     ):
         return None
     try:
-        edam = yaml.safe_load(prepared.resolved.edam_path.read_text(encoding="utf-8"))
-        if not isinstance(edam, dict) or edam.get("hooks") or edam.get("vpi"):
+        recipe = _stock_verilator_recipe(prepared)
+        if recipe is None:
             return None
-        if build_reuse.unsupported_verilator_recipe(prepared.build_root):
+        build_environment = {**environment, **_generation_neutral(prepared)}
+        identity = build_reuse.verilator_identity(build_environment, recipe.system_libraries)
+        python_recipe = _python_recipe_identity()
+        if identity is None or python_recipe is None:
             return None
-        target_environment = _generation_neutral(prepared)
-        environment = {**os.environ, **target_environment}
-        identity = build_reuse.verilator_identity(environment)
-        recipe = _python_recipe_identity()
-        if identity is None or recipe is None:
-            return None
-        record = {
-            "schema": 1,
-            "tool_kind": "verilator",
-            "target": prepared.target_identity,
-            "inputs": dict(inputs),
-            "cores": dict(prepared.core_closure),
-            "tool": identity.digest,
-            "recipe": recipe,
-            "versions": {
-                name: importlib.metadata.version(name) for name in ("fusesoc", "edalize")
-            },
-            "environment": build_reuse.build_environment_digest(
-                environment, prepared.build_root, identity
-            ),
-            "target_environment": sorted(target_environment.items()),
-        }
-        digest = hashlib.sha256(json.dumps(record, sort_keys=True).encode("utf-8")).hexdigest()
-        return digest, identity
+        record = _verilator_key_record(
+            prepared, inputs, identity, python_recipe, build_environment
+        )
+        return _json_digest(record), identity
     except (
         OSError,
         UnicodeError,
@@ -404,6 +429,40 @@ def _verilator_reuse_key(
         importlib.metadata.PackageNotFoundError,
     ):
         return None
+
+
+def _stock_verilator_recipe(
+    prepared: PreparedSimulationBuild,
+) -> build_reuse.VerilatorRecipe | None:
+    """Accept an EDAM without hooks or VPI whose Makefile is the stock recipe."""
+    edam = as_dict(yaml.safe_load(prepared.resolved.edam_path.read_text(encoding="utf-8")))
+    if edam is None or edam.get("hooks") or edam.get("vpi"):
+        return None
+    return build_reuse.stock_verilator_recipe(prepared.build_root)
+
+
+def _verilator_key_record(
+    prepared: PreparedSimulationBuild,
+    inputs: Mapping[str, str],
+    identity: build_reuse.VerilatorIdentity,
+    python_recipe: str,
+    build_environment: Mapping[str, str],
+) -> dict[str, object]:
+    """Assemble everything a Verilator reuse key hashes."""
+    return {
+        "schema": 1,
+        "tool_kind": "verilator",
+        "target": prepared.target_identity,
+        "inputs": dict(inputs),
+        "cores": dict(prepared.core_closure or {}),
+        "tool": identity.digest,
+        "recipe": python_recipe,
+        "versions": _recipe_package_versions(),
+        "environment": build_reuse.build_environment_digest(
+            build_environment, prepared.build_root, identity
+        ),
+        "target_environment": sorted(_generation_neutral(prepared).items()),
+    }
 
 
 def _generation_neutral(prepared: PreparedSimulationBuild) -> dict[str, str]:
@@ -418,6 +477,15 @@ def _generation_neutral(prepared: PreparedSimulationBuild) -> dict[str, str]:
         name: value.replace(generation, "<generation>")
         for name, value in prepared.environment.items()
     }
+
+
+def _ambient_environment(prepared: PreparedSimulationBuild) -> dict[str, str]:
+    """The process environment minus what the Target build environment overrides.
+
+    The key hashes the Target build environment whole, so only ambient names
+    can reach a generated makefile unhashed.
+    """
+    return {name: value for name, value in os.environ.items() if name not in prepared.environment}
 
 
 def _retained_build_root(slot: Path) -> tuple[Path, Path] | None:
@@ -460,20 +528,18 @@ def _matching_hashes(root: Path, raw: object) -> bool:
             path.is_symlink()
             or not path.is_file()
             or not path.resolve().is_relative_to(root.resolve())
-            or _hash_file(path) != digest
+            or hash_file(path) != digest
         ):
             return False
     return True
 
 
-def _expected_reusability(manifest: Mapping[str, object], reusable: bool | None) -> bool:
-    """Match a manifest's reusability; ``None`` accepts either well-formed state."""
+def _well_formed_reusability(manifest: Mapping[str, object]) -> bool:
+    """Require a boolean ``reusable`` and, when set, its string ``input_key``."""
     recorded = manifest.get("reusable")
     if not isinstance(recorded, bool):
         return False
-    if recorded and not isinstance(manifest.get("input_key"), str):
-        return False
-    return reusable is None or recorded is reusable
+    return not recorded or as_str(manifest.get("input_key")) is not None
 
 
 def simulation_build_slot(handle: TargetHandle, variant: str = "") -> Path:
@@ -498,7 +564,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         self.slot = simulation_build_slot(handle, variant)
         self._lock: IO[str] | None = None
         self._lease_token: contextvars.Token[int | None] | None = None
-        self.cache_decision = "unexamined"
+        self.cache_decision: CacheDecision = CacheDecision.UNEXAMINED
         # Set by the last Verilator ``reusable_key``; scopes read-closure paths.
         self._verilator_identity: build_reuse.VerilatorIdentity | None = None
         # Wall-clock time each generation's inputs were first captured.
@@ -562,28 +628,33 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         *hooks* reports that Pre-Sim Commands wrote into this generation; such
         a candidate is never reused because the hook output would be lost.
         """
+        # A declined call must not leave an earlier identity scoping closures.
+        self._verilator_identity = None
         if hooks:
             return None
+        environment = os.environ
         if prepared.eda_tool == "verilator":
-            keyed = _verilator_reuse_key(prepared, inputs, self.variant, self.handle.project_root)
+            keyed = _verilator_reuse_key(prepared, inputs, environment)
             if keyed is None:
                 return None
             key, self._verilator_identity = keyed
             return key
-        return _reuse_input_key(prepared, inputs, self.variant, self.handle.project_root)
+        return _reuse_input_key(
+            prepared, inputs, self.variant, self.handle.project_root, environment
+        )
 
     def try_reuse(
         self, candidate: PreparedSimulationBuild, key: str | None
     ) -> PreparedSimulationBuild | None:
         """Validate the current pointer and reconstruct its resolved build data."""
         if self._lock is None or key is None:
-            self.cache_decision = "reuse unsupported"
+            self.cache_decision = CacheDecision.REUSE_UNSUPPORTED
             return None
-        self.cache_decision = "missing provenance"
+        self.cache_decision = CacheDecision.MISSING_PROVENANCE
         try:
             retained = _retained_build_root(self.slot)
             if retained is None:
-                self.cache_decision = "malformed provenance"
+                self.cache_decision = CacheDecision.MALFORMED_PROVENANCE
                 return None
             root, build_root = retained
             manifest_path = build_root / ".booley-build-manifest.json"
@@ -592,7 +663,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             rejection = self._hit_rejection(root, build_root, manifest, candidate, key)
             if rejection is None and not self._read_closure_matches(root, manifest, candidate):
-                rejection = "changed source"
+                rejection = CacheDecision.CHANGED_SOURCE
             if rejection is not None:
                 self.cache_decision = rejection
                 return None
@@ -602,9 +673,9 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 for path in _runtime_artifacts(selected)
             }
             if actual != set(manifest["artifacts"]):
-                self.cache_decision = "changed artifact"
+                self.cache_decision = CacheDecision.CHANGED_ARTIFACT
                 return None
-            self.cache_decision = "hit"
+            self.cache_decision = CacheDecision.HIT
             return selected
         except (
             OSError,
@@ -615,9 +686,9 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             SimulationBuildSlotError,
         ) as exc:
             self.cache_decision = (
-                "missing provenance"
+                CacheDecision.MISSING_PROVENANCE
                 if isinstance(exc, FileNotFoundError)
-                else "malformed provenance"
+                else CacheDecision.MALFORMED_PROVENANCE
             )
             return None
 
@@ -670,10 +741,6 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             core_closure=candidate.core_closure,
         )
 
-    def verify_fresh_image(self, prepared: PreparedSimulationBuild) -> None:
-        """Reauthenticate a non-reusable image while holding its Target lease."""
-        self._verify_image(prepared, reusable=False)
-
     def verify_image(self, prepared: PreparedSimulationBuild) -> None:
         """Reauthenticate a fresh or retained image, as its manifest records.
 
@@ -681,9 +748,6 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         moved on since, but launching it only requires the recorded inputs and
         image bytes to be intact.
         """
-        self._verify_image(prepared, reusable=None)
-
-    def _verify_image(self, prepared: PreparedSimulationBuild, *, reusable: bool | None) -> None:
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
         if prepared.work_root.parent != self.slot / _GENERATION_DIR:
@@ -697,7 +761,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 manifest.get("schema") != 1
                 or manifest.get("target_identity") != prepared.target_identity
                 or manifest.get("generation") != prepared.work_root.name
-                or not _expected_reusability(manifest, reusable)
+                or not _well_formed_reusability(manifest)
             ):
                 raise SimulationBuildSlotError("Simulation manifest identity changed")
             if not _matching_hashes(prepared.work_root, manifest.get("inputs")):
@@ -731,24 +795,28 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         manifest: object,
         candidate: PreparedSimulationBuild,
         key: str,
-    ) -> str | None:
+    ) -> CacheDecision | None:
         if not isinstance(manifest, dict):
-            return "malformed manifest"
+            return CacheDecision.MALFORMED_MANIFEST
         if (
             manifest.get("schema") != 1
             or manifest.get("target_identity") != candidate.target_identity
         ):
-            return "schema mismatch" if manifest.get("schema") != 1 else "wrong Target"
+            return (
+                CacheDecision.SCHEMA_MISMATCH
+                if manifest.get("schema") != 1
+                else CacheDecision.WRONG_TARGET
+            )
         if (
             manifest.get("generation") != root.name
             or manifest.get("input_key") != key
             or manifest.get("reusable") is not True
         ):
-            return "changed source, recipe, or tool"
+            return CacheDecision.CHANGED_KEY
         if not _matching_hashes(root, manifest.get("inputs")):
-            return "changed source"
+            return CacheDecision.CHANGED_SOURCE
         if not _matching_hashes(build_root, manifest.get("artifacts")):
-            return "changed artifact"
+            return CacheDecision.CHANGED_ARTIFACT
         return None
 
     def authorize_fresh_image(
@@ -781,10 +849,10 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                     or not path.resolve().is_relative_to(root)
                 ):
                     raise SimulationBuildSlotError(f"unsafe Simulation image: {path}")
-                hashes[path.relative_to(root).as_posix()] = _hash_file(path)
+                hashes[path.relative_to(root).as_posix()] = hash_file(path)
             self._write_manifest(prepared, inputs, key, hashes, closure or {}, reason)
             for name, digest in hashes.items():
-                if _hash_file(root / name) != digest:
+                if hash_file(root / name) != digest:
                     raise SimulationBuildSlotError(
                         f"Simulation image changed before launch: {name}"
                     )
@@ -815,8 +883,13 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 self.handle.project_root,
                 captured_ns,
             )
-        except build_reuse.ReadClosureError as exc:
+            unkeyed = build_reuse.unkeyed_build_environment(
+                prepared.build_root, identity, _ambient_environment(prepared)
+            )
+        except (build_reuse.ReadClosureError, OSError, UnicodeError) as exc:
             return None, f"{unproven}: {exc}"
+        if unkeyed:
+            return None, f"{unproven}: generated makefiles read unkeyed environment {unkeyed}"
         return closure, ""
 
     @staticmethod
@@ -868,6 +941,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
 
 __all__ = [
+    "CacheDecision",
     "SimulationBuildSession",
     "SimulationBuildSlotError",
     "TargetCompileSurface",
@@ -876,5 +950,6 @@ __all__ = [
     "resolve_target_compile_surface",
     "simulation_build_slot",
     "snapshot_build_inputs",
+    "snapshot_generation_files",
     "verify_existing_build_inputs",
 ]
