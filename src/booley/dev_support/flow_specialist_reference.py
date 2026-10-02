@@ -225,11 +225,10 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "",
         "Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and "
         "`MINOR` findings. In Interactive Mode, review the selected files using your "
-        "specification or steering. In Ticket Mode, `_done` completes review and preserves "
-        "findings; current findings require human review and explicit approval before "
-        "acceptance, completion, merge, or cleanup, regardless of the success destination. "
-        "`_clean` requires current findings to be verified fixed or explicitly waived "
-        "with user-visible justification.",
+        "specification or steering. In Ticket Mode, `_done` reports findings without "
+        "requiring fixes, but open findings make the Ticket wait for your approval even "
+        "without `review` in `on_success`. `_clean` requires every finding to be fixed "
+        "or waived with a justification.",
         "",
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",

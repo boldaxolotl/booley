@@ -390,8 +390,7 @@ each step waits for the one before it. Leave an action out and it's skipped:
    (one extra AI call). It only applies together with `review`.
 2. **`review`**: parks the Ticket until you approve it. Its branch and working
    copy stay in place so you can inspect them. Nothing below happens until you
-   approve. Without `review`, the Ticket goes straight on to the next step unless
-   current `_done` review findings require explicit Human approval.
+   approve. Without `review`, the Ticket goes straight on to the next step.
 3. **`merge`**: merges the work into the destination branch. Leave it
    out to keep that branch untouched.
 4. **`cleanup`**: deletes the Ticket's branch and working copy, after the merge
@@ -400,8 +399,8 @@ each step waits for the one before it. Leave an action out and it's skipped:
 
 So with `review` in the list, nothing reaches your branch until you've
 approved it. Without `review`, `merge` and `cleanup` run as soon as the
-criteria pass, unless current `_done` review findings require explicit Human
-approval first.
+criteria pass, unless a `_done` review left findings open: then the Ticket
+waits for your approval anyway.
 
 **Adding Targets in a Ticket.** Most Tickets use the Targets you already have.
 To add one, mark it where the Ticket mentions it, and include `merge`:
@@ -641,7 +640,7 @@ Call the `coverage_analyst` Specialist from your connected agent session with `c
 
 #### `reviewer`
 
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` completes review and preserves findings; current findings require human review and explicit approval before acceptance, completion, merge, or cleanup, regardless of the success destination. `_clean` requires current findings to be verified fixed or explicitly waived with user-visible justification.
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` reports findings without requiring fixes, but open findings make the Ticket wait for your approval even without `review` in `on_success`. `_clean` requires every finding to be fixed or waived with a justification.
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
