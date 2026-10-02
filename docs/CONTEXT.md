@@ -56,6 +56,26 @@ _Avoid_: batch mode, automated mode, host mode
 Execution mode in which a human steers Claude Code or Codex inside a Sandbox, using the recommended CLI or an optional VS Code extension in a window attached to that Sandbox. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; ordinary interactive work has no Ticket or Criteria tracking. Explicit human review of a Ticket retains its Scope and records Criteria evidence while the human directs the work, without a Developer Agent.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
+**Goal Mode**:
+The state one agent session enters, on its own Goal Branch, in which its work is judged against its Goals until it finishes with all Goals met or is abandoned. It serves both human-steered and unattended work, and replaces Ticket Mode.
+_Avoid_: ticket mode, ticket, goal session, objective
+
+**Goal Branch**:
+The branch created from a clean worktree's HEAD when a session enters Goal Mode; that HEAD is the base against which Goals are judged. One Goal Mode owns exactly one Goal Branch.
+_Avoid_: ticket branch, work branch
+
+**Goal**:
+A named, mandatory boolean condition held by a session in Goal Mode, met only by Booley Flow or Specialist evidence at the session's current code. The agent may ask to relax a Goal; only a human may approve it.
+_Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
+
+**Goalset**:
+A predefined, named bundle of Goals in strict syntax, selectable when entering Goal Mode.
+_Avoid_: Ticket Creation Guidance, criteria defaults, goal profile
+
+**Session Summary**:
+The mandatory prose report the agent writes when its session finishes Goal Mode: what changed and why, which Booley Flows and Specialists it used, and remaining uncertainties.
+_Avoid_: Developer Report, run report, Goal Report
+
 **Sandbox Attachment**:
 The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
 _Avoid_: Runtime Attachment, remote, tunnel, app bridge
