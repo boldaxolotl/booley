@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from booley.runtime.pid import is_pid_alive
+from booley.runtime.worktree_paths import worktree_state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def _prune_stale_worktree_locks(
          ``TerminateProcess``, which doesn't fire shell EXIT traps).
       2. Age-based fallback (mtime > max_age_s) when no readable PID.
     """
-    locks_dir = project_root / ".booley_project" / "worktrees" / ".locks"
+    locks_dir = worktree_state_dir(project_root) / "worktrees" / ".locks"
     if not locks_dir.is_dir():
         return
 
@@ -61,7 +62,7 @@ def release_worktree_locks(project_root: Path, name: str) -> None:
     Never touches the shared ``_parent_git`` locks: those serialize parent-repo
     mutations across *all* worktrees and may be held by another live ticket.
     """
-    locks_dir = project_root / ".booley_project" / "worktrees" / ".locks"
+    locks_dir = worktree_state_dir(project_root) / "worktrees" / ".locks"
     if not locks_dir.is_dir() or not name or name.startswith("_parent_git"):
         return
 

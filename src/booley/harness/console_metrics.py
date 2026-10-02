@@ -58,6 +58,9 @@ class WorktreeLineCounter:
         # the host-side Console runs on Windows, where Path('/work/...') is not
         # considered absolute.
         runtime_worktree = f"{_SESSION_WORKTREE_PREFIX}/{self._worktree.name}"
+        canonical_worktree = f"/work/.booley_project/worktrees/{self._worktree.name}"
+        if raw_path == canonical_worktree or raw_path.startswith(f"{canonical_worktree}/"):
+            raw_path = runtime_worktree + raw_path.removeprefix(canonical_worktree)
         if raw_path in ("/work", runtime_worktree):
             return None
         if raw_path.startswith(f"{runtime_worktree}/"):

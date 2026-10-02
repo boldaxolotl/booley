@@ -425,11 +425,11 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_SIM_EDA_TOOL` | after Target resolution | concrete EDA tool driven by this Simulation Flow run |
 
 `BOOLEY_PROJECT_DIR` deserves a note: **inside the Sandbox it is
-`/booley-project`**, not `/work/.booley_project`. Both paths reach the same
-state directory — the project dir is bind-mounted at the short path as well —
-but only the short one is exported, so a script that hardcodes
-`/work/.booley_project` and a script that uses `$BOOLEY_PROJECT_DIR` are
-writing to the same place under two different names. Prefer the variable.
+`/booley-project`**, not `/work/.booley_project`. For the default in-checkout
+Project, both paths reach the same state directory through the issued layout;
+compatible images provide the short path as a symlink. Only the short path is
+exported. An external Project-data directory uses its issued short-path mount,
+without a `/work/.booley_project` counterpart. Prefer the variable.
 
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues

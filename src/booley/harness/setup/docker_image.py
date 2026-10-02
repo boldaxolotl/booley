@@ -187,6 +187,7 @@ class _DockerBuildSpec:
     labels: tuple[tuple[str, str], ...] = ()
     capacity_request: DockerBuildRequest | None = None
     capacity_plan: DockerBuildPlan | None = None
+    network: str | None = None
 
 
 def _iter_fingerprint_files(booley_root: Path):
@@ -1061,6 +1062,10 @@ def _local_parent_label_args(parent_artifact: str) -> list[str]:
 def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     """Translate a build specification into the Docker CLI command."""
     build_cmd = ["docker", "build"]
+    if spec.network is not None:
+        if spec.network != "none":
+            raise ValueError("unsupported layout build network")
+        build_cmd += ["--network", "none", "--pull=false"]
     # ``ctx.force`` means "run the local build even if the image fingerprint is
     # current"; it must not mean "discard Docker's layer cache".  The current
     # wheel COPY invalidates Booley's own layers, while changed Dockerfile inputs

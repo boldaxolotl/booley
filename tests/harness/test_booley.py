@@ -1127,7 +1127,7 @@ def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, cap
     monkeypatch.setattr(
         blocked_prep,
         "render_blocked_dossier",
-        lambda *_a, **_k: Namespace(ready=False, message="dossier unavailable"),
+        lambda *_a, **_k: Namespace(ready=False, status="stale", message="dossier unavailable"),
     )
     assert tlr._cmd_board_show(missing_args, tmp_path) == 2
     assert "dossier unavailable" in capsys.readouterr().err
@@ -3511,3 +3511,19 @@ def test_review_exec_cli_preserves_command_exit_or_reports_error(
     assert tlr._cmd_review_exec(args, tmp_path) == (2 if failure else 7)
     if failure:
         assert "stale review execution" in capsys.readouterr().err
+
+
+def test_failed_blocked_renderers_do_not_append_immediate_retry_hint(
+    tmp_path, monkeypatch, capsys
+):
+    from booley.harness import blocked_prep
+
+    outcome = blocked_prep.BlockedPrepOutcome("failed", "underlying worktree registration error")
+    monkeypatch.setattr(blocked_prep, "render_blocked_dossier", lambda *_args: outcome)
+    assert tlr._show_blocked_dossier(tmp_path, "demo") == 2
+    assert "run booley board review" not in capsys.readouterr().out
+    args = Namespace(slug="demo")
+    assert tlr._cmd_board_blocked_briefing(args, tmp_path) == 2
+    error = capsys.readouterr().err
+    assert "underlying worktree registration error" in error
+    assert "run booley board review" not in error

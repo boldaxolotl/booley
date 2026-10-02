@@ -162,6 +162,10 @@ def test_resolve_context_accepts_blocked_ticket(tmp_path: Path, monkeypatch):
     checkout.mkdir()
 
     class FakeTicketIO:
+        @contextmanager
+        def _ticket_lock(self, *_args, **_kwargs):
+            yield
+
         logs_dir = tmp_path / "logs"
 
         def find_ticket(self, _slug):
@@ -220,6 +224,10 @@ def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
         stream.write(f"\n/{rp.PROJECT_DIR_NAME}/\n")
 
     class FakeTicketIO:
+        @contextmanager
+        def _ticket_lock(self, *_args, **_kwargs):
+            yield
+
         logs_dir = project_dir / "tickets" / "logs"
 
         def find_ticket(self, _slug):
@@ -577,14 +585,15 @@ def test_find_checkout_uses_supplied_project_root(tmp_path: Path, monkeypatch):
     checkout = tmp_path / "feature"
     calls = []
 
-    def git(root, *args, **_kwargs):
-        calls.append((root, args))
-        return f"worktree {checkout}\nHEAD {'a' * 40}\nbranch refs/heads/demo\n\n"
+    def lookup(root, ticket_ref):
+        calls.append((root, ticket_ref))
+        return checkout.resolve()
 
-    monkeypatch.setattr(rp, "_git", git)
+    monkeypatch.setattr(rp, "_git", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("booley.ticket_board.ticket_baseline.worktree_for_ref", lookup)
 
     assert rp._find_checkout(tmp_path, "refs/heads/demo") == checkout.resolve()
-    assert calls == [(tmp_path, ("worktree", "list", "--porcelain"))]
+    assert calls == [(tmp_path, "refs/heads/demo")]
 
 
 def test_source_fingerprint_changes_when_run_evidence_changes(tmp_path: Path, monkeypatch):

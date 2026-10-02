@@ -18,6 +18,7 @@ from booley.runtime.project_dir import (
     resolve_project_dir,
     runtime_dir,
 )
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
@@ -346,7 +347,7 @@ def _resume_prepared_refresh(
         raise BasisRefreshError(str(exc)) from exc
     operation = _operation_path(root, journal.operation_id)
     candidate = operation / "new-outer"
-    canonical = resolve_project_dir(root) / "worktrees" / slug
+    canonical = ticket_workspace_path(root, slug)
     outer = candidate if candidate.is_dir() else canonical
     paired = paired_project_repository(outer) if outer.is_dir() else None
     has_project = any(row.role == "project" for row in basis.participants)

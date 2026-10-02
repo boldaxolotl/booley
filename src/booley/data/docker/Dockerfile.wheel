@@ -61,5 +61,13 @@ RUN test -x "$(command -v claude)" \
     && python3 -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)' \
     && /usr/local/libexec/booley/bwave --version
 
+USER root
+RUN if test -e /booley-project || test -L /booley-project; then \
+        test -L /booley-project && test "$(readlink /booley-project)" = /work/.booley_project; \
+    else ln -s /work/.booley_project /booley-project; fi \
+    && chown -h root:root /booley-project \
+    && test "$(stat -c %u /)" = 0 \
+    && test "$(readlink /booley-project)" = /work/.booley_project
+
 USER agent
 WORKDIR /work

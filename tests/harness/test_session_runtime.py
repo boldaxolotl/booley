@@ -259,6 +259,7 @@ def _test_issuance(workspace: Path) -> SimpleNamespace:
         license_profile=None,
         relay_image_id="sha256:" + "a" * 64,
         project_data_source=str(workspace / ".booley_project"),
+        project_data_layout="legacy",
     )
 
 
@@ -1060,6 +1061,7 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         license_profile=None,
         relay_image_id="sha256:" + "a" * 64,
         project_data_source=str(workspace / ".booley_project"),
+        project_data_layout="legacy",
     )
     with (
         patch.object(sr.idk, "network_exists", return_value=True),
@@ -2795,7 +2797,9 @@ class TestImageDriftWarning:
         monkeypatch.setattr(
             sr.idk,
             "compare_issued_selection",
-            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
+            lambda *_args, **_kwargs: sr.image_identity.Comparison(
+                sr.image_identity.Status.MISMATCH
+            ),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
@@ -2812,7 +2816,9 @@ class TestImageDriftWarning:
         monkeypatch.setattr(
             sr.idk,
             "compare_issued_reference",
-            lambda *_args: sr.image_identity.Comparison(sr.image_identity.Status.MISMATCH),
+            lambda *_args, **_kwargs: sr.image_identity.Comparison(
+                sr.image_identity.Status.MISMATCH
+            ),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
@@ -4046,3 +4052,113 @@ class TestSessionRefresh:
         assert "Automatic Doctor is running" in output.err
         assert "Doctor inputs changed" in output.err
         assert "Sandbox ready: session" in output.out
+
+
+@pytest.mark.parametrize(
+    "capable,duplicate,expected", [(True, False, True), (True, True, False), (False, False, False)]
+)
+def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
+    tmp_path, monkeypatch, capable, duplicate, expected
+):
+    import json
+
+    from booley.runtime import project_image
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / ".booley_project"
+    mounts = [
+        {"Destination": "/work/.booley_project", "Source": str(source), "Type": "bind", "RW": True}
+    ]
+    if duplicate:
+        mounts.append(
+            {
+                "Destination": "/booley-project/secrets",
+                "Source": str(source),
+                "Type": "bind",
+                "RW": True,
+            }
+        )
+    raw = json.dumps([{"Mounts": mounts}])
+    image_id = "sha256:" + "a" * 64
+    inspected = []
+    monkeypatch.setattr(
+        project_image,
+        "project_data_alias_capable",
+        lambda image: inspected.append(image) or capable,
+    )
+    issued = SimpleNamespace(project_data_layout="canonical-alias", image_id=image_id)
+    assert (
+        sr._project_data_mount_root_is_pinned(raw, workspace, source, issuance=issued) is expected
+    )
+    assert inspected == [image_id]
+
+
+def test_host_repair_defers_active_legacy_layout_and_accepts_canonical_pin(tmp_path, monkeypatch):
+    import json
+
+    from booley.runtime import project_image
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / ".booley_project"
+    mounts = [
+        {"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True},
+        {
+            "Destination": "/work/.booley_project",
+            "Source": str(source),
+            "Type": "bind",
+            "RW": True,
+        },
+    ]
+    state = {"Image": "sha256:" + "a" * 64, "Mounts": mounts}
+    monkeypatch.setattr(
+        sr, "_strict_running_interactive_states", lambda: [("fixture", json.dumps([state]))]
+    )
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
+    sr.assert_worktree_repair_safe(workspace)
+    mounts.append(
+        {"Destination": "/booley-project", "Source": str(source), "Type": "bind", "RW": True}
+    )
+    with pytest.raises(sr.SessionError, match="regenerate and recreate"):
+        sr.assert_worktree_repair_safe(workspace)
+
+
+def test_host_repair_probe_failure_is_a_session_error(tmp_path, monkeypatch):
+    import json
+
+    from booley.runtime import project_image
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    state = {
+        "Image": "sha256:" + "a" * 64,
+        "Mounts": [{"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True}],
+    }
+    monkeypatch.setattr(
+        sr, "_strict_running_interactive_states", lambda: [("fixture", json.dumps([state]))]
+    )
+
+    def unavailable(_image):
+        raise project_image.DockerImageError("Docker alias probe unavailable")
+
+    monkeypatch.setattr(project_image, "project_data_alias_capable", unavailable)
+    with pytest.raises(sr.SessionError, match="alias probe unavailable"):
+        sr.assert_worktree_repair_safe(workspace)
+
+
+@pytest.mark.parametrize("image", [None, [], 123])
+def test_host_repair_malformed_image_identity_is_a_session_error(tmp_path, monkeypatch, image):
+    import json
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    state = {
+        "Image": image,
+        "Mounts": [{"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True}],
+    }
+    monkeypatch.setattr(
+        sr, "_strict_running_interactive_states", lambda: [("fixture", json.dumps([state]))]
+    )
+    with pytest.raises(sr.SessionError, match="image identity is unavailable"):
+        sr.assert_worktree_repair_safe(workspace)

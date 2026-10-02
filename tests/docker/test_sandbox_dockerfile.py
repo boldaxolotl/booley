@@ -338,6 +338,7 @@ def test_shipped_external_base_images_are_digest_pinned() -> None:
                 "booley-standard-substrate",
                 "booley-substrate",
                 "booley-project-parent",
+                "booley-layout-parent",
             }:
                 continue
             assert re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image), (
@@ -779,3 +780,18 @@ def test_verilator_acceptance_is_required_in_candidate_image() -> None:
     assert "booley-test python /work/tests/docker/verilator_acceptance.py" in workflow
     assert "--work-dir /validation-tmp" in workflow
     assert "fifo native-fst verilator coverage-release simulator" in workflow
+
+
+def test_layout_recipe_is_in_wheel_sources_and_package_data():
+    import tomllib
+
+    from booley.runtime.build_stamp import iter_wheel_source_files
+
+    recipe = _DOCKER_DIR / "Dockerfile.project-data-layout"
+    assert recipe in set(iter_wheel_source_files(Path()))
+    config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert "data/**/*" in config["tool"]["setuptools"]["package-data"]["booley"]
+    instructions = logical_instructions(recipe.read_text(encoding="utf-8"))
+    assert instructions[0].keyword == "FROM"
+    assert instructions[0].value == "booley-layout-parent"
+    assert not any(line.keyword in {"COPY", "WORKDIR"} for line in instructions)

@@ -31,6 +31,7 @@ from booley.criteria.templates import (
 )
 from booley.criteria.thresholds import describe_threshold
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.targets.domain import FuseSocError, UnknownTargetError
 
 TicketStage = Literal["draft", "executable"]
@@ -271,13 +272,11 @@ def ticket_conversion_context(
     """
     root = Path(project_root).resolve()
     if stage == "draft":
-        from booley.runtime.project_dir import resolve_project_dir
-
         selected: Path | None = None
 
         def resolve_view(_generated: Mapping[str, Any]) -> TicketAuthoringView:
             nonlocal selected
-            workspace = resolve_project_dir(root) / "worktrees" / slug
+            workspace = ticket_workspace_path(root, slug)
             selected = workspace if workspace.is_dir() else root
             return ticket_authoring_view(selected)
 

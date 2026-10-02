@@ -5,7 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
@@ -128,7 +129,7 @@ def validate_ticket_document(
         return [f"File not found: {path}"]
     stage = document_stage(tickets_dir, path, off_board="draft")
     git_marker = project_root / ".git"
-    workspace = resolve_project_dir(project_root) / "worktrees" / path.stem
+    workspace = ticket_workspace_path(project_root, path.stem)
     if stage == "draft" and git_marker.exists() and not workspace.is_dir():
         try:
             workspace_ops.ensure_ticket_workspace(project_root, path, path.stem)

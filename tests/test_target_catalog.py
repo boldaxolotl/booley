@@ -358,6 +358,7 @@ def test_inspection_normalizes_windows_fileset_paths_on_posix(tmp_path: Path) ->
 def test_real_baseline_worktree_receives_an_independent_catalog(tmp_path: Path) -> None:
     root = tmp_path / "project"
     _init_repository(root)
+    (root / ".booley_project").mkdir()
     (root / ".gitignore").write_text("/.booley_project/\n", encoding="utf-8")
     (root / "rtl").mkdir()
     (root / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")

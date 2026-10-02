@@ -7,7 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.runtime.project_dir import resolve_project_dir, runtime_dir
+from booley.runtime.project_dir import runtime_dir
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.ticket_board.ticket_repositories import (
     resolve_inner_project_repo,
     ticket_project_worktree,
@@ -196,7 +197,7 @@ def _validate_refs(root: Path, slug: str, refs: dict[str, str]) -> None:
 
 def plan_generation(root: Path, slug: str, status: str, fields: dict) -> tuple[_Participant, ...]:
     """Preflight all participants before modifying either repository."""
-    canonical = resolve_project_dir(root) / "worktrees" / slug
+    canonical = ticket_workspace_path(root, slug)
     project = resolve_inner_project_repo(root)
     if project is None and fields.get("project_destination_ref"):
         raise ArchiveGenerationError(f"project repository is unavailable for {slug}")

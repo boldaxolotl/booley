@@ -33,6 +33,7 @@ from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
     resolve_checkout_project_dir,
 )
+from booley.runtime.worktree_paths import worktree_state_dir
 from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
     resolve_inner_project_repo,
@@ -1259,6 +1260,7 @@ def _mounted_worktree_path(
     except ValueError:
         return next((candidate for candidate in candidates if candidate.exists()), None)
     suffix = Path(*recorded.parts[worktrees_index:])
+    candidates.insert(0, worktree_state_dir(root) / suffix)
     candidates.append(root / suffix)
     try:
         project_dir = resolve_checkout_project_dir(root)

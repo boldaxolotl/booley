@@ -767,7 +767,9 @@ def _run_project_phase(
         project_dir=project_dir,
     )
     if project is not None:
-        _check_worktree_core_shadow_guard(project.project_dir, reporter.pass_, reporter.warn_)
+        _check_worktree_core_shadow_guard(
+            project.project_dir, reporter.pass_, reporter.warn_, project_root=project.project_root
+        )
         reporter.diagnostics(readiness.check_stealth_cores(project, mode=mode))
     _check_board_orphans(
         project_root,
@@ -1313,6 +1315,8 @@ def _check_worktree_core_shadow_guard(
     project_dir: Path,
     _pass: Check,
     _warn: Check,
+    *,
+    project_root: Path | None = None,
 ) -> None:
     """Ensure ``.booley_project/FUSESOC_IGNORE`` keeps worktree cores out of scan.
 
@@ -1333,9 +1337,10 @@ def _check_worktree_core_shadow_guard(
     # Authored stealth cores (.booley_project/cores/, ADR 0036) are sources, not
     # shadow threats — they are scanned deliberately and must not be counted.
     stealth_root = project_dir / fusesoc_registry.STATE_CORES_SUBDIR
+    worktrees = _worktree_core_directory(project_dir, project_root)
     shadow_cores = [
         p
-        for sub in (project_dir / "worktrees", project_dir)
+        for sub in (worktrees, project_dir)
         if sub.is_dir()
         for p in sub.rglob("*.core")
         if not p.is_relative_to(stealth_root)
@@ -1351,6 +1356,17 @@ def _check_worktree_core_shadow_guard(
             ".booley_project/FUSESOC_IGNORE missing; a future ticket worktree's "
             ".core could shadow the repo-root source — run `booley init`"
         )
+
+
+def _worktree_core_directory(project_dir: Path, project_root: Path | None) -> Path:
+    from booley.runtime.worktree_paths import worktree_state_dir
+
+    state = (
+        worktree_state_dir(project_root, project_dir=project_dir)
+        if project_root is not None
+        else project_dir
+    )
+    return state / "worktrees"
 
 
 # State-dir subtrees that legitimately hold transient .core COPIES (worktree /
@@ -6152,7 +6168,7 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     repo-relative rendering that resolves on both host and runtime; any other project dir
     (host default, or an explicit ``[project].dir`` override) is printed as-is.
     """
-    if project.project_dir.as_posix() != dc.PROJECT_DIR_TARGET:
+    if project.project_dir.as_posix() not in {dc.PROJECT_DIR_TARGET, "/work/.booley_project"}:
         return str(report_dir)
     try:
         rel = report_dir.relative_to(project.project_dir)

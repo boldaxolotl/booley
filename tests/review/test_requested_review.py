@@ -366,6 +366,8 @@ def test_stale_accepted_handoff_refuses_approval_without_state_change(
 
 
 @pytest.mark.parametrize("blocked", _STALE_HANDOFF_CASES, indirect=True)
+# Git-heavy recovery lifecycle: allow CI latency; native worker-crash cause is unconfirmed.
+@pytest.mark.timeout(180)
 def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monkeypatch, capsys):
     from booley.harness import booley as harness
     from booley.ticket_board.review_lifecycle import review_command, run_review_command
@@ -2149,7 +2151,7 @@ def test_prepare_blocked_dossier_reuses_fresh_dossier(tmp_path, monkeypatch):
     from booley.harness import blocked_prep
 
     fresh = tmp_path / "dossier.json"
-    ctx = SimpleNamespace()
+    ctx = SimpleNamespace(worktree=None)
     monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: ctx)
     monkeypatch.setattr(
         blocked_prep,

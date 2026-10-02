@@ -34,9 +34,9 @@ from booley.runtime.developer_budget import DeveloperBudget, run_with_developer_
 from booley.runtime.environment import scoped_environment
 from booley.runtime.git import git_run
 from booley.runtime.platform_paths import bash_bin
-from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.prompt_artifacts import write_prompt_artifacts
 from booley.runtime.timefmt import compact_utc_now
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.ticket_board.agent_execution import configure_agent_call, resolve_agent_artifacts
 from booley.ticket_board.paths import (
     existing_ticket_runtime_file,
@@ -205,11 +205,7 @@ def _recover_setup_state(ctx: TicketContext, project_root: Path) -> None:
 
     # Discover worktree from the deterministic path convention used by setup/workspace.py.
     if not ctx.worktree_path:
-        expected_wt = (
-            resolve_project_dir(project_root) / "worktrees" / ctx.slug
-            if ctx.ticket_baseline is not None
-            else project_root / ".booley_project" / "worktrees" / ctx.slug
-        )
+        expected_wt = ticket_workspace_path(project_root, ctx.slug)
         if (expected_wt / ".git").exists():
             ctx.worktree_path = expected_wt
             logger.debug("Recovered worktree_path from filesystem: %s", expected_wt)
@@ -613,7 +609,7 @@ def _is_safe_worktree(ctx: TicketContext) -> bool:
         return False
     allowed_parents = [root_resolved / ".booley_project" / "worktrees"]
     if ctx.ticket_baseline is not None:
-        allowed_parents.append(resolve_project_dir(root_resolved) / "worktrees")
+        allowed_parents.append(ticket_workspace_path(root_resolved, ctx.slug).parent)
     return any(wt_resolved.is_relative_to(p) for p in allowed_parents)
 
 

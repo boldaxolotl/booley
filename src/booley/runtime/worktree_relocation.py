@@ -69,7 +69,14 @@ def preflight_worktree_moves(
             )
 
 
-def relocate_worktree(repository: Path, ref: str, source: Path, destination: Path) -> None:
+def relocate_worktree(
+    repository: Path,
+    ref: str,
+    source: Path,
+    destination: Path,
+    *,
+    relative_paths: bool | None = None,
+) -> None:
     """Atomically move one linked worktree and repair its registration.
 
     Standalone submodule repositories move with the worktree. Native Git
@@ -99,7 +106,7 @@ def relocate_worktree(repository: Path, ref: str, source: Path, destination: Pat
         raise WorktreeRelocationError(
             f"registered worktree and relocation destination are both unavailable: {source}"
         )
-    _repair_registration(repository, ref, destination)
+    _repair_registration(repository, ref, destination, relative_paths=relative_paths)
     refresh_relative_worktree_config(destination)
     _validate_destination(destination)
 
@@ -219,8 +226,13 @@ def _validate_submodule_layout(repository: Path, worktree_root: Path) -> None:
         _validate_submodule_layout(submodule, worktree_root)
 
 
-def _repair_registration(repository: Path, ref: str, destination: Path) -> None:
-    _git(repository, "worktree", "repair", str(destination))
+def _repair_registration(
+    repository: Path, ref: str, destination: Path, *, relative_paths: bool | None = None
+) -> None:
+    from booley.runtime.worktree_repair import _metadata_flag
+
+    flags = () if relative_paths is None else _metadata_flag(relative_paths)
+    _git(repository, "worktree", "repair", *flags, str(destination))
     if _registered_worktrees(repository).get(destination) != ref:
         raise WorktreeRelocationError(
             f"Git did not register relocated worktree for {ref} at {destination}"

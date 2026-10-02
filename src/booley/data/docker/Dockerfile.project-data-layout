@@ -1,0 +1,11 @@
+FROM booley-layout-parent
+ARG BOOLEY_LAYOUT_USER=root
+USER root
+RUN test -L /booley-project \
+    && test "$(readlink /booley-project)" = /work/.booley_project \
+    && test "$(stat -c %u /booley-project)" = 0 \
+    && rm /booley-project \
+    && mkdir /booley-project \
+    && chown root:root /booley-project \
+    && chmod 0755 /booley-project
+USER ${BOOLEY_LAYOUT_USER}

@@ -1007,6 +1007,10 @@ jobs:
           for validation in agent-policy openroad verible isolation fifo native-fst verilator coverage-release simulator cocotb ticket-mode; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
+          install -d -m 0777 \
+            "${RUNNER_TEMP}/bwave-smoke/ticket-mode/alias-project" \
+            "${RUNNER_TEMP}/bwave-smoke/ticket-mode/alias-project/.booley_project"
+          sudo chown -R 1000:1000 "${RUNNER_TEMP}/bwave-smoke/ticket-mode/alias-project"
 
       # Runtime config and layer diff IDs identify the effective parent without
       # timestamped attestations or exporter-dependent config-digest metadata.
@@ -1333,10 +1337,6 @@ jobs:
               python .github/scripts/riscv_phase_metrics.py timed-run
               --record "${RUNNER_TEMP}/riscv-image-evidence/records/ticket-mode.json"
               --name ticket_mode --topology parallel --
-              install -d -m 0777
-              "${VALIDATION_TMP}/alias-project"
-              "${VALIDATION_TMP}/alias-project/.booley_project" &&
-              sudo chown -R 1000:1000 "${VALIDATION_TMP}/alias-project" &&
               .github/scripts/run_with_container_cleanup.sh
               booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
               docker run --rm --init
@@ -1344,9 +1344,10 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
-              --mount type=bind,src="${VALIDATION_TMP}/alias-project/.booley_project",dst=/booley-project
+              --mount type=bind,src="${VALIDATION_TMP}/alias-project/.booley_project",dst=/booley-enqueue-alias
               -e TMPDIR=/validation-tmp -e BOOLEY_TICKET_MODE_SMOKE=1
               -e BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project
+              -e BOOLEY_ENQUEUE_ALIAS_DATA=/booley-enqueue-alias
               booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
               python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
               -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"

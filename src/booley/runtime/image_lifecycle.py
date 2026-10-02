@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tomllib
@@ -124,6 +125,7 @@ class ImageRole(StrEnum):
     PROJECT_SUBSTRATE = "project-substrate"
     PROJECT_OVERLAY = "project-overlay"
     WHEEL_OVERLAY = "wheel-overlay"
+    PROJECT_DATA_LAYOUT = "project-data-layout"
 
 
 class PlanAction(StrEnum):
@@ -256,6 +258,7 @@ class LifecyclePlan:
     selected_reference: str
     input_snapshot: InputSnapshot
     project_root: Path
+    acquisition_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +319,8 @@ class ImageNode:
                 labels.append((LEGACY_FINGERPRINT_LABEL, self.payload.fingerprint))
         if self.role is not None:
             labels.append((LABEL_ARTIFACT_ROLE, self.role.value))
+        if self.role is ImageRole.PROJECT_DATA_LAYOUT:
+            labels.append((project_image.LABEL_LAYOUT_REFERENCE, self.reference))
         if self.effective_inputs is not None:
             labels.append((LABEL_EFFECTIVE_INPUTS, self.effective_inputs))
         if self.wheel_source_fingerprint is not None:
@@ -376,13 +381,35 @@ class TransactionBuildPort(Protocol):
 
 
 def _candidate_reference_is_transactional(reference: str) -> bool:
-    return reference.startswith("booley-lifecycle-") and reference.endswith(":candidate")
+    local_reference = reference.removeprefix("127.0.0.1:1/")
+    return local_reference.startswith("booley-lifecycle-") and local_reference.endswith(
+        ":candidate"
+    )
+
+
+def _active_layout_parent(reference: str) -> bool:
+    match = re.fullmatch(
+        r"(?:127\.0\.0\.1:1/)?booley-lifecycle-(\d+)-[0-9a-f]{32}-layout(?:-parent)?:candidate",
+        reference,
+    )
+    if match is None:
+        return False
+    if os.name != "posix":
+        return True
+    try:
+        from booley.runtime.pid import is_pid_alive
+
+        return is_pid_alive(int(match.group(1)))
+    except (ValueError, OverflowError):
+        return True
 
 
 def _discard_orphaned_candidates(docker: DockerPort) -> None:
     """Remove unjournaled transaction tags left by a process crash."""
     for image in docker.image_references():
-        if _candidate_reference_is_transactional(image.reference):
+        if _candidate_reference_is_transactional(image.reference) and not _active_layout_parent(
+            image.reference
+        ):
             docker.remove_tag(image.reference)
 
 
@@ -908,7 +935,7 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
     if requirements_body is None:
         raise ImageLifecycleError("managed Project overlay has no Project requirements")
     recipe = docker_data_dir() / "Dockerfile.project-overlay"
-    return _graph_node(
+    node = _graph_node(
         reference=selected,
         role=ImageRole.PROJECT_OVERLAY,
         recipe=recipe,
@@ -918,7 +945,15 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
             parent_image=project_image.MANAGED_PROJECT_PARENT,
         ),
         parent=parent,
+        wheel_source_fingerprint=parent.wheel_source_fingerprint,
         recipe_fingerprint=resolve_recipe_fingerprint((recipe,)),
+    )
+
+    return replace(
+        node,
+        payload=parent.payload,
+        runtime_base_contract=parent.runtime_base_contract,
+        standard_substrate_contract=parent.standard_substrate_contract,
     )
 
 
@@ -1052,13 +1087,22 @@ def plan(
         nodes = _hybrid_release_graph(root, selected, contracts)
     else:
         nodes = _source_graph(root, selected)
+    parent_id = resolved_docker.image_id(nodes[-1].reference)
+    if _external_data_layout(root) and parent_id and _layout_alias_capable(parent_id):
+        nodes = (*nodes, _layout_node(root, nodes[-1], parent_id))
+        selected = nodes[-1].reference
+    steps = _plan_steps(nodes, resolved_docker, intent)
+    return LifecyclePlan(nodes, steps, selected, _snapshot(nodes), root, artifact_policy)
+
+
+def _plan_steps(nodes, docker, intent) -> tuple[PlanStep, ...]:
     invalid = False
     steps = []
     for node in nodes:
         reason = (
             Diagnostic("refresh", "explicit refresh requested")
             if intent is Intent.REFRESH
-            else _planned_reason(node, resolved_docker, parent_invalid=invalid)
+            else _planned_reason(node, docker, parent_invalid=invalid)
         )
         if reason is None:
             steps.append(
@@ -1077,7 +1121,7 @@ def plan(
             else PlanAction.BUILD
         )
         steps.append(PlanStep(node.reference, node.role, action, reason))
-    return LifecyclePlan(nodes, tuple(steps), selected, _snapshot(nodes), root)
+    return tuple(steps)
 
 
 def _candidate_reference(transaction_id: str, node: ImageNode) -> str:
@@ -1105,7 +1149,7 @@ def _verify_prepared_image(
             f"prepared candidate {reference!r} has invalid provenance: " + ", ".join(mismatched)
         )
     wheel_sha256 = docker.label(reference, LABEL_WHEEL_SHA256)
-    if node.role is ImageRole.WHEEL_OVERLAY and not wheel_sha256:
+    if node.role in {ImageRole.WHEEL_OVERLAY, ImageRole.PROJECT_DATA_LAYOUT} and not wheel_sha256:
         raise ImageLifecycleError(f"prepared wheel overlay {reference!r} has no wheel SHA-256")
     return PreparedImage(node.reference, reference, image_id, parent_artifact, wheel_sha256)
 
@@ -1129,6 +1173,8 @@ def _prepared_provenance(node: ImageNode, parent_artifact: str | None) -> dict[s
         and node.acquisition_policy is not ArtifactPolicy.VERIFIED_RELEASE_ONLY
     ):
         required[LABEL_LOGICAL_SELECTION_FINGERPRINT] = node.logical_selection_fingerprint
+    if node.role is ImageRole.PROJECT_DATA_LAYOUT:
+        required[project_image.LABEL_LAYOUT_REFERENCE] = node.reference
     required.update(_image_contract_labels(node))
     if parent_artifact is not None:
         required[LABEL_PARENT_ARTIFACT] = parent_artifact
@@ -1171,16 +1217,17 @@ def prepare(
         resolved_docker,
         verbose=verbose,
     )
-    transaction_id = uuid4().hex[:16]
-    prior_tags = tuple(
-        TagSnapshot(node.reference, resolved_docker.image_id(node.reference))
-        for node in lifecycle_plan.nodes
-    )
-    prepared: list[PreparedImage] = []
-    realized: dict[str, PreparedImage] = {}
-    candidate_references: list[str] = []
+    return _prepare_graph(lifecycle_plan, uuid4().hex[:16], resolved_docker, resolved_builder)
+
+
+def _prepare_upstream(lifecycle_plan, transaction_id, resolved_docker, resolved_builder):
+    prepared = []
+    realized = {}
+    candidate_references = []
     try:
         for node, step in zip(lifecycle_plan.nodes, lifecycle_plan.steps, strict=True):
+            if node.role is ImageRole.PROJECT_DATA_LAYOUT:
+                continue
             acquired, candidates = _prepare_node(
                 node,
                 step,
@@ -1193,9 +1240,45 @@ def prepare(
             realized[node.reference] = acquired
             candidate_references.extend(candidates)
     except BaseException:
-        for reference in candidate_references:
-            if resolved_docker.image_id(reference) is not None:
-                resolved_docker.remove_tag(reference)
+        _discard_candidate_references(candidate_references, resolved_docker)
+        raise
+    return prepared, realized, candidate_references
+
+
+def _discard_candidate_references(references, docker) -> None:
+    for reference in references:
+        if docker.image_id(reference) is not None:
+            docker.remove_tag(reference)
+
+
+def _prepare_graph(lifecycle_plan, transaction_id, resolved_docker, resolved_builder):
+    prior_tags = tuple(
+        TagSnapshot(node.reference, resolved_docker.image_id(node.reference))
+        for node in lifecycle_plan.nodes
+        if node.role is not ImageRole.PROJECT_DATA_LAYOUT
+    )
+    candidate_references: list[str] = []
+    try:
+        prepared, realized, candidate_references = _prepare_upstream(
+            lifecycle_plan, transaction_id, resolved_docker, resolved_builder
+        )
+        lifecycle_plan, layout_image, layout_candidates, layout_prior = _prepare_layout_child(
+            lifecycle_plan,
+            prepared[-1],
+            transaction_id,
+            realized,
+            resolved_docker,
+            resolved_builder,
+        )
+        if layout_image is not None:
+            prepared.append(layout_image)
+            candidate_references.extend(layout_candidates)
+            prior_tags = (
+                *(row for row in prior_tags if row.reference != layout_prior.reference),
+                layout_prior,
+            )
+    except BaseException:
+        _discard_candidate_references(candidate_references, resolved_docker)
         raise
     return PreparedConvergence(
         lifecycle_plan,
@@ -1221,11 +1304,19 @@ def _prepare_node(
     if step.action is PlanAction.REUSE:
         return _verify_prepared_image(node, node.reference, parent_artifact, docker), ()
     candidate = _candidate_reference(transaction_id, node)
-    built = builder.prepare(node, candidate_reference=candidate, parent_reference=parent_reference)
     candidates = [candidate]
-    if built not in candidates and built != node.reference:
-        candidates.append(built)
-    return _verify_prepared_image(node, built, parent_artifact, docker), tuple(candidates)
+    try:
+        built = builder.prepare(
+            node, candidate_reference=candidate, parent_reference=parent_reference
+        )
+        if built not in candidates and built != node.reference:
+            candidates.append(built)
+        return _verify_prepared_image(node, built, parent_artifact, docker), tuple(candidates)
+    except BaseException:
+        for reference in candidates:
+            if docker.image_id(reference) is not None:
+                docker.remove_tag(reference)
+        raise
 
 
 def validate(
@@ -1238,8 +1329,14 @@ def validate(
     current = plan(
         ProjectImageScope(prepared.plan.project_root),
         docker=resolved_docker,
-        artifact_policy=prepared.plan.nodes[-1].acquisition_policy,
+        artifact_policy=prepared.plan.acquisition_policy,
     )
+    if (
+        prepared.plan.nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT
+        or current.nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT
+    ):
+        _validate_layout_preparation(prepared, current, resolved_docker)
+        return
     if current.input_snapshot != prepared.input_snapshot:
         raise ImageLifecycleError(
             "image inputs changed while candidates were being prepared: "
@@ -1281,7 +1378,10 @@ def abort(
     """Discard transaction references without disturbing managed tags."""
     resolved_docker = docker or _docker_adapter()
     for image in prepared.candidates:
-        if image.candidate_reference != image.reference:
+        if (
+            image.candidate_reference != image.reference
+            and resolved_docker.image_id(image.candidate_reference) is not None
+        ):
             resolved_docker.remove_tag(image.candidate_reference)
 
 
@@ -1316,7 +1416,7 @@ def commit(
         raise
     final = prepared.candidates[-1]
     abort(prepared, docker=resolved_docker)
-    return LifecycleResult(
+    result = LifecycleResult(
         prepared.plan.selected_reference,
         final.image_id,
         Status.CHANGED if changed else Status.CURRENT,
@@ -1326,6 +1426,9 @@ def commit(
         requires_runtime_recreation=bool(changed),
         wheel_source_fingerprint=prepared.plan.nodes[-1].wheel_source_fingerprint,
         wheel_sha256=final.wheel_sha256,
+    )
+    return _cleanup_layout_result(
+        prepared.plan.project_root, result, Intent.ENSURE, resolved_docker
     )
 
 
@@ -1772,7 +1875,12 @@ def _reconcile_release_tag_cleanup(
 
 def _with_cleanup(result: LifecycleResult, cleanup: ImageCleanup) -> LifecycleResult:
     status = Status.CHANGED if cleanup.removed else result.status
-    return replace(result, status=status, cleanup=cleanup)
+    combined = ImageCleanup(
+        tuple(dict.fromkeys((*result.cleanup.pending, *cleanup.pending))),
+        tuple(dict.fromkeys((*result.cleanup.removed, *cleanup.removed))),
+        tuple(dict.fromkeys((*result.cleanup.retained_required, *cleanup.retained_required))),
+    )
+    return replace(result, status=status, cleanup=combined)
 
 
 def reconcile(
@@ -1798,13 +1906,17 @@ def reconcile(
         return _reconcile_host(intent, resolved_docker, builder, artifact_policy.sources)
     if not isinstance(scope, ProjectImageScope):
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    return _reconcile_project(
+    result = _reconcile_project(
         scope,
         intent,
         resolved_docker,
         builder,
         artifact_policy.sources,
     )
+    result = _reconcile_legacy_layout(
+        scope.project_root.resolve(), result, intent, resolved_docker, builder
+    )
+    return _cleanup_layout_result(scope.project_root, result, intent, resolved_docker)
 
 
 def _reconcile_host(
@@ -1872,6 +1984,17 @@ def _reconcile_project(
     if intent is not Intent.CHECK and selected == generated:
         _prepare_project_recipe(root, _project_requirements_body(root))
         selected = _selected_reference(root)
+    selected_id = docker.image_id(selected)
+    if (
+        intent is Intent.CHECK
+        and _external_data_layout(root)
+        and selected_id
+        and _layout_alias_capable(selected_id)
+    ):
+        try:
+            return _check_layout_graph(scope, shipped_sources, docker)
+        except IncrementalPlanUnavailableError:
+            pass  # User-owned recipes retain the complete legacy graph.
     if selected == BASE_IMAGE and scope.base is not None:
         _verify_host_base(scope.base, docker)
         return LifecycleResult(
@@ -2180,3 +2303,263 @@ def _inspect_container_image_ids(container_ids: list[str]) -> frozenset[str]:
 
 def _docker_adapter() -> DockerPort:
     return _DockerCli()
+
+
+def _layout_alias_capable(image_id: str) -> bool:
+    if not isinstance(image_id, str):
+        raise ImageLifecycleError("Sandbox image identity is unavailable for Project-data proof")
+    try:
+        return project_image.project_data_alias_capable(image_id)
+    except project_image.DockerImageError as exc:
+        raise ImageLifecycleError(str(exc)) from exc
+
+
+def _external_data_layout(root: Path) -> bool:
+    from booley.runtime.project_dir import resolve_project_dir
+
+    try:
+        selected = resolve_project_dir(root)
+        return selected.resolve() != (
+            root / ".booley_project"
+        ).resolve() and not selected.is_relative_to(root)
+    except (FileNotFoundError, ValueError):
+        return False
+
+
+def _layout_node(root: Path, parent: ImageNode, parent_id: str) -> ImageNode:
+    recipe = docker_data_dir() / "Dockerfile.project-data-layout"
+    recipe_hash = resolve_recipe_fingerprint((recipe,))
+    reference, identity = project_image.layout_identity(root, parent_id, recipe_hash)
+    node = _graph_node(
+        reference=reference,
+        role=ImageRole.PROJECT_DATA_LAYOUT,
+        recipe=recipe,
+        effective_inputs=identity,
+        parent=parent,
+        recipe_fingerprint=recipe_hash,
+        policy=ArtifactPolicy.LOCAL_ONLY,
+        wheel_source_fingerprint=parent.wheel_source_fingerprint,
+    )
+    return replace(
+        node,
+        payload=parent.payload,
+        logical_selection_fingerprint=parent.logical_selection_fingerprint,
+        runtime_base_contract=parent.runtime_base_contract,
+        standard_substrate_contract=parent.standard_substrate_contract,
+    )
+
+
+def _prepare_layout_child(
+    original: LifecyclePlan,
+    parent_image: PreparedImage,
+    transaction_id: str,
+    realized: dict[str, PreparedImage],
+    docker: DockerPort,
+    builder: TransactionBuildPort,
+) -> tuple[LifecyclePlan, PreparedImage | None, tuple[str, ...], TagSnapshot | None]:
+    upstream = tuple(
+        node for node in original.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT
+    )
+    if not _external_data_layout(original.project_root) or not _layout_alias_capable(
+        parent_image.image_id
+    ):
+        steps = tuple(
+            step for step in original.steps if step.role is not ImageRole.PROJECT_DATA_LAYOUT
+        )
+        updated = replace(
+            original,
+            nodes=upstream,
+            steps=steps,
+            selected_reference=upstream[-1].reference,
+            input_snapshot=_snapshot(upstream),
+        )
+        return updated, None, (), None
+    node = _layout_node(original.project_root, upstream[-1], parent_image.image_id)
+    reason = _planned_reason(node, docker, parent_invalid=False)
+    action = PlanAction.BUILD if reason else PlanAction.REUSE
+    step = PlanStep(
+        node.reference, node.role, action, reason or Diagnostic("current", "verified layout")
+    )
+    acquired, candidates = _prepare_node(node, step, transaction_id, realized, docker, builder)
+    nodes = (*upstream, node)
+    steps = (
+        *tuple(step for step in original.steps if step.role is not ImageRole.PROJECT_DATA_LAYOUT),
+        step,
+    )
+    updated = replace(
+        original,
+        nodes=nodes,
+        steps=steps,
+        selected_reference=node.reference,
+        input_snapshot=_snapshot(nodes),
+    )
+    return (
+        updated,
+        acquired,
+        candidates,
+        TagSnapshot(node.reference, docker.image_id(node.reference)),
+    )
+
+
+def _validate_layout_preparation(
+    prepared: PreparedConvergence, current: LifecyclePlan, docker: DockerPort
+) -> None:
+    before = tuple(
+        node for node in prepared.plan.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT
+    )
+    now = tuple(node for node in current.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT)
+    if _snapshot(before) != _snapshot(now) or not _external_data_layout(
+        prepared.plan.project_root
+    ):
+        raise ImageLifecycleError(
+            "upstream image or Project-data topology inputs changed during layout preparation"
+        )
+    has_layout = prepared.plan.nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT
+    parent = prepared.candidates[-2 if has_layout else -1]
+    if docker.image_id(parent.candidate_reference) != parent.image_id:
+        raise ImageLifecycleError("Project-data layout immutable prepared parent was substituted")
+    if has_layout:
+        expected = _layout_node(prepared.plan.project_root, before[-1], parent.image_id)
+        if _snapshot((expected,)) != _snapshot((prepared.plan.nodes[-1],)):
+            raise ImageLifecycleError(
+                "Project-data layout recipe or parent identity changed during preparation"
+            )
+    elif _layout_alias_capable(parent.image_id):
+        raise ImageLifecycleError("prepared alias image is missing its required layout derivative")
+    for image in prepared.candidates:
+        if docker.image_id(image.candidate_reference) != image.image_id:
+            raise ImageLifecycleError("prepared image identity changed before layout adoption")
+
+
+def _reconcile_layout_tag_cleanup(
+    root: Path, selected: str, intent: Intent, docker: DockerPort
+) -> ImageCleanup:
+    """Remove obsolete owned derivative tags, preserving every live artifact tag."""
+    prefix = project_image.project_layout_prefix(root)
+    inventory = docker.image_references()
+    candidates = [
+        row
+        for row in inventory
+        if row.reference.removesuffix(":latest") != selected.removesuffix(":latest")
+        and row.reference.startswith(prefix)
+        and re.fullmatch(
+            r"[0-9a-f]{16}", row.reference.removeprefix(prefix).removesuffix(":latest")
+        )
+        is not None
+        and docker.label(row.reference, LABEL_ARTIFACT_ROLE) == ImageRole.PROJECT_DATA_LAYOUT.value
+        and docker.label(row.reference, LABEL_SCHEMA) == PROVENANCE_SCHEMA
+        and (docker.label(row.reference, LABEL_EFFECTIVE_INPUTS) or "")[:16]
+        == row.reference.removeprefix(prefix).removesuffix(":latest")
+    ]
+    if not candidates:
+        return ImageCleanup()
+    used = docker.container_image_ids()
+    pending, removed, retained = [], [], []
+    for row in candidates:
+        if row.image_id in used:
+            retained.append(row.reference)
+        elif intent is Intent.CHECK:
+            pending.append(row.reference)
+        elif docker.image_id(row.reference) != row.image_id:
+            raise ImageLifecycleError(
+                f"obsolete layout tag changed before cleanup: {row.reference}"
+            )
+        else:
+            docker.remove_tag(row.reference)
+            removed.append(row.reference)
+    return ImageCleanup(tuple(pending), tuple(removed), tuple(retained))
+
+
+def _cleanup_layout_result(root, result, intent, docker) -> LifecycleResult:
+    try:
+        return _with_cleanup(
+            result, _reconcile_layout_tag_cleanup(root, result.selected_reference, intent, docker)
+        )
+    except (ImageLifecycleError, OSError, subprocess.SubprocessError) as exc:
+        return replace(
+            result, diagnostics=(*result.diagnostics, Diagnostic("cleanup-deferred", str(exc)))
+        )
+
+
+def _reconcile_legacy_layout(root, result, intent, docker, builder) -> LifecycleResult:
+    if (
+        not _external_data_layout(root)
+        or result.status is Status.EXTERNAL
+        or not result.selected_id
+        or result.selected_reference.startswith(project_image.project_layout_prefix(root))
+    ):
+        return result
+    if not _layout_alias_capable(result.selected_id):
+        return result
+    parent = _nodes(root, result.selected_reference, docker)[-1]
+    parent = replace(
+        parent,
+        wheel_source_fingerprint=docker.label(
+            result.selected_reference, LABEL_WHEEL_SOURCE_FINGERPRINT
+        ),
+        logical_selection_fingerprint=docker.label(
+            result.selected_reference, LABEL_LOGICAL_SELECTION_FINGERPRINT
+        ),
+    )
+    node = _layout_node(root, parent, result.selected_id)
+    reason = _planned_reason(node, docker, parent_invalid=False)
+    if intent is Intent.CHECK:
+        return replace(
+            result,
+            selected_reference=node.reference,
+            selected_id=docker.image_id(node.reference),
+            status=Status.STALE if reason or result.status is Status.STALE else result.status,
+            diagnostics=(*result.diagnostics, *((reason,) if reason else ())),
+            wheel_source_fingerprint=parent.wheel_source_fingerprint,
+            wheel_sha256=docker.label(node.reference, LABEL_WHEEL_SHA256),
+        )
+    if result.status is Status.STALE:
+        return result
+    changed = _adopt_legacy_layout(node, result, reason, docker, builder)
+    return replace(
+        result,
+        selected_reference=node.reference,
+        selected_id=docker.image_id(node.reference),
+        status=Status.CHANGED if changed else result.status,
+        changed_images=(*result.changed_images, *changed),
+        requires_spec_reseed=bool(changed) or result.requires_spec_reseed,
+        requires_runtime_recreation=bool(changed) or result.requires_runtime_recreation,
+        wheel_source_fingerprint=parent.wheel_source_fingerprint,
+        wheel_sha256=docker.label(node.reference, LABEL_WHEEL_SHA256),
+    )
+
+
+def _check_layout_graph(scope, shipped_sources, docker) -> LifecycleResult:
+    policy = next(policy for policy in ArtifactPolicy if policy.sources == shipped_sources)
+    observed = plan(scope, docker=docker, artifact_policy=policy)
+    stale = tuple(step.reason for step in observed.steps if step.action is not PlanAction.REUSE)
+    final = observed.nodes[-1]
+    return LifecycleResult(
+        observed.selected_reference,
+        docker.image_id(observed.selected_reference),
+        Status.STALE if stale else Status.CURRENT,
+        diagnostics=stale,
+        payload_fingerprint=final.wheel_source_fingerprint,
+        wheel_source_fingerprint=final.wheel_source_fingerprint,
+        wheel_sha256=docker.label(observed.selected_reference, LABEL_WHEEL_SHA256),
+    )
+
+
+def _adopt_legacy_layout(node, result, reason, docker, builder) -> tuple[str, ...]:
+    changed = ()
+    if reason is not None:
+        if builder is None:
+            raise TypeError("layout reconciliation requires a build adapter")
+        candidate = builder.build(node, force=True, source=ArtifactSource.LOCAL_BUILD)
+        if candidate is None or candidate == node.reference:
+            raise ImageLifecycleError("layout builder must return a transaction-owned candidate")
+        try:
+            prepared = _verify_prepared_image(node, candidate, result.selected_id, docker)
+            if docker.image_id(result.selected_reference) != result.selected_id:
+                raise ImageLifecycleError("legacy layout parent changed before adoption")
+            docker.tag(prepared.image_id, node.reference)
+            changed = (node.reference,)
+        finally:
+            if docker.image_id(candidate) is not None:
+                docker.remove_tag(candidate)
+    return changed

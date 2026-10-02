@@ -24,6 +24,7 @@ from booley.criteria.state import DevelopmentState
 from booley.runtime.agent import call_agent
 from booley.runtime.agent_config import get_backend_config
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.worktree_paths import ticket_workspace_path
 from booley.ticket_board.agent_execution import configure_agent_call
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
@@ -100,10 +101,15 @@ class FreshResult:
 
     package_path: Path | None = None
     mismatches: tuple[str, ...] = ()
+    failure: str | None = None
 
     @property
     def ready(self) -> bool:
-        return self.package_path is not None and not self.mismatches
+        return self.package_path is not None and not self.mismatches and self.failure is None
+
+
+class _PreparationError(RuntimeError):
+    """A persisted preparation or live input collection failed."""
 
 
 class _FreshnessError(RuntimeError):
@@ -144,7 +150,7 @@ def _resolve_context(project_root: Path, slug: str) -> BlockedContext:
     if worktree is None or not worktree.is_dir():
         worktree = _find_checkout(project_root, feature_branch)
     if worktree is None or not worktree.is_dir():
-        conventional = project_root / ".booley_project" / "worktrees" / slug
+        conventional = ticket_workspace_path(project_root, slug)
         worktree = conventional.resolve() if conventional.is_dir() else None
     log_dir = tio.logs_dir / slug
     return BlockedContext(
@@ -522,10 +528,10 @@ def _load_manifest(ctx: BlockedContext) -> dict[str, Any]:
         raise _FreshnessError("manifest malformed") from exc
     if manifest.get("version") != BLOCKED_PACKAGE_VERSION:
         raise _FreshnessError("manifest version changed")
+    if manifest.get("status") == "failed" and isinstance(manifest.get("error"), str):
+        raise _PreparationError(manifest["error"])
     if manifest.get("status") != "ready":
-        error = manifest.get("error")
-        detail = f"manifest failed: {error}" if isinstance(error, str) else "manifest not ready"
-        raise _FreshnessError(detail)
+        raise _FreshnessError("manifest not ready")
     return manifest
 
 
@@ -547,13 +553,15 @@ def _fresh(ctx: BlockedContext) -> FreshResult:
     try:
         manifest = _load_manifest(ctx)
         inputs, package_path = _manifest_package(manifest)
+    except _PreparationError as exc:
+        return FreshResult(failure=str(exc))
     except _FreshnessError as exc:
         return FreshResult(mismatches=(str(exc),))
     mismatches = list(_snapshot_mismatches(inputs))
     try:
         mismatches.extend(_compare_inputs(inputs, _collect_live_inputs(ctx)))
     except (OSError, RuntimeError, ValueError) as exc:
-        mismatches.append(str(exc))
+        return FreshResult(failure=f"{type(exc).__name__}: {exc}")
     return FreshResult(package_path if not mismatches else None, tuple(mismatches))
 
 
@@ -600,6 +608,7 @@ async def prepare_blocked_dossier(
     started = time.monotonic()
     try:
         ctx = _resolve_context(project_root.resolve(), slug)
+        _repair_preparation_workspace(ctx)
         if not force:
             fresh = _fresh(ctx)
             if fresh.ready:
@@ -646,6 +655,8 @@ def render_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
     try:
         ctx = _resolve_context(project_root.resolve(), slug)
         fresh = _fresh(ctx)
+        if fresh.failure is not None:
+            return BlockedPrepOutcome("failed", _failure_message(fresh.failure, slug))
         if not fresh.ready:
             detail = ", ".join(fresh.mismatches)
             return BlockedPrepOutcome("stale", f"blocked dossier is stale: {detail}")
@@ -688,3 +699,24 @@ def render_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
         return BlockedPrepOutcome("ready", "\n".join(lines), path)
     except Exception as exc:  # noqa: BLE001 — CLI boundary returns a stable outcome
         return BlockedPrepOutcome("failed", f"{type(exc).__name__}: {exc}"[:2000])
+
+
+def _failure_message(error: str, slug: str) -> str:
+    return (
+        f"blocked dossier preparation failed: {error}; resolve the underlying preparation error; "
+        f"after resolving this failure, run booley board review {slug} to prepare a new dossier"
+    )
+
+
+def _repair_preparation_workspace(ctx: BlockedContext) -> None:
+    from booley.runtime.worktree_repair import repair_ticket_workspace
+
+    if ctx.worktree is None or not (ctx.worktree / ".git").is_file():
+        return
+    tio = TicketIO(tickets_dir_from_project_root(ctx.project_root), project_root=ctx.project_root)
+    with tio._ticket_lock(ctx.slug, review_operation=True):
+        basis = tio._load_basis_unlocked(ctx.slug)
+        project_ref = basis.participant("project").ticket_ref if basis.project_sha else None
+        repair_ticket_workspace(
+            ctx.project_root, ctx.worktree, basis.participant("outer").ticket_ref, project_ref
+        )

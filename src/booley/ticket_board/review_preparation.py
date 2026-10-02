@@ -382,16 +382,23 @@ def _git(worktree: Path, *args: str, timeout: int = 60) -> str:
 
 def _find_checkout(project_root: Path, ticket_ref: str) -> Path | None:
     """Find a branch checkout without depending on the caller's current directory."""
+    from booley.runtime.worktree_paths import worktree_state_dir
+    from booley.ticket_board.ticket_baseline import worktree_for_ref
+
     output = _git(project_root, "worktree", "list", "--porcelain")
-    checkout: Path | None = None
+    current: Path | None = None
     for line in [*output.splitlines(), ""]:
         if line.startswith("worktree "):
-            checkout = Path(line.removeprefix("worktree "))
-        elif line == f"branch {ticket_ref}" and checkout is not None:
-            return checkout.resolve()
+            current = Path(line.removeprefix("worktree "))
+        elif line == f"branch {ticket_ref}" and current is not None:
+            if "worktrees" in current.parts:
+                suffix = Path(*current.parts[current.parts.index("worktrees") :])
+                candidate = worktree_state_dir(project_root) / suffix
+                if candidate.is_dir():
+                    return candidate.resolve()
         elif not line:
-            checkout = None
-    return None
+            current = None
+    return worktree_for_ref(project_root, ticket_ref)
 
 
 def _load_review_basis(tio: TicketIO, slug: str) -> TicketBaseline:
@@ -626,6 +633,7 @@ def _resolve_context(
         allow_report_disabled=allow_report_disabled,
         locked_basis=locked_basis,
     )
+    _repair_review_workspace(project_root, inputs, already_locked=locked_basis is not None)
     log_dir = inputs.tio.logs_dir / inputs.slug
     selected, expected_heads, accepted_heads = _review_selection(
         project_root,
@@ -643,6 +651,32 @@ def _resolve_context(
         allow_stale_accepted=allow_stale_accepted,
     )
     return _build_review_context(project_root, inputs, selected, resolved)
+
+
+def _repair_review_workspace(
+    project_root: Path, inputs: ReviewTicketInputs, *, already_locked: bool
+) -> None:
+    """Reconcile linked metadata under the same lock as Ticket mutation."""
+    from booley.runtime.worktree_repair import repair_ticket_workspace
+
+    def repair() -> None:
+        outer = inputs.basis.participant("outer")
+        checkout = _find_checkout(project_root, outer.ticket_ref)
+        if checkout is None or not (checkout / ".git").is_file():
+            return
+        project = next((row for row in inputs.basis.participants if row.role == "project"), None)
+        repair_ticket_workspace(
+            project_root,
+            checkout,
+            outer.ticket_ref,
+            project.ticket_ref if project is not None else None,
+        )
+
+    if already_locked:
+        repair()
+    else:
+        with inputs.tio._ticket_lock(inputs.slug, review_operation=True):
+            repair()
 
 
 def _resolve_project_review_repository(

@@ -594,7 +594,9 @@ class TestCmdShow:
         path = make_ticket_file(tio, "drafts", "custom-project")
         path.write_text(_VALID_REVIEW_TICKET, encoding="utf-8")
         project_dir = tmp_path / "configured-project-dir"
-        monkeypatch.setattr(cli_handlers, "resolve_project_dir", lambda _root: project_dir)
+        monkeypatch.setattr(
+            "booley.runtime.worktree_paths.resolve_project_dir", lambda _root: project_dir
+        )
 
         assert _cmd_show(tio, Namespace(slug="custom-project")) == 0
         assert (

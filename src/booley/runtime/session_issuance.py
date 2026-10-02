@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import stat
@@ -14,7 +15,7 @@ import sysconfig
 import tempfile
 import tomllib
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -152,6 +153,7 @@ class Issuance:
     validator_sha256: str
     file_sha256: str | None = None
     project_data_source: str | None = None
+    project_data_layout: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +165,7 @@ class SessionSpecInputs:
     fixed_container_environment: tuple[tuple[str, str], ...]
     installation_name: str | None
     license_profile_name: str | None
+    project_data_layout: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +213,7 @@ def issuance_from_document(raw: object) -> Issuance:
     except BoundaryError as exc:
         raise RuntimeSpecError(str(exc)) from exc
     expected = {field.name for field in fields(Issuance)}
-    if set(values) != expected:
+    if set(values) not in (expected, expected - {"project_data_layout"}):
         raise RuntimeSpecError("host-issued spec stamp has unexpected or missing fields")
     try:
         issuance = Issuance(
@@ -230,6 +233,11 @@ def issuance_from_document(raw: object) -> Issuance:
             validator_sha256=require_str(values, "validator_sha256"),
             file_sha256=require_opt_str(values, "file_sha256"),
             project_data_source=require_opt_str(values, "project_data_source"),
+            project_data_layout=(
+                require_str(values, "project_data_layout")
+                if "project_data_layout" in values
+                else "legacy"
+            ),
         )
     except BoundaryError as exc:
         raise RuntimeSpecError(f"host-issued spec stamp is invalid: {exc}") from exc
@@ -256,6 +264,7 @@ def _validate_issuance_fields(issuance: Issuance) -> None:
             and re.fullmatch(r"sha256:[0-9a-f]{64}", issuance.relay_image_id) is None
         )
         or issuance.project_data_source is None
+        or issuance.project_data_layout not in {"legacy", "canonical-alias"}
     ):
         raise RuntimeSpecError("host-issued spec stamp contains invalid field types or values")
 
@@ -563,6 +572,7 @@ def _prepare_spec(
         requirements.runtime,
         project_data_path,
     )
+    inputs = replace(inputs, project_data_layout=prospective.project_data_layout)
     return PreparedSessionSpec(spec, digest, inputs, prospective)
 
 
@@ -1001,6 +1011,7 @@ def _issuance(
         validator_sha256=_file_sha256(_initialize_executable(spec)),
         file_sha256=file_sha256,
         project_data_source=project_data_source,
+        project_data_layout=_spec_project_data_layout(spec),
     )
 
 
@@ -1065,8 +1076,12 @@ def _validate_generated_spec(
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
     project_data_workspace_target = _require_project_data_mount(
-        mounts, issuance.project_data_source, project
+        mounts, issuance.project_data_source, project, layout=issuance.project_data_layout
     )
+    if issuance.project_data_layout == "canonical-alias" and not _project_data_alias_capable(
+        issuance.image_id
+    ):
+        raise RuntimeSpecError("issued image no longer proves the canonical Project-data alias")
     _validate_state_volume(mounts, app, project)
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
@@ -1383,11 +1398,22 @@ def _pin_project_data_mount(
     mounts[index] = f"source={expected_source},target=/booley-project,type=bind"
     shadow_target = _project_data_shadow_target(project, project_data)
     if shadow_target is None:
+        if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
+            raise RuntimeSpecError(
+                "selected image alias hides the external Project-data source; managed images require init or refresh; for an explicitly selected external image, select an image with an ordinary /booley-project directory"
+            )
         return
     if any(_mount_target(raw) == shadow_target for raw in mounts):
         raise RuntimeSpecError("Project-data workspace view is already mounted")
     shadow_source = expected_source
     mounts.insert(index + 1, f"source={shadow_source},target={shadow_target},type=bind")
+    if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
+        mounts[:] = [
+            raw
+            for raw in mounts
+            if _mount_target(raw) != "/booley-project"
+            and not str(_mount_target(raw)).startswith("/booley-project/")
+        ]
 
 
 def _pin_devcontainer_mount(spec: dict[str, Any], project: Path) -> None:
@@ -1621,6 +1647,8 @@ def _require_project_data_mount(
     mounts: list[str],
     source: str | None,
     project_root: Path,
+    *,
+    layout: str = "legacy",
 ) -> str | None:
     if not source:
         raise RuntimeSpecError("host issuance lacks an authorized Project-data mount source")
@@ -1631,14 +1659,25 @@ def _require_project_data_mount(
     expected_source = docker_mount_path(project)
     expected = f"source={expected_source},target=/booley-project,type=bind"
     matches = [item for item in mounts if _mount_target(item) == "/booley-project"]
-    if matches != [expected]:
+    if layout == "canonical-alias":
+        if project != project_root / ".booley_project":
+            raise RuntimeSpecError("canonical alias layout requires checkout-local Project data")
+        if any(
+            _mount_target(raw) == "/booley-project"
+            or str(_mount_target(raw)).startswith("/booley-project/")
+            for raw in mounts
+        ):
+            raise RuntimeSpecError("canonical alias layout forbids alias-subtree mounts")
+    elif layout != "legacy" or matches != [expected]:
         raise RuntimeSpecError("Project-data target must have one exact host-authorized bind")
     shadow_target = _project_data_shadow_target(project_root, project)
     if shadow_target is None:
         return None
     expected_shadow = f"source={expected_source},target={shadow_target},type=bind"
     shadows = [item for item in mounts if _mount_target(item) == shadow_target]
-    if shadows != [expected_shadow] or mounts.index(expected_shadow) < mounts.index(expected):
+    if shadows != [expected_shadow] or (
+        layout != "canonical-alias" and mounts.index(expected_shadow) < mounts.index(expected)
+    ):
         raise RuntimeSpecError(
             "Project-data workspace view must be pinned by the exact host-authorized bind"
         )
@@ -1665,16 +1704,29 @@ def _require_exact_readonly_mount(mounts: list[str], expected: str, *, last: boo
 
 
 def _mount_target(raw: str) -> str:
-    for field in raw.split(","):
-        key, separator, value = field.partition("=")
-        if separator and key == "target":
-            return value
-    return ""
+    return _mount_fields(raw).get("target", "")
 
 
 def _mount_fields(raw: str) -> dict[str, str]:
-    """Parse Booley's generated Docker mount grammar."""
-    return dict(field.split("=", 1) for field in raw.split(",") if "=" in field)
+    """Parse Booley's unquoted lowercase Docker mount grammar without ambiguity."""
+    fields = {}
+    for field in raw.split(","):
+        key, separator, value = field.partition("=")
+        if '"' in field or key != key.lower():
+            raise RuntimeSpecError("mount fields must use canonical lowercase unquoted grammar")
+        if not separator:
+            continue
+        if key == "src":
+            key = "source"
+        if key in {"target", "dst", "destination"}:
+            key = "target"
+            value = posixpath.normpath("/" + value.lstrip("/")) if value.startswith("/") else value
+        if key in fields:
+            raise RuntimeSpecError("mount has conflicting or repeated fields")
+        fields[key] = value
+    if fields.get("type", "") != fields.get("type", "").lower():
+        raise RuntimeSpecError("mount type must use canonical lowercase grammar")
+    return fields
 
 
 def _runtime_authority_error(spec: dict[str, Any], exc: Exception) -> RuntimeSpecError:
@@ -1870,3 +1922,23 @@ def _write_stamp(path: Path, issuance: Issuance) -> None:
                 os.close(descriptor)
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def _spec_project_data_layout(spec: dict[str, Any]) -> str:
+    mounts = spec.get("mounts", [])
+    return (
+        "legacy"
+        if any(_mount_target(raw) == "/booley-project" for raw in mounts)
+        else "canonical-alias"
+    )
+
+
+def _project_data_alias_capable(image_id: str) -> bool:
+    from booley.runtime.project_image import DockerImageError, project_data_alias_capable
+
+    if not isinstance(image_id, str):
+        raise RuntimeSpecError("Sandbox image identity is unavailable for Project-data proof")
+    try:
+        return project_data_alias_capable(image_id)
+    except DockerImageError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
