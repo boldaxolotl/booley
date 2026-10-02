@@ -25,13 +25,13 @@ from pathlib import Path
 
 from booley.harness.setup.common import InitContext, err, info, ok, skip, warn
 from booley.runtime.build_stamp import (
-    build_stamp,
     embedded_payload_fingerprint,
     iter_payload_files,
     resolve_build_commit,
     resolve_payload_fingerprint,
     resolve_source_updated_at,
     resolve_wheel_source_fingerprint,
+    runtime_image_build_stamp,
     wheel_embedded_commit,
 )
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
@@ -957,7 +957,7 @@ def _report_build_cache(prune_hint_gb: float = 10.0) -> None:
 
 def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
     if not preserve_stamp:
-        return build_stamp(booley_root)
+        return runtime_image_build_stamp(booley_root)
     stamp_file = booley_root / "src" / "booley" / "_build_commit.py"
     if not stamp_file.is_file():
         raise OSError("verified development build stamp is missing")

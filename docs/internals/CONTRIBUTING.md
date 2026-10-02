@@ -40,6 +40,30 @@ After editing it, refresh the installed-runtime copy with
 `python -m booley.dev_support.reference_docs`; use `--check` to verify it
 without writing.
 
+### Building a development wheel
+
+Use the editable development environment and a complete checkout. From its root:
+```bash
+python3 -m pip install build
+wheel=$(python3 -P .github/scripts/build_development_wheel.py)
+```
+The script stamps `DEVELOPMENT_WHEEL`, removes generated src stamp/context even
+on failure, and prints the exact built wheel path. Only after a successful build,
+inspect it without replacing the editable install:
+```bash
+if [ -n "$wheel" ]; then
+    wheel_env=$(mktemp -d)
+    python3 -m venv "$wheel_env/venv"
+    "$wheel_env/venv/bin/python" -m pip install "$wheel"
+    (cd "$wheel_env" && "$wheel_env/venv/bin/booley" --version)
+    rm -rf -- "$wheel_env"
+fi
+```
+Host Bootstrap refuses disposable/virtualenv installs; follow
+[canonical host installation policy](../user/SETUP.md) and
+[host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment)
+to intentionally use this wheel on the host.
+
 ### Agent source-development checks
 
 Agents use the read-only Agent Readiness Check at

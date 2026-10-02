@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -3619,3 +3620,125 @@ def test_layout_builder_refuses_parent_before_docker_build(
     assert probe.specs == []
     assert probe.docker.image_id("candidate") is None
     assert probe.docker.image_id("parent") == probe.parent["Id"]
+
+
+@pytest.fixture
+def runtime_image_stamp_environment(tmp_path, monkeypatch):
+    import sys
+    from types import ModuleType
+
+    docker, _pulls = _wire_distribution_pull(tmp_path, monkeypatch, stamped=False)
+    stamp = ModuleType("booley._build_commit")
+    stamp.DEVELOPMENT_CONTEXT_SHA256 = ""
+    stamp.PAYLOAD_FINGERPRINT = "a" * 64
+    stamp.WHEEL_SOURCE_FINGERPRINT = "b" * 64
+    stamp.RUNTIME_BASE_CONTRACT = "c" * 64
+    stamp.STANDARD_SUBSTRATE_CONTRACT = "d" * 64
+    stamp.OFFICIAL_RELEASE = False
+    monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+    from booley.runtime import image_build_contracts
+
+    stamp_file = tmp_path / "_build_commit.py"
+    stamp_file.write_text(
+        f'RUNTIME_BASE_CONTRACT = "{stamp.RUNTIME_BASE_CONTRACT}"\n'
+        f'STANDARD_SUBSTRATE_CONTRACT = "{stamp.STANDARD_SUBSTRATE_CONTRACT}"\n'
+    )
+    monkeypatch.setattr(image_build_contracts, "_embedded_stamp_path", lambda: stamp_file)
+    monkeypatch.setattr(harness_lifecycle, "capacity_plan", lambda _plan: None)
+    plan = SimpleNamespace(
+        project_root=tmp_path,
+        steps=(),
+        nodes=(
+            SimpleNamespace(
+                role=lifecycle.ImageRole.WHEEL_OVERLAY,
+                acquisition_policy=lifecycle.ArtifactPolicy.LOCAL_ONLY,
+            ),
+        ),
+    )
+    monkeypatch.setattr(harness_lifecycle, "plan", lambda *_args: plan)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_transaction_build_adapter",
+        lambda *_a, **_kw: pytest.fail("must fail before building"),
+    )
+    return docker, plan
+
+
+@pytest.mark.parametrize("consumer", ["host", "prepare", "init", "refresh", "bootstrap"])
+def test_runtime_image_stamp_recovery_reaches_consumers(
+    tmp_path, monkeypatch, capsys, consumer, runtime_image_stamp_environment
+):
+    from booley.harness import bootstrap, bootstrap_cli, init_cmd
+
+    docker, plan = runtime_image_stamp_environment
+    if consumer == "init":
+        monkeypatch.setattr(
+            harness_lifecycle,
+            "reconcile_planned",
+            lambda *_a, **_kw: harness_lifecycle.prepare(plan),
+        )
+        ctx = init_cmd.InitContext(project_root=tmp_path)
+        assert init_cmd._step_image_lifecycle(ctx) is None
+        message = ctx.results[-1].detail
+    elif consumer == "bootstrap":
+        monkeypatch.setattr(bootstrap, "reconcile_images", harness_lifecycle.reconcile)
+        result, finding = bootstrap._reconcile_base_image(lifecycle.Intent.ENSURE, verbose=False)
+        assert result is None
+        assert finding.state is bootstrap.BootstrapState.ERROR
+        monkeypatch.setattr(
+            bootstrap_cli,
+            "reconcile_bootstrap",
+            lambda *_a, **_kw: bootstrap.BootstrapResult(lifecycle.Intent.ENSURE, (finding,)),
+        )
+        assert (
+            bootstrap_cli.run_bootstrap(
+                SimpleNamespace(force=False, check_only=True, verbose=True)
+            )
+            == 2
+        )
+        message = capsys.readouterr().out
+    else:
+        with pytest.raises(lifecycle.ImageLifecycleError) as caught:
+            if consumer == "host":
+                harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+            elif consumer == "refresh":
+                init_cmd.prepare_runtime_image(tmp_path)
+            else:
+                harness_lifecycle.prepare(plan)
+        message = str(caught.value)
+        if consumer != "host":
+            assert isinstance(caught.value.__cause__, ValueError)
+    assert "runtime-image-style" in message
+    assert "BuildProfile.DEVELOPMENT_WHEEL" in message
+    assert "python3 -P -m build --wheel" in message
+    assert "python3 -P .github/scripts/build_development_wheel.py" in message
+    assert docker.mutations == []
+
+
+def test_verified_source_context_preserves_builder_errors_and_cleanup(monkeypatch):
+    from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="0.2.6", origin=VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl"
+        ),
+    )
+    closed = []
+
+    @contextmanager
+    def context():
+        try:
+            yield Path("verified-source")
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(harness_lifecycle, "extracted_development_context", context)
+    with (
+        pytest.raises(ValueError, match="builder failure"),
+        harness_lifecycle._verified_source_context(True) as root,
+    ):
+        assert root == Path("verified-source")
+        raise ValueError("builder failure")
+    assert closed == [True]
