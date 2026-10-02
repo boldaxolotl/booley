@@ -182,47 +182,18 @@ def _configuration_candidate(path: Path, *, strict: bool) -> bool:
     return True
 
 
-@dataclass(frozen=True, slots=True)
-class UpstreamRecord:
-    """Owner-selected repository authority and immutable imported commit."""
-
-    repository: str
-    base: str
-
-
-def upstream_record(project_root: Path | None = None) -> UpstreamRecord | None:
-    """Read an explicit paired upstream authority, never infer one from refs."""
+def validate_push_configuration(project_root: Path | None = None) -> None:
+    """Strictly validate the selected policy before checking an active push."""
     if source_checkout_policy_owner(project_root):
-        return None
+        return
     section = _load_booley_config(project_root, strict=True).get("stealth", {})
     if not isinstance(section, dict):
         raise ValueError("[stealth] must be a table")
-    repository = section.get("upstream_repository")
-    base = section.get("upstream_base")
-    if repository is None and base is None:
-        return None
-    if (
-        not isinstance(repository, str)
-        or not repository.strip()
-        or repository != repository.strip()
-    ):
-        raise ValueError("[stealth] upstream_repository and upstream_base require a complete pair")
-    if (
-        not isinstance(base, str)
-        or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", base) is None
-    ):
-        raise ValueError("[stealth] upstream_base must be a full immutable commit object ID")
-    absolute = Path(repository).is_absolute()
-    url = re.fullmatch(r"(?:https|ssh|file)://[^\s]+", repository)
-    scp = (
-        "://" not in repository
-        and "::" not in repository
-        and not repository.lower().startswith("file:")
-        and re.fullmatch(r"(?:[^\s/@:]+@)?[^\s/:]+:[^\s]+", repository)
-    )
-    if not (absolute or url or scp):
-        raise ValueError("[stealth] upstream_repository requires a literal URL or absolute path")
-    return UpstreamRecord(repository, base.lower())
+    if "upstream_repository" in section or "upstream_base" in section:
+        raise ValueError(
+            "[stealth]: remove these unsupported import settings; "
+            "all newly exposed history is checked"
+        )
 
 
 def _stealth_section(project_root: Path | None = None) -> dict:

@@ -18,7 +18,7 @@ from booley.commit_policy.policy import (
     has_banned_content,
     redact_banned,
     source_checkout_policy_owner,
-    upstream_record,
+    validate_push_configuration,
 )
 
 # ---------------------------------------------------------------------------
@@ -569,28 +569,27 @@ def test_default_inventory_is_exhaustively_audited():
         "upstream_repository = [",
     ],
 )
-def test_upstream_record_invalid_pair_fails_closed(tmp_path, text):
+def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path, text):
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\n" + text)
     with pytest.raises(ValueError):
-        upstream_record(tmp_path)
+        validate_push_configuration(tmp_path)
 
 
-def test_upstream_record_absent_and_valid_immutable_pairs(tmp_path):
-    assert upstream_record(tmp_path) is None
+def test_validate_push_configuration_absent_and_retired_immutable_pairs(tmp_path):
+    assert validate_push_configuration(tmp_path) is None
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     for base in ("A" * 40, "B" * 64):
         config.write_text(
             f'[stealth]\nupstream_repository = "https://example.test/upstream.git"\nupstream_base = "{base}"\n'
         )
-        record = upstream_record(tmp_path)
-        assert record.repository == "https://example.test/upstream.git"
-        assert record.base == base.lower()
+        with pytest.raises(ValueError, match="remove these unsupported import settings"):
+            validate_push_configuration(tmp_path)
 
 
-def test_upstream_record_unreadable_selected_config_refuses(tmp_path, monkeypatch):
+def test_validate_push_configuration_unreadable_selected_config_refuses(tmp_path, monkeypatch):
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\n")
@@ -603,10 +602,12 @@ def test_upstream_record_unreadable_selected_config_refuses(tmp_path, monkeypatc
 
     monkeypatch.setattr(Path, "open", denied)
     with pytest.raises(ValueError, match="cannot read selected"):
-        upstream_record(tmp_path)
+        validate_push_configuration(tmp_path)
 
 
-def test_upstream_record_source_owner_never_loads_project_config(tmp_path, monkeypatch):
+def test_validate_push_configuration_source_owner_never_loads_project_config(
+    tmp_path, monkeypatch
+):
     from booley.commit_policy import policy
 
     monkeypatch.setattr(policy, "source_checkout_policy_owner", lambda root: True)
@@ -615,11 +616,11 @@ def test_upstream_record_source_owner_never_loads_project_config(tmp_path, monke
         pytest.fail("source policy must not load Project configuration")
 
     monkeypatch.setattr(policy, "_load_booley_config", forbidden)
-    assert upstream_record(tmp_path) is None
+    assert validate_push_configuration(tmp_path) is None
 
 
 @pytest.mark.parametrize("target", ["missing.toml", "booley.toml"])
-def test_upstream_record_broken_config_node_refuses(tmp_path, target):
+def test_validate_push_configuration_broken_config_node_refuses(tmp_path, target):
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     try:
@@ -627,10 +628,10 @@ def test_upstream_record_broken_config_node_refuses(tmp_path, target):
     except OSError:
         pytest.skip("platform does not support symlink creation")
     with pytest.raises(ValueError, match="cannot read selected"):
-        upstream_record(tmp_path)
+        validate_push_configuration(tmp_path)
 
 
-def test_upstream_record_stat_error_refuses(tmp_path, monkeypatch):
+def test_validate_push_configuration_stat_error_refuses(tmp_path, monkeypatch):
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     original = Path.stat
@@ -642,31 +643,31 @@ def test_upstream_record_stat_error_refuses(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", denied)
     with pytest.raises(ValueError, match="cannot read selected"):
-        upstream_record(tmp_path)
+        validate_push_configuration(tmp_path)
 
 
 @pytest.mark.parametrize(
     "repository", ["http://example.test/repo", "git://example.test/repo", "ext::unsafe"]
 )
-def test_upstream_record_unsafe_url_is_not_scp(tmp_path, repository):
+def test_validate_push_configuration_unsafe_url_is_not_scp(tmp_path, repository):
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
     config.write_text(
         f'[stealth]\nupstream_repository = "{repository}"\nupstream_base = "{"f" * 40}"\n'
     )
-    with pytest.raises(ValueError, match="literal URL or absolute path"):
-        upstream_record(tmp_path)
+    with pytest.raises(ValueError, match="unsupported import settings"):
+        validate_push_configuration(tmp_path)
 
 
-def test_upstream_record_refuses_file_scp_form(tmp_path):
+def test_validate_push_configuration_refuses_file_scp_form(tmp_path):
     directory = tmp_path / ".booley_project"
     directory.mkdir()
     (directory / "booley.toml").write_text(
         '[stealth]\nupstream_repository = "file:/absolute/repo"\n'
         'upstream_base = "' + "a" * 40 + '"\n'
     )
-    with pytest.raises(ValueError, match="literal URL"):
-        upstream_record(tmp_path)
+    with pytest.raises(ValueError, match="unsupported import settings"):
+        validate_push_configuration(tmp_path)
 
 
 class TestIdentifierRegression:

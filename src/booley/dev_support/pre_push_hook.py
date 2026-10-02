@@ -5,7 +5,7 @@ The commit-msg sanitizer covers ``git commit`` and ``git merge`` — but git
 runs no message hook at all for ``git revert``/``git cherry-pick``, and
 ``--no-verify`` disables commit-msg entirely (F-17). This hook is the safety
 net at the last interception point git offers: it scans every newly exposed commit
-outside actual destination history and positively verified imported ancestry and refuses the push on any of these offenses:
+outside actual destination history and refuses the push on any of these offenses:
 
 1. **Banned phrases** in the message, either identity, a changed tracked path,
    or a changed symlink target.
@@ -22,7 +22,7 @@ Packaged into the Project's ``.booley_project/.managed/project-git-hooks.pyz``
 bundle by ``booley init``. Its flat imports resolve from the zip root, so Git
 operations do not need an installed Booley package. Escape hatch:
 ``BOOLEY_SKIP_PUSH_GUARD=1`` explicitly skips all checks for one push.
-Imported history is exempt only through verified recorded upstream authority.
+History already advertised by the actual destination is excluded automatically.
 
 Exit 0 = allow push; exit 1 = reject with diagnostic naming the commits.
 """
@@ -54,9 +54,9 @@ from commit_msg_utils import (
 )
 
 try:
-    from booley.commit_policy.policy import upstream_record
+    from booley.commit_policy.policy import validate_push_configuration
 except ImportError:
-    from booley_commit_policy import upstream_record
+    from booley_commit_policy import validate_push_configuration
 
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"
@@ -97,7 +97,7 @@ def _run_git(args, *, cwd=None, env=None, data=None, timeout=60):
     except subprocess.TimeoutExpired as exc:
         raise InspectionError(
             "Git inspection timed out; repair slow Git/transport or reduce the selected "
-            "range with verified upstream authority and retry"
+            "range with complete inspected history and retry"
         ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise InspectionError(
@@ -504,21 +504,11 @@ def _secure_https(root, location, env):
             )
 
 
-def _advertised(inspection, location, *, upstream=False):
+def _advertised(inspection, location):
     env, path = _transport_environment(inspection.root, location)
     if path is not None:
         external = _probe_environment(external=True)
         authority = _file_authority_state(path, external)
-        if upstream:
-            alternates = authority[1] / "info" / "alternates"
-            if (
-                authority[0] == inspection.state[0]
-                or authority[1] == inspection.state[1]
-                or (alternates.exists() and alternates.read_bytes().strip())
-            ):
-                raise InspectionError(
-                    "recorded upstream must have independent repository and object storage"
-                )
         for key in (
             "GIT_DIR",
             "GIT_WORK_TREE",
@@ -553,7 +543,7 @@ def _advertised(inspection, location, *, upstream=False):
     return ids
 
 
-def _outgoing_range(inspection, updates, destination, record):
+def _outgoing_range(inspection, updates, destination):
     tips = inspection.commits([update.local for update in updates])
     # Different tags may peel to the same commit; validate each local update.
     if len(tips) != len({update.local for update in updates}) and any(
@@ -564,29 +554,14 @@ def _outgoing_range(inspection, updates, destination, record):
             "history or select a commit update and retry"
         )
     old = inspection.commits([update.old for update in updates if set(update.old) != {"0"}])
-    if record:
-        if len(record.base) != inspection.oid_length:
-            raise InspectionError("recorded upstream base object format differs from repository")
-        base = inspection.objects([record.base])[record.base]
-        if base is None or base[0] != "commit":
-            raise InspectionError("fetch/reconcile the configured upstream base commit and retry")
     excluded, unavailable = _destination_exclusions(inspection, destination, old)
     candidate = inspection.inventory(tips, excluded)
-    if record:
-        ancestry = inspection.inventory([record.base])
-        if set(candidate).intersection(ancestry):
-            advertised = inspection.commits(
-                _advertised(inspection, record.repository, upstream=True)
-            )
-            if record.base not in inspection.inventory(advertised):
-                raise InspectionError(
-                    "fetch the configured upstream history and retry; recorded base provenance unavailable"
-                )
-            candidate = inspection.inventory(tips, [*excluded, record.base])
     shallow = Path(inspection.git(["rev-parse", "--git-path", "shallow"]).decode().strip())
     shallow = inspection.root / shallow if not shallow.is_absolute() else shallow
     if shallow.exists() and set(shallow.read_text().split()).intersection(candidate):
-        raise InspectionError("fetch --unshallow from the trusted repository and retry")
+        raise InspectionError(
+            "fetch complete pushed history from its source with --unshallow and retry"
+        )
     return candidate, unavailable
 
 
@@ -987,14 +962,14 @@ def main() -> int:
 def _inspect_push(repository_root):
     # Consume the complete hook protocol before any child can acquire stdin.
     protocol = sys.stdin.read()
-    record = upstream_record(repository_root)
     updates = _updates(protocol, _Protocol(repository_root))
     if not updates:
         return [], False
+    validate_push_configuration(repository_root)
     if len(sys.argv) != 3 or not sys.argv[1] or not sys.argv[2]:
         raise InspectionError("active push requires destination name and location")
     inspection = _Inspection(repository_root)
-    commits, unavailable = _outgoing_range(inspection, updates, sys.argv[2], record)
+    commits, unavailable = _outgoing_range(inspection, updates, sys.argv[2])
     policy = stealth_policy(repository_root)
     offenders = _inspect_commits(
         inspection,
@@ -1023,7 +998,7 @@ def _report_offenders(offenders, unavailable):
             file=sys.stderr,
         )
     print(
-        "Fix: rewrite offending commits, or fetch/reconcile the configured upstream history and retry.",
+        "Fix: rewrite offending commits, or repair destination discovery and retry.",
         file=sys.stderr,
     )
     return 1

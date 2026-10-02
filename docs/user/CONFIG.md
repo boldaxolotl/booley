@@ -1019,33 +1019,13 @@ prose. An already-installed hook no-ops at commit time when the flag is off.
 findings`, `as suggested by`, `automated fix`, and `suggested fix` are no longer
 default bans. Custom vocabulary still redacts these terms when selected.
 
-To exempt imported ancestry, explicitly record its trusted repository and full
-immutable commit object ID in this Project's configuration:
-
-```toml
-[stealth]
-upstream_repository = "/absolute/path/to/independent/upstream.git"
-upstream_base = "0123456789abcdef0123456789abcdef01234567"
-```
-
-Both settings are required together. The base must be a locally available
-commit, using the repository's 40- or 64-digit object format. The location must
-be a literal SSH/HTTPS/file URL or absolute local repository path, never a
-remote-name alias or relative upstream path. Local authority must use a
-different Git common directory and independent object storage; the current
-checkout, worktrees, aliases, shared stores, and alternate-backed upstream
-repositories cannot prove import provenance. Complete alternate-backed Projects
-and destination repositories remain supported.
-
-There is no automatic baseline. Without the pair, newly exposed history is
-fully checked: generated-only imported history passes with the reduced defaults,
-while protected identities and identities outside an allowlist remain checked.
-The base's ancestry is exempt only after the exact configured repository's
-advertised history positively proves it. A missing base blocks active pushes;
-fetch/reconcile the recorded base and retry. An applicable base still needs
-verified upstream access on a first import, even when offline scanning would
-otherwise pass. Destination-covered or unrelated ancestry avoids that lookup.
-No-update and deletion-only pushes do not need network discovery.
+No import settings are needed. Pre-push automatically excludes history already
+advertised by the actual destination. All newly exposed history is checked,
+including imported history: generated-only first imports pass with the default
+vocabulary, while protected identities, authors outside an allowlist, protected
+paths, and committed symlink targets may block a first push to an empty destination.
+Remove obsolete `upstream_repository` and `upstream_base` settings from `[stealth]`;
+removing them does not grant an imported-history exemption.
 
 `banned_words` replaces (not extends) the built-in list; `banned_substrings`
 adds literal substring terms. Both lists are combined case-insensitively without
@@ -1153,23 +1133,26 @@ allowed_authors = [
 ]
 ```
 
+Malformed or unreadable selected Project configuration blocks active pushes:
+repair the file and retry so configured allowlists and custom vocabulary remain
+in effect. Valid disabled policies and Booley source checkouts still no-op.
+Valid no-update and deletion-only pushes need no configuration validation or
+destination discovery.
+
 Unset or `[]` disables the identity allowlist. Pre-push checks the complete
 newly exposed range, excluding ancestry already reachable from the actual
 destination's advertised locally available refs, available old tips supplied by
-Git's push protocol, or a positively verified recorded upstream base. New local
-commits, merges, and newly reachable side branches outside those exclusions still
+Git's push protocol. New local commits, merges, and newly reachable side branches outside those exclusions still
 receive every message, identity, tracked-path, and committed-symlink check.
 Collaborators' identities in that checked range must match the allowlist.
 
 Destination advertisement failure or denied transport grants no advertised
 exclusion. The hook warns that discovery is unavailable and scans the complete
-conservative superset, retaining available push-protocol old tips and separately
-verified upstream ancestry. Historical findings may already be present on the
+conservative superset, retaining available push-protocol old tips. Historical findings may already be present on the
 destination; repair credentials/network or canonical transport and retry verified
-discovery. Required upstream proof, range, object, batch, or provenance failures
-block the push. Fetch complete missing history and retry; when a selected shallow
-boundary remains, fetch `--unshallow` from the trusted repository. The hook does
-not fetch objects or choose credentials interactively.
+discovery. Range, object, or batch failures block the push. Fetch complete missing history and retry; when a selected shallow
+boundary remains, fetch complete pushed history from its source with
+`--unshallow`. The hook does not fetch objects or choose credentials interactively.
 
 Authority discovery permits file, SSH, and HTTPS only where effective Git
 specific/global protocol settings and the caller's `GIT_ALLOW_PROTOCOL` both
@@ -1193,10 +1176,10 @@ both capability paths. Missing inspected objects and changed inspection state
 fail closed.
 
 After upgrading, rerun `booley init` to reconcile the managed hooks. Cached
-unrelated upstream remote refs are no longer implicit authority: clone-first
-workflows importing protected history must record the explicit pair.
-`BOOLEY_SKIP_PUSH_GUARD=1` remains an explicit all-checks override for one push;
-verified imported ancestry does not require it.
+unrelated remote refs never grant an exemption. There is no configured import
+exemption, and unadvertised imported history containing protected metadata may
+refuse a first push. `BOOLEY_SKIP_PUSH_GUARD=1` remains an explicit all-checks
+override for one push.
 
 #### What survives a fresh clone
 
