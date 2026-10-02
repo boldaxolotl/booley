@@ -448,3 +448,23 @@ def test_stale_image_missing_cleanup_module_cannot_apply_identity(tmp_path):
     assert "No module named" in result.stderr
     assert "old apply invoked" not in result.stderr
     assert _git(workspace, "config", "user.name") == "Human"
+
+
+def test_cleanup_preserves_next_writers_lock_after_publication(tmp_path, monkeypatch):
+    from booley.runtime.incontainer_git_identity_cleanup import cleanup_git_identity
+
+    _git(tmp_path, "init", "-q")
+    apply_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    target = tmp_path / ".git/config.worktree"
+    lock = target.with_name("config.worktree.lock")
+    original_replace = Path.replace
+
+    def publish_and_acquire_next_lock(source, destination):
+        result = original_replace(source, destination)
+        if source == lock and destination == target:
+            lock.write_text("next Git writer's lock")
+        return result
+
+    monkeypatch.setattr(Path, "replace", publish_and_acquire_next_lock)
+    cleanup_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    assert lock.read_text() == "next Git writer's lock"

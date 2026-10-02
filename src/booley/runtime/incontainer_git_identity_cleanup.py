@@ -61,6 +61,7 @@ def cleanup_git_identity(checkout: Path, identity: GitIdentity) -> None:
         descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except OSError as exc:
         raise GitIdentityError(f"cannot acquire Git config lock {lock}: {exc}") from exc
+    published = False
     try:
         with os.fdopen(descriptor, "wb") as stream:
             mode = target.lstat().st_mode
@@ -76,10 +77,12 @@ def cleanup_git_identity(checkout: Path, identity: GitIdentity) -> None:
             os.fchmod(stream.fileno(), stat.S_IMODE(mode))
         _remove_pair(checkout, lock)
         lock.replace(target)
+        published = True
     except OSError as exc:
         raise GitIdentityError(f"cannot clean legacy worktree identity: {exc}") from exc
     finally:
-        lock.unlink(missing_ok=True)
+        if not published:
+            lock.unlink(missing_ok=True)
 
 
 def main() -> None:
