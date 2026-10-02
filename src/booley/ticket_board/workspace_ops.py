@@ -74,6 +74,7 @@ from .ticket_baseline import (
     TicketBaseline,
     TicketBaselineError,
     _identity_git_result,
+    _named_commit_result,
     _named_ref_exists,
     _named_ref_is_commit,
     authored_ticket_digest,
@@ -1828,7 +1829,13 @@ def pin_basis_refs(
 
 
 def _verified_basis_commit(repository: Path, ref: str) -> str:
-    result = _identity_git_result(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    result = (
+        _named_commit_result(repository, ref, timeout=120)
+        if ref.startswith("refs/")
+        else _identity_git_result(
+            repository, "rev-parse", "--verify", f"{ref}^{{commit}}", timeout=120
+        )
+    )
     if result.returncode != 0:
         if ref.startswith("refs/") and (
             not _named_ref_exists(repository, ref) or not _named_ref_is_commit(repository, ref)
@@ -1838,6 +1845,8 @@ def _verified_basis_commit(repository: Path, ref: str) -> str:
             f"cannot verify ancestry in {repository} (identity {ref!r}, rc {result.returncode}): "
             f"{(result.stderr or result.stdout).strip()}"
         )
+    if ref.startswith("refs/"):
+        return result.stdout.strip()
     try:
         return resolve_commit(repository, result.stdout.strip())
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:

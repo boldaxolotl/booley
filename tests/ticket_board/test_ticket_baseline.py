@@ -2724,21 +2724,60 @@ def test_board_renders_commit_identity_failure_after_valid_conversion(
 
 
 @pytest.mark.parametrize("adapter", ["baseline", "workspace"])
-def test_valid_named_commit_does_not_need_failure_classification(tmp_path, monkeypatch, adapter):
+@pytest.mark.parametrize("ref_kind", ["branch", "annotated_tag"])
+def test_valid_named_commit_does_not_need_failure_classification(
+    tmp_path, monkeypatch, adapter, ref_kind
+):
     from booley.ticket_board import ticket_baseline
 
     root, _data, _tio = _paired_basis_project(tmp_path)
     expected = _git(root, "rev-parse", "HEAD")
+    ref = "refs/heads/main"
+    if ref_kind == "annotated_tag":
+        _git(root, "tag", "-a", "verified-tag", "-m", "annotated", expected)
+        ref = "refs/tags/verified-tag"
     module = ticket_baseline if adapter == "baseline" else workspace_ops
 
     def unavailable_proof(*_args):
         raise ticket_baseline.TicketAncestryVerificationError("failure-only proof unavailable")
 
     monkeypatch.setattr(module, "_named_ref_exists", unavailable_proof)
+    original_run = ticket_baseline.subprocess.run
+    identity_calls = []
+
+    def observed_git(command, *args, **kwargs):
+        if command[1] in {"show-ref", "rev-parse"}:
+            identity_calls.append((command[1:], kwargs["timeout"]))
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", observed_git)
     if adapter == "baseline":
         actual = ticket_baseline._descendant_ref_commit(
-            root, "refs/heads/main", expected, kind="destination", role="outer"
+            root, ref, expected, kind="destination", role="outer"
         )
     else:
-        actual = workspace_ops._verified_basis_commit(root, "refs/heads/main")
+        actual = workspace_ops._verified_basis_commit(root, ref)
     assert actual == expected
+    assert identity_calls == [
+        (["show-ref", "--verify", "--dereference", ref], 30 if adapter == "baseline" else 120),
+        (["rev-parse", "--verify", f"{expected}^{{commit}}"], 30),
+    ]
+
+
+@pytest.mark.parametrize("adapter", ["baseline", "workspace"])
+@pytest.mark.parametrize("decoy_prefix", ["refs/", "refs/tags/"])
+def test_missing_full_ref_does_not_resolve_decoy(tmp_path, adapter, decoy_prefix):
+    from booley.ticket_board import ticket_baseline
+
+    root, _data, _tio = _paired_basis_project(tmp_path)
+    expected = _git(root, "rev-parse", "HEAD")
+    ref = "refs/heads/not-there"
+    _git(root, "update-ref", decoy_prefix + ref, expected)
+    if adapter == "baseline":
+        with pytest.raises(ticket_baseline.TicketBaselineError, match="ref is unavailable"):
+            ticket_baseline._descendant_ref_commit(
+                root, ref, expected, kind="destination", role="outer"
+            )
+    else:
+        with pytest.raises(workspace_ops.TicketBaselineOperationError, match="ref is unavailable"):
+            workspace_ops._verified_basis_commit(root, ref)

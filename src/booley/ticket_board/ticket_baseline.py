@@ -1345,10 +1345,17 @@ def _materialize_participant_commits(
     return checkout
 
 
-def _identity_git_result(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _identity_git_result(
+    repository: Path, *args: str, timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            ["git", *args], cwd=repository, capture_output=True, text=True, timeout=30, check=False
+            ["git", *args],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
     except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
         raise TicketAncestryVerificationError(
@@ -1441,6 +1448,34 @@ def _named_ref_is_commit(repository: Path, ref: str) -> bool:
     return kind == "commit"
 
 
+def _named_commit_result(
+    repository: Path, ref: str, *, timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
+    result = _identity_git_result(
+        repository, "show-ref", "--verify", "--dereference", ref, timeout=timeout
+    )
+    if result.returncode != 0:
+        return result
+    identities: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(" ", 1)
+        if (
+            len(fields) != 2
+            or not _COMMIT_RE.fullmatch(fields[0])
+            or fields[1] not in {ref, f"{ref}^{{}}"}
+            or fields[1] in identities
+        ):
+            raise _ref_lookup_error(repository, ref, result)
+        identities[fields[1]] = fields[0]
+    if ref not in identities:
+        raise _ref_lookup_error(repository, ref, result)
+    pinned = identities.get(f"{ref}^{{}}", identities[ref])
+    verified = _identity_git_result(repository, "rev-parse", "--verify", f"{pinned}^{{commit}}")
+    if verified.returncode == 0 and verified.stdout.strip() != pinned:
+        raise _ref_lookup_error(repository, ref, verified)
+    return verified
+
+
 def _descendant_ref_commit(
     repository: Path,
     ref: str,
@@ -1449,7 +1484,11 @@ def _descendant_ref_commit(
     kind: str,
     role: str,
 ) -> str:
-    result = _identity_git_result(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    result = (
+        _named_commit_result(repository, ref)
+        if ref.startswith("refs/")
+        else _identity_git_result(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    )
     if (
         result.returncode != 0
         and ref.startswith("refs/")

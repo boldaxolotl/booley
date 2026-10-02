@@ -17,6 +17,7 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -63,7 +64,6 @@ from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks as _managed_step_project_git_hooks,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
-from booley.runtime.project_repositories import is_standalone_git_repository
 
 
 def _step_git_hooks(ctx: InitContext) -> None:
@@ -363,9 +363,38 @@ def worktree_policy_repositories(
             project_dir = resolve_checkout_project_dir(project_root)
         except FileNotFoundError:
             return tuple(repositories)
-    if project_dir != project_root and is_standalone_git_repository(project_dir):
+    if project_dir != project_root and _policy_standalone_repository(project_dir):
         repositories.append(project_dir)
     return tuple(repositories)
+
+
+def _policy_git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+        environment.pop(key, None)
+    return environment
+
+
+def _policy_standalone_repository(repository: Path) -> bool:
+    if not (repository / ".git").is_dir():
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            env=_policy_git_environment(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+    try:
+        return Path(result.stdout.strip()).resolve() == repository.resolve()
+    except OSError:
+        return False
 
 
 def read_local_config(repository: Path, key: str) -> str | None:
@@ -376,6 +405,7 @@ def read_local_config(repository: Path, key: str) -> str | None:
             text=True,
             check=False,
             timeout=10,
+            env=_policy_git_environment(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -409,7 +439,14 @@ def _set_local_config(repository: Path, value: str | None) -> str | None:
         else ["--unset-all", WORKTREE_RELATIVE_KEY]
     )
     try:
-        result = subprocess.run(args, capture_output=True, text=True, check=False, timeout=10)
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            env=_policy_git_environment(),
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         return str(exc)
     if result.returncode not in ({0, 5} if value is None else {0}):
