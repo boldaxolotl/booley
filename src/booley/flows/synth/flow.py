@@ -549,6 +549,20 @@ def _latch_diagnostic(metrics: SynthMetrics) -> str:
     )
 
 
+def _design_failure_reason(metrics: SynthMetrics) -> str:
+    """Keep the rejected generic master distinct from allowed latch evidence."""
+    if "unmapped generic cell:" in metrics.failure_output:
+        reason = "unmapped generic cell"
+        return f"{reason}; {_latch_diagnostic(metrics)}" if metrics.latches else reason
+    if metrics.latches:
+        return _latch_diagnostic(metrics)
+    return (
+        "unmapped latch"
+        if "unmapped latch:" in metrics.failure_output
+        else "unmapped generic cell"
+    )
+
+
 def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
     """Count latches, combinational loops, and multi-driven nets in output.
 
@@ -1396,6 +1410,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         failure = classify_eda_failure(
             replace(result, stdout=output, stderr=""),
             expected_token=getattr(outcome, "attempt_token", None),
+            expected_stage=getattr(outcome, "stage", None) or "yosys",
             design_diagnostic=diagnostic,
         )
         if failure is not None and failure.kind == "design":
@@ -2642,7 +2657,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif cur.infra_error:
             return "   ERROR"
         elif cur.termination == "design_failure":
-            reason = _latch_diagnostic(cur) if cur.latches else "unmapped generic cell"
+            reason = _design_failure_reason(cur)
         elif cur.returncode != 0 and not cur.has_metrics:
             reason = f"rc={cur.returncode}, no metrics"
         elif cur.returncode != 0:
@@ -2664,7 +2679,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif cur.infra_error:
             reason = "infrastructure error"
         elif cur.termination == "design_failure":
-            reason = _latch_diagnostic(cur) if cur.latches else "unmapped generic cell"
+            reason = _design_failure_reason(cur)
         elif cur.returncode != 0 and not cur.has_metrics:
             reason = f"rc={cur.returncode}, no metrics"
         elif cur.returncode != 0:

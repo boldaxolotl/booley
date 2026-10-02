@@ -5002,3 +5002,79 @@ def test_public_generated_make_latch_failure(
     assert "actual=8, expected=0, excess=8" in result.report_text
     assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
     assert not DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite")
+
+
+@pytest.mark.parametrize(
+    "cell", ["$dlatchsr", "$_DLATCH_NN0_", "$_DLATCH_NP1_", "$_DLATCH_PN0_", "$_DLATCH_PP1_"]
+)
+@pytest.mark.parametrize("cell_first", [False, True])
+def test_reset_and_set_reset_latch_inventory(cell, cell_first):
+    from booley.flows.synth.flow import _count_latches
+
+    row = f"{cell} 3 -" if cell_first else f"3 - {cell}"
+    text = f"Printing statistics.\n  3 - cells\n  {row}\n"
+    assert _count_latches(text) == 3
+
+
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+def test_reset_latch_public_design_failure(flow_and_state, tmp_path, mode):
+    cell = "$_DLATCH_PN0_"
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "mode": mode,
+            "cell": cell,
+            "openroad": f"[ERROR ORD-2013] instance latch LEF master {cell} not found."
+            if mode == "physical"
+            else "",
+            "process": {"returncode": 2 if mode == "physical" else 0},
+        },
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["conditions"]["latches"] == 8
+    assert report["implementation"]["conditions"]["has_critical"] is True
+    assert cell in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert "8 latches" in result.report_text
+
+
+def test_unusable_stat_headers_ignore_pre_stat_tally_decoy():
+    from booley.flows.synth.flow import _count_latches
+
+    text = "Warning: found $dlatch in cell A\n  9 $_DFF_P_\nPrinting statistics.\n=== dut ===\n"
+    assert _count_latches(text) == 1
+
+
+def test_nonlatch_generic_failure_with_expected_latches_names_actual_failure(
+    flow_and_state, tmp_path
+):
+    diagnostic = "[ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found."
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"mode": "physical", "expected": 8, "openroad": diagnostic, "process": {"returncode": 2}},
+    )
+    assert report["implementation"]["conditions"]["has_critical"] is False
+    assert "unmapped generic cell" in result.report_text
+    assert "actual=8, expected=8, excess=0" in result.report_text
+
+
+@pytest.mark.parametrize(
+    "formatter",
+    [
+        AsicSynthesizeFlow._format_status_suffix,
+        lambda metrics: AsicSynthesizeFlow._format_failure_summary("dut", metrics),
+    ],
+)
+def test_generic_failure_summary_separates_expected_latches(formatter):
+    metrics = SynthMetrics(
+        latches=8,
+        expected_latches=8,
+        returncode=1,
+        termination="design_failure",
+        failure_output="unmapped generic cell: [ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found.",
+    )
+    summary = formatter(metrics)
+    assert "unmapped generic cell" in summary
+    assert "actual=8, expected=8, excess=0" in summary

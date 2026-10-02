@@ -58,7 +58,9 @@ _CELL_RE = re.compile(
     rf"(?P<count>\d+)(?:\s+(?P<area>{_AREA_COLUMN}))?\s+(?P<cell>\$\S+))\s*$",
     re.MULTILINE,
 )
-_LATCH_RE = re.compile(r"\$(?:a?dlatch|_DLATCH(?:SR)?_[A-Z]+_)", re.IGNORECASE)
+_LATCH_RE = re.compile(
+    r"\$(?:a?dlatch|dlatchsr|_DLATCH_[NP]+[01]?_|_DLATCHSR_[NP]{3}_)", re.IGNORECASE
+)
 _CHIP_AREA_RE = re.compile(r"Chip area for (?P<module>[^\n:]+):\s*(?P<value>\S+)")
 
 
@@ -124,13 +126,18 @@ def _selected_module(section: str) -> str | None:
 def authoritative_stat_section(output: str) -> str | None:
     """Select final usable stat; terminated diagnostic tails are not inventories."""
     candidates = []
-    start, active = 0, True
-    for boundary in _STAT_BOUNDARY_RE.finditer(output):
+    boundaries = list(_STAT_BOUNDARY_RE.finditer(output))
+    has_stat_header = any(boundary["stat"] for boundary in boundaries)
+    start, active = 0, not has_stat_header
+    for boundary in boundaries:
         if active:
             candidates.append(output[start : boundary.start()])
         active = bool(boundary["stat"]) or bool(
             boundary["artifact"]
-            and re.fullmatch(r"--- (?:stat_[^/]+\.txt|yosys\.log) ---", boundary["artifact"])
+            and (
+                re.fullmatch(r"--- stat_[^/]+\.txt ---", boundary["artifact"])
+                or (boundary["artifact"] == "--- yosys.log ---" and not has_stat_header)
+            )
         )
         start = boundary.end()
     if active:
