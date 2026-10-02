@@ -229,10 +229,19 @@ experiment, not a setup requirement.
   Linux container reads as every file modified. `booley init` handles it: it
   inspects both the Project checkout and the resolved project-data directory
   when they are separate Git repositories. In each repository it sets
-  `core.autocrlf=false` locally and adds `* text=auto eol=lf` as the first line
-  of `.gitattributes`. `text=auto` preserves Git's binary-file detection, while
-  the first-line position lets any more-specific rule below it still win.
-  **Commit each `.gitattributes`**: the rule only reaches your team through git.
+  `core.autocrlf=false` locally. With Stealth enabled, the Project checkout's
+  `* text=auto eol=lf` default goes in Git's common `info/attributes`, local to
+  the repository and shared by linked worktrees; it does not travel through
+  commits. Existing upstream attributes policy suppresses that default to
+  preserve its rules. With Stealth disabled, and in independent project-data
+  repositories, init adds the default as the first line of root `.gitattributes`
+  unless the root already owns a whole-tree policy. `text=auto` preserves Git's
+  binary-file detection, and later rules in that file can override the default.
+  **Commit only published root `.gitattributes` files** to share their policy.
+  Init warns about an old untracked root default or a local default conflicting
+  with upstream rules or Stealth opt-out. Inspect those files and remove or
+  migrate the default if appropriate; init preserves them because ownership
+  cannot be proven.
 
   Files already on disk with CRLF are a separate matter. From a clean tracked
   tree, init stages Git-filtered LF replacements, verifies that the affected
