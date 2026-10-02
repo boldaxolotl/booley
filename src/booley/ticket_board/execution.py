@@ -211,7 +211,7 @@ def _classification_group(
     status = t.get("status", "")
     if status in {"blocked", "review", "waiting"}:
         return status
-    if t.get("ticket_error") and status != "running":
+    if t.get("ticket_error") and status == "queued":
         return "blocked"
     if status == "queued":
         deps = t.get("dependencies", [])
