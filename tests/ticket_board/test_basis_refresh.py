@@ -943,10 +943,10 @@ def test_scan_isolates_operational_failure_in_one_ticket(tmp_path, monkeypatch):
     assert "cannot verify ancestry" in consumer["ticket_error"]
     assert "acceptance-input-change-required" not in consumer["ticket_error"]
     assert "ticket_error" not in provider
-    with pytest.raises(
-        ticket_baseline.TicketAncestryVerificationError, match="cannot verify ancestry"
-    ):
-        scanner.find_ticket_file(project / "tickets", "unknown-feature", project_root=root)
+    assert scanner.find_ticket_file(project / "tickets", "unknown-feature", project_root=root) == (
+        None,
+        None,
+    )
 
 
 def test_prepared_refresh_operational_failure_is_retryable(tmp_path, monkeypatch):
@@ -1031,3 +1031,80 @@ def test_scanned_operational_error_is_never_promoted_or_executable(
     assert read_state_record(board.tickets_dir, "consumer") == before
     assert {p: p.read_bytes() for p in documents} == documents
     assert {repo: _git(repo, "show-ref") for repo in refs} == refs
+
+
+def _unrelated_scanner_failure(root, project, monkeypatch):
+    from booley.ticket_board import ticket_baseline
+
+    bad = _write_published_ticket(
+        root,
+        project,
+        "unrelated",
+        "queue",
+        {
+            "summary": "Unrelated",
+            "type": "bugfix",
+            "branch": "main",
+            "project_destination_ref": "refs/heads/main",
+            "scope": ["README.md"],
+            "on_success": ["review"],
+            "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "clean"}}},
+        },
+        "## Description\n\nUnrelated Ticket.\n",
+        "9" * 32,
+    )
+    original = ticket_baseline.subprocess.run
+    failures = []
+
+    def git(command, *args, **kwargs):
+        if command[1:3] == ["merge-base", "--is-ancestor"] and bad.outer_sha in command:
+            failures.append(command)
+            return subprocess.CompletedProcess(
+                command, 128, "", "fatal: unrelated storage failure"
+            )
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    return failures
+
+
+def test_create_new_ticket_ignores_unrelated_scanner_failure(tmp_path, monkeypatch):
+    from booley.ticket_board.io import TicketFileSpec
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+    from tests.ticket_board.test_ticket_baseline import _create_v2_ticket
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    _publish_missing_target_refresh(root, project)
+    failures = _unrelated_scanner_failure(root, project, monkeypatch)
+    board = TicketIO(project / "tickets", project_root=root)
+    path = _create_v2_ticket(
+        board,
+        "brand-new",
+        TicketFileSpec(summary="New", ticket_type="feature", branch="main", scope=["README.md"]),
+    )
+    assert path is not None and path.is_file()
+    assert failures
+    assert read_state_record(board.tickets_dir, "unrelated").state is TicketState.QUEUED
+    with pytest.raises(TicketAncestryVerificationError, match="unrelated storage failure"):
+        board.inspect_ticket("unrelated")
+
+
+def test_closed_provider_refresh_ignores_unrelated_scanner_failure(tmp_path, monkeypatch, capsys):
+    from booley.ticket_board import planned_dependencies
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    failures = _unrelated_scanner_failure(root, project, monkeypatch)
+    board = TicketIO(project / "tickets", project_root=root)
+    assert (
+        planned_dependencies._dependency_providers(root, board.tickets_dir, ("provider",), [])
+        == []
+    )
+    assert operations.op_promote_waiting(board) == []
+    assert failures
+    error = capsys.readouterr().err
+    assert "provider Ticket 'provider' no longer exports 'acme:lib:toy:1.0#removed'" in error
+    assert "cannot verify ancestry" not in error
+    assert read_state_record(board.tickets_dir, "consumer").state is TicketState.BLOCKED
+    assert read_state_record(board.tickets_dir, "unrelated").state is TicketState.QUEUED

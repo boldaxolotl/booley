@@ -206,11 +206,12 @@ def _classification_group(
     done_slugs: Collection[str],
 ) -> str | None:
     """Return the :func:`classify_tickets` group of one ticket, or ``None`` to omit it."""
-    if t.get("ticket_error"):
-        return "blocked"
     status = t.get("status", "")
     if status in {"blocked", "review", "waiting"}:
         return status
+    if t.get("ticket_error"):
+        # Missing verified metadata cannot prove an orphan or authorize a claim.
+        return "active" if status == "running" else "blocked"
     if status == "queued":
         deps = t.get("dependencies", [])
         if deps and not all(d in done_slugs for d in deps):

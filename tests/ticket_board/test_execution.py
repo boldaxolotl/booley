@@ -6,6 +6,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.ticket_board.execution import (
     classify_tickets,
@@ -62,6 +64,14 @@ class TestSelectMutationConfig:
 
 
 class TestClassifyTickets:
+    @pytest.mark.parametrize("status", ["running", "waiting", "review", "blocked", "queued"])
+    def test_operational_error_preserves_state_without_claiming_or_failing(self, tmp_path, status):
+        ticket = {"status": status, "file": "board/t.md", "ticket_error": "cannot verify ancestry"}
+        result = classify_tickets([ticket], logs_dir=tmp_path, done_slugs=())
+        group = "active" if status == "running" else "blocked" if status == "queued" else status
+        assert result[group] == [ticket]
+        assert result["executable"] == result["orphaned"] == []
+
     def test_empty_list(self):
         result = classify_tickets([], logs_dir=Path("/tmp/logs"), done_slugs=())
         assert result["executable"] == []

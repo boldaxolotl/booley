@@ -1370,7 +1370,7 @@ def _named_ref_exists(repository: Path, ref: str) -> bool:
         return True
     if result.returncode == 2:
         return False
-    if result.returncode == 129:
+    if result.returncode in (1, 129):
         return _legacy_named_ref_exists(repository, ref)
     raise _ref_lookup_error(repository, ref, result)
 
@@ -1390,7 +1390,7 @@ def _legacy_named_ref_exists(repository: Path, ref: str) -> bool:
         loose = _reference_storage_path(repository, ref)
         try:
             loose.lstat()
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             pass
         else:
             raise TicketAncestryVerificationError(
