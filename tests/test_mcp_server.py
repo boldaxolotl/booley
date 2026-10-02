@@ -1029,9 +1029,9 @@ class TestMcpExposureFiltering:
         # Investigation contract: trace before hypothesizing, walk backwards from
         # the wrong value, and check that a passing reproducer really triggered.
         assert "rerun `sim` with `trace: true`" in description
-        assert "before forming or acting on an RTL hypothesis" in description
-        assert "trace it backwards, cycle by cycle" in description
-        assert "suspected trigger condition actually occurred" in description
+        assert "before acting on an RTL hypothesis" in description
+        assert "backwards cycle by cycle" in description
+        assert "suspected trigger actually occurred" in description
         assert "before editing RTL" in description
         # Detailed syntax and presentation guidance are discovered through these entry points.
         assert 'extra_args=["skill"]' in by_name["bwave"]["description"]

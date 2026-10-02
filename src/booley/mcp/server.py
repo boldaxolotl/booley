@@ -904,28 +904,20 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "bwave",
         "description": (
-            "RTL debug helper for simulation traces. Use it to investigate a "
-            "bug, not only to confirm a fix. When the simulation report does "
-            "not localize a failure or reported symptom, or a reproducer "
-            "unexpectedly passes, reuse a current trace or rerun `sim` with "
-            "`trace: true` and query the trace before forming or acting on an "
-            "RTL hypothesis. Start at the observed wrong value or missing "
-            "event and trace it backwards, cycle by cycle, through the data, "
-            "valid/enable, select, and handshake signals that drive it until "
-            "you reach the first divergent signal. When a reproducer passes, "
-            "check in the trace whether the suspected trigger condition "
-            "actually occurred before concluding the path is clean. Confirm "
-            "the mechanism in the trace before editing RTL. Use B-Wave instead "
-            "of temporary $display/debug prints to inspect signal values, "
-            "state transitions, handshakes, latency, and datapath divergence; "
-            "query bounded signal/time windows. Use temporary prints "
-            "only when B-Wave is unavailable or cannot capture/query the "
-            "needed evidence; explain the limitation. Diagnose compile/elaboration "
-            "failures from compiler output. Queries need no GUI; use the viewer "
-            "to show humans a scoped, logically grouped view and relay warnings "
-            'about omitted signals. Before use, call extra_args=["skill"] for '
-            'workflow and presentation guidance, then extra_args=["--help"] '
-            "for syntax."
+            "RTL debug helper for simulation traces: investigate with it, "
+            "not just confirm fixes. If the sim report does not localize a "
+            "failure, or a reproducer unexpectedly passes, query a current "
+            "trace (or rerun `sim` with `trace: true`) before acting on an RTL "
+            "hypothesis. Walk the wrong value backwards cycle by cycle through "
+            "its data, valid, select, and handshake drivers to the first "
+            "divergent signal; for a passing reproducer, verify the suspected "
+            "trigger actually occurred. Confirm the mechanism in the trace "
+            "before editing RTL. Prefer B-Wave over $display prints; use prints "
+            "only if B-Wave cannot capture the evidence, and say why. Diagnose "
+            "compile errors from compiler output. Queries need no GUI; for "
+            "humans, open a scoped, grouped view and relay omitted-signal "
+            'warnings. First call extra_args=["skill"], then '
+            'extra_args=["--help"] for syntax.'
         ),
         "schema": {
             "type": "object",
