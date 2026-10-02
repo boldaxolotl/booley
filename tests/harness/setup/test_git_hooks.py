@@ -2620,11 +2620,11 @@ def test_stealth_init_messages_identify_local_policy_without_commit_hint(tmp_pat
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
     _step_line_endings(_ctx(tmp_path, check_only=True), data)
     planned = capsys.readouterr().out
-    assert "would add" in planned and "info/attributes" in planned
+    assert "would add" in planned and str(tmp_path / ".git/info/attributes") in planned
     assert "commit it" not in planned
     _step_line_endings(_ctx(tmp_path), data)
     completed = capsys.readouterr().out
-    assert "repository-local" in completed and "info/attributes" in completed
+    assert "repository-local" in completed and str(tmp_path / ".git/info/attributes") in completed
     assert "commit it" not in completed
     assert not (tmp_path / ".gitattributes").exists()
 

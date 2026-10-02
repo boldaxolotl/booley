@@ -711,10 +711,11 @@ def test_local_comments_without_final_newline_preserve_bytes_and_mode(tmp_path: 
     attrs = tmp_path / ".git/info/attributes"
     attrs.write_bytes(b"# custom comment")
     attrs.chmod(0o600)
+    before_mode = attrs.stat().st_mode
     report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
     assert report.status is LineEndingStatus.SAFE
     assert attrs.read_bytes() == b"* text=auto eol=lf\n# custom comment\n"
-    assert attrs.stat().st_mode & 0o777 == 0o600
+    assert attrs.stat().st_mode == before_mode
 
 
 def test_linked_worktree_uses_shared_common_attributes(tmp_path: Path):
@@ -835,12 +836,13 @@ def test_unrelated_local_attribute_lines_are_byte_preserved(tmp_path: Path):
     attrs = tmp_path / ".git/info/attributes"
     attrs.write_bytes(b"*.tar export-ignore")
     attrs.chmod(0o600)
+    before_mode = attrs.stat().st_mode
     assert (
         reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR).status
         is LineEndingStatus.SAFE
     )
     assert attrs.read_bytes() == b"* text=auto eol=lf\n*.tar export-ignore\n"
-    assert attrs.stat().st_mode & 0o777 == 0o600
+    assert attrs.stat().st_mode == before_mode
 
 
 def test_crlf_index_blob_remains_unchanged_and_meaningful_dirt_is_unsafe(tmp_path: Path):

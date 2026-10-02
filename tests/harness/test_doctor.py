@@ -8003,7 +8003,7 @@ def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
     c = _Collector()
     doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, project_dir=data)
     assert c.warned and not c.passed and not c.failed
-    assert "info/attributes" in c.warned[0]
+    assert str(tmp_path / ".git/info/attributes") in c.warned[0]
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
     assert not (tmp_path / ".git/info/attributes").exists()
     assert not (tmp_path / ".gitattributes").exists()
