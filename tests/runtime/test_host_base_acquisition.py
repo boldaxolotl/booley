@@ -325,3 +325,109 @@ def test_owner_cli_reports_error_without_traceback(tmp_path, monkeypatch, capsys
     error = capsys.readouterr().err
     assert "Bootstrap runtime-base acquisition failed: Docker unavailable" in error
     assert "Traceback" not in error
+
+
+@pytest.mark.parametrize("returncode,timed_out", [(0, False), (1, False), (0, True)])
+@pytest.mark.parametrize("planned", [False, True])
+def test_base_build_emits_verified_provenance_and_honors_build_outcome(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, timed_out: bool, planned: bool
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    recipe = root / "src/booley/data/docker/Dockerfile.base"
+    plan = (
+        owner.DockerBuildPlan((owner.DockerBuildRequest(owner.REFERENCE, owner.REFERENCE),))
+        if planned
+        else None
+    )
+    calls = []
+
+    def build(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=returncode, timed_out=timed_out)
+
+    monkeypatch.setattr(owner, "run_docker_build", build)
+    assert owner._build(root, recipe, owner.REFERENCE, plan) is (returncode == 0 and not timed_out)
+    command, kwargs = calls[0]
+    labels = dict(
+        command[index + 1].split("=", 1) for index, item in enumerate(command) if item == "--label"
+    )
+    assert (
+        labels[LABEL_RUNTIME_BASE_CONTRACT]
+        == owner.source_image_build_contracts(root).runtime_base
+    )
+    assert labels["io.booley.artifact.role"] == "runtime-base"
+    assert f"BOOLEY_BASE_CONTRACT={labels[LABEL_RUNTIME_BASE_CONTRACT]}" in command
+    assert command[-4:] == [owner.REFERENCE, "-f", str(recipe), str(root)]
+    assert kwargs["timeout"] == 7200
+    assert kwargs["current_request"] == (plan.current if plan else None)
+    assert kwargs["remaining_plan"] is plan
+
+
+@pytest.mark.parametrize("failure", ["alias", "build", "provenance"])
+def test_acquire_migration_failure_preserves_base_and_cleans_owned_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, base_owner: dict[str, str], failure: str
+) -> None:
+    installed = {
+        "Id": "old",
+        "Config": {"Labels": {LABEL_RUNTIME_BASE_CONTRACT: "current"}},
+        "RootFS": {"Layers": ["layer"]},
+    }
+    candidate = {"Id": "new", "Config": {"Labels": {}}, "RootFS": {"Layers": ["layer"]}}
+    calls = []
+
+    def inspect(reference: str) -> dict[str, object] | None:
+        if reference == owner.REFERENCE:
+            return installed
+        if reference.endswith(":parent"):
+            return None if failure == "alias" else installed
+        return candidate
+
+    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=1 if command[1] == "image" else 0, stderr="image is in use"
+        )
+
+    monkeypatch.setattr(owner, "_inspect", inspect)
+    monkeypatch.setattr(owner.subprocess, "run", run)
+    monkeypatch.setattr(owner, "_build", lambda *_args: failure != "build")
+    message = {
+        "alias": "parent alias changed",
+        "build": "migration failed",
+        "provenance": "expected provenance",
+    }[failure]
+    with pytest.raises(RuntimeError, match=message) as caught:
+        owner.acquire(tmp_path, scope=HostImageScope())
+    assert not any(command[1] == "tag" and command[-1] == owner.REFERENCE for command in calls)
+    assert calls[-2][-1].endswith(":candidate") and calls[-1][-1].endswith(":parent")
+    assert "image is in use" in caught.value.__notes__[0]
+
+
+@pytest.mark.parametrize("image", [None, "sha256:ready"])
+def test_cli_exit_status_reflects_acquisition_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image: str | None
+) -> None:
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(sys, "argv", ["owner", "--repo", str(tmp_path)])
+    monkeypatch.setattr(owner, "host_lifecycle_lock", lambda _reason: nullcontext())
+    monkeypatch.setattr(owner, "acquire", lambda *_args, **_kwargs: image)
+    assert owner.main() == (0 if image else 2)
+
+
+def test_cli_includes_cleanup_recovery_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(sys, "argv", ["owner", "--repo", str(tmp_path)])
+    monkeypatch.setattr(owner, "host_lifecycle_lock", lambda _reason: nullcontext())
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        error = RuntimeError("migration failed")
+        error.add_note("owned candidate cleanup failed: image is in use")
+        raise error
+
+    monkeypatch.setattr(owner, "acquire", fail)
+    assert owner.main() == 2
+    assert "owned candidate cleanup failed: image is in use" in capsys.readouterr().err

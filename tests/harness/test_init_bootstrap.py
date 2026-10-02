@@ -312,3 +312,101 @@ def test_retired_project_policy_fails_before_project_mutation(
     assert "idle_timeout_seconds = 600" in output
     assert config.read_bytes() == before
     assert not (tmp_path / "rtl").exists()
+
+
+def _image_command_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text("[sandbox]\nimage = 'booley-sandbox'\n")
+    spec = tmp_path / ".devcontainer/devcontainer.json"
+    spec.parent.mkdir()
+    spec.write_text('{"image":"sha256:prior"}\n')
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_bootstrap",
+        lambda intent, **_kw: init_cmd.BootstrapResult(intent, ()),
+    )
+    monkeypatch.setattr(
+        init_cmd,
+        "_resolve_agent_selection",
+        lambda *_args: init_cmd.AgentSelection("claude", "auto", True, True),
+    )
+    monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
+    monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
+    return spec
+
+
+def test_init_capacity_refusal_returns_two_without_image_or_spec_adoption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.runtime.docker_capacity import DockerCapacityError
+
+    spec = _image_command_project(tmp_path, monkeypatch)
+    before = spec.read_bytes()
+    intents = []
+
+    def refuse(
+        _scope: init_cmd.ProjectImageScope, intent: Intent, **_kwargs: object
+    ) -> LifecycleResult:
+        intents.append(intent)
+        raise DockerCapacityError("Project overlay needs 10 GiB; only 1 GiB available")
+
+    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", refuse)
+
+    # Isolate unrelated setup resources while retaining the CLI, image step,
+    # diagnostic recording and aggregate exit-status boundaries.
+    def image_steps(ctx: init_cmd.InitContext, *_args: object, **_kwargs: object) -> int:
+        init_cmd._step_image_lifecycle(ctx)
+        return init_cmd._print_summary(ctx)
+
+    monkeypatch.setattr(init_cmd, "_run_project_init_steps", image_steps)
+    assert init_cmd.run_init(_args(force=True), tmp_path) == 2
+    captured = capsys.readouterr()
+    assert "[XX] image-capacity:" in captured.out
+    assert "only 1 GiB available" in captured.out
+    assert "Traceback" not in captured.out + captured.err
+    assert intents == [Intent.REFRESH]
+    assert spec.read_bytes() == before
+
+
+@pytest.mark.parametrize("failure", ["stale", "unavailable"])
+def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    from booley.runtime.image_lifecycle import Diagnostic, ImageLifecycleError
+
+    spec = _image_command_project(tmp_path, monkeypatch)
+    before = spec.read_bytes()
+    intents = []
+
+    def observe(
+        _scope: init_cmd.ProjectImageScope, intent: Intent, **_kwargs: object
+    ) -> LifecycleResult:
+        intents.append(intent)
+        if failure == "unavailable":
+            raise ImageLifecycleError("runtime base missing; run booley bootstrap")
+        return LifecycleResult(
+            "project-image",
+            "sha256:prior",
+            Status.STALE,
+            diagnostics=(Diagnostic("stale", "Project wheel is stale"),),
+        )
+
+    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", observe)
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_interactive",
+        lambda *_args, **_kwargs: pytest.fail("refused seed must not apply a spec"),
+    )
+    assert init_cmd.run_init(_args(seed=True, force=True), tmp_path) == 2
+    captured = capsys.readouterr()
+    repair = (
+        "run booley bootstrap" if failure == "unavailable" else "run booley init before seeding"
+    )
+    assert repair in captured.out
+    assert "Traceback" not in captured.out + captured.err
+    assert intents == [Intent.CHECK]
+    assert spec.read_bytes() == before

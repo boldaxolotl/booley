@@ -3527,3 +3527,51 @@ def test_failed_blocked_renderers_do_not_append_immediate_retry_hint(
     error = capsys.readouterr().err
     assert "underlying worktree registration error" in error
     assert "run booley board review" not in error
+
+
+def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.harness import init_cmd
+    from booley.runtime import session_refresh as refresh_runtime
+    from booley.runtime import session_runtime
+    from booley.runtime.docker_capacity import DockerCapacityError
+    from booley.runtime.image_lifecycle import LifecycleResult, Status
+
+    spec = tmp_path / ".devcontainer/devcontainer.json"
+    spec.parent.mkdir()
+    spec.write_text('{"image":"sha256:running"}\n')
+    before = spec.read_bytes()
+    monkeypatch.setattr(refresh_runtime, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setattr(session_runtime, "conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(
+        init_cmd,
+        "inspect_refreshable_runtime_image",
+        lambda *_args, **_kwargs: LifecycleResult("project-image", "sha256:running", Status.STALE),
+    )
+    preparations = []
+
+    def refuse(project: Path, **_kwargs: object) -> None:
+        preparations.append(project)
+        raise DockerCapacityError("Project overlay needs 10 GiB; only 1 GiB available")
+
+    monkeypatch.setattr(init_cmd, "prepare_runtime_image", refuse)
+    monkeypatch.setattr(
+        session_runtime,
+        "plan_session_refresh",
+        lambda *_args, **_kwargs: pytest.fail("capacity failure must precede parking"),
+    )
+    monkeypatch.setattr(
+        refresh_runtime,
+        "capture_session_spec",
+        lambda *_args: pytest.fail("capacity failure must precede spec preparation"),
+    )
+    args = tlr._build_parser().parse_args(["session", "refresh"])
+    assert tlr._cmd_session(args, tmp_path) == 2
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "[XX] image-capacity: Project overlay needs 10 GiB; only 1 GiB available\n"
+    )
+    assert "Refreshed Sandbox" not in captured.out
+    assert preparations == [tmp_path.resolve()]
+    assert spec.read_bytes() == before

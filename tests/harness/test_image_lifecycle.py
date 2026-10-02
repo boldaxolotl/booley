@@ -2258,6 +2258,39 @@ def test_docker_label_daemon_failure_is_not_an_absent_label(
         lifecycle._DockerCli().label("booley-sandbox", lifecycle.LABEL_SCHEMA)
 
 
+@pytest.mark.parametrize("layers", [None, "layer", [1], {"layer": "id"}])
+def test_docker_layer_inventory_rejects_invalid_metadata(
+    monkeypatch: pytest.MonkeyPatch, layers: object
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.project_image,
+        "inspect_layout_image",
+        lambda _image: {"RootFS": {"Layers": layers}},
+    )
+    with pytest.raises(lifecycle.ImageLifecycleError, match="invalid filesystem layers"):
+        lifecycle._DockerCli().image_layers("candidate")
+
+
+def test_docker_layer_inventory_preserves_inspection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_inspection(_image: str) -> dict:
+        raise RuntimeError("Docker daemon unavailable")
+
+    monkeypatch.setattr(lifecycle.project_image, "inspect_layout_image", fail_inspection)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="Docker daemon unavailable"):
+        lifecycle._DockerCli().image_layers("candidate")
+
+
+def test_docker_layer_inventory_retains_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        lifecycle.project_image,
+        "inspect_layout_image",
+        lambda _image: {"RootFS": {"Layers": ["base", "overlay"]}},
+    )
+    assert lifecycle._DockerCli().image_layers("candidate") == ("base", "overlay")
+
+
 def test_docker_repo_digests_are_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
     digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "A" * 64
     monkeypatch.setattr(
