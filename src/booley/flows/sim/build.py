@@ -32,6 +32,7 @@ from .. import edam as edam_layer
 from ..base import SubprocessResult
 from . import edam as sim_edam
 from .build_parallelism import LaneKind, verilator_backend_arguments
+from .build_reuse import capture_core_closure
 from .compiler_cache import (
     CompilerCacheConfigurationError,
     CompilerCachePolicy,
@@ -107,6 +108,9 @@ class PreparedSimulationBuild:
     environment: Mapping[str, str] = field(default_factory=dict)
     fileset: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     compiler_cache: CompilerCachePolicy | None = None
+    # Verilator only: every resolved core's path and digest, captured while
+    # Booley's overlay cores still exist; ``None`` when reuse cannot prove them.
+    core_closure: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -188,11 +192,13 @@ def _prepare_simulation_build(
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
     cache_policy = None
+    core_closure = None
     build_environment = dict(environment or {})
     if eda_tool == "verilator":
         cache_policy, build_environment = _verilator_cache_environment(
             root, inspection, build_environment, Path(resolved.build_root)
         )
+        core_closure = capture_core_closure(resolved.edam_path, root)
     _stage_doctor_overlay(root, resolved.build_root)
     fileset = {
         "rtl": tuple(inspection.rtl_files),
@@ -211,6 +217,7 @@ def _prepare_simulation_build(
         environment=build_environment,
         compiler_cache=cache_policy,
         fileset=fileset,
+        core_closure=core_closure,
     )
 
 

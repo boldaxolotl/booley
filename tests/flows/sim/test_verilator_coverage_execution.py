@@ -775,3 +775,54 @@ def test_missing_per_test_evidence_is_rejected_without_losing_process_timeout(
 
     assert result.verdict == ("timeout" if process_timeout else "inconclusive")
     assert "omits required per-test verdicts" in result.output
+
+
+def _pin_reusable_session(monkeypatch) -> None:
+    """Prove reuse wiring without a real toolchain: pin the key and closure."""
+    session = "booley.flows.sim.build_session.SimulationBuildSession"
+    monkeypatch.setattr(f"{session}.reusable_key", lambda *_args, **_kwargs: "pinned-key")
+    monkeypatch.setattr(f"{session}._fresh_read_closure", lambda *_args: ({}, ""))
+    monkeypatch.setattr(f"{session}._read_closure_matches", lambda *_args: True)
+    monkeypatch.setattr(
+        f"{session}._restore_prepared_build",
+        lambda _self, root, candidate: replace(candidate, work_root=root, build_root=root),
+    )
+
+
+def _build_stages(captured) -> int:
+    return sum("BOOLEY_BUILD_STAGE" in command[-1] for command, _ in captured["timeouts"])
+
+
+def test_coverage_variant_reuses_its_promoted_image(tmp_path: Path, monkeypatch) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    _pin_reusable_session(monkeypatch)
+
+    first = _build_coverage(execution, target)
+    first_root = execution.authenticated_image()[0]
+    assert first.success and _build_stages(captured) == 1
+    assert execution.run(_run_request(target, raw_path)).verdict == "pass"
+
+    second = _build_coverage(execution, target)
+
+    assert second.success, second.output
+    assert "verified Simulation build reuse (hit)" in second.output
+    assert _build_stages(captured) == 1
+    root, artifacts = execution.authenticated_image()
+    assert root == first_root
+    assert [path.name for path in artifacts] == ["Vcounter_tb"]
+    assert len(list(root.parent.iterdir())) == 1  # the unused candidate was discarded
+    assert execution.run(_run_request(target, raw_path)).verdict == "pass"
+
+
+def test_tampered_retained_coverage_image_rebuilds(tmp_path: Path, monkeypatch) -> None:
+    execution, target, _raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    _pin_reusable_session(monkeypatch)
+    assert _build_coverage(execution, target).success
+    root, artifacts = execution.authenticated_image()
+    artifacts[0].write_text("stale image", encoding="utf-8")
+
+    rebuilt = _build_coverage(execution, target)
+
+    assert rebuilt.success
+    assert _build_stages(captured) == 2
+    assert execution.authenticated_image()[0] != root

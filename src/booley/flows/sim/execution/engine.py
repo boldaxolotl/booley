@@ -49,6 +49,7 @@ from booley.flows.sim.build_session import (
     project_compile_surface,
     resolve_target_compile_surface,
     snapshot_build_inputs,
+    snapshot_generation_files,
     verify_existing_build_inputs,
 )
 from booley.flows.sim.config import (
@@ -253,7 +254,7 @@ class PreparedOrdinaryGroup:
     @contextmanager
     def runtime_view(self, run_cwd: Path, attempt_token: str) -> Iterator[Path]:
         """Expose the attempt-scoped Doctor view when fail-path testing is active."""
-        if not _doctor_bad_requested():
+        if not selftest_overlay.bad_selftest_requested(os.environ):
             yield run_cwd
             return
         project_dir = resolve_project_dir(self._handle.project_root)
@@ -731,6 +732,7 @@ class SimulationExecution:
             return _artifact_failure(handle, attempt, None, None, detail, started)
         prepared_surface = project_compile_surface(compile_surface, include_operational_cores=True)
         prepared_inputs = snapshot_build_inputs(attempt.prepared)
+        generation_before = snapshot_generation_files(attempt.prepared)
         pre_sim = self._run_pre_sim(handle, attempt)
         if pre_sim is not None and pre_sim.status != "passed":
             failure = (
@@ -751,14 +753,14 @@ class SimulationExecution:
             raise SimulationBuildSlotError(
                 "Project compile inputs changed during Pre-Sim Commands"
             )
-        attempt = self._select_generation_for_group(handle, attempt)
+        attempt = self._select_generation_for_group(handle, attempt, generation_before)
         attempt = _with_workload_inputs(handle, attempt)
         return self._run_authorized_group(handle, attempt, pre_sim, started)
 
     @contextmanager
     def _runtime_view(self, handle: TargetHandle, attempt: _Attempt) -> Iterator[None]:
         """Own the Doctor runtime view for the complete attempt lifecycle."""
-        if not _doctor_bad_requested():
+        if not selftest_overlay.bad_selftest_requested(os.environ):
             yield
             return
         project_dir = resolve_project_dir(handle.project_root)
@@ -772,13 +774,26 @@ class SimulationExecution:
         ):
             yield
 
-    def _select_generation_for_group(self, handle: TargetHandle, attempt: _Attempt) -> _Attempt:
-        """Resolve a post-hook cache decision without leaking candidate paths."""
+    def _select_generation_for_group(
+        self,
+        handle: TargetHandle,
+        attempt: _Attempt,
+        generation_before: Mapping[str, str],
+    ) -> _Attempt:
+        """Resolve a post-hook cache decision without leaking candidate paths.
+
+        Pre-Sim Commands that only write run-time inputs elsewhere (firmware in
+        the run directory, say) keep reuse; anything they wrote into the
+        candidate generation, under any name, would be lost with it, so that
+        candidate always builds. *generation_before* is the generation's
+        :func:`snapshot_generation_files` from before the Pre-Sim Commands ran.
+        """
         session = self._build_session
         if session is None or self._fresh_generation != attempt.prepared.work_root:
             return attempt
+        hooks = snapshot_generation_files(attempt.prepared) != generation_before
         inputs = session.capture_inputs(attempt.prepared)
-        key = session.reusable_key(attempt.prepared, inputs, hooks=bool(attempt.pre_sim_commands))
+        key = session.reusable_key(attempt.prepared, inputs, hooks=hooks)
         selected = session.try_reuse(attempt.prepared, key)
         generation = (
             selected.work_root.name if selected is not None else attempt.prepared.work_root.name
@@ -1184,13 +1199,9 @@ def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) 
     return None
 
 
-def _doctor_bad_requested() -> bool:
-    return os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
-
-
 def _build_policy(trace: bool) -> _BuildPolicy:
     variants = ["trace"] if trace else []
-    doctor_bad = _doctor_bad_requested()
+    doctor_bad = selftest_overlay.bad_selftest_requested(os.environ)
     if doctor_bad:
         variants.append("doctor-selftest-bad")
     fresh_root_label = "traced" if trace else "Doctor bad" if doctor_bad else None
@@ -1280,7 +1291,7 @@ def _simulation_run_cwd(
     attempt_token: str | None = None,
     configured_run_cwd: Path | None = None,
 ) -> str:
-    if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
+    if selftest_overlay.bad_selftest_requested(os.environ):
         if attempt_token is None:
             return "<attempt>"
         return (
