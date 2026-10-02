@@ -214,3 +214,188 @@ def test_provisional_review_ignores_leftover_advisory_marker(tio, monkeypatch):
     path = tio.logs_dir / "t1" / "review" / "advisory-handoff.json"
     path.write_text("{")
     renew_advisory_inspection(tio, "t1")
+
+
+_MARKER = "review/advisory-handoff.json"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("execution_id", 7, "execution identity is missing"),
+        ("heads", {}, "heads are missing"),
+        ("heads", {"outer": ""}, "heads are missing"),
+        ("findings", [], "findings are missing"),
+        ("findings", [{"finding_id": "minor"}], "findings are missing"),
+        ("created_at", "", "timestamp is missing"),
+    ],
+)
+def test_incomplete_marker_is_rejected(tio, field, value, message):
+    from booley.ticket_board.advisory_handoff import read_advisory_marker
+
+    assert op_handoff(tio, "t1")
+    path = tio.logs_dir / "t1" / _MARKER
+    marker = json.loads(path.read_text())
+    marker[field] = value
+    path.write_text(json.dumps(marker))
+    with pytest.raises(ValueError, match=message):
+        read_advisory_marker(tio.logs_dir / "t1")
+
+
+def test_unresolvable_heads_refuse_advisory_publication(tio, monkeypatch):
+    monkeypatch.setattr("booley.ticket_board.operations._handoff_basis_heads", lambda *_a: None)
+    assert op_handoff(tio, "t1") is False
+    assert tio.find_ticket("t1")["status"] == "running"
+    assert not (tio.logs_dir / "t1" / _MARKER).exists()
+
+
+def test_direct_advisory_handoff_requires_outstanding_findings(tio):
+    from booley.ticket_board.advisory_handoff import op_handoff_advisory
+
+    path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
+    state = DevelopmentState.load(path)
+    state.set_criterion("review_rtl_bugs_done", True, detail={"issue_list": []})
+    state.save()
+    with pytest.raises(ValueError, match="requires outstanding done findings"):
+        op_handoff_advisory(tio, "t1")
+    assert tio.find_ticket("t1")["status"] == "running"
+    assert not (tio.logs_dir / "t1" / _MARKER).exists()
+
+
+def test_direct_advisory_handoff_requires_durable_criteria_state(tio):
+    from booley.ticket_board.advisory_handoff import op_handoff_advisory
+
+    runtime_file(tio.logs_dir, "t1", "booley_state.json").unlink()
+    with pytest.raises(ValueError, match="durable criteria state is unavailable"):
+        op_handoff_advisory(tio, "t1")
+    assert tio.find_ticket("t1")["status"] == "running"
+
+
+def test_direct_advisory_handoff_requires_developer_log(tio, capsys):
+    from booley.ticket_board.advisory_handoff import op_handoff_advisory
+    from booley.ticket_board.paths import existing_human_log_file
+
+    existing_human_log_file(tio.logs_dir, "t1", "run.log").unlink()
+    assert op_handoff_advisory(tio, "t1") is False
+    assert "run.log not found" in capsys.readouterr().err
+    assert tio.find_ticket("t1")["status"] == "running"
+
+
+def test_direct_advisory_handoff_validates_step_transitions(tio, monkeypatch):
+    from booley.ticket_board.advisory_handoff import op_handoff_advisory
+
+    monkeypatch.setattr(
+        "booley.ticket_board.operations._validate_transitions_for_handoff", lambda *_a: False
+    )
+    assert op_handoff_advisory(tio, "t1") is False
+    assert tio.find_ticket("t1")["status"] == "running"
+
+
+def test_advisory_handoff_refuses_foreign_execution(tio, capsys):
+    assert op_handoff(tio, "t1", expected_execution_id="someone-else") is False
+    assert "execution identity changed" in capsys.readouterr().err
+    assert tio.find_ticket("t1")["status"] == "running"
+    assert not (tio.logs_dir / "t1" / _MARKER).exists()
+
+
+def _add_second_finding(tio) -> None:
+    path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
+    state = DevelopmentState.load(path)
+    detail = state.criteria["review_rtl_bugs_done"].detail
+    detail["issue_list"].append(
+        {"finding_id": "late", "severity": "MINOR", "disposition": "current", "status": "current"}
+    )
+    state.set_criterion("review_rtl_bugs_done", True, detail=detail)
+    state.save()
+
+
+def test_same_execution_cannot_silently_replace_changed_marker(tio):
+    from booley.ticket_board.lifecycle import TicketState
+
+    assert op_handoff(tio, "t1")
+    path = tio.logs_dir / "t1" / _MARKER
+    before = path.read_bytes()
+    assert tio.move_ticket_file("t1", TicketState.RUNNING)
+    _add_second_finding(tio)
+    with pytest.raises(ValueError, match="stale advisory handoff marker"):
+        op_handoff(tio, "t1")
+    assert path.read_bytes() == before
+
+
+def test_selected_inspection_prevents_marker_renewal(tio, monkeypatch):
+    from booley.ticket_board.lifecycle import TicketState
+
+    assert op_handoff(tio, "t1")
+    path = tio.logs_dir / "t1" / _MARKER
+    before = path.read_bytes()
+    assert tio.move_ticket_file("t1", TicketState.RUNNING)
+    _add_second_finding(tio)
+    monkeypatch.setattr(
+        "booley.ticket_board.advisory_handoff.read_entry", lambda _log: {"entry": "selected"}
+    )
+    with pytest.raises(ValueError, match="selected review inspection prevents"):
+        op_handoff(tio, "t1")
+    assert path.read_bytes() == before
+
+
+def test_retry_rechecks_board_status_and_execution_fence(tio):
+    from booley.ticket_board.advisory_handoff import _retry_advisory_handoff
+    from booley.ticket_board.lifecycle import TicketState
+
+    assert op_handoff(tio, "t1")
+    execution_id = tio.read_progress("t1")["execution_id"]
+    assert _retry_advisory_handoff(tio, "t1", execution_id) is True
+    assert _retry_advisory_handoff(tio, "t1", "superseded") is False
+    assert tio.move_ticket_file("t1", TicketState.RUNNING)
+    assert _retry_advisory_handoff(tio, "t1", execution_id) is False
+
+
+def _review_existing(tio):
+    import asyncio
+
+    from booley.ticket_board.review_lifecycle import _review_existing_ticket
+
+    return asyncio.run(_review_existing_ticket(tio.logs_dir.parent, "t1", tio, force=False))
+
+
+def test_review_refuses_marker_from_another_execution(tio):
+    from booley.ticket_board.lifecycle import TicketState
+
+    assert op_handoff(tio, "t1")
+    progress = tio.read_progress("t1")
+    progress["execution_id"] = "later-run"
+    tio.commit_state("t1", TicketState.REVIEW, progress)
+    outcome = _review_existing(tio)
+    assert outcome.status == "failed"
+    assert "advisory marker belongs to another execution" in outcome.message
+
+
+def test_review_reports_unrenewable_advisory_inspection(tio, monkeypatch):
+    assert op_handoff(tio, "t1")
+    monkeypatch.setattr("booley.ticket_board.operations._handoff_jobs_clear", lambda *_a: False)
+    outcome = _review_existing(tio)
+    assert outcome.status == "failed"
+    assert "cannot renew advisory review" in outcome.message
+    assert "booley board reset t1" in outcome.message
+
+
+def test_marker_removed_while_waiting_for_lock_skips_renewal(tio, monkeypatch):
+    from contextlib import contextmanager
+
+    from booley.ticket_board.advisory_handoff import renew_advisory_inspection
+
+    assert op_handoff(tio, "t1")
+    acquire = tio._ticket_lock
+
+    @contextmanager
+    def lock_after_concurrent_cleanup(slug, **kwargs):
+        (tio.logs_dir / slug / _MARKER).unlink()
+        with acquire(slug, **kwargs):
+            yield
+
+    monkeypatch.setattr(tio, "_ticket_lock", lock_after_concurrent_cleanup)
+    monkeypatch.setattr(
+        "booley.ticket_board.review_lifecycle._quiescent",
+        lambda *_a: pytest.fail("renewal ran without a marker"),
+    )
+    renew_advisory_inspection(tio, "t1")

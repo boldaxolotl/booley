@@ -1312,6 +1312,48 @@ def test_generic_accepted_projection_keeps_one_neutral_note():
     assert projected["assessment"]["findings"].count(tp.DONE_FINDINGS_ACCEPTED) == 1
 
 
+@pytest.mark.parametrize("noted", [False, True])
+def test_accepted_inspection_keeps_done_findings_visible_without_hold(tmp_path, noted):
+    """An accepted package notes outstanding done findings once but does not re-hold."""
+    from booley.evidence.review_dispositions import collect_review_dispositions
+
+    ctx = _context(tmp_path)
+    facts = _facts(ctx)
+    facts["review_dispositions"] = collect_review_dispositions(
+        {
+            "review_rtl_bugs_done": {
+                "detail": {
+                    "issue_list": [
+                        {
+                            "severity": "MINOR",
+                            "summary": "accepted obligation",
+                            "disposition": "current",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    facts["inspection"] = {
+        "schema": 1,
+        "disposition": "accepted",
+        "reason": "accepted review",
+        "blocked_reason": "",
+        "heads": {},
+        "ticket_generation": "g",
+    }
+    # Isolate the done-findings rule from the fixture's unrelated stale-evidence hold.
+    facts["criteria"] = [{**row, "freshness": "current"} for row in facts["criteria"]]
+    assessment = _assessment()
+    assessment["findings"] = [tp.DONE_FINDINGS_ACCEPTED] if noted else []
+    package = tp.load_triage_package(tp.write_triage_package(ctx, facts, assessment, None))
+    written = package["assessment"]
+    assert written["recommendation"] == "approve"
+    assert tp.DONE_FINDINGS_HOLD not in written["decision_blockers"]
+    # The neutral note appears exactly once; the hold marker stays for projection.
+    assert written["findings"] == [tp.DONE_FINDINGS_ACCEPTED, tp.DONE_FINDINGS_HOLD]
+
+
 @pytest.mark.parametrize("completed", [False, True])
 def test_triage_uses_only_effective_report_and_justifications(tmp_path, completed):
     from booley.criteria.state import DevelopmentState

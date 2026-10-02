@@ -2268,6 +2268,41 @@ def test_real_advisory_inspection_and_explicit_human_approval(blocked, monkeypat
     _assert_closed_done(tio, "demo")
 
 
+@pytest.mark.timeout(90)
+def test_human_approval_claim_requires_intact_selected_binding(blocked, monkeypatch, tmp_path):
+    """Only the exact approved selection with its intact package binding claims approval."""
+    from booley.ticket_board import operations, review_lifecycle
+    from booley.ticket_board.operations import op_handoff
+    from booley.ticket_board.review_lifecycle import (
+        approve_review_command,
+        review_command,
+        selected_human_approval,
+    )
+
+    root, tio, _ = _advisory_running(blocked, monkeypatch)
+    log = tio.logs_dir / "demo"
+    assert op_handoff(tio, "demo")
+    assert asyncio.run(review_command(root, "demo")).ready
+    with monkeypatch.context() as keep:
+        keep.setattr(operations, "op_complete", lambda *_args, **_kwargs: True)
+        assert approve_review_command(root, "demo", no_merge=True, no_cleanup=True)
+    selected = read_entry(log)
+    assert selected_human_approval(log, selected) is True
+    assert selected_human_approval(tmp_path, selected) is False  # nothing selected or accepted
+    assert selected_human_approval(log, {**selected, "generation": "other"}) is False
+    with monkeypatch.context() as moved:
+        moved.setattr(review_lifecycle, "read_entry", lambda _log: {**selected, "heads": {}})
+        assert selected_human_approval(log, selected) is False
+    binding = log / "acceptance" / "review-package.json"
+    original = binding.read_bytes()
+    binding.write_text("{")
+    assert selected_human_approval(log, selected) is False
+    binding.unlink()
+    assert selected_human_approval(log, selected) is False
+    binding.write_bytes(original)
+    assert selected_human_approval(log, selected) is True
+
+
 @pytest.mark.parametrize("changed_heads", [False, True])
 @pytest.mark.timeout(90)
 def test_advisory_failed_package_retry_selects_unaccepted_current_heads(

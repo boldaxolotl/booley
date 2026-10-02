@@ -1823,8 +1823,6 @@ object, even after calling the capability.
 
     def _done_receipt_completed(self, crit_key: str) -> bool:
         """Replay only fresh completed review evidence, never incomplete/error detail."""
-        if self.state is None:
-            return False
         entry = self.state.criteria.get(crit_key)
         if entry is None or entry.stale:
             return False
