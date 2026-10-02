@@ -373,7 +373,7 @@ def _layout_fixture_node(root: Path, parent_id: str, parent: dict):
         parent_id,
         docker_data_dir() / "Dockerfile.wheel",
         lifecycle.PayloadProvenance(
-            "3", labels[lifecycle.LABEL_VERSION], labels[lifecycle.LABEL_PAYLOAD_FINGERPRINT]
+            "3", labels[lifecycle.LABEL_VERSION], labels.get(lifecycle.LABEL_PAYLOAD_FINGERPRINT)
         ),
         lifecycle.BuildProvenance(labels[lifecycle.LABEL_RECIPE_FINGERPRINT], None),
         role=lifecycle.ImageRole.WHEEL_OVERLAY,

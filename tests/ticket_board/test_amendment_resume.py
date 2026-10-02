@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.runtime.project_dir import reset_cache
 from booley.ticket_board.acceptance_ledger import freeze_acceptance, record_changes
 from booley.ticket_board.amendment import apply_amendment, preview_amendment
 from booley.ticket_board.paths import runtime_file
@@ -99,7 +100,7 @@ def test_valid_foreign_plain_evidence_does_not_gate_current_observation(tmp_path
     assert len(list((tmp_path / "acceptance/evidence").glob("*/record.json"))) == 2
 
 
-def _simulation_ticket(tmp_path: Path):
+def _simulation_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import yaml
 
     from booley.ticket_board.frontmatter import parse_frontmatter
@@ -107,6 +108,8 @@ def _simulation_ticket(tmp_path: Path):
     from .test_ticket_baseline import _basis_project, _git
 
     root, data, tio = _basis_project(tmp_path)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    reset_cache()
     (root / "dut.sv").write_text("module dut; endmodule\n")
     (root / "dut.core").write_text(
         "CAPI=2:\nname: acme:lib:dut:1\nfilesets:\n  rtl:\n"
@@ -503,7 +506,7 @@ async def test_amended_ticket_resumes_simulation_and_reaches_review(
     from booley.ticket_board.frontmatter import parse_frontmatter
     from booley.ticket_board.operations import op_block
 
-    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path)
+    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path, monkeypatch)
     monkeypatch.chdir(root)
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
@@ -904,7 +907,7 @@ async def test_report_disabled_zero_mandatory_amendment_declares_gate_and_finali
     from booley.runtime.project_dir import reset_cache
     from booley.ticket_board.operations import op_block
 
-    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path)
+    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path, monkeypatch)
     monkeypatch.chdir(root)
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
@@ -992,7 +995,7 @@ async def test_failed_compensation_cannot_resurrect_report_on_real_simulation_re
 def _mounted_simulation_for_report(tmp_path, monkeypatch):
     from booley.ticket_board.ticket_baseline import worktree_for_ref
 
-    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path)
+    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path, monkeypatch)
     monkeypatch.chdir(root)
     monkeypatch.setenv("PROJECT_ROOT", str(root))
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
