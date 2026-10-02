@@ -1,4 +1,35 @@
 #!/bin/sh
 set -eu
-exec env LD_PRELOAD=/lib/x86_64-linux-gnu/libudev.so.1 \
-  /opt/booley-eda/vivado/Vivado/bin/vivado "$@"
+launcher=$(/usr/bin/readlink -f /opt/booley-eda/vivado/Vivado/bin/vivado) || {
+  printf '%s\n' 'Vivado wrapper: cannot resolve mounted launcher' >&2
+  exit 1
+}
+self=$(/usr/bin/readlink -f "$0")
+if [ "$launcher" = "$self" ]; then
+  printf '%s\n' 'Vivado wrapper: mounted launcher resolves to wrapper itself' >&2
+  exit 1
+fi
+root=${launcher%/bin/*}
+libroot=$root/lib/lnx64.o
+selector=$root/bin/ldlibpath.sh
+if [ -x "$selector" ] && selected=$("$selector" "$libroot"); then
+  if [ "$selected" = "$libroot/Ubuntu:$libroot" ]; then
+    newest=$(
+      for directory in "$libroot"/Ubuntu/*; do
+        [ -d "$directory" ] || continue
+        name=${directory##*/}
+        case "$name" in ''|*[!0-9]*) continue ;; esac
+        printf '%s\n' "$name"
+      done | LC_ALL=C /usr/bin/sort -n | /usr/bin/tail -n 1
+    )
+    if [ -n "$newest" ]; then
+      bundled=$libroot/Ubuntu/$newest
+      case ":${LD_LIBRARY_PATH-}:" in
+        *":$bundled:"*) ;;
+        *) LD_LIBRARY_PATH=$bundled${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+           export LD_LIBRARY_PATH ;;
+      esac
+    fi
+  fi
+fi
+exec /usr/bin/env LD_PRELOAD=/lib/x86_64-linux-gnu/libudev.so.1 "$launcher" "$@"
