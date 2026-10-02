@@ -127,6 +127,11 @@ class SubmitRunReportMcpTool(McpTool):
         super().record_acceptance(prepared, outcome)
 
     def _post_run(self, result: EndpointOutcome, duration: float) -> None:
+        from booley.flows.endpoint_reporting import _endpoint_timeline_args
+        from booley.flows.execution_persistence import NoAcceptanceRecorder
+
+        if isinstance(self._acceptance_recorder, NoAcceptanceRecorder):
+            return
         if getattr(self, "_candidate_entry", None) is None:
             super()._post_run(result, duration)
             return
@@ -137,11 +142,13 @@ class SubmitRunReportMcpTool(McpTool):
             duration_s=duration,
             criteria_set=list(self._pending_criteria_set or ()) or None,
             cost_usd=result.cost_usd or None,
+            args=_endpoint_timeline_args(self),
         )
         candidate = deepcopy(self.state)
         candidate.criteria[_REPORT_CRITERION] = self._candidate_entry
-        candidate.save()
-        _emit_criteria_update(self.state)
+        if candidate._file_path is not None:
+            candidate.save()
+            _emit_criteria_update(self.state)
 
     def finish_execution(
         self,

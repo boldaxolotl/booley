@@ -11,7 +11,7 @@ import re
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from booley.core.boundary import require_dict
 from booley.core.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
@@ -157,6 +157,13 @@ def synchronize(log_dir: Path) -> None:
 class Submission:
     """Hold one bounded Ticket lock through the final visibility commit."""
 
+    validate: Callable[[], None] | None
+    log_dir: Path
+    path: Path
+    lock: TextIO
+    committed: bool
+    row: dict[str, Any]
+
     def __init__(
         self,
         log_dir: Path,
@@ -183,6 +190,10 @@ class Submission:
         }
         try:
             self._acquire()
+            _validate_receipt(self.row, log_dir)
+            history = self.path.parent / "report-submissions" / submission_id
+            if history.exists():
+                raise ReportSubmissionError("report submission attempt identity was already used")
             if self.validate is not None:
                 self.validate()
             atomic_replace_bytes(self.path, _encoded(self.row))

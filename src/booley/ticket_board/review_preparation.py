@@ -418,7 +418,9 @@ def _review_snapshot_heads(
         )
     if accepted.kind != "accepted":
         if status == "review":
-            raise ReviewPrepError("review Ticket has no Criteria Satisfaction Record")
+            raise ReviewPrepError(
+                "review Ticket has no Criteria Satisfaction Record: " + accepted.reason
+            )
         return None
     expected_roles = {participant.role for participant in basis.participants}
     if set(accepted.snapshot.participant_heads) != expected_roles:

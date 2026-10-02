@@ -593,7 +593,8 @@ def _freeze_handoff_snapshot(
     )
     if verdict.disposition != "review":
         print(
-            f"Error: cannot hand off '{slug}': acceptance is {verdict.disposition}",
+            f"Error: cannot hand off '{slug}': acceptance is {verdict.disposition}"
+            + (f": {verdict.blocked_reason}" if verdict.blocked_reason else ""),
             file=sys.stderr,
         )
         return False

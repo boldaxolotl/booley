@@ -599,7 +599,7 @@ def _seed_run_report_criterion(expanded: dict[str, bool]) -> None:
         or any(not required for key, required in expanded.items() if not key.startswith("_"))
         or any(key.startswith("review_") for key in expanded)
     ):
-        expanded["_report_submitted"] = True
+        expanded["_report_submitted"] = is_run_report_enabled()
 
 
 def _ensure_run_report_gate(ctx: TicketContext) -> None:
@@ -613,7 +613,9 @@ def _ensure_run_report_gate(ctx: TicketContext) -> None:
     if "_report_submitted" in required and "_report_submitted" not in state.criteria:
         from booley.criteria.state import CriterionEntry
 
-        state.criteria["_report_submitted"] = CriterionEntry(met=False, mandatory=True)
+        state.criteria["_report_submitted"] = CriterionEntry(
+            met=False, mandatory=required["_report_submitted"]
+        )
         state.save()
 
 

@@ -847,6 +847,10 @@ def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
         raise TriagePackageError(f"Invalid saved file justifications: {exc}") from exc
 
 
+def _report_is_submitted(state: Mapping[str, Any]) -> bool:
+    return state.get("criteria", {}).get("_report_submitted", {}).get("met") is True
+
+
 def _effective_review_inputs(
     ctx: TriageContext, evidence: ResolvedReviewEvidence
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -859,7 +863,7 @@ def _effective_review_inputs(
         state = project_mapping(state, ctx.log_dir, identity=getattr(ctx, "ticket_identity", None))
     except (BoundaryError, json.JSONDecodeError) as exc:
         raise TriagePackageError(f"invalid resolved review evidence: {exc}") from exc
-    if state.get("criteria", {}).get("_report_submitted", {}).get("met") is not True:
+    if not _report_is_submitted(state):
         from booley.ticket_board.persistence import atomic_replace_bytes
 
         atomic_replace_bytes(
@@ -867,11 +871,7 @@ def _effective_review_inputs(
             b"Report submission is uncommitted or unavailable.\n",
             mode=0o644,
         )
-    scope["file_justifications"] = (
-        justifications
-        if state.get("criteria", {}).get("_report_submitted", {}).get("met") is True
-        else {}
-    )
+    scope["file_justifications"] = justifications if _report_is_submitted(state) else {}
     return state, scope
 
 
@@ -963,7 +963,7 @@ def build_review_facts(
         "commits": _commits(ctx),
         "changed_files": changes,
         "developer_report_path": str(ctx.log_dir / "REPORT.md")
-        if state.get("criteria", {}).get("_report_submitted", {}).get("met") is True
+        if _report_is_submitted(state)
         else str(ctx.log_dir / ".runtime" / "unsubmitted-report.md"),
         "run_economics": run_economics,
         "health": _health(evidence, state, scope, criterion_presenter),
@@ -1502,7 +1502,7 @@ def _render_reports(lines: list[str], package: Mapping[str, Any]) -> None:
             "",
             (
                 f"- {_markdown_link('Developer Agent report (REPORT.md)', report)}"
-                if package["developer_report_path"] is not None
+                if Path(report).name != "unsubmitted-report.md"
                 else "- Developer Agent report is unsubmitted."
             ),
         ]

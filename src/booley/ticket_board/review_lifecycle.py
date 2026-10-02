@@ -87,10 +87,6 @@ def _capture_state(ctx: prep.ReviewPrepContext) -> dict[str, Any]:
     state = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
     criteria = dict(require_dict(state.get("criteria", {}), field="criteria"))
     expected = {row.identity: row.mandatory for row in document.spec.criteria}
-    from booley.config.project_config import is_run_report_enabled
-
-    if is_run_report_enabled():
-        expected["_report_submitted"] = True
     for key, mandatory in expected.items():
         if key in criteria:
             row = dict(require_dict(criteria[key], field=f"criterion {key}"))
@@ -191,7 +187,7 @@ def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
     raw = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
     actual = require_dict(raw.get("criteria", {}), field="criteria")
     for key, expected in ctx.inspection["state"]["criteria"].items():
-        if expected.get("mandatory"):
+        if expected.get("mandatory") and key != "_report_submitted":
             observed = require_dict(actual.get(key, {}), field=f"criterion {key}")
             if observed.get("mandatory") is not True or observed.get("met") is not True:
                 raise ReviewEntryError(

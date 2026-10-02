@@ -311,7 +311,6 @@ def _submit_execution_report(checkout):
 
 
 async def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
-    from booley.ticket_board.acceptance_ledger import read_acceptance
     from booley.ticket_board.operations import op_handoff
     from booley.ticket_board.paths import human_log_file
     from booley.ticket_board.ticket_baseline import worktree_for_ref
@@ -341,12 +340,11 @@ async def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatc
     elif kind == "make_optional":
         assert state.criteria[cycle].mandatory is False
     _submit_execution_report(checkout)
-    if kind == "zero_mandatory_blocked":
-        _assert_current_declared_block(state._file_path, checkout, identity)
     human_log_file(tio.logs_dir, "amended", "run.log").write_text("Completed\n")
     from booley.ticket_board import review_preparation as prep
-    from booley.ticket_board.review_lifecycle import approve_review_command
 
+    if kind == "zero_mandatory_blocked":
+        await _assert_blocked_handoff(tio, state._file_path, checkout, identity, ctx)
     package = await prep.prepare_review(ctx.project_root, "amended")
     assert package.ready, package.message
     assert prep.verify_review_handoff(ctx.project_root, "amended").ready
@@ -355,12 +353,19 @@ async def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatc
     assert tio.find_ticket("amended")["status"] == "review"
     if kind == "zero_mandatory_blocked":
         _assert_real_package_rejections(ctx.project_root)
-    frozen = read_acceptance(snapshot.parent).snapshot
-    assert frozen is not None and frozen.ticket_identity == identity
-    assert prep.verify_review_handoff(ctx.project_root, "amended").ready
-    assert approve_review_command(ctx.project_root, "amended", no_merge=True, no_cleanup=True)
+    return _finalize_amended_review(ctx.project_root, tio, snapshot, identity)
+
+
+def _finalize_amended_review(root, tio, snapshot, identity):
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.review_lifecycle import approve_review_command
+    from booley.ticket_board.review_preparation import verify_review_handoff
     from booley.ticket_board.ticket_history import read_closed_ticket
 
+    frozen = read_acceptance(snapshot.parent).snapshot
+    assert frozen is not None and frozen.ticket_identity == identity
+    assert verify_review_handoff(root, "amended").ready
+    assert approve_review_command(root, "amended", no_merge=True, no_cleanup=True)
     assert read_closed_ticket(tio.tickets_dir, "amended") is not None
     return frozen
 
@@ -378,6 +383,25 @@ def _assert_current_declared_block(state_path, checkout, identity):
     verdict = check_criteria_acceptance(state_path, work_dir=checkout, ticket_identity=identity)
     assert verdict.disposition == "blocked"
     assert verdict.blocked_reason == reason
+    return current, reason
+
+
+async def _assert_blocked_handoff(tio, state_path, checkout, identity, ctx):
+    from contextlib import redirect_stderr
+    from io import StringIO
+
+    from booley.ticket_board import review_preparation as prep
+    from booley.ticket_board.operations import op_handoff
+
+    current, reason = _assert_current_declared_block(state_path, checkout, identity)
+    package = await prep.prepare_review(ctx.project_root, "amended")
+    assert package.ready, package.message
+    output = StringIO()
+    with redirect_stderr(output):
+        assert not op_handoff(tio, "amended", expected_execution_id=ctx.execution_id)
+    assert reason in output.getvalue()
+    assert tio.find_ticket("amended")["status"] == "running"
+    assert DevelopmentState.load(state_path).criteria["_blocked_reason"].met
     current.set_criterion("_blocked_reason", False)
     current.save()
 
@@ -401,6 +425,7 @@ def _assert_real_package_rejections(root):
         "source_sha256",
     )
     try:
+        _assert_single_real_package_rejections(root, path, manifest, fields)
         changed = {**manifest, **dict.fromkeys(fields, "wrong")}
         path.write_text(json.dumps(changed))
         with pytest.raises(prep.ReviewPrepError) as error:
@@ -424,6 +449,33 @@ def _assert_real_package_rejections(root):
             prep.verify_review_handoff(root, "amended")
     finally:
         path.write_bytes(original)
+
+
+def _assert_single_real_package_rejections(root, path, manifest, fields):
+    import json
+
+    from booley.ticket_board import review_preparation as prep
+
+    for field in fields:
+        path.write_text(json.dumps({**manifest, field: "wrong"}))
+        with pytest.raises(prep.ReviewPrepError) as error:
+            prep.verify_review_handoff(root, "amended")
+        assert f"{field} expected={manifest[field]!r} actual='wrong'" in str(error.value)
+        assert str(error.value).count("expected=") == 1
+    path.unlink()
+    with pytest.raises(prep.ReviewPrepError, match="manifest missing"):
+        prep.verify_review_handoff(root, "amended")
+    for mutation, reason in (
+        ({"html_path": str(path.parent / "absent.html")}, "HTML missing or corrupt"),
+        ({"html_path": None, "html_error": ""}, "HTML unavailable marker missing or invalid"),
+    ):
+        path.write_text(json.dumps({**manifest, **mutation}))
+        with pytest.raises(prep.ReviewPrepError, match=reason):
+            prep.verify_review_handoff(root, "amended")
+    path.write_text(json.dumps({**manifest, "html_path": None, "html_error": "Unavailable"}))
+    assert prep.verify_review_handoff(root, "amended").ready
+    path.write_text(json.dumps(manifest))
+    assert prep.verify_review_handoff(root, "amended").ready
 
 
 @pytest.mark.asyncio

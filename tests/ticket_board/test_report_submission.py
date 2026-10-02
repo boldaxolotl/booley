@@ -125,7 +125,8 @@ def test_receipt_digest_bound_to_report_bytes(tmp_path):
     attempt.close()
 
 
-def test_lost_commit_invalidates_frozen_acceptance_selection(tmp_path):
+@pytest.mark.parametrize("damage", ["pending", "report_bytes"])
+def test_lost_commit_invalidates_frozen_acceptance_selection(tmp_path, damage):
     from booley.criteria.state import DevelopmentState
     from booley.ticket_board.acceptance_ledger import (
         freeze_acceptance,
@@ -162,7 +163,10 @@ def test_lost_commit_invalidates_frozen_acceptance_selection(tmp_path):
     )
     assert frozen.criteria[rs.KEY]["met"]
     assert read_acceptance(tmp_path).kind == "accepted"
-    atomic_replace_bytes(rs.receipt_path(tmp_path), pending)
+    if damage == "pending":
+        atomic_replace_bytes(rs.receipt_path(tmp_path), pending)
+    else:
+        (tmp_path / "REPORT.md").write_bytes(b"edited after freeze")
     assert read_acceptance(tmp_path).kind == "unavailable"
     assert (tmp_path / "acceptance/snapshots" / f"{frozen.digest}.json").exists()
 
@@ -401,3 +405,15 @@ def test_downstream_freeze_sync_failure_publishes_no_selection(tmp_path, monkeyp
             participant_heads={"outer": "c" * 40},
         )
     assert not (tmp_path / "acceptance/accepted.json").exists()
+
+
+@pytest.mark.parametrize("attempt_id", ["invalid", "a" * 32])
+def test_invalid_or_reused_attempt_preserves_active_receipt(tmp_path, attempt_id):
+    original = rs.Submission(tmp_path, "a" * 32, {}, "execution")
+    original.stage(b"report")
+    original.commit()
+    original.close()
+    before = rs.receipt_path(tmp_path).read_bytes()
+    with pytest.raises(rs.ReportSubmissionError):
+        rs.Submission(tmp_path, attempt_id, {}, "execution")
+    assert rs.receipt_path(tmp_path).read_bytes() == before

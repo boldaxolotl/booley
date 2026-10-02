@@ -3467,7 +3467,7 @@ def _committed_submission_report(report, submission_id, exit_code):
     ):
         return (
             None,
-            "Report submission interrupted or failed before commit; submit the report again.",
+            "Report submission did not complete before commit; resolve the reported error before retrying.",
         )
     try:
         from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
