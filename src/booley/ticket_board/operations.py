@@ -1109,7 +1109,7 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
 def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     try:
         current = tio.inspect_ticket(slug)
-    except (OSError, ValueError):
+    except (OSError, ValueError, TicketAncestryVerificationError):
         current = None
     if current is not None and current.get("status") == "review":
         return "ticket stays in review"

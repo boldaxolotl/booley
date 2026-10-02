@@ -1825,6 +1825,20 @@ def pin_basis_refs(
 
 
 def _verified_basis_commit(repository: Path, ref: str) -> str:
+    if ref.startswith("refs/"):
+        try:
+            result = _git(repository, "show-ref", "--verify", "--quiet", ref)
+        except TicketBaselineOperationError as exc:
+            raise TicketAncestryVerificationError(
+                f"cannot verify ancestry in {repository} (ref {ref!r}): {exc}"
+            ) from exc
+        if result.returncode == 1:
+            raise TicketBaselineOperationError(f"Ticket baseline ref is unavailable: {ref}")
+        if result.returncode != 0:
+            raise TicketAncestryVerificationError(
+                f"cannot verify ancestry in {repository} (ref {ref!r}, rc {result.returncode}): "
+                f"{(result.stderr or result.stdout).strip()}"
+            )
     try:
         return _full_commit(repository, ref)
     except (TicketBaselineOperationError, ValueError, OSError, subprocess.TimeoutExpired) as exc:

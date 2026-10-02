@@ -24,6 +24,7 @@ from .board_layout import (
 from .execution import next_from_planned
 from .lifecycle import TicketState
 from .paths import existing_runtime_file
+from .ticket_baseline import TicketAncestryVerificationError
 from .ticket_document import convert_ticket_document, ticket_conversion_context
 from .ticket_history import TicketHistoryError, read_history_record
 
@@ -64,7 +65,7 @@ def find_ticket_file(
             )
             if feature_branch and feature_branch == slug:
                 return md_file, state.status
-        except OSError:
+        except (OSError, TicketAncestryVerificationError):
             continue
     return None, None
 
@@ -289,10 +290,18 @@ def _scan_document(
 ) -> dict[str, Any]:
     """Build the board entry of the Ticket document *text* in *state*."""
     file = path.relative_to(roots.tickets_dir).as_posix()
-    with ticket_conversion_context(
-        roots.project_root, path.stem, state.conversion_stage
-    ) as context:
-        converted = convert_ticket_document(text, context)
+    try:
+        with ticket_conversion_context(
+            roots.project_root, path.stem, state.conversion_stage
+        ) as context:
+            converted = convert_ticket_document(text, context)
+    except TicketAncestryVerificationError as exc:
+        return {
+            "file": file,
+            "summary": path.stem,
+            "status": state.status,
+            "ticket_error": str(exc),
+        }
     if converted.document is None:
         preview = converted.preview
         return {

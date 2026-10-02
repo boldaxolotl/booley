@@ -100,9 +100,7 @@ def discover_project_root(start: Path | None = None, *, required: bool = False) 
     env = os.environ.get("RTL_PROJECT_ROOT")
     explicit = Path(env).resolve() if env else None
     if explicit is not None:
-        explicit_checkouts = [
-            p for p in (explicit, *explicit.parents) if has_git_worktree_marker(p)
-        ]
+        _selected, explicit_checkouts = _checkout_candidates(Path(env))
         explicit_data = _data_root(explicit, explicit_checkouts)
         if explicit_data is None:
             return explicit

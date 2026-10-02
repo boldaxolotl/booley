@@ -1367,6 +1367,27 @@ def _descendant_ref_commit(
     kind: str,
     role: str,
 ) -> str:
+    if ref.startswith("refs/"):
+        try:
+            existence = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", ref],
+                cwd=repository,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise TicketAncestryVerificationError(
+                f"cannot verify ancestry in {repository} ({kind} ref {ref!r}): {exc}"
+            ) from exc
+        if existence.returncode == 1:
+            raise TicketBaselineError(f"Ticket baseline {kind} ref is unavailable: {ref}")
+        if existence.returncode != 0:
+            raise TicketAncestryVerificationError(
+                f"cannot verify ancestry in {repository} ({kind} ref {ref!r}, rc {existence.returncode}): "
+                f"{(existence.stderr or existence.stdout).strip()}"
+            )
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],

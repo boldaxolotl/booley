@@ -904,3 +904,81 @@ def test_recover_refresh_finishes_matching_ticket_and_rejects_disagreement(
             tmp_path,
             [{"status": "queued", "feature_branch": "ticket", "machine": {}}],
         )
+
+
+@pytest.mark.parametrize("role", ["ticket", "destination"])
+def test_deleted_basis_branch_retains_waiting_policy_block(tmp_path, monkeypatch, capsys, role):
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    board = TicketIO(project / "tickets", project_root=root)
+    operations.reconcile_board(board)
+    ref = (
+        basis.participant("outer").ticket_ref
+        if role == "ticket"
+        else basis.participant("outer").destination_ref
+    )
+    _git(root, "update-ref", "-d", ref)
+    assert operations.op_promote_waiting(board) == []
+    assert read_state_record(project / "tickets", "consumer").state is TicketState.BLOCKED
+    assert "acceptance-input-change-required" in capsys.readouterr().err
+
+
+def test_scan_isolates_operational_failure_in_one_ticket(tmp_path, monkeypatch):
+    from booley.ticket_board import scanner, ticket_baseline
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    original = ticket_baseline.subprocess.run
+
+    def git(command, *args, **kwargs):
+        if command[1:3] == ["merge-base", "--is-ancestor"] and basis.outer_sha in command:
+            return subprocess.CompletedProcess(command, 128, "", "fatal: missing object")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    entries = scanner.scan_all_tickets(project / "tickets", project_root=root, include_closed=True)
+    consumer = next(row for row in entries if row["file"].endswith("consumer.md"))
+    provider = next(row for row in entries if row["file"].endswith("provider.md"))
+    assert "cannot verify ancestry" in consumer["ticket_error"]
+    assert "acceptance-input-change-required" not in consumer["ticket_error"]
+    assert "ticket_error" not in provider
+    assert scanner.find_ticket_file(project / "tickets", "unknown-feature", project_root=root) == (
+        None,
+        None,
+    )
+
+
+def test_prepared_refresh_operational_failure_is_retryable(tmp_path, monkeypatch):
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    basis, journal, path, operation = _prepared_refresh_fixture(tmp_path)
+    original = path.read_bytes()
+    failure = TicketAncestryVerificationError("cannot verify ancestry: missing object")
+    results = iter([failure, basis])
+
+    def load(*args):
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(basis_refresh, "load_ticket_baseline_from_document", load)
+    monkeypatch.setattr(basis_refresh, "_operation_path", lambda *a: operation)
+    monkeypatch.setattr(basis_refresh, "resolve_project_dir", lambda *a: tmp_path)
+    moves = []
+    monkeypatch.setattr(
+        basis_refresh, "relocate_refresh_workspace", lambda *a, **kw: moves.append(a)
+    )
+    with pytest.raises(TicketAncestryVerificationError) as caught:
+        basis_refresh._resume_prepared_refresh(tmp_path, "ticket", _fake_document(), journal)
+    assert caught.value is failure
+    assert path.read_bytes() == original
+    assert not moves
+    recovered, operation_id = basis_refresh._resume_prepared_refresh(
+        tmp_path, "ticket", _fake_document(), journal
+    )
+    assert recovered is basis
+    assert operation_id == journal.operation_id
+    assert len(moves) == 1
+    assert path.read_bytes() == original

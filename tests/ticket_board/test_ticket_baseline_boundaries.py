@@ -268,9 +268,7 @@ def test_descendant_and_project_repository_failures_are_explicit(
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=1),
     )
-    with pytest.raises(
-        ticket_baseline.TicketAncestryVerificationError, match="cannot verify ancestry"
-    ):
+    with pytest.raises(ticket_baseline.TicketBaselineError, match="ref is unavailable"):
         ticket_baseline.validate_current_basis_refs(tmp_path, TicketBaseline((_participant(),)))
     paired = TicketBaseline((_participant(), _participant("project")))
     monkeypatch.setattr(ticket_baseline, "paired_project_repository", lambda _root: None)

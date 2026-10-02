@@ -338,3 +338,51 @@ def test_workspace_ancestry_transport_failure_keeps_original_cause(
         workspace_ops._require_ancestor(tmp_path, "parent", "child", "not descendant")
     assert caught.value.__cause__.__cause__ is failure
     assert "acceptance-input-change-required" not in str(caught.value)
+
+
+@pytest.mark.parametrize("site", ["baseline", "workspace"])
+def test_existing_ref_with_missing_object_stays_operational(tmp_path, monkeypatch, site):
+    from booley.ticket_board import ticket_baseline, workspace_ops
+    from tests.ticket_board.test_basis_refresh import _git, _paired_refresh_repositories
+
+    root, _project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    sha = _git(root, "rev-parse", "refs/heads/main")
+    (root / ".git" / "objects" / sha[:2] / sha[2:]).unlink()
+    with pytest.raises(
+        ticket_baseline.TicketAncestryVerificationError, match="cannot verify ancestry"
+    ) as caught:
+        if site == "baseline":
+            ticket_baseline._descendant_ref_commit(
+                root, "refs/heads/main", sha, kind="destination", role="outer"
+            )
+        else:
+            workspace_ops._verified_basis_commit(root, "refs/heads/main")
+    assert "acceptance-input-change-required" not in str(caught.value)
+    assert "no longer descends" not in str(caught.value)
+
+
+def test_acceptance_secondary_inspection_preserves_failure_guidance():
+    from booley.ticket_board import operations
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    tio = SimpleNamespace(
+        inspect_ticket=_raise_failure(TicketAncestryVerificationError("cannot verify ancestry"))
+    )
+    assert (
+        operations._acceptance_failure_detail(tio, "ticket")
+        == "inspect the Ticket and Acceptance Journal before retrying"
+    )
+
+
+@pytest.mark.parametrize("boundary", ["recording", "flow"])
+def test_flow_discovery_failure_is_clean_operational_outcome(tmp_path, monkeypatch, boundary):
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    failure = ProjectRootDiscoveryError("Cannot determine Project checkout")
+    fail = _raise_failure(failure)
+    ticket = tmp_path / "ticket.md"
+    ticket.write_text("Ticket")
+    tio = SimpleNamespace(load_basis=fail)
+    result = _flow_boundary_outcome(boundary, tmp_path, ticket, tio, monkeypatch, fail, failure)
+    assert str(failure) in str(result)
+    assert "acceptance-input-change-required" not in str(result)

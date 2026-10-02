@@ -387,3 +387,20 @@ def test_baseline_ref_identity_failure_is_operational(tmp_path, monkeypatch, fai
             tmp_path, "missing-ref", "a" * 40, kind="ticket", role="outer"
         )
     assert "acceptance-input-change-required" not in str(caught.value)
+
+
+def test_explicit_external_data_symlink_is_refused(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError, discover_project_root
+
+    outer = tmp_path / "checkout"
+    data = tmp_path / "external-data"
+    outer.mkdir()
+    data.mkdir()
+    alias = outer / ".booley_project"
+    alias.symlink_to(data, target_is_directory=True)
+    for root in (outer, data):
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.setenv("RTL_PROJECT_ROOT", str(alias))
+    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project checkout"):
+        discover_project_root(outer)
