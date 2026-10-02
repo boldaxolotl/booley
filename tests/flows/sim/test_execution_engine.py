@@ -128,6 +128,7 @@ def _prepared_group_with_sources(
         {},
         {},
         {},
+        {},
     )
 
 

@@ -259,6 +259,7 @@ class _Recorder:
         )
         self.builds = 0
         self.launches: list[str] = []
+        self.launch_commands: list[str] = []
 
     def __call__(self, command: list[str], *, timeout: int) -> SubprocessResult:
         started = time.monotonic()
@@ -274,6 +275,7 @@ class _Recorder:
         self.builds += "BOOLEY_BUILD_STAGE" in command[-1]
         if _ADAPTER_MODULE in command[-1]:
             self.launches.append(result.stdout)
+            self.launch_commands.append(command[-1])
         return SubprocessResult(
             returncode=result.returncode,
             stdout=result.stdout,
@@ -526,3 +528,24 @@ def test_race_downgraded_build_costs_only_one_rebuild(
     assert recorder.builds == 2
     assert second.builds[0].ran is True
     assert third.builds[0].cache_decision.startswith("hit;")
+
+
+def test_native_fst_trace_mode_survives_a_reuse_hit(verilator_env: Path) -> None:
+    """A hit launches the retained image with the trace recipe it was built from.
+
+    The authored ``--trace-fst`` recipe resolves to native FST; rebinding the
+    retained image must not fall back to the VCD FIFO launch mode.
+    """
+    _write_core(
+        verilator_env, options="--timing, --trace, --trace-fst, -CFLAGS, -DVM_TRACE_FMT_FST"
+    )
+    recorder = _Recorder(verilator_env)
+    options = SimulationOptions(timeout_ms=10_000, trace=True)
+    first = _run(verilator_env, recorder, options=options)
+    second = _run(verilator_env, recorder, options=options)
+    assert recorder.builds == 1
+    assert first.builds[0].ran is True
+    assert second.builds[0].ran is False
+    assert second.builds[0].cache_decision.startswith("hit;")
+    assert len(recorder.launch_commands) == 2
+    assert all("--trace-mode native_fst" in command for command in recorder.launch_commands)

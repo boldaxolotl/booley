@@ -372,11 +372,11 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             )
             if isinstance(prepared, SimulationResult):
                 return prepared
-            bundle_artifacts = prepared
+            bundle_artifacts, execution_ref = prepared
         elapsed = time.monotonic() - started
         self._publication_checkpoint("before:build_result")
         build_result, bundle = _publish_ready_build_result(
-            request, build_directory, build_attempt, bundle_artifacts, elapsed
+            request, build_directory, build_attempt, bundle_artifacts, execution_ref, elapsed
         )
         self._publication_checkpoint("after:build_result")
         identity = {
@@ -408,7 +408,8 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         workload,
         access,
         started,
-    ) -> list[dict[str, object]] | SimulationResult:
+    ) -> tuple[list[dict[str, object]], dict[str, object]] | SimulationResult:
+        """Compile the private build; return its image inventory and execution evidence."""
         _authenticate_planning_disclosure(request, group)
         if access == "legacy-per-test":
             failure = self._legacy_hook_failure(
@@ -426,6 +427,11 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         build = group.compile()
         if not build.passed:
             return self._compile_failure(request, build_directory, build_attempt, group, started)
+        # Record the compiler outcome and cache decision, hit or miss, exactly
+        # as the shared-variant path does.
+        execution_ref = _capture_build_execution(
+            build_directory, request.attempt_id, group.build_recovery_document()
+        )
         self._publication_checkpoint("before:bundle_evidence")
         artifacts = _capture_private_image(
             group.artifact_paths,
@@ -434,7 +440,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"]),
         )
         self._publication_checkpoint("after:bundle_evidence")
-        return artifacts
+        return artifacts, execution_ref
 
     def _group_inputs(self, request: WorkExecutionRequest):
         target = cast(Mapping[str, str], request.manifest.document["target"])
@@ -924,8 +930,14 @@ def _publish_ready_build_result(
     build_directory: Path,
     build_attempt: BundleBuildAttempt,
     artifacts: list[dict[str, object]],
+    execution_ref: dict[str, object] | None,
     elapsed: float,
 ) -> tuple[BundleBuildResult, SimulatorBundle]:
+    """Publish a private ready build; *execution_ref* is its build-execution record.
+
+    Native coverage captures its image without a recorded compiler process,
+    so it passes ``None``.
+    """
     bundle_id = str(uuid.uuid4())
     owner = {
         "work_item_id": request.work_item["work_item_id"],
@@ -957,7 +969,7 @@ def _publish_ready_build_result(
     bundle_path = build_directory / "evidence" / "bundle.json"
     _create_immutable(bundle_path, encode_simulator_bundle(bundle))
     build_result = _ready_build_result(
-        request, build_attempt, bundle, bundle_path, build_directory, elapsed
+        request, build_attempt, bundle, bundle_path, build_directory, execution_ref, elapsed
     )
     request.store.publish_build_result(build_directory, build_result)
     return build_result, bundle
@@ -1075,6 +1087,7 @@ def _ready_build_result(
     bundle: SimulatorBundle,
     bundle_path: Path,
     build_directory: Path,
+    execution_ref: dict[str, object] | None,
     elapsed: float,
 ) -> BundleBuildResult:
     bundle_raw = encode_simulator_bundle(bundle)
@@ -1103,7 +1116,7 @@ def _ready_build_result(
             "artifacts": [dict(item) for item in bundle.document["artifacts"]],
         },
         "observation": None,
-        "evidence": [],
+        "evidence": [execution_ref] if execution_ref is not None else [],
     }
     return decode_bundle_build_result(canonical_json_bytes(document))
 
