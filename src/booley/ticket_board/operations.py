@@ -923,6 +923,9 @@ def _advance_waiting_ticket(
 ) -> dict[str, str] | None:
     """Block, keep waiting, or promote one waiting Ticket; return it if promoted."""
     slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
+    if ticket.get("ticket_error"):
+        print(f"Error: cannot promote '{slug}': {ticket['ticket_error']}", file=sys.stderr)
+        return None
     dependencies = ticket.get("dependencies", [])
     archived = sorted(dep for dep in dependencies if closed.get(dep) is TicketState.ARCHIVED)
     if archived:

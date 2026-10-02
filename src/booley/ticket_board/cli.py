@@ -487,12 +487,13 @@ def main(argv: list[str] | None = None) -> int:
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
     from .io import TicketValidationError
-    from .ticket_baseline import TicketAncestryVerificationError
+    from .ticket_baseline import TicketAncestryVerificationError, TicketBaselineError
 
     try:
         return _dispatch_main(argv)
     except (
         TicketValidationError,
+        TicketBaselineError,
         TicketAncestryVerificationError,
         ProjectRootDiscoveryError,
     ) as exc:

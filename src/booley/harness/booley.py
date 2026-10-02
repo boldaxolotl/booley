@@ -1276,7 +1276,10 @@ def _cmd_board_create(tio: TicketIO, slug: str, project_root: Path) -> bool:
 def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
     from booley.ticket_board.board_layout import StateRecordError
     from booley.ticket_board.io import TicketValidationError
-    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+    from booley.ticket_board.ticket_baseline import (
+        TicketAncestryVerificationError,
+        TicketBaselineError,
+    )
     from booley.ticket_board.ticket_history import TicketHistoryError
 
     try:
@@ -1286,6 +1289,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         StateRecordError,
         TicketHistoryError,
         TicketValidationError,
+        TicketBaselineError,
         TicketAncestryVerificationError,
     ) as exc:
         # A broken state record fails closed: say which one instead of a traceback.

@@ -266,7 +266,9 @@ def test_descendant_and_project_repository_failures_are_explicit(
     monkeypatch.setattr(
         ticket_baseline.subprocess,
         "run",
-        lambda *_args, **_kwargs: _completed("git", returncode=1),
+        lambda command, **_kwargs: _completed(
+            "git", returncode=2 if command[1:3] == ["show-ref", "--exists"] else 1
+        ),
     )
     with pytest.raises(ticket_baseline.TicketBaselineError, match="ref is unavailable"):
         ticket_baseline.validate_current_basis_refs(tmp_path, TicketBaseline((_participant(),)))
@@ -489,7 +491,9 @@ def test_ticket_commit_trailers_fail_when_authoring_commit_is_unavailable(
         "run",
         lambda *_args, **_kwargs: _completed("git", returncode=128),
     )
-    with pytest.raises(TicketBaselineError, match="authoring commit is unavailable"):
+    with pytest.raises(
+        ticket_baseline.TicketAncestryVerificationError, match="cannot verify ancestry"
+    ):
         ticket_baseline.validate_ticket_commit_trailers(
             tmp_path, "ticket", TicketBaseline((_participant(),)), {}
         )

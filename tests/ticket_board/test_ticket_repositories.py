@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -386,3 +387,156 @@ def test_flow_discovery_failure_is_clean_operational_outcome(tmp_path, monkeypat
     result = _flow_boundary_outcome(boundary, tmp_path, ticket, tio, monkeypatch, fail, failure)
     assert str(failure) in str(result)
     assert "acceptance-input-change-required" not in str(result)
+
+
+def _set_named_ref_storage(root, ref, sha, state):
+    from tests.ticket_board.test_basis_refresh import _git
+
+    path = root / ".git/refs/heads/check"
+    if state == "corrupt":
+        path.write_text("not-an-object-id\n")
+    elif state == "unreadable":
+        _git(root, "update-ref", ref, sha)
+        path.chmod(0)
+    elif state == "blob":
+        blob = _git(root, "rev-parse", "main:README.md")
+        path.write_text(blob + "\n")
+    if state.startswith("packed-"):
+        path = root / ".git/packed-refs"
+        path.write_text(
+            "invalid packed storage\n" if state == "packed-corrupt" else sha + " " + ref + "\n"
+        )
+        if state == "packed-unreadable":
+            path.chmod(0)
+    if state in ("unreadable", "packed-unreadable") and os.access(path, os.R_OK):
+        path.chmod(0o644)
+        pytest.skip("requires filesystem and process permissions that deny file reads")
+    return path
+
+
+@pytest.mark.parametrize("site", ["baseline", "workspace"])
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "state", ["absent", "corrupt", "unreadable", "packed-corrupt", "packed-unreadable", "blob"]
+)
+def test_named_ref_failure_classification_is_storage_aware(
+    tmp_path, monkeypatch, site, legacy, state
+):
+    from booley.ticket_board import ticket_baseline, workspace_ops
+    from tests.ticket_board.test_basis_refresh import _git, _paired_refresh_repositories
+
+    root, _project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    sha = _git(root, "rev-parse", "refs/heads/main")
+    ref = "refs/heads/check"
+    path = _set_named_ref_storage(root, ref, sha, state)
+    original = ticket_baseline.subprocess.run
+
+    def git(command, *args, **kwargs):
+        if legacy and command[1:3] == ["show-ref", "--exists"]:
+            return subprocess.CompletedProcess(command, 129, "", "unknown option: exists")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    error = (
+        (
+            ticket_baseline.TicketBaselineError
+            if site == "baseline"
+            else workspace_ops.TicketBaselineOperationError
+        )
+        if state in ("absent", "blob")
+        else ticket_baseline.TicketAncestryVerificationError
+    )
+    try:
+        with pytest.raises(error) as caught:
+            if site == "baseline":
+                ticket_baseline._descendant_ref_commit(
+                    root, ref, sha, kind="destination", role="outer"
+                )
+            else:
+                workspace_ops._verified_basis_commit(root, ref)
+        assert ("cannot verify ancestry" in str(caught.value)) == (state not in ("absent", "blob"))
+    finally:
+        if state in ("unreadable", "packed-unreadable"):
+            path.chmod(0o644)
+
+
+@pytest.mark.parametrize("failure_kind", ["missing-object", "timeout", "oserror"])
+def test_ticket_commit_trailer_read_failure_stays_operational(tmp_path, monkeypatch, failure_kind):
+    from booley.ticket_board import ticket_baseline
+    from tests.ticket_board.test_basis_refresh import _git, _paired_refresh_repositories
+
+    root, _project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    sha = _git(root, "rev-parse", "main")
+    failure = (
+        subprocess.TimeoutExpired("git", 30)
+        if failure_kind == "timeout"
+        else OSError("storage unavailable")
+    )
+    if failure_kind == "missing-object":
+        (root / ".git/objects" / sha[:2] / sha[2:]).unlink()
+    else:
+        monkeypatch.setattr(ticket_baseline.subprocess, "run", _raise_failure(failure))
+    with pytest.raises(
+        ticket_baseline.TicketAncestryVerificationError, match="cannot verify ancestry"
+    ) as caught:
+        ticket_baseline.validate_ticket_commit_trailers(
+            root, "ticket", SimpleNamespace(outer_sha=sha), {}
+        )
+    assert "acceptance-input-change-required" not in str(caught.value)
+    if failure_kind != "missing-object":
+        assert caught.value.__cause__ is failure
+
+
+@pytest.mark.parametrize("kind", ["rc128", "timeout", "oserror"])
+def test_worktree_listing_failure_is_operational(tmp_path, monkeypatch, kind):
+    from booley.ticket_board import ticket_baseline
+
+    failure = (
+        subprocess.TimeoutExpired("git", 30)
+        if kind == "timeout"
+        else OSError("storage unavailable")
+    )
+    if kind == "rc128":
+        monkeypatch.setattr(
+            ticket_baseline.subprocess,
+            "run",
+            lambda *a, **kw: subprocess.CompletedProcess(a[0], 128, "", "fatal: storage failure"),
+        )
+    else:
+        monkeypatch.setattr(ticket_baseline.subprocess, "run", _raise_failure(failure))
+    with pytest.raises(
+        ticket_baseline.TicketAncestryVerificationError, match="cannot verify ancestry"
+    ) as caught:
+        ticket_baseline._worktree_records(tmp_path)
+    if kind != "rc128":
+        assert caught.value.__cause__ is failure
+
+
+@pytest.mark.parametrize("site", ["baseline", "workspace"])
+def test_legacy_ref_lookup_accepts_valid_packed_commit(tmp_path, monkeypatch, site):
+    from booley.ticket_board import ticket_baseline, workspace_ops
+    from tests.ticket_board.test_basis_refresh import _git, _paired_refresh_repositories
+
+    root, _project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    sha = _git(root, "rev-parse", "main")
+    _git(root, "branch", "unicode-Ü")
+    _git(root, "pack-refs", "--all", "--prune")
+    assert not (root / ".git/refs/heads/main").exists()
+    original = ticket_baseline.subprocess.run
+
+    def git(command, *args, **kwargs):
+        if command[1:3] == ["show-ref", "--exists"]:
+            return subprocess.CompletedProcess(command, 129, "", "unknown option: exists")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    if site == "baseline":
+        assert (
+            ticket_baseline._descendant_ref_commit(
+                root, "refs/heads/main", sha, kind="destination", role="outer"
+            )
+            == sha
+        )
+    else:
+        assert workspace_ops._verified_basis_commit(root, "refs/heads/main") == sha
+    assert not ticket_baseline._named_ref_exists(root, "refs/heads/absent")

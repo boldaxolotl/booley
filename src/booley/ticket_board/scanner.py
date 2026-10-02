@@ -54,6 +54,7 @@ def find_ticket_file(
         return located[0], located[1].status
     # Second pass: match only a generated feature branch on a converted Ticket.
     root = project_root or tickets_dir.parent.parent
+    verification_error: TicketAncestryVerificationError | None = None
     for md_file, state in iter_board_documents(tickets_dir):
         try:
             with ticket_conversion_context(root, md_file.stem, state.conversion_stage) as context:
@@ -65,8 +66,12 @@ def find_ticket_file(
             )
             if feature_branch and feature_branch == slug:
                 return md_file, state.status
-        except (OSError, TicketAncestryVerificationError):
+        except TicketAncestryVerificationError as exc:
+            verification_error = verification_error or exc
+        except OSError:
             continue
+    if verification_error is not None:
+        raise verification_error
     return None, None
 
 

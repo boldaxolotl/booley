@@ -2682,3 +2682,42 @@ def test_real_git_failure_promotion_keeps_waiting_without_policy(tmp_path, monke
     output = capsys.readouterr().err
     assert "cannot verify ancestry" in output
     assert "acceptance-input-change-required" not in output
+
+
+@pytest.mark.parametrize("entrypoint", ["harness", "standalone"])
+def test_board_renders_commit_identity_failure_after_valid_conversion(
+    tmp_path, monkeypatch, capsys, entrypoint
+):
+    from argparse import Namespace
+
+    from booley.harness.booley import _cmd_board
+    from booley.ticket_board import cli, ticket_baseline
+
+    root, data, tio = _paired_basis_project(tmp_path)
+    slug = "identity-boundary"
+    assert _create_v2_ticket(
+        tio,
+        slug,
+        TicketFileSpec(
+            summary="Identity", ticket_type="feature", branch="main", scope=["README.md"]
+        ),
+    )
+    assert tio.enqueue_ticket(slug)
+    original = ticket_baseline.subprocess.run
+
+    def git(command, *args, **kwargs):
+        if command[1:4] == ["show", "-s", "--format=%B"]:
+            return subprocess.CompletedProcess(command, 0, "rewritten without Ticket trailers", "")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    if entrypoint == "harness":
+        result = _cmd_board(
+            Namespace(board_command="show", slug=slug, all=False, no_open_diffs=True), root
+        )
+    else:
+        monkeypatch.setenv("PROJECT_ROOT", str(root))
+        monkeypatch.setattr(cli, "detect_tickets_dir", lambda: data / "tickets")
+        result = cli.main(["show", slug])
+    assert result == 2
+    assert "Ticket commit identity changed" in capsys.readouterr().err

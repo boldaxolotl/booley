@@ -53,15 +53,19 @@ def test_standalone_board_root_and_io_use_owning_checkout(tmp_path, monkeypatch,
     assert TicketIO(data / "tickets")._project_root == outer
 
 
-@pytest.mark.parametrize("error_kind", ["authored", "ancestry", "discovery"])
+@pytest.mark.parametrize("error_kind", ["authored", "baseline", "ancestry", "discovery"])
 def test_standalone_board_typed_errors_render_cleanly(tmp_path, monkeypatch, capsys, error_kind):
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
     from booley.ticket_board import cli
     from booley.ticket_board.io import TicketValidationError
-    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+    from booley.ticket_board.ticket_baseline import (
+        TicketAncestryVerificationError,
+        TicketBaselineError,
+    )
 
     errors = {
         "authored": TicketValidationError,
+        "baseline": TicketBaselineError,
         "ancestry": TicketAncestryVerificationError,
         "discovery": ProjectRootDiscoveryError,
     }

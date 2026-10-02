@@ -206,6 +206,8 @@ def _classification_group(
     done_slugs: Collection[str],
 ) -> str | None:
     """Return the :func:`classify_tickets` group of one ticket, or ``None`` to omit it."""
+    if t.get("ticket_error"):
+        return "blocked"
     status = t.get("status", "")
     if status in {"blocked", "review", "waiting"}:
         return status
