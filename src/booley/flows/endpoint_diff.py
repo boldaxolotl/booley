@@ -107,12 +107,9 @@ def _core_classified_sets(
         return None
     root = work_dir
     if root is None:
-        try:
-            from booley.runtime.shared_infra import PROJECT_ROOT
+        from booley.runtime.shared_infra import resolve_project_root
 
-            root = PROJECT_ROOT
-        except Exception:  # noqa: BLE001 — no CWD root resolvable
-            return None
+        root = resolve_project_root()
     try:
         cs = classified_sources(root)
     except Exception:  # noqa: BLE001 — malformed .core; fall back to prefixes

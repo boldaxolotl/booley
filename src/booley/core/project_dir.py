@@ -21,6 +21,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
+from booley.core.boundary import as_dict, as_str
 from booley.core.checkout_role import require_project_checkout
 
 logger = logging.getLogger(__name__)
@@ -78,14 +79,15 @@ def _resolve_from_toml(current: Path) -> Path | None:
             try:
                 with toml_path.open("rb") as f:
                     cfg = tomllib.load(f)
-                dir_val = cfg.get("project", {}).get("dir", "")
-                if dir_val:
+                project = as_dict(cfg.get("project")) or {}
+                dir_val = as_str(project.get("dir"), default="")
+                if dir_val and "\x00" not in dir_val:
                     p = Path(dir_val)
                     if not p.is_absolute():
                         p = (parent / p).resolve()
                     if p.is_dir():
                         return p
-            except (OSError, tomllib.TOMLDecodeError) as e:
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
                 logger.warning("Failed to read %s: %s", toml_path, e)
             # booley.toml found but no override — fall through
             break

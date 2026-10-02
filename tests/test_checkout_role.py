@@ -65,6 +65,15 @@ def test_legacy_identity_and_layout_classify_old_branch(tmp_path: Path) -> None:
     assert source_checkout_root(root / "src" / "booley") == root.resolve()
 
 
+def test_invalid_utf8_metadata_keeps_source_layout_authority(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    _write_source_checkout(root)
+    (root / "pyproject.toml").write_bytes(b"\xff")
+
+    assert is_booley_source_checkout(root)
+    assert source_checkout_root(root) == root.resolve()
+
+
 def test_distribution_name_alone_does_not_classify_downstream(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "booley-rtl"\n',
