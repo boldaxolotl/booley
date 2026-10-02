@@ -50,21 +50,19 @@ def build_development_wheel(checkout: Path) -> Path:
         shutil.rmtree(build)
     dist = checkout / "dist"
     dist.mkdir(exist_ok=True)
-    with (
-        tempfile.TemporaryDirectory(dir=dist, prefix=".development-wheel-") as temporary,
-        ExitStack() as cleanup,
-    ):
-        cleanup.callback(stamp_path(checkout).unlink, missing_ok=True)
-        cleanup.callback(development_context_path(checkout).unlink, missing_ok=True)
-        write_build_stamp(checkout, profile=BuildProfile.DEVELOPMENT_WHEEL)
-        subprocess.run(
-            [sys.executable, "-P", "-m", "build", "--wheel", "--outdir", temporary],
-            cwd=checkout,
-            check=True,
-            timeout=1800,
-            stdout=sys.stderr,
-        )
-        wheel = _built_wheel(Path(temporary))
+    with tempfile.TemporaryDirectory(dir=dist, prefix=".development-wheel-") as temporary:
+        with ExitStack() as cleanup:
+            cleanup.callback(stamp_path(checkout).unlink, missing_ok=True)
+            cleanup.callback(development_context_path(checkout).unlink, missing_ok=True)
+            write_build_stamp(checkout, profile=BuildProfile.DEVELOPMENT_WHEEL)
+            subprocess.run(
+                [sys.executable, "-P", "-m", "build", "--wheel", "--outdir", temporary],
+                cwd=checkout,
+                check=True,
+                timeout=1800,
+                stdout=sys.stderr,
+            )
+            wheel = _built_wheel(Path(temporary))
         published = dist / wheel.name
         wheel.replace(published)
     return published.resolve()

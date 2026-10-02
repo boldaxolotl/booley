@@ -146,9 +146,9 @@ def test_failures_report_no_success_path_and_clean_generated_provenance(
     assert "development wheel" in captured.err.lower()
     if failure != "cleanup":
         assert_clean(checkout)
-        assert prior.read_bytes() == b"previous"
     else:
         assert not build_stamp.development_context_path(checkout).exists()
+    assert prior.read_bytes() == b"previous"
 
 
 @pytest.mark.parametrize("outputs", ["zero", "multiple", "symlink"])
@@ -190,13 +190,23 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
     shutil.copytree(
         ROOT / "src/booley", root / "src/booley", ignore=shutil.ignore_patterns("__pycache__")
     )
-    shutil.copytree(ROOT / "crates/bwave", root / "crates/bwave")
+    shutil.copytree(
+        ROOT / "crates/bwave", root / "crates/bwave", ignore=shutil.ignore_patterns("target")
+    )
     shutil.copytree(ROOT / ".github/scripts", root / ".github/scripts")
     for name in build_stamp._DEVELOPMENT_CONTEXT_FILES:
         if (ROOT / name).is_file():
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
+    copied_owner = root / "src/booley/dev_support/build_development_wheel.py"
+    owner_source = copied_owner.read_text()
+    owner_source = owner_source.replace(
+        "    try:\n        wheel = build_development_wheel(checkout)",
+        '    (checkout.parent / "source-owner-evidence").write_text(str(Path(__file__).resolve()))\n'
+        "    try:\n        wheel = build_development_wheel(checkout)",
+    )
+    copied_owner.write_text(owner_source)
     frontend = tmp_path / "frontend"
     frontend.mkdir()
     (frontend / "build.py").write_text(
@@ -217,4 +227,5 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout == str((root / "dist" / WHEEL).resolve()) + "\n"
     assert "stub frontend log" in result.stderr
+    assert (tmp_path / "source-owner-evidence").read_text() == str(copied_owner.resolve())
     assert_clean(root)

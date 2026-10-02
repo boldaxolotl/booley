@@ -463,7 +463,8 @@ def extracted_development_context() -> Iterator[Path]:
             "From a complete source checkout, run "
             "python3 -P .github/scripts/build_development_wheel.py. The script uses "
             "write_build_stamp(root, profile=BuildProfile.DEVELOPMENT_WHEEL), then "
-            "python3 -P -m build --wheel, and removes src/booley/_build_commit.py and "
+            "python3 -P -m build --wheel with fresh output staging, and removes "
+            "src/booley/_build_commit.py and "
             "src/booley/data/development-build-context.tar.gz even on failure. See "
             "docs/internals/CONTRIBUTING.md#building-a-development-wheel for the safe recipe."
         )
