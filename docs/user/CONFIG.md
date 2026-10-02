@@ -1006,7 +1006,8 @@ fileset paths; `booley init` generates ignored `.booley-projected-*.core` copies
 at the repository root so FuseSoC reads pristine RTL directly, with no source
 symlinks or copied RTL. Booley refreshes the projections again before target
 resolution. This filesystem behavior requires explicit `enabled = true`; the
-legacy missing-key fallback applies only to history sanitation.
+legacy missing-key fallback still enables history sanitation and repository-local
+line-ending policy, but not these core projections.
 
 `ignore_native_cores` is an optional, default-false isolation switch for
 repositories whose shipped `.core` files are invalid, obsolete, or deliberately

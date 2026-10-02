@@ -899,3 +899,453 @@ def test_local_publication_revalidates_normalized_comment_only_root_attributes(t
     assert (tmp_path / ".gitattributes").read_bytes() == b"# upstream comment\n"
     assert _git(tmp_path, "show", ":.gitattributes").stdout == before
     assert (tmp_path / ".git/info/attributes").read_bytes() == b"* text=auto eol=lf\n"
+
+
+def _isolated_user_attributes(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "xdg"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / "config"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "1")
+    return home
+
+
+def test_stealth_preserves_effective_global_attribute_exceptions(tmp_path, monkeypatch):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    attrs = home / "xdg/git/attributes"
+    attrs.parent.mkdir(parents=True)
+    attrs.write_bytes(b"*.bat -text\n*.txt text eol=crlf\n")
+    before = _snapshot(attrs)
+    effective = _git(
+        root, "check-attr", "text", "eol", "--", "run.bat", "a.txt", "future.bin"
+    ).stdout
+    assert b"run.bat: text: unset" in effective
+    assert b"a.txt: eol: crlf" in effective
+
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert (
+        _git(root, "check-attr", "text", "eol", "--", "run.bat", "a.txt", "future.bin").stdout
+        == effective
+    )
+    assert _snapshot(attrs) == before
+
+
+@pytest.mark.parametrize(
+    "selection", ["absolute", "relative", "tilde", "xdg", "home", "empty-xdg", "symlink"]
+)
+def test_effective_user_attributes_selection_and_read_only_inspection(
+    tmp_path, monkeypatch, selection
+):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    if selection in ("home", "empty-xdg"):
+        monkeypatch.setenv(
+            "XDG_CONFIG_HOME", "" if selection == "empty-xdg" else str(home / ".config")
+        )
+        attrs = home / ".config/git/attributes"
+    elif selection == "relative":
+        attrs = root / "user.attributes"
+        assert _git(root, "config", "core.attributesFile", "user.attributes").returncode == 0
+    elif selection in ("absolute", "symlink"):
+        attrs = home / "user.attributes"
+        assert _git(root, "config", "core.attributesFile", str(attrs)).returncode == 0
+    elif selection == "tilde":
+        attrs = home / "user.attributes"
+        assert _git(root, "config", "core.attributesFile", "~/user.attributes").returncode == 0
+    else:
+        attrs = home / "xdg/git/attributes"
+    attrs.parent.mkdir(parents=True, exist_ok=True)
+    if selection == "symlink":
+        target = home / "target.attributes"
+        target.write_bytes(b"*.bin -text\n*.txt text eol=crlf\n")
+        attrs.symlink_to(target)
+    else:
+        attrs.write_bytes(b"*.bin -text\n*.txt text eol=crlf\n")
+    before = _snapshot(attrs)
+    effective = _git(root, "check-attr", "text", "eol", "--", "future.bin", "a.txt").stdout
+    assert b"future.bin: text: unset" in effective and b"a.txt: eol: crlf" in effective
+    paths = [root / ".git/config", _index_path(root)]
+    state = [_snapshot(path) for path in paths]
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.INSPECT)
+    assert report.status is LineEndingStatus.SAFE
+    assert [_snapshot(path) for path in paths] == state
+    assert _snapshot(attrs) == before
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert _git(root, "check-attr", "text", "eol", "--", "future.bin", "a.txt").stdout == effective
+    assert _snapshot(attrs) == before
+    if selection == "symlink":
+        assert attrs.is_symlink()
+
+
+@pytest.mark.parametrize("case", ["missing", "comments", "empty-config", "no-home"])
+def test_absent_or_comment_only_user_policy_allows_local_default(tmp_path, monkeypatch, case):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    if case in ("comments", "empty-config"):
+        attrs = home / "xdg/git/attributes"
+        attrs.parent.mkdir(parents=True)
+        attrs.write_bytes(b"# only comments\n" if case == "comments" else b"*.txt -text\n")
+    if case == "empty-config":
+        assert _git(root, "config", "core.attributesFile", "").returncode == 0
+        assert (
+            _git(root, "check-attr", "text", "--", "a.txt").stdout == b"a.txt: text: unspecified\n"
+        )
+    if case == "no-home":
+        monkeypatch.delenv("HOME")
+        monkeypatch.delenv("XDG_CONFIG_HOME")
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert (root / ".git/info/attributes").read_bytes() == b"* text=auto eol=lf\n"
+
+
+@pytest.mark.parametrize("content", [b"*.txt text eol=crlf\n", b"*.special diff=custom\n"])
+def test_later_user_policy_conflicts_conservatively_with_existing_default(
+    tmp_path, monkeypatch, content
+):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    assert (
+        reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR).status
+        is LineEndingStatus.SAFE
+    )
+    local = root / ".git/info/attributes"
+    before = _snapshot(local)
+    attrs = home / "xdg/git/attributes"
+    attrs.parent.mkdir(parents=True)
+    attrs.write_bytes(content)
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.INSPECT)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert any(
+        o.code is LineEndingObservationCode.LOCAL_POLICY_CONFLICT
+        for o in report.repositories[0].observations
+    )
+    assert _snapshot(local) == before and attrs.read_bytes() == content
+    (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    assert (
+        reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR).status
+        is LineEndingStatus.UNSAFE
+    )
+    assert _snapshot(local) == before
+
+
+@pytest.mark.parametrize("change", ["create", "selection", "symlink"])
+def test_effective_user_attributes_are_revalidated_before_publication(
+    tmp_path, monkeypatch, change
+):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    attrs = home / "xdg/git/attributes"
+    attrs.parent.mkdir(parents=True)
+    if change == "symlink":
+        first, second = home / "first", home / "second"
+        first.write_bytes(b"# empty\n")
+        second.write_bytes(b"*.txt -text\n")
+        attrs.symlink_to(first)
+    real_actions = line_endings._repair_actions
+
+    def race(plan):
+        if change == "create":
+            attrs.write_bytes(b"*.txt -text\n")
+        elif change == "selection":
+            selected = home / "selected"
+            selected.write_bytes(b"*.txt -text\n")
+            assert _git(root, "config", "core.attributesFile", str(selected)).returncode == 0
+        else:
+            attrs.unlink()
+            attrs.symlink_to(second)
+        return real_actions(plan)
+
+    with patch.object(line_endings, "_repair_actions", side_effect=race):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert not (root / ".git/info/attributes").exists()
+
+
+@pytest.mark.parametrize("unsafe", ["directory", "unreadable", "config-error"])
+def test_user_attribute_inspection_failures_do_not_guess_absence(tmp_path, monkeypatch, unsafe):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    attrs = home / "xdg/git/attributes"
+    attrs.parent.mkdir(parents=True)
+    if unsafe == "directory":
+        attrs.mkdir()
+    else:
+        attrs.write_bytes(b"*.txt -text\n")
+    real_read, real_query = Path.read_bytes, line_endings._attribute_path_result
+
+    def unreadable(path):
+        if path == attrs:
+            raise PermissionError("fixture unreadable")
+        return real_read(path)
+
+    def query(root, *args):
+        if args[0] == "var":
+            return subprocess.CompletedProcess(args, 129, stdout=b"", stderr=b"usage: git var")
+        return subprocess.CompletedProcess(args, 2, stdout=b"", stderr=b"invalid config")
+
+    with (
+        patch.object(Path, "read_bytes", new=unreadable)
+        if unsafe == "unreadable"
+        else patch.object(
+            line_endings,
+            "_attribute_path_result",
+            side_effect=query if unsafe == "config-error" else real_query,
+        )
+    ):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert not (root / ".git/info/attributes").exists()
+
+
+def test_non_stealth_root_publication_does_not_read_inaccessible_user_attributes(
+    tmp_path, monkeypatch
+):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root, enabled=False)
+    assert _git(root, "config", "--unset", "core.autocrlf").returncode == 0
+    attrs = home / "xdg/git/attributes"
+    attrs.parent.mkdir(parents=True)
+    attrs.mkdir()
+    with patch.object(
+        line_endings,
+        "_effective_user_inputs",
+        side_effect=AssertionError("non-Stealth must not inspect user files"),
+    ):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert (root / ".gitattributes").read_bytes() == b"* text=auto eol=lf\n"
+
+
+def test_older_git_with_unknown_system_path_suppresses_default_with_diagnostic(
+    tmp_path, monkeypatch
+):
+    _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    monkeypatch.delenv("GIT_ATTR_NOSYSTEM")
+    with patch.object(line_endings, "_native_attribute_path", return_value=(False, None)):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert any(
+        "system attributes path unresolved" in (o.detail or "")
+        for o in report.repositories[0].observations
+    )
+
+
+def test_system_policy_is_preserved_when_git_resolves_its_path(tmp_path, monkeypatch):
+    _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    monkeypatch.delenv("GIT_ATTR_NOSYSTEM")
+    system = tmp_path / "system.attributes"
+    system.write_bytes(b"*.bin -text\n")
+    before = _snapshot(system)
+    real_native = line_endings._native_attribute_path
+
+    def native(root, variable):
+        return (True, system) if variable == "GIT_ATTR_SYSTEM" else real_native(root, variable)
+
+    with patch.object(line_endings, "_native_attribute_path", side_effect=native):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert _snapshot(system) == before
+
+
+@pytest.mark.parametrize("selection", ["relative", "worktree-config", "conditional"])
+def test_common_default_respects_sibling_worktree_user_policy(tmp_path, monkeypatch, selection):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "main"
+    data = _stealth_repo(root)
+    sibling = tmp_path / "linked with spaces"
+    assert _git(root, "worktree", "add", "-qb", "linked", str(sibling)).returncode == 0
+    attrs = sibling / "policy.attributes"
+    attrs.write_bytes(b"*.txt text eol=crlf\n")
+    if selection == "relative":
+        (root / "policy.attributes").write_bytes(b"# root has no policy\n")
+        assert _git(root, "config", "core.attributesFile", "policy.attributes").returncode == 0
+    elif selection == "worktree-config":
+        assert _git(root, "config", "extensions.worktreeConfig", "true").returncode == 0
+        assert (
+            _git(sibling, "config", "--worktree", "core.attributesFile", str(attrs)).returncode
+            == 0
+        )
+    else:
+        conditional = home / "conditional.config"
+        conditional.write_text(f'[core]\nattributesFile = "{attrs}"\n')
+        actual = _git(sibling, "rev-parse", "--absolute-git-dir").stdout.decode().strip()
+        common = Path(actual)
+        (home / "config").write_text(f'[includeIf "gitdir:{common}"]\npath = "{conditional}"\n')
+    assert _git(sibling, "check-attr", "eol", "--", "a.txt").stdout == b"a.txt: eol: crlf\n"
+    before = _snapshot(attrs)
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert _git(sibling, "check-attr", "eol", "--", "a.txt").stdout == b"a.txt: eol: crlf\n"
+    assert _snapshot(attrs) == before
+
+
+def test_inaccessible_sibling_user_policy_suppresses_default_with_diagnostic(
+    tmp_path, monkeypatch
+):
+    _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "main"
+    data = _stealth_repo(root)
+    sibling = tmp_path / "linked"
+    assert _git(root, "worktree", "add", "-qb", "linked", str(sibling)).returncode == 0
+    assert _git(root, "config", "extensions.worktreeConfig", "true").returncode == 0
+    attrs = tmp_path / "nonregular.attributes"
+    attrs.mkdir()
+    assert _git(sibling, "config", "--worktree", "core.attributesFile", str(attrs)).returncode == 0
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert any(
+        "cannot inspect sibling worktree" in (o.detail or "")
+        for o in report.repositories[0].observations
+    )
+
+
+def test_worktree_list_is_revalidated_before_shared_publication(tmp_path, monkeypatch):
+    _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "main"
+    data = _stealth_repo(root)
+    real_actions = line_endings._repair_actions
+
+    def race(plan):
+        sibling = tmp_path / "new linked"
+        assert _git(root, "worktree", "add", "-qb", "linked", str(sibling)).returncode == 0
+        return real_actions(plan)
+
+    with patch.object(line_endings, "_repair_actions", side_effect=race):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert not (root / ".git/info/attributes").exists()
+
+
+@pytest.mark.parametrize("case", ["empty-config", "empty-xdg", "no-home"])
+def test_old_git_global_path_fallback_matches_empty_and_missing_settings(
+    tmp_path, monkeypatch, case
+):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    if case == "empty-config":
+        assert _git(root, "config", "core.attributesFile", "").returncode == 0
+        attrs = home / "xdg/git/attributes"
+        attrs.parent.mkdir(parents=True)
+        attrs.write_bytes(b"*.txt -text\n")
+    elif case == "empty-xdg":
+        monkeypatch.setenv("XDG_CONFIG_HOME", "")
+        attrs = home / ".config/git/attributes"
+        attrs.parent.mkdir(parents=True)
+        attrs.write_bytes(b"*.txt -text\n")
+    else:
+        monkeypatch.delenv("HOME")
+        monkeypatch.delenv("XDG_CONFIG_HOME")
+    with patch.object(line_endings, "_native_attribute_path", return_value=(False, None)):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert (root / ".git/info/attributes").exists() is (case != "empty-xdg")
+
+
+def test_diff_only_global_policy_conservatively_suppresses_new_default(tmp_path, monkeypatch):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    attrs = home / "xdg/git/attributes"
+    attrs.parent.mkdir(parents=True)
+    attrs.write_bytes(b"*.special diff=custom\n")
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert (
+        _git(root, "check-attr", "text", "eol", "--", "a.txt").stdout
+        == b"a.txt: text: unspecified\na.txt: eol: unspecified\n"
+    )
+
+
+def test_symlinked_xdg_directory_is_read_and_preserved(tmp_path, monkeypatch):
+    home = _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    target = home / "real-xdg"
+    attrs = target / "git/attributes"
+    attrs.parent.mkdir(parents=True)
+    attrs.write_bytes(b"*.txt text eol=crlf\n")
+    (home / "xdg").symlink_to(target, target_is_directory=True)
+    before = _snapshot(attrs)
+    assert _git(root, "check-attr", "eol", "--", "a.txt").stdout == b"a.txt: eol: crlf\n"
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not (root / ".git/info/attributes").exists()
+    assert (home / "xdg").is_symlink()
+    assert _snapshot(attrs) == before
+
+
+def test_missing_info_parent_is_not_created_by_inspection(tmp_path, monkeypatch):
+    _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    info = root / ".git/info"
+    (info / "exclude").unlink()
+    info.rmdir()
+    before = _snapshot(root / ".git/config"), _snapshot(_index_path(root))
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.INSPECT)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert not info.exists()
+    assert (_snapshot(root / ".git/config"), _snapshot(_index_path(root))) == before
+    assert (
+        reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR).status
+        is LineEndingStatus.SAFE
+    )
+    assert (info / "attributes").read_bytes() == b"* text=auto eol=lf\n"
+
+
+def test_normalized_tracked_user_attribute_comments_are_handed_off_safely(tmp_path, monkeypatch):
+    _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    assert _git(root, "config", "core.autocrlf", "true").returncode == 0
+    _commit_file(root, "user.attributes", b"# comment only\n")
+    assert _git(root, "config", "core.attributesFile", "user.attributes").returncode == 0
+    (root / "user.attributes").unlink()
+    assert _git(root, "checkout", "--", "user.attributes").returncode == 0
+    assert b"\r\n" in (root / "user.attributes").read_bytes()
+    before = _git(root, "show", ":user.attributes").stdout
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert (root / "user.attributes").read_bytes() == before
+    assert _git(root, "show", ":user.attributes").stdout == before
+    assert (root / ".git/info/attributes").read_bytes() == b"* text=auto eol=lf\n"
+
+
+@pytest.mark.parametrize("value", ["~/unexpanded", "~unknown/attributes", "%(prefix)/attributes"])
+def test_old_git_unexpanded_attribute_paths_are_refused(tmp_path, monkeypatch, value):
+    _isolated_user_attributes(tmp_path, monkeypatch)
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root)
+    result = subprocess.CompletedProcess([], 0, stdout=(value + "\n").encode(), stderr=b"")
+    with (
+        patch.object(line_endings, "_native_attribute_path", return_value=(False, None)),
+        patch.object(line_endings, "_attribute_path_result", return_value=result),
+    ):
+        report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert not (root / ".git/info/attributes").exists()
