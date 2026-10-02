@@ -4607,6 +4607,293 @@ class TestWorktreePortability:
         assert not [item for item in report.findings if item.severity is Severity.WARN]
         assert any("worktree.useRelativePaths=true" in item.message for item in report.findings)
 
+    @pytest.mark.parametrize("version", [(2, 48, 0), (2, 53, 0)])
+    def test_runtime_true_policy_infers_historical_host_capability(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version
+    ):
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "--local", "worktree.useRelativePaths", "true"],
+            check=True,
+        )
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_command: version)
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(self._project(tmp_path), None, "image", True)
+        )
+        assert any(
+            item.severity is Severity.NOTE and "host version not rechecked" in item.message
+            for item in report.findings
+        )
+        assert not [item for item in report.findings if item.severity is Severity.WARN]
+
+    @pytest.mark.parametrize("policy", ["false", None, "invalid"])
+    def test_runtime_nontrue_policy_remains_unknown(self, tmp_path, monkeypatch, policy):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        assert git_hooks._set_local_config(tmp_path, policy) is None
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(self._project(tmp_path), None, "image", True)
+        )
+        assert any("host Git capability is unknown" in item.message for item in report.findings)
+        assert any("container-only" in item.message for item in report.findings)
+        assert not any(item.severity is Severity.NOTE for item in report.findings)
+
+    @pytest.mark.parametrize(
+        "root_policy,data_policy",
+        [
+            ("true", "true"),
+            ("true", "false"),
+            ("true", None),
+            ("false", "true"),
+            (None, "true"),
+        ],
+    )
+    def test_runtime_paired_repository_policy(
+        self, tmp_path, monkeypatch, root_policy, data_policy
+    ):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        project = self._project(tmp_path)
+        _git_init(project.project_dir)
+        for repository, policy in ((tmp_path, root_policy), (project.project_dir, data_policy)):
+            assert git_hooks._set_local_config(repository, policy) is None
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", True)
+        )
+        warnings = [item for item in report.findings if item.severity is Severity.WARN]
+        assert bool(warnings) is (root_policy != "true" or data_policy != "true")
+        if root_policy == "true" and data_policy != "true":
+            scoped = [item for item in warnings if item.subject == str(project.project_dir)]
+            assert len(scoped) == 1
+            assert "container-only" in scoped[0].fix
+            assert "do not run host `git worktree prune`" in scoped[0].fix
+
+    @pytest.mark.parametrize("version", [(2, 47, 9), None])
+    @pytest.mark.parametrize("extension", [False, True])
+    def test_runtime_true_policy_still_checks_sandbox(
+        self, tmp_path, monkeypatch, version, extension
+    ):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        assert git_hooks._set_local_config(tmp_path, "true") is None
+        if extension:
+            for key, value in (
+                ("core.repositoryFormatVersion", "1"),
+                ("extensions.relativeWorktrees", "true"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(tmp_path), "config", "--local", key, value], check=True
+                )
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: version)
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(self._project(tmp_path), None, "image", True)
+        )
+        assert any(item.severity is Severity.NOTE for item in report.findings)
+        assert any(
+            "Sandbox Git" in item.message and item.severity is Severity.WARN
+            for item in report.findings
+        )
+        assert bool([item for item in report.findings if item.severity is Severity.FAIL]) is (
+            extension and version is not None
+        )
+        if extension and version is None:
+            assert any(
+                "one Git side could not be verified" in item.message for item in report.findings
+            )
+
+    @pytest.mark.parametrize(
+        "host,image",
+        [
+            (None, (2, 53, 0)),
+            ((2, 47, 9), (2, 53, 0)),
+            ((2, 53, 0), None),
+            ((2, 53, 0), (2, 47, 9)),
+        ],
+    )
+    def test_host_true_policy_never_replaces_measured_versions(
+        self, tmp_path, monkeypatch, host, image
+    ):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        assert git_hooks._set_local_config(tmp_path, "true") is None
+        versions = iter((host, image))
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: next(versions))
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(self._project(tmp_path), "docker", "image", False)
+        )
+        assert any(item.severity is Severity.WARN for item in report.findings)
+        assert not any(item.severity is Severity.NOTE for item in report.findings)
+
+    @pytest.mark.parametrize(
+        "source", ["global", "environment", "file", "worktree", "foreign", "unreachable"]
+    )
+    def test_runtime_nonlocal_true_is_not_host_evidence(self, tmp_path, monkeypatch, source):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        project = self._project(tmp_path)
+        foreign = tmp_path / "foreign"
+        _git_init(foreign)
+        assert git_hooks._set_local_config(foreign, "true") is None
+        config = tmp_path / "foreign-config"
+        config.write_text("[worktree]\nuseRelativePaths = true\n")
+        if source == "global":
+            monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+            monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        elif source == "environment":
+            monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+            monkeypatch.setenv("GIT_CONFIG_KEY_0", "worktree.useRelativePaths")
+            monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+        elif source == "file":
+            monkeypatch.setenv("GIT_CONFIG", str(config))
+        elif source == "worktree":
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "config", "extensions.worktreeConfig", "true"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(tmp_path),
+                    "config",
+                    "--worktree",
+                    "worktree.useRelativePaths",
+                    "true",
+                ],
+                check=True,
+            )
+        elif source == "foreign":
+            monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+        else:
+            checkout = tmp_path / "unreachable"
+            checkout.mkdir()
+            (checkout / ".git").write_text(f"gitdir: {tmp_path / 'missing-host-admin'}\n")
+            project = self._project(checkout)
+        assert (
+            git_hooks.read_local_config(project.project_root, git_hooks.WORKTREE_RELATIVE_KEY)
+            is None
+        )
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", True)
+        )
+        assert any("host Git capability is unknown" in item.message for item in report.findings)
+
+    def test_runtime_stale_manual_policy_is_historical_evidence(self, tmp_path, monkeypatch):
+        from booley.harness.setup import git_hooks
+        from tests.harness.setup.test_git_hooks import _ctx
+
+        _git_init(tmp_path)
+        assert git_hooks._set_local_config(tmp_path, "true") is None
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
+            check=True,
+        )
+        ctx = _ctx(tmp_path)
+        git_hooks._step_worktree_link_policy(
+            ctx, host_git_version=(2, 47, 9), sandbox_git_version=(2, 53, 0)
+        )
+        assert ctx.results[-1].detail == "incompatible Git downgrade"
+        assert git_hooks.read_local_config(tmp_path, git_hooks.WORKTREE_RELATIVE_KEY) == "true"
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(self._project(tmp_path), None, "image", True)
+        )
+        assert any(item.severity is Severity.NOTE for item in report.findings)
+        assert not any(item.severity is Severity.WARN for item in report.findings)
+
+    @pytest.mark.parametrize("failure", ["unparseable", "nonzero", "timeout", "oserror"])
+    def test_runtime_version_failure_keeps_real_local_evidence(
+        self, tmp_path, monkeypatch, failure
+    ):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        assert git_hooks._set_local_config(tmp_path, "true") is None
+        real_run = subprocess.run
+
+        def run(argv, **kwargs):
+            if argv == ["git", "--version"]:
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(argv, 30)
+                if failure == "oserror":
+                    raise OSError("unavailable")
+                return subprocess.CompletedProcess(
+                    argv, int(failure == "nonzero"), "invalid version", ""
+                )
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(readiness.subprocess, "run", run)
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(self._project(tmp_path), None, "image", True)
+        )
+        assert git_hooks.read_local_config(tmp_path, git_hooks.WORKTREE_RELATIVE_KEY) == "true"
+        assert any(item.severity is Severity.NOTE for item in report.findings)
+        assert any("Sandbox Git could not be verified" in item.message for item in report.findings)
+
+    @pytest.mark.parametrize("hazard", ["format", "metadata", "extension-only"])
+    def test_runtime_policy_does_not_hide_repository_hazards(self, tmp_path, monkeypatch, hazard):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        project = self._project(tmp_path)
+        if hazard != "extension-only":
+            assert git_hooks._set_local_config(tmp_path, "true") is None
+        if hazard in ("format", "extension-only"):
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
+                check=True,
+            )
+            if hazard == "format":
+                # The format diagnostic boundary remains authoritative even when
+                # a Git implementation exposes malformed format text.
+                read_config = readiness.read_local_config
+                monkeypatch.setattr(
+                    readiness,
+                    "read_local_config",
+                    lambda repository, key: (
+                        "invalid"
+                        if key == "core.repositoryFormatVersion"
+                        else read_config(repository, key)
+                    ),
+                )
+        else:
+            worktree = project.project_dir / "worktrees" / "ticket"
+            admin = tmp_path / "admin"
+            worktree.mkdir(parents=True)
+            admin.mkdir()
+            (worktree / ".git").write_text(f"gitdir: {admin}\n")
+            (admin / "gitdir").write_text(f"{worktree / '.git'}\n")
+        monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", True)
+        )
+        if hazard == "format":
+            assert any(item.severity is Severity.FAIL for item in report.findings)
+        elif hazard == "metadata":
+            assert any(
+                item.severity is Severity.WARN and "absolute .git pointer" in item.message
+                for item in report.findings
+            )
+        else:
+            assert any(
+                "host Git capability is unknown" in item.message for item in report.findings
+            )
+
     def test_runtime_probe_reports_sandbox_and_unknown_host(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

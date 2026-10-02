@@ -2479,3 +2479,85 @@ class TestDetachGuidanceHardlinks:
         monkeypatch.setattr(Path, "samefile", vanished)
         assert guidance_links.detach_guidance_hardlinks(tmp_path, canonical.parent) == ()
         assert (tmp_path / "CLAUDE.md").exists()
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [
+        ("GIT_DIR",),
+        ("GIT_WORK_TREE",),
+        ("GIT_COMMON_DIR",),
+        ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"),
+    ],
+)
+@pytest.mark.parametrize("rollback", [False, True])
+def test_policy_git_environment_reads_writes_discovery_and_rollback(
+    tmp_path, monkeypatch, keys, rollback
+):
+    root, data, foreign = (tmp_path / name for name in ("root", "data", "foreign"))
+    for repository in (root, data, foreign):
+        _git_init(repository)
+    for repository, value in ((root, "false"), (foreign, "true")):
+        assert git_hooks._set_local_config(repository, value) is None
+    foreign_before = (foreign / ".git" / "config").read_bytes()
+    for key in keys:
+        monkeypatch.setenv(key, str(foreign if key == "GIT_WORK_TREE" else foreign / ".git"))
+    assert git_hooks.read_local_config(root, WORKTREE_RELATIVE_KEY) == "false"
+    assert git_hooks.read_local_config(data, WORKTREE_RELATIVE_KEY) is None
+    repositories = git_hooks.worktree_policy_repositories(root, project_dir=data)
+    assert repositories == (root, data)
+    real_run = subprocess.run
+    writes = []
+
+    def run(argv, **kwargs):
+        if "config" in argv and "--get" not in argv:
+            writes.append(tuple(argv))
+            if rollback and str(data) in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, "", "injected second repository failure"
+                )
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(git_hooks.subprocess, "run", run)
+    ctx = _ctx(root)
+    git_hooks._step_worktree_link_policy(
+        ctx, host_git_version=(2, 53, 0), sandbox_git_version=(2, 53, 0), project_dir=data
+    )
+    assert ctx.results[-1].status == ("warn" if rollback else "ok")
+    assert git_hooks.read_local_config(root, WORKTREE_RELATIVE_KEY) == (
+        "false" if rollback else "true"
+    )
+    assert git_hooks.read_local_config(data, WORKTREE_RELATIVE_KEY) == (
+        None if rollback else "true"
+    )
+    assert len(writes) == (3 if rollback else 2)
+    assert (foreign / ".git" / "config").read_bytes() == foreign_before
+
+
+def test_policy_local_config_reads_linked_checkout_shared_config(tmp_path):
+    root, linked = tmp_path / "root", tmp_path / "linked"
+    _git_init(root)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "seed",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "worktree", "add", "-b", "linked", str(linked)],
+        check=True,
+        capture_output=True,
+    )
+    assert git_hooks._set_local_config(root, "true") is None
+    assert git_hooks.read_local_config(linked, WORKTREE_RELATIVE_KEY) == "true"
