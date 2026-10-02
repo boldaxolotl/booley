@@ -5,7 +5,7 @@ Single source of truth for banned phrases and content checking.
 Consumed by packaged callers and standalone Git-hook adapters.
 
 Banned phrases are read from booley.toml [stealth] banned_words if available,
-falling back to a hardcoded default list. The same [stealth] table also carries
+falling back to a hardcoded default list; banned_substrings adds literal terms. The same [stealth] table also carries
 the commit-body cap (max_body_lines) and the identity allowlist
 (allowed_authors), both read here so the validator and the pre-push guard share
 one parser.
@@ -67,6 +67,71 @@ _DEFAULT_BANNED_PHRASES = [
     "docker",
     "booley",
 ]
+
+
+_SUBSTRING_IDENTITIES = frozenset(
+    {"booley", "claude", "anthropic", "codex", "openai", "chatgpt", "copilot", "gemini"}
+)
+
+
+def _unique_terms(terms: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    unique = []
+    for term in terms:
+        if term and term.lower() not in seen:
+            unique.append(term)
+            seen.add(term.lower())
+    return tuple(unique)
+
+
+def _reserved_substring(term: str) -> bool:
+    lowered = term.lower()
+    fixed = (
+        "redacted",
+        "<redacted>",
+        "<author>",
+        "<author-email>",
+        "<repo>",
+        "<home>",
+        "<remote>",
+        "<org>",
+        "<org>/<repo>",
+        "<email>",
+    )
+    pattern = re.compile(re.escape(term), re.IGNORECASE)
+    if any(pattern.search(placeholder) for placeholder in fixed):
+        return True
+    # A substring can contain at most one contiguous decimal run. Try each
+    # placement of that run in a positive integer, preserving literal edges.
+    numbers = {"1", "10"}
+    for digits in re.findall(r"[0-9]+", lowered):
+        numbers.update((digits, "1" + digits, digits + "1", "1" + digits + "1"))
+    return any(pattern.search(f"<module-{number}>") for number in numbers if number[0] != "0")
+
+
+def parse_stealth_vocabulary(
+    section: dict, *, defaults: bool = True
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Parse the union and substring tier; feedback explicitly suppresses defaults."""
+    raw_words = section.get("banned_words")
+    if raw_words is None:
+        words = tuple(_DEFAULT_BANNED_PHRASES) if defaults else ()
+    elif is_str_list(raw_words):
+        words = tuple(word for word in raw_words if word)
+    else:
+        fallback = "using defaults" if defaults else "ignoring invalid override"
+        logger.warning("[stealth] banned_words must be a list of strings — %s", fallback)
+        words = tuple(_DEFAULT_BANNED_PHRASES) if defaults else ()
+    raw_substrings = section.get("banned_substrings", [])
+    if not is_str_list(raw_substrings):
+        raise BoundaryError("[stealth] banned_substrings must be a list of strings")
+    substrings = tuple(word for word in raw_substrings if word)
+    if any(_reserved_substring(word) for word in substrings):
+        raise BoundaryError(
+            "[stealth] banned_substrings must not match reserved redaction placeholders"
+        )
+    identities = tuple(word for word in words if word.lower() in _SUBSTRING_IDENTITIES)
+    return _unique_terms(words + substrings), _unique_terms(identities + substrings)
 
 
 _TOML_SUBDIRS = [Path(".booley_project"), Path(".booley") / "project"]
@@ -166,11 +231,13 @@ class StealthPolicy:
     enforce_convention: bool
     allowed_authors: tuple[str, ...]
 
+    banned_substrings: tuple[str, ...] = ()
+
     def find_banned(self, text: str) -> list[str]:
         """Return this policy's banned phrases found in *text*."""
         return [
             phrase
-            for phrase, pattern in _cached_banned_res(self.banned_phrases)
+            for phrase, pattern in _cached_banned_res(self.banned_phrases, self.banned_substrings)
             if pattern.search(text)
         ]
 
@@ -181,17 +248,7 @@ def stealth_policy(project_root: Path | None = None) -> StealthPolicy:
         return StealthPolicy(False, (), None, False, ())
 
     section = _stealth_section(project_root)
-    raw_words = section.get("banned_words")
-    if raw_words is None:
-        words = tuple(_DEFAULT_BANNED_PHRASES)
-    elif is_str_list(raw_words):
-        words = tuple(word for word in raw_words if word)
-    else:
-        logger.warning(
-            "[stealth] banned_words must be a list of strings, got %r — using defaults",
-            raw_words,
-        )
-        words = tuple(_DEFAULT_BANNED_PHRASES)
+    words, substrings = parse_stealth_vocabulary(section)
     raw_cap = section.get("max_body_lines")
     try:
         cap = (
@@ -223,6 +280,7 @@ def stealth_policy(project_root: Path | None = None) -> StealthPolicy:
         max_body_lines=cap,
         enforce_convention=_boolean_setting(section, "enforce_convention", False),
         allowed_authors=authors,
+        banned_substrings=substrings,
     )
 
 
@@ -312,20 +370,62 @@ def identity_allowed(name: str, email: str, patterns: list[str]) -> bool:
     )
 
 
-def _build_banned_res(phrases: list[str]) -> list[tuple[str, re.Pattern[str]]]:
-    """Compile word-boundary regexes for each banned phrase."""
-    return [
-        (phrase, re.compile(r"\b" + re.escape(phrase) + r"\b", re.IGNORECASE))
-        for phrase in phrases
-    ]
+# Assertions inspect original casing independently of the case-insensitive literal.
+_IDENTIFIER_EDGE = (
+    r"(?-i:(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|"
+    r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z]))"
+)
+
+
+def _build_banned_res(
+    phrases: list[str], substrings: tuple[str, ...] = ()
+) -> list[tuple[str, re.Pattern[str]]]:
+    """Compile literal substring or original-text identifier-token patterns."""
+    substring_terms = _SUBSTRING_IDENTITIES | {term.lower() for term in substrings}
+    patterns = []
+    for phrase in _unique_terms(tuple(phrases)):
+        literal = re.escape(phrase)
+        if phrase.lower() not in substring_terms:
+            literal = (
+                r"(?:(?-i:(?<![A-Za-z0-9]))|"
+                + _IDENTIFIER_EDGE
+                + ")"
+                + literal
+                + r"(?:(?-i:(?![A-Za-z0-9]))|"
+                + _IDENTIFIER_EDGE
+                + ")"
+            )
+        patterns.append((phrase, re.compile(literal, re.IGNORECASE)))
+    return patterns
 
 
 @cache
 def _cached_banned_res(
-    phrases: tuple[str, ...],
+    phrases: tuple[str, ...], substrings: tuple[str, ...] = ()
 ) -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """Compile one immutable policy once for repeated commit/tree scans."""
-    return tuple(_build_banned_res(list(phrases)))
+    """Cache both immutable matching tiers together."""
+    return tuple(_build_banned_res(list(phrases), substrings))
+
+
+def banned_spans(
+    text: str, phrases: tuple[str, ...], substrings: tuple[str, ...] = ()
+) -> list[tuple[int, int, str]]:
+    """Return literal hits in original character coordinates, including overlaps."""
+    return [
+        (match.start(1), match.end(1), phrase)
+        for phrase, pattern in _cached_banned_res(phrases, substrings)
+        for match in re.finditer("(?=(" + pattern.pattern + "))", text, pattern.flags)
+    ]
+
+
+def _merged_spans(spans: list[tuple[int, int, str]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end, _phrase in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 # Compatibility view of the shipped defaults. Project consumers must call
@@ -356,14 +456,12 @@ REDACTION_PLACEHOLDER = "redacted"
 
 
 def redact_banned(text: str, project_root: Path | None = None) -> str:
-    """Replace every banned phrase in *text* with REDACTION_PLACEHOLDER.
+    """Replace covered original spans once, preserving all surrounding text.
 
-    Used for text that must be preserved rather than dropped (commit
-    subjects). Applying the same compiled, case-insensitive, word-boundary
-    regexes as find_banned/has_banned_content guarantees the result is free
-    of banned content, so a subsequent validation pass cannot re-flag it.
+    A custom legacy banned_words entry may itself match the fixed placeholder.
     """
     policy = stealth_policy(project_root)
-    for _phrase, pattern in _cached_banned_res(policy.banned_phrases):
-        text = pattern.sub(REDACTION_PLACEHOLDER, text)
+    spans = _merged_spans(banned_spans(text, policy.banned_phrases, policy.banned_substrings))
+    for start, end in reversed(spans):
+        text = text[:start] + REDACTION_PLACEHOLDER + text[end:]
     return text

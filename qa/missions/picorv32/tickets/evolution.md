@@ -8,8 +8,8 @@ copy in `evidence/`.
 
 Submit it with the client's form, using that Sandbox path:
 
-- Codex: `$booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
-- Claude: `/booley-ticket-create --agent --no-confirm --input-file <project-data-path>`
+- Codex: `$booley-ticket-create --agent --no-confirm --input-file /booley-project/tmp/qa-inputs/<run-id>/ticket-2/packet.md`
+- Claude: `/booley-ticket-create --agent --no-confirm --input-file /booley-project/tmp/qa-inputs/<run-id>/ticket-2/packet.md`
 
 These are skill invocations, not shell commands. Ticket Create resolves dependencies,
 guidance, selectors, Targets, tests, and the FPGA Flow from the live Project. It also

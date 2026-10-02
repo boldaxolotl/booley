@@ -254,6 +254,57 @@ def test_promotion_reconstructs_paired_basis_before_provider_validation(
     )
 
 
+@pytest.mark.parametrize(
+    ("returncode", "failure_kind"),
+    [(1, "ancestry"), (128, "ancestry"), (128, "identity"), (128, "timeout")],
+)
+def test_provider_refresh_ancestry_failure_preserves_policy_distinction(
+    tmp_path, monkeypatch, capsys, returncode, failure_kind
+):
+    from booley.ticket_board import workspace_ops
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    board = TicketIO(project / "tickets", project_root=root)
+    operations.reconcile_board(board)
+    before_state = read_state_record(project / "tickets", "consumer")
+    before_documents = {path: path.read_bytes() for path in (project / "tickets").rglob("*.md")}
+    before_refs = {repo: _git(repo, "show-ref") for repo in (root, project)}
+    original = workspace_ops._git
+    checks = []
+
+    def git(repository, *args, **kwargs):
+        if failure_kind == "identity" and args[:2] == ("rev-parse", "--verify"):
+            checks.append(repository)
+            return original(repository, *args[:2], "f" * 40 + "^{commit}", **kwargs)
+        if args[:2] == ("merge-base", "--is-ancestor"):
+            checks.append(repository)
+            if failure_kind == "timeout":
+                raise workspace_ops.TicketBaselineOperationError(
+                    "Git ancestry verification timed out"
+                )
+            return subprocess.CompletedProcess(args, returncode, "", "fatal: missing object")
+        return original(repository, *args, **kwargs)
+
+    monkeypatch.setattr(workspace_ops, "_git", git)
+    assert operations.op_promote_waiting(board) == []
+    assert checks
+    error = capsys.readouterr().err
+    after_state = read_state_record(project / "tickets", "consumer")
+    if returncode == 128:
+        assert "cannot verify ancestry" in error
+        assert "acceptance-input-change-required" not in error
+        assert after_state == before_state
+        assert after_state.state is TicketState.WAITING
+        assert {path: path.read_bytes() for path in before_documents} == before_documents
+        assert {repo: _git(repo, "show-ref") for repo in before_refs} == before_refs
+        assert not (project / "worktrees/consumer").exists()
+    else:
+        assert "acceptance-input-change-required" in error
+        assert after_state.state is TicketState.BLOCKED
+
+
 def test_reapply_targets_keeps_current_destination_and_approved_candidate(
     tmp_path: Path,
 ) -> None:
@@ -826,6 +877,13 @@ def test_recover_refresh_finishes_matching_ticket_and_rejects_disagreement(
 ) -> None:
     basis, journal, _journal_path, _operation = _prepared_refresh_fixture(tmp_path)
     finished: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        basis_refresh,
+        "_recover_published_refresh",
+        lambda root, slug, journal: basis_refresh.finish_basis_refresh(
+            root, slug, journal.operation_id
+        ),
+    )
     monkeypatch.setattr(basis_refresh, "load_basis_refresh", lambda *_args: journal)
     monkeypatch.setattr(
         basis_refresh,
@@ -846,3 +904,207 @@ def test_recover_refresh_finishes_matching_ticket_and_rejects_disagreement(
             tmp_path,
             [{"status": "queued", "feature_branch": "ticket", "machine": {}}],
         )
+
+
+@pytest.mark.parametrize("role", ["ticket", "destination"])
+def test_deleted_basis_branch_retains_waiting_policy_block(tmp_path, monkeypatch, capsys, role):
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    board = TicketIO(project / "tickets", project_root=root)
+    operations.reconcile_board(board)
+    ref = (
+        basis.participant("outer").ticket_ref
+        if role == "ticket"
+        else basis.participant("outer").destination_ref
+    )
+    _git(root, "update-ref", "-d", ref)
+    assert operations.op_promote_waiting(board) == []
+    assert read_state_record(project / "tickets", "consumer").state is TicketState.BLOCKED
+    assert "acceptance-input-change-required" in capsys.readouterr().err
+
+
+def test_scan_isolates_operational_failure_in_one_ticket(tmp_path, monkeypatch):
+    from booley.ticket_board import scanner, ticket_baseline
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    original = ticket_baseline.subprocess.run
+
+    def git(command, *args, **kwargs):
+        if command[1:3] == ["merge-base", "--is-ancestor"] and basis.outer_sha in command:
+            return subprocess.CompletedProcess(command, 128, "", "fatal: missing object")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    entries = scanner.scan_all_tickets(project / "tickets", project_root=root, include_closed=True)
+    consumer = next(row for row in entries if row["file"].endswith("consumer.md"))
+    provider = next(row for row in entries if row["file"].endswith("provider.md"))
+    assert "cannot verify ancestry" in consumer["ticket_error"]
+    assert "acceptance-input-change-required" not in consumer["ticket_error"]
+    assert "ticket_error" not in provider
+    assert scanner.find_ticket_file(project / "tickets", "unknown-feature", project_root=root) == (
+        None,
+        None,
+    )
+
+
+def test_prepared_refresh_operational_failure_is_retryable(tmp_path, monkeypatch):
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    basis, journal, path, operation = _prepared_refresh_fixture(tmp_path)
+    original = path.read_bytes()
+    failure = TicketAncestryVerificationError("cannot verify ancestry: missing object")
+    results = iter([failure, basis])
+
+    def load(*args):
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(basis_refresh, "load_ticket_baseline_from_document", load)
+    monkeypatch.setattr(basis_refresh, "_operation_path", lambda *a: operation)
+    monkeypatch.setattr(basis_refresh, "resolve_project_dir", lambda *a: tmp_path)
+    moves = []
+    monkeypatch.setattr(
+        basis_refresh, "relocate_refresh_workspace", lambda *a, **kw: moves.append(a)
+    )
+    with pytest.raises(TicketAncestryVerificationError) as caught:
+        basis_refresh._resume_prepared_refresh(tmp_path, "ticket", _fake_document(), journal)
+    assert caught.value is failure
+    assert path.read_bytes() == original
+    assert not moves
+    recovered, operation_id = basis_refresh._resume_prepared_refresh(
+        tmp_path, "ticket", _fake_document(), journal
+    )
+    assert recovered is basis
+    assert operation_id == journal.operation_id
+    assert len(moves) == 1
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("initial_state", [TicketState.WAITING, TicketState.QUEUED])
+def test_scanned_operational_error_is_never_promoted_or_executable(
+    tmp_path, monkeypatch, capsys, initial_state
+):
+    from booley.ticket_board import scanner, ticket_baseline
+    from booley.ticket_board.board_layout import write_state_record
+    from booley.ticket_board.execution import classify_tickets
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    board = TicketIO(project / "tickets", project_root=root)
+    operations.reconcile_board(board)
+    record = read_state_record(board.tickets_dir, "consumer")
+    write_state_record(board.tickets_dir, "consumer", record.with_state(initial_state))
+    before = read_state_record(board.tickets_dir, "consumer")
+    documents = {p: p.read_bytes() for p in board.tickets_dir.rglob("*.md")}
+    refs = {repo: _git(repo, "show-ref") for repo in (root, project)}
+    original = ticket_baseline.subprocess.run
+    failures = []
+
+    def git(command, *args, **kwargs):
+        if (
+            not failures
+            and command[1:3] == ["merge-base", "--is-ancestor"]
+            and basis.outer_sha in command
+        ):
+            failures.append(command)
+            return subprocess.CompletedProcess(command, 128, "", "fatal: transient read failure")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    if initial_state is TicketState.WAITING:
+        assert operations.op_promote_waiting(board) == []
+        error = capsys.readouterr().err
+        assert "cannot verify ancestry" in error
+        assert "acceptance-input-change-required" not in error
+    else:
+        rows = scanner.scan_all_tickets(board.tickets_dir, project_root=root)
+        groups = classify_tickets(rows, logs_dir=board.logs_dir, done_slugs={"provider"})
+        assert not groups["executable"]
+        assert any(
+            "cannot verify ancestry" in row.get("ticket_error", "") for row in groups["blocked"]
+        )
+    assert failures
+    assert read_state_record(board.tickets_dir, "consumer") == before
+    assert {p: p.read_bytes() for p in documents} == documents
+    assert {repo: _git(repo, "show-ref") for repo in refs} == refs
+
+
+def _unrelated_scanner_failure(root, project, monkeypatch):
+    from booley.ticket_board import ticket_baseline
+
+    bad = _write_published_ticket(
+        root,
+        project,
+        "unrelated",
+        "queue",
+        {
+            "summary": "Unrelated",
+            "type": "bugfix",
+            "branch": "main",
+            "project_destination_ref": "refs/heads/main",
+            "scope": ["README.md"],
+            "on_success": ["review"],
+            "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "clean"}}},
+        },
+        "## Description\n\nUnrelated Ticket.\n",
+        "9" * 32,
+    )
+    original = ticket_baseline.subprocess.run
+    failures = []
+
+    def git(command, *args, **kwargs):
+        if command[1:3] == ["merge-base", "--is-ancestor"] and bad.outer_sha in command:
+            failures.append(command)
+            return subprocess.CompletedProcess(
+                command, 128, "", "fatal: unrelated storage failure"
+            )
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
+    return failures
+
+
+def test_create_new_ticket_ignores_unrelated_scanner_failure(tmp_path, monkeypatch):
+    from booley.ticket_board.io import TicketFileSpec
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+    from tests.ticket_board.test_ticket_baseline import _create_v2_ticket
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    _publish_missing_target_refresh(root, project)
+    failures = _unrelated_scanner_failure(root, project, monkeypatch)
+    board = TicketIO(project / "tickets", project_root=root)
+    path = _create_v2_ticket(
+        board,
+        "brand-new",
+        TicketFileSpec(summary="New", ticket_type="feature", branch="main", scope=["README.md"]),
+    )
+    assert path is not None and path.is_file()
+    assert failures
+    assert read_state_record(board.tickets_dir, "unrelated").state is TicketState.QUEUED
+    with pytest.raises(TicketAncestryVerificationError, match="unrelated storage failure"):
+        board.inspect_ticket("unrelated")
+
+
+def test_closed_provider_refresh_ignores_unrelated_scanner_failure(tmp_path, monkeypatch, capsys):
+    from booley.ticket_board import planned_dependencies
+
+    root, project = _paired_refresh_repositories(tmp_path, monkeypatch)
+    basis = _publish_missing_target_refresh(root, project)
+    _remove_canonical_generation_worktree(root, project, basis)
+    failures = _unrelated_scanner_failure(root, project, monkeypatch)
+    board = TicketIO(project / "tickets", project_root=root)
+    assert (
+        planned_dependencies._dependency_providers(root, board.tickets_dir, ("provider",), [])
+        == []
+    )
+    assert operations.op_promote_waiting(board) == []
+    assert failures
+    error = capsys.readouterr().err
+    assert "provider Ticket 'provider' no longer exports 'acme:lib:toy:1.0#removed'" in error
+    assert "cannot verify ancestry" not in error
+    assert read_state_record(board.tickets_dir, "consumer").state is TicketState.BLOCKED
+    assert read_state_record(board.tickets_dir, "unrelated").state is TicketState.QUEUED

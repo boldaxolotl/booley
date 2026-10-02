@@ -50,6 +50,7 @@ from booley.flows.plan import (
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
+from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
 from booley.flows.synth.cli import SynthArguments
 from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.request import SynthRequest
@@ -246,6 +247,7 @@ class SynthMetrics:
     reg2reg_fmax_mhz: float | None = None
     elapsed_s: float = 0.0
     latches: int = 0
+    latch_types: dict[str, int] | None = None
     expected_latches: int = 0
     """Latches the design is declared to contain on purpose
     (``[flows.synth].expected_latches``). Not every latch is an
@@ -400,41 +402,9 @@ class SynthMetrics:
 
 
 def _parse_area(output: str) -> tuple[float | None, int | None]:
-    """Extract area_um2 and cell_count from synthesis output.
-
-    Looks for the Yosys ``stat -liberty`` patterns:
-      - "Chip area for top module '...': <number>"
-      - "Number of cells: <number>" (Yosys <= 0.5x)
-      - "<count> <area> cells" stat-table row (Yosys 0.67+ dropped the
-        "Number of cells:" line for a count/area column table)
-    Falls back to any "Chip area for" line.
-    """
-    area: float | None = None
-    cells: int | None = None
-
-    # Area — prefer "top module" line (hierarchical total)
-    m = re.search(r"Chip area for top module\b.*?:\s*([\d.]+)", output)
-    if m:
-        area = float(m.group(1))
-    else:
-        matches = re.findall(r"Chip area for\b.*?:\s*([\d.]+)", output)
-        if matches:
-            area = float(matches[-1])
-
-    # Cell count — legacy summary line first, then the 0.67+ table's total
-    # "cells" row (bare word: per-type rows carry a cell name after it).
-    m = re.search(r"Number of cells:\s*(\d+)", output)
-    if m:
-        cells = int(m.group(1))
-    else:
-        table = re.findall(r"^\s*(\d+)\s+[0-9.eE+-]+\s+cells\s*$", output, flags=re.MULTILINE)
-        if table:
-            # Multiple stat blocks (per module): the totals accumulate per
-            # module; take the last block's row — it follows the final
-            # (post-mapping, flattened-top) stat, matching the area pick.
-            cells = int(table[-1])
-
-    return area, cells
+    """Extract authoritative Yosys area and cell count."""
+    stat = parse_stat(output)
+    return stat.area_um2, stat.cells
 
 
 def _parse_per_clock_sta(output: str) -> dict[str, ClockTiming]:
@@ -543,84 +513,54 @@ def _parse_logical_estimated_fmax(output: str) -> float | None:
 
 
 def _parse_wire_count(output: str) -> int:
-    """Extract wire count from Yosys stat output."""
-    m = re.search(r"Number of wires:\s*(\d+)", output)
-    return int(m.group(1)) if m else 0
+    """Extract wire count from the authoritative final stat."""
+    return parse_stat(output).wires
 
 
 def _parse_process_count(output: str) -> int:
-    """Extract process count from Yosys stat output (non-zero = unsynthesized)."""
-    m = re.search(r"Number of processes:\s*(\d+)", output)
-    return int(m.group(1)) if m else 0
-
-
-# A Yosys ``stat`` cell tally line: leading whitespace plus a cell type and
-# instance count in either ordering used by supported Yosys versions. Counting
-# these is exact; counting bare ``$dlatch`` occurrences over the whole log also
-# catches mentions in banners and techmap/ABC traces, inflating the number that
-# decides a FAIL.
-_DLATCH_STAT_RE = re.compile(
-    r"^\s+(?:\$_?DLATCH\S*\s+(\d+)|(\d+)\s+\$_?DLATCH\S*)\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_STAT_MARKER_RE = re.compile(
-    r"^(?:\d+(?:\.\d+)*\.\s+)?Printing statistics\.\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_STAT_END_RE = re.compile(
-    r"^(?:\d+(?:\.\d+)*\.\s+Executing\b|Warnings:|End of script\.|--- .+ ---|ERROR:)",
-    re.MULTILINE,
-)
-_STAT_CELL_TOTAL_RE = re.compile(
-    r"^\s*(?:Number of cells:\s*\d+|\d+(?:\s+[\d.]+)?\s+cells)\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_STAT_INTERNAL_CELL_RE = re.compile(
-    r"^\s+(?:\$\S+\s+\d+|\d+\s+\$\S+)\s*$",
-    re.MULTILINE,
-)
+    """Extract residual process count from the authoritative final stat."""
+    return parse_stat(output).processes
 
 
 def _authoritative_stat_section(output: str) -> str | None:
-    """Return the final usable, bounded Yosys statistics section."""
-    markers = list(_STAT_MARKER_RE.finditer(output))
-    for index in range(len(markers) - 1, -1, -1):
-        start = markers[index].end()
-        end = markers[index + 1].start() if index + 1 < len(markers) else len(output)
-        section = output[start:end]
-        boundary = _STAT_END_RE.search(section)
-        if boundary is not None:
-            section = section[: boundary.start()]
-        if _STAT_CELL_TOTAL_RE.search(section) or _STAT_INTERNAL_CELL_RE.search(section):
-            return section
-    if markers:
-        return None
-    totals = list(_STAT_CELL_TOTAL_RE.finditer(output))
-    if totals:
-        section = output[totals[-1].start() :]
-        boundary = _STAT_END_RE.search(section)
-        return section[: boundary.start()] if boundary is not None else section
-    return None
+    """Compatibility wrapper for final-stat selection."""
+    return authoritative_stat_section(output)
 
 
 def _count_latches(output: str) -> int:
-    """Number of latch cells Yosys inferred.
-
-    Prefers the final usable ``stat`` cell tally, which is an exact instance
-    count. A completed section that prints **no** ``$_DLATCH*`` row means zero latches —
-    ``stat`` omits cell types with no instances, so "no tally" must not be
-    conflated with "run died before ``stat``" (ravenoc F-29: yosys-slang emits
-    transient ``$driver$…($dlatch)`` helper cells that opt folds away; the
-    occurrence fallback counted 1680 log mentions on a netlist with zero
-    latches and failed a clean synthesis). Occurrence-matching remains only
-    for runs with no stat section at all, where over-counting is the safe
-    direction.
-    """
-    final_stat = _authoritative_stat_section(output)
-    if final_stat is not None:
-        tallies = _DLATCH_STAT_RE.findall(final_stat)
-        return sum(int(cell_first or count_first) for cell_first, count_first in tallies)
+    """Count final inferred cells; occurrence fallback only without usable stat."""
+    stat = parse_stat(output)
+    if stat.section is not None:
+        return sum(stat.latch_types.values())
     return len(re.findall(r"\$dlatch", output))
+
+
+def _latch_diagnostic(metrics: SynthMetrics) -> str:
+    """Bounded structural evidence shared by console and diagnostic excerpts."""
+    types = (
+        ", ".join(f"{cell}={count}" for cell, count in sorted(metrics.latch_types.items()))
+        if metrics.latch_types is not None
+        else "unavailable"
+    )
+    return (
+        f"{metrics.latches} latches (actual={metrics.latches}, "
+        f"expected={metrics.expected_latches}, excess={metrics.unexpected_latches}; "
+        f"types: {types or 'none'})"
+    )
+
+
+def _design_failure_reason(metrics: SynthMetrics) -> str:
+    """Keep the rejected generic master distinct from allowed latch evidence."""
+    if "unmapped generic cell:" in metrics.failure_output:
+        reason = "unmapped generic cell"
+        return f"{reason}; {_latch_diagnostic(metrics)}" if metrics.latches else reason
+    if metrics.latches:
+        return _latch_diagnostic(metrics)
+    return (
+        "unmapped latch"
+        if "unmapped latch:" in metrics.failure_output
+        else "unmapped generic cell"
+    )
 
 
 def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
@@ -641,7 +581,8 @@ def _parse_synth_output(
 ) -> SynthMetrics:
     """Parse all metrics from combined synthesis stdout/stderr."""
     mode = SynthMode(synth_mode)
-    mapped_area_um2, cells = _parse_area(output)
+    stat = parse_stat(output)
+    mapped_area_um2, cells = stat.area_um2, stat.cells
     if mode.runs_openroad:
         area_um2 = _parse_physical_area(output)
         estimated_fmax_mhz = None
@@ -672,6 +613,7 @@ def _parse_synth_output(
         synth_mode=mode,
         elapsed_s=elapsed_s,
         latches=latches,
+        latch_types=stat.latch_types if stat.section is not None else None,
         comb_loops=comb_loops,
         multi_driven=multi_driven,
         peak_rss_mb=float(peak_matches[-1]) if peak_matches else None,
@@ -1399,10 +1341,18 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.termination = "infrastructure_error"
         failure = None
         if metrics.termination not in {"timeout", "oom", "resource_killed"}:
-            failure = classify_eda_failure(
-                replace(result, stdout=output, stderr=""),
-                expected_token=getattr(outcome, "attempt_token", None),
-            )
+            boundary_result = replace(result, stdout=output, stderr="")
+            token = getattr(outcome, "attempt_token", None)
+            failure = classify_eda_failure(boundary_result, expected_token=token)
+            stage = getattr(outcome, "stage", None)
+            if (
+                failure is None
+                and re.fullmatch(r"[0-9a-f]{32}", token or "")
+                and stage in {"sv2v", "yosys", "openroad"}
+            ):
+                failure = classify_eda_failure(
+                    boundary_result, expected_stage=stage, expected_executable=stage
+                )
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
             metrics.infra_error = failure.reason
@@ -1412,8 +1362,10 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if outcome.forced_failure and metrics.returncode == 0:
             metrics.returncode = 1
             metrics.termination = "eda_tool_failure"
+            metrics.failure_output = outcome.forced_failure
         legacy_inline = (
-            not outcome.yosys_complete
+            not getattr(outcome, "attempt_token", "")
+            and not outcome.yosys_complete
             and metrics.has_metrics
             and bool(result.stdout.strip())
             and "BOOLEY_STAGE:" not in result.stdout
@@ -1436,6 +1388,35 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.ppa_complete = (
                 metrics.termination == "completed" and metrics.area_source == "yosys_mapped"
             )
+        self._apply_design_failure(metrics, outcome, result, output)
+
+    @staticmethod
+    def _apply_design_failure(
+        metrics: SynthMetrics, outcome: Any, result: SubprocessResult, output: str
+    ) -> None:
+        """Normalize recognized design failures after stronger execution gates."""
+        if metrics.termination in {"timeout", "oom", "resource_killed", "infrastructure_error"}:
+            return
+        diagnostic = getattr(outcome, "openroad_diagnostic", None)
+        if diagnostic:
+            kind = (
+                "latch" if re.search(r"\$_DLATCH", diagnostic, re.IGNORECASE) else "generic cell"
+            )
+            diagnostic = f"unmapped {kind}: {diagnostic}"
+        elif result.returncode == 0 and metrics.unexpected_latches:
+            diagnostic = _latch_diagnostic(metrics)
+        if not diagnostic:
+            return
+        failure = classify_eda_failure(
+            replace(result, stdout=output, stderr=""),
+            expected_token=getattr(outcome, "attempt_token", None),
+            expected_stage=getattr(outcome, "stage", None) or "yosys",
+            design_diagnostic=diagnostic,
+        )
+        if failure is not None and failure.kind == "design":
+            metrics.returncode = 1
+            metrics.termination = "design_failure"
+            metrics.failure_output = failure.diagnostic
 
     @staticmethod
     def _apply_structural_completion(
@@ -1446,7 +1427,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """Apply authoritative final-check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
-            not outcome.yosys_complete
+            not getattr(outcome, "attempt_token", "")
+            and not outcome.yosys_complete
             and not structural.complete
             and metrics.has_metrics
             and bool(stdout.strip())
@@ -1495,7 +1477,13 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif result.returncode != 0:
             logger.warning("Synth %s failed with rc=%d", target, result.returncode)
         if metrics.termination != "completed" or (not metrics.has_metrics and result.returncode):
-            metrics.failure_output = _error_excerpt(output)
+            metrics.failure_output = "\n".join(
+                part for part in (metrics.failure_output, _error_excerpt(output)) if part
+            )
+            if metrics.latches and not metrics.failure_output.startswith(
+                _latch_diagnostic(metrics)
+            ):
+                metrics.failure_output = _latch_diagnostic(metrics) + "\n" + metrics.failure_output
             reason_lines = metrics.failure_output.splitlines()
             logger.error(
                 "Synth %s: boundary run failed (rc=%d, timed_out=%s): %s (full output: %s)",
@@ -2635,7 +2623,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """Format a CRITICAL conditions warning line."""
         parts = []
         if cur.unexpected_latches:
-            parts.append(f"{cur.unexpected_latches} latches")
+            parts.append(_latch_diagnostic(cur))
         if cur.comb_loops:
             parts.append(f"{cur.comb_loops} comb loop")
         if cur.multi_driven:
@@ -2668,6 +2656,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             reason = "resource-killed"
         elif cur.infra_error:
             return "   ERROR"
+        elif cur.termination == "design_failure":
+            reason = _design_failure_reason(cur)
         elif cur.returncode != 0 and not cur.has_metrics:
             reason = f"rc={cur.returncode}, no metrics"
         elif cur.returncode != 0:
@@ -2688,6 +2678,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             reason = "resource-killed"
         elif cur.infra_error:
             reason = "infrastructure error"
+        elif cur.termination == "design_failure":
+            reason = _design_failure_reason(cur)
         elif cur.returncode != 0 and not cur.has_metrics:
             reason = f"rc={cur.returncode}, no metrics"
         elif cur.returncode != 0:

@@ -8,6 +8,7 @@ from pathlib import Path
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 
 from . import workspace_ops
 from .acceptance_targets import deferable_rtl_or_tb_input
@@ -70,7 +71,14 @@ def validate_executable_ticket(
             runtime_ticket_path=runtime_ticket_path,
         )
         return _validate_prepared_checkout(root, ticket, slug, document, basis)
-    except (TicketBaselineError, PlannedDependencyError, FuseSocError, OSError, ValueError) as exc:
+    except (
+        TicketAncestryVerificationError,
+        TicketBaselineError,
+        PlannedDependencyError,
+        FuseSocError,
+        OSError,
+        ValueError,
+    ) as exc:
         return [str(exc)]
 
 
@@ -182,8 +190,18 @@ def _validate_published(
         basis = load_ticket_baseline_from_document(
             project_root, path.stem, document, authoring_checkout=checkout
         )
+        # The pinned checkout is a fresh materialization: run the post-setup
+        # hook so hook-generated (often gitignored) Target inputs exist, exactly
+        # as the executable `--check-ready` path does.
+        prepare_acceptance_checkout(project_root, checkout, slug=path.stem, ticket_path=path)
         placeholders = _published_provider_placeholders(checkout, basis)
-    except (TicketBaselineError, PlannedDependencyError, FuseSocError, OSError) as exc:
+    except (
+        TicketAncestryVerificationError,
+        TicketBaselineError,
+        PlannedDependencyError,
+        FuseSocError,
+        OSError,
+    ) as exc:
         return [str(exc)]
     return validate_ticket_spec(
         document.spec, project_root=checkout, provider_placeholders=placeholders

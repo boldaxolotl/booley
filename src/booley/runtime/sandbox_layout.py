@@ -11,3 +11,5 @@ from __future__ import annotations
 # it so in-container tooling — including the Ticket-Mode Runner and its
 # developer agent (ADR 0028) — resolves project config from one place.
 PROJECT_DIR_TARGET = "/booley-project"
+
+WORK_DIR = "/work"

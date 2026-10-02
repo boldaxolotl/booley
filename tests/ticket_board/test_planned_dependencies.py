@@ -1261,12 +1261,16 @@ def test_provider_discovery_filters_states_and_wraps_invalid_basis(
 ) -> None:
     ticket = tmp_path / "provider.md"
     ticket.write_text("---\nmachine:\n  generation: bad\n---\n", encoding="utf-8")
-    monkeypatch.setattr(planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "done"))
-    assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
-    monkeypatch.setattr(planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "draft"))
+    monkeypatch.setattr(
+        planned_dependencies, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "done")
+    )
     assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
     monkeypatch.setattr(
-        planned_dependencies, "find_ticket_file", lambda *_args: (ticket, "waiting")
+        planned_dependencies, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "draft")
+    )
+    assert planned_dependencies._provider(tmp_path, tmp_path, "provider") is None
+    monkeypatch.setattr(
+        planned_dependencies, "find_ticket_file", lambda *_args, **_kwargs: (ticket, "waiting")
     )
     monkeypatch.setattr(
         planned_dependencies,

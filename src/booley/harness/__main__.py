@@ -20,7 +20,13 @@ def main() -> int:
     _stamp_developer_pid()
     _setup_logging(args.verbose)
 
-    project_root = Path(args.project_root) if args.project_root else _find_project_root()
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    try:
+        project_root = Path(args.project_root) if args.project_root else _find_project_root()
+    except ProjectRootDiscoveryError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     if project_root is None:
         print("ERROR: Could not find project root (no .git directory found)", file=sys.stderr)
         return 1
@@ -124,12 +130,9 @@ def _run_harness(args: argparse.Namespace, project_root: Path) -> int:
 
 def _find_project_root() -> Path | None:
     """Walk up from cwd to find git repo root (skip .booley's own repo)."""
-    p = Path.cwd().resolve()
-    while p != p.parent:
-        if (p / ".git").exists() and p.name != ".booley":
-            return p
-        p = p.parent
-    return None
+    from booley.runtime.project_discovery import discover_project_root
+
+    return discover_project_root(required=True)
 
 
 if __name__ == "__main__":

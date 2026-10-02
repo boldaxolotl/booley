@@ -231,7 +231,12 @@ def test_freeze_requires_each_observation_to_match_current_ticket_identity(
         )
         assert len(snapshot.evidence) == 1
     else:
-        with pytest.raises(AcceptanceLedgerError, match="another Ticket identity"):
+        with pytest.raises(
+            AcceptanceLedgerError,
+            match=(
+                "another Ticket identity" if drift == "missing" else "current-generation proof"
+            ),
+        ):
             freeze_acceptance(
                 log_dir,
                 state,
@@ -634,3 +639,100 @@ def test_review_package_binding_requires_exact_basis_and_participant_heads(tmp_p
         bind_review_package(log_dir, different_snapshot, replace_existing=True)
     assert "execution_id generation-1 -> generation-2" in str(caught.value)
     assert "participant_heads" not in str(caught.value)
+
+
+@pytest.mark.parametrize("encoding", ["plain", "v1", "v2"])
+def test_current_generation_filters_valid_historical_records(
+    tmp_path: Path, encoding: str
+) -> None:
+    old = {
+        "generation": "a" * 32,
+        "authored_sha256": "b" * 64,
+        "baseline": {"outer": {"commit": "c" * 40}},
+    }
+    current = {**old, "generation": "d" * 32}
+    log, state, _ = _transaction_state(tmp_path)
+    first = state.set_criterion("sim_pass_uart", False)
+    second = state.set_criterion("sim_pass_uart", True)
+    if encoding == "v2":
+        record_or_verify_transaction(
+            log, state, first, acceptance_facts=_campaign_facts(), ticket_identity=old
+        )
+        record_or_verify_transaction(
+            log, state, second, acceptance_facts=_campaign_facts(), ticket_identity=current
+        )
+    else:
+        transaction = "e" * 64 if encoding == "v1" else ""
+        for changes, identity in ((first, old), (second, current)):
+            record_changes(
+                log,
+                state,
+                changes,
+                invocation_id="campaign",
+                producer="sim",
+                execution_id="execution",
+                ticket_identity=identity,
+                transaction_id=transaction,
+            )
+        if transaction:
+            state.acceptance_transactions = [transaction]
+    frozen = freeze_acceptance(
+        log,
+        state,
+        execution_id="new",
+        ticket_identity=current,
+        participant_heads={"outer": "c" * 40},
+    )
+    assert [row["sequence"] for row in frozen.evidence] == [2]
+    assert len(list((log / "acceptance/evidence").glob("*/record.json"))) == 2
+
+
+def test_foreign_v2_manifest_corruption_is_still_fatal(tmp_path: Path) -> None:
+    identity = {"generation": "a" * 32}
+    log, state, changes = _transaction_state(tmp_path)
+    record_or_verify_transaction(
+        log, state, changes, acceptance_facts=_campaign_facts(), ticket_identity=identity
+    )
+    path = next((log / "acceptance/evidence").glob("*/record.json"))
+    row = json.loads(path.read_text())
+    row["met"] = False
+    path.write_bytes(acceptance_ledger._canonical(row) + b"\n")
+    with pytest.raises(AcceptanceLedgerError, match="does not bind"):
+        freeze_acceptance(
+            log,
+            state,
+            execution_id="new",
+            ticket_identity={"generation": "b" * 32},
+            participant_heads={"outer": "c" * 40},
+        )
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {},
+        {"generation": "bad"},
+        {"generation": "a" * 32, "baseline": {"outer": {"commit": "bad"}}},
+    ],
+)
+def test_malformed_foreign_identity_is_not_silently_ignored(
+    tmp_path: Path, malformed: dict
+) -> None:
+    log, state, changes = _transaction_state(tmp_path)
+    record_changes(
+        log,
+        state,
+        changes,
+        invocation_id="old",
+        producer="sim",
+        execution_id="old",
+        ticket_identity=malformed,
+    )
+    with pytest.raises(AcceptanceLedgerError):
+        freeze_acceptance(
+            log,
+            state,
+            execution_id="new",
+            ticket_identity={"generation": "b" * 32},
+            participant_heads={"outer": "c" * 40},
+        )

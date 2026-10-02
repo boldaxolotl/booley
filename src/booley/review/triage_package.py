@@ -827,7 +827,7 @@ def _unverified_transitions(
     return sorted(names)
 
 
-def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
+def saved_file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
     """Validate saved report explanations before exposing them to review readers."""
     try:
         criteria = require_dict(state.get("criteria", {}), field="criteria")
@@ -847,26 +847,40 @@ def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
         raise TriagePackageError(f"Invalid saved file justifications: {exc}") from exc
 
 
-def build_review_facts(
-    ctx: TriageContext,
-    evidence: ResolvedReviewEvidence,
-    *,
-    freshness_eligible: Callable[..., bool],
-    freshness_evaluator: Callable[..., Any],
-    criterion_presenter: CriterionPresenter,
-    coverage_report_resolver: CoverageReportResolver,
-    run_economics: str = "unavailable",
-    waiver_candidates: Sequence[Mapping[str, Any]] = (),
-) -> dict[str, Any]:
-    """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
-    inspection = getattr(ctx, "inspection", None)
+def _report_is_submitted(state: Mapping[str, Any]) -> bool:
+    return state.get("criteria", {}).get("_report_submitted", {}).get("met") is True
+
+
+def _effective_review_inputs(
+    ctx: TriageContext, evidence: ResolvedReviewEvidence
+) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         state = evidence.state()
         scope = evidence.scope()
+        justifications = saved_file_justifications(state)
     except (BoundaryError, json.JSONDecodeError) as exc:
         raise TriagePackageError(f"invalid resolved review evidence: {exc}") from exc
-    scope["file_justifications"] = _file_justifications(state)
-    changes = _materialize_diffs(ctx, _changed_files(ctx))
+    scope["file_justifications"] = justifications if _report_is_submitted(state) else {}
+    return state, scope
+
+
+def _inspection_summary(inspection: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not inspection:
+        return None
+    return {
+        key: inspection[key]
+        for key in (
+            "schema",
+            "disposition",
+            "reason",
+            "blocked_reason",
+            "heads",
+            "ticket_generation",
+        )
+    }
+
+
+def _review_identity_facts(ctx: TriageContext) -> dict[str, Any]:
     repositories = [
         {
             "name": "rtl",
@@ -885,6 +899,35 @@ def build_review_facts(
                 "worktree": str(project.worktree),
             }
         )
+    return {
+        "inspection": _inspection_summary(getattr(ctx, "inspection", None)),
+        "slug": ctx.slug,
+        "feature_branch": ctx.feature_branch,
+        "base_sha": ctx.base_sha,
+        "head_sha": ctx.head_sha,
+        "worktree": str(ctx.worktree),
+        "repositories": repositories,
+    }
+
+
+def build_review_facts(
+    ctx: TriageContext,
+    evidence: ResolvedReviewEvidence,
+    *,
+    freshness_eligible: Callable[..., bool],
+    freshness_evaluator: Callable[..., Any],
+    criterion_presenter: CriterionPresenter,
+    coverage_report_resolver: CoverageReportResolver,
+    run_economics: str = "unavailable",
+    waiver_candidates: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Build artifacts from Ticket Board-resolved evidence and immutable heads.
+
+    The caller must project report completion authority before capturing evidence;
+    this renderer trusts the resolved report gate and performs no lifecycle I/O.
+    """
+    state, scope = _effective_review_inputs(ctx, evidence)
+    changes = _materialize_diffs(ctx, _changed_files(ctx))
     from booley.evidence.review_dispositions import (
         collect_review_audit,
         collect_review_dispositions,
@@ -893,27 +936,7 @@ def build_review_facts(
     return {
         "version": TRIAGE_PACKAGE_VERSION,
         "kind": "review",
-        "inspection": (
-            {
-                key: inspection[key]
-                for key in (
-                    "schema",
-                    "disposition",
-                    "reason",
-                    "blocked_reason",
-                    "heads",
-                    "ticket_generation",
-                )
-            }
-            if inspection
-            else None
-        ),
-        "slug": ctx.slug,
-        "feature_branch": ctx.feature_branch,
-        "base_sha": ctx.base_sha,
-        "head_sha": ctx.head_sha,
-        "worktree": str(ctx.worktree),
-        "repositories": repositories,
+        **_review_identity_facts(ctx),
         "criteria": _criteria(
             state,
             worktree=ctx.worktree,
@@ -932,7 +955,9 @@ def build_review_facts(
         "scope": scope,
         "commits": _commits(ctx),
         "changed_files": changes,
-        "developer_report_path": str(ctx.log_dir / "REPORT.md"),
+        "developer_report_path": str(ctx.log_dir / "REPORT.md")
+        if _report_is_submitted(state)
+        else str(ctx.log_dir / ".runtime" / "unsubmitted-report.md"),
         "run_economics": run_economics,
         "health": _health(evidence, state, scope, criterion_presenter),
     }
@@ -1498,7 +1523,11 @@ def _render_reports(lines: list[str], package: Mapping[str, Any]) -> None:
             "",
             "#### Reports",
             "",
-            f"- {_markdown_link('Developer Agent report (REPORT.md)', report)}",
+            (
+                f"- {_markdown_link('Developer Agent report (REPORT.md)', report)}"
+                if Path(report).name != "unsubmitted-report.md"
+                else "- Developer Agent report is unsubmitted."
+            ),
         ]
     )
     html_path = package.get("html_path")

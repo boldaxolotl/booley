@@ -1027,3 +1027,70 @@ async def test_prepare_review_marks_live_input_changes_concurrent(tmp_path: Path
     manifest = json.loads((ctx.runtime_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "changed"
     assert "concurrently" in manifest["error"] or "snapshot" in manifest["error"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["version", "prompt_sha256", "ticket_generation", "base_sha", "head_sha", "source_sha256"],
+)
+def test_handoff_diagnoses_each_identity_mismatch(tmp_path, monkeypatch, field):
+    ctx = _ctx(tmp_path)
+    manifest = {
+        "status": "ready",
+        "version": rp._PROMPT_VERSION,
+        "prompt_sha256": "prompt",
+        "ticket_generation": ctx.ticket_generation,
+        "base_sha": ctx.base_sha,
+        "head_sha": ctx.head_sha,
+        "source_sha256": "source",
+    }
+    expected = manifest[field]
+    manifest[field] = "wrong"
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
+    monkeypatch.setattr(rp, "_review_prompt", lambda _ctx: ("", "prompt"))
+    monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "source")
+    monkeypatch.setattr(rp, "_read_manifest", lambda _ctx: manifest)
+    with pytest.raises(rp.ReviewPrepError) as error:
+        rp.verify_review_handoff(tmp_path, "demo")
+    assert field in str(error.value)
+    assert f"expected={expected!r}" in str(error.value)
+    assert "actual='wrong'" in str(error.value)
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_review_source_snapshot_masks_uncommitted_report(tmp_path, completed):
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board import report_submission as rs
+
+    ctx = _ctx(tmp_path)
+    state = DevelopmentState.load(ctx.log_dir / ".runtime/booley_state.json")
+    state.init_criteria({rs.KEY: True})
+    attempt = rs.Submission(ctx.log_dir, "a" * 32, {}, "execution")
+    attempt.stage(b"candidate")
+    state.set_criterion(
+        rs.KEY, True, detail={rs.ID_KEY: "a" * 32, rs.DIGEST_KEY: attempt.row["report_sha256"]}
+    )
+    state.save()
+    if completed:
+        attempt.commit()
+    attempt.close()
+    sources = rp._review_sources(ctx, {})
+    assert ("developer_report" in sources) is completed
+    assert json.loads(sources["state"].read_bytes())["criteria"][rs.KEY]["met"] is completed
+    assert (".runtime/report-submission.json", rs.receipt_path(ctx.log_dir)) in rp._source_paths(
+        ctx
+    )
+
+
+def test_downstream_prepare_sync_failure_precedes_package_authority(tmp_path, monkeypatch):
+    from booley.ticket_board import report_submission as rs
+
+    ctx = _ctx(tmp_path)
+
+    def fail(_log):
+        raise rs.ReportSubmissionError("durability synchronization failed")
+
+    monkeypatch.setattr(rs, "synchronize", fail)
+    with pytest.raises(rs.ReportSubmissionError, match="durability synchronization"):
+        rp._build_review_facts(ctx)
+    assert not (ctx.runtime_dir / "manifest.json").exists()

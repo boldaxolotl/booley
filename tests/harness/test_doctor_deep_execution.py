@@ -266,3 +266,167 @@ def test_probe_cost_accounting_and_completeness_are_independent(
     doctor._track_developer_probe(project, reporter, tracker)
     assert reporter.agent_calls == [doctor._AgentCallRecord("developer probe", usage)]
     assert tracker.missing == (("developer-probe",) if storage_fails else ())
+
+
+def _qualification_measurement(missing):
+    from booley.harness import developer_probe
+
+    if missing == "developer":
+        raise developer_probe.ProbeError("process accounting unavailable", agent_failure=False)
+    return developer_probe.ProbeMeasurement(1024, True, None)
+
+
+def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failure, data_policy):
+    import tomllib
+
+    from booley.harness import developer_probe
+    from booley.harness.setup import git_hooks, readiness
+    from tests.harness.test_doctor import _git_init
+
+    _git_init(tmp_path)
+    directory = _write_project(tmp_path, seed_interactive=False)
+    # Select exactly one real Simulation Target and exclude unrelated Flow families.
+    core = tmp_path / "unit.core"
+    core.write_text(core.read_text().split("  lint_fast:")[0])
+    config = tomllib.loads((directory / "booley.toml").read_text())
+    config["flows"]["lint"]["enabled"] = False
+    config["flows"]["synth"]["enabled"] = False
+    config["flows"]["sim"]["enabled"] = True
+    audit = readiness.ProjectAudit(tmp_path, directory, config, {}, "sim_fast")
+    overlay = directory / "selftest" / "sim" / "bad-overlay"
+    overlay.mkdir(parents=True)
+    (overlay / "bad.sv").write_text("invalid fixture for boundary transport\n")
+    assert git_hooks._set_local_config(tmp_path, policy) is None
+    if data_policy is not None:
+        _git_init(directory)
+        assert git_hooks._set_local_config(directory, data_policy) is None
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
+    monkeypatch.setattr(doctor, "_run_project_phase", lambda *_args, **_kw: (None, audit))
+
+    def health(_project, _runtime, _verbose, reporter, _progress):
+        if health_failure:
+            reporter.fail_("unrelated project health failed", "repair project")
+
+    monkeypatch.setattr(doctor, "_run_flow_and_core_phase", health)
+    for name in (
+        "_check_runtime_location",
+        "_check_memory_invariant",
+        "_run_container_checks",
+        "_run_mcp_checks",
+        "_run_ticket_preflight_parity_checks",
+    ):
+        monkeypatch.setattr(doctor, name, lambda *_args, **_kw: None)
+    monkeypatch.setattr(sandbox_artifact, "observe_execution", lambda *_args, **_kw: _artifact())
+    monkeypatch.setattr(sandbox_artifact, "observe", lambda *_args, **_kw: _artifact())
+
+    monkeypatch.setattr(
+        developer_probe,
+        "measure_developer_rss",
+        lambda _project: _qualification_measurement(missing),
+    )
+    return audit
+
+
+def _qualification_transport(monkeypatch, missing):
+    real_run = subprocess.run
+    commands = []
+    completions = {}
+    real_completed = deep.DeepCheckTracker.completed
+
+    def completed(tracker, identifier, value):
+        completions[identifier] = value
+        real_completed(tracker, identifier, value)
+
+    monkeypatch.setattr(deep.DeepCheckTracker, "completed", completed)
+
+    def run(argv, **kwargs):
+        if argv[0] == "git":
+            return real_run(argv, **kwargs)
+        if len(argv) > 2 and argv[1] == "-c" and "[[CORE_RESOLVE_JSON]]" in argv[2]:
+            commands.append("core")
+            if missing == "core":
+                return subprocess.CompletedProcess(argv, 0, "malformed core result", "")
+            payload = json.loads(argv[-1])
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                "[[CORE_RESOLVE_JSON]]"
+                + json.dumps([{"selector": item["selector"], "ok": True} for item in payload]),
+                "",
+            )
+        if "booley.flows.sim" in argv:
+            kind = kwargs.get("env", {}).get(doctor.selftest_overlay.INTERNAL_KIND_ENV)
+            commands.append(kind or "smoke")
+            return subprocess.CompletedProcess(
+                argv,
+                1 if kind == "bad" else 0,
+                "[SIM_RESULT] FAILED" if kind == "bad" else "[SIM_RESULT] PASSED",
+                "",
+            )
+        raise AssertionError(f"unexpected external command: {argv}")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    return commands, completions
+
+
+@pytest.mark.parametrize(
+    "policy,missing,health_failure,data_policy,expected",
+    [
+        ("true", None, False, None, deep.DeepOutcome.SUCCESS),
+        ("true", None, False, "true", deep.DeepOutcome.SUCCESS),
+        ("true", None, False, "false", deep.DeepOutcome.FAILED),
+        ("false", None, False, None, deep.DeepOutcome.FAILED),
+        (None, None, False, None, deep.DeepOutcome.FAILED),
+        ("true", "developer", False, None, deep.DeepOutcome.INCOMPLETE),
+        ("true", "core", False, None, deep.DeepOutcome.FAILED),
+        ("true", None, True, None, deep.DeepOutcome.FAILED),
+    ],
+)
+def test_runtime_policy_full_doctor_qualification(
+    tmp_path, monkeypatch, policy, missing, health_failure, data_policy, expected
+):
+    """Real orchestration, grading, tracker, persistence and identity qualification."""
+    audit = _qualification_project(
+        tmp_path, monkeypatch, policy, missing, health_failure, data_policy
+    )
+    commands, completions = _qualification_transport(monkeypatch, missing)
+    result = doctor.run_doctor_result(
+        argparse.Namespace(deep=True, skip_agent_checks=False), tmp_path
+    )
+    assert result.health_evidence is True
+    if policy == "true":
+        assert any(
+            item.severity == "note" and "host version not rechecked" in item.message
+            for item in result.findings
+        )
+        assert bool(
+            [
+                item
+                for item in result.findings
+                if item.check_id == "git.worktree-portability" and item.severity == "warn"
+            ]
+        ) is (data_policy == "false")
+    state = deep.load_deep_state(audit.project_dir)
+    assert state.latest_completed_attempt.outcome is expected
+    assert result.deep_status.current is (expected is deep.DeepOutcome.SUCCESS)
+    assert result.clean is (
+        policy == "true" and data_policy != "false" and missing != "core" and not health_failure
+    )
+    assert commands == ["smoke", "good", "bad", "core"]
+    assert set(completions) == {
+        *([] if missing == "developer" else ["developer-probe"]),
+        "sim.smoke.d97e8ce47f651215",
+        "sim.selftest.good",
+        "sim.selftest.bad",
+        *([] if missing == "core" else ["core.resolve.d97e8ce47f651215"]),
+    }
+    assert ("developer-probe" in completions) is (missing != "developer")
+    assert all(value for key, value in completions.items() if key != "developer-probe")
+    assert state.latest_completed_attempt.complete is (missing is None)
+    assert doctor._doctor_targets(audit, "sim") == ["sim_fast"]
+    assert not doctor._flow_enabled(audit, "lint")
+    assert not doctor._flow_enabled(audit, "synth")
+    if expected is deep.DeepOutcome.SUCCESS:
+        assert state.latest_completed_attempt.complete
+        assert not state.latest_completed_attempt.reasons

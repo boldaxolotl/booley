@@ -420,14 +420,25 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Model a PyPI user: bootstrap refuses virtual environments, and only an
+      # official-release wheel adopts the verified published image instead of
+      # building locally. Stamp it exactly as publish.yml does and install it
+      # into the isolated home's user site with the base interpreter.
+      - name: Build official-release wheel from the candidate
+        run: |
+          pip install build==1.6.1
+          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.OFFICIAL_RELEASE)'
+          trap 'rm -f src/booley/_build_commit.py' EXIT
+          rm -rf build/
+          python -m build --wheel --outdir dist/
       - name: Prepare isolated uid-1000 host
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
         run: |
           root="${RUNNER_TEMP}/release-host-doctor"
           mkdir -p "${root}/home" "${root}/evidence" "${root}/project"
-          python -m venv "${root}/venv"
-          "${root}/venv/bin/pip" install .
+          PYTHONUSERBASE="${root}/home/.local" python -m pip install --user dist/booley_rtl-*.whl
+          test -x "${root}/home/.local/bin/booley"
           docker pull "${IMAGE}"
           docker tag "${IMAGE}" booley-sandbox
           doctor_gid="$(getent passwd 1000 | cut -d: -f4)"
@@ -440,12 +451,12 @@ jobs:
           sudo /usr/bin/setpriv \
             --reuid=1000 --regid="${DOCTOR_GID}" \
             --groups="${DOCTOR_GID},${runner_groups}" \
-            -- "${RUNNER_TEMP}/release-host-doctor/venv/bin/python" \
+            -- "${pythonLocation}/bin/python" \
             "${GITHUB_WORKSPACE}/.github/scripts/release_validation/host_doctor.py" \
             --allowed-root "${RUNNER_TEMP}/release-host-doctor" \
             --project "${RUNNER_TEMP}/release-host-doctor/project" \
             --home "${RUNNER_TEMP}/release-host-doctor/home" \
-            --booley "${RUNNER_TEMP}/release-host-doctor/venv/bin/booley" \
+            --booley "${RUNNER_TEMP}/release-host-doctor/home/.local/bin/booley" \
             --expected-gid "${DOCTOR_GID}" \
             --candidate-sha "${GITHUB_SHA}" \
             --image-digest "${{ needs.build-and-push.outputs.image-digest }}" \
@@ -574,6 +585,9 @@ jobs:
       - name: Validate exact RISC-V candidate
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          # Dockerfile.riscv derives from the standard substrate, not the
+          # wheel-overlaid standard image, so the layer prefix is the substrate.
+          STANDARD_SUBSTRATE: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push.outputs.substrate-digest }}
           RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
           RISCV_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
           EXPECTED_PARENT: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.substrate-digest }}
@@ -582,6 +596,7 @@ jobs:
           evidence="${RUNNER_TEMP}/riscv-image-evidence"
           mkdir -p "${evidence}"
           docker pull "${BASE_IMAGE}"
+          docker pull "${STANDARD_SUBSTRATE}"
           docker pull "${RISCV_IMAGE}"
           python .github/scripts/image_package_inventory.py \
             --image "${BASE_IMAGE}" \
@@ -606,7 +621,7 @@ jobs:
             --expected-revision "$(git rev-parse --short HEAD)" \
             --evidence "${RUNNER_TEMP}/riscv-image-evidence/provenance.json"
           PYTHONPATH=src python .github/scripts/image_contract.py \
-            --image "${RISCV_IMAGE}" --base-image "${BASE_IMAGE}" --flavor riscv \
+            --image "${RISCV_IMAGE}" --base-image "${STANDARD_SUBSTRATE}" --flavor riscv \
             --contract .github/contracts/session-runtime.toml \
             --evidence "${RUNNER_TEMP}/riscv-image-evidence/runtime-contract.json"
           PYTHONPATH=src python .github/scripts/image_size_report.py \

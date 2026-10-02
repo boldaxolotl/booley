@@ -632,3 +632,15 @@ def test_specialist_preserves_files_outside_its_selected_paths(monkeypatch):
 
     monkeypatch.setattr(specialist, "_revert_out_of_scope", unexpected_revert)
     assert specialist._resolve_stageable_files(["selected.sv"]) == (["selected.sv"], [])
+
+
+def test_specialist_note_describes_both_matching_tiers(tmp_path):
+    directory = tmp_path / ".booley_project"
+    directory.mkdir()
+    (directory / "booley.toml").write_text(
+        '[stealth]\nbanned_words = ["agent"]\nbanned_substrings = ["quokka"]\n'
+    )
+    note = Specialist.commit_msg_banned_phrase_note(tmp_path)
+    assert "agent" in note and "quokka" in note
+    assert "CamelCase" in note and "banned_substrings match anywhere" in note
+    assert "word-boundary" not in note

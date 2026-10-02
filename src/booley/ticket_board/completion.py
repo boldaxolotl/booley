@@ -9,6 +9,7 @@ from typing import Any
 
 from booley.core.boundary import BoundaryError, require_str
 from booley.runtime.file_lock import LockContentionError
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 
 from .acceptance_journal import (
     AcceptanceJournalError,
@@ -76,7 +77,7 @@ def _completion_inputs(
         basis = tio.load_basis(slug)
         _destination_branch(entry, basis)
         _validate_completion_plan(basis, cleanup=effective_policy.cleanup)
-    except (TicketBaselineError, CompletionError) as exc:
+    except (TicketAncestryVerificationError, TicketBaselineError, CompletionError) as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return None
     return entry, basis

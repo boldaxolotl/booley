@@ -604,7 +604,8 @@ class TestProvisionalDisposition:
     def _start(self, tmp_path: Path, *, handed_off: bool, outcome: ReviewPrepOutcome):
         provisional = self._provisional()
 
-        def check(_state_path, *, work_dir, provisional):
+        def check(_state_path, *, work_dir, provisional, log_dir):
+            assert log_dir == _make_ctx(tmp_path).logs_dir
             assert provisional(MagicMock(), ["coverage_line"]) == frozenset({"coverage_line"})
             return CriteriaVerdict(disposition="review", provisional=("coverage_line",))
 

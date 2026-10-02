@@ -1002,8 +1002,18 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
     assert "Traceback" not in capsys.readouterr().err
 
 
+def _acceptance_log_context(tmp_path, monkeypatch, authority_context):
+    log_dir = tmp_path / "logs"
+    if authority_context == "environment":
+        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(log_dir))
+        return None
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "unrelated-logs"))
+    return log_dir
+
+
+@pytest.mark.parametrize("authority_context", ["explicit", "environment"])
 def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authority_context: str
 ) -> None:
     state_path, initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
 
@@ -1085,9 +1095,44 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
         detail={"unmet_optional_criteria": [branch_key]},
     )
     replayed.save()
-    verdict = check_criteria_acceptance(state_path, work_dir=tmp_path)
+    explicit_log_dir = _acceptance_log_context(tmp_path, monkeypatch, authority_context)
+    verdict = check_criteria_acceptance(
+        state_path, work_dir=tmp_path, log_dir=explicit_log_dir, ticket_identity=identity
+    )
     assert verdict.disposition == "review"
     assert verdict.unmet_mandatory == []
+
+
+def test_arbitrary_state_and_recorder_paths_allow_report_absent_legacy_flow(tmp_path, monkeypatch):
+    state_path, _initial = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    state = DevelopmentState.load(state_path)
+    state.criteria.pop("_report_submitted")
+    branch_key = next(
+        key for key, entry in state.criteria.items() if "branch" in entry.params.get("metrics", {})
+    )
+    state.criteria.pop(branch_key)
+    state.save()
+    monkeypatch.setattr("booley.config.project_config.is_run_report_enabled", lambda: False)
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    log_dir = tmp_path / "independent-evidence"
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: _SplitMetricsExecution()
+    ).execute(
+        SimRequest(
+            target="sim_custom", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        ),
+        adapter=_AcceptanceAdapter(log_dir=log_dir, ticket_identity=identity),
+    )
+    assert result.exit_code == 0
+    assert list((log_dir / "acceptance/evidence").rglob("record.json"))
+    assert (
+        check_criteria_acceptance(
+            state_path, work_dir=tmp_path, log_dir=log_dir, ticket_identity=identity
+        ).disposition
+        == "review"
+    )
+    assert "_report_submitted" not in DevelopmentState.load(state_path).criteria
+    assert not (log_dir / ".runtime/report-submission.json").exists()
 
 
 def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monkeypatch):

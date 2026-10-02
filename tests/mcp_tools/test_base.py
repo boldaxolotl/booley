@@ -386,6 +386,11 @@ def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
 class TestClassifyFiles:
     """Test diff classification with known prefixes (mocked to be project-agnostic)."""
 
+    @pytest.fixture(autouse=True)
+    def prefix_only_project(self, monkeypatch):
+        # These tests exercise the no-.core fallback, independent of cached roots.
+        monkeypatch.setattr("booley.flows.endpoint_diff._core_classified_sets", lambda _: None)
+
     # Patch module-level _RTL_DIRS/_TB_DIRS loaded from config at import time
     @mock.patch("booley.mcp.base._TB_DIRS", ("tb/",))
     @mock.patch("booley.mcp.base._RTL_DIRS", ("rtl/", "fw/"))

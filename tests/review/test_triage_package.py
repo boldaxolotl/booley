@@ -122,6 +122,9 @@ def _facts(
     freshness_eligible=verification_freshness_eligible,
 ) -> dict:
     state = json.loads((ctx.log_dir / ".runtime" / "booley_state.json").read_text())
+    from booley.ticket_board.review_preparation import _project_review_report
+
+    state = _project_review_report(state, ctx.log_dir)
     scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
     scope = json.loads(scope_path.read_text()) if scope_path.is_file() else {}
     evidence = tp.ResolvedReviewEvidence.capture(
@@ -1307,3 +1310,30 @@ def test_generic_accepted_projection_keeps_one_neutral_note():
     }
     projected = tp.accepted_review_presentation(package)
     assert projected["assessment"]["findings"].count(tp.DONE_FINDINGS_ACCEPTED) == 1
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_triage_uses_only_effective_report_and_justifications(tmp_path, completed):
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board import report_submission as rs
+
+    ctx = _context(tmp_path)
+    state = DevelopmentState.load(ctx.log_dir / ".runtime/booley_state.json")
+    state.set_criterion(rs.KEY, False)
+    attempt = rs.Submission(ctx.log_dir, "a" * 32, {}, "execution")
+    attempt.stage(b"candidate report")
+    detail = {
+        rs.ID_KEY: "a" * 32,
+        rs.DIGEST_KEY: attempt.row["report_sha256"],
+        "file_justifications": {"rtl/new.sv": "Explained change."},
+    }
+    state.set_criterion(rs.KEY, True, detail=detail)
+    state.save()
+    if completed:
+        attempt.commit()
+    attempt.close()
+    facts = _facts(ctx)
+    assert bool(facts["scope"]["file_justifications"]) is completed
+    report = Path(facts["developer_report_path"])
+    assert (report == ctx.log_dir / "REPORT.md") is completed
+    assert (b"candidate report" in report.read_bytes()) is completed

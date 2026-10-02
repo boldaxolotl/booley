@@ -8,7 +8,7 @@ First prompt, before fault injection:
 
 > Work interactively in the current pinned PicoRV32 project. Confirm the Booley session identity, repository cleanliness, Doctor state, and available Targets. Run the traced Wishbone simulation, inspect its artifacts with B-Wave, and report the readiness checkpoint without changing project sources.
 
-The operator then injects exactly one defect in `picorv32.v`, inside `picorv32_wb`: replace the OR reduction that derives `we` from `mem_wstrb[3:0]` with an AND reduction. This preserves full-word writes while breaking byte and halfword stores. The mutation and its location are hidden from the Interactive Mode prompt.
+The operator then injects exactly one defect in `picorv32.v`, inside `picorv32_wb`: replace the OR reduction that derives `we` from `mem_wstrb[3:0]` with an AND reduction, and commit it on a run-owned disposable branch. This preserves full-word writes while breaking byte and halfword stores. The mutation and its location are hidden from the Interactive Mode prompt.
 
 Second prompt to the same child:
 
@@ -16,4 +16,4 @@ Second prompt to the same child:
 
 The trace must expose `mem_wstrb`, `we`, `wbm_we_o`, `wbm_sel_o`, `wbm_stb_o`, `wbm_cyc_o`, `wbm_ack_i`, `mem_valid`, `mem_ready`, and `ram_we`. Diagnosis is based on signal relationships, not hard-coded timestamps. A useful deterministic signature is the byte-store `ERROR` path; the clean pinned run is known to complete successfully while the seeded run fails early and still produces a nonempty trace/VCD. Save reproduction, trace, B-Wave queries, diagnosis, patch, clean reruns, and commit under `evidence/`. Block remote push, then restore the clean pre-exercise checkpoint and discard all Interactive Mode changes.
 
-The repair must replace the injected AND expression with the canonical reduction-OR form `assign we = |mem_wstrb;`. The fixture keeps a separate negative case for restoring the exact clean `HEAD` bytes: that no-op repair must be rejected because it cannot produce the required meaningful local commit diff.
+Any repair that restores an OR reduction of `mem_wstrb[3:0]` is valid, including the exact upstream bytes. Reject a repair commit that is empty relative to the fault commit, or that edits tests, stimulus, or waivers.

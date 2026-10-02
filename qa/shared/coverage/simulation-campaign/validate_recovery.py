@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
+
+# Direct script execution must find repository-owned QA helpers without installation.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from qa.shared.campaign_artifacts import validate_manifest_reference
 
 
 def _need(condition: bool, message: str) -> None:
@@ -362,7 +367,13 @@ def validate_acceptance_recovery(
     )
     simulation, _ = _load(simulation_path)
     _need(simulation.get("complete") is True, "simulation projection is not complete")
-    _need(simulation.get("campaign_manifest") == str(manifest_path), "projection manifest differs")
+    validate_manifest_reference(
+        simulation.get("campaign_manifest"),
+        projection_path=simulation_path,
+        manifest_path=manifest_path,
+        manifest_raw=manifest_path.read_bytes(),
+        campaign_id=campaign_id,
+    )
 
 
 def validate_corrupt_terminal(

@@ -1,6 +1,9 @@
 """Shared EDA execution-failure classification regressions."""
 
+import pytest
+
 from booley.flows.base import SubprocessResult
+from booley.flows.eda_failures import classify_eda_failure
 
 
 def test_authenticated_missing_eda_tool_marker_survives_make_rc_translation() -> None:
@@ -86,3 +89,34 @@ def test_direct_spawn_failure_names_boundary_not_child() -> None:
     )
     assert result is not None
     assert result.subject == "make"
+
+
+@pytest.mark.parametrize(
+    "executable,alias", [("vivado", "vivado"), ("verilator", "verilator_bin"), ("yosys", "yosys")]
+)
+@pytest.mark.parametrize("rc", [0, 127])
+def test_owned_dynamic_loader_failure(executable, alias, rc):
+    diagnostic = f"{alias}: error while loading shared libraries: libncurses.so.5: cannot open shared object file"
+    failure = classify_eda_failure(
+        SubprocessResult(returncode=rc, stderr=diagnostic), expected_executable=executable
+    )
+    assert failure is not None
+    assert failure.kind == "infrastructure"
+    assert diagnostic in failure.reason
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "helper: error while loading shared libraries: libx.so: missing",
+        'ERROR: RTL string "yosys: error while loading shared libraries: libx.so: missing"',
+        "yosys: compilation error in design",
+    ],
+)
+def test_loader_unowned_and_rtl_negative_controls(text):
+    assert (
+        classify_eda_failure(
+            SubprocessResult(returncode=0, stdout=text), expected_executable="vivado"
+        )
+        is None
+    )

@@ -20,7 +20,6 @@ from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.board_layout import (
     StateRecordError,
     document_state,
-    documents_in_state,
     read_state_record,
     ticket_document_path,
 )
@@ -31,11 +30,11 @@ from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.paths import (
     existing_runtime_file,
     migrate_runtime_file,
-    ticket_log_dir,
     ticket_runtime_dir,
 )
 from booley.ticket_board.scanner import find_ticket_file
 from booley.ticket_board.ticket_baseline import (
+    TicketAncestryVerificationError,
     TicketBaseline,
     TicketBaselineError,
     requires_return_to_draft,
@@ -108,6 +107,8 @@ def _validate_intake_ticket(project_root: Path, ticket_path: Path, slug: str) ->
     """Validate executable Tickets operationally and preserve review intake rules."""
     state = _board_state(project_root, ticket_path)
     status = state.status if state is not None else None
+    if state is None and _is_git_backed(project_root):
+        raise FatalError("Ticket intake requires its authoritative Board document", slug=slug)
     if is_operational_ticket_status(status) and _is_git_backed(project_root):
         errors = validate_executable_ticket(
             project_root,
@@ -192,6 +193,8 @@ def _load_context_basis(
             tickets_dir_from_project_root(project_root),
             project_root=project_root,
         ).load_basis(slug, runtime_ticket_path=ticket_path)
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=slug) from exc
     except TicketBaselineError as exc:
         raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
@@ -254,10 +257,6 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
     elif action == "resume_blocked":
         _apply_resume_blocked(ctx, progress, fields)
 
-    # Ensure ticket.md exists in logs dir — it may be missing if a prior
-    # run failed at validation before init_ticket() had a chance to copy it.
-    _ensure_ticket_snapshot(project_root, ctx.slug, ctx.ticket_path)
-
     # Activate ticket for non-fresh resume.
     # init_ticket (fresh path) marks it running. For all other resume
     # actions, the ticket may be queued after reset/unblock.
@@ -277,6 +276,10 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
             f"Ticket '{ctx.slug}' is already being executed by another runner",
         )
 
+    _ensure_ticket_snapshot(project_root, ctx.slug, ctx.ticket_path)
+    _clear_stale_blocked_reason(ctx)
+    _ensure_run_report_gate(ctx)
+
     # PID stamp for orphan detection: _ticket_lock() (called by both
     # init_ticket and activate) already stamps the developer PID
     # from the *_DEVELOPER_PID env var.  No separate write needed.
@@ -284,20 +287,17 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
 
 
 def _ensure_ticket_snapshot(project_root: Path, slug: str, ticket_path: Path) -> None:
-    """Copy ticket.md into logs dir if missing (e.g. prior run failed before init)."""
-    logs_dir = ticket_log_dir(tickets_dir_from_project_root(project_root) / "logs", slug)
-    ticket_md = logs_dir / "ticket.md"
-    if ticket_md.exists():
-        return
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    # ticket_path may name a runtime copy — fall back to the board document
-    tickets_dir = tickets_dir_from_project_root(project_root)
-    for candidate in (ticket_path, ticket_document_path(tickets_dir, slug)):
-        if candidate.exists():
-            shutil.copy2(str(candidate), str(ticket_md))
-            logger.info("Recovered missing ticket.md from %s", candidate)
-            return
-    logger.warning("Could not find ticket source to copy ticket.md for %s", slug)
+    """Recover the mounted snapshot only under its activated execution owner."""
+    from booley.runtime.pid import is_pid_alive
+    from booley.ticket_board.runtime_identity import refresh_snapshot
+
+    tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+    with tio._ticket_lock(slug, stamp_pid=False):
+        owner = tio.read_progress(slug).get("execution_owner_pid")
+        caller = int(tio._resolve_developer_pid())
+        if owner and owner != caller and is_pid_alive(owner):
+            raise FatalError(f"Ticket '{slug}' is already being executed by another runner")
+        refresh_snapshot(tio, slug)
 
 
 def _load_progress(project_root: Path, slug: str) -> dict:
@@ -331,12 +331,10 @@ def _apply_resume_blocked(ctx: TicketContext, progress: dict, fields: dict) -> N
     # so the main loop's next_stage() call re-runs the blocked stage (not skips it).
     ctx.current_step = ctx.completed_steps[-1] if ctx.completed_steps else ""
     # Only require questions.md verification for question-type blocks
-    if "question" in block_reason.lower() or "unresolved" in block_reason.lower():
+    if not block_reason.startswith("Review package changed before handoff:") and (
+        "question" in block_reason.lower() or "unresolved" in block_reason.lower()
+    ):
         _verify_questions_answered(ctx.logs_dir / "questions.md")
-
-    # Clear stale _blocked_reason from booley_state.json so the new run
-    # isn't poisoned by the previous run's block verdict.
-    _clear_stale_blocked_reason(ctx)
 
 
 def _clear_stale_blocked_reason(ctx: TicketContext) -> None:
@@ -391,7 +389,7 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     ticket_path = _resolve_ticket_path(project_root, ticket_path_or_slug)
     slug = ticket_path.stem
-    if _board_state(project_root, ticket_path) is TicketState.WAITING:
+    if _board_state(project_root, ticket_path) in {TicketState.WAITING, TicketState.QUEUED}:
         ticket_path = _promote_waiting_for_intake(project_root, ticket_path, slug)
         _validate_intake_ticket(project_root, ticket_path, slug)
     else:
@@ -407,6 +405,8 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
         document = TicketIO(
             tickets_dir_from_project_root(project_root), project_root=project_root
         ).load_document(slug, runtime_ticket_path=ticket_path)
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=slug) from exc
     except (TicketBaselineError, OSError, ValueError) as exc:
         raise FatalError(f"Ticket conversion or baseline failed: {exc}", slug=slug) from exc
     ctx = _build_context(project_root, ticket_path, slug, document, progress)
@@ -428,8 +428,6 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
 def _promote_waiting_before_auto_select(project_root: Path) -> None:
     tickets_dir = tickets_dir_from_project_root(project_root)
-    if not documents_in_state(tickets_dir, TicketState.WAITING):
-        return
     from booley.ticket_board.operations import op_promote_waiting
 
     op_promote_waiting(TicketIO(tickets_dir, project_root=project_root))
@@ -447,7 +445,18 @@ def _board_state(project_root: Path, ticket_path: Path) -> TicketState | None:
 
 
 def _promote_waiting_for_intake(project_root: Path, ticket_path: Path, slug: str) -> Path:
-    if _board_state(project_root, ticket_path) is not TicketState.WAITING:
+    status = _board_state(project_root, ticket_path)
+    if status is TicketState.QUEUED:
+        from booley.ticket_board.basis_refresh import (
+            load_basis_refresh,
+            recover_published_basis_refreshes,
+        )
+
+        if load_basis_refresh(project_root, slug) is not None:
+            tio = TicketIO(tickets_dir_from_project_root(project_root), project_root=project_root)
+            recover_published_basis_refreshes(project_root, [tio.find_ticket(slug)])
+        return ticket_path
+    if status is not TicketState.WAITING:
         return ticket_path
     from booley.ticket_board.operations import op_promote_waiting
 
@@ -478,6 +487,8 @@ def _verify_ticket_baseline(ctx: TicketContext, action: str) -> None:
             slug=ctx.slug,
             destination_branch=ctx.branch,
         )
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=ctx.slug) from exc
     except (RuntimeError, ValueError, OSError) as exc:
         errors = [str(exc)]
     if errors:
@@ -488,24 +499,42 @@ def _ticket_baseline_fields(ctx: TicketContext) -> dict[str, Any]:
     return ctx.ticket_baseline_fields()
 
 
+def _authoritative_intake_path(project_root: Path, candidate: Path) -> Path:
+    """Normalize only the canonical mounted Ticket copy to Board authority."""
+    from booley.ticket_board.helpers import resolve_runtime_ticket_slug
+
+    tickets = tickets_dir_from_project_root(project_root)
+    path = candidate.resolve()
+    if path.name != "ticket.md" or path.parent.parent != (tickets / "logs").resolve():
+        return candidate
+    # The canonical path identifies the slug even before the execution environment is mounted.
+    slug = resolve_runtime_ticket_slug(path.with_name(path.parent.name + ".md"))
+    if slug != path.parent.name:
+        raise FatalError("Runtime Ticket path disagrees with its execution slug")
+    board, status = find_ticket_file(tickets, slug, project_root=project_root)
+    if board is None or status in {None, "draft"}:
+        raise FatalError(f"Executable Ticket Board entry '{slug}' is unavailable")
+    return board
+
+
 def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
     """Resolve a ticket path or slug to an absolute .md path."""
     p = Path(path_or_slug)
 
     # Already absolute path
     if p.is_absolute() and p.exists():
-        return p
+        return _authoritative_intake_path(project_root, p)
 
     # Relative path from project root
     candidate = project_root / p
     if candidate.exists():
-        return candidate
+        return _authoritative_intake_path(project_root, candidate)
 
     # Relative to tickets dir (classify output uses this format)
     tickets_dir = tickets_dir_from_project_root(project_root)
     candidate = tickets_dir / p
     if candidate.exists():
-        return candidate
+        return _authoritative_intake_path(project_root, candidate)
 
     # Try as slug -- accept a board document in an executable, live state
     try:
@@ -524,7 +553,7 @@ def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
             TicketState.WAITING,
             TicketState.REVIEW,
         }:
-            return candidate
+            return _authoritative_intake_path(project_root, candidate)
 
     # Try with .md extension
     if not path_or_slug.endswith(".md"):
@@ -572,8 +601,29 @@ def _seed_run_report_criterion(expanded: dict[str, bool]) -> None:
     """Add the internal report gate when the project enables run reports."""
     from booley.config.project_config import is_run_report_enabled
 
-    if is_run_report_enabled():
-        expanded["_report_submitted"] = True
+    if (
+        is_run_report_enabled()
+        or any(not required for key, required in expanded.items() if not key.startswith("_"))
+        or any(key.startswith("review_") for key in expanded)
+    ):
+        expanded["_report_submitted"] = is_run_report_enabled()
+
+
+def _ensure_run_report_gate(ctx: TicketContext) -> None:
+    """Declare the report obligation on normalized retained state without resetting proof."""
+    state_path = existing_runtime_file(ctx._tickets_dir / "logs", ctx.slug, "booley_state.json")
+    if not state_path.is_file():
+        return
+    state = DevelopmentState.load(state_path)
+    required = {key: entry.mandatory for key, entry in state.criteria.items()}
+    _seed_run_report_criterion(required)
+    if "_report_submitted" in required and "_report_submitted" not in state.criteria:
+        from booley.criteria.state import CriterionEntry
+
+        state.criteria["_report_submitted"] = CriterionEntry(
+            met=False, mandatory=required["_report_submitted"]
+        )
+        state.save()
 
 
 def _persist_initial_criteria_state(

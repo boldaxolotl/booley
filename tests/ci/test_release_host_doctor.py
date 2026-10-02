@@ -53,7 +53,7 @@ def test_host_doctor_isolates_xdg_config_home(
 ) -> None:
     ambient = tmp_path / "ambient-config"
     home = tmp_path / "home"
-    executable = tmp_path / "venv" / "bin" / "booley"
+    executable = home / ".local" / "bin" / "booley"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(ambient))
 
     env = host_doctor._environment(home, executable)

@@ -2083,7 +2083,9 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 52480.0\nNumber of cells: 12345\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text("Number of cells: 12345\n", encoding="utf-8")
+            (build_dir / "stat_dut.txt").write_text(
+                "Number of cells: 12345\nChip area for top module dut: 52480.0\n", encoding="utf-8"
+            )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -2135,7 +2137,7 @@ class TestFileBasedInterpretation:
         assert "Area for cell type $_DLATCH_P_ is unknown!" in run_log.read_text()
         assert report["passed"] is False
         assert report["returncode"] == 1
-        assert report["termination"] == "eda_tool_failure"
+        assert report["termination"] == "design_failure"
         assert report["ppa_complete"] is False
         assert report["area_um2"] is None
         conditions = report["implementation"]["conditions"]
@@ -2242,7 +2244,9 @@ class TestFileBasedInterpretation:
                 "ABC: Warning: The network has multiple outputs.\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            (build_dir / "stat_dut.txt").write_text(
+                "Number of cells: 100\nChip area for top module dut: 6400.0\n", encoding="utf-8"
+            )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -4483,3 +4487,594 @@ class TestIncompleteResourceResults:
         assert progress["completed_targets"] == ["asic_a"]
         assert progress["pending_targets"] == ["asic_b"]
         assert (invocation_dirs[-1] / "targets" / "asic_a.json").is_file()
+
+
+@pytest.mark.parametrize("executable", ["sv2v", "yosys", "openroad"])
+@pytest.mark.parametrize("returncode", [0, 127])
+def test_authenticated_synth_loader_is_infrastructure(tmp_path, executable, returncode):
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    metrics = SynthMetrics()
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=False,
+        attempt_token="0123456789abcdef0123456789abcdef",
+        stage=executable,
+    )
+    diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
+    flow._apply_boundary_completion(
+        metrics, outcome, SubprocessResult(returncode=returncode, stderr=diagnostic), diagnostic
+    )
+    assert metrics.returncode == 2
+    assert "libx.so" in metrics.infra_error
+    assert not metrics.yosys_complete
+    assert not metrics.timing_complete
+
+
+def test_authenticated_synth_cannot_use_inline_metric_decoy(tmp_path):
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    text = "Chip area for module 'dut': 1000.0"
+    metrics = _parse_synth_output(text, 0.1)
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=False,
+        attempt_token="0123456789abcdef0123456789abcdef",
+    )
+    flow._apply_boundary_completion(
+        metrics, outcome, SubprocessResult(returncode=0, stdout=text), text
+    )
+    assert not metrics.yosys_complete
+    assert not metrics.structural_checks_complete
+
+
+@pytest.mark.parametrize("executable", ["vivado", "vvp", "verible-verilog-lint", "openroad"])
+def test_authenticated_yosys_stage_rejects_unrelated_loader(tmp_path, executable):
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    metrics = SynthMetrics()
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=False,
+        attempt_token="0123456789abcdef0123456789abcdef",
+        stage="yosys",
+    )
+    diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
+    flow._apply_boundary_completion(
+        metrics, outcome, SubprocessResult(returncode=1, stderr=diagnostic), diagnostic
+    )
+    assert not metrics.infra_error
+
+
+@pytest.mark.parametrize("area", ["", "- ", "12 ", "12.5 ", "1.2e+2 "])
+@pytest.mark.parametrize("cell_first", [False, True])
+def test_modern_stat_latch_columns(area, cell_first):
+    from booley.flows.synth.flow import _count_latches
+
+    row = f"$_DLATCH_P_ 8 {area}" if cell_first else f"8 {area}$_DLATCH_P_"
+    text = f"13. Printing statistics.\n=== dut ===\n  16 {area}cells\n  {row}\n"
+    assert _count_latches(text) == 8
+    assert _parse_area(text)[1] == 16
+
+
+def test_stat_hierarchy_inventory_is_aggregate_only():
+    from booley.flows.synth.flow import _count_latches
+
+    text = (
+        "3. Printing statistics.\n=== child ===\n  1 cells\n  1 $_DLATCH_P_\n"
+        "=== design hierarchy ===\n  9 wires\n  - processes\n  2 cells\n  2 $_DLATCH_P_\n"
+    )
+    assert _count_latches(text) == 2
+    assert _parse_wire_count(text) == 9
+    assert _parse_process_count(text) == 0
+
+
+@pytest.mark.parametrize("token", ["1.2.3", "NaN", "inf", "1e999", "e+-", "-"])
+def test_stat_area_rejects_complete_invalid_numeric_tokens(token):
+    assert _parse_area(f"Chip area for top module dut: {token}\n")[0] is None
+
+
+def test_stat_latest_modern_zero_overrides_legacy_and_truncated_tail():
+    from booley.flows.synth.flow import _count_latches
+
+    text = (
+        "1. Printing statistics.\n=== dut ===\n  Number of cells: 8\n"
+        "  $_DLATCH_P_ 8\n  Chip area for top module dut: 10\n"
+        "2. Printing statistics.\n=== dut ===\n  5 - wires\n  0 - processes\n"
+        "  2 - cells\n  2 1e1 NAND2\n  Chip area for top module dut: 2e1\n"
+        "3. Printing statistics.\n=== dut ===\n"
+    )
+    assert _count_latches(text) == 0
+    assert _parse_area(text) == (20.0, 2)
+    assert _parse_wire_count(text) == 5
+    assert _parse_process_count(text) == 0
+
+
+def test_stat_latch_variants_exclude_sr_and_mapped_names():
+    from booley.flows.synth.flow import _count_latches
+
+    text = "Printing statistics.\n  9 cells\n  2 - $adlatch\n  3 - $_DLATCHSR_PPP_\n  2 - $_SR_PP_\n  2 - DLH_X1\n"
+    assert _count_latches(text) == 5
+
+
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+@pytest.mark.parametrize("frontend", ["sv2v", "slang"])
+def test_public_flow_modern_latch_design_failure(flow_and_state, tmp_path, mode, frontend):
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "mode": mode,
+            "frontend": frontend,
+            "openroad": _LATCH_ORD if mode == "physical" else "",
+            "process": {"returncode": 2 if mode == "physical" else 0},
+        },
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["returncode"] == 1
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["conditions"]["latches"] == 8
+    assert report["implementation"]["conditions"]["unexpected_latches"] == 8
+    assert report["implementation"]["conditions"]["has_critical"] is True
+    assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert "8 latches" in result.report_text
+    assert report["yosys_complete"] is True
+    assert not DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite")
+    if mode == "physical":
+        assert report["timing_complete"] is False
+        assert report["ppa_complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("text", "cells", "wires", "latches", "area"),
+    [
+        # Captured Yosys 0.68+ (38e001a6f) logical final stat, verbatim rows.
+        (
+            "3. Printing statistics.\n\n=== latch ===\n\n        +----------Local Count, excluding submodules.\n        | \n        5 wires\n        5 wire bits\n        5 public wires\n        5 public wire bits\n        4 ports\n        4 port bits\n        2 cells\n        1   $_DFF_P_\n        1   $_DLATCH_P_\n",
+            2,
+            5,
+            1,
+            None,
+        ),
+        # Same real run, stat -liberty with unknown latch area.
+        (
+            "4. Printing statistics.\n\n=== latch ===\n\n        +----------Local Count, excluding submodules.\n        |        +-Local Area, excluding submodules.\n        |        | \n        5        - wires\n        5        - wire bits\n        5        - public wires\n        5        - public wire bits\n        4        - ports\n        4        - port bits\n        2        2 cells\n        1        2   $_DFF_P_\n        1        -   $_DLATCH_P_\n\n   Area for cell type $_DLATCH_P_ is unknown!\n\n   Chip area for module '\\latch': 2.000000\n     of which used for sequential elements: 0.000000 (0.00%)\n",
+            2,
+            5,
+            1,
+            2.0,
+        ),
+        # Actual two-instance child hierarchy, local inventory then aggregate.
+        (
+            "3. Printing statistics.\n\n=== top ===\n\n        +----------Local Count, excluding submodules.\n        | \n        3 wires\n        4 wire bits\n        3 public wires\n        4 public wire bits\n        3 ports\n        4 port bits\n        2 submodules\n        2   child\n\n=== child ===\n\n        +----------Local Count, excluding submodules.\n        | \n        3 wires\n        3 wire bits\n        3 public wires\n        3 public wire bits\n        3 ports\n        3 port bits\n        1 cells\n        1   $_DLATCH_P_\n\n=== design hierarchy ===\n\n        +----------Count including submodules.\n        | \n        2 top\n        1 child\n\n        +----------Count including submodules.\n        | \n        9 wires\n       10 wire bits\n        9 public wires\n       10 public wire bits\n        9 ports\n       10 port bits\n        - memories\n        - memory bits\n        - processes\n        2 cells\n        2   $_DLATCH_P_\n        2 submodules\n        2   child\n",
+            2,
+            9,
+            2,
+            None,
+        ),
+    ],
+    ids=["captured-logical", "captured-liberty", "captured-hierarchy"],
+)
+def test_captured_real_yosys_stat_grammar(text, cells, wires, latches, area):
+    from booley.flows.synth.flow import _count_latches
+
+    assert _parse_area(text) == (area, cells)
+    assert _parse_wire_count(text) == wires
+    assert _parse_process_count(text) == 0
+    assert _count_latches(text) == latches
+
+
+def test_stat_top_area_preference_survives_module_inventory_selection():
+    text = (
+        "Printing statistics.\n=== top ===\n  Number of cells: 2\n"
+        "  Chip area for top module top: 20\n"
+        "=== child ===\n  Number of cells: 1\n  $_DLATCH_P_ 1\n"
+        "  Chip area for module child: 5\n"
+    )
+    assert _parse_area(text) == (20.0, 1)
+
+
+def test_standalone_final_stat_overrides_terminated_earlier_stage_and_summary_lookalikes():
+    from booley.flows.synth.backends.yosys.parsing import parse_stat
+
+    text = (
+        "Printing statistics.\n  8 cells\n  8 $_DLATCH_P_\nEnd of script.\n"
+        "--- stat_dut.txt ---\n=== dut ===\n  2 2e1 cells\n  5 - wires\n"
+        "  10 - wire bits\n  99 - public wires\n  99 - memory bits\n"
+        "  2 - processes\n  2 2e1 NAND2\n"
+        "--- openroad.log ---\n  99 $_DLATCH_P_\n"
+    )
+    stat = parse_stat(text)
+    assert stat.cells == 2
+    assert stat.wires == 5
+    assert stat.processes == 2
+    assert not stat.latch_types
+
+
+_LATCH_ORD = "[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found."
+_LATCH_TOKEN = "0123456789abcdef0123456789abcdef"
+
+
+def _write_latch_artifacts(build, stat, openroad_log, stale_openroad):
+    build.mkdir(parents=True, exist_ok=True)
+    for name, text in {
+        "stat_dut.txt": stat,
+        "yosys.log": stat,
+        "check_dut.txt": "Found and reported 0 problems.\n",
+        "synth_dut.v": "module dut; endmodule\n",
+        "sv2v_converted.v": "module dut; endmodule\n",
+        **({"openroad.log": openroad_log} if openroad_log else {}),
+    }.items():
+        path = build / name
+        path.write_text(text)
+        timestamp = 0 if stale_openroad and name == "openroad.log" else 100
+        os.utime(path, (timestamp, timestamp))
+
+
+def _run_latch_case(flow_and_state, tmp_path, case):
+    flow, _state = flow_and_state
+    mode = case.get("mode", "logical")
+    project = tmp_path / ".booley_project"
+    project.mkdir(exist_ok=True)
+    expected = case.get("expected", 0)
+    (project / "booley.toml").write_text(
+        f'[flows.synth]\nmode = "{mode}"\nexpected_latches = {expected}\n'
+    )
+    stub = _stub_plan(tmp_path, "lite", mode=mode)
+    plan = dataclasses.replace(
+        stub,
+        attempt_token=_LATCH_TOKEN,
+        spec=dataclasses.replace(stub.spec, frontend=case.get("frontend", "sv2v")),
+    )
+    cell = case.get("cell", "$_DLATCH_P_")
+    stat = f"Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - {cell}\n  Chip area for top module dut: 36.176\n"
+    if case.get("unknown_area"):
+        stat += f"Area for cell type {cell} is unknown!\n"
+    stat += case.get("yosys_decoy", "")
+
+    def execute(*_args, **_kwargs):
+        _write_latch_artifacts(
+            plan.build_dir, stat, case.get("openroad", ""), case.get("stale", False)
+        )
+        if case.get("missing_netlist"):
+            (plan.build_dir / "synth_dut.v").unlink()
+        return SubprocessResult(dispatched_unix=99, **case.get("process", {"returncode": 0}))
+
+    with (
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_execute_boundary", side_effect=execute),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    return result, report
+
+
+@pytest.mark.parametrize("expected", [8, 9])
+def test_public_latch_allowance_clean_logical_pass(flow_and_state, tmp_path, expected):
+    result, report = _run_latch_case(flow_and_state, tmp_path, {"expected": expected})
+    assert result.exit_code == EXIT_SUCCESS
+    assert report["implementation"]["conditions"]["latches"] == 8
+    assert report["implementation"]["conditions"]["unexpected_latches"] == 0
+    assert report["implementation"]["conditions"]["has_critical"] is False
+    assert DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite")
+
+
+def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_path):
+    result, report = _run_latch_case(flow_and_state, tmp_path, {"expected": 7})
+    assert result.exit_code == EXIT_FAILURE
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["conditions"]["unexpected_latches"] == 1
+    assert (
+        "actual=8, expected=7, excess=1"
+        in report["implementation"]["status"]["diagnostic_excerpt"]
+    )
+
+
+def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_path):
+    result, report = _run_latch_case(
+        flow_and_state, tmp_path, {"expected": 8, "unknown_area": True}
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["termination"] == "eda_tool_failure"
+    assert report["implementation"]["conditions"]["has_critical"] is False
+    assert report["ppa_complete"] is False
+    excerpt = report["implementation"]["status"]["diagnostic_excerpt"]
+    assert "actual=8, expected=8, excess=0" in excerpt
+    assert "Area for cell type $_DLATCH_P_ is unknown!" in excerpt
+
+
+def test_expected_physical_unmapped_latch_is_noncritical_design_failure(flow_and_state, tmp_path):
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"mode": "physical", "expected": 8, "openroad": _LATCH_ORD, "process": {"returncode": 2}},
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["returncode"] == 1
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["conditions"]["has_critical"] is False
+    assert report["yosys_complete"] is True
+    assert report["timing_complete"] is False
+    assert report["ppa_complete"] is False
+    assert "actual=8, expected=8, excess=0" in result.report_text
+    assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
+
+
+@pytest.mark.parametrize(
+    "openroad",
+    [
+        "[ERROR ORD-2013] instance gate LEF master NAND2_X1 not found.",
+        "[ERROR STA-9999] failed unrelated timing command.",
+    ],
+)
+def test_unrelated_openroad_failure_preserves_tool_status_and_latch_evidence(
+    flow_and_state, tmp_path, openroad
+):
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"mode": "physical", "openroad": openroad, "process": {"returncode": 2}},
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["returncode"] == 2
+    assert report["termination"] == "eda_tool_failure"
+    assert report["implementation"]["conditions"]["unexpected_latches"] == 8
+    assert "rc=2" in result.report_text
+    assert (
+        "actual=8, expected=0, excess=8"
+        in report["implementation"]["status"]["diagnostic_excerpt"]
+    )
+
+
+def test_nonlatch_generic_master_failure_does_not_manufacture_latch_evidence(
+    flow_and_state, tmp_path
+):
+    diagnostic = "[ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found."
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "mode": "physical",
+            "cell": "$_DFF_P_",
+            "openroad": diagnostic,
+            "process": {"returncode": 2},
+        },
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["conditions"]["latches"] == 0
+    assert report["implementation"]["conditions"]["has_critical"] is False
+    assert "unmapped generic cell" in result.report_text
+    assert "latches" not in report["implementation"]["status"]["diagnostic_excerpt"]
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
+    flow_and_state, tmp_path, stale
+):
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "mode": "physical",
+            "openroad": _LATCH_ORD if stale else "[ERROR STA-9999] unrelated.",
+            "stale": stale,
+            "yosys_decoy": _LATCH_ORD + "\n",
+            "process": {"returncode": 2, "stdout": _LATCH_ORD},
+        },
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["returncode"] == 2
+    assert report["termination"] == "eda_tool_failure"
+
+
+@pytest.mark.parametrize(
+    ("case", "termination"),
+    [
+        ({"process": {"returncode": 2, "timed_out": True}}, "timeout"),
+        ({"process": {"returncode": 2, "oom_kill_delta": 1}}, "oom"),
+        ({"process": {"returncode": 137}}, "resource_killed"),
+        (
+            {
+                "process": {
+                    "returncode": 2,
+                    "stderr": "openroad: error while loading shared libraries: libx.so: missing",
+                }
+            },
+            "infrastructure_error",
+        ),
+        (
+            {
+                "process": {
+                    "returncode": 2,
+                    "stdout": f"BOOLEY_EDA_FAILURE token={_LATCH_TOKEN} kind=missing_eda_tool stage=openroad subject=openroad",
+                }
+            },
+            "infrastructure_error",
+        ),
+        (
+            {"mode": "logical", "missing_netlist": True, "process": {"returncode": 0}},
+            "infrastructure_error",
+        ),
+    ],
+)
+def test_latch_and_fresh_ord_do_not_override_stronger_execution_failure(
+    flow_and_state, tmp_path, case, termination
+):
+    result, report = _run_latch_case(
+        flow_and_state, tmp_path, {"mode": "physical", "openroad": _LATCH_ORD, **case}
+    )
+    assert report["termination"] == termination
+    assert report["implementation"]["conditions"]["unexpected_latches"] == 8
+    if termination == "infrastructure_error":
+        assert result.exit_code == EXIT_ERROR
+        assert report["returncode"] == 2
+        assert report["infra_error"]
+    assert report["ppa_complete"] is False
+    assert report["timing_complete"] is False
+
+
+def _fake_latch_eda_bin(tmp_path):
+    fake_bin = tmp_path / "fake-eda"
+    fake_bin.mkdir()
+    scripts = {
+        "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
+        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
+        "openroad": "#!/bin/sh\necho '[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found.'\nexit 1\n",
+    }
+    for name, script in scripts.items():
+        executable = fake_bin / name
+        executable.write_text(script)
+        executable.chmod(0o755)
+    return fake_bin
+
+
+def _run_generated_latch_case(flow_and_state, tmp_path, monkeypatch, frontend, mode):
+    flow = flow_and_state[0]
+    liberty = tmp_path / "cells.lib"
+    liberty.write_text("library(cells) {}")
+    sdc = tmp_path / "timing.sdc"
+    sdc.write_text("create_clock -name clk -period 4 [get_ports clk]\n")
+    source = tmp_path / "dut.sv"
+    source.write_text("module dut(input clk); endmodule\n")
+    monkeypatch.setattr(
+        syn_make.openroad_timing,
+        "openroad_pdk_paths",
+        lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
+    )
+    fake_bin = _fake_latch_eda_bin(tmp_path)
+
+    def configure(target, _cmd):
+        stub = _stub_plan(tmp_path, target, mode=mode)
+        spec = dataclasses.replace(
+            stub.spec,
+            sources=(source,),
+            liberty=liberty,
+            frontend=frontend,
+            timing=StaTimingConfig(mode=mode, sdc=(sdc,)),
+        )
+        return syn_make.configure_synthesis(spec, stub.build_dir)
+
+    def execute(cmd, **_kwargs):
+        process = subprocess.run(
+            cmd,
+            cwd=tmp_path,
+            env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return SubprocessResult(
+            returncode=process.returncode, stdout=process.stdout, stderr=process.stderr
+        )
+
+    with (
+        patch.object(flow, "_configure_synth", side_effect=configure),
+        patch.object(flow, "_execute", side_effect=execute),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    return result, report
+
+
+@pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
+@pytest.mark.parametrize("frontend", ["sv2v", "slang"])
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+def test_public_generated_make_latch_failure(
+    flow_and_state, tmp_path, monkeypatch, frontend, mode
+):
+    result, report = _run_generated_latch_case(
+        flow_and_state, tmp_path, monkeypatch, frontend, mode
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["returncode"] == 1
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["status"]["grade"] == "fail"
+    assert report["implementation"]["conditions"]["latches"] == 8
+    assert report["implementation"]["conditions"]["has_critical"] is True
+    assert report["yosys_complete"] is True
+    assert report["ppa_complete"] is False
+    assert report["timing_complete"] is False
+    assert "actual=8, expected=0, excess=8" in result.report_text
+    assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert not DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite")
+
+
+@pytest.mark.parametrize(
+    "cell", ["$dlatchsr", "$_DLATCH_NN0_", "$_DLATCH_NP1_", "$_DLATCH_PN0_", "$_DLATCH_PP1_"]
+)
+@pytest.mark.parametrize("cell_first", [False, True])
+def test_reset_and_set_reset_latch_inventory(cell, cell_first):
+    from booley.flows.synth.flow import _count_latches
+
+    row = f"{cell} 3 -" if cell_first else f"3 - {cell}"
+    text = f"Printing statistics.\n  3 - cells\n  {row}\n"
+    assert _count_latches(text) == 3
+
+
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+def test_reset_latch_public_design_failure(flow_and_state, tmp_path, mode):
+    cell = "$_DLATCH_PN0_"
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "mode": mode,
+            "cell": cell,
+            "openroad": f"[ERROR ORD-2013] instance latch LEF master {cell} not found."
+            if mode == "physical"
+            else "",
+            "process": {"returncode": 2 if mode == "physical" else 0},
+        },
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["conditions"]["latches"] == 8
+    assert report["implementation"]["conditions"]["has_critical"] is True
+    assert cell in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert "8 latches" in result.report_text
+
+
+def test_unusable_stat_headers_ignore_pre_stat_tally_decoy():
+    from booley.flows.synth.flow import _count_latches
+
+    text = "Warning: found $dlatch in cell A\n  9 $_DFF_P_\nPrinting statistics.\n=== dut ===\n"
+    assert _count_latches(text) == 1
+
+
+def test_nonlatch_generic_failure_with_expected_latches_names_actual_failure(
+    flow_and_state, tmp_path
+):
+    diagnostic = "[ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found."
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"mode": "physical", "expected": 8, "openroad": diagnostic, "process": {"returncode": 2}},
+    )
+    assert report["implementation"]["conditions"]["has_critical"] is False
+    assert "unmapped generic cell" in result.report_text
+    assert "actual=8, expected=8, excess=0" in result.report_text
+
+
+@pytest.mark.parametrize(
+    "formatter",
+    [
+        AsicSynthesizeFlow._format_status_suffix,
+        lambda metrics: AsicSynthesizeFlow._format_failure_summary("dut", metrics),
+    ],
+)
+def test_generic_failure_summary_separates_expected_latches(formatter):
+    metrics = SynthMetrics(
+        latches=8,
+        expected_latches=8,
+        returncode=1,
+        termination="design_failure",
+        failure_output="unmapped generic cell: [ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found.",
+    )
+    summary = formatter(metrics)
+    assert "unmapped generic cell" in summary
+    assert "actual=8, expected=8, excess=0" in summary

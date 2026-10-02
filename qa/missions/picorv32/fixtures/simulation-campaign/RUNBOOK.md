@@ -5,18 +5,24 @@ and this fixture's validator protect the public contracts; they do not replace
 running the steps below against the build under test.
 
 Use this owned Icarus fixture only inside a run-owned copy of the PicoRV32
-Project. Do not edit the pinned upstream source. Copy `campaign.core` and
-`campaign_tb.sv` into one declared core root and merge the `sim_campaign`
+Project. Do not edit the pinned upstream source. This Project uses Stealth with
+`ignore_native_cores = true`, so `.booley_project/cores/` is the only core root,
+and its fileset paths are repository-root-relative (CONFIG.md "Stealth"). Copy
+`campaign.core` and `campaign_tb.sv` into `.booley_project/cores/qa_campaign/`,
+then change the copied core's `campaign_tb.sv` entry to
+`.booley_project/cores/qa_campaign/campaign_tb.sv`. Merge the `sim_campaign`
 table from `tests.toml` into the Project's active test catalog. Add the copied
 files and catalog entry to `resources.md` before running anything.
 
 All commands below must use an explicit run-owned report root. Save exact
 argv, stdout/stderr, exit status, the printed manifest path, directory listings,
 and copies of every referenced JSON document under `evidence/sim-campaign/`.
-The `validate_campaign.py` helper is a read-only structural cross-check for
-exact selection, manifest/summary/compatibility backlinks, interrupted resume,
-fail-closed rejection, and Criteria journal scope; your own reading of the
-evidence against the steps below is what decides a finding.
+The `validate_campaign.py` helper is a read-only structural cross-check with one
+subcommand per check: `selection` (exact ordered selection), `backlinks`
+(manifest/summary/compatibility backlinks), `resume` (interrupted resume),
+`rejection` (fail-closed rejection), and `journal` (Criteria journal scope).
+Run `python3 validate_campaign.py <check> --help` for its arguments. Your own
+reading of the evidence against the steps below is what decides a finding.
 
 ## Exact selection and tests-file normalization
 
@@ -38,7 +44,10 @@ work item completes and again after completion. They must be identical. Inspect
 the strict schema, exact Target identity, Required Simulation Suite, workload
 fingerprint, and ordered work items. Authenticate every consumed result and
 require both `summary.json` and the Target's `simulation.json` to identify the
-same manifest. Run the validator with the expected ordered tests.
+same manifest. Run `validate_campaign.py selection` with the expected ordered
+tests, and `validate_campaign.py backlinks` on the manifest, `summary.json`, and
+`targets/<target>/simulation.json` in place (the projection's typed manifest
+reference resolves relative to its own Target directory).
 
 ## Interruption and resume
 
