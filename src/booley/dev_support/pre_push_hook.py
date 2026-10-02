@@ -213,10 +213,13 @@ def _file_authority_state(path, env):
         strict=True,
     )
     if path != git_dir:
+        result = _run_git(["rev-parse", "--show-toplevel"], cwd=path, env=env)
+        if result.returncode:
+            raise InspectionError(
+                "file authority must name its exact repository root or Git directory"
+            )
         top = _resolve_repository_path(
-            Path(
-                _required_git(["rev-parse", "--show-toplevel"], cwd=path, env=env).decode().strip()
-            ),
+            Path(result.stdout.decode().strip()),
             strict=True,
         )
         if path != top:
@@ -380,6 +383,8 @@ def _updates(text, inspection):
 def _location(location, root):
     if any(char.isspace() or ord(char) < 32 for char in location):
         raise InspectionError("invalid repository location")
+    if location.startswith("~") and ":" not in location:
+        raise InspectionError("home-expanded authority requires an absolute repository path")
     parsed = urlsplit(location)
     if parsed.scheme == "file":
         if not location.startswith("file://"):
@@ -555,7 +560,8 @@ def _outgoing_range(inspection, updates, destination, record):
         not inspection.commits([update.local]) for update in updates
     ):
         raise InspectionError(
-            "missing or noncommit local update cannot be inspected; fetch complete pushed history and retry"
+            "missing or noncommit local update cannot be inspected; fetch missing pushed "
+            "history or select a commit update and retry"
         )
     old = inspection.commits([update.old for update in updates if set(update.old) != {"0"}])
     if record:

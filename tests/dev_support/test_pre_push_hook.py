@@ -1502,7 +1502,9 @@ def test_minimum_git_invalid_utf8_file_url_cannot_substitute_self_authority(matr
 
 
 @pytest.mark.parametrize("storage", ["self", "shared"])
-def test_minimum_git_upload_pack_suffix_cannot_substitute_self_authority(matrix_repo, storage):
+def test_minimum_git_upload_pack_suffix_cannot_substitute_self_authority(
+    matrix_repo, storage, capsys
+):
     repo = matrix_repo
     parent = repo.parent / "authority-parent"
     _git(repo, "clone", str(repo), str(parent))
@@ -1519,6 +1521,7 @@ def test_minimum_git_upload_pack_suffix_cannot_substitute_self_authority(matrix_
     assert base in advertisement
     _record(repo, location, base)
     assert _push(base) == 1
+    assert "file authority must name its exact repository root" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("form", ["bare", "worktree", "gitdir", "symlink"])
@@ -1567,4 +1570,57 @@ def test_minimum_git_missing_local_tag_target_has_fetch_repair(matrix_repo, caps
     tag = _git(repo, "rev-parse", "refs/tags/missing-local-target")
     (repo / ".git" / "objects" / target[:2] / target[2:]).unlink()
     assert _push(tag) == 1
-    assert "fetch complete pushed history and retry" in capsys.readouterr().err
+    assert "fetch missing pushed history" in capsys.readouterr().err
+
+
+def test_minimum_git_tilde_promisor_destination_refuses_before_discovery(
+    matrix_repo, monkeypatch, capsys
+):
+    repo = matrix_repo
+    base = _head(repo)
+    inspected = repo / "~" / "destination.git"
+    inspected.parent.mkdir()
+    _git(repo, "clone", "--bare", str(repo), str(inspected))
+    home = repo.parent / "selected-home"
+    home.mkdir()
+    served = home / "destination.git"
+    _git(repo, "clone", "--bare", str(repo), str(served))
+    _git(served, "config", "remote.origin.promisor", "true")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(sys, "argv", ["pre-push", "destination", "~/destination.git"])
+    assert base in _git(repo, "ls-remote", "--refs", "~/destination.git", HOME=str(home))
+    original = pre_push_hook._run_git
+    advertisements = []
+
+    def observe(args, **kwargs):
+        if "ls-remote" in args:
+            advertisements.append(args)
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    assert _push(base) == 0
+    assert not advertisements
+    assert "destination advertisement unavailable" in capsys.readouterr().err
+    assert _push(_commit(repo, "fix(core): claude new local metadata")) == 1
+    assert not advertisements
+
+
+def test_minimum_git_mistyped_bare_authority_has_path_repair(matrix_repo, capsys):
+    repo = matrix_repo
+    base = _head(repo)
+    upstream = _clone_upstream(repo)
+    _record(repo, upstream / "objects", base)
+    assert _push(base) == 1
+    assert "file authority must name its exact repository root" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["tree", "blob"])
+def test_minimum_git_noncommit_update_has_commit_repair(matrix_repo, capsys, kind):
+    repo = matrix_repo
+    oid = _git(repo, "rev-parse", "HEAD^{tree}" if kind == "tree" else "HEAD:file.txt")
+    assert _push(oid) == 1
+    assert "select a commit update and retry" in capsys.readouterr().err
+
+
+def test_tilde_scp_host_remains_ssh_location(tmp_path):
+    assert pre_push_hook._location("~owner:repository", tmp_path) == ("ssh", None)
