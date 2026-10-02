@@ -40,6 +40,41 @@ After editing it, refresh the installed-runtime copy with
 `python -m booley.dev_support.reference_docs`; use `--check` to verify it
 without writing.
 
+### Building a development wheel
+
+Use the editable development environment above and a complete source checkout.
+Install the build frontend with `python3 -m pip install build`, then run this
+from the checkout root:
+
+```bash
+PYTHONPATH=src python3 -P <<'PY'
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+from booley.runtime.build_stamp import (
+    BuildProfile, development_context_path, stamp_path, write_build_stamp,
+)
+
+root = Path.cwd()
+shutil.rmtree(root / "build", ignore_errors=True)
+try:
+    write_build_stamp(root, profile=BuildProfile.DEVELOPMENT_WHEEL)
+    subprocess.run([sys.executable, "-P", "-m", "build", "--wheel"], check=True)
+finally:
+    stamp_path(root).unlink(missing_ok=True)
+    development_context_path(root).unlink(missing_ok=True)
+PY
+```
+
+Keep the generated stamp and development context until the build finishes;
+the `finally` block removes both on success and failure. Install the selected
+rebuilt wheel from `dist/` with `python3 -m pip install --force-reinstall path/to/selected.whl`.
+Running `booley bootstrap` still requires the normal host and Docker prerequisites.
+The `runtime_image_build_stamp` helper is for a wheel embedded in Sandbox Images;
+use the explicit `DEVELOPMENT_WHEEL` profile for a host development distribution.
+
 ### Agent source-development checks
 
 Agents use the read-only Agent Readiness Check at

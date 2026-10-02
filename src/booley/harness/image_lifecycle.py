@@ -6,7 +6,8 @@ import hashlib
 import os
 import subprocess
 import tempfile
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -726,6 +727,23 @@ def host_capacity_requests(intent: Intent) -> tuple[DockerBuildRequest, ...]:
     )
 
 
+@contextmanager
+def _verified_source_context(needs_source: bool) -> Iterator[Path | None]:
+    import booley
+
+    if not needs_source or booley.version_attribution.origin is not VersionOrigin.DISTRIBUTION:
+        yield booley.version_attribution.source_root
+        return
+    with ExitStack() as stack:
+        try:
+            root = stack.enter_context(extracted_development_context())
+        except (OSError, ValueError) as error:
+            raise ImageLifecycleError(
+                f"cannot verify the development Sandbox Image build context: {error}"
+            ) from error
+        yield root
+
+
 def prepare(
     lifecycle_plan: LifecyclePlan,
     *,
@@ -746,7 +764,6 @@ def prepare(
             current_request=build_plan.current,
             remaining_plan=build_plan,
         )
-    import booley
 
     needs_source = any(
         node.role
@@ -754,12 +771,7 @@ def prepare(
         and node.acquisition_policy is not ArtifactPolicy.VERIFIED_RELEASE_ONLY
         for node in lifecycle_plan.nodes
     )
-    source_context = (
-        extracted_development_context()
-        if needs_source and booley.version_attribution.origin is VersionOrigin.DISTRIBUTION
-        else nullcontext(booley.version_attribution.source_root)
-    )
-    with source_context as source_root:
+    with _verified_source_context(needs_source) as source_root:
         builder = _transaction_build_adapter(
             lifecycle_plan.project_root,
             docker,
