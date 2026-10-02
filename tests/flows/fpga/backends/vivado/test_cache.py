@@ -164,6 +164,10 @@ def test_store_rejects_artifacts_predating_dispatch(tmp_path: Path) -> None:
 
 
 def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> None:
+    _artifacts(tmp_path)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            os.utime(path, (time.time() + 3600, time.time() + 3600))
     flow = _flow(tmp_path)
     prepared = _PreparedFpgaCommand(
         run_cmd=["make", "-C", "build"],
@@ -198,6 +202,10 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
 
 
 def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
+    _artifacts(tmp_path)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            os.utime(path, (time.time() + 3600, time.time() + 3600))
     flow = _flow(tmp_path)
     prepared = _PreparedFpgaCommand(
         run_cmd=["make", "-C", "build"],
@@ -230,6 +238,10 @@ def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
 
 
 def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
+    _artifacts(tmp_path)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            os.utime(path, (time.time() + 3600, time.time() + 3600))
     flow = _flow(tmp_path)
     flow.args.no_cache = True
     prepared = _PreparedFpgaCommand(["make", "-C", "build"], tmp_path, "a" * 64, False)
@@ -271,6 +283,10 @@ def test_post_route_completion_gates_success_and_cache(
 ) -> None:
     from booley.flows.fpga.profiles import VIVADO_PROFILES
 
+    _artifacts(tmp_path)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            os.utime(path, (time.time() + 3600, time.time() + 3600))
     flow = _flow(tmp_path)
     prepared = _PreparedFpgaCommand(
         ["make"],
@@ -304,3 +320,23 @@ def test_post_route_completion_gates_success_and_cache(
     else:
         assert "post-route" in metrics.infra_error.lower()
         store.assert_not_called()
+
+
+def test_cached_reports_cannot_replace_missing_route_witness(tmp_path):
+    _artifacts(tmp_path)
+    (tmp_path / "demo.runs/impl_1/runme.log").write_text("no route occurred")
+    (tmp_path / "demo.runs/impl_1/top_drc_routed.rpt").write_text(
+        "route_design completed successfully"
+    )
+    assert fpga_cache.store(
+        tmp_path, "a" * 64, require_bitstream=False, producer_evidence=_run_evidence()
+    )
+    with patch(
+        "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=_parsed_pass()
+    ):
+        assert (
+            _flow(tmp_path)._load_cached_metrics(
+                "fpga_demo", tmp_path, "a" * 64, require_bitstream=False
+            )
+            is None
+        )

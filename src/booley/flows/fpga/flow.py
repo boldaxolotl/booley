@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -797,15 +798,19 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # success, NOT the bitstream/make exit code. Only when route did *not*
         # complete do we surface the boundary command's exit code as the failure.
         # Profiles requiring post-route work must also pass the completion gate below.
-        route_completed = metric_dict.get("status") in ("pass", "success")
+        route_completed, report_error = self._route_evidence(
+            work_root, min_mtime=result.dispatched_unix
+        )
         metric_dict["exit_code"] = 0 if route_completed else result.returncode
         metrics = self._metrics_from_parsed_reports(metric_dict, result.duration_s)
+        metrics.route_completed = route_completed
         metrics.cache_fingerprint = fingerprint
+        self._apply_route_report_error(metrics, report_error)
         completion_error = fpga_edam.profile_completion_error(
             log_text + "\n" + report_text, prepared.ppa_profile
         )
-        if completion_error:
-            metrics.returncode = result.returncode or 1
+        if completion_error and route_completed:
+            metrics.returncode = 2
             metrics.infra_error = completion_error
         if result.timed_out:
             metrics.timed_out = True
@@ -848,6 +853,20 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             metrics.run_evidence = current_evidence
         return metrics
 
+    @staticmethod
+    def _apply_route_report_error(metrics: FpgaMetrics, report_error: str) -> None:
+        """A route witness cannot substitute for the evidence needed to grade it."""
+        if metrics.route_completed and (
+            report_error
+            or not metrics.has_primary_metrics
+            or metrics.wns_ns is None
+            or metrics.whs_ns is None
+        ):
+            metrics.returncode = 2
+            metrics.infra_error = (
+                report_error or "Vivado required reports lack usable utilization/timing evidence"
+            )
+
     def _apply_vivado_failure(
         self,
         metrics: FpgaMetrics,
@@ -857,23 +876,77 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         stderr: str,
     ) -> None:
         """Apply design-vs-infrastructure ownership to a failed Vivado run."""
-        if metrics.infra_error or (metrics.returncode == 0 and not result.timed_out):
+        abnormal = (
+            result.timed_out
+            or result.oom_kill_delta > 0
+            or result.returncode < 0
+            or result.returncode >= 128
+        )
+        if metrics.infra_error and not abnormal:
+            metrics.failure_output = self._failure_tail(stdout + "\n" + evidence, stderr).strip()
+            return
+        if metrics.route_completed and not abnormal:
             return
         failure = self._classify_vivado_failure(result, evidence)
-        if failure is not None and failure.kind == "infrastructure":
-            metrics.returncode = 2
-            metrics.infra_error = failure.reason
-            metrics.failure_output = failure.diagnostic
-            return
         if failure is not None:
             metrics.failure_output = failure.diagnostic
+            metrics.returncode = 2 if failure.kind == "infrastructure" else 1
+            if failure.kind == "infrastructure":
+                metrics.infra_error = failure.reason
             return
-        if metrics.returncode == 0 or metrics.infra_error:
-            return
-        metrics.infra_error = (
-            f"Vivado (edalize) did not reach route_design (exit {metrics.returncode})."
+        text = "\n".join((stdout, stderr, evidence))
+        cause = self._first_startup_cause(text)
+        metrics.returncode = 2
+        metrics.infra_error = f"Vivado did not reach route_design: {cause}"
+        metrics.failure_output = self._failure_tail(stdout + "\n" + evidence, stderr).strip()
+
+    @staticmethod
+    def _first_startup_cause(text: str) -> str:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return next(
+            (
+                line[:500]
+                for line in lines
+                if re.search(
+                    r"^(?:ERROR|FATAL)(?::|\s)|"
+                    r"^[\w.+/-]+:\s*(?:error|fatal)(?::|\s)|"
+                    r"^(?:could not|cannot|failed to|missing)\b|"
+                    r"^application-specific initialization failed:",
+                    line,
+                    re.IGNORECASE,
+                )
+            ),
+            "no route completion evidence",
         )
-        metrics.failure_output = self._failure_tail(stdout, stderr).strip()
+
+    def _route_evidence(
+        self, work_root: Path, *, min_mtime: float | None = None
+    ) -> tuple[bool, str]:
+        """Accept only an implementation run's fresh route witness and reports."""
+        patterns = ("*_utilization_placed.rpt", "*_timing_summary_routed.rpt", "*_drc_routed.rpt")
+        for impl_dir in sorted(work_root.glob("*.runs/impl_1")):
+            runlog = impl_dir / "runme.log"
+            try:
+                if self._is_stale_artifact(runlog, min_mtime):
+                    continue
+                text = runlog.read_text(errors="replace")
+            except OSError:
+                continue
+            if not re.search(
+                r"Implementation completed successfully|route_design completed successfully", text
+            ):
+                continue
+            for pattern in patterns:
+                valid = False
+                for report in impl_dir.glob(pattern):
+                    with suppress(OSError):
+                        valid |= not self._is_stale_artifact(report, min_mtime) and bool(
+                            report.read_bytes()
+                        )
+                if not valid:
+                    return True, f"Vivado missing fresh nonempty required report: {pattern}"
+            return True, ""
+        return False, ""
 
     def _load_cached_metrics(
         self,
@@ -891,11 +964,15 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         )
         if hit is None:
             return None
+        route_completed, report_error = self._route_evidence(work_root)
+        if not route_completed or report_error:
+            return None
         parsed = fpga_edam.parse_fpga_reports(hit.report_text)
         parsed["exit_code"] = 0
         metrics = self._metrics_from_parsed_reports(parsed, 0.0)
         if not metrics.passed:
             return None
+        metrics.route_completed = True
         metrics.cached = True
         metrics.cache_fingerprint = hit.fingerprint
         metrics.run_evidence = hit.producer_evidence
@@ -1034,7 +1111,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         match = re.search(
             r"^ERROR:\s*\[Synth\s+8-\d+\]"
             r"(?=[^\r\n]*(?:syntax|parse|unexpected\s+token|port))[^\r\n]*$",
-            combined.stdout,
+            combined.stdout + "\n" + combined.stderr,
             re.IGNORECASE | re.MULTILINE,
         )
         if match is not None:
@@ -1291,7 +1368,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         lines, failures = self._aggregate_head(short_sha, baseline_results, implementation_reports)
         self._append_target_results(lines, failures, configs, current_results, baseline_results)
         lines.append("")
-        lines.append("RESULT: PASS" if not failures else f"RESULT: FAIL ({'; '.join(failures)})")
+        verdict = {0: "PASS", 1: "FAIL", 2: "ERROR"}[implementation_aggregate.exit_code]
+        suffix = f" ({'; '.join(failures)})" if failures else ""
+        lines.append(f"RESULT: {verdict}{suffix}")
         return EndpointOutcome(
             exit_code=implementation_aggregate.exit_code,
             report_text="\n".join(lines),
