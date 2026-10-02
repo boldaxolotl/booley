@@ -4669,8 +4669,8 @@ class TestWorktreePortability:
         if root_policy == "true" and data_policy != "true":
             scoped = [item for item in warnings if item.subject == str(project.project_dir)]
             assert len(scoped) == 1
-            assert "container-only" in scoped[0].fix
-            assert "do not run host `git worktree prune`" in scoped[0].fix
+            assert "container-only" in scoped[0].message
+            assert "do not run host `git worktree prune`" in scoped[0].message
 
     @pytest.mark.parametrize("version", [(2, 47, 9), None])
     @pytest.mark.parametrize("extension", [False, True])
@@ -4730,13 +4730,9 @@ class TestWorktreePortability:
         assert any(item.severity is Severity.WARN for item in report.findings)
         assert not any(item.severity is Severity.NOTE for item in report.findings)
 
-    @pytest.mark.parametrize(
-        "source", ["global", "environment", "file", "worktree", "foreign", "unreachable"]
-    )
-    def test_runtime_nonlocal_true_is_not_host_evidence(self, tmp_path, monkeypatch, source):
+    def _nonlocal_policy_project(self, tmp_path, monkeypatch, source):
         from booley.harness.setup import git_hooks
 
-        _git_init(tmp_path)
         project = self._project(tmp_path)
         foreign = tmp_path / "foreign"
         _git_init(foreign)
@@ -4776,6 +4772,16 @@ class TestWorktreePortability:
             checkout.mkdir()
             (checkout / ".git").write_text(f"gitdir: {tmp_path / 'missing-host-admin'}\n")
             project = self._project(checkout)
+        return project
+
+    @pytest.mark.parametrize(
+        "source", ["global", "environment", "file", "worktree", "foreign", "unreachable"]
+    )
+    def test_runtime_nonlocal_true_is_not_host_evidence(self, tmp_path, monkeypatch, source):
+        from booley.harness.setup import git_hooks
+
+        _git_init(tmp_path)
+        project = self._nonlocal_policy_project(tmp_path, monkeypatch, source)
         assert (
             git_hooks.read_local_config(project.project_root, git_hooks.WORKTREE_RELATIVE_KEY)
             is None
@@ -4841,12 +4847,9 @@ class TestWorktreePortability:
         assert any(item.severity is Severity.NOTE for item in report.findings)
         assert any("Sandbox Git could not be verified" in item.message for item in report.findings)
 
-    @pytest.mark.parametrize("hazard", ["format", "metadata", "extension-only"])
-    def test_runtime_policy_does_not_hide_repository_hazards(self, tmp_path, monkeypatch, hazard):
+    def _configure_repository_hazard(self, tmp_path, monkeypatch, project, hazard):
         from booley.harness.setup import git_hooks
 
-        _git_init(tmp_path)
-        project = self._project(tmp_path)
         if hazard != "extension-only":
             assert git_hooks._set_local_config(tmp_path, "true") is None
         if hazard in ("format", "extension-only"):
@@ -4878,6 +4881,12 @@ class TestWorktreePortability:
             admin.mkdir()
             (worktree / ".git").write_text(f"gitdir: {admin}\n")
             (admin / "gitdir").write_text(f"{worktree / '.git'}\n")
+
+    @pytest.mark.parametrize("hazard", ["format", "metadata", "extension-only"])
+    def test_runtime_policy_does_not_hide_repository_hazards(self, tmp_path, monkeypatch, hazard):
+        _git_init(tmp_path)
+        project = self._project(tmp_path)
+        self._configure_repository_hazard(tmp_path, monkeypatch, project, hazard)
         monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
         report = readiness.inspect_worktree_portability(
             readiness.WorktreePortabilityRequest(project, None, "image", True)

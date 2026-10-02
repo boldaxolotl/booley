@@ -2561,3 +2561,28 @@ def test_policy_local_config_reads_linked_checkout_shared_config(tmp_path):
     )
     assert git_hooks._set_local_config(root, "true") is None
     assert git_hooks.read_local_config(linked, WORKTREE_RELATIVE_KEY) == "true"
+
+
+@pytest.mark.parametrize("failure", ["empty", "resolve"])
+def test_policy_discovery_rejects_missing_repository_identity(tmp_path, monkeypatch, failure):
+    root = tmp_path / "root"
+    data = root / ".booley_project"
+    _git_init(root)
+    _git_init(data)
+    if failure == "empty":
+        monkeypatch.chdir(data)
+        monkeypatch.setattr(
+            git_hooks.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
+        )
+    else:
+        real_resolve = Path.resolve
+
+        def resolve(path, *args, **kwargs):
+            if path == data:
+                raise OSError("repository identity unreadable")
+            return real_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+    assert git_hooks.worktree_policy_repositories(root, project_dir=data) == (root,)

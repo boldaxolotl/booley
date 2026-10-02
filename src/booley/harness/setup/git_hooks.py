@@ -389,7 +389,12 @@ def _policy_standalone_repository(repository: Path) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return result.returncode == 0 and Path(result.stdout.strip()).resolve() == repository.resolve()
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+    try:
+        return Path(result.stdout.strip()).resolve() == repository.resolve()
+    except OSError:
+        return False
 
 
 def read_local_config(repository: Path, key: str) -> str | None:

@@ -268,7 +268,15 @@ def test_probe_cost_accounting_and_completeness_are_independent(
     assert tracker.missing == (("developer-probe",) if storage_fails else ())
 
 
-def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failure):
+def _qualification_measurement(missing):
+    from booley.harness import developer_probe
+
+    if missing == "developer":
+        raise developer_probe.ProbeError("process accounting unavailable", agent_failure=False)
+    return developer_probe.ProbeMeasurement(1024, True, None)
+
+
+def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failure, data_policy):
     import tomllib
 
     from booley.harness import developer_probe
@@ -289,6 +297,9 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     overlay.mkdir(parents=True)
     (overlay / "bad.sv").write_text("invalid fixture for boundary transport\n")
     assert git_hooks._set_local_config(tmp_path, policy) is None
+    if data_policy is not None:
+        _git_init(directory)
+        assert git_hooks._set_local_config(directory, data_policy) is None
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
     monkeypatch.setattr(doctor, "_run_project_phase", lambda *_args, **_kw: (None, audit))
@@ -308,12 +319,11 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         monkeypatch.setattr(doctor, name, lambda *_args, **_kw: None)
     monkeypatch.setattr(sandbox_artifact, "observe_execution", lambda *_args, **_kw: _artifact())
     monkeypatch.setattr(sandbox_artifact, "observe", lambda *_args, **_kw: _artifact())
+
     monkeypatch.setattr(
         developer_probe,
         "measure_developer_rss",
-        lambda _project: developer_probe.ProbeMeasurement(
-            None if missing == "developer" else 1024, missing != "developer", None
-        ),
+        lambda _project: _qualification_measurement(missing),
     )
     return audit
 
@@ -361,21 +371,25 @@ def _qualification_transport(monkeypatch, missing):
 
 
 @pytest.mark.parametrize(
-    "policy,missing,health_failure,expected",
+    "policy,missing,health_failure,data_policy,expected",
     [
-        ("true", None, False, deep.DeepOutcome.SUCCESS),
-        ("false", None, False, deep.DeepOutcome.FAILED),
-        (None, None, False, deep.DeepOutcome.FAILED),
-        ("true", "developer", False, deep.DeepOutcome.INCOMPLETE),
-        ("true", "core", False, deep.DeepOutcome.FAILED),
-        ("true", None, True, deep.DeepOutcome.FAILED),
+        ("true", None, False, None, deep.DeepOutcome.SUCCESS),
+        ("true", None, False, "true", deep.DeepOutcome.SUCCESS),
+        ("true", None, False, "false", deep.DeepOutcome.FAILED),
+        ("false", None, False, None, deep.DeepOutcome.FAILED),
+        (None, None, False, None, deep.DeepOutcome.FAILED),
+        ("true", "developer", False, None, deep.DeepOutcome.INCOMPLETE),
+        ("true", "core", False, None, deep.DeepOutcome.FAILED),
+        ("true", None, True, None, deep.DeepOutcome.FAILED),
     ],
 )
 def test_runtime_policy_full_doctor_qualification(
-    tmp_path, monkeypatch, policy, missing, health_failure, expected
+    tmp_path, monkeypatch, policy, missing, health_failure, data_policy, expected
 ):
     """Real orchestration, grading, tracker, persistence and identity qualification."""
-    audit = _qualification_project(tmp_path, monkeypatch, policy, missing, health_failure)
+    audit = _qualification_project(
+        tmp_path, monkeypatch, policy, missing, health_failure, data_policy
+    )
     commands, completions = _qualification_transport(monkeypatch, missing)
     result = doctor.run_doctor_result(
         argparse.Namespace(deep=True, skip_agent_checks=False), tmp_path
@@ -386,15 +400,19 @@ def test_runtime_policy_full_doctor_qualification(
             item.severity == "note" and "host version not rechecked" in item.message
             for item in result.findings
         )
-        assert not [
-            item
-            for item in result.findings
-            if item.check_id == "git.worktree-portability" and item.severity == "warn"
-        ]
+        assert bool(
+            [
+                item
+                for item in result.findings
+                if item.check_id == "git.worktree-portability" and item.severity == "warn"
+            ]
+        ) is (data_policy == "false")
     state = deep.load_deep_state(audit.project_dir)
     assert state.latest_completed_attempt.outcome is expected
     assert result.deep_status.current is (expected is deep.DeepOutcome.SUCCESS)
-    assert result.clean is (policy == "true" and missing != "core" and not health_failure)
+    assert result.clean is (
+        policy == "true" and data_policy != "false" and missing != "core" and not health_failure
+    )
     assert commands == ["smoke", "good", "bad", "core"]
     assert set(completions) == {
         *([] if missing == "developer" else ["developer-probe"]),

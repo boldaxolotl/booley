@@ -236,11 +236,14 @@ def _inspect_repository_policies(
             report.pass_(f"{repository}: {WORKTREE_RELATIVE_KEY}=true")
         else:
             report.warn(
-                f"{repository}: {WORKTREE_RELATIVE_KEY} is {policy or 'unset'}",
-                "run `booley init`; Ticket Workspaces use the container-only absolute-link "
-                "fallback: run Git in the Sandbox and do not run host `git worktree prune`"
-                if inferred_host
-                else "run `booley init`",
+                f"{repository}: {WORKTREE_RELATIVE_KEY} is {policy or 'unset'}"
+                + (
+                    "; Ticket Workspaces use the container-only absolute-link fallback; "
+                    "run Git in the Sandbox and do not run host `git worktree prune`"
+                    if inferred_host
+                    else ""
+                ),
+                "run `booley init`",
                 check_id="git.worktree-portability",
                 subject=str(repository),
             )
