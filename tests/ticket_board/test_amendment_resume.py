@@ -491,6 +491,8 @@ def _assert_single_real_package_rejections(root, path, manifest, fields):
     ],
 )
 @pytest.mark.parametrize("drop_snapshot", [False, True])
+# Real endpoint, repository and review lifecycle on Windows exceeds the CI 60s unit bound.
+@pytest.mark.timeout(180)
 async def test_amended_ticket_resumes_simulation_and_reaches_review(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -893,6 +895,8 @@ async def test_successful_old_amendment_runtime_is_repaired_without_pending_jour
 
 
 @pytest.mark.asyncio
+# Real endpoint, repository and review lifecycle on Windows exceeds the CI 60s unit bound.
+@pytest.mark.timeout(180)
 async def test_report_disabled_zero_mandatory_amendment_declares_gate_and_finalizes(
     tmp_path, monkeypatch
 ):

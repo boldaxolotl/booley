@@ -2178,6 +2178,8 @@ def test_mechanical_move_to_review_is_rejected(tmp_path, capsys):
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("retained_mandatory", [None, False, True])
 @pytest.mark.parametrize("optional_met", [False, True])
+# Real endpoint, repository and review lifecycle on Windows exceeds the CI 60s unit bound.
+@pytest.mark.timeout(180)
 def test_conditional_report_gate_requested_finalization(
     blocked, monkeypatch, enabled, retained_mandatory, optional_met
 ):

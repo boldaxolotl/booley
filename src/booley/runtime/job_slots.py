@@ -16,7 +16,7 @@ entry, then rank all live entries; no entry ever needs to modify another
 except to reap a provably-stale one:
 
 * Entry names sort in scheduling order: ``h-`` holders (running) before
-  ``w-`` waiters, then ``(priority, seq, pid, n)``.  Priority 0 is
+  ``w-`` waiters, then priority, sequence and PID, with the filename suffix breaking ties. Priority 0 is
   Interactive, 1 is Ticket — a later interactive request overtakes queued
   ticket work, but *never* a holder: promotion renames only one's **own**
   ``w-`` entry to ``h-``, and only when its rank is within the class cap, so
@@ -300,7 +300,8 @@ class SlotRecovery:
 
 
 def _entry_name(state: str, priority: int, seq: int, pid: int, n: int) -> str:
-    # Fixed-width fields so lexicographic filename order == scheduling order.
+    # Fixed-width priority/sequence/PID fields preserve admission precedence;
+    # the lease-derived suffix gives otherwise equal entries a stable total order.
     return f"{state}-p{priority}-s{seq:010d}-{pid:010d}-{n:04d}.json"
 
 
@@ -387,7 +388,6 @@ class SlotStore:
         self._observe_identity = observe_identity
         self._recovery = recovery or SlotRecovery()
         self._inherited_execution_verifier = inherited_execution_verifier
-        self._n = 0  # per-store counter: distinct entries from one process
         self._auto_renew = now is time.time and sleep is time.sleep
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
         self._deferred_releases: dict[str, threading.Event] = {}
@@ -457,11 +457,13 @@ class SlotStore:
         payload_base = self._new_waiter_payload(request, lease_id, owner_identity)
         for _attempt in range(_ENTRY_CREATE_ATTEMPTS):
             seq = self._next_seq(request.cls_dir)
-            self._n += 1
-            name = _entry_name(_WAITER, request.priority, seq, request.pid, self._n)
+            # A lease owns its filename across waiter/holder transitions and
+            # cancellation. Independent stores must never recycle that name.
+            entry_number = int(lease_id, 16)
+            name = _entry_name(_WAITER, request.priority, seq, request.pid, entry_number)
             path = request.cls_dir / name
             payload = dict(payload_base, seq=seq)
-            tmp = request.cls_dir / f".{name}.{request.pid}.tmp"
+            tmp = request.cls_dir / f".{name}.{lease_id}.tmp"
             try:
                 tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
                 os.link(tmp, path)
@@ -500,13 +502,16 @@ class SlotStore:
         payload: dict,
         request: _WaiterRequest,
     ) -> SlotToken:
+        published = _parse_entry_name(path.name)
+        if published is None:
+            raise ValueError(f"invalid published waiter entry name: {path.name}")
         return SlotToken(
             job_class=path.parent.name,
             role=payload["role"],
             priority=request.priority,
             seq=payload["seq"],
             pid=request.pid,
-            n=self._n,
+            n=published[4],
             argv=list(payload["argv"]),
             created_at=payload["created_at"],
             timeout_s=payload["timeout_s"],
