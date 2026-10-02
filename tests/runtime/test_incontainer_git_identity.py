@@ -468,3 +468,34 @@ def test_cleanup_preserves_next_writers_lock_after_publication(tmp_path, monkeyp
     monkeypatch.setattr(Path, "replace", publish_and_acquire_next_lock)
     cleanup_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
     assert lock.read_text() == "next Git writer's lock"
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_cleanup_staging_lock_ownership_on_timeout(tmp_path, monkeypatch, preexisting):
+    from booley.runtime import incontainer_git_identity_cleanup as cleanup
+
+    _git(tmp_path, "init", "-q")
+    apply_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    target = tmp_path / ".git/config.worktree"
+    lock = target.with_name("config.worktree.lock")
+    nested = target.with_name("config.worktree.lock.lock")
+    before = target.read_bytes()
+    if preexisting:
+        nested.write_text("another writer")
+    original_config = cleanup._config
+
+    def timed_out_git(checkout, staged, *args):
+        if "--unset-all" in args:
+            nested.write_text("interrupted staging writer")
+            raise GitIdentityError("forced subprocess timeout")
+        return original_config(checkout, staged, *args)
+
+    monkeypatch.setattr(cleanup, "_config", timed_out_git)
+    with pytest.raises(GitIdentityError, match="existing lock" if preexisting else "timeout"):
+        cleanup.cleanup_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    assert target.read_bytes() == before
+    assert not lock.exists()
+    if preexisting:
+        assert nested.read_text() == "another writer"
+    else:
+        assert not nested.exists()

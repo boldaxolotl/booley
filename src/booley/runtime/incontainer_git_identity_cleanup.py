@@ -43,12 +43,22 @@ def _values(checkout: Path, target: Path, key: str) -> list[str]:
 
 
 def _remove_pair(checkout: Path, staged: Path) -> None:
-    for key in ("user.name", "user.email"):
-        result = _config(checkout, staged, "--unset-all", key)
-        if result.returncode != 0:
-            raise GitIdentityError(
-                f"cannot stage legacy identity cleanup: {result.stderr.strip()}"
-            )
+    nested_lock = staged.with_name(staged.name + ".lock")
+    if nested_lock.exists() or nested_lock.is_symlink():
+        raise GitIdentityError(
+            f"cannot stage legacy identity cleanup: existing lock {nested_lock}"
+        )
+    try:
+        for key in ("user.name", "user.email"):
+            result = _config(checkout, staged, "--unset-all", key)
+            if result.returncode != 0:
+                raise GitIdentityError(
+                    f"cannot stage legacy identity cleanup: {result.stderr.strip()}"
+                )
+    finally:
+        # The outer Git lock excludes other writers to this private staging file.
+        # A killed Git subprocess can leave its own nested staging lock behind.
+        nested_lock.unlink(missing_ok=True)
 
 
 def cleanup_git_identity(checkout: Path, identity: GitIdentity) -> None:
