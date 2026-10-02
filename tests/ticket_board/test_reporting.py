@@ -327,7 +327,9 @@ class TestBrokenTicketNote:
 
     def test_several_broken_tickets_get_one_summary_line(self, tmp_path, capsys):
         display_board([_QUEUED], tickets_dir=_board_with_broken(tmp_path, ["b1", "b2", "b3"]))
-        out = capsys.readouterr().out
+        # The note names the tickets directory; drop that path so a hex basetemp
+        # (``.../pytest-basetemp-...66b1...``) cannot spoof a ticket name.
+        out = capsys.readouterr().out.replace(str(tmp_path), "<tmp>")
         assert "3 tickets are not shown" in out
         assert "b1" not in out and "b2" not in out and "b3" not in out
 
