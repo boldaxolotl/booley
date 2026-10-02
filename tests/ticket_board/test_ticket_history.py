@@ -753,3 +753,14 @@ def test_history_policy_preserves_removed_terms_and_scrubs_retained_metadata(tmp
         root, "chore(core): close Ticket with claude", root
     )
     assert retained == "chore(core): close redacted with redacted"
+
+
+def test_history_identifier_sanitization_with_active_project(tmp_path):
+    root, tio = _repository(tmp_path)
+    _policy(root, 'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]')
+    slug = "booley_config-myquokkafile-reagent-precursor"
+    _close(tio, slug)
+    assert _commit(tio, slug)
+    subject = _git(root, "log", "--format=%s", "-1")
+    assert "redacted_config-myredactedfile-reagent-precursor" in subject
+    assert find_banned(subject, root) == []

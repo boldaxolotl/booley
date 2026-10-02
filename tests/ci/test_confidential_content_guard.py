@@ -1303,3 +1303,24 @@ def test_source_guard_synthetic_generic_vocabulary_remains_independent(tmp_path)
     result = _scan_pr_text(repo, stdin="ordinary generated prose", config=config)
     assert result.returncode == 1
     assert "confidential term" in result.stderr
+
+
+def test_source_guard_synthetic_vocabulary_contract(monkeypatch):
+    import runpy
+
+    monkeypatch.syspath_prepend(str(SCANNER.parent))
+    guard = runpy.run_path(str(SCANNER))
+    words, authors, ignored = guard["_config_lists"](
+        {
+            "guard": {"words": ["quokka"], "banned_words": ["narwhal__"]},
+            "stealth": {"banned_substrings": ["booley"]},
+        }
+    )
+    assert (words, authors, ignored) == (["quokka", "narwhal__"], [], [])
+    token = guard["_compile_term"]("quokka", b"0" * 32)
+    prefix = guard["_compile_term"]("narwhal__", b"0" * 32)
+    assert token.regex.search("path/quokka_file")
+    assert not token.regex.search("myquokkafile QuokkaRunner")
+    assert prefix.regex.search("narwhal__private_suffix").group() == "narwhal__private_suffix"
+    assert not prefix.regex.search("narwhal__")
+    assert "quokka" not in token.term_id

@@ -389,6 +389,9 @@ class TestMain:
     )
     def test_allows_checkout_project_state_name_lookalikes(self, repo, monkeypatch, relative_path):
         _configure_external_project_state(repo, monkeypatch)
+        config = repo / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text("[stealth]\nbanned_words = []\n")
         path = repo / relative_path
         path.parent.mkdir(parents=True)
         path.write_text("ordinary docs\n", encoding="utf-8")
@@ -1624,3 +1627,50 @@ def test_minimum_git_noncommit_update_has_commit_repair(matrix_repo, capsys, kin
 
 def test_tilde_scp_host_remains_ssh_location(tmp_path):
     assert pre_push_hook._location("~owner:repository", tmp_path) == ("ssh", None)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "docs_qa/booley_notes.txt",
+        "notes/booley-notes.txt",
+        "notes/mybooleyfile.txt",
+        "booley_config",
+        "BooleyRunner.py",
+    ],
+)
+def test_identifier_tracked_paths_blocked(repo, monkeypatch, name):
+    monkeypatch.chdir(repo)
+    path = repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("opaque\n")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "--no-verify", "-m", "fix: add file")
+    assert any(
+        "tracked path has banned terms" in offense for offense in _commit_offenses(_head(repo), [])
+    )
+
+
+def test_identifier_generic_path_controls(repo, monkeypatch):
+    monkeypatch.chdir(repo)
+    for name in ("precursor.txt", "reagent.sv"):
+        (repo / name).write_text("opaque\n")
+        _git(repo, "add", name)
+    _git(repo, "commit", "-q", "--no-verify", "-m", "fix: add files")
+    assert _commit_offenses(_head(repo), []) == []
+
+
+def test_identifier_symlink_and_identities(repo, monkeypatch):
+    monkeypatch.chdir(repo)
+    sha = _commit_symlink(repo, "guide", "notes/mybooleyfile.txt")
+    assert any("symlink target" in offense for offense in _commit_offenses(sha, []))
+    _git(repo, "rm", "guide")
+    _git(repo, "commit", "-q", "--no-verify", "-m", "fix: remove link")
+    sha = _commit(repo, "fix: tune layout", author="mybooleyfile <safe@example.com>")
+    assert any("banned terms" in offense for offense in _commit_offenses(sha, []))
+    _git(repo, "config", "user.name", "BooleyRunner")
+    sha = _commit(repo, "fix: tune layout", author="Safe User <safe@example.com>")
+    assert any("banned terms" in offense for offense in _commit_offenses(sha, []))
+    _git(repo, "config", "user.name", "Safe User")
+    sha = _commit(repo, "fix: tune booley_config", author="Safe User <safe@example.com>")
+    assert any("banned terms" in offense for offense in _commit_offenses(sha, []))

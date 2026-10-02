@@ -69,3 +69,11 @@ def test_default_validation_preserves_ordinary_engineering_prose(tmp_path):
     assert any(
         "Banned phrase" in error for error in validate_message(message, project_root=tmp_path)
     )
+
+
+def test_identifier_message_validation_uses_both_tiers(tmp_path):
+    root = _configured_project(
+        tmp_path, 'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]\n'
+    )
+    assert validate_message("fix: booley_config BooleyRunner myquokkafile\n", project_root=root)
+    assert validate_message("fix: reagent precursor\n", project_root=root) == []
