@@ -60,3 +60,11 @@ def test_source_checkout_exemption_overrides_config() -> None:
     source_root = Path(__file__).resolve().parents[2]
 
     assert policy.stealth_policy(source_root) == StealthPolicy(False, (), None, False, ())
+
+
+def test_identifier_message_validation_uses_both_tiers(tmp_path):
+    root = _configured_project(
+        tmp_path, 'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]\n'
+    )
+    assert validate_message("fix: booley_config BooleyRunner myquokkafile\n", project_root=root)
+    assert validate_message("fix: reagent precursor\n", project_root=root) == []

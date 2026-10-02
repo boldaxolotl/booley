@@ -571,7 +571,9 @@ class Specialist(McpTool):
         return (
             "## Banned Words in Commit Message\n"
             "Your `commit_message` MUST NOT contain any of the following "
-            "phrases (case-insensitive, word-boundary match). They are "
+            "phrases (case-insensitive identifier-token matching, including "
+            "CamelCase and digits; known identity names and configured "
+            "banned_substrings match anywhere). They are "
             "rejected by the commit-msg validator and will fail the commit "
             "after the work is done, forcing a fallback to a generic "
             f"message:\n  {joined}\n"
