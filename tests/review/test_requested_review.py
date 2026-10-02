@@ -2149,7 +2149,7 @@ def test_prepare_blocked_dossier_reuses_fresh_dossier(tmp_path, monkeypatch):
     from booley.harness import blocked_prep
 
     fresh = tmp_path / "dossier.json"
-    ctx = SimpleNamespace()
+    ctx = SimpleNamespace(worktree=None)
     monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: ctx)
     monkeypatch.setattr(
         blocked_prep,

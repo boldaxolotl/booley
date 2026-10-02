@@ -3965,16 +3965,22 @@ def test_layout_parent_cleanup_requires_safe_platform_process_proof(monkeypatch)
     def forbidden(*_args):
         raise AssertionError("non-POSIX cleanup must not signal a process")
 
-    monkeypatch.setattr(lifecycle, "os", SimpleNamespace(name="nt", kill=forbidden))
+    monkeypatch.setattr(lifecycle, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr("booley.runtime.pid.is_pid_alive", forbidden)
     assert lifecycle._active_layout_parent(tag)
 
-    def absent(*_args):
-        raise ProcessLookupError
+    calls = []
 
-    monkeypatch.setattr(lifecycle, "os", SimpleNamespace(name="posix", kill=absent))
+    def absent(pid):
+        calls.append(pid)
+        return False
+
+    monkeypatch.setattr(lifecycle, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr("booley.runtime.pid.is_pid_alive", absent)
     docker = FakeDocker({tag: ("parent-id", {})})
     lifecycle._discard_orphaned_candidates(docker)
     assert tag not in docker.images
+    assert calls == [123]
 
 
 def test_init_reports_layout_probe_failure_without_traceback(tmp_path, monkeypatch):

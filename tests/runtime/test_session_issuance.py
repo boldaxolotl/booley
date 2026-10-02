@@ -2085,3 +2085,30 @@ def test_mount_surface_rejects_normalized_forbidden_target():
         runtime_spec._validate_mount_surfaces(
             ["source=/owned,target=/var/run//docker.sock,type=bind,readonly"], None
         )
+
+
+def test_issuance_document_accepts_only_legacy_layout_omission(
+    issued: tuple[Path, dict, Path, runtime_spec.Issuance],
+) -> None:
+    from dataclasses import asdict
+
+    _project, _spec, _path, stamp = issued
+    raw = asdict(stamp)
+    raw.pop("project_data_layout")
+    assert runtime_spec.issuance_from_document(raw).project_data_layout == "legacy"
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="unexpected or missing fields"):
+        runtime_spec.issuance_from_document({**raw, "unknown": "legacy"})
+    raw.pop("image_id")
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="unexpected or missing fields"):
+        runtime_spec.issuance_from_document(raw)
+
+
+@pytest.mark.parametrize("layout", [[], {}, None, 42, "unknown-layout"])
+def test_issuance_document_rejects_malformed_layout_as_spec_error(
+    issued: tuple[Path, dict, Path, runtime_spec.Issuance], layout: object
+) -> None:
+    from dataclasses import asdict
+
+    _project, _spec, _path, stamp = issued
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.issuance_from_document({**asdict(stamp), "project_data_layout": layout})

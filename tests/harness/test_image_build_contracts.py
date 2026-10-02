@@ -259,6 +259,7 @@ class Builder:
 
 docker = Docker()
 harness_lifecycle._docker_adapter = lambda: docker
+lifecycle.project_image.project_data_alias_capable = lambda _image: False
 plan = harness_lifecycle.plan(lifecycle.ProjectImageScope(Path(sys.argv[1])))
 prepared = lifecycle.prepare(plan, docker=docker, builder=Builder(docker))
 image_contracts = expected_image_build_contracts(booley.version_attribution)

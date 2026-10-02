@@ -213,7 +213,7 @@ def issuance_from_document(raw: object) -> Issuance:
     except BoundaryError as exc:
         raise RuntimeSpecError(str(exc)) from exc
     expected = {field.name for field in fields(Issuance)}
-    if set(values) != expected:
+    if set(values) not in (expected, expected - {"project_data_layout"}):
         raise RuntimeSpecError("host-issued spec stamp has unexpected or missing fields")
     try:
         issuance = Issuance(
@@ -233,7 +233,11 @@ def issuance_from_document(raw: object) -> Issuance:
             validator_sha256=require_str(values, "validator_sha256"),
             file_sha256=require_opt_str(values, "file_sha256"),
             project_data_source=require_opt_str(values, "project_data_source"),
-            project_data_layout=values.get("project_data_layout", "legacy"),
+            project_data_layout=(
+                require_str(values, "project_data_layout")
+                if "project_data_layout" in values
+                else "legacy"
+            ),
         )
     except BoundaryError as exc:
         raise RuntimeSpecError(f"host-issued spec stamp is invalid: {exc}") from exc

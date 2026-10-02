@@ -397,12 +397,11 @@ def _active_layout_parent(reference: str) -> bool:
     if os.name != "posix":
         return True
     try:
-        os.kill(int(match.group(1)), 0)
-    except ProcessLookupError:
-        return False
-    except (OSError, ValueError, OverflowError):
+        from booley.runtime.pid import is_pid_alive
+
+        return is_pid_alive(int(match.group(1)))
+    except (ValueError, OverflowError):
         return True
-    return True
 
 
 def _discard_orphaned_candidates(docker: DockerPort) -> None:
