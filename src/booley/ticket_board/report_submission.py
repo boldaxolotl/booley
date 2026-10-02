@@ -123,6 +123,14 @@ def state_log_dir(state: Any) -> Path | None:
     path = getattr(state, "_file_path", None)
     if path is None:
         return None
+    configured_state = os.environ.get("BOOLEY_STATE_FILE")
+    configured_logs = os.environ.get("BOOLEY_LOGS_DIR")
+    if (
+        configured_state
+        and configured_logs
+        and Path(configured_state).resolve() == Path(path).resolve()
+    ):
+        return Path(configured_logs).resolve()
     parent = Path(path).parent
     return parent.parent if parent.name in {".runtime", "runtime"} else parent
 

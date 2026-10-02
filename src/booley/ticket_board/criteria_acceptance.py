@@ -95,11 +95,13 @@ def check_criteria_acceptance(
     work_dir: Path | None = None,
     provisional: ProvisionalJudge | None = None,
     ticket_identity: Mapping[str, Any] | None = None,
+    log_dir: Path | None = None,
 ) -> CriteriaVerdict:
     """Read state file and determine ticket disposition.
 
     Args:
         state_path: Path to ``booley_state.json``.
+        log_dir: Explicit Ticket evidence root for arbitrary state paths.
         provisional: Optional judge of provisionally met Criteria (ADR 0066).
             Without one, only strictly met Criteria count.
 
@@ -126,7 +128,9 @@ def check_criteria_acceptance(
     refresh_verification_freshness(state, work_dir=work_dir)
     _enforce_acceptance_evidence(state, work_dir=work_dir)
     stats = _compute_criteria_stats(state.criteria)
-    verdict = _determine_disposition(state, stats, provisional, ticket_identity=ticket_identity)
+    verdict = _determine_disposition(
+        state, stats, provisional, ticket_identity=ticket_identity, log_dir=log_dir
+    )
     verdict.unverified_transitions = _find_unverified_transitions(state.criteria)
     note = verdict.unverified_transitions_note()
     if note:
@@ -482,10 +486,15 @@ def _missing_mandatory_verdict(state, base: dict) -> CriteriaVerdict:
 
 
 def _all_mandatory_met_verdict(
-    state, stats: dict, base: dict, *, ticket_identity: Mapping[str, Any] | None = None
+    state,
+    stats: dict,
+    base: dict,
+    *,
+    ticket_identity: Mapping[str, Any] | None = None,
+    log_dir: Path | None = None,
 ) -> CriteriaVerdict:
     """Apply the Developer Report gate after all mandatory Criteria pass."""
-    report_error = _run_report_gate_error(state, ticket_identity=ticket_identity)
+    report_error = _run_report_gate_error(state, ticket_identity=ticket_identity, log_dir=log_dir)
     if report_error:
         logger.warning(
             "All visible mandatory criteria met for %s, but %s -- "
@@ -508,6 +517,7 @@ def _determine_disposition(
     provisional: ProvisionalJudge | None = None,
     *,
     ticket_identity: Mapping[str, Any] | None = None,
+    log_dir: Path | None = None,
 ) -> CriteriaVerdict:
     """Decide ticket disposition from criteria stats and blocked reason."""
     all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
@@ -528,10 +538,14 @@ def _determine_disposition(
         return _missing_mandatory_verdict(state, base)
 
     if all_mandatory_met:
-        return _all_mandatory_met_verdict(state, stats, base, ticket_identity=ticket_identity)
+        return _all_mandatory_met_verdict(
+            state, stats, base, ticket_identity=ticket_identity, log_dir=log_dir
+        )
 
     if provisional is not None and set(stats["unmet"]) <= provisional(state, stats["unmet"]):
-        verdict = _all_mandatory_met_verdict(state, stats, base, ticket_identity=ticket_identity)
+        verdict = _all_mandatory_met_verdict(
+            state, stats, base, ticket_identity=ticket_identity, log_dir=log_dir
+        )
         if verdict.disposition == "review":
             verdict.provisional = tuple(sorted(stats["unmet"]))
             logger.info("Ticket %s met provisionally: %s", state.slug, verdict.provisional)
@@ -552,7 +566,7 @@ def _determine_disposition(
 
 
 def _run_report_gate_error(
-    state, *, ticket_identity: Mapping[str, Any] | None = None
+    state, *, ticket_identity: Mapping[str, Any] | None = None, log_dir: Path | None = None
 ) -> str | None:
     """Return why final report evidence is insufficient, or ``None``."""
     from booley.config.project_config import is_run_report_enabled
@@ -572,7 +586,7 @@ def _run_report_gate_error(
 
     from .acceptance_ledger import project_report_state as project_state
 
-    project_state(state, identity=ticket_identity)
+    project_state(state, log_dir, identity=ticket_identity)
     report_entry = state.criteria.get(_REPORT_CRITERION)
     if report_entry is None or not report_entry.met:
         return "run report was not submitted"

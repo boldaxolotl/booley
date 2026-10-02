@@ -49,6 +49,7 @@ from booley.review.generation import (
     open_package_diffs,
     render_explanation_html,
     render_review_briefing,
+    saved_file_justifications,
     validate_assessment,
     write_triage_package,
 )
@@ -134,8 +135,24 @@ def _review_dirty_paths(ctx: ReviewPrepContext) -> list[str]:
     return dirty
 
 
+def _project_review_report(
+    state: Mapping[str, Any], log_dir: Path, *, identity: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    from .acceptance_ledger import project_report_mapping
+    from .persistence import atomic_replace_bytes
+
+    saved_file_justifications(state)
+    projected = project_report_mapping(state, log_dir, identity=identity)
+    if projected.get("criteria", {}).get("_report_submitted", {}).get("met") is not True:
+        atomic_replace_bytes(
+            log_dir / ".runtime" / "unsubmitted-report.md",
+            b"Report submission is uncommitted or unavailable.\n",
+            mode=0o644,
+        )
+    return projected
+
+
 def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
-    from .acceptance_ledger import project_report_mapping as project_mapping
     from .report_submission import synchronize
 
     synchronize(ctx.log_dir)
@@ -145,7 +162,7 @@ def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
         if ctx.inspection is not None
         else _read_review_mapping(state_path, field="review state")
     )
-    state = project_mapping(state, ctx.log_dir, identity=ctx.ticket_identity)
+    state = _project_review_report(state, ctx.log_dir, identity=ctx.ticket_identity)
     scope = _read_review_mapping(
         ctx.log_dir / ".runtime" / "scope_deviations.json",
         field="review scope",

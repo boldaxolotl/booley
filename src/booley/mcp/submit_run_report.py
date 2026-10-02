@@ -423,6 +423,10 @@ class SubmitRunReportMcpTool(McpTool):
         _cli_arg, _attr, heading = _TYPE_FIELD[ticket_type]
         type_specific_value = self._type_specific_value(ticket_type)
 
+        if _REPORT_CRITERION not in self.state.criteria:
+            raise submission.ReportSubmissionError(
+                "report gate is undeclared; initialize Ticket Criteria before submitting"
+            )
         report_path = self._write_report(
             ticket_type=ticket_type,
             summary=self.args.summary,
@@ -433,12 +437,18 @@ class SubmitRunReportMcpTool(McpTool):
             optional_criteria_justification=self.args.optional_criteria_justification,
         )
 
-        if _REPORT_CRITERION not in self.state.criteria:
-            raise submission.ReportSubmissionError(
-                "report gate is undeclared; initialize Ticket Criteria before submitting"
+        if report_path is None:
+            self._invalidate_report_gate()
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "Report directory unavailable; configure BOOLEY_LOGS_DIR "
+                    "to the Ticket evidence directory before submitting."
+                ),
             )
+
         self._candidate_detail = {
-            "report_path": str(report_path) if report_path else "",
+            "report_path": str(report_path),
             "ticket_type": ticket_type,
             "unmet_optional_criteria": unmet_optional,
             "file_justifications": self.file_justifications,
@@ -446,11 +456,7 @@ class SubmitRunReportMcpTool(McpTool):
             submission.DIGEST_KEY: self._submission.row["report_sha256"],
         }
 
-        wrote = (
-            f"Wrote {report_path}"
-            if report_path
-            else "Report content prepared (no report_dir configured -- not written to disk)"
-        )
+        wrote = f"Wrote {report_path}"
         return McpToolResult(
             exit_code=EXIT_SUCCESS,
             criterion_key=None,
@@ -770,7 +776,7 @@ class SubmitRunReportMcpTool(McpTool):
         logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
         report_dir = Path(logs_dir) if logs_dir else self.args.report_dir
         if report_dir is None:
-            logger.warning("submit_run_report: no report_dir configured, skipping file write")
+            logger.warning("submit_run_report: report directory is unavailable")
             return None
 
         slug = self.args.slug or "<unknown>"

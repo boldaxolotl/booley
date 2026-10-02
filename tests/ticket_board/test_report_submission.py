@@ -417,3 +417,22 @@ def test_invalid_or_reused_attempt_preserves_active_receipt(tmp_path, attempt_id
     with pytest.raises(rs.ReportSubmissionError):
         rs.Submission(tmp_path, attempt_id, {}, "execution")
     assert rs.receipt_path(tmp_path).read_bytes() == before
+
+
+@pytest.mark.parametrize("pair", ["matching", "other-state", "missing-state", "missing-logs"])
+def test_state_log_root_requires_exact_environment_pair(tmp_path, monkeypatch, pair):
+    from booley.criteria.state import DevelopmentState
+
+    state_path = tmp_path / "custom-state.json"
+    state = DevelopmentState.load(state_path)
+    logs = tmp_path / "independent-evidence"
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    if pair != "missing-state":
+        monkeypatch.setenv(
+            "BOOLEY_STATE_FILE",
+            str(state_path if pair != "other-state" else tmp_path / "other.json"),
+        )
+    if pair != "missing-logs":
+        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    assert rs.state_log_dir(state) == (logs if pair == "matching" else tmp_path)

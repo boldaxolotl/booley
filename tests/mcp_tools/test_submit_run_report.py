@@ -1294,3 +1294,76 @@ def test_permanent_state_and_compensation_failure_keeps_receipt_closed(
     )  # Mutable persistence cannot be promised under permanent failure.
     assert rs.read_receipt(tmp_path)["status"] == "failed"
     assert not rs.effective_met(tmp_path, True, reloaded.criteria[rs.KEY].detail)
+
+
+def test_missing_report_directory_refuses_submission_and_invalidates_old_gate(
+    tmp_path, state_file, monkeypatch, capsys
+):
+    state = DevelopmentState.load(state_file)
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    worktree = tmp_path / "worktree"
+    _init_repo(worktree)
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BOOLEY_SLUG", "report-test")
+    monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    monkeypatch.setattr("booley.mcp.report_changes.changed_ticket_paths", lambda _: [])
+    code = SubmitRunReportMcpTool().main(
+        [
+            "--work-dir",
+            str(worktree),
+            "--summary",
+            "Fixed.",
+            "--root-cause",
+            "Ordering.",
+            "--uncertainties",
+            "None.",
+            "--file-justifications",
+            "{}",
+        ]
+    )
+    output = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert "configure BOOLEY_LOGS_DIR" in output.out + output.err
+    assert "Traceback" not in output.out + output.err
+    assert not DevelopmentState.load(state_file).is_met("_report_submitted")
+    assert not (tmp_path / "REPORT.md").exists()
+
+
+def test_explicit_report_directory_with_custom_state_has_explicit_reader_context(
+    tmp_path, state_file, monkeypatch
+):
+    from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
+
+    worktree = tmp_path / "worktree"
+    _init_repo(worktree)
+    report_dir = tmp_path / "independent-evidence"
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
+    monkeypatch.setenv("BOOLEY_SLUG", "report-test")
+    monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    monkeypatch.setattr("booley.mcp.report_changes.changed_ticket_paths", lambda _: [])
+    code = SubmitRunReportMcpTool().main(
+        [
+            "--work-dir",
+            str(worktree),
+            "--report-dir",
+            str(report_dir),
+            "--summary",
+            "Fixed.",
+            "--root-cause",
+            "Ordering.",
+            "--uncertainties",
+            "None.",
+            "--file-justifications",
+            "{}",
+        ]
+    )
+    assert code == EXIT_SUCCESS
+    assert (report_dir / "REPORT.md").is_file()
+    assert check_criteria_acceptance(state_file, ticket_identity={}).disposition == "failed"
+    assert (
+        check_criteria_acceptance(state_file, log_dir=report_dir, ticket_identity={}).disposition
+        == "review"
+    )

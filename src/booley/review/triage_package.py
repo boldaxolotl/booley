@@ -827,7 +827,7 @@ def _unverified_transitions(
     return sorted(names)
 
 
-def _file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
+def saved_file_justifications(state: Mapping[str, Any]) -> dict[str, str]:
     """Validate saved report explanations before exposing them to review readers."""
     try:
         criteria = require_dict(state.get("criteria", {}), field="criteria")
@@ -854,23 +854,12 @@ def _report_is_submitted(state: Mapping[str, Any]) -> bool:
 def _effective_review_inputs(
     ctx: TriageContext, evidence: ResolvedReviewEvidence
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    from booley.ticket_board.acceptance_ledger import project_report_mapping as project_mapping
-
     try:
         state = evidence.state()
         scope = evidence.scope()
-        justifications = _file_justifications(state)
-        state = project_mapping(state, ctx.log_dir, identity=getattr(ctx, "ticket_identity", None))
+        justifications = saved_file_justifications(state)
     except (BoundaryError, json.JSONDecodeError) as exc:
         raise TriagePackageError(f"invalid resolved review evidence: {exc}") from exc
-    if not _report_is_submitted(state):
-        from booley.ticket_board.persistence import atomic_replace_bytes
-
-        atomic_replace_bytes(
-            ctx.log_dir / ".runtime" / "unsubmitted-report.md",
-            b"Report submission is uncommitted or unavailable.\n",
-            mode=0o644,
-        )
     scope["file_justifications"] = justifications if _report_is_submitted(state) else {}
     return state, scope
 
@@ -932,7 +921,11 @@ def build_review_facts(
     run_economics: str = "unavailable",
     waiver_candidates: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Build artifacts from Ticket Board-resolved evidence and immutable heads."""
+    """Build artifacts from Ticket Board-resolved evidence and immutable heads.
+
+    The caller must project report completion authority before capturing evidence;
+    this renderer trusts the resolved report gate and performs no lifecycle I/O.
+    """
     state, scope = _effective_review_inputs(ctx, evidence)
     changes = _materialize_diffs(ctx, _changed_files(ctx))
     from booley.evidence.review_dispositions import (

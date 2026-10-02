@@ -196,6 +196,7 @@ def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
     verdict = check_criteria_acceptance(
         ctx.log_dir / ".runtime" / "booley_state.json",
         work_dir=ctx.worktree,
+        log_dir=ctx.log_dir,
         ticket_identity=ctx.ticket_identity,
     )
     if verdict.disposition != "review":

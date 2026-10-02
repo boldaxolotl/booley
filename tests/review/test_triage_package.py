@@ -122,6 +122,9 @@ def _facts(
     freshness_eligible=verification_freshness_eligible,
 ) -> dict:
     state = json.loads((ctx.log_dir / ".runtime" / "booley_state.json").read_text())
+    from booley.ticket_board.review_preparation import _project_review_report
+
+    state = _project_review_report(state, ctx.log_dir)
     scope_path = ctx.log_dir / ".runtime" / "scope_deviations.json"
     scope = json.loads(scope_path.read_text()) if scope_path.is_file() else {}
     evidence = tp.ResolvedReviewEvidence.capture(
