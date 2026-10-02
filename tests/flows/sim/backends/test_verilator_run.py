@@ -809,3 +809,123 @@ def test_trace_file_round_trips_through_the_cli():
     args = vr._parse_args(["--bin-dir", "b", "--top", "t", "--trace", "--trace-file=fpu.vcd"])
     assert args.trace_files == ["fpu.vcd"]
     assert vr._parse_args(["--bin-dir", "b", "--top", "t"]).trace_files == []
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode):
+    import io
+    from types import SimpleNamespace
+
+    import booley.flows.sim.run_guard as guard_module
+    import booley.runtime.platform_paths as platform
+
+    def spawn(*args, **kwargs):
+        (tmp_path / "output.bin").write_bytes(b"x" * 9)
+        return SimpleNamespace(
+            stdout=io.StringIO("PASS\n"),
+            returncode=returncode,
+            pid=4321,
+            poll=lambda: returncode,
+            wait=lambda **kwargs: returncode,
+        )
+
+    monkeypatch.setattr(vr.subprocess, "Popen", spawn)
+    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
+    monkeypatch.setattr(vr, "_supervise", lambda proc: None)
+
+    def unexpected_kill(proc):
+        pytest.fail("already exited child must not be killed")
+
+    monkeypatch.setattr(platform, "kill_process_tree", unexpected_kill)
+    lines, proc, termination = vr._stream_output(
+        ["fake"], tmp_path, {}, 30, None, None, max_rundir_bytes=8
+    )
+    assert termination.kind == "disk_budget"
+    assert termination.failure_kind == "infrastructure"
+    assert proc.returncode == returncode
+    assert "simulation aborted:" in "".join(lines)
+    work = tmp_path / "work"
+    work.mkdir()
+    vr._evaluate_verdict(
+        "".join(lines), returncode, work, pass_sentinels=["PASS"], termination=termination
+    )
+    result = json.loads((work / "result.json").read_text())
+    assert result["passed"] is False
+    assert not result.get("inconclusive", False)
+
+
+@pytest.mark.parametrize("prior", ["timeout", "trace_stall"])
+def test_final_disk_retains_abort_during_reap(tmp_path, monkeypatch, prior):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.run_guard import DiskBudgetGuard
+
+    state = {"hit": False}
+    trace = SimpleNamespace(stall_killed=False)
+
+    def wait(**kwargs):
+        state["hit"] = prior == "timeout"
+        trace.stall_killed = prior == "trace_stall"
+        return 0
+
+    proc = SimpleNamespace(wait=wait, poll=lambda: 0)
+    guard = DiskBudgetGuard(tmp_path, 8, proc, baseline=(0, 0))
+    monkeypatch.setattr(guard, "finish", lambda: pytest.fail("prior abort must skip final scan"))
+    _, _, termination = vr._finish_stream(
+        proc, trace, None, guard, state, vr.time.monotonic() + 30, lambda: "timeout", deque()
+    )
+    assert termination.kind == ("timeout" if prior == "timeout" else "completed")
+
+
+@pytest.mark.parametrize("prior", ["fatal_init", "timeout"])
+def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
+    import io
+    import threading
+    from types import SimpleNamespace
+
+    import booley.flows.sim.run_guard as guard_module
+    import booley.runtime.platform_paths as platform
+
+    timers = []
+    alive = [True]
+
+    class Timer:
+        def __init__(self, delay, callback):
+            timers.append(callback)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    def wait(**kwargs):
+        if prior == "timeout" and alive[0]:
+            timers[0]()
+        alive[0] = False
+        return 0
+
+    def spawn(*args, **kwargs):
+        (tmp_path / "output.bin").write_bytes(b"x" * 9)
+        line = "$readmemh: Cannot open memory.hex\n" if prior == "fatal_init" else "PASS\n"
+        return SimpleNamespace(
+            stdout=io.StringIO(line),
+            returncode=0,
+            pid=4321,
+            poll=lambda: None if alive[0] else 0,
+            wait=wait,
+        )
+
+    monkeypatch.setattr(threading, "Timer", Timer)
+    monkeypatch.setattr(vr.subprocess, "Popen", spawn)
+    monkeypatch.setattr(vr, "_supervise", lambda proc: None)
+    monkeypatch.setattr(platform, "kill_process_tree", lambda proc: alive.__setitem__(0, False))
+    monkeypatch.setattr(
+        guard_module.DiskBudgetGuard,
+        "finish",
+        lambda guard: pytest.fail("prior abort must skip final scan"),
+    )
+    _, _, termination = vr._stream_output(
+        ["fake"], tmp_path, {}, 30, None, None, max_rundir_bytes=8
+    )
+    assert termination.kind == prior

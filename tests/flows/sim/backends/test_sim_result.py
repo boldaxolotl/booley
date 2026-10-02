@@ -248,6 +248,7 @@ class TestHarnessInfraLines:
             "ERROR: Verilator simulation timed out (900s)",
             "ERROR: missing $readmemh memory-init file — foo",
             "simulation killed: run directory /work grew by 1 bytes",
+            "simulation aborted: run directory /work grew by 1 bytes",
             "TRACE_OK: /work/trace.fst",
         ],
     )
