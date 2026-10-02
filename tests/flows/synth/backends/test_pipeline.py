@@ -761,3 +761,83 @@ def test_startup_stage_requires_fresh_stage_log(tmp_path, stage):
     assert outcome.stage == stage
     outcome = syn_make.boundary_output(plan, 1, is_stale=lambda path: True)
     assert outcome.stage is None
+
+
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+def test_openroad_generic_master_diagnostic_is_fresh_stage_owned(tmp_path, stale, mode):
+    plan = syn_make.configure_synthesis(_spec(tmp_path, mode=mode), _build_dir(tmp_path))
+    text = "[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found.\n"
+    (plan.build_dir / "openroad.log").write_text(text)
+    (plan.build_dir / "yosys.log").write_text(text)
+    outcome = syn_make.boundary_output(
+        plan, 2, is_stale=lambda p: stale and p.name == "openroad.log"
+    )
+    assert outcome.openroad_diagnostic == (None if stale or mode == "logical" else text.rstrip())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
+@pytest.mark.parametrize("frontend", ["sv2v", "slang"])
+def test_generated_fake_generic_master_latch_design_failure(tmp_path, monkeypatch, frontend):
+    from booley.flows.base import SubprocessResult
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.flows.synth.implementation_report import _run
+
+    liberty = tmp_path / "cells.lib"
+    liberty.write_text("library(cells) {}")
+    monkeypatch.setattr(
+        syn_make.openroad_timing,
+        "openroad_pdk_paths",
+        lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
+    )
+    spec = dataclasses.replace(_spec(tmp_path, frontend=frontend), liberty=liberty, params={})
+    plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
+    fake_bin = _fake_generic_master_bin(tmp_path)
+    started = time.time()
+    result = subprocess.run(
+        ["make", "-C", str(plan.build_dir)],
+        env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    assert "ORD-2013" in result.stdout
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "dut", "--work-dir", str(tmp_path)])
+    metrics, _ = flow._interpret_boundary_run(
+        "dut",
+        plan,
+        SubprocessResult(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            dispatched_unix=started,
+        ),
+        0.1,
+    )
+    run = _run(metrics, fatal_timing=True)
+    assert metrics.returncode == 1
+    assert metrics.termination == "design_failure"
+    assert metrics.infra_error == ""
+    assert metrics.latches == metrics.unexpected_latches == 8
+    assert "$_DLATCH_P_" in run.diagnostic_excerpt
+    assert "actual=8, expected=0, excess=8" in run.diagnostic_excerpt
+    assert run.completion["yosys"] is True
+    assert run.completion["timing"] is False
+    assert run.completion["ppa"] is False
+
+
+def _fake_generic_master_bin(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    scripts = {
+        "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
+        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
+        "openroad": "#!/bin/sh\necho '[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found.'\nexit 1\n",
+    }
+    for name, script in scripts.items():
+        executable = fake_bin / name
+        executable.write_text(script)
+        executable.chmod(0o755)
+    return fake_bin

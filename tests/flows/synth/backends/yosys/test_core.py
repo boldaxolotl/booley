@@ -1189,3 +1189,28 @@ class TestFrontendKnobResolution:
 
         with pytest.raises(BoundaryError, match="non-empty list"):
             syn_core.resolve_slang_options({"slang_options": "--single-unit"})
+
+
+@pytest.mark.parametrize("token", ["1.2.3", "1e999", "NaN", "inf", "-"])
+def test_stat_backend_rejects_nonfinite_or_partial_area(tmp_path, token):
+    from booley.flows.synth.backends.yosys import core as syn_core
+
+    stat = tmp_path / "stat.txt"
+    stat.write_text(f"Chip area for top module dut: {token}\n")
+    assert syn_core.parse_area_from_stat(stat) is None
+
+
+def test_stat_backend_latest_complete_area_matches_flow(tmp_path):
+    from booley.flows.synth.backends.yosys import core as syn_core
+    from booley.flows.synth.flow import _parse_area
+
+    text = (
+        "1. Printing statistics.\n=== dut ===\n  Number of cells: 1\n"
+        "  Chip area for top module dut: 1\n"
+        "2. Printing statistics.\n=== dut ===\n  2 - cells\n"
+        "  Chip area for top module dut: 2e1\n"
+        "3. Printing statistics.\n=== dut ===\n"
+    )
+    stat = tmp_path / "stat.txt"
+    stat.write_text(text)
+    assert syn_core.parse_area_from_stat(stat) == _parse_area(text)[0] == 20.0
