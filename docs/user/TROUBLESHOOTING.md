@@ -805,8 +805,12 @@ the Campaign-bound evidence tool.
 - Approve exits non-zero and the Ticket stays in review: the strict verdict with
   your accepted candidates would still fail. Rejections are kept; nothing was
   promoted. Fix the Ticket in review, reset it, or archive it.
-- Approver refused as the `[agent.git]` identity: set your own `user.name` and
-  `user.email` in the Project checkout.
+- Approver refused as the `[agent.git]` identity: approve on the host with your
+  personal `user.name` and `user.email`. The Sandbox intentionally uses the agent
+  identity and refuses approval. Refresh and recreate the Sandbox with an updated
+  image, or start an already updated Sandbox, to clean recognized legacy worktree
+  identity pairs. Unrecognized custom overrides are preserved; if host approval
+  still refuses, inspect the Project checkout's worktree identity overrides.
 - Candidate shown as stale or invalid: its source changed since recording, it
   came from another Campaign, or the evidence no longer supports it. Rerun
   coverage and the Analyst to record fresh candidates.

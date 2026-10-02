@@ -387,7 +387,7 @@ fi
 BOOLEY_PACKAGE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
     BOOLEY_PROJECT_DIR="$IDENTITY_PROJECT_DIR" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \
-    "${PY[@]}" -m booley.runtime.incontainer_git_identity
+    "${PY[@]}" -m booley.runtime.incontainer_git_identity --ticket
 
 _parent_lock_release
 # --- End critical section B ---
