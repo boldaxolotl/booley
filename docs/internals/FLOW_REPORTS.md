@@ -119,7 +119,12 @@ Three cases add to this layout:
 - **A Cycle Count baseline** gets its own Target directory next to the
   candidate's, named from `<target>@baseline-<first 12 hex of revision>`.
 
-The Campaign files reference each other by size and SHA-256 digest. Resume
+The Campaign files reference each other by size and SHA-256 digest. Two digest
+forms exist for the same manifest. Durable records (`summary.json`, work-item
+results) carry the canonical manifest digest: SHA-256 of `manifest.json`
+without its trailing newline. Typed artifact references, such as
+`simulation.json`'s `campaign_manifest`, carry the SHA-256 of the file's exact
+bytes. Compare each against its own form. Resume
 checks that whole chain, plus the Target's current sources and test suite,
 before it runs anything. If the suite or sources changed, the old Campaign can
 no longer be resumed.

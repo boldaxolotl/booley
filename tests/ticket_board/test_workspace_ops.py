@@ -1509,7 +1509,12 @@ def test_ancestor_check_rejects_non_ancestor_and_git_error(
         "_git",
         lambda *_args: _completed("git", returncode=returncode, stderr="git failed"),
     )
-    with pytest.raises(workspace_ops.TicketBaselineOperationError, match=r"moved|git failed"):
+    error = (
+        workspace_ops.TicketBaselineOperationError
+        if returncode == 1
+        else workspace_ops.TicketAncestryVerificationError
+    )
+    with pytest.raises(error, match=r"moved|git failed"):
         workspace_ops._require_ancestor(tmp_path, "old", "new", "destination moved")
 
 

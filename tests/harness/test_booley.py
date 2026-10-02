@@ -1698,6 +1698,7 @@ class TestInterruptibleSleep:
 class TestFindProjectRoot:
     def test_finds_git_dir(self, tmp_path: Path):
         (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
         subdir = tmp_path / "a" / "b"
         subdir.mkdir(parents=True)
         with patch("booley.harness.booley.Path.cwd", return_value=subdir):
@@ -1709,7 +1710,9 @@ class TestFindProjectRoot:
         rtl_dir = tmp_path / ".booley"
         rtl_dir.mkdir()
         (rtl_dir / ".git").mkdir()
+        (rtl_dir / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
         (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
         subdir = rtl_dir / "scripts"
         subdir.mkdir()
         with patch("booley.harness.booley.Path.cwd", return_value=subdir):

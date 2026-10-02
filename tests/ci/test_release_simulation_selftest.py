@@ -107,3 +107,30 @@ def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> 
     tickets = project / ".booley_project" / "tickets"
     board = required_board_directories(tickets)
     assert all(directory.is_dir() for directory in (*board, tickets / "logs", tickets / "locks"))
+
+
+def test_prepare_clone_state_guards_nested_project_repository(tmp_path: Path) -> None:
+    """Doctor's prune guard also checks a standalone nested Project repo (#915)."""
+    project = tmp_path / "project"
+    project_dir = project / ".booley_project"
+    project_dir.mkdir(parents=True)
+    for repository in (project, project_dir):
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    simulation_selftest._prepare_clone_state(project)
+
+    for repository in (project, project_dir):
+        configured = subprocess.run(
+            ["git", "config", "--local", "--get", "gc.worktreePruneExpire"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert configured.stdout.strip() == "never", repository

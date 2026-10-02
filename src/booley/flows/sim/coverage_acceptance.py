@@ -44,7 +44,8 @@ class CoverageAcceptance:
                 producer="sim",
                 transaction_id=transaction,
             )
-            shadow.acceptance_transactions.append(transaction)
+            if transaction not in shadow.acceptance_transactions:
+                shadow.acceptance_transactions.append(transaction)
         shadow.save()
         self.state.work_dir = shadow.work_dir
         self.state.criteria = shadow.criteria

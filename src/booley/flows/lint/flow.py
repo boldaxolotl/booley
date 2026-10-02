@@ -260,6 +260,10 @@ def _classify_lint_failure(
         result.error = failure.reason
         result.error_is_eda_tool_failure = True
         return
+    if result.returncode == 0 and not (
+        _verible_first_error_line(combined) if family == "verible" else _first_error_line(combined)
+    ):
+        return
     if family == "verible":
         result.error = (
             _verible_first_error_line(combined) or f"lint eda_tool exited {result.returncode}"
@@ -714,7 +718,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             result.warnings = parse_verible_warnings(combined, selector)
         else:
             result.warnings = parse_warnings(combined, selector)
-        if proc.returncode != 0 and not result.error:
+        if not result.error:
             _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
             if result.error and evidence_log is not None:
                 # The classified error cites only the FIRST error line; the

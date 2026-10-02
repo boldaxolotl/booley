@@ -779,7 +779,7 @@ def _legacy_transaction_records(root: Path, transaction_id: str) -> list[dict[st
         records.append(payload)
     if not records:
         raise AcceptanceLedgerError("selected legacy transaction has no evidence")
-    return records
+    return sorted(records, key=lambda record: record["sequence"])
 
 
 def _read_legacy_record(directory: Path) -> dict[str, Any]:
@@ -799,7 +799,7 @@ def _read_legacy_record(directory: Path) -> dict[str, Any]:
     return payload
 
 
-def _active_evidence_records(
+def _validated_evidence_records(
     log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     root = log_dir / "acceptance" / "evidence"
@@ -829,9 +829,160 @@ def _active_evidence_records(
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence in seen:
             raise AcceptanceLedgerError("active Criterion evidence repeats a sequence")
         seen.add(sequence)
-        if payload.get("ticket_identity") != ticket_identity:
-            raise AcceptanceLedgerError("Criterion evidence names another Ticket identity")
+        _validate_observation_identity(payload.get("ticket_identity"), ticket_identity)
+        _validate_observation(payload)
     return records
+
+
+def _active_evidence_records(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    return [
+        payload
+        for payload in _validated_evidence_records(log_dir, state, ticket_identity)
+        if payload["ticket_identity"] == ticket_identity
+    ]
+
+
+def historical_ticket_identities(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Return distinct identities only after validating selected historical observations."""
+    identities = []
+    for row in _validated_evidence_records(log_dir, state, ticket_identity):
+        identity = row["ticket_identity"]
+        if identity != ticket_identity and identity not in identities:
+            identities.append(identity)
+    return identities
+
+
+def _validate_observation_identity(value: object, current: Mapping[str, Any]) -> None:
+    if not current:
+        if not isinstance(value, dict):
+            raise AcceptanceLedgerError("Criterion evidence has malformed Ticket identity")
+        return
+    if not isinstance(value, dict) or not value:
+        raise AcceptanceLedgerError(
+            "Criterion evidence names another Ticket identity: missing identity"
+        )
+    _identity(value, value.get("generation"))
+    if "schema" in value:
+        from .ticket_baseline import TicketBaselineError, ticket_baseline_from_machine
+
+        try:
+            ticket_baseline_from_machine(value)
+        except (TicketBaselineError, ValueError) as exc:
+            raise AcceptanceLedgerError(
+                "Criterion evidence has malformed Ticket identity"
+            ) from exc
+    authored = value.get("authored_sha256")
+    if authored is not None and (
+        not isinstance(authored, str) or re.fullmatch(r"[0-9a-f]{64}", authored) is None
+    ):
+        raise AcceptanceLedgerError("Criterion evidence has malformed authored identity")
+    baseline = value.get("baseline")
+    if baseline is not None:
+        if not isinstance(baseline, dict) or not baseline:
+            raise AcceptanceLedgerError("Criterion evidence has malformed baseline identity")
+        for participant in baseline.values():
+            if (
+                not isinstance(participant, dict)
+                or not isinstance(participant.get("commit"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", participant["commit"]) is None
+            ):
+                raise AcceptanceLedgerError("Criterion evidence has malformed baseline identity")
+    for key in ("authored_sha256", "baseline"):
+        if key in current and (key not in value or not isinstance(value[key], type(current[key]))):
+            raise AcceptanceLedgerError("Criterion evidence has malformed Ticket identity")
+
+
+def _validate_observation(payload: Mapping[str, Any]) -> None:
+    if (
+        "acceptance_basis" in payload
+        or not isinstance(payload.get("criterion"), str)
+        or payload.get("role") not in {"baseline", "candidate"}
+        or not isinstance(payload.get("met"), bool)
+        or not isinstance(payload.get("mandatory"), bool)
+        or not isinstance(payload.get("params"), dict)
+        or not isinstance(payload.get("detail"), dict)
+    ):
+        raise AcceptanceLedgerError("corrupt Criterion evidence: invalid observation")
+
+
+def current_evidence_records(
+    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Read validated observations for one identity without replaying history."""
+    return _read_evidence_records(log_dir, state, ticket_identity)
+
+
+def _verify_amendment_prefix(
+    records: list[dict], changes: list[CriterionChange], ticket_identity: Mapping[str, Any]
+) -> None:
+    for record, change in zip(records, changes[: len(records)], strict=True):
+        if any(
+            record.get(key) != value
+            for key, value in {
+                "ticket_identity": dict(ticket_identity),
+                "criterion": change.key,
+                "met": change.met,
+                "mandatory": change.mandatory,
+                "params": change.params,
+                "detail": change.detail,
+            }.items()
+        ):
+            raise AcceptanceLedgerError("amendment observation changed during retry")
+
+
+def record_amendment_observations(
+    log_dir: Path,
+    state: DevelopmentState,
+    changes: list[CriterionChange],
+    *,
+    operation_id: str,
+    ticket_identity: Mapping[str, Any],
+) -> None:
+    """Publish and select idempotent generic observations of validated retained proof."""
+    transaction = hashlib.sha256(
+        _canonical(
+            {
+                "operation_id": operation_id,
+                "ticket_identity": dict(ticket_identity),
+            }
+        )
+    ).hexdigest()
+    root = log_dir / "acceptance" / "evidence"
+    if root.exists():
+        for directory in root.glob(f"*.tx.{transaction}"):
+            if not (directory / "record.json").exists():
+                for temporary in directory.glob(".record.json.*.tmp"):
+                    temporary.unlink()
+                try:
+                    directory.rmdir()
+                except OSError as exc:
+                    raise AcceptanceLedgerError(
+                        f"invalid amendment proof reservation {directory}: {exc}"
+                    ) from exc
+    if root.exists() and list(root.glob(f"*.tx.{transaction}")):
+        records = _legacy_transaction_records(root, transaction)
+        if len(records) > len(changes):
+            raise AcceptanceLedgerError("incomplete amendment observation transaction")
+        _verify_amendment_prefix(records, changes, ticket_identity)
+    else:
+        records = []
+    if len(records) < len(changes):
+        record_changes(
+            log_dir,
+            state,
+            changes[len(records) :],
+            invocation_id=operation_id,
+            producer="amendment",
+            execution_id=operation_id,
+            ticket_identity=ticket_identity,
+            transaction_id=transaction,
+        )
+    if changes and transaction not in state.acceptance_transactions:
+        state.acceptance_transactions.append(transaction)
 
 
 def _plain_legacy_records(root: Path) -> list[dict[str, Any]]:
@@ -876,6 +1027,10 @@ def _replay_projection(
             }
             if transition not in entry.transition_evidence:
                 entry.transition_evidence.append(transition)
+
+    from .report_submission import project_state
+
+    project_state(state, log_dir, identity=ticket_identity)
 
 
 def _update_live_state(state: DevelopmentState, saved: DevelopmentState) -> None:
@@ -1098,6 +1253,14 @@ def _read_evidence_refs(
     ]
 
 
+def _effective_projection_met(log_dir, criterion, met, detail, identity):
+    if criterion != "_report_submitted":
+        return met
+    from .report_submission import effective_met
+
+    return effective_met(log_dir, met, detail, identity=identity)
+
+
 def _validate_state_projection(
     log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
 ) -> None:
@@ -1108,7 +1271,10 @@ def _validate_state_projection(
     for criterion, payload in latest.items():
         entry = state.criteria.get(criterion)
         agrees = entry is not None and (
-            entry.met is payload.get("met")
+            _effective_projection_met(log_dir, criterion, entry.met, entry.detail, ticket_identity)
+            is _effective_projection_met(
+                log_dir, criterion, payload.get("met"), payload.get("detail"), ticket_identity
+            )
             and entry.mandatory is payload.get("mandatory")
             and entry.params == payload.get("params")
             and entry.detail == payload.get("detail")
@@ -1169,6 +1335,28 @@ def record_changes(
     return tuple(refs)
 
 
+def _validate_current_proof(
+    log_dir: Path, state: DevelopmentState, identity: Mapping[str, Any]
+) -> None:
+    if not identity:
+        return
+    current = {row["criterion"] for row in _read_evidence_records(log_dir, state, identity)}
+    root = log_dir / "acceptance" / "evidence"
+    if not root.exists():
+        return
+    historical = set()
+    for path in root.glob("*/record.json"):
+        if re.fullmatch(r"[0-9]{9}(?:\.tx\.[0-9a-f]{64})?", path.parent.name) is None:
+            continue
+        row = _read_json_document(path, _MAX_RECORD_BYTES, "Criterion evidence")
+        if row.get("ticket_identity") != identity:
+            historical.add(row.get("criterion"))
+    for name in historical - current:
+        entry = state.criteria.get(name)
+        if entry is not None and entry.met:
+            raise AcceptanceLedgerError(f"Criterion {name!r} is missing current-generation proof")
+
+
 def freeze_acceptance(
     log_dir: Path,
     state: DevelopmentState,
@@ -1181,6 +1369,12 @@ def freeze_acceptance(
     """Freeze and select one Criteria Satisfaction Record for the current Ticket epoch."""
     identity = dict(ticket_identity or {})
     _validate_state_projection(log_dir, state, identity)
+    _validate_current_proof(log_dir, state, identity)
+    from .report_submission import project_state, synchronize
+
+    synchronize(log_dir)
+    state = deepcopy(state)
+    project_state(state, log_dir, identity=identity)
     payload = {
         "schema": SCHEMA_VERSION,
         "slug": state.slug,
@@ -1326,7 +1520,13 @@ def read_acceptance(log_dir: Path) -> AcceptanceReadResult:
         actual = hashlib.sha256(_canonical(payload)).hexdigest()
         if actual != digest:
             raise ValueError("Criteria Satisfaction Record digest mismatch")
-        return AcceptanceReadResult("accepted", _snapshot_from_payload(payload, digest))
+        snapshot = _snapshot_from_payload(payload, digest)
+        if not _snapshot_report_effective(Path(log_dir), snapshot):
+            return AcceptanceReadResult(
+                "unavailable",
+                reason="report submission is uncommitted or invalidated; submit a new report",
+            )
+        return AcceptanceReadResult("accepted", snapshot)
     except (
         AcceptanceLedgerError,
         KeyError,
@@ -1336,3 +1536,122 @@ def read_acceptance(log_dir: Path) -> AcceptanceReadResult:
         json.JSONDecodeError,
     ) as exc:
         return AcceptanceReadResult("corrupt", reason=str(exc))
+
+
+def _snapshot_report_effective(log_dir: Path, snapshot: AcceptanceSnapshot) -> bool:
+    from .paths import existing_ticket_runtime_file
+    from .report_submission import ID_KEY, KEY, effective_met
+
+    report = snapshot.criteria.get(KEY)
+    if report is None or report.get("met") is not True:
+        return True
+    detail = report.get("detail", {})
+    if not effective_met(log_dir, True, detail, identity=snapshot.ticket_identity):
+        return False
+    state = DevelopmentState.load(existing_ticket_runtime_file(log_dir, "booley_state.json"))
+    rows = [
+        row
+        for row in current_evidence_records(log_dir, state, snapshot.ticket_identity)
+        if row["criterion"] == KEY
+    ]
+    if rows and not rows[-1]["met"]:
+        return False
+    if detail.get(ID_KEY) and KEY in state.criteria:
+        project_report_state(state, log_dir, identity=snapshot.ticket_identity)
+        return state.criteria[KEY].met
+    return not detail.get(ID_KEY)
+
+
+def _report_identity(log_dir: Path, state: DevelopmentState) -> dict[str, Any]:
+    if log_dir.parent.name != "logs" or not state.strict_criteria:
+        return {}
+    from .io import TicketIO
+
+    return TicketIO(log_dir.parent.parent).load_basis(log_dir.name).ticket_identity()
+
+
+def project_report_state(
+    state: DevelopmentState,
+    log_dir: Path | None = None,
+    *,
+    identity: Mapping[str, Any] | None = None,
+) -> None:
+    """Fence the mutable report with the latest validated current observation."""
+    from .report_submission import KEY, effective_met, state_log_dir
+
+    root = log_dir or state_log_dir(state)
+    entry = state.criteria.get(KEY)
+    if root is None or entry is None:
+        return
+    current = dict(identity) if identity is not None else _report_identity(root, state)
+    rows = [
+        row for row in current_evidence_records(root, state, current) if row["criterion"] == KEY
+    ]
+    if rows:
+        latest = rows[-1]
+        if not latest["met"]:
+            entry.met = False
+        elif entry.met and any(
+            latest[key] != value
+            for key, value in {
+                "detail": entry.detail,
+                "mandatory": entry.mandatory,
+                "params": entry.params,
+            }.items()
+        ):
+            raise AcceptanceLedgerError(
+                "current report observation differs from mutable projection"
+            )
+    elif current and entry.detail.get("report_submission_id"):
+        entry.met = False
+    entry.met = effective_met(root, entry.met, entry.detail, identity=current)
+
+
+def project_report_mapping(
+    state: Mapping[str, Any], log_dir: Path, *, identity: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Project report authority without altering unrelated mutable state fields."""
+    from booley.core.boundary import require_dict
+    from booley.criteria.state import CriterionEntry, _acceptance_transactions
+
+    criteria = dict(require_dict(state.get("criteria", {}), field="criteria"))
+    key = "_report_submitted"
+    if key not in criteria:
+        return dict(state)
+    row = dict(require_dict(criteria[key], field=key))
+    from booley.core.boundary import require_bool
+
+    require_bool(row, "met", field="report met")
+    require_bool(row, "mandatory", default=True, field="report mandatory")
+    require_dict(row.get("detail", {}), field="report detail")
+    require_dict(row.get("params", {}), field="report params")
+    projection = DevelopmentState(
+        strict_criteria=require_bool(state, "strict_criteria"),
+        criteria={key: CriterionEntry.from_dict(row)},
+        acceptance_transactions=_acceptance_transactions(state.get("acceptance_transactions", [])),
+    )
+    project_report_state(projection, log_dir, identity=identity)
+    criteria[key] = {**row, "met": projection.criteria[key].met}
+    return {**state, "criteria": criteria}
+
+
+def submitted_report(log_dir: Path, *, identity: Mapping[str, Any] | None = None) -> Path | None:
+    """Expose report bytes only after validated current evidence and completion."""
+    from .paths import existing_ticket_runtime_file
+    from .report_submission import KEY, read_receipt
+
+    state = DevelopmentState.load(existing_ticket_runtime_file(log_dir, "booley_state.json"))
+    project_report_state(state, log_dir, identity=identity)
+    entry = state.criteria.get(KEY)
+    if entry is None:
+        return None if read_receipt(log_dir) else log_dir / "REPORT.md"
+    return log_dir / "REPORT.md" if entry.met else None
+
+
+def effective_state_bytes(
+    log_dir: Path, content: bytes, *, identity: Mapping[str, Any] | None = None
+) -> bytes:
+    from booley.core.boundary import require_dict
+
+    state = require_dict(json.loads(content), field="report state")
+    return _canonical(project_report_mapping(state, log_dir, identity=identity)) + b"\n"

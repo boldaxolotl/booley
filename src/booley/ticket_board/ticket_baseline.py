@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import re
+import stat
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -83,6 +84,10 @@ _AUTHORED_DEFAULTS: dict[str, Any] = {
         "triage_report": True,
     },
 }
+
+
+class TicketAncestryVerificationError(RuntimeError):
+    """Git could not establish ancestry; no policy verdict is available."""
 
 
 class TicketBaselineError(ValueError):
@@ -306,16 +311,9 @@ def validate_ticket_commit_trailers(
     machine: Mapping[str, Any],
 ) -> None:
     """Check the independent Git anchor for the Ticket's authored and machine identity."""
-    result = subprocess.run(
-        ["git", "show", "-s", "--format=%B", basis.outer_sha],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = _identity_git_result(Path(project_root), "show", "-s", "--format=%B", basis.outer_sha)
     if result.returncode != 0:
-        raise TicketBaselineError(f"{BLOCK_REASON}: outer authoring commit is unavailable")
+        raise _ref_lookup_error(Path(project_root), basis.outer_sha, result)
     trailers = dict(
         line.split(": ", 1)
         for line in result.stdout.splitlines()
@@ -1193,17 +1191,9 @@ def validate_ticket_view(
 
 
 def _worktree_records(repository: Path) -> tuple[tuple[Path, str | None], ...]:
-    result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = _identity_git_result(repository, "worktree", "list", "--porcelain")
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
-        raise TicketBaselineError(f"git worktree list failed in {repository}: {detail}")
+        raise _ref_lookup_error(repository, "worktree registry", result)
     records: list[tuple[Path, str | None]] = []
     worktree: Path | None = None
     branch: str | None = None
@@ -1357,6 +1347,137 @@ def _materialize_participant_commits(
     return checkout
 
 
+def _identity_git_result(
+    repository: Path, *args: str, timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} (Git identity {' '.join(args)}): {exc}"
+        ) from exc
+
+
+def _ref_lookup_error(
+    repository: Path, ref: str, result: subprocess.CompletedProcess[str]
+) -> TicketAncestryVerificationError:
+    return TicketAncestryVerificationError(
+        f"cannot verify ancestry in {repository} (ref {ref!r}, rc {result.returncode}): "
+        f"{(result.stderr or result.stdout).strip()}"
+    )
+
+
+def _named_ref_exists(repository: Path, ref: str) -> bool:
+    result = _identity_git_result(repository, "show-ref", "--exists", ref)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 2:
+        return False
+    if result.returncode in (1, 129):
+        return _legacy_named_ref_exists(repository, ref)
+    raise _ref_lookup_error(repository, ref, result)
+
+
+def _legacy_named_ref_exists(repository: Path, ref: str) -> bool:
+    result = _identity_git_result(repository, "show-ref", "--verify", "--quiet", ref)
+    if result.returncode == 0:
+        return True
+    if result.returncode != 1:
+        raise _ref_lookup_error(repository, ref, result)
+    storage = _identity_git_result(repository, "config", "--get", "extensions.refStorage")
+    if storage.returncode not in (0, 1) or (
+        storage.returncode == 0 and storage.stdout.strip() != "files"
+    ):
+        raise _ref_lookup_error(repository, ref, storage)
+    try:
+        loose = _reference_storage_path(repository, ref)
+        try:
+            metadata = loose.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        else:
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise TicketAncestryVerificationError(
+                    f"cannot verify ancestry in {repository}: unreadable or corrupt ref {ref!r}"
+                )
+        _verify_packed_ref_absence(repository, ref)
+        return False
+    except (OSError, UnicodeError) as exc:
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} (reference storage {ref!r}): {exc}"
+        ) from exc
+
+
+def _reference_storage_path(repository: Path, ref: str) -> Path:
+    result = _identity_git_result(repository, "rev-parse", "--git-path", ref)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise _ref_lookup_error(repository, ref, result)
+    path = Path(result.stdout.strip())
+    return path if path.is_absolute() else repository / path
+
+
+def _verify_packed_ref_absence(repository: Path, ref: str) -> None:
+    try:
+        text = _reference_storage_path(repository, "packed-refs").read_text(
+            encoding="utf-8", errors="surrogateescape"
+        )
+    except FileNotFoundError:
+        return
+    for line in text.splitlines():
+        if not line or line.startswith(("#", "^")):
+            continue
+        fields = line.split(" ", 1)
+        if len(fields) != 2 or not _COMMIT_RE.fullmatch(fields[0]) or fields[1] == ref:
+            raise TicketAncestryVerificationError(
+                f"cannot verify ancestry in {repository}: unreadable or corrupt packed ref {ref!r}"
+            )
+
+
+def _named_ref_is_commit(repository: Path, ref: str) -> bool:
+    result = _identity_git_result(repository, "cat-file", "-t", f"{ref}^{{}}")
+    if result.returncode != 0:
+        raise _ref_lookup_error(repository, ref, result)
+    kind = result.stdout.strip()
+    if kind not in {"commit", "tree", "blob", "tag"}:
+        raise _ref_lookup_error(repository, ref, result)
+    return kind == "commit"
+
+
+def _named_commit_result(
+    repository: Path, ref: str, *, timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
+    result = _identity_git_result(
+        repository, "show-ref", "--verify", "--dereference", ref, timeout=timeout
+    )
+    if result.returncode != 0:
+        return result
+    identities: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(" ", 1)
+        if (
+            len(fields) != 2
+            or not _COMMIT_RE.fullmatch(fields[0])
+            or fields[1] not in {ref, f"{ref}^{{}}"}
+            or fields[1] in identities
+        ):
+            raise _ref_lookup_error(repository, ref, result)
+        identities[fields[1]] = fields[0]
+    if ref not in identities:
+        raise _ref_lookup_error(repository, ref, result)
+    pinned = identities.get(f"{ref}^{{}}", identities[ref])
+    verified = _identity_git_result(repository, "rev-parse", "--verify", f"{pinned}^{{commit}}")
+    if verified.returncode == 0 and verified.stdout.strip() != pinned:
+        raise _ref_lookup_error(repository, ref, verified)
+    return verified
+
+
 def _descendant_ref_commit(
     repository: Path,
     ref: str,
@@ -1365,16 +1486,22 @@ def _descendant_ref_commit(
     kind: str,
     role: str,
 ) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    result = (
+        _named_commit_result(repository, ref)
+        if ref.startswith("refs/")
+        else _identity_git_result(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
     )
-    if result.returncode != 0 or not _COMMIT_RE.fullmatch(result.stdout.strip()):
+    if (
+        result.returncode != 0
+        and ref.startswith("refs/")
+        and (not _named_ref_exists(repository, ref) or not _named_ref_is_commit(repository, ref))
+    ):
         raise TicketBaselineError(f"Ticket baseline {kind} ref is unavailable: {ref}")
+    if result.returncode != 0 or not _COMMIT_RE.fullmatch(result.stdout.strip()):
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} ({kind} ref {ref!r}, rc {result.returncode}): "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
     return _descendant_commit(repository, result.stdout.strip(), recorded_sha, role=role, ref=ref)
 
 
@@ -1386,15 +1513,25 @@ def _descendant_commit(
     role: str,
     ref: str | None = None,
 ) -> str:
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", recorded_sha, commit],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if ancestor.returncode != 0:
+    try:
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", recorded_sha, commit],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} ({recorded_sha} -> {ref or commit}): {exc}"
+        ) from exc
+    if ancestor.returncode not in (0, 1):
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} (rc {ancestor.returncode}, "
+            f"{recorded_sha} -> {ref or commit}): {ancestor.stderr.strip()}"
+        )
+    if ancestor.returncode == 1:
         identity = ref or commit
         raise TicketBaselineError(
             f"{BLOCK_REASON}: {identity} no longer descends from recorded "

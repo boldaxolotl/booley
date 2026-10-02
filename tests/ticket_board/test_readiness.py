@@ -18,7 +18,7 @@ from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatte
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.lifecycle import TicketState
 from booley.ticket_board.readiness import check_ticket_ready
-from booley.ticket_board.ticket_baseline import TicketBaselineError
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 
 
 @pytest.fixture(autouse=True)
@@ -271,7 +271,7 @@ def test_worktree_discovery_failure_is_loud(
 
     monkeypatch.setattr(ticket_baseline_module.subprocess, "run", failed_worktree)
 
-    with pytest.raises(TicketBaselineError, match="worktree metadata is unreadable"):
+    with pytest.raises(TicketAncestryVerificationError, match="worktree metadata is unreadable"):
         ticket_baseline_module.worktree_for_ref(root, "refs/heads/main")
 
 

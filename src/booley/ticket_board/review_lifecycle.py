@@ -87,10 +87,6 @@ def _capture_state(ctx: prep.ReviewPrepContext) -> dict[str, Any]:
     state = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
     criteria = dict(require_dict(state.get("criteria", {}), field="criteria"))
     expected = {row.identity: row.mandatory for row in document.spec.criteria}
-    from booley.config.project_config import is_run_report_enabled
-
-    if is_run_report_enabled():
-        expected["_report_submitted"] = True
     for key, mandatory in expected.items():
         if key in criteria:
             row = dict(require_dict(criteria[key], field=f"criterion {key}"))
@@ -100,7 +96,13 @@ def _capture_state(ctx: prep.ReviewPrepContext) -> dict[str, Any]:
             criteria[key] = {"met": False, "mandatory": mandatory, "availability": "unavailable"}
     for key, value in criteria.items():
         require_dict(value, field=f"criterion {key}")
-    return {**state, "criteria": criteria}
+    from .acceptance_ledger import project_report_mapping as project_mapping
+    from .report_submission import synchronize
+
+    synchronize(ctx.log_dir)
+    return project_mapping(
+        {**state, "criteria": criteria}, ctx.log_dir, identity=ctx.ticket_identity
+    )
 
 
 def _capture(
@@ -185,7 +187,7 @@ def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
     raw = read_json(ctx.log_dir / ".runtime" / "booley_state.json") or {}
     actual = require_dict(raw.get("criteria", {}), field="criteria")
     for key, expected in ctx.inspection["state"]["criteria"].items():
-        if expected.get("mandatory"):
+        if expected.get("mandatory") and key != "_report_submitted":
             observed = require_dict(actual.get(key, {}), field=f"criterion {key}")
             if observed.get("mandatory") is not True or observed.get("met") is not True:
                 raise ReviewEntryError(
@@ -194,6 +196,8 @@ def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
     verdict = check_criteria_acceptance(
         ctx.log_dir / ".runtime" / "booley_state.json",
         work_dir=ctx.worktree,
+        log_dir=ctx.log_dir,
+        ticket_identity=ctx.ticket_identity,
     )
     if verdict.disposition != "review":
         raise ReviewEntryError(f"acceptance is {verdict.disposition}: {verdict}")
@@ -332,7 +336,12 @@ def _recover_publication(tio, slug, operation):
     _prompt, prompt_sha = prep._review_prompt(ctx)
     outcome = prep._fresh_outcome(ctx, manifest, prompt_sha, operation["source_sha"])
     if outcome is None:
-        raise ReviewEntryError("interrupted package is stale or corrupt")
+        raise ReviewEntryError(
+            "interrupted package is stale or corrupt: "
+            + str(
+                prep.review_package_rejection(ctx, manifest, prompt_sha, operation["source_sha"])
+            )
+        )
     _commit(tio, ctx, operation)
     return outcome
 
@@ -567,7 +576,10 @@ def _require_selected_package(
     manifest = prep._read_manifest(ctx)
     _prompt, prompt_sha = prep._review_prompt(ctx)
     if prep._fresh_outcome(ctx, manifest, prompt_sha, row["capture_sha"]) is None:
-        raise ReviewEntryError("selected package is missing or stale; run board review first")
+        raise ReviewEntryError(
+            "selected package is missing or stale; run board review first: "
+            + str(prep.review_package_rejection(ctx, manifest, prompt_sha, row["capture_sha"]))
+        )
 
 
 def _approve_done_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
@@ -761,8 +773,8 @@ def _verified_accepted_handoff(
         )
     except StaleAcceptanceError:
         raise
-    except (AcceptanceLedgerError, prep.ReviewPrepError, OSError, ValueError):
-        return prep.ReviewPrepOutcome("accepted", guidance)
+    except (AcceptanceLedgerError, prep.ReviewPrepError, OSError, ValueError) as exc:
+        return prep.ReviewPrepOutcome("accepted", guidance + f"; package verification: {exc}")
     return replace(outcome, message=guidance)
 
 

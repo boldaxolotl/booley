@@ -70,6 +70,15 @@ Packaged release history starts at 0.2.7. For older changes, see
   `booley.simulation-campaign-manifest/v2` manifest; default runs still write
   v1. ([#992](https://github.com/boldaxolotl/Booley/issues/992))
 
+### Quality of life
+
+- The `bwave` MCP tool description now steers agents to investigate with
+  B-Wave, not just confirm fixes. When a report doesn't localize a failure, or
+  a reproducer unexpectedly passes, agents rerun `sim` with `trace: true`,
+  trace the wrong value backwards to the first divergent signal, check that the
+  suspected trigger actually occurred, and confirm the mechanism before editing
+  RTL. This applies in Interactive Mode and Ticket Mode alike.
+
 ### Upgrade notes
 
 - The Project `AGENTS.md` template now limits Doctor during task work: Flows

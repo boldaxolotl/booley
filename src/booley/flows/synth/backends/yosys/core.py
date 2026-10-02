@@ -678,6 +678,8 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
     command. There is no TOML fallback: ``[flows.synth.timing].sdc`` is a
     hard-removed key.
     """
+    if not sdc:
+        return []
     base = root.resolve() if root is not None else resolve_project_root()
     resolved_sdc: list[Path] = []
     for raw in sdc or []:

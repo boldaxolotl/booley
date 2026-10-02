@@ -173,7 +173,8 @@ def _synthetic_non_git_ticket_view(monkeypatch):
                     "refs/heads/master",
                     "a" * 40,
                 ),
-            )
+            ),
+            machine=document.generated.get("machine") or {"generation": "a" * 32},
         )
 
     monkeypatch.setattr(ticket_document_module, "ticket_conversion_context", context)
@@ -2871,6 +2872,7 @@ class TestOpPromoteWaiting:
                 "machine": {"generation": "0" * 32},
             },
         )
+        monkeypatch.setattr(basis_refresh, "reconcile_refresh_runtime", lambda *_args: None)
         refreshed = MagicMock()
         refreshed.ticket_identity.return_value = {"generation": "a" * 32}
         monkeypatch.setattr(
@@ -2936,6 +2938,7 @@ class TestOpPromoteWaiting:
                 "machine": {"generation": "0" * 32},
             },
         )
+        monkeypatch.setattr(basis_refresh, "reconcile_refresh_runtime", lambda *_args: None)
         refreshed = MagicMock()
         refreshed.ticket_identity.return_value = {"generation": "a" * 32}
         monkeypatch.setattr(

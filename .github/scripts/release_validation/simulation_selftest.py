@@ -9,6 +9,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from booley.harness.setup.git_hooks import worktree_policy_repositories
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.ticket_board.board_layout import required_board_directories
 
@@ -33,16 +34,21 @@ def _doctor(project: Path, booley: Path) -> str:
 
 def _prepare_clone_state(project: Path) -> None:
     """Restore the local-only state that a fresh CI checkout cannot carry."""
-    result = subprocess.run(
-        ["git", "config", "--local", "gc.worktreePruneExpire", "never"],
-        cwd=project,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"failed to configure checkout worktree guard\n{result.stderr}")
+    # Doctor's prune guard checks every repository that creates Ticket
+    # Workspaces, including a standalone nested Project repository.
+    for repository in worktree_policy_repositories(project):
+        result = subprocess.run(
+            ["git", "config", "--local", "gc.worktreePruneExpire", "never"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"failed to configure worktree guard for {repository}\n{result.stderr}"
+            )
     tickets = resolve_checkout_project_dir(project) / "tickets"
     board = required_board_directories(tickets)
     for directory in (*board, tickets / "logs", tickets / "locks"):

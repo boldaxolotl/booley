@@ -119,15 +119,22 @@ def check_stealth_cores(project: ProjectAudit, *, mode: ReadinessMode) -> Diagno
 def inspect_worktree_portability(request: WorktreePortabilityRequest) -> DiagnosticReport:
     """Inspect repository policy and every live Ticket Workspace without repair."""
     report = Findings()
-    host_version, sandbox_version = _inspect_git_versions(request, report)
-    repositories = worktree_policy_repositories(request.project.project_root)
-    extensions = _inspect_repository_policies(repositories, report)
+    repositories = worktree_policy_repositories(
+        request.project.project_root, project_dir=request.project.project_dir
+    )
+    policies = {
+        repository: read_local_config(repository, WORKTREE_RELATIVE_KEY)
+        for repository in repositories
+    }
+    inferred_host = request.inside_runtime and policies[request.project.project_root] == "true"
+    host_version, sandbox_version = _inspect_git_versions(request, report, inferred_host)
+    extensions = _inspect_repository_policies(repositories, report, policies, inferred_host)
     minimum = RELATIVE_WORKTREE_MIN_GIT_VERSION
     known_old = any(
         version is not None and version < minimum for version in (host_version, sandbox_version)
     )
-    capable = all(
-        version is not None and version >= minimum for version in (host_version, sandbox_version)
+    capable = (inferred_host or (host_version is not None and host_version >= minimum)) and (
+        sandbox_version is not None and sandbox_version >= minimum
     )
     if any(extensions) and known_old:
         report.fail(
@@ -163,17 +170,23 @@ def _git_version_at(*command: str) -> tuple[int, int, int] | None:
 
 
 def _inspect_git_versions(
-    request: WorktreePortabilityRequest, report: Findings
+    request: WorktreePortabilityRequest, report: Findings, inferred_host: bool = False
 ) -> tuple[tuple[int, int, int] | None, tuple[int, int, int] | None]:
     current = _git_version_at("git", "--version")
     if request.inside_runtime:
         _report_git_version("Sandbox Git", current, report)
-        report.warn(
-            "host Git capability is unknown inside the Sandbox",
-            "run `booley doctor` on the host",
-            check_id="git.worktree-portability",
-            subject="host-git",
-        )
+        if inferred_host:
+            report.note(
+                "host Git capability inferred from checkout worktree.useRelativePaths=true "
+                "(host-init policy; host version not rechecked inside the Sandbox)"
+            )
+        else:
+            report.warn(
+                "host Git capability is unknown inside the Sandbox",
+                "run `booley doctor` on the host",
+                check_id="git.worktree-portability",
+                subject="host-git",
+            )
         return None, current
     _report_git_version("host Git", current, report)
     sandbox = (
@@ -209,11 +222,14 @@ def _report_git_version(
 
 
 def _inspect_repository_policies(
-    repositories: tuple[Path, ...], report: Findings
+    repositories: tuple[Path, ...],
+    report: Findings,
+    policies: Mapping[Path, str | None],
+    inferred_host: bool,
 ) -> tuple[bool, ...]:
     extensions: list[bool] = []
     for repository in repositories:
-        policy = read_local_config(repository, WORKTREE_RELATIVE_KEY)
+        policy = policies[repository]
         extension = read_local_config(repository, "extensions.relativeWorktrees") == "true"
         format_version = read_local_config(repository, "core.repositoryFormatVersion")
         extensions.append(extension)
@@ -221,7 +237,13 @@ def _inspect_repository_policies(
             report.pass_(f"{repository}: {WORKTREE_RELATIVE_KEY}=true")
         else:
             report.warn(
-                f"{repository}: {WORKTREE_RELATIVE_KEY} is {policy or 'unset'}",
+                f"{repository}: {WORKTREE_RELATIVE_KEY} is {policy or 'unset'}"
+                + (
+                    "; Ticket Workspaces use the container-only absolute-link fallback; "
+                    "run Git in the Sandbox and do not run host `git worktree prune`"
+                    if inferred_host
+                    else ""
+                ),
                 "run `booley init`",
                 check_id="git.worktree-portability",
                 subject=str(repository),

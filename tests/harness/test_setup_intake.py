@@ -244,6 +244,9 @@ def _load_test_basis(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(intake, "_is_git_backed", lambda _root: False)
+    # These unit fixtures substitute Board conversion and activation authority.
+    # Real owner-checked snapshot publication is exercised by amendment resume tests.
+    monkeypatch.setattr(intake, "_ensure_ticket_snapshot", lambda *_args: None)
 
     original_load = TicketIO.load_document
 
@@ -531,6 +534,7 @@ async def test_automatic_intake_promotes_waiting_before_selection(
     monkeypatch.setattr(operations, "op_promote_waiting", promote)
     monkeypatch.setattr(intake, "_auto_select_ticket", select)
     monkeypatch.setattr(intake, "_resolve_and_validate", lambda *_: (queued, "ticket"))
+    monkeypatch.setattr(intake, "_validate_intake_ticket", lambda *_: None)
     monkeypatch.setattr(intake, "_promote_waiting_for_intake", lambda _r, path, _s: path)
     monkeypatch.setattr(intake.TicketIO, "load_document", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(intake.ticket_cli, "parse_ticket", lambda *_: {"fields": {}, "body": ""})
@@ -1012,8 +1016,17 @@ class TestResumeBlocked:
             await run(str(sample_ticket), project_root)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "eda_tool_failure: vivado crashed",
+            "Review package changed before handoff: source_sha256 actual='unresolved/question/path'",
+        ],
+    )
     @patch("booley.harness.setup.intake.ticket_cli")
-    async def test_non_question_block_skips_check(self, mock_cli, project_root, sample_ticket):
+    async def test_non_question_block_skips_check(
+        self, mock_cli, project_root, sample_ticket, reason
+    ):
         """An EDA-tool failure should not trigger the question check."""
         slug = sample_ticket.stem
         _mock_cli_defaults(mock_cli, action="resume_blocked")
@@ -1022,7 +1035,7 @@ class TestResumeBlocked:
             slug,
             {
                 "steps_completed": ["planning"],
-                "blocked_reason": "eda_tool_failure: vivado crashed",
+                "blocked_reason": reason,
             },
         )
         from booley.harness.setup.intake import run
@@ -1407,3 +1420,50 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 # Migration guards
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["fresh", "continue", "resume_blocked"])
+@patch("booley.harness.setup.intake.ticket_cli")
+async def test_new_authorized_execution_clears_only_prior_block(
+    mock_cli, project_root, sample_ticket, action
+):
+    from booley.criteria.state import DevelopmentState
+    from booley.harness.setup.intake import run
+    from booley.ticket_board.paths import runtime_file
+
+    _mock_cli_defaults(mock_cli, action=action)
+    _write_progress(project_root, sample_ticket.stem, {"steps_completed": ["setup"]})
+    state_path = runtime_file(
+        project_root / _TICKETS_REL / "logs", sample_ticket.stem, "booley_state.json"
+    )
+    state = DevelopmentState.load(state_path)
+    state.init_criteria({"implementation_done": True, "_blocked_reason": False})
+    state.set_criterion("implementation_done", True)
+    state.set_criterion("_blocked_reason", True, detail={"reason": "prior execution"})
+    state.save()
+    await run(str(sample_ticket), project_root)
+    reloaded = DevelopmentState.load(state_path)
+    assert "_blocked_reason" not in reloaded.criteria
+    assert reloaded.is_met("implementation_done")
+
+
+@pytest.mark.parametrize("optional", [False, True])
+def test_disabled_retained_gate_preserves_deferred_state(tmp_path, monkeypatch, optional):
+    from types import SimpleNamespace
+
+    from booley.criteria.state import DevelopmentState
+    from booley.harness.setup.intake import _ensure_run_report_gate
+
+    tickets = tmp_path / "tickets"
+    path = tickets / "logs/demo/.runtime/booley_state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria({"implementation_done": not optional}, strict=True)
+    state.set_criterion("implementation_done", True, detail={"proof": "retained"})
+    state.save()
+    original = state.criteria["implementation_done"].to_dict()
+    monkeypatch.setattr("booley.config.project_config.is_run_report_enabled", lambda: False)
+    _ensure_run_report_gate(SimpleNamespace(_tickets_dir=tickets, slug="demo"))
+    current = DevelopmentState.load(path)
+    assert current.criteria["implementation_done"].to_dict() == original
+    assert ("_report_submitted" in current.criteria) is optional

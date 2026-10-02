@@ -22,7 +22,7 @@ from pathlib import Path, PurePosixPath
 from booley.config.agent import SANDBOX_IMAGE
 from booley.runtime import auth_token
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
-from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET
+from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
@@ -57,7 +57,6 @@ INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
 SESSION_PIDS_LIMIT = 4096
 
 # --- Container-side paths (must match the booley-sandbox image / developer) ---
-WORK_DIR = "/work"
 # PROJECT_DIR_TARGET (imported above from ``sandbox_layout``) is where
 # ``.booley_project`` mounts; it is re-exported here for existing callers.
 AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfile)

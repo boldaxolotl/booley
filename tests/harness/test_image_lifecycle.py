@@ -1349,35 +1349,6 @@ def _stage_registry_candidate(
     return reference
 
 
-class RegistryChainBuilder:
-    def __init__(self, docker: FakeDocker, *, base_digest: str | None = None) -> None:
-        self.docker = docker
-        self.built: list[str] = []
-        self.base_digest = base_digest or ("ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "d" * 64)
-
-    def build(
-        self,
-        node: lifecycle.ImageNode,
-        *,
-        force: bool,
-        source: lifecycle.ArtifactSource,
-    ) -> str:
-        del force
-        assert source is lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL
-        self.built.append(node.reference)
-        release = lifecycle._published_release_repository(node.reference) + ":0.2.6"
-        if node.reference == lifecycle.BASE_IMAGE:
-            self.docker.registry_identities[lifecycle.BASE_IMAGE] = (self.base_digest,)
-            return _stage_registry_candidate(self.docker, node, release)
-        return _stage_registry_candidate(
-            self.docker,
-            node,
-            release,
-            image_id="sha256:" + "c" * 64,
-            label_overrides={lifecycle.LABEL_PARENT_ARTIFACT: self.base_digest},
-        )
-
-
 def test_host_scope_never_reads_project_configuration(monkeypatch):
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
@@ -1396,7 +1367,7 @@ def test_host_scope_never_reads_project_configuration(monkeypatch):
 def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    image_id, labels = _current_registry_base()
+    image_id, labels = "sha256:" + "a" * 64, _published_release_labels()
     current_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"
     prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
     docker = FakeDocker(
@@ -1407,7 +1378,7 @@ def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
         }
     )
     docker.used_image_ids = frozenset({image_id})
-    builder = _wire(monkeypatch, docker)
+    builder = _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
         lifecycle.HostImageScope(),
@@ -1427,7 +1398,7 @@ def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
 def test_host_check_reports_release_cleanup_without_mutating(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    image_id, labels = _current_registry_base()
+    image_id, labels = "sha256:" + "a" * 64, _published_release_labels()
     prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
     docker = FakeDocker(
         {
@@ -1437,7 +1408,7 @@ def test_host_check_reports_release_cleanup_without_mutating(
             "example.com/booley-sandbox:0.2.4": ("sha256:" + "c" * 64, {}),
         }
     )
-    _wire(monkeypatch, docker)
+    _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
         lifecycle.HostImageScope(),
@@ -1687,6 +1658,7 @@ def _wire_distribution_pull(
     docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
     docker_dir.mkdir(parents=True)
     (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (docker_dir / "Dockerfile.wheel").write_text("FROM booley-substrate\n", encoding="utf-8")
     monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
     monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
     monkeypatch.setattr(
@@ -1699,22 +1671,20 @@ def _wire_distribution_pull(
         ),
     )
     docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
     if stamped:
-        monkeypatch.setattr(
-            lifecycle,
-            "_expected_image_build_contracts",
-            lambda: lifecycle.ImageBuildContracts("a" * 64, "b" * 64),
-        )
+        _wire_official_release(monkeypatch, docker)
+    else:
+        _wire(monkeypatch, docker)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
     pulls: list[tuple[str, str]] = []
 
     def pull(version: str, image: str = lifecycle.BASE_IMAGE, *, adopt: bool = True) -> bool:
         assert adopt is False
         pulls.append((version, image))
-        payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, version, "payload-new")
-        node = lifecycle._base_node(payload)
-        _stage_registry_candidate(docker, node, init_docker_image.remote_tag(image, version))
+        docker.images[init_docker_image.remote_tag(image, version)] = (
+            "sha256:" + "a" * 64,
+            _published_release_labels(version=version),
+        )
         return True
 
     monkeypatch.setattr(init_docker_image, "_try_pull_image", pull)
@@ -1805,29 +1775,29 @@ def test_development_distribution_missing_base_builds_locally(
     assert calls == []
 
 
-def test_distribution_replaces_current_local_base_before_pulling_flavor(
+def test_official_release_replaces_a_locally_built_base(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = _project(tmp_path, "booley-sandbox-riscv")
+    root = _project(tmp_path)
     docker = FakeDocker({})
-    local_builder = _wire(monkeypatch, docker)
+    local_builder = _wire_official_release(monkeypatch, docker)
     payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", "payload-new")
     local_builder.build(
         lifecycle._base_node(payload),
         force=False,
         source=lifecycle.ArtifactSource.LOCAL_BUILD,
     )
-    registry_builder = RegistryChainBuilder(docker)
+    puller = PublishedReleasePuller(docker)
 
     result = lifecycle.reconcile(
         lifecycle.ProjectImageScope(root),
         lifecycle.Intent.ENSURE,
         docker=docker,
-        builder=registry_builder,
+        builder=puller,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
 
-    assert registry_builder.built == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
+    assert puller.pulled == [lifecycle.BASE_IMAGE]
     assert result.status is lifecycle.Status.CHANGED
     assert docker.label(lifecycle.BASE_IMAGE, lifecycle.LABEL_BUILD_ORIGIN) == "registry"
 
@@ -1870,6 +1840,7 @@ def test_check_reports_selected_artifact_source_without_mutation(
     docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
     docker_dir.mkdir(parents=True)
     (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (docker_dir / "Dockerfile.wheel").write_text("FROM booley-substrate\n", encoding="utf-8")
     monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
     monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
     monkeypatch.setattr(
@@ -1891,11 +1862,7 @@ def test_check_reports_selected_artifact_source_without_mutation(
     _wire(monkeypatch, docker)
     monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
     if origin == "distribution":
-        monkeypatch.setattr(
-            lifecycle,
-            "_expected_image_build_contracts",
-            lambda: lifecycle.ImageBuildContracts("a" * 64, "b" * 64),
-        )
+        _wire_official_release(monkeypatch, docker)
 
     result = harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
 
@@ -2420,39 +2387,15 @@ def test_source_host_then_project_builds_one_exact_local_chain(
     assert builds == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
 
 
-def test_published_flavor_uses_registry_parent_when_local_ids_differ(
+def test_published_riscv_image_is_current_without_a_local_standard_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The published RISC-V image derives from its own registry substrate (#628/#664)."""
     root = _project(tmp_path, "booley-sandbox-riscv")
-    payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", "payload-new")
-    publisher_parent_id = "sha256:" + "1" * 64
-    consumer_base_id = "sha256:" + "2" * 64
-    consumer_flavor_id = "sha256:" + "3" * 64
-    base_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "d" * 64
-    runtime_digest = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
-    base_labels = _registry_labels(lifecycle._base_node(payload), runtime_digest)
-    flavor = lifecycle._flavor_node("booley-sandbox-riscv", lifecycle._base_node(payload), payload)
-    legacy_flavor_labels = _registry_labels(flavor, publisher_parent_id, legacy=True)
-    flavor_labels = _registry_labels(flavor, base_digest)
-    docker = FakeDocker(
-        {
-            lifecycle.BASE_IMAGE: (consumer_base_id, base_labels),
-            "booley-sandbox-riscv": (consumer_flavor_id, legacy_flavor_labels),
-        }
-    )
-    docker.registry_identities[lifecycle.BASE_IMAGE] = (base_digest,)
-    builder = _wire(monkeypatch, docker)
+    riscv_id = "sha256:" + "3" * 64
+    docker = FakeDocker({"booley-sandbox-riscv": (riscv_id, _published_release_labels())})
+    builder = _wire_official_release(monkeypatch, docker)
 
-    legacy_result = lifecycle.reconcile(
-        lifecycle.ProjectImageScope(root),
-        lifecycle.Intent.CHECK,
-        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
-    )
-
-    assert publisher_parent_id != consumer_base_id
-    assert legacy_result.status is lifecycle.Status.STALE
-
-    docker.images["booley-sandbox-riscv"] = (consumer_flavor_id, flavor_labels)
     result = lifecycle.reconcile(
         lifecycle.ProjectImageScope(root),
         lifecycle.Intent.ENSURE,
@@ -2460,109 +2403,53 @@ def test_published_flavor_uses_registry_parent_when_local_ids_differ(
     )
 
     assert result.status is lifecycle.Status.CURRENT
-    assert result.selected_id == consumer_flavor_id
-    assert docker.image_id("booley-sandbox-riscv") == result.selected_id
+    assert result.selected_id == riscv_id
+    assert docker.image_id(lifecycle.BASE_IMAGE) is None
     assert not builder.built
 
 
-def test_missing_published_pair_is_acquired_and_keeps_flavor_short_tag(
+def test_missing_published_riscv_image_is_pulled_alone_under_its_short_tag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class RegistryPullBuilder:
-        def __init__(self, docker: FakeDocker) -> None:
-            self.docker = docker
-            self.built: list[str] = []
-
-        def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> None:
-            del force, source
-            self.built.append(node.reference)
-            labels = dict(node.expected_labels)
-            labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
-            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
-                lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
-            )
-            if node.reference == lifecycle.BASE_IMAGE:
-                labels[lifecycle.LABEL_PARENT_ARTIFACT] = runtime_digest
-                image_id = consumer_base_id
-                self.docker.registry_identities[node.reference] = (base_digest,)
-            else:
-                labels[lifecycle.LABEL_PARENT_ARTIFACT] = base_digest
-                image_id = consumer_flavor_id
-            self.docker.images[node.reference] = (image_id, labels)
-
     root = _project(tmp_path, "booley-sandbox-riscv")
-    consumer_base_id = "sha256:" + "2" * 64
-    consumer_flavor_id = "sha256:" + "3" * 64
-    base_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "d" * 64
-    runtime_digest = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
     docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    builder = RegistryPullBuilder(docker)
-    monkeypatch.setattr(lifecycle, "_build_adapter", lambda *_args, **_kwargs: builder)
+    _wire_official_release(monkeypatch, docker)
+    puller = PublishedReleasePuller(docker)
 
     result = lifecycle.reconcile(
         lifecycle.ProjectImageScope(root),
         lifecycle.Intent.ENSURE,
+        docker=docker,
+        builder=puller,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
 
-    assert builder.built == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
+    assert puller.pulled == ["booley-sandbox-riscv"]
     assert result.status is lifecycle.Status.CHANGED
-    assert result.selected_id == consumer_flavor_id
-    assert docker.image_id(lifecycle.BASE_IMAGE) == consumer_base_id
-    assert docker.image_id("booley-sandbox-riscv") == consumer_flavor_id
+    assert docker.image_id("booley-sandbox-riscv") == "sha256:" + "8" * 64
+    assert docker.image_id(lifecycle.BASE_IMAGE) is None
 
 
-def test_published_flavor_rejects_different_registry_parent(
+def test_published_riscv_image_without_registry_ancestry_is_pulled_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _project(tmp_path, "booley-sandbox-riscv")
-    payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", "payload-new")
-    recorded_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "d" * 64
-    current_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "c" * 64
-    runtime_digest = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
-    base_labels = _labels(
-        payload="payload-new",
-        recipe=lifecycle._base_node(payload).build.recipe_fingerprint,
-        parent=runtime_digest,
-    )
-    base_labels.update(
-        {
-            lifecycle.LABEL_BUILD_ORIGIN: "registry",
-            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
-        }
-    )
-    flavor = lifecycle._flavor_node("booley-sandbox-riscv", lifecycle._base_node(payload), payload)
-    flavor_labels = _labels(
-        payload="payload-new",
-        recipe=flavor.build.recipe_fingerprint,
-        parent=recorded_digest,
-    )
-    flavor_labels.update(
-        {
-            lifecycle.LABEL_BUILD_ORIGIN: "registry",
-            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
-        }
-    )
-    docker = FakeDocker(
-        {
-            lifecycle.BASE_IMAGE: ("sha256:" + "a" * 64, base_labels),
-            "booley-sandbox-riscv": ("sha256:" + "b" * 64, flavor_labels),
-        }
-    )
-    docker.registry_identities[lifecycle.BASE_IMAGE] = (current_digest,)
-    _wire(monkeypatch, docker)
-    builder = RegistryChainBuilder(docker, base_digest=current_digest)
+    labels = _published_release_labels()
+    labels[lifecycle.LABEL_PARENT_ARTIFACT] = "sha256:" + "4" * 64
+    docker = FakeDocker({"booley-sandbox-riscv": ("sha256:" + "3" * 64, labels)})
+    _wire_official_release(monkeypatch, docker)
+    puller = PublishedReleasePuller(docker)
 
     lifecycle.reconcile(
         lifecycle.ProjectImageScope(root),
         lifecycle.Intent.ENSURE,
         docker=docker,
-        builder=builder,
+        builder=puller,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
 
-    assert builder.built == ["booley-sandbox-riscv"]
+    assert puller.pulled == ["booley-sandbox-riscv"]
+    assert docker.image_id("booley-sandbox-riscv") == "sha256:" + "8" * 64
 
 
 def test_keep_recipe_is_not_rewritten_when_parent_forces_rebuild(tmp_path: Path, monkeypatch):
@@ -4181,3 +4068,138 @@ def test_layout_verification_malformed_filesystem_ancestry_is_controlled(rootfs)
     records[child_id]["RootFS"] = rootfs
     with pytest.raises(RuntimeError, match="filesystem ancestry is missing"):
         lifecycle.project_image.verify_layout_image(records[parent_id], records[child_id])
+
+
+# The published Sandbox Images are wheel overlays on a registry substrate.
+# These labels mirror .github/workflows/docker-publish.yml rather than any
+# lifecycle node model, so a model drift fails here instead of in release CI.
+_PUBLISHED_CONTRACTS = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
+_PUBLISHED_WHEEL_SOURCE = "5" * 64
+
+
+def _published_release_labels(*, version: str = "0.2.6") -> dict[str, str]:
+    overlay_recipe = lifecycle.docker_data_dir() / "Dockerfile.wheel"
+    return {
+        lifecycle.LABEL_SCHEMA: lifecycle.PROVENANCE_SCHEMA,
+        lifecycle.LABEL_VERSION: version,
+        lifecycle.LABEL_ARTIFACT_ROLE: "wheel-overlay",
+        lifecycle.LABEL_EFFECTIVE_INPUTS: _PUBLISHED_WHEEL_SOURCE,
+        lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT: _PUBLISHED_WHEEL_SOURCE,
+        lifecycle.LABEL_WHEEL_SHA256: "6" * 64,
+        lifecycle.LABEL_RUNTIME_BASE_CONTRACT: _PUBLISHED_CONTRACTS.runtime_base,
+        lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT: _PUBLISHED_CONTRACTS.standard_substrate,
+        lifecycle.LABEL_RECIPE_FINGERPRINT: lifecycle.resolve_recipe_fingerprint(
+            (overlay_recipe,)
+        ),
+        lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST,
+        lifecycle.LABEL_PARENT_ARTIFACT: (
+            "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "7" * 64
+        ),
+        lifecycle.LABEL_BUILD_ORIGIN: "registry",
+    }
+
+
+def _wire_official_release(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> FakeBuilder:
+    builder = _wire(monkeypatch, docker)
+    monkeypatch.setattr(lifecycle, "_expected_image_build_contracts", lambda: _PUBLISHED_CONTRACTS)
+    monkeypatch.setattr(
+        lifecycle, "_expected_wheel_source_fingerprint", lambda: _PUBLISHED_WHEEL_SOURCE
+    )
+    return builder
+
+
+class PublishedReleasePuller:
+    """Pull exactly what the release workflow publishes, then adopt it by name."""
+
+    def __init__(self, docker: FakeDocker) -> None:
+        self.docker = docker
+        self.pulled: list[str] = []
+
+    def build(
+        self,
+        node: lifecycle.ImageNode,
+        *,
+        force: bool,
+        source: lifecycle.ArtifactSource,
+    ) -> str:
+        del force
+        assert source is lifecycle.ArtifactSource.VERIFIED_RELEASE_PULL
+        self.pulled.append(node.reference)
+        release = lifecycle._published_release_repository(node.reference) + ":0.2.6"
+        self.docker.images[release] = ("sha256:" + "8" * 64, _published_release_labels())
+        return release
+
+
+def test_official_host_check_accepts_the_published_release_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = FakeDocker(
+        {lifecycle.BASE_IMAGE: ("sha256:" + "8" * 64, _published_release_labels())}
+    )
+    _wire_official_release(monkeypatch, docker)
+
+    result = lifecycle.reconcile(
+        lifecycle.HostImageScope(),
+        lifecycle.Intent.CHECK,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert result.status is lifecycle.Status.CURRENT
+    assert result.payload_fingerprint == _PUBLISHED_WHEEL_SOURCE
+
+
+def test_official_host_check_rejects_a_release_for_other_wheel_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    labels = _published_release_labels()
+    labels[lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT] = "0" * 64
+    labels[lifecycle.LABEL_EFFECTIVE_INPUTS] = "0" * 64
+    docker = FakeDocker({lifecycle.BASE_IMAGE: ("sha256:" + "8" * 64, labels)})
+    _wire_official_release(monkeypatch, docker)
+
+    result = lifecycle.reconcile(
+        lifecycle.HostImageScope(),
+        lifecycle.Intent.CHECK,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert result.status is lifecycle.Status.STALE
+
+
+def test_official_host_bootstrap_pulls_and_verifies_the_published_release_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: bootstrap pulled the release, then rejected its overlay labels."""
+    docker = FakeDocker({})
+    _wire_official_release(monkeypatch, docker)
+    puller = PublishedReleasePuller(docker)
+
+    result = lifecycle.reconcile(
+        lifecycle.HostImageScope(),
+        lifecycle.Intent.ENSURE,
+        docker=docker,
+        builder=puller,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert puller.pulled == [lifecycle.BASE_IMAGE]
+    assert result.status is lifecycle.Status.CHANGED
+    assert docker.image_id(lifecycle.BASE_IMAGE) == "sha256:" + "8" * 64
+    assert result.payload_fingerprint == _PUBLISHED_WHEEL_SOURCE
+
+
+@pytest.mark.parametrize("selected", [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"])
+def test_official_project_check_accepts_the_published_release_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: str
+) -> None:
+    root = _project(tmp_path, selected)
+    docker = FakeDocker({selected: ("sha256:" + "8" * 64, _published_release_labels())})
+    _wire_official_release(monkeypatch, docker)
+
+    result = lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root),
+        lifecycle.Intent.CHECK,
+        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    )
+
+    assert result.status is lifecycle.Status.CURRENT
