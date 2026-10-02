@@ -56,11 +56,12 @@ def _identity_suffix(candidate: Path, root: Path) -> Path | None:
 
 
 def contains(path: str | Path, *, project_dir: Path | None = None) -> Path | None:
-    """Return a canonical Project-data path, or None if membership is unproven.
+    """Return a selected-root Project-data path, or None if membership is unproven.
 
     Directory identity admits independent mount spellings, including missing
     descendants of an existing root. File hardlinks do not establish membership.
     Explicit ``project_dir`` supplies authority independently of active selection.
+    Resolve internal symlinks while retaining the selected root spelling for aliases.
     Filesystem errors fail closed; selection errors and malformed paths propagate.
     This predicate does not authorize mutation or provide a race-free file open.
     """
@@ -78,8 +79,9 @@ def contains(path: str | Path, *, project_dir: Path | None = None) -> Path | Non
         if canonical_suffix is None:
             return None
         authoritative = root / canonical_suffix
-        if _identity_suffix(authoritative.resolve(), root) is None:
+        resolved = authoritative.resolve()
+        if _identity_suffix(resolved, root) is None:
             return None
-        return authoritative
+        return resolved if resolved.is_relative_to(root) else authoritative
     except (OSError, RuntimeError):
         return None

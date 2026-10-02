@@ -8065,3 +8065,10 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
         doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
         == ".booley_project/target (under the repo root)"
     )
+    (root / "target").rmdir()
+    (root / "real").mkdir()
+    (root / "target").symlink_to(root / "real", target_is_directory=True)
+    assert (
+        doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
+        == ".booley_project/real (under the repo root)"
+    )

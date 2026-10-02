@@ -477,3 +477,21 @@ class TestContainment:
             Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
         )
         assert contains(alias / "input", project_dir=root) is None
+
+
+def test_containment_final_authority_internal_symlink(tmp_path, monkeypatch):
+    from booley.runtime.project_dir import contains
+
+    root, alias = tmp_path / "root", tmp_path / "alias"
+    for directory in (root, alias):
+        directory.mkdir()
+    (alias / "input").mkdir()
+    (alias / "target").mkdir()
+    (root / "real").mkdir()
+    (root / "input").symlink_to(alias / "target", target_is_directory=True)
+    (root / "target").symlink_to(root / "real", target_is_directory=True)
+    original = Path.samefile
+    monkeypatch.setattr(
+        Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
+    )
+    assert contains(alias / "input", project_dir=root) == root / "real"
