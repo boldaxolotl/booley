@@ -31,6 +31,8 @@ from booley.harness.setup.git_hooks import (
     read_worktree_prune_expire,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+
 
 def _git_init(root: Path) -> None:
     subprocess.run(["git", "init", "-q", str(root)], capture_output=True, check=True)
@@ -1152,6 +1154,7 @@ class TestLineEndingsStep:
         assert "[ii] detected core.autocrlf=true" not in output
 
     def test_crlf_matching_the_index_is_not_a_phantom_diff(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         # B5. With autocrlf=false git stores the CRLF bytes as-is: index and
         # worktree agree (`i/crlf w/crlf`), so `git status` is clean on the host
         # AND in the container. Counting these as phantom diffs is a false
@@ -1481,6 +1484,7 @@ class TestLineEndingsAutoFix:
         return tmp_path
 
     def test_gitattributes_rule_is_prepended_not_appended(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         # The ordering guard. git resolves attributes last-match-wins, so
         # appending the whole-tree LF default would override `-text` exemptions
         # that keep CRLF-native payloads intact. First line loses to every rule
@@ -1496,6 +1500,7 @@ class TestLineEndingsAutoFix:
         assert lines == [GITATTRIBUTES_RULE, "*.bat -text"]
 
     def test_gitattributes_rule_preserves_binary_detection(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         from booley.harness.setup.git_hooks import GITATTRIBUTES_RULE, _step_line_endings
 
         _git_init(tmp_path)
@@ -1658,7 +1663,17 @@ class TestLineEndingsAutoFix:
             text=True,
             check=True,
         )
-        assert status.stdout == ""
+        # The failed CRLF path may be dirty under the newly published LF policy;
+        # successful replacements must remain clean and the index stays untouched.
+        assert status.stdout in ("", " M b.v\n")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "diff", "--cached", "--quiet"],
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
         assert ctx.results[-1].status == "err"
 
         retry = _ctx(tmp_path)
@@ -1683,6 +1698,7 @@ class TestLineEndingsAutoFix:
         assert "git unavailable" in error
 
     def test_fix_flag_ignores_init_created_untracked_gitattributes(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         from booley.harness.setup.git_hooks import _step_line_endings
 
         # The compatibility flag remains harmless on the already-fixed output
@@ -1727,6 +1743,7 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
 
     def test_gitattributes_rule_survives_normalization(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         # .gitattributes is normally tracked, so its staged replacement comes
         # from the index. Writing the rule before applying that replacement
         # would silently lose the part of the fix that reaches teammates.
@@ -2586,3 +2603,50 @@ def test_policy_discovery_rejects_missing_repository_identity(tmp_path, monkeypa
 
         monkeypatch.setattr(Path, "resolve", resolve)
     assert git_hooks.worktree_policy_repositories(root, project_dir=data) == (root,)
+
+
+def _disable_line_ending_stealth(root: Path) -> None:
+    data = root / ".booley_project"
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
+
+
+def test_stealth_init_messages_identify_local_policy_without_commit_hint(tmp_path, capsys):
+    from booley.harness.setup.git_hooks import _step_line_endings
+
+    _git_init(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    _step_line_endings(_ctx(tmp_path, check_only=True), data)
+    planned = capsys.readouterr().out
+    assert "would add" in planned and str(tmp_path / ".git/info/attributes") in planned
+    assert "commit it" not in planned
+    _step_line_endings(_ctx(tmp_path), data)
+    completed = capsys.readouterr().out
+    assert "repository-local" in completed and str(tmp_path / ".git/info/attributes") in completed
+    assert "commit it" not in completed
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+@pytest.mark.parametrize("state", ["refused", "failed"])
+def test_local_attributes_publication_failure_messages_name_actual_target(tmp_path, capsys, state):
+    from booley.harness.setup.line_endings import (
+        AttributesTarget,
+        LineEndingActionKind,
+        LineEndingActionResult,
+        LineEndingActionState,
+    )
+
+    attrs = tmp_path / "common/info/attributes"
+    action = LineEndingActionResult(
+        LineEndingActionKind.PUBLISH_ATTRIBUTES,
+        LineEndingActionState(state),
+        detail=f"{attrs}: simulated failure",
+        target=AttributesTarget(attrs, True),
+    )
+    git_hooks._render_line_ending_action(action)
+    output = capsys.readouterr().out
+    assert "attributes publication" in output and str(attrs) in output
+    assert "tracked files untouched" not in output
+    assert "commit it" not in output

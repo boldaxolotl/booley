@@ -327,6 +327,15 @@ anyway: it skips validation but not attribution rejection or sanitization
 project details leak into history). Stealth mode itself is covered in
 [CONFIG.md](CONFIG.md#stealth-mode-stealth).
 
+With Stealth enabled, init stores the Project checkout's line-ending default in
+Git's common `info/attributes`, shared by linked worktrees and local to this
+repository; it does not travel through commits. Init repairs a missing local
+default even when `core.autocrlf` is already false. Any upstream attributes
+policy suppresses this default so its higher precedence cannot override user
+rules. Independent project-data repositories retain their root `.gitattributes`
+policy. The enabled choice is read from the resolved project-data directory,
+including relocated data.
+
 ## See also
 
 - [README installation](../../README.md#installation): host prerequisites and CLI installation.
