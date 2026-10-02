@@ -991,6 +991,15 @@ commit messages stay verbatim. For compatibility with projects configured
 before this setup policy, a missing `enabled` key still means **on**; write the
 key rather than omitting it when you want stealth disabled.
 
+With Stealth enabled, init stores the Project checkout's line-ending default in
+Git's common `info/attributes`, shared by linked worktrees and local to this
+repository; it does not travel through commits. Init repairs a missing local
+default even when `core.autocrlf` is already false. Any upstream attributes
+policy suppresses this default so its higher precedence cannot override user
+rules. Independent project-data repositories retain their root `.gitattributes`
+policy. The enabled choice is read from the resolved project-data directory,
+including relocated data.
+
 Stealth also makes `.booley_project/` a self-contained home for authored
 FuseSoC cores. Cores under `.booley_project/cores/` use repository-root-relative
 fileset paths; `booley init` generates ignored `.booley-projected-*.core` copies

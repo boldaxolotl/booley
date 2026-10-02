@@ -897,3 +897,26 @@ def test_disabled_policy_rejects_invalid_explicit_substring_tier(tmp_path):
     )
     with pytest.raises(BoundaryError, match="reserved"):
         stealth_policy(tmp_path)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("name", ["booley.toml", "pipeline.toml"])
+def test_stealth_uses_explicit_relocated_project_data(tmp_path, enabled, name):
+    from booley.commit_policy.policy import stealth_enabled
+
+    root, data = tmp_path / "checkout", tmp_path / "relocated"
+    root.mkdir()
+    data.mkdir()
+    (data / name).write_text(f"[stealth]\nenabled = {str(enabled).lower()}\n")
+    assert stealth_enabled(root, project_dir=data) is enabled
+
+
+def test_relocated_project_data_does_not_enable_source_checkout_stealth(tmp_path):
+    from booley.commit_policy.policy import stealth_enabled
+
+    root, data = tmp_path / "source", tmp_path / "relocated"
+    root.mkdir()
+    data.mkdir()
+    (root / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    assert stealth_enabled(root, project_dir=data) is False
