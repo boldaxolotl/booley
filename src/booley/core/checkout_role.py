@@ -36,7 +36,7 @@ def is_booley_source_checkout(root: Path) -> bool:
         return False
     try:
         document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return _source_layout(checkout)
 
     tool = as_dict(document.get("tool"), default={}) or {}

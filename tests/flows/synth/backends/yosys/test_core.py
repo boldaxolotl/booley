@@ -729,13 +729,15 @@ class TestSynthTimingConfigTomlBoundary:
         with pytest.raises(SystemExit, match="escapes the selected checkout"):
             syn_core.synth_timing_config(sdc=[str(outside)], project_root=tmp_path)
 
-    def test_missing_cli_sdc_file_raises_clear_error(self, monkeypatch):
+    def test_missing_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
         from booley.flows.synth.backends.yosys import core as syn_core
 
         # A silently-ignored bad path is the worst outcome; error loudly instead.
         self._with_timing(monkeypatch, {})
         with pytest.raises(SystemExit) as exc_info:
-            syn_core.synth_timing_config(sdc=["/nope/does_not_exist.sdc"])
+            syn_core.synth_timing_config(
+                project_root=tmp_path, sdc=[str(tmp_path / "does_not_exist.sdc")]
+            )
         assert "does_not_exist.sdc" in str(exc_info.value)
 
     def test_unreadable_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
@@ -1187,3 +1189,28 @@ class TestFrontendKnobResolution:
 
         with pytest.raises(BoundaryError, match="non-empty list"):
             syn_core.resolve_slang_options({"slang_options": "--single-unit"})
+
+
+@pytest.mark.parametrize("token", ["1.2.3", "1e999", "NaN", "inf", "-"])
+def test_stat_backend_rejects_nonfinite_or_partial_area(tmp_path, token):
+    from booley.flows.synth.backends.yosys import core as syn_core
+
+    stat = tmp_path / "stat.txt"
+    stat.write_text(f"Chip area for top module dut: {token}\n")
+    assert syn_core.parse_area_from_stat(stat) is None
+
+
+def test_stat_backend_latest_complete_area_matches_flow(tmp_path):
+    from booley.flows.synth.backends.yosys import core as syn_core
+    from booley.flows.synth.flow import _parse_area
+
+    text = (
+        "1. Printing statistics.\n=== dut ===\n  Number of cells: 1\n"
+        "  Chip area for top module dut: 1\n"
+        "2. Printing statistics.\n=== dut ===\n  2 - cells\n"
+        "  Chip area for top module dut: 2e1\n"
+        "3. Printing statistics.\n=== dut ===\n"
+    )
+    stat = tmp_path / "stat.txt"
+    stat.write_text(text)
+    assert syn_core.parse_area_from_stat(stat) == _parse_area(text)[0] == 20.0

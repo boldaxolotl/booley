@@ -447,7 +447,7 @@ HANDLERS = {
 }
 
 
-def main(argv: list[str] | None = None) -> int:
+def _dispatch_main(argv: list[str] | None = None) -> int:
     """Entry point -- parse args and dispatch to the appropriate subcommand handler."""
     ensure_utf8_output()
 
@@ -480,3 +480,22 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Render authored validation, ancestry verification, and discovery failures."""
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    from .io import TicketValidationError
+    from .ticket_baseline import TicketAncestryVerificationError, TicketBaselineError
+
+    try:
+        return _dispatch_main(argv)
+    except (
+        TicketValidationError,
+        TicketBaselineError,
+        TicketAncestryVerificationError,
+        ProjectRootDiscoveryError,
+    ) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2

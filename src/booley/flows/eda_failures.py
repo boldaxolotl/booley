@@ -146,6 +146,55 @@ def _termination_failure(
     )
 
 
+_LOADER_RE = re.compile(
+    r"^(?P<name>[\w.+/-]+):\s*(?:error while loading shared libraries|"
+    r"symbol lookup error):[^\r\n]*$",
+    re.MULTILINE,
+)
+_STARTUP_RE = re.compile(
+    r"^(?P<name>[\w.+/-]+):\s*(?:error|fatal):\s*(?:"
+    r"failed to initialize|cannot initialize)[^\r\n]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_EDA_EXECUTABLES = frozenset(
+    {
+        "vivado",
+        "sv2v",
+        "yosys",
+        "openroad",
+        "verilator",
+        "verilator_bin",
+        "iverilog",
+        "vvp",
+        "verible-verilog-lint",
+    }
+)
+
+
+def _startup_failure(
+    text: str, executable: str | None, authenticated: bool, stage: str
+) -> EdaFailure | None:
+    owned = {Path(executable).name} if executable else set()
+    if executable and Path(executable).name == "verilator":
+        owned.add("verilator_bin")
+    if authenticated:
+        owned.update(_EDA_EXECUTABLES)
+    for pattern in (_LOADER_RE, _STARTUP_RE):
+        for match in pattern.finditer(text):
+            name = Path(match["name"]).name
+            if name in owned:
+                diagnostic = match.group(0)[:500]
+                return EdaFailure(
+                    "infrastructure",
+                    "missing_required_file",
+                    stage,
+                    name,
+                    f"{name} startup failed: {diagnostic}",
+                    diagnostic,
+                )
+    return None
+
+
 def classify_eda_failure(
     result: SubprocessResult,
     *,
@@ -162,7 +211,9 @@ def classify_eda_failure(
     if marker is not None:
         return _marker_failure(*marker, text)
     stage = expected_stage or "simulation"
-    termination = _termination_failure(result, stage, text, boundary_executable)
+    termination = _termination_failure(
+        result, stage, text, boundary_executable
+    ) or _startup_failure(text, expected_executable, authenticated_build, stage)
     if termination is not None:
         return termination
     missing = find_missing_executable(text)

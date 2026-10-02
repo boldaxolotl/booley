@@ -83,7 +83,7 @@ class TestSourcePathMatches:
 class TestResolveProjectRoot:
     def test_from_env_var(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path))
-        # Import after setting env so module-level PROJECT_ROOT picks it up
+        # Root selection is lazy and reads the current environment.
         from booley.runtime.shared_infra import resolve_project_root
 
         result = resolve_project_root()

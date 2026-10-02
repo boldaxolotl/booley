@@ -24,7 +24,7 @@ from .acceptance_ledger import (
     read_acceptance,
     record_amendment_observations,
 )
-from .paths import existing_runtime_file, ticket_log_dir
+from .paths import existing_runtime_file, existing_ticket_runtime_file, ticket_log_dir
 from .persistence import atomic_replace_bytes, atomic_write_once
 from .ticket_baseline import TicketBaselineError, ticket_baseline_from_machine
 
@@ -121,6 +121,33 @@ def retire_foreign_pointers(log: Path, history: Path, operation_id: str, identit
         _retire_pointer(path, history, operation_id)
 
 
+def _retire_uncommitted_report_pointers(log: Path, identity: dict) -> None:
+    """Retire selections whose completed report visibility did not survive restart."""
+    from .acceptance_ledger import project_report_state
+    from .report_submission import ID_KEY, read_receipt
+
+    receipt = read_receipt(log)
+    if receipt is not None and receipt["ticket_identity"] != identity:
+        return
+    state = DevelopmentState.load(existing_ticket_runtime_file(log, "booley_state.json"))
+    entry = state.criteria.get("_report_submitted")
+    if entry is None or (receipt is None and not entry.detail.get(ID_KEY)):
+        return
+    project_report_state(state, log, identity=identity)
+    if entry.met:
+        return
+    _foreign_pointer_paths(log, identity)  # Preserve corruption checks before retiring selections.
+    operation = receipt["submission_id"] if receipt else "missing-receipt"
+    history = log / ".runtime" / "report-recovery"
+    for path in (
+        log / "acceptance/accepted.json",
+        log / "review/entry.json",
+        log / ".runtime/triage-prep/manifest.json",
+    ):
+        if path.exists():
+            _retire_pointer(path, history, operation)
+
+
 def refresh_snapshot(tio: Any, slug: str) -> None:
     """Repair missing/malformed/foreign snapshots from validated Board authority."""
     basis = tio._load_basis_unlocked(slug)
@@ -141,6 +168,7 @@ def refresh_snapshot(tio: Any, slug: str) -> None:
         except (TicketBaselineError, ValueError, OSError):
             reason = "malformed"
     _repair_completed_amendment(tio, slug, board, basis, parsed)
+    _retire_uncommitted_report_pointers(tio.logs_dir / slug, basis.ticket_identity())
     if parsed is not None and parsed.ticket_identity() == basis.ticket_identity():
         return
     atomic_replace_bytes(snapshot, board.read_bytes(), mode=0o644)

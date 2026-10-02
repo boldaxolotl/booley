@@ -34,6 +34,7 @@ from booley.ticket_board.paths import (
 )
 from booley.ticket_board.scanner import find_ticket_file
 from booley.ticket_board.ticket_baseline import (
+    TicketAncestryVerificationError,
     TicketBaseline,
     TicketBaselineError,
     requires_return_to_draft,
@@ -192,6 +193,8 @@ def _load_context_basis(
             tickets_dir_from_project_root(project_root),
             project_root=project_root,
         ).load_basis(slug, runtime_ticket_path=ticket_path)
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=slug) from exc
     except TicketBaselineError as exc:
         raise FatalError(f"Invalid Ticket baseline: {exc}", slug=slug) from exc
 
@@ -274,6 +277,8 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
         )
 
     _ensure_ticket_snapshot(project_root, ctx.slug, ctx.ticket_path)
+    _clear_stale_blocked_reason(ctx)
+    _ensure_run_report_gate(ctx)
 
     # PID stamp for orphan detection: _ticket_lock() (called by both
     # init_ticket and activate) already stamps the developer PID
@@ -326,12 +331,10 @@ def _apply_resume_blocked(ctx: TicketContext, progress: dict, fields: dict) -> N
     # so the main loop's next_stage() call re-runs the blocked stage (not skips it).
     ctx.current_step = ctx.completed_steps[-1] if ctx.completed_steps else ""
     # Only require questions.md verification for question-type blocks
-    if "question" in block_reason.lower() or "unresolved" in block_reason.lower():
+    if not block_reason.startswith("Review package changed before handoff:") and (
+        "question" in block_reason.lower() or "unresolved" in block_reason.lower()
+    ):
         _verify_questions_answered(ctx.logs_dir / "questions.md")
-
-    # Clear stale _blocked_reason from booley_state.json so the new run
-    # isn't poisoned by the previous run's block verdict.
-    _clear_stale_blocked_reason(ctx)
 
 
 def _clear_stale_blocked_reason(ctx: TicketContext) -> None:
@@ -402,6 +405,8 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
         document = TicketIO(
             tickets_dir_from_project_root(project_root), project_root=project_root
         ).load_document(slug, runtime_ticket_path=ticket_path)
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=slug) from exc
     except (TicketBaselineError, OSError, ValueError) as exc:
         raise FatalError(f"Ticket conversion or baseline failed: {exc}", slug=slug) from exc
     ctx = _build_context(project_root, ticket_path, slug, document, progress)
@@ -482,6 +487,8 @@ def _verify_ticket_baseline(ctx: TicketContext, action: str) -> None:
             slug=ctx.slug,
             destination_branch=ctx.branch,
         )
+    except TicketAncestryVerificationError as exc:
+        raise FatalError(str(exc), slug=ctx.slug) from exc
     except (RuntimeError, ValueError, OSError) as exc:
         errors = [str(exc)]
     if errors:
@@ -594,8 +601,29 @@ def _seed_run_report_criterion(expanded: dict[str, bool]) -> None:
     """Add the internal report gate when the project enables run reports."""
     from booley.config.project_config import is_run_report_enabled
 
-    if is_run_report_enabled():
-        expanded["_report_submitted"] = True
+    if (
+        is_run_report_enabled()
+        or any(not required for key, required in expanded.items() if not key.startswith("_"))
+        or any(key.startswith("review_") for key in expanded)
+    ):
+        expanded["_report_submitted"] = is_run_report_enabled()
+
+
+def _ensure_run_report_gate(ctx: TicketContext) -> None:
+    """Declare the report obligation on normalized retained state without resetting proof."""
+    state_path = existing_runtime_file(ctx._tickets_dir / "logs", ctx.slug, "booley_state.json")
+    if not state_path.is_file():
+        return
+    state = DevelopmentState.load(state_path)
+    required = {key: entry.mandatory for key, entry in state.criteria.items()}
+    _seed_run_report_criterion(required)
+    if "_report_submitted" in required and "_report_submitted" not in state.criteria:
+        from booley.criteria.state import CriterionEntry
+
+        state.criteria["_report_submitted"] = CriterionEntry(
+            met=False, mandatory=required["_report_submitted"]
+        )
+        state.save()
 
 
 def _persist_initial_criteria_state(

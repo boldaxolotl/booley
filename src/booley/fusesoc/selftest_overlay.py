@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import shutil
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -26,6 +26,11 @@ _OWNED_VIEW_RE = re.compile(rf"{re.escape(BAD_RUN_CWD_DIR)}-(?:[0-9a-f]{{16}}|a-
 
 class SelftestOverlayError(RuntimeError):
     """A Doctor self-test overlay is unsafe or cannot be staged."""
+
+
+def bad_selftest_requested(environment: Mapping[str, str]) -> bool:
+    """Report whether *environment* runs Doctor's deliberately broken self-test."""
+    return environment.get(INTERNAL_KIND_ENV) == BAD_KIND
 
 
 def _validated_generation_parent(project_root: Path, generation_parent: Path) -> Path:

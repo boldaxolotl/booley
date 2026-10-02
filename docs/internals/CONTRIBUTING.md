@@ -29,7 +29,7 @@ cd Booley
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"     # editable install + test deps (pytest, pytest-asyncio, …)
-pytest                      # full suite; scope to a path/-k for a fast subset
+pytest                      # full suite, serial; scope to a path/-k for a fast subset
 ```
 
 Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
@@ -46,9 +46,13 @@ Agents use the read-only Agent Readiness Check at
 `.github/scripts/agent_readiness.py` before creating a linked worktree and
 again before editing it. It uses one shared tools-only environment, never
 installs Booley from any checkout, and runs commands against the active
-worktree's source. Human contributors may continue using the editable `.venv`
-workflow above. Readiness output contains local paths and is diagnostic
-material; do not publish it.
+worktree's source. Its broad pytest command runs the full suite on up to
+eight xdist workers (`-n auto --maxprocesses=8`) with a disk-backed
+per-checkout `--basetemp` on POSIX. Set `PYTEST_XDIST_AUTO_NUM_WORKERS` to use
+fewer workers on a smaller host, or drop the xdist options to run serially.
+Human contributors may continue using the editable `.venv` workflow above.
+Readiness output contains local paths and is diagnostic material; do not
+publish it.
 
 ### Maintainer QA skills
 

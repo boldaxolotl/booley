@@ -415,8 +415,17 @@ class TestCmdClassify:
         out = capsys.readouterr().out
         assert "executable=" in out
 
-    def test_classify_with_queued_ticket(self, tio, capsys):
-        make_ticket_file(tio, "queue", "exec-ticket")
+    def test_classify_with_queued_ticket(self, tmp_path, capsys):
+        _root, _data, tio = _paired_basis_project(tmp_path)
+        assert _create_v2_ticket(
+            tio,
+            "exec-ticket",
+            TicketFileSpec(
+                summary="Executable", ticket_type="feature", branch="main", scope=["README.md"]
+            ),
+        )
+        assert tio.enqueue_ticket("exec-ticket")
+        capsys.readouterr()
         args = Namespace(format="json")
         rc = _cmd_classify(tio, args)
         assert rc == 0

@@ -169,9 +169,8 @@ class VerilatorCoverageExecution:
                         "coverage preparation escaped its leased generation"
                     )
                 inputs = session.capture_inputs(prepared)
-                result = self._execute_build(prepared, identity)
+                prepared, result = self._reuse_or_build(session, prepared, inputs, identity)
                 if result.success:
-                    self._artifact_paths = session.authorize_fresh_image(prepared, inputs)
                     self._build_variant = request.variant.name
                     result = replace(
                         result,
@@ -181,6 +180,27 @@ class VerilatorCoverageExecution:
         except SimulationBuildSlotError as exc:
             self._prepared = None
             return SimulationBuildResult(False, str(exc), infrastructure_error=True)
+
+    def _reuse_or_build(
+        self,
+        session: SimulationBuildSession,
+        candidate: PreparedSimulationBuild,
+        inputs: Mapping[str, str],
+        identity: VerilatorCollectorIdentity,
+    ) -> tuple[PreparedSimulationBuild, SimulationBuildResult]:
+        """Launch a verified retained image when one matches, else compile fresh."""
+        key = session.reusable_key(candidate, inputs, hooks=False)
+        retained = session.try_reuse(candidate, key)
+        if retained is None:
+            result = self._execute_build(candidate, identity)
+            if result.success:
+                self._artifact_paths = session.authorize_fresh_image(candidate, inputs, key)
+            return candidate, result
+        session.discard_candidate(candidate.work_root)
+        self._prepared = retained
+        self._artifact_paths = session.retained_artifacts(retained)
+        reason = f"verified Simulation build reuse ({session.cache_decision})"
+        return retained, SimulationBuildResult(True, reason, identity)
 
     def _declarations(
         self,
@@ -275,11 +295,11 @@ class VerilatorCoverageExecution:
             if self._snapshot_bound:
                 return self._run_prepared(request, prepared)
             with SimulationBuildSession(self._handle, variant) as session:
-                session.verify_fresh_image(prepared)
+                session.verify_image(prepared)
                 return self._run_prepared(
                     request,
                     prepared,
-                    verify_image=lambda: session.verify_fresh_image(prepared),
+                    verify_image=lambda: session.verify_image(prepared),
                 )
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(

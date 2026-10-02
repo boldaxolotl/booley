@@ -1855,6 +1855,43 @@ def test_matching_closed_icarus_inputs_reuse_verified_image(
     assert second.builds[0].cache_decision.startswith("hit;")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
+@pytest.mark.parametrize(
+    ("destination", "builds"),
+    [("$BOOLEY_RUN_CWD/firmware.hex", 1), ("$BOOLEY_BUILD_ROOT/firmware.hex", 2)],
+    ids=["run-cwd-keeps-reuse", "build-root-rebuilds"],
+)
+def test_icarus_pre_sim_output_gates_reuse_only_inside_the_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, destination: str, builds: int
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    (project / ".booley_project" / "booley.toml").write_text(
+        f'[flows.sim]\npre_run_commands = ["printf fw > \\"{destination}\\""]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    first = execution.run(handle, NamedTests(("first",)))
+    second = execution.run(handle, NamedTests(("second",)))
+    assert first.passed, first.infrastructure_failure
+    assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
+    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == builds
+    assert second.builds[0].ran is (builds == 2)
+
+
 def test_changed_input_with_failed_rebuild_never_launches_prior_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

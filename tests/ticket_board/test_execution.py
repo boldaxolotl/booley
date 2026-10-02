@@ -6,6 +6,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.ticket_board.execution import (
     classify_tickets,
@@ -62,6 +64,50 @@ class TestSelectMutationConfig:
 
 
 class TestClassifyTickets:
+    @pytest.mark.parametrize("status", ["draft", "done", "failed", "unknown"])
+    def test_error_rows_outside_execution_states_remain_omitted(self, tmp_path, status):
+        row = {"status": status, "file": "board/t.md", "ticket_error": "invalid Ticket"}
+        assert not any(classify_tickets([row], logs_dir=tmp_path, done_slugs=()).values())
+
+    def test_error_running_row_with_unreadable_pid_stays_active(self, tmp_path, monkeypatch):
+        from booley.ticket_board import execution
+        from booley.ticket_board.paths import runtime_file
+
+        lock = runtime_file(tmp_path, "t", "ticket.lock")
+        lock.parent.mkdir(parents=True)
+        lock.write_text("partial PID")
+        monkeypatch.setattr(execution.time, "sleep", lambda _delay: None)
+        row = {"status": "running", "file": "board/t.md", "ticket_error": "cannot verify ancestry"}
+        groups = classify_tickets([row], logs_dir=tmp_path, done_slugs=())
+        assert groups["active"] == [row]
+        assert not groups["orphaned"]
+
+    @pytest.mark.parametrize("alive", [False, True])
+    def test_error_running_row_preserves_independent_pid_proof(self, tmp_path, monkeypatch, alive):
+        from booley.ticket_board import execution
+
+        lock = tmp_path / "ticket.lock"
+        lock.write_text("12345")
+        monkeypatch.setattr(execution, "existing_runtime_file", lambda *_args: lock)
+        monkeypatch.setattr(execution, "read_lock_pid", lambda _path: 12345)
+        monkeypatch.setattr(execution, "is_pid_alive", lambda _pid: alive)
+        ticket = {
+            "status": "running",
+            "file": "board/t.md",
+            "ticket_error": "cannot verify ancestry",
+        }
+        result = classify_tickets([ticket], logs_dir=tmp_path, done_slugs=())
+        assert result["active" if alive else "orphaned"] == [ticket]
+        assert not result["executable"]
+
+    @pytest.mark.parametrize("status", ["running", "waiting", "review", "blocked", "queued"])
+    def test_operational_error_preserves_state_without_claiming_or_failing(self, tmp_path, status):
+        ticket = {"status": status, "file": "board/t.md", "ticket_error": "cannot verify ancestry"}
+        result = classify_tickets([ticket], logs_dir=tmp_path, done_slugs=())
+        group = "active" if status == "running" else "blocked" if status == "queued" else status
+        assert result[group] == [ticket]
+        assert result["executable"] == result["orphaned"] == []
+
     def test_empty_list(self):
         result = classify_tickets([], logs_dir=Path("/tmp/logs"), done_slugs=())
         assert result["executable"] == []

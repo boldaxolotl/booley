@@ -45,6 +45,7 @@ from booley.ticket_board.paths import (
     ticket_runtime_dir,
     ticket_runtime_file,
 )
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 
 from . import terminal, ticket_cli
 from .auto_retry import maybe_auto_retry, record_crash
@@ -1641,7 +1642,9 @@ async def _resolve_ticket_disposition(
     from .colors import bold_red, yellow
 
     judge = _ProvisionalCoverageJudge(ctx, project_root)
-    verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir, provisional=judge)
+    verdict = check_criteria_acceptance(
+        state_path, work_dir=ctx.work_dir, provisional=judge, log_dir=ctx.logs_dir
+    )
     logger.info("Criteria verdict for %s: %s", ctx.slug, verdict.disposition)
     _display_criteria_verdict(state_path, verdict, endpoint_catalog)
 
@@ -1693,6 +1696,9 @@ def _block_changed_ticket_baseline(ctx: TicketContext, run_index: int) -> bool:
             slug=ctx.slug,
             ticket_path=ctx.ticket_path,
         )
+    except TicketAncestryVerificationError as exc:
+        fail_ticket(ctx, str(exc), "developer", run_index=run_index)
+        return True
     except (OSError, TicketBaselineError) as exc:
         block_ticket(ctx, str(exc), "developer", run_index=run_index)
         return True
