@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -168,14 +169,16 @@ def _validate_action(tio: TicketIO, slug: str, action: str, repair: bool) -> Non
 
 
 def _awaits_provisional_inspection(tio: TicketIO, slug: str, prior: dict[str, Any] | None) -> bool:
-    """A provisional handoff (ADR 0066) whose unaccepted inspection is not yet published."""
+    """An automatic unaccepted handoff whose inspection is not yet published."""
     from .provisional_handoff import read_provisional_marker
 
     log_dir = tio.logs_dir / slug
+    from .advisory_handoff import advisory_marker_current
+
     return (
         prior is None
         and read_acceptance(log_dir).kind == "unavailable"
-        and read_provisional_marker(log_dir) is not None
+        and (read_provisional_marker(log_dir) is not None or advisory_marker_current(tio, slug))
     )
 
 
@@ -279,7 +282,13 @@ def _commit(tio: TicketIO, ctx: prep.ReviewPrepContext, operation: dict[str, Any
     assert row is not None
     if row["disposition"] == "accepted" or operation["action"] == "approve":
         _publish_acceptance(ctx, operation)
-    _write(entry_path(ctx.log_dir), {"entry": row, "sha256": digest(row)})
+    record = {"entry": row, "sha256": digest(row)}
+    if operation["action"] == "approve":
+        record["approval"] = {
+            "generation": row["generation"],
+            "accepted_at": operation["accepted_at"],
+        }
+    _write(entry_path(ctx.log_dir), record)
     board = tio.find_ticket(ctx.slug)
     if board is None or board["status"] not in {"blocked", "review"}:
         raise ReviewEntryError("ticket moved during review publication")
@@ -750,14 +759,33 @@ def _approve_review_ticket(
     )
 
 
+def _accepted_handoff_guidance(tio: TicketIO, slug: str) -> str:
+    """Surface durable done findings even when the accepted package predates them."""
+    from booley.evidence.review_dispositions import outstanding_done_findings
+
+    from .advisory_handoff import ADVISORY_REVIEW_REASON
+    from .paths import existing_runtime_file
+
+    guidance = (
+        f"Ticket {slug!r} is already accepted; run booley board approve {slug} to complete it."
+    )
+    state = DevelopmentState.load(existing_runtime_file(tio.logs_dir, slug, "booley_state.json"))
+    findings = outstanding_done_findings(state.criteria)
+    if not findings:
+        return guidance
+    rows = [
+        f"- {row['criterion']}: {row['severity']} {row['file']}:{row['line']}: {row['summary']}"
+        for row in findings
+    ]
+    return "\n".join([ADVISORY_REVIEW_REASON, *rows, guidance])
+
+
 def _verified_accepted_handoff(
     project_root: Path, slug: str, tio: TicketIO, snapshot: Any
 ) -> prep.ReviewPrepOutcome:
     from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
 
-    guidance = (
-        f"Ticket {slug!r} is already accepted; run booley board approve {slug} to complete it."
-    )
+    guidance = _accepted_handoff_guidance(tio, slug)
     if snapshot is None:
         return prep.ReviewPrepOutcome(
             "failed", "Criteria Satisfaction Record is corrupt: accepted result has no snapshot"
@@ -906,8 +934,13 @@ async def _review_existing_ticket(
     project_root: Path, slug: str, tio: TicketIO, *, force: bool
 ) -> prep.ReviewPrepOutcome:
     """Reuse or refresh review material for an existing review Ticket."""
+    from .advisory_handoff import renew_advisory_inspection
     from .provisional_handoff import PROVISIONAL_REVIEW_REASON
 
+    try:
+        renew_advisory_inspection(tio, slug)
+    except (ReviewEntryError, ValueError) as exc:
+        return prep.ReviewPrepOutcome("failed", str(exc))
     if not force and (fresh := _current_review_package(tio, slug)) is not None:
         return fresh
     try:
@@ -915,9 +948,15 @@ async def _review_existing_ticket(
     except (ReviewEntryError, ValueError) as exc:
         return prep.ReviewPrepOutcome("failed", str(exc))
     if provisional:
-        return await request_review_command(
-            project_root, slug, action="request", reason=PROVISIONAL_REVIEW_REASON
+        from .advisory_handoff import ADVISORY_REVIEW_REASON
+        from .provisional_handoff import read_provisional_marker
+
+        reason = (
+            PROVISIONAL_REVIEW_REASON
+            if read_provisional_marker(tio.logs_dir / slug)
+            else ADVISORY_REVIEW_REASON
         )
+        return await request_review_command(project_root, slug, action="request", reason=reason)
     accepted = read_acceptance(tio.logs_dir / slug)
     if accepted.kind == "corrupt":
         return prep.ReviewPrepOutcome(
@@ -999,3 +1038,32 @@ def run_review_command(project_root: Path, slug: str, command: list[str]) -> int
     from .review_execution import run_review_command as execute
 
     return execute(project_root, slug, command)
+
+
+def selected_human_approval(log_dir: Path, inspection: Mapping[str, Any]) -> bool:
+    """Prove approval of this selected generation against its immutable acceptance."""
+    from .acceptance_ledger import AcceptanceLedgerError, validate_review_package_binding
+
+    selected = read_entry(log_dir)
+    accepted = read_acceptance(log_dir)
+    if selected is None or accepted.kind != "accepted" or accepted.snapshot is None:
+        return False
+    approval = (read_json(entry_path(log_dir)) or {}).get("approval")
+    snapshot = accepted.snapshot
+    if not isinstance(approval, dict) or approval != {
+        "generation": inspection.get("generation"),
+        "accepted_at": snapshot.accepted_at,
+    }:
+        return False
+    if (
+        selected["execution_id"] != snapshot.execution_id
+        or selected["heads"] != snapshot.participant_heads
+    ):
+        return False
+    if not (log_dir / "acceptance" / "review-package.json").exists():
+        return False
+    try:
+        validate_review_package_binding(log_dir, snapshot)
+    except AcceptanceLedgerError:
+        return False
+    return True

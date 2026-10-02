@@ -588,11 +588,16 @@ class TicketIO:
 
             kind = read_acceptance(ticket_log_dir(self.logs_dir, slug)).kind
             if kind != "accepted" and not (
-                kind == "unavailable" and self._provisional_handoff_marked(slug)
+                kind == "unavailable" and self._unaccepted_handoff_marked(slug)
             ):
                 print("Error: unaccepted review requires board review --request", file=sys.stderr)
                 return False
         return True
+
+    def _unaccepted_handoff_marked(self, slug: str) -> bool:
+        from .advisory_handoff import advisory_marker_current
+
+        return self._provisional_handoff_marked(slug) or advisory_marker_current(self, slug)
 
     def _provisional_handoff_marked(self, slug: str) -> bool:
         """ADR 0066: the current execution recorded a provisional-coverage handoff."""

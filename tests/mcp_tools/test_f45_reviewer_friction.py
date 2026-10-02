@@ -167,7 +167,7 @@ def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatc
         )
 
     assert result.detail["issues"] == 1, result.report_text
-    assert result.criterion_met is False
+    assert result.criterion_met is True
 
 
 def test_ticket_deferred_work_cannot_be_critical(tmp_path, monkeypatch):
@@ -317,7 +317,7 @@ def test_corrective_findings_do_not_complete_terminal_done_review(tmp_path, monk
             ]
         )
 
-    assert result.criterion_met is False, result.report_text
+    assert result.criterion_met is True, result.report_text
 
 
 def test_done_correction_survives_empty_rediscovery(tmp_path, monkeypatch):
@@ -351,9 +351,14 @@ def test_done_correction_survives_empty_rediscovery(tmp_path, monkeypatch):
 
     detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail
     assert agent.call_count == 2
-    assert first.criterion_met is False
-    assert second.criterion_met is False
+    assert first.criterion_met is True
+    assert second.criterion_met is True
     assert detail["issue_list"][0]["status"] == "current"
+
+    assert detail["issues"] == 1
+    assert detail["CRITICAL"] == 1
+    assert detail["gate_passed"] is True
+    assert "NO FINDINGS" not in second.report_text
 
 
 def test_explicit_advisory_done_observation_completes(tmp_path, monkeypatch):

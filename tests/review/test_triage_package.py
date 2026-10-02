@@ -1174,6 +1174,10 @@ def test_normalized_review_facts_write_package(tmp_path, mode, original, report_
         ctx, facts, _assessment(), ctx.log_dir / "explanation.html" if report_enabled else None
     )
     package = tp.load_triage_package(path)
+    if mode == "done":
+        assert (tp.DONE_FINDINGS_HOLD in package["assessment"]["decision_blockers"]) == (
+            original == "current"
+        )
     row = package.review_dispositions[0]
     assert row.disposition == ("open" if original == "current" else "reported")
     assert row.reviewer_disposition == original
@@ -1199,6 +1203,155 @@ def test_reviewer_disposition_markdown_is_inert():
     rendered = "\n".join(lines)
     assert "\\<script>\\|bad" in rendered
     assert "bad\ntext" not in rendered
+
+
+def test_current_done_finding_package_requires_human_even_with_agent_approve(tmp_path):
+    """Real publication exposes outstanding findings independently of report enablement."""
+    ctx = _context(tmp_path)
+    facts = _facts(ctx)
+    from booley.evidence.review_dispositions import collect_review_dispositions
+
+    facts["review_dispositions"] = collect_review_dispositions(
+        {
+            "review_rtl_bugs_done": {
+                "detail": {
+                    "issue_list": [
+                        {
+                            "criterion": "review_rtl_bugs_done",
+                            "finding_id": "minor",
+                            "severity": "MINOR",
+                            "file": "rtl/new.sv",
+                            "line": 1,
+                            "summary": "current finding",
+                            "disposition": "current",
+                            "status": "current",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    assessment = _assessment()
+    assessment["recommendation"] = "approve"
+    path = tp.write_triage_package(ctx, facts, assessment, None)
+    package = tp.load_triage_package(path)
+    assert package["assessment"]["recommendation"] == "hold"
+    assert tp.DONE_FINDINGS_HOLD in package["assessment"]["decision_blockers"]
+    assert "current finding" in tp.render_review_briefing(package, [])
+
+
+def test_generic_acceptance_does_not_claim_human_approval():
+    package = {
+        "inspection": {"disposition": "unaccepted"},
+        "review_dispositions": [{"summary": "still visible"}],
+        "assessment": {
+            "recommendation": "hold",
+            "decision_blockers": [tp.DONE_FINDINGS_HOLD],
+            "findings": [tp.DONE_FINDINGS_HOLD],
+        },
+    }
+    accepted = tp.accepted_review_presentation(package)
+    assert accepted["assessment"]["recommendation"] == "approve"
+    assert accepted["assessment"]["decision_blockers"] == []
+    assert "accepted by the Human" not in " ".join(accepted["assessment"]["findings"])
+    assert tp.DONE_FINDINGS_HOLD in accepted["assessment"]["findings"]
+    assert accepted["review_dispositions"] == package["review_dispositions"]
+
+
+def test_combined_done_findings_and_coverage_choices_are_both_visible(tmp_path):
+    from booley.evidence.review_dispositions import collect_review_dispositions
+
+    ctx = _context(tmp_path)
+    facts = _facts(ctx)
+    facts["review_dispositions"] = collect_review_dispositions(
+        {
+            "review_old_done": {
+                "detail": {
+                    "issue_list": [
+                        {
+                            "severity": "MINOR",
+                            "summary": "historical obligation",
+                            "disposition": "current",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    facts["waiver_candidates"] = [_waiver_row("wc-offered", "offered", needed=True)]
+    facts["inspection"] = {
+        "schema": 1,
+        "disposition": "unaccepted",
+        "reason": "combined review",
+        "blocked_reason": "",
+        "heads": {},
+        "ticket_generation": "g",
+    }
+    facts["criteria"] = [
+        {**row, "required": "mandatory", "status": "unmet"} for row in facts["criteria"][:1]
+    ]
+    path = tp.write_triage_package(ctx, facts, _assessment(), None)
+    package = tp.load_triage_package(path)
+    briefing = tp.render_review_briefing(package, [])
+    assert tp.DONE_FINDINGS_HOLD in package["assessment"]["decision_blockers"]
+    assert "historical obligation" in briefing
+    assert "wc-offered" in briefing
+    assert "decide waivers and approve" in briefing
+
+
+def test_generic_accepted_projection_keeps_one_neutral_note():
+    package = {
+        "inspection": {"disposition": "accepted"},
+        "assessment": {
+            "recommendation": "hold",
+            "decision_blockers": [tp.DONE_FINDINGS_HOLD],
+            "findings": [tp.DONE_FINDINGS_ACCEPTED, tp.DONE_FINDINGS_HOLD],
+        },
+    }
+    projected = tp.accepted_review_presentation(package)
+    assert projected["assessment"]["findings"].count(tp.DONE_FINDINGS_ACCEPTED) == 1
+
+
+@pytest.mark.parametrize("noted", [False, True])
+def test_accepted_inspection_keeps_done_findings_visible_without_hold(tmp_path, noted):
+    """An accepted package notes outstanding done findings once but does not re-hold."""
+    from booley.evidence.review_dispositions import collect_review_dispositions
+
+    ctx = _context(tmp_path)
+    facts = _facts(ctx)
+    facts["review_dispositions"] = collect_review_dispositions(
+        {
+            "review_rtl_bugs_done": {
+                "detail": {
+                    "issue_list": [
+                        {
+                            "severity": "MINOR",
+                            "summary": "accepted obligation",
+                            "disposition": "current",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    facts["inspection"] = {
+        "schema": 1,
+        "disposition": "accepted",
+        "reason": "accepted review",
+        "blocked_reason": "",
+        "heads": {},
+        "ticket_generation": "g",
+    }
+    # Isolate the done-findings rule from the fixture's unrelated stale-evidence hold.
+    facts["criteria"] = [{**row, "freshness": "current"} for row in facts["criteria"]]
+    assessment = _assessment()
+    assessment["findings"] = [tp.DONE_FINDINGS_ACCEPTED] if noted else []
+    package = tp.load_triage_package(tp.write_triage_package(ctx, facts, assessment, None))
+    written = package["assessment"]
+    assert written["recommendation"] == "approve"
+    assert tp.DONE_FINDINGS_HOLD not in written["decision_blockers"]
+    # The neutral note appears exactly once; the hold marker stays for projection.
+    assert written["findings"] == [tp.DONE_FINDINGS_ACCEPTED, tp.DONE_FINDINGS_HOLD]
 
 
 @pytest.mark.parametrize("completed", [False, True])

@@ -87,7 +87,9 @@ simulation, and synthesis criteria before finishing. Reviews are the \
 same: a passing review records the source fingerprint it checked and later \
 RTL/TB edits make it stale. A `_done` review is terminal and advisory: run it \
 only after every code-changing criterion, report every finding, and do not edit \
-the implementation in response during this ticket run. An unmet `_clean` review \
+the implementation in response during this ticket run. Current `_done` findings \
+require human review and explicit approval before acceptance, even with a done \
+success destination. An unmet `_clean` review \
 is a resolution loop: fix each finding or propose an explicit waiver through \
 `reviewer --steer` with a specific justification, then call `reviewer` again. \
 The reviewer validates every FIXED or WAIVED disposition. Every accepted waiver, \

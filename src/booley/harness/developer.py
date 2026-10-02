@@ -1522,12 +1522,70 @@ def _reconcile_done_handoff_failure(
     return _ticket_run_result(ctx.slug, "failed")
 
 
+def _has_done_findings(ctx: TicketContext) -> bool:
+    from booley.evidence.review_dispositions import outstanding_done_findings
+
+    return bool(
+        outstanding_done_findings(
+            DevelopmentState.load(
+                existing_ticket_runtime_file(ctx.logs_dir, "booley_state.json")
+            ).criteria
+        )
+    )
+
+
+async def _finish_unaccepted_handoff(
+    ctx: TicketContext, project_root: Path, reason: str
+) -> TicketRunResult:
+    """Publish an inspection after a durable Board transition; failures remain review."""
+    from booley.ticket_board.review_lifecycle import request_review_command
+
+    outcome = await request_review_command(project_root, ctx.slug, action="request", reason=reason)
+    if not outcome.ready or outcome.package_path is None:
+        raise RuntimeError(
+            f"{ctx.slug} is in review, but its review package failed: {outcome.message}. "
+            f"Run `booley board review {ctx.slug}` to retry."
+        )
+    return TicketRunResult(
+        slug=ctx.slug,
+        disposition="review",
+        review_package_path=outcome.package_path,
+        html_path=outcome.html_path,
+    )
+
+
+async def _handoff_advisory_ticket(ctx: TicketContext, project_root: Path) -> TicketRunResult:
+    from booley.ticket_board.advisory_handoff import ADVISORY_REVIEW_REASON
+
+    ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
+    ticket_cli.handoff(project_root, ctx.slug, **ownership)
+    if ticket_cli.ticket_status(project_root, ctx.slug) != "review":
+        raise RuntimeError(f"advisory handoff did not leave {ctx.slug} in review")
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.review_lifecycle import review_command
+
+    if read_acceptance(ctx.logs_dir).kind == "accepted":
+        outcome = await review_command(project_root, ctx.slug)
+        if not outcome.ready or outcome.package_path is None:
+            raise RuntimeError(
+                f"{ctx.slug} is in review with its existing acceptance preserved. {outcome.message}"
+            )
+        terminal.raw(outcome.message)
+        return TicketRunResult(
+            slug=ctx.slug,
+            disposition="review",
+            review_package_path=outcome.package_path,
+            html_path=outcome.html_path,
+        )
+    return await _finish_unaccepted_handoff(ctx, project_root, ADVISORY_REVIEW_REASON)
+
+
 async def _handoff_accepted_ticket(
     ctx: TicketContext, project_root: Path, run_index: int
 ) -> TicketRunResult:
     """Complete an accepted Ticket handoff and return its durable outcome."""
-    from .colors import dim, green
-
+    if _has_done_findings(ctx):
+        return await _handoff_advisory_ticket(ctx, project_root)
     review_outcome = None
     if ctx.on_success.destination == "review":
         prepared = await _prepare_review_handoff(ctx, project_root, run_index)
@@ -1537,6 +1595,8 @@ async def _handoff_accepted_ticket(
         if review_outcome is None:
             return _ticket_run_result(ctx.slug, "blocked")
 
+    if _has_done_findings(ctx):
+        return await _handoff_advisory_ticket(ctx, project_root)
     ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
     try:
         ticket_cli.handoff(project_root, ctx.slug, **ownership)
@@ -1545,7 +1605,20 @@ async def _handoff_accepted_ticket(
             raise
         return _reconcile_done_handoff_failure(ctx, project_root, run_index, exc)
 
-    destination = ctx.on_success.destination
+    return await _accepted_handoff_result(ctx, project_root, review_outcome)
+
+
+async def _accepted_handoff_result(
+    ctx: TicketContext, project_root: Path, review_outcome: ReviewPrepOutcome | None
+) -> TicketRunResult:
+    """Report the authoritative Board destination, including an advisory override."""
+    from .colors import dim, green
+
+    destination = ticket_cli.ticket_status(project_root, ctx.slug)
+    if destination == "review" and _has_done_findings(ctx):
+        from booley.ticket_board.advisory_handoff import ADVISORY_REVIEW_REASON
+
+        return await _finish_unaccepted_handoff(ctx, project_root, ADVISORY_REVIEW_REASON)
     terminal.raw(f"  {green('post-processing complete')} {dim(f'→ {destination}')}")
     if destination == "done":
         return _ticket_run_result(ctx.slug, "done")
