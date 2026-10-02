@@ -128,7 +128,7 @@ Code review is split into focus categories with severity-stratified issue tracki
 - Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes. Current findings require human review and explicit approval before automatic acceptance, completion, or merge.
 - Testbench code gets its own separate review.
 
-The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves them. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
+The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for `_clean` reviews. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
 
 ## Mutation Testing
 
