@@ -94,6 +94,11 @@ def _run_git(args, *, cwd=None, env=None, data=None, timeout=60):
             timeout=timeout,
             check=False,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise InspectionError(
+            "Git inspection timed out; repair slow Git/transport or reduce the selected "
+            "range with verified upstream authority and retry"
+        ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise InspectionError(
             "Git inspection unavailable; repair repository access and retry"
@@ -148,6 +153,16 @@ def _structural_node_present(path: Path) -> bool:
     return True
 
 
+def _resolve_repository_path(path: Path, *, strict: bool = False) -> Path:
+    try:
+        return path.resolve(strict=strict)
+    except RuntimeError as exc:
+        # Python 3.11/3.12 report this filesystem error as RuntimeError, not OSError.
+        if not str(exc).startswith("Symlink loop from "):
+            raise
+        raise InspectionError("cannot resolve repository symlink loop; repair the path") from exc
+
+
 def _repository_state(cwd, env, *, complete):
     config, raw = _config(cwd, env)
     common = Path(
@@ -156,15 +171,11 @@ def _repository_state(cwd, env, *, complete):
     objects = Path(
         _required_git(["rev-parse", "--git-path", "objects"], cwd=cwd, env=env).decode().strip()
     )
-    common = (
-        (cwd / common).resolve(strict=True)
-        if not common.is_absolute()
-        else common.resolve(strict=True)
+    common = _resolve_repository_path(
+        cwd / common if not common.is_absolute() else common, strict=True
     )
-    objects = (
-        (cwd / objects).resolve(strict=True)
-        if not objects.is_absolute()
-        else objects.resolve(strict=True)
+    objects = _resolve_repository_path(
+        cwd / objects if not objects.is_absolute() else objects, strict=True
     )
     if not common.is_dir() or not objects.is_dir():
         raise InspectionError("cannot resolve readable Git object storage")
@@ -282,27 +293,30 @@ class _Inspection(_Protocol):
         return result
 
     def commits(self, ids) -> list[str]:
+        pending = {oid: oid for oid in ids}
+        seen = {oid: set() for oid in pending}
         resolved = []
-        objects = self.objects(ids)
-        for requested_oid in dict.fromkeys(ids):
-            oid = requested_oid
-            value = objects[oid]
-            seen = set()
-            while value is not None and value[0] == "tag":
-                if oid in seen:
-                    raise InspectionError("cyclic annotated tag")
-                seen.add(oid)
-                first = value[1].split(b"\n", 1)[0]
-                if not first.startswith(b"object "):
-                    raise InspectionError("malformed annotated tag")
-                oid = first[7:].decode("ascii")
-                if not self.oid(oid):
-                    raise InspectionError("invalid annotated tag object")
-                value = self.objects([oid])[oid]
+        while pending:
+            objects = self.objects(pending.values())
+            following = {}
+            for requested, oid in pending.items():
+                value = objects[oid]
                 if value is None:
-                    raise InspectionError("missing annotated tag contents")
-            if value is not None and value[0] == "commit":
-                resolved.append(oid)
+                    continue
+                if value[0] == "commit":
+                    resolved.append(oid)
+                elif value[0] == "tag":
+                    if oid in seen[requested]:
+                        raise InspectionError("cyclic annotated tag")
+                    seen[requested].add(oid)
+                    first = value[1].split(b"\n", 1)[0]
+                    if not first.startswith(b"object "):
+                        raise InspectionError("malformed annotated tag")
+                    target = first[7:].decode("ascii")
+                    if not self.oid(target):
+                        raise InspectionError("invalid annotated tag object")
+                    following[requested] = target
+            pending = following
         return list(dict.fromkeys(resolved))
 
 
@@ -349,9 +363,15 @@ def _location(location, root):
     if parsed.scheme == "file":
         if parsed.netloc not in ("", "localhost") or parsed.query or parsed.fragment:
             raise InspectionError("unsupported file authority")
-        return "file", Path(unquote(parsed.path)).resolve()
+        try:
+            decoded = unquote(parsed.path, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise InspectionError("file authority requires valid UTF-8 URL encoding") from exc
+        if "\0" in decoded:
+            raise InspectionError("invalid file authority path")
+        return "file", _resolve_repository_path(Path(decoded))
     if Path(location).is_absolute() or (not parsed.scheme and ":" not in location):
-        return "file", (root / location).resolve()
+        return "file", _resolve_repository_path(root / location)
     if parsed.scheme in ("https", "ssh"):
         if not parsed.hostname or parsed.fragment:
             raise InspectionError("invalid authenticated repository URL")
@@ -424,12 +444,12 @@ def _secure_ssh(config, env):
         )
         if any(option in compact for option in insecure):
             raise InspectionError("SSH authority requires host verification")
-    elif env.get("GIT_SSH_VARIANT", config.get("ssh.variant", "ssh")) == "ssh":
+    elif env.get("GIT_SSH_VARIANT", config.get("ssh.variant", "ssh")) in ("ssh", "auto"):
         env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"
 
 
 def _secure_https(root, location, env):
-    if env.get("GIT_SSL_NO_VERIFY", "").lower() not in ("", "0", "false", "no", "off"):
+    if "GIT_SSL_NO_VERIFY" in env:
         raise InspectionError("HTTPS authority requires certificate verification")
     for key in ("http.sslVerify", "http.followRedirects"):
         result = _run_git(

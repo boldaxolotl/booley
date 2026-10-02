@@ -1370,3 +1370,132 @@ def test_unrelated_non_utf8_git_config_preserves_push(repo, monkeypatch):
     with (repo / ".git" / "config").open("ab") as stream:
         stream.write(b"\n[legacy]\n value = \xff\n")
     assert _push(_head(repo)) == 0
+
+
+def _clean_merge(repo):
+    _git(repo, "checkout", "-b", "clean-side")
+    _commit(repo, "fix(core): ordinary side work")
+    _git(repo, "checkout", "main")
+    _git(repo, "merge", "--no-ff", "clean-side", "-m", "fix(core): clean merge")
+    return _head(repo)
+
+
+def test_minimum_git_clean_merge_and_upstream_merge_import(matrix_repo):
+    repo = matrix_repo
+    merge = _clean_merge(repo)
+    assert len(_git(repo, "rev-list", "--parents", "-n", "1", merge).split()) == 3
+    inspection = pre_push_hook._Inspection(repo)
+    frame = inspection.git(
+        ["diff-tree", "--stdin", "--always", "--root", "-m", "-r", "--no-renames", "--raw", "-z"],
+        data=(merge + "\n").encode(),
+    ).split(b"\0", 1)[0]
+    assert frame == merge.encode()
+    print("real merge frame receipt:", _git(repo, "--version"), frame.decode())
+    assert _push(merge) == 0
+    upstream = _clone_upstream(repo)
+    _record(repo, upstream, merge)
+    local = _commit(repo, "fix(core): ordinary post-import work")
+    assert _push(local) == 0
+
+
+@pytest.mark.parametrize("value", ["0", "false", "", "off"])
+def test_ssl_no_verify_presence_denies_authority(repo, monkeypatch, value):
+    monkeypatch.setenv("GIT_SSL_NO_VERIFY", value)
+    with pytest.raises(pre_push_hook.InspectionError, match="certificate verification"):
+        pre_push_hook._secure_https(repo, "https://example.test/repo", dict(os.environ))
+
+
+def test_minimum_git_tag_heavy_advertisement_batches_peeling(matrix_repo, monkeypatch):
+    repo = matrix_repo
+    destination = Path(sys.argv[2])
+    oid = _head(repo)
+    tags = []
+    for index in range(12):
+        name = f"release-{index}"
+        _git(repo, "tag", "-a", name, "-m", "ordinary release")
+        tags.append(_git(repo, "rev-parse", name))
+    _git(repo, "push", "--no-verify", str(destination), "--tags")
+    original = pre_push_hook._run_git
+    batches = []
+
+    def observe(args, **kwargs):
+        if "cat-file" in args and "--batch" in args:
+            batches.append(kwargs.get("data"))
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    assert _push(oid) == 0
+    assert len(batches) < len(tags)
+
+
+def test_minimum_git_missing_advertised_tag_target_grants_no_exclusion(matrix_repo):
+    repo = matrix_repo
+    destination = Path(sys.argv[2])
+    target = _git(
+        repo, "commit-tree", _git(repo, "rev-parse", "HEAD^{tree}"), "-m", "orphan release"
+    )
+    _git(repo, "tag", "-a", "withdrawn-object", target, "-m", "ordinary release")
+    _git(repo, "push", "--no-verify", str(destination), "refs/tags/withdrawn-object")
+    (repo / ".git" / "objects" / target[:2] / target[2:]).unlink()
+    assert _push(_commit(repo, "fix(core): fresh ordinary work")) == 0
+    assert _push(_commit(repo, "fix(core): claude fresh leak")) == 1
+
+
+@pytest.mark.parametrize("source", ["config", "environment"])
+def test_default_auto_ssh_variant_keeps_noninteractive_flags(source):
+    config = {"ssh.variant": "auto"} if source == "config" else {}
+    env = {"GIT_SSH_VARIANT": "auto"} if source == "environment" else {}
+    pre_push_hook._secure_ssh(config, env)
+    assert "BatchMode=yes" in env.get("GIT_SSH_COMMAND", "")
+    assert "StrictHostKeyChecking=yes" in env["GIT_SSH_COMMAND"]
+
+
+def test_legacy_resolve_symlink_loop_uses_destination_fallback(repo, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    destination = repo.parent / "looping-destination"
+    monkeypatch.setattr(sys, "argv", ["pre-push", "destination", str(destination)])
+    original = Path.resolve
+
+    def legacy_loop(path, *args, **kwargs):
+        if path == destination:
+            raise RuntimeError("Symlink loop from selected path")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", legacy_loop)
+    assert _push(_head(repo)) == 0
+    assert "destination advertisement unavailable" in capsys.readouterr().err
+
+
+def test_git_timeout_reports_its_actual_failure(repo, monkeypatch):
+    def timed_out(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    with pytest.raises(pre_push_hook.InspectionError, match="timed out"):
+        pre_push_hook._run_git(["rev-list", "--stdin"], cwd=repo, timeout=1)
+
+
+def test_minimum_git_encoded_file_upstream_uses_git_decoded_storage(matrix_repo):
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude imported history")
+    upstream = _clone_upstream(repo, "encoded space.git")
+    assert "%20" in upstream.as_uri()
+    _record(repo, upstream, base)
+    config = repo / ".booley_project" / "booley.toml"
+    config.write_text(config.read_text().replace(upstream.as_posix(), upstream.as_uri()))
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude new local metadata")) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="invalid UTF-8 filename fixture is POSIX-specific")
+def test_minimum_git_invalid_utf8_file_url_cannot_substitute_self_authority(matrix_repo):
+    repo = matrix_repo
+    _clone_upstream(repo, "encoded-\ufffd.git")
+    base = _commit(repo, "fix(core): claude local metadata")
+    alias = repo.parent / os.fsdecode(b"encoded-\xff.git")
+    alias.symlink_to(repo, target_is_directory=True)
+    _record(repo, repo.parent, base)
+    config = repo / ".booley_project" / "booley.toml"
+    location = repo.parent.as_uri() + "/encoded-%FF.git"
+    config.write_text(config.read_text().replace(repo.parent.as_posix(), location))
+    assert _push(base) == 1
