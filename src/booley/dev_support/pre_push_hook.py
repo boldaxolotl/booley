@@ -205,6 +205,27 @@ def _repository_state(cwd, env, *, complete):
     return common, objects, (raw, version, stat, graft_data)
 
 
+def _file_authority_state(path, env):
+    git_dir = _resolve_repository_path(
+        Path(
+            _required_git(["rev-parse", "--absolute-git-dir"], cwd=path, env=env).decode().strip()
+        ),
+        strict=True,
+    )
+    if path != git_dir:
+        top = _resolve_repository_path(
+            Path(
+                _required_git(["rev-parse", "--show-toplevel"], cwd=path, env=env).decode().strip()
+            ),
+            strict=True,
+        )
+        if path != top:
+            raise InspectionError(
+                "file authority must name its exact repository root or Git directory"
+            )
+    return _repository_state(path, env, complete=True)
+
+
 class _Protocol:
     """Non-object-resolving validation of Git's complete hook input."""
 
@@ -361,6 +382,8 @@ def _location(location, root):
         raise InspectionError("invalid repository location")
     parsed = urlsplit(location)
     if parsed.scheme == "file":
+        if not location.startswith("file://"):
+            raise InspectionError("file authority requires a literal file:// URL")
         if parsed.netloc not in ("", "localhost") or parsed.query or parsed.fragment:
             raise InspectionError("unsupported file authority")
         try:
@@ -424,7 +447,7 @@ def _transport_environment(root, location):
 
 
 def _secure_ssh(config, env):
-    command = env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH") or config.get("core.sshcommand")
+    command = env.get("GIT_SSH_COMMAND") or config.get("core.sshcommand") or env.get("GIT_SSH")
     if command:
         try:
             tokens = shlex.split(command)
@@ -480,7 +503,7 @@ def _advertised(inspection, location, *, upstream=False):
     env, path = _transport_environment(inspection.root, location)
     if path is not None:
         external = _probe_environment(external=True)
-        authority = _repository_state(path, external, complete=True)
+        authority = _file_authority_state(path, external)
         if upstream:
             alternates = authority[1] / "info" / "alternates"
             if (
@@ -519,7 +542,7 @@ def _advertised(inspection, location, *, upstream=False):
         ids.append(fields[0].lower())
     if (
         path is not None
-        and _repository_state(path, _probe_environment(external=True), complete=True) != authority
+        and _file_authority_state(path, _probe_environment(external=True)) != authority
     ):
         raise InspectionError("file authority changed during advertisement")
     return ids
@@ -531,7 +554,9 @@ def _outgoing_range(inspection, updates, destination, record):
     if len(tips) != len({update.local for update in updates}) and any(
         not inspection.commits([update.local]) for update in updates
     ):
-        raise InspectionError("noncommit local update cannot be inspected")
+        raise InspectionError(
+            "missing or noncommit local update cannot be inspected; fetch complete pushed history and retry"
+        )
     old = inspection.commits([update.old for update in updates if set(update.old) != {"0"}])
     if record:
         if len(record.base) != inspection.oid_length:

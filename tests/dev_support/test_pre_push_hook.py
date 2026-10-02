@@ -1499,3 +1499,72 @@ def test_minimum_git_invalid_utf8_file_url_cannot_substitute_self_authority(matr
     location = repo.parent.as_uri() + "/encoded-%FF.git"
     config.write_text(config.read_text().replace(repo.parent.as_posix(), location))
     assert _push(base) == 1
+
+
+@pytest.mark.parametrize("storage", ["self", "shared"])
+def test_minimum_git_upload_pack_suffix_cannot_substitute_self_authority(matrix_repo, storage):
+    repo = matrix_repo
+    parent = repo.parent / "authority-parent"
+    _git(repo, "clone", str(repo), str(parent))
+    location = parent / "up"
+    location.mkdir()
+    base = _commit(repo, "fix(core): claude local metadata")
+    served = repo
+    if storage == "shared":
+        served = repo.parent / "shared-authority.git"
+        _git(repo, "clone", "--bare", "--shared", str(repo), str(served))
+    (parent / "up.git").symlink_to(served, target_is_directory=True)
+    assert _git(location, "rev-parse", "--show-toplevel") == str(parent)
+    advertisement = _git(repo, "ls-remote", "--refs", str(location))
+    assert base in advertisement
+    _record(repo, location, base)
+    assert _push(base) == 1
+
+
+@pytest.mark.parametrize("form", ["bare", "worktree", "gitdir", "symlink"])
+def test_minimum_git_exact_file_authority_accepts_independent_storage(matrix_repo, form):
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude imported history")
+    authority = repo.parent / "exact-authority"
+    args = ["--bare"] if form == "bare" else []
+    _git(repo, "clone", *args, str(repo), str(authority))
+    if form == "gitdir":
+        authority = authority / ".git"
+    elif form == "symlink":
+        alias = repo.parent / "independent-alias"
+        alias.symlink_to(authority, target_is_directory=True)
+        authority = alias
+    _record(repo, authority, base)
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude new local metadata")) == 1
+
+
+def test_file_scp_form_cannot_bypass_ssh_classification(repo):
+    with pytest.raises(pre_push_hook.InspectionError, match="file authority"):
+        pre_push_hook._location("file:" + repo.as_posix(), repo)
+
+
+def test_ssh_core_command_precedes_git_ssh_environment():
+    env = {"GIT_SSH": "/usr/bin/ssh"}
+    config = {"core.sshcommand": "ssh -o StrictHostKeyChecking=no"}
+    with pytest.raises(pre_push_hook.InspectionError, match="host verification"):
+        pre_push_hook._secure_ssh(config, env)
+
+
+def test_ssh_environment_command_precedes_core_command():
+    env = {"GIT_SSH_COMMAND": "ssh -o StrictHostKeyChecking=yes"}
+    config = {"core.sshcommand": "ssh -o StrictHostKeyChecking=no"}
+    pre_push_hook._secure_ssh(config, env)
+    assert env["GIT_SSH_COMMAND"] == "ssh -o StrictHostKeyChecking=yes"
+
+
+def test_minimum_git_missing_local_tag_target_has_fetch_repair(matrix_repo, capsys):
+    repo = matrix_repo
+    target = _git(
+        repo, "commit-tree", _git(repo, "rev-parse", "HEAD^{tree}"), "-m", "ordinary release"
+    )
+    _git(repo, "tag", "-a", "missing-local-target", target, "-m", "ordinary release")
+    tag = _git(repo, "rev-parse", "refs/tags/missing-local-target")
+    (repo / ".git" / "objects" / target[:2] / target[2:]).unlink()
+    assert _push(tag) == 1
+    assert "fetch complete pushed history and retry" in capsys.readouterr().err

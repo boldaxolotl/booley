@@ -152,6 +152,7 @@ def upstream_record(project_root: Path | None = None) -> UpstreamRecord | None:
     scp = (
         "://" not in repository
         and "::" not in repository
+        and not repository.lower().startswith("file:")
         and re.fullmatch(r"(?:[^\s/@:]+@)?[^\s/:]+:[^\s]+", repository)
     )
     if not (absolute or url or scp):

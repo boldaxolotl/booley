@@ -656,3 +656,14 @@ def test_upstream_record_unsafe_url_is_not_scp(tmp_path, repository):
     )
     with pytest.raises(ValueError, match="literal URL or absolute path"):
         upstream_record(tmp_path)
+
+
+def test_upstream_record_refuses_file_scp_form(tmp_path):
+    directory = tmp_path / ".booley_project"
+    directory.mkdir()
+    (directory / "booley.toml").write_text(
+        '[stealth]\nupstream_repository = "file:/absolute/repo"\n'
+        'upstream_base = "' + "a" * 40 + '"\n'
+    )
+    with pytest.raises(ValueError, match="literal URL"):
+        upstream_record(tmp_path)
