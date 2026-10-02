@@ -44,7 +44,7 @@ import tempfile
 import tomllib
 from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley import __version__
@@ -145,6 +145,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.checkout_role import is_booley_qa_skill_path
+from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
@@ -810,125 +811,6 @@ def _report_curated_overrides(kept: list[str]) -> None:
         info(f"pin '{req}' overrides the base image's {name}=={base_version} (project wins)")
 
 
-def _selected_image_handled(ctx: InitContext, sandbox: dict, generated: str) -> bool:
-    """Dispatch on an explicit ``[sandbox].image``; True when the step is done here.
-
-    Three kinds of explicit selection:
-
-    - a Booley-SHIPPED flavor (:data:`FLAVOR_IMAGES`) — Booley's own image, so
-      init builds and refreshes it here just like the base. It used to land in
-      the user-managed branch purely because its name isn't the generated one,
-      which meant init rebuilt the base for 20 minutes and left the image the
-      project actually runs stranded on the base's previous layers.
-    - a genuinely user-managed image — hands off, as before.
-    - the generated or base name — not handled here; the caller builds it.
-    """
-    configured = sandbox.get("image")
-    if not (isinstance(configured, str) and configured.strip()):
-        return False
-    selected = configured.strip()
-    if selected in FLAVOR_IMAGES:
-        if sandbox.get("pip_requirements"):
-            return False
-        if ensure_flavor_image(ctx, selected):
-            _warn_on_live_session_on_old_image(ctx, selected)
-        return True
-    if selected not in (generated, pi.BASE_IMAGE, DOCKER_IMAGE):
-        skip(f"[sandbox].image={selected!r} is user-managed — project image skipped")
-        ctx.record("project_image", "skip", "user-managed image")
-        return True
-    return False
-
-
-def _project_image_setup_gate(  # noqa: PLR0911 — each early return is a distinct image-ownership/build gate
-    ctx: InitContext,
-) -> tuple[Path, Path, dict, str, str | None, bool] | None:
-    """Run the early docker/project-dir/user-managed-image skip checks.
-
-    Returns ``(project_dir, toml_path, sandbox, generated, configured,
-    hand_authored)`` when the build should proceed, or ``None`` after the step
-    is already accounted for: no docker, no project dir, a Booley-shipped
-    sandbox flavor (handled here in full), a genuinely user-managed image, or
-    hand-edited docker files whose image is already built (SETUP-6).
-    ``hand_authored`` is True when the docker files are user-owned but their
-    image is absent, so the step must build from them verbatim (F-5) instead
-    of regenerating.
-    """
-    if not shutil.which("docker"):
-        skip("docker not on PATH — project image skipped")
-        ctx.record("project_image", "skip", "docker missing")
-        return None
-    try:
-        project_dir = resolve_project_dir(ctx.project_root)
-    except FileNotFoundError:
-        skip("no .booley_project — project image skipped")
-        ctx.record("project_image", "skip", "no project dir")
-        return None
-
-    toml_path = project_dir / "booley.toml"
-    sandbox = _load_sandbox_config(toml_path)
-
-    generated = pi.project_image_name(ctx.project_root)
-    configured = sandbox.get("image")
-    if _selected_image_handled(ctx, sandbox, generated):
-        return None
-
-    # Never clobber hand-edited docker files (SETUP-6): re-running init used to
-    # silently overwrite a customized Dockerfile/requirements.txt and print
-    # [OK]. If either is user-owned, leave both alone — but only skip the build
-    # when the image they describe actually exists. Skipping with NO image
-    # dead-ended the natural "drop a requirements.txt, re-run init" path (F-5):
-    # the user had to `docker build` and set [sandbox].image by hand.
-    docker_dir = project_dir / "docker"
-    dockerfile = docker_dir / "Dockerfile"
-    parent = pi.dockerfile_parent_image(dockerfile)
-    parent_refreshed = False
-    if parent in FLAVOR_IMAGES:
-        result_count = len(ctx.results)
-        parent_refreshed = ensure_flavor_image(ctx, parent)
-        if parent_refreshed:
-            _warn_on_live_session_on_old_image(ctx, parent)
-        parent_result = ctx.results[-1] if len(ctx.results) > result_count else None
-        if parent_result is not None and parent_result.status in {"warn", "err"}:
-            return None
-
-    user_owned = [
-        p.name
-        for p in (docker_dir / "Dockerfile", docker_dir / "requirements.txt")
-        if not pi.is_managed_generated_file(p)
-    ]
-    if user_owned:
-        owned = f"docker/{{{', '.join(user_owned)}}}"
-        if idk.image_exists(generated):
-            image_stale = source_fingerprint_mismatch(generated) is True
-            if not parent_refreshed and not image_stale:
-                warn(
-                    f"manual edits detected in {owned} — leaving "
-                    "them and the existing image untouched. Delete them (or set "
-                    "[sandbox].image to your own image) to resume managed regeneration; "
-                    "run `docker build` yourself to rebuild from your edits."
-                )
-                ctx.record("project_image", "skip", "manual edits preserved")
-                return None
-            reason = (
-                f"its Booley-managed parent '{parent}' was refreshed"
-                if parent_refreshed
-                else "its inherited Booley provenance is stale"
-            )
-            info(
-                f"manual edits detected in {owned}; rebuilding '{generated}' "
-                f"from those files because {reason}"
-            )
-            return project_dir, toml_path, sandbox, generated, configured, True
-        info(
-            f"manual edits detected in {owned} and image '{generated}' is not "
-            "built — using your files as the build input (leaving them untouched)"
-        )
-        return project_dir, toml_path, sandbox, generated, configured, True
-
-    return project_dir, toml_path, sandbox, generated, configured, False
-
-
 def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
     """Warn when a live Sandbox still serves the pre-rebuild image (F-9).
 
@@ -951,91 +833,6 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
             "session on the image just built (in VS Code: Reopen in Container / "
             "Rebuild Container)."
         )
-
-
-def _build_and_configure_image(
-    ctx: InitContext,
-    docker_dir: Path,
-    generated: str,
-) -> None:
-    """Build the derived project image; its name is resolved automatically."""
-    if not pi.build_project_image(generated, docker_dir, verbose=ctx.verbose):
-        err(f"failed to build {generated} — re-run with -v for full output")
-        ctx.record("project_image", "err", "build failed")
-        return
-    ok(f"built {generated}")
-    _warn_on_live_session_on_old_image(ctx, generated)
-
-    ctx.record("project_image", "ok", generated)
-
-
-def _build_hand_authored_image(
-    ctx: InitContext,
-    project_dir: Path,
-    generated: str,
-) -> None:
-    """Build the project image from user-owned docker/ files, verbatim (F-5).
-
-    Reached when ``docker/{Dockerfile,requirements.txt}`` carry manual edits
-    but the image they describe was never built (fresh clone/machine, or the
-    files were hand-authored before any build). The user's files are the build
-    input as-is; only a *missing* Dockerfile is backfilled with the managed one
-    so a lone hand-authored requirements.txt is still buildable. Once the image
-    exists, re-running init lands on the usual manual-edits skip path — so the
-    step stays idempotent.
-    """
-    docker_dir = project_dir / "docker"
-    if ctx.check_only:
-        warn(f"would build {generated} from the hand-edited docker/ files")
-        ctx.record("project_image", "warn", "would build")
-        return
-    if not (docker_dir / "Dockerfile").is_file():
-        pi.write_managed_dockerfile(docker_dir)
-        info("generated the managed docker/Dockerfile around your requirements.txt")
-    _build_and_configure_image(ctx, docker_dir, generated)
-
-
-def _step_project_image(ctx: InitContext) -> None:
-    """Build a project image baking the repo's Python deps into the sandbox.
-
-    The base image is project-agnostic and runtime egress is locked down, so a
-    project's ``requirements.txt`` deps must be baked at build time. Bakes the
-    files listed in ``[sandbox].pip_requirements`` (nothing is auto-discovered),
-    builds ``<slug>-booley-sandbox``; that generated name is selected
-    automatically. A
-    user-set custom ``[sandbox].image`` disables this; hand-edited docker files
-    are never regenerated, but are built from as-is when their image is absent
-    (F-5).
-    """
-    ctx.step_banner("project sandbox image")
-
-    gate = _project_image_setup_gate(ctx)
-    if gate is None:
-        return
-    project_dir, _toml_path, sandbox, generated, _configured, hand_authored = gate
-
-    if hand_authored:
-        _build_hand_authored_image(ctx, project_dir, generated)
-        return
-
-    baked = _resolve_baked_requirements(ctx, sandbox)
-    if baked is None:
-        return
-    body, kept = baked
-
-    if ctx.check_only:
-        warn(f"would build {generated} with {len(kept)} requirement(s)")
-        ctx.record("project_image", "warn", "would build")
-        return
-
-    docker_dir = project_dir / "docker"
-    parent_image = (
-        image_lifecycle.RISCV_SUBSTRATE_IMAGE
-        if sandbox.get("image") == "booley-sandbox-riscv"
-        else pi.BASE_IMAGE
-    )
-    pi.write_project_image_files(docker_dir, body, parent_image=parent_image)
-    _build_and_configure_image(ctx, docker_dir, generated)
 
 
 def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
@@ -1068,13 +865,11 @@ def _step_image_lifecycle(
     )
     scope = ProjectImageScope(ctx.project_root, base_result)
     try:
-        if intent is ImageLifecycleIntent.CHECK:
-            result = reconcile_images(scope, intent, verbose=ctx.verbose)
-        else:
-            try:
-                result = image_lifecycle.reconcile_planned(scope, intent, verbose=ctx.verbose)
-            except image_lifecycle.IncrementalPlanUnavailableError:
-                result = reconcile_images(scope, intent, verbose=ctx.verbose)
+        result = image_lifecycle.reconcile_planned(scope, intent, verbose=ctx.verbose)
+    except DockerCapacityError as exc:
+        err(f"image-capacity: {exc}")
+        ctx.record("image-capacity", "err", str(exc))
+        return None
     except ImageLifecycleError as exc:
         err(str(exc))
         ctx.record("docker_image", "err", str(exc))
@@ -1093,6 +888,7 @@ def _step_image_lifecycle(
     if result.cleanup.pending:
         return result
     if result.changed_images:
+        _warn_on_live_session_on_old_image(ctx, result.selected_reference)
         ok("reconciled Sandbox Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
     elif not result.cleanup.removed:
@@ -1111,15 +907,12 @@ def inspect_refreshable_runtime_image(
 ) -> LifecycleResult:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     del verbose
-    try:
-        lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
-    except InstalledImageContractError as exc:
-        raise RuntimeError(str(exc)) from exc
-    except ImageLifecycleError as exc:
+    lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
+    if lifecycle_plan.nodes[0].role is image_lifecycle.ImageRole.EXTERNAL:
         raise RuntimeError(
-            f"the selected Sandbox Image cannot use managed refresh: {exc}. "
+            "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
             "Rebuild it explicitly, then run `booley session up --rebuild`."
-        ) from exc
+        )
     stale = tuple(
         step
         for step in lifecycle_plan.steps
@@ -2039,6 +1832,15 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     folder needs its own untracked ``.devcontainer/`` and exclude entry, since a
     folder without the seeded config will not offer "Reopen in Container".
     """
+    observed = _step_image_lifecycle(replace(ctx, check_only=True, force=False))
+    if observed is None or observed.status is ImageLifecycleStatus.STALE:
+        if observed is not None and not ctx.check_only:
+            ctx.record(
+                "docker_image",
+                "err",
+                "Sandbox Image is not current; run booley init before seeding",
+            )
+        return _print_summary(ctx)
     if not ctx.check_only and sys.stdout.isatty():
         print(bold_chrome(f"  Seeding Interactive Mode for {ctx.project_root}"))
         print()
@@ -2202,6 +2004,7 @@ def _usable_bootstrap_base(result: BootstrapResult) -> LifecycleResult | None:
     if base is None or base.status not in {
         ImageLifecycleStatus.CURRENT,
         ImageLifecycleStatus.CHANGED,
+        ImageLifecycleStatus.EXTERNAL,
     }:
         return None
     return base
@@ -2306,24 +2109,23 @@ def _reconcile_init_bootstrap(
     args: argparse.Namespace,
 ) -> BootstrapResult | None:
     """Reconcile Host Bootstrap and report whether Project init may continue."""
-    seed = getattr(args, "seed", False)
-    intent = (
-        ImageLifecycleIntent.CHECK
-        if ctx.check_only or seed
-        else ImageLifecycleIntent.REFRESH
-        if ctx.force
-        else ImageLifecycleIntent.ENSURE
+    del args
+    result = reconcile_bootstrap(ImageLifecycleIntent.CHECK, verbose=ctx.verbose)
+    _record_bootstrap(
+        ctx,
+        replace(
+            result,
+            findings=tuple(
+                finding for finding in result.findings if finding.resource != "base-image"
+            ),
+        ),
     )
-    result = reconcile_bootstrap(intent, verbose=ctx.verbose)
-    _record_bootstrap(ctx, result)
-    if seed and not result.ready:
-        err("Host Bootstrap is not current; run `booley bootstrap` on the host, then retry seed.")
-        if not ctx.check_only and not any(item.status == "err" for item in ctx.results):
-            ctx.record("bootstrap", "err", "run booley bootstrap")
-        return None
-    if not ctx.check_only and not result.ready:
-        if not any(item.status == "err" for item in ctx.results):
-            ctx.record("bootstrap", "err", "Host Bootstrap did not converge")
+    required = tuple(finding for finding in result.findings if finding.resource != "base-image")
+    if not ctx.check_only and any(
+        finding.state in {BootstrapState.PENDING, BootstrapState.ERROR} for finding in required
+    ):
+        err("Host capabilities are not current; run `booley bootstrap` on the host, then retry.")
+        ctx.record("bootstrap", "err", "run booley bootstrap")
         return None
     return result
 

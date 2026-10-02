@@ -1091,14 +1091,9 @@ def _sandbox_image(project: ProjectAudit | None) -> str:
     """Return configured sandbox image, falling back to the base image."""
     if project is None:
         return DOCKER_IMAGE
-    raw = project.booley_toml.get("sandbox", {}).get("image", "")
-    if isinstance(raw, str) and raw.strip():
-        return raw
-    if (project.project_dir / "docker" / "Dockerfile").is_file():
-        from booley.runtime.project_image import project_image_name
+    from booley.config.sandbox import project_sandbox_image
 
-        return project_image_name(project.project_root)
-    return DOCKER_IMAGE
+    return project_sandbox_image(project.project_root)
 
 
 def _docker_image_exists_by_name(image: str) -> bool:
@@ -1271,6 +1266,19 @@ def _report_repository_line_endings(
         emit(
             f"{identity}: {message}",
             f"git -C {repository.root} config --local core.autocrlf false   (or re-run `booley init`)",
+        )
+        return
+    policy_risk = _line_ending_observation(
+        report,
+        LineEndingObservationCode.LOCAL_POLICY_MISSING,
+        LineEndingObservationCode.LEAKED_ROOT_POLICY,
+        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+    )
+    if policy_risk is not None:
+        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=repository.role)
+        emit(
+            f"{identity}: {policy_risk.detail}",
+            "inspect attributes policy, then re-run booley init",
         )
         return
     if _report_unreadable_line_endings(report, identity, _warn):

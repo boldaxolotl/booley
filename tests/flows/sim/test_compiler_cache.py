@@ -256,8 +256,13 @@ def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
         run_line='test "$OBJCACHE" = run-value && test -z "$CCACHE_MAXSIZE"',
         run_environment={"OBJCACHE": "run-value"},
     )
+    # Git for Windows starts several shell processes here on loaded CI workers.
     result = subprocess.run(
-        ["sh", "-c", script], capture_output=True, text=True, timeout=10, check=False
+        ["sh", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60 if os.name == "nt" else 10,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "rc=0" in result.stdout

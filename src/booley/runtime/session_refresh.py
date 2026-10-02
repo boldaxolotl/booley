@@ -612,6 +612,7 @@ def recover_project_locked(project_root: Path) -> RecoveryResult:
     journal = _load_journal(project)
     if journal is None:
         return RecoveryResult(project, RecoveryOutcome.NONE)
+    _validate_recovery_ownership(journal)
     if journal.direction is _RecoveryDirection.COMMITTED_FORWARD or _replacement_is_coherent(
         journal
     ):
@@ -619,6 +620,23 @@ def recover_project_locked(project_root: Path) -> RecoveryResult:
     if journal.direction is _RecoveryDirection.RESTORE_ELIGIBLE:
         return _restore_journal(journal)
     raise sr.SessionError("Session refresh journal direction is invalid")
+
+
+def _validate_recovery_ownership(journal: _RefreshJournal) -> None:
+    from booley.runtime.project_image import is_managed_sandbox_image
+
+    forbidden = tuple(
+        image.reference
+        for image in journal.prepared_images
+        if image.candidate_reference != image.reference
+        and not is_managed_sandbox_image(journal.project_root, image.reference)
+    )
+    if forbidden:
+        raise sr.SessionError(
+            f"Session refresh journal {_journal_name(journal.project_root)} contains legacy image state "
+            f"outside this Project: {', '.join(forbidden)}; explicit recovery is required. "
+            "The prior Session and journal have been preserved."
+        )
 
 
 def _scanned_project_root(filename: str, raw: object) -> Path:

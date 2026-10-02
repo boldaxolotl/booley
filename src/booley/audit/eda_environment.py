@@ -8,7 +8,7 @@ from enum import StrEnum
 
 from booley.audit.contracts import CommandRunner
 
-RISCV_IMAGE_FIX = "rebuild the RISC-V image: ./src/booley/data/docker/build-riscv.sh"
+RISCV_IMAGE_FIX = "run booley bootstrap --update on the host, then refresh the Project Sandbox"
 RISCV_DOC_FILES = (
     "INDEX.md",
     "riscv-abi.pdf",

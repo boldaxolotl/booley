@@ -5,6 +5,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BOOLEY_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
+STANDARD_ARGS=("$@")
+RISCV_ARGS=()
+for argument in "$@"; do
+  if [ "$argument" != --refresh-base ]; then
+    RISCV_ARGS+=("$argument")
+  fi
+done
+set -- "${RISCV_ARGS[@]}"
+
 BOOLEY_IMAGE_BUILD_PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/booley-image-plan.XXXXXX")"
 chmod 600 "$BOOLEY_IMAGE_BUILD_PLAN_FILE"
 trap 'rm -f "$BOOLEY_IMAGE_BUILD_PLAN_FILE"' EXIT
@@ -20,13 +29,13 @@ export BOOLEY_IMAGE_BUILD_PLAN_INDEX=0
 
 # Build the runtime base, standard substrate, and exact wheel once.
 echo ">>> Preparing standard substrate and wheel..."
-"$SCRIPT_DIR/build.sh" "$@"
+"$SCRIPT_DIR/build.sh" "${STANDARD_ARGS[@]}"
 
 FP_PY=""
 for cand in "${PYTHON:-}" python3 /usr/bin/python3 python; do
   [ -n "$cand" ] || continue
   if command -v "$cand" >/dev/null 2>&1 \
-     && PYTHONPATH="$BOOLEY_ROOT/src" "$cand" -c 'import booley.harness.init_cmd' 2>/dev/null; then
+     && PYTHONPATH="$BOOLEY_ROOT/src" "$cand" -c 'import booley.runtime.host_base_acquisition' 2>/dev/null; then
     FP_PY="$cand"; break
   fi
 done

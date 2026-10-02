@@ -2733,7 +2733,8 @@ class TestImageDriftWarning:
 
     def test_matching_image_is_silent(self, wired, caplog):
         workspace, _run = wired
-        self._set_toml_image(workspace, "booley-sandbox")  # == spec image
+        self._set_toml_image(workspace, "booley-sandbox")
+        _write_spec(workspace, _spec(image=sr.project_image.project_image_name(workspace)))
 
         self._up_running(workspace)
 
@@ -2745,12 +2746,18 @@ class TestImageDriftWarning:
 
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image,
+            "project_sandbox_image",
+            lambda _root: sr.project_image.project_image_name(workspace),
         )
         monkeypatch.setattr(
             sr.idk,
             "image_id",
-            lambda image: digest if image in {digest, "booley-sandbox-riscv"} else None,
+            lambda image: (
+                digest
+                if image in {digest, sr.project_image.project_image_name(workspace)}
+                else None
+            ),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
@@ -2761,7 +2768,9 @@ class TestImageDriftWarning:
 
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image,
+            "project_sandbox_image",
+            lambda _root: sr.project_image.project_image_name(workspace),
         )
         fingerprint = "f" * 64
 
@@ -2792,7 +2801,9 @@ class TestImageDriftWarning:
     ):
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image,
+            "project_sandbox_image",
+            lambda _root: sr.project_image.project_image_name(workspace),
         )
         monkeypatch.setattr(
             sr.idk,
@@ -2804,7 +2815,9 @@ class TestImageDriftWarning:
 
         sr._warn_on_image_drift({"image": digest}, workspace)
 
-        assert "!= [sandbox].image 'booley-sandbox-riscv'" in caplog.text
+        assert (
+            f"!= [sandbox].image '{sr.project_image.project_image_name(workspace)}'" in caplog.text
+        )
 
     def test_rebuilt_external_image_warns_despite_inherited_labels(
         self, workspace: Path, caplog, monkeypatch
@@ -2829,6 +2842,7 @@ class TestImageDriftWarning:
         # No .booley_project at all: the resolver falls back to the base image,
         # which is exactly what the generated spec carries — no drift.
         workspace, _run = wired
+        _write_spec(workspace, _spec(image=sr.project_image.project_image_name(workspace)))
 
         self._up_running(workspace)
 
@@ -4162,3 +4176,63 @@ def test_host_repair_malformed_image_identity_is_a_session_error(tmp_path, monke
     )
     with pytest.raises(sr.SessionError, match="image identity is unavailable"):
         sr.assert_worktree_repair_safe(workspace)
+
+
+@pytest.mark.parametrize("vscode", [False, True])
+@pytest.mark.parametrize("drift", [None, "missing", "changed"])
+def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch, vscode, drift):
+    spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test")
+    labels = {"devcontainer.local_folder": str(tmp_path)} if vscode else {}
+    sections = (spec["containerEnv"],) if vscode else (spec["containerEnv"], spec["remoteEnv"])
+    environment = {key: value for section in sections for key, value in section.items()}
+    if drift == "missing":
+        environment.pop("GIT_CONFIG_VALUE_0")
+    elif drift == "changed":
+        environment["GIT_CONFIG_VALUE_0"] = "Human"
+    state = {
+        "Image": "sha256:test",
+        "Config": {
+            "Image": "sha256:test",
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+        },
+        "HostConfig": {"Memory": 0},
+        "NetworkSettings": {
+            "Networks": {network: {} for network in sr._flag_values(spec["runArgs"], "--network")}
+        },
+    }
+    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
+    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
+    monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        sr,
+        "_docker_stdout",
+        lambda argv: json.dumps(labels) if "--format" in argv else json.dumps([state]),
+    )
+    assert sr._container_matches_issuance(
+        "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
+    ) is (drift is None)
+
+
+def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
+    spec = dc.build_devcontainer_spec(dc.APP_NONE)
+    argv = sr.docker_run_argv(spec, tmp_path, "test")
+    for key, value in spec["containerEnv"].items():
+        if key.startswith("GIT_CONFIG_"):
+            assert argv.count(f"{key}={value}") == 2
+    assert "incontainer_git_identity_cleanup" in spec["postCreateCommand"]
+    assert "incontainer_git_identity_cleanup" in spec["postStartCommand"]
+
+
+def test_startup_preserves_identity_drift_diagnostic(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
+
+    def refuse(*_args):
+        raise runtime_spec.RuntimeSpecError(
+            "[agent.git] Sandbox identity has drifted; refresh and recreate"
+        )
+
+    monkeypatch.setattr(runtime_spec, "validate", refuse)
+    with pytest.raises(sr.SessionError, match=r"\[agent.git\].*refresh and recreate"):
+        sr._validate_up_request(tmp_path, None)

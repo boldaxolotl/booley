@@ -634,7 +634,11 @@ class TestWorktreeCreateScript:
             encoding="utf-8",
         )
 
+        _git(project_root, "config", "user.name", "Human")
+        _git(project_root, "config", "user.email", "human@example.invalid")
         result = _run_worktree_create(project_root, "configured-identity")
+        assert _git(project_root, "config", "user.name").stdout.strip() == "Human"
+        assert _git(project_root, "config", "user.email").stdout.strip() == "human@example.invalid"
 
         assert result.returncode == 0, result.stderr
         worktree = project_data / "worktrees" / "configured-identity"

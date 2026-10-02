@@ -54,10 +54,16 @@ MANAGED_PROJECT_PARENT = "booley-project-parent"
 
 def is_managed_sandbox_image(project_root: Path, image: str) -> bool:
     """Return whether Booley owns the selected image's provenance contract."""
-    return image in {BASE_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)} or (
-        image.startswith(project_layout_prefix(project_root))
-        and re.fullmatch(r"[0-9a-f]{16}", image.removeprefix(project_layout_prefix(project_root)))
-        is not None
+    return (
+        image == project_image_name(project_root)
+        or image.startswith(project_image_name(project_root) + "-")
+        or (
+            image.startswith(project_layout_prefix(project_root))
+            and re.fullmatch(
+                r"[0-9a-f]{16}", image.removeprefix(project_layout_prefix(project_root))
+            )
+            is not None
+        )
     )
 
 
@@ -134,9 +140,10 @@ def dockerfile_parent_image(dockerfile: Path) -> str | None:
     except OSError:
         return None
     directive = _PARENT_DIRECTIVE_RE.search(text)
-    if directive is not None:
-        return directive.group("image")
     matches = list(_FROM_RE.finditer(text))
+    if directive is not None:
+        parent = directive.group("image")
+        return parent if any(match.group("image") == parent for match in matches) else None
     if len(matches) != 1:
         return None
     image = matches[0].group("image")
@@ -379,6 +386,8 @@ def is_managed_generated_file(path: Path) -> bool:
     flagged ``# booley:keep`` — is user-owned; init must not clobber it
     (SETUP-6). Unreadable files are treated as user-owned.
     """
+    if path.is_symlink():
+        return False
     if not path.exists():
         return True
     try:
