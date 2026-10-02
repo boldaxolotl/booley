@@ -114,6 +114,11 @@ def provisional_handoff_path(log_dir: Path) -> Path:
     return log_dir / "review" / "provisional-handoff.json"
 
 
+def advisory_handoff_path(log_dir: Path) -> Path:
+    """Return the marker for an unaccepted done-finding handoff."""
+    return log_dir / "review" / "advisory-handoff.json"
+
+
 def operation_path(log_dir: Path) -> Path:
     """Return the recoverable operation record, outside disposable runtime outputs."""
     return log_dir / "review" / "operation.json"

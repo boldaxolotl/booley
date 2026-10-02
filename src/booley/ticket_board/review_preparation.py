@@ -1972,8 +1972,12 @@ def _render_review_briefing_outcome(
     failures = open_package_diffs(package) if open_diffs else []
     accepted = read_acceptance(ctx.log_dir)
     inspection = package.get("inspection")
+    from .review_lifecycle import selected_human_approval
+
     presentation: Mapping[str, Any] = (
-        accepted_review_presentation(package)
+        accepted_review_presentation(
+            package, human_approved=selected_human_approval(ctx.log_dir, ctx.inspection or {})
+        )
         if accepted.kind == "accepted" and inspection is not None
         else package
     )

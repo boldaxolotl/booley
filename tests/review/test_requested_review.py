@@ -2176,6 +2176,272 @@ def test_mechanical_move_to_review_is_rejected(tmp_path, capsys):
     assert "requires board review --request" in capsys.readouterr().err
 
 
+def _advisory_running(blocked, monkeypatch):
+    from booley.specialists.reviewer import ReviewerSpecialist
+    from booley.ticket_board import operations
+    from booley.ticket_board.ticket_baseline import validate_current_basis_refs
+
+    root, tio, worktree = blocked
+    state = DevelopmentState.load(tio.logs_dir / "demo" / ".runtime" / "booley_state.json")
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        [
+            "--scope",
+            "README.md",
+            "--category",
+            "rtl",
+            "--focus",
+            "bugs",
+            "--work-dir",
+            str(worktree),
+        ]
+    )
+    state.set_criterion(
+        "review_rtl_bugs_done",
+        True,
+        detail={
+            "review_detail_version": 4,
+            "contract": endpoint._review_contract_detail(),
+            "issue_list": [
+                {
+                    "finding_id": "retained",
+                    "severity": "MINOR",
+                    "summary": "human obligation",
+                    "disposition": "current",
+                    "status": "current",
+                }
+            ],
+            SOURCE_FINGERPRINT_DETAIL_KEY: {
+                "categories": ["rtl"],
+                "fingerprint": compute_source_fingerprint(worktree),
+            },
+        },
+    )
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    assert tio.move_ticket_file("demo", TicketState.RUNNING)
+    run_log = tio.logs_dir / "demo" / "human-logs" / "run.log"
+    run_log.parent.mkdir(parents=True, exist_ok=True)
+    run_log.write_text("# Developer run\n")
+    monkeypatch.setattr(
+        operations,
+        "_handoff_basis_heads",
+        lambda *_args: validate_current_basis_refs(root, tio._load_basis_unlocked("demo")),
+    )
+    monkeypatch.setattr(operations, "_validate_transitions_for_handoff", lambda *_args: True)
+    return root, tio, worktree
+
+
+@pytest.mark.timeout(90)
+def test_real_advisory_inspection_and_explicit_human_approval(blocked, monkeypatch):
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.operations import op_handoff
+    from booley.ticket_board.review_lifecycle import approve_review_command, review_command
+
+    root, tio, _ = _advisory_running(blocked, monkeypatch)
+    assert op_handoff(tio, "demo", expected_execution_id="first")
+    assert read_acceptance(tio.logs_dir / "demo").kind == "unavailable"
+    prepared = asyncio.run(review_command(root, "demo"))
+    assert prepared.ready, prepared.message
+    selected = read_entry(tio.logs_dir / "demo")
+    assert selected["disposition"] == "unaccepted"
+    assert (
+        "human obligation" in prep.review_briefing_command(root, "demo", open_diffs=False).briefing
+    )
+    from booley.ticket_board import operations
+
+    with monkeypatch.context() as keep:
+        keep.setattr(operations, "op_complete", lambda *_args, **_kwargs: True)
+        assert approve_review_command(root, "demo", no_merge=True, no_cleanup=True)
+    snapshot = read_acceptance(tio.logs_dir / "demo").snapshot
+    assert (
+        snapshot.criteria["review_rtl_bugs_done"]["detail"]["issue_list"][0]["disposition"]
+        == "current"
+    )
+    briefing = prep.review_briefing_command(root, "demo", open_diffs=False)
+    assert "accepted by the Human" in briefing.briefing
+    assert (
+        "require explicit human approval"
+        not in briefing.briefing.split("**Decision blockers:**", 1)[1]
+    )
+    assert operations.op_complete(
+        tio, "demo", no_merge=True, no_cleanup=True, require_review_package_binding=True
+    )
+    _assert_closed_done(tio, "demo")
+
+
+@pytest.mark.timeout(90)
+def test_human_approval_claim_requires_intact_selected_binding(blocked, monkeypatch, tmp_path):
+    """Only the exact approved selection with its intact package binding claims approval."""
+    from booley.ticket_board import operations, review_lifecycle
+    from booley.ticket_board.operations import op_handoff
+    from booley.ticket_board.review_lifecycle import (
+        approve_review_command,
+        review_command,
+        selected_human_approval,
+    )
+
+    root, tio, _ = _advisory_running(blocked, monkeypatch)
+    log = tio.logs_dir / "demo"
+    assert op_handoff(tio, "demo")
+    assert asyncio.run(review_command(root, "demo")).ready
+    with monkeypatch.context() as keep:
+        keep.setattr(operations, "op_complete", lambda *_args, **_kwargs: True)
+        assert approve_review_command(root, "demo", no_merge=True, no_cleanup=True)
+    selected = read_entry(log)
+    assert selected_human_approval(log, selected) is True
+    assert selected_human_approval(tmp_path, selected) is False  # nothing selected or accepted
+    assert selected_human_approval(log, {**selected, "generation": "other"}) is False
+    with monkeypatch.context() as moved:
+        moved.setattr(review_lifecycle, "read_entry", lambda _log: {**selected, "heads": {}})
+        assert selected_human_approval(log, selected) is False
+    binding = log / "acceptance" / "review-package.json"
+    original = binding.read_bytes()
+    binding.write_text("{")
+    assert selected_human_approval(log, selected) is False
+    binding.unlink()
+    assert selected_human_approval(log, selected) is False
+    binding.write_bytes(original)
+    assert selected_human_approval(log, selected) is True
+
+
+@pytest.mark.parametrize("changed_heads", [False, True])
+@pytest.mark.timeout(90)
+def test_advisory_failed_package_retry_selects_unaccepted_current_heads(
+    blocked, monkeypatch, changed_heads
+):
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.operations import op_handoff
+    from booley.ticket_board.review_lifecycle import review_command
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    root, tio, worktree = _advisory_running(blocked, monkeypatch)
+    assert op_handoff(tio, "demo")
+    with monkeypatch.context() as fail:
+        from unittest.mock import AsyncMock
+
+        fail.setattr(
+            prep,
+            "_prepare_resolved_review",
+            AsyncMock(return_value=prep.ReviewPrepOutcome("failed", "renderer failed")),
+        )
+        failed = asyncio.run(review_command(root, "demo"))
+        assert not failed.ready
+    assert tio.find_ticket("demo")["status"] == "review"
+    assert read_entry(tio.logs_dir / "demo") is None
+    assert read_acceptance(tio.logs_dir / "demo").kind == "unavailable"
+    if changed_heads:
+        readme = worktree / "README.md"
+        readme.write_text(readme.read_text() + "\nfix here\n")
+        _git(worktree, "add", "README.md")
+        _git(worktree, "commit", "-m", "Fix during review")
+        state = DevelopmentState.load(tio.logs_dir / "demo" / ".runtime" / "booley_state.json")
+        from booley.specialists.reviewer import ReviewerSpecialist
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--scope",
+                "README.md",
+                "--category",
+                "rtl",
+                "--focus",
+                "bugs",
+                "--work-dir",
+                str(worktree),
+            ]
+        )
+        state.criteria["review_rtl_bugs_done"].detail["contract"] = (
+            endpoint._review_contract_detail()
+        )
+        state.criteria["review_rtl_bugs_done"].detail[SOURCE_FINGERPRINT_DETAIL_KEY][
+            "fingerprint"
+        ] = compute_source_fingerprint(worktree)
+        state.set_criterion("_report_submitted", True)
+        state.save()
+    retried = asyncio.run(review_command(root, "demo"))
+    assert retried.ready, retried.message
+    assert read_entry(tio.logs_dir / "demo")["disposition"] == "unaccepted"
+    assert read_acceptance(tio.logs_dir / "demo").kind == "unavailable"
+
+
+@pytest.mark.parametrize("kind", ["valid", "corrupt", "stale"])
+def test_real_prior_acceptance_never_auto_completes_advisory_findings(
+    blocked, monkeypatch, capsys, kind
+):
+    from booley.ticket_board.acceptance_ledger import freeze_acceptance, read_acceptance
+    from booley.ticket_board.operations import op_handoff
+    from booley.ticket_board.ticket_baseline import validate_current_basis_refs
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    root, tio, worktree = _advisory_running(blocked, monkeypatch)
+    log = tio.logs_dir / "demo"
+    state = DevelopmentState.load(log / ".runtime" / "booley_state.json")
+    basis = tio.load_basis("demo")
+    freeze_acceptance(
+        log,
+        state,
+        execution_id="first",
+        ticket_identity=basis.ticket_identity(),
+        participant_heads=validate_current_basis_refs(root, basis),
+    )
+    path = log / "acceptance" / "accepted.json"
+    if kind == "corrupt":
+        path.write_text("{")
+    elif kind == "stale":
+        (worktree / "README.md").write_text("after machine acceptance\n")
+        _git(worktree, "add", "README.md")
+        _git(worktree, "commit", "-m", "Change accepted head")
+    before = path.read_bytes()
+    assert op_handoff(tio, "demo") is (kind == "valid")
+    assert path.read_bytes() == before
+    assert tio.find_ticket("demo")["status"] == ("review" if kind == "valid" else "running")
+    assert not (log / "review" / "advisory-handoff.json").exists()
+    error = capsys.readouterr().err
+    assert error
+    if kind == "valid":
+        assert read_acceptance(log).kind == "accepted"
+        assert "booley board review demo" in error
+        assert "booley board approve demo" in error
+        assert op_handoff(tio, "demo", expected_execution_id="first")
+        from booley.ticket_board.review_lifecycle import approve_review_command, review_command
+
+        recovered = asyncio.run(review_command(root, "demo"))
+        assert recovered.status == "accepted", recovered.message
+        assert "human obligation" in recovered.message
+        assert "Current done review findings require explicit human approval" in recovered.message
+        assert path.read_bytes() == before
+        assert approve_review_command(root, "demo", no_merge=True, no_cleanup=True)
+        _assert_closed_done(tio, "demo")
+    elif kind == "stale":
+        assert "heads changed after acceptance" in error
+
+
+@pytest.mark.parametrize("drift", ["heads", "mandatory"])
+def test_selected_advisory_approval_keeps_ordinary_validation_gates(blocked, monkeypatch, drift):
+    from booley.ticket_board.acceptance_ledger import read_acceptance
+    from booley.ticket_board.operations import op_handoff
+    from booley.ticket_board.review_lifecycle import approve_review_command, review_command
+    from tests.ticket_board.test_ticket_baseline import _git
+
+    root, tio, worktree = _advisory_running(blocked, monkeypatch)
+    assert op_handoff(tio, "demo")
+    assert asyncio.run(review_command(root, "demo")).ready
+    if drift == "heads":
+        (worktree / "README.md").write_text("new head\n")
+        _git(worktree, "add", "README.md")
+        _git(worktree, "commit", "-m", "Change reviewed head")
+    else:
+        path = tio.logs_dir / "demo" / ".runtime" / "booley_state.json"
+        state = DevelopmentState.load(path)
+        state.set_criterion("review_rtl_bugs_done", False)
+        state.save()
+    with pytest.raises((ReviewEntryError, prep.ReviewPrepError)):
+        approve_review_command(root, "demo", no_merge=True)
+    assert read_acceptance(tio.logs_dir / "demo").kind == "unavailable"
+    assert tio.find_ticket("demo")["status"] == "review"
+
+
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("retained_mandatory", [None, False, True])

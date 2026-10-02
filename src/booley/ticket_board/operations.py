@@ -653,6 +653,16 @@ def op_handoff(
     if not _validate_transitions_for_handoff(tio, slug, entry):
         return False
     from booley.core.models import OnSuccess
+    from booley.criteria.state import DevelopmentState
+    from booley.evidence.review_dispositions import outstanding_done_findings
+
+    state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
+    if state_path.exists() and outstanding_done_findings(
+        DevelopmentState.load(state_path).criteria
+    ):
+        from .advisory_handoff import op_handoff_advisory
+
+        return op_handoff_advisory(tio, slug, expected_execution_id=expected_execution_id)
 
     on_success = OnSuccess.from_dict(entry.get("on_success") if entry else None)
 

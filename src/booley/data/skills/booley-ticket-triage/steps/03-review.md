@@ -80,6 +80,9 @@ appear with its justification.
 
 ## 3. Decision
 
+Present every open `_done` finding and get explicit Human approval; a met
+`_done` Criterion is not approval.
+
 For a briefing marked **unaccepted**, offer **fix here** / **refresh** /
 **approve when all mandatory Criteria are met** / **hold** / **reset** /
 **archive**. Keep the Ticket in review
