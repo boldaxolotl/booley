@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class TicketValidationError(ValueError):
+    """An externally authored Ticket failed document validation."""
+
+
 @dataclass
 class TicketFileSpec:
     """Metadata for creating a ticket file on disk."""
@@ -109,16 +113,19 @@ class TicketIO:
                 root = parent.parent
             else:
                 root = parent.parent.parent
-            # The Sandbox can mount the data dir as a top-level sibling
-            # (/booley-project, no dot), so the structural walk lands on the
-            # filesystem root — never a real project root (QA_REPORT D1).
-            # Recover from the cwd, mirroring detect_project_root().
-            if root == root.parent:
-                cwd = Path.cwd().resolve()
-                for cand in [cwd, *cwd.parents]:
-                    if (cand / ".booley_project").is_dir():
-                        root = cand
-                        break
+            from booley.runtime.project_discovery import (
+                discover_project_root,
+                has_git_worktree_marker,
+            )
+
+            if (
+                root == root.parent
+                or os.environ.get("RTL_PROJECT_ROOT")
+                or has_git_worktree_marker(parent)
+            ):
+                inferred = discover_project_root(parent, required=True)
+                if inferred is not None:
+                    root = inferred
             self._project_root = root
 
     @staticmethod
@@ -261,7 +268,7 @@ class TicketIO:
             result = convert_ticket_document(path.read_text(encoding="utf-8"), context)
         if result.document is None:
             details = "; ".join(item.message for item in result.diagnostics)
-            raise ValueError(f"Ticket {path.name} is invalid: {details}")
+            raise TicketValidationError(f"Ticket {path.name} is invalid: {details}")
         return result.document
 
     @staticmethod

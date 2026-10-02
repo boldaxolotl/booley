@@ -569,7 +569,7 @@ def _basis_branch(source: Path, expected_ref: str, expected_sha: str) -> str:
         )
     detail = (ancestry.stderr or ancestry.stdout).strip()
     raise TicketWorkspaceError(
-        f"could not validate paired Ticket baseline ref {expected_ref!r} "
+        f"cannot verify ancestry in {source} ({expected_sha} -> {head}, ref {expected_ref!r}) "
         f"(rc={ancestry.returncode}): {detail}"
     )
 

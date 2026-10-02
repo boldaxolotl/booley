@@ -382,7 +382,11 @@ def test_published_validation_rejects_authored_document_drift(project, capsys) -
     _assert_both_reject(root, path, capsys, "authored Ticket changed")
 
 
-def test_published_validation_rejects_missing_pinned_commit(project, capsys) -> None:
+def test_published_validation_reports_missing_pinned_commit_as_operational(
+    project, capsys
+) -> None:
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
     root, board = project
     path = _provider(root, board)
     content = path.read_text(encoding="utf-8")
@@ -390,7 +394,19 @@ def test_published_validation_rejects_missing_pinned_commit(project, capsys) -> 
     assert damaged != content
     path.write_text(damaged, encoding="utf-8")
 
-    _assert_both_reject(root, path, capsys, "commit")
+    capsys.readouterr()
+    assert main(["validate-ticket", str(path)]) == 2
+    output = capsys.readouterr()
+    assert "cannot verify ancestry" in output.err and "f" * 40 in output.err
+    assert "acceptance-input-change-required" not in output.err
+    assert "no longer descends" not in output.err
+    assert not output.out
+    with pytest.raises(TicketAncestryVerificationError, match="cannot verify ancestry") as caught:
+        DirectTicketOps().validate_ticket(root, str(path))
+    assert "f" * 40 in str(caught.value)
+    assert "acceptance-input-change-required" not in str(caught.value)
+    assert path.read_text(encoding="utf-8") == damaged
+    assert read_state_record(board.tickets_dir, "provider").state is TicketState.QUEUED
 
 
 def test_published_validation_rejects_invalid_machine_metadata(project, capsys) -> None:

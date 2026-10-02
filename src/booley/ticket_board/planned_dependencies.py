@@ -156,7 +156,7 @@ def target_surface_sha256(checkout: Path, target: str) -> str:
 
 
 def _provider(root: Path, tickets_dir: Path, slug: str) -> _Provider | None:
-    path, status = find_ticket_file(tickets_dir, slug)
+    path, status = find_ticket_file(tickets_dir, slug, project_root=root)
     if path is None or status is None or status == "done":
         return None
     if status not in _PROVIDER_STATES:

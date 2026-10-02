@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from booley.core.differences import format_differences
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import format_human_datetime
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 from booley.ticket_board.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 
 logger = logging.getLogger(__name__)
@@ -928,6 +929,9 @@ def _advance_waiting_ticket(
 ) -> dict[str, str] | None:
     """Block, keep waiting, or promote one waiting Ticket; return it if promoted."""
     slug = ticket.get("feature_branch") or slug_from_file(ticket.get("file", ""))
+    if ticket.get("ticket_error"):
+        print(f"Error: cannot promote '{slug}': {ticket['ticket_error']}", file=sys.stderr)
+        return None
     dependencies = ticket.get("dependencies", [])
     archived = sorted(dep for dep in dependencies if closed.get(dep) is TicketState.ARCHIVED)
     if archived:
@@ -1017,6 +1021,9 @@ def _promote_waiting_ticket(tio: Any, ticket: dict[str, Any]) -> dict[str, str] 
             ),
             before_move=refresh_basis,
         )
+    except TicketAncestryVerificationError as exc:
+        print(f"Error: cannot promote '{slug}': {exc}", file=sys.stderr)
+        ok = False
     except ValueError as exc:
         state["failed"] = True
         print(
@@ -1058,6 +1065,9 @@ def _refresh_waiting_basis(tio, ticket, slug, updates, state) -> bool:
             candidate = tio._prepare_spec_fields(path, {"machine": journal.machine})
             reconcile_refresh_runtime(tio, slug, candidate, journal)
             state["operation"] = operation
+    except TicketAncestryVerificationError as exc:
+        print(f"Error: cannot promote '{slug}': {exc}", file=sys.stderr)
+        return False
     except BasisRefreshError as exc:
         state["failed"] = True
         print(
@@ -1108,7 +1118,7 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
 def _acceptance_failure_detail(tio: Any, slug: str) -> str:
     try:
         current = tio.inspect_ticket(slug)
-    except (OSError, ValueError):
+    except (OSError, ValueError, TicketAncestryVerificationError):
         current = None
     if current is not None and current.get("status") == "review":
         return "ticket stays in review"
@@ -1879,7 +1889,12 @@ def _reset_ticket_branches(
             str(entry.get("branch", "")),
             plan=reset_plan,
         )
-    except (TicketBaselineOperationError, TicketBaselineError, OSError) as exc:
+    except (
+        TicketBaselineOperationError,
+        TicketBaselineError,
+        TicketAncestryVerificationError,
+        OSError,
+    ) as exc:
         print(
             f"Error: reset could not restore the Ticket baseline for '{slug}': {exc}",
             file=sys.stderr,
@@ -1909,7 +1924,12 @@ def _preflight_reset_branches(
             basis,
             str(entry.get("branch", "")),
         )
-    except (TicketBaselineOperationError, TicketBaselineError, OSError) as exc:
+    except (
+        TicketBaselineOperationError,
+        TicketBaselineError,
+        TicketAncestryVerificationError,
+        OSError,
+    ) as exc:
         print(
             f"Error: reset could not preflight the Ticket baseline for '{slug}': {exc}",
             file=sys.stderr,

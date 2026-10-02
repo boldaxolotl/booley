@@ -729,13 +729,15 @@ class TestSynthTimingConfigTomlBoundary:
         with pytest.raises(SystemExit, match="escapes the selected checkout"):
             syn_core.synth_timing_config(sdc=[str(outside)], project_root=tmp_path)
 
-    def test_missing_cli_sdc_file_raises_clear_error(self, monkeypatch):
+    def test_missing_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
         from booley.flows.synth.backends.yosys import core as syn_core
 
         # A silently-ignored bad path is the worst outcome; error loudly instead.
         self._with_timing(monkeypatch, {})
         with pytest.raises(SystemExit) as exc_info:
-            syn_core.synth_timing_config(sdc=["/nope/does_not_exist.sdc"])
+            syn_core.synth_timing_config(
+                project_root=tmp_path, sdc=[str(tmp_path / "does_not_exist.sdc")]
+            )
         assert "does_not_exist.sdc" in str(exc_info.value)
 
     def test_unreadable_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):

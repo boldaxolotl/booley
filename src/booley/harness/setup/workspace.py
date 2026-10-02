@@ -23,6 +23,7 @@ from booley.runtime.submodule_materialization import (
     materialize_project_submodules,
 )
 from booley.ticket_board.git_status import parse_porcelain_v1_z
+from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
 from booley.ticket_board.ticket_repositories import (
     paired_project_repository,
     project_repository_scope,
@@ -496,6 +497,19 @@ def _prepare_branch(
     )
 
 
+def _ancestry_verification_failure(
+    worktree_path: Path, expected_ref: str, ancestry: subprocess.CompletedProcess
+) -> StepResult | None:
+    if ancestry.returncode in (0, 1):
+        return None
+    return StepResult(
+        block_reason=(
+            f"cannot verify ancestry in {worktree_path} (rc {ancestry.returncode}, "
+            f"Ticket baseline ref {expected_ref!r}): {ancestry.stderr.strip()}"
+        )
+    )
+
+
 def _attach_clean_detached_basis_branch(
     worktree_path: Path,
     expected_ref: str,
@@ -518,13 +532,14 @@ def _attach_clean_detached_basis_branch(
         ["merge-base", "--is-ancestor", "HEAD", expected_ref],
         timeout=10,
     )
-    if ancestry.returncode != 0:
-        detail = ancestry.stderr.strip()
-        suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
+    failure = _ancestry_verification_failure(worktree_path, expected_ref, ancestry)
+    if failure is not None:
+        return failure
+    if ancestry.returncode == 1:
         return StepResult(
             block_reason=(
                 "Detached Ticket Workspace HEAD is not contained in "
-                f"Ticket baseline ref {expected_ref!r}{suffix}"
+                f"Ticket baseline ref {expected_ref!r}"
             )
         )
     branch = expected_ref.removeprefix("refs/heads/")
@@ -563,13 +578,14 @@ def _attach_basis_branch(ctx: TicketContext, worktree_path: Path) -> StepResult 
         ["merge-base", "--is-ancestor", basis.outer_sha, "HEAD"],
         timeout=10,
     )
-    if ancestry.returncode != 0:
-        detail = ancestry.stderr.strip()
-        suffix = f": {detail}" if detail and ancestry.returncode != 1 else ""
+    failure = _ancestry_verification_failure(worktree_path, expected_ref, ancestry)
+    if failure is not None:
+        return failure
+    if ancestry.returncode == 1:
         return StepResult(
             block_reason=(
                 f"Ticket Workspace branch {expected_ref!r} does not descend from "
-                f"Ticket baseline commit {basis.outer_sha}{suffix}"
+                f"Ticket baseline commit {basis.outer_sha}"
             )
         )
     ctx.feature_branch = expected_ref.removeprefix("refs/heads/")
@@ -790,7 +806,7 @@ def _validate_materialized_ticket_baseline(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except (OSError, TicketBaselineError) as exc:
+    except (OSError, TicketBaselineError, TicketAncestryVerificationError) as exc:
         return StepResult(block_reason=str(exc))
     return None
 
@@ -865,7 +881,7 @@ def _prepare_ticket_checkout(
             slug=ctx.slug,
             ticket_path=ticket_path,
         )
-    except TicketBaselineError as exc:
+    except (TicketAncestryVerificationError, TicketBaselineError) as exc:
         return StepResult(block_reason=str(exc))
 
 
