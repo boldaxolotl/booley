@@ -116,6 +116,7 @@ class BoundaryOutcome:
     yosys_complete: bool = False
     attempt_token: str = ""
     stage: str | None = None
+    openroad_diagnostic: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +565,24 @@ def boundary_output(
         ),
         attempt_token=plan.attempt_token,
         stage=stage,
+        openroad_diagnostic=(
+            _generic_master_diagnostic(diagnostic_sources.get("openroad", ""))
+            if physical
+            else None
+        ),
     )
+
+
+def _generic_master_diagnostic(text: str) -> str | None:
+    """Recognize only fresh OpenROAD generic-master mapping rejection."""
+    match = re.search(
+        r"^\[ERROR ORD-2013\] instance [^\r\n]+ LEF master (\$_[A-Za-z0-9_]+) not found\.\s*$",
+        text,
+        re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return match.group(0).strip()[:500]
 
 
 def _diagnostic_sources(

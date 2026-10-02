@@ -58,8 +58,6 @@ try:
 except ImportError:
     from booley_commit_policy import upstream_record
 
-_ZERO_SHA_PREFIX = "0000000"
-
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"
 # Kept local because this module is packaged into Projects and must run without
@@ -136,8 +134,18 @@ def _config(cwd, env):
         key, separator, value = field.partition(b"\n")
         if not separator:
             value = b""
-        values[key.decode("utf-8", "strict").lower()] = value.decode("utf-8", "strict")
+        values[key.decode("utf-8", "surrogateescape").lower()] = value.decode(
+            "utf-8", "surrogateescape"
+        )
     return values, raw
+
+
+def _structural_node_present(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def _repository_state(cwd, env, *, complete):
@@ -166,7 +174,7 @@ def _repository_state(cwd, env, *, complete):
     pack = objects / "pack"
     markers = (
         tuple(sorted(item for item in pack.iterdir() if item.name.endswith(".promisor")))
-        if pack.exists()
+        if _structural_node_present(pack)
         else ()
     )
     promisor = any(
@@ -179,10 +187,11 @@ def _repository_state(cwd, env, *, complete):
             "materialize a complete nonpromisor clone, or use Git supporting no-lazy-fetch inspection"
         )
     grafts = Path(env.get("GIT_GRAFT_FILE", str(common / "info" / "grafts")))
-    if grafts.exists() and grafts.read_bytes().strip():
+    graft_data = grafts.read_bytes() if _structural_node_present(grafts) else b""
+    if graft_data.strip():
         raise InspectionError("remove active Git grafts before inspection")
     stat = tuple((str(item), item.stat().st_mtime_ns, item.stat().st_size) for item in markers)
-    return common, objects, (raw, version, stat, grafts.read_bytes() if grafts.exists() else b"")
+    return common, objects, (raw, version, stat, graft_data)
 
 
 class _Protocol:
@@ -234,7 +243,12 @@ class _Inspection(_Protocol):
     def inventory(self, tips: list[str], exclusions=()) -> list[str]:
         if not tips:
             return []
-        raw = self.git(["rev-list", *tips, "--not", *exclusions]).decode("ascii").splitlines()
+        revisions = [*tips, *("^" + oid for oid in exclusions)]
+        raw = (
+            self.git(["rev-list", "--stdin"], data=("\n".join(revisions) + "\n").encode("ascii"))
+            .decode("ascii")
+            .splitlines()
+        )
         if any(not self.oid(value) for value in raw) or len(raw) != len(set(raw)):
             raise InspectionError("malformed outgoing commit inventory")
         return raw
@@ -292,6 +306,20 @@ class _Inspection(_Protocol):
         return list(dict.fromkeys(resolved))
 
 
+def _valid_ref_name(ref: str) -> bool:
+    if not ref.startswith("refs/") or ref.endswith(("/", ".")):
+        return False
+    if (
+        ".." in ref
+        or "@{" in ref
+        or any(ord(char) < 33 or ord(char) == 127 or char in "~^:?*[\\" for char in ref)
+    ):
+        return False
+    return all(
+        part and not part.startswith(".") and not part.endswith(".lock") for part in ref.split("/")
+    )
+
+
 def _updates(text, inspection):
     updates = []
     for line in text.splitlines():
@@ -301,18 +329,14 @@ def _updates(text, inspection):
         local_ref, local, remote_ref, old = fields
         if not inspection.oid(local) or not inspection.oid(old):
             raise InspectionError("invalid pre-push object ID")
-        for ref in (local_ref, remote_ref):
-            if ref == "(delete)" and ref == local_ref and set(local) == {"0"}:
-                continue
-            if ref == "HEAD" and ref == local_ref:
-                continue
-            if ref.startswith("refs/"):
-                if _run_git(
-                    ["check-ref-format", ref], cwd=inspection.root, env=inspection.env
-                ).returncode:
-                    raise InspectionError("invalid pre-push ref name")
-            elif ref != local or not inspection.oid(ref):
-                raise InspectionError("invalid pre-push ref name")
+        if not _valid_ref_name(remote_ref):
+            raise InspectionError("invalid pre-push ref name")
+        if local_ref == "(delete)":
+            if set(local) != {"0"}:
+                raise InspectionError("invalid pre-push deletion")
+        elif local_ref.startswith("refs/") and not _valid_ref_name(local_ref):
+            raise InspectionError("invalid pre-push ref name")
+        # Git preserves typed revision labels; only validated protocol OIDs reach queries.
         if set(local) != {"0"}:
             updates.append(_Update(local.lower(), old.lower()))
     return updates
@@ -363,8 +387,8 @@ def _transport_environment(root, location):
         raise InspectionError("repository transport denied by effective Git policy")
     for field in raw_config.split(b"\0"):
         key, _, replacement = field.partition(b"\n")
-        key = key.decode("utf-8").lower()
-        replacement = replacement.decode("utf-8")
+        key = key.decode("utf-8", "surrogateescape").lower()
+        replacement = replacement.decode("utf-8", "surrogateescape")
         if (
             key.startswith("url.")
             and key.endswith(".insteadof")
@@ -470,9 +494,7 @@ def _advertised(inspection, location, *, upstream=False):
         fields = line.decode("utf-8", "strict").split("\t")
         if len(fields) != 2 or not inspection.oid(fields[0]) or not fields[1].startswith("refs/"):
             raise InspectionError("malformed repository advertisement")
-        if _run_git(
-            ["check-ref-format", fields[1]], cwd=inspection.root, env=inspection.env
-        ).returncode:
+        if not _valid_ref_name(fields[1]):
             raise InspectionError("invalid advertised ref")
         ids.append(fields[0].lower())
     if (
@@ -505,7 +527,7 @@ def _outgoing_range(inspection, updates, destination, record):
             advertised = inspection.commits(
                 _advertised(inspection, record.repository, upstream=True)
             )
-            if not any(record.base in inspection.inventory([tip]) for tip in advertised):
+            if record.base not in inspection.inventory(advertised):
                 raise InspectionError(
                     "fetch the configured upstream history and retry; recorded base provenance unavailable"
                 )

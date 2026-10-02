@@ -616,3 +616,43 @@ def test_upstream_record_source_owner_never_loads_project_config(tmp_path, monke
 
     monkeypatch.setattr(policy, "_load_booley_config", forbidden)
     assert upstream_record(tmp_path) is None
+
+
+@pytest.mark.parametrize("target", ["missing.toml", "booley.toml"])
+def test_upstream_record_broken_config_node_refuses(tmp_path, target):
+    config = tmp_path / ".booley_project" / "booley.toml"
+    config.parent.mkdir()
+    try:
+        config.symlink_to(target)
+    except OSError:
+        pytest.skip("platform does not support symlink creation")
+    with pytest.raises(ValueError, match="cannot read selected"):
+        upstream_record(tmp_path)
+
+
+def test_upstream_record_stat_error_refuses(tmp_path, monkeypatch):
+    config = tmp_path / ".booley_project" / "booley.toml"
+    config.parent.mkdir()
+    original = Path.stat
+
+    def denied(path, *args, **kwargs):
+        if path == config:
+            raise PermissionError("denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(ValueError, match="cannot read selected"):
+        upstream_record(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "repository", ["http://example.test/repo", "git://example.test/repo", "ext::unsafe"]
+)
+def test_upstream_record_unsafe_url_is_not_scp(tmp_path, repository):
+    config = tmp_path / ".booley_project" / "booley.toml"
+    config.parent.mkdir()
+    config.write_text(
+        f'[stealth]\nupstream_repository = "{repository}"\nupstream_base = "{"f" * 40}"\n'
+    )
+    with pytest.raises(ValueError, match="literal URL or absolute path"):
+        upstream_record(tmp_path)

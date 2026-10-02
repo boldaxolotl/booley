@@ -88,7 +88,7 @@ def _load_booley_config(project_root: Path | None = None, *, strict: bool = Fals
     for subdir in directories:
         for name in _TOML_NAMES:
             toml_path = root / subdir / name
-            if toml_path.exists():
+            if _configuration_candidate(toml_path, strict=strict):
                 try:
                     with toml_path.open("rb") as f:
                         return tomllib.load(f)
@@ -97,6 +97,24 @@ def _load_booley_config(project_root: Path | None = None, *, strict: bool = Fals
                         raise ValueError("cannot read selected Project configuration") from e
                     logger.warning("Failed to parse %s: %s", toml_path, e)
     return {}
+
+
+def _configuration_candidate(path: Path, *, strict: bool) -> bool:
+    if not strict:
+        return path.exists()
+    try:
+        path.stat()
+    except FileNotFoundError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise ValueError("cannot read selected Project configuration") from exc
+        raise ValueError("cannot read selected Project configuration") from None
+    except OSError as exc:
+        raise ValueError("cannot read selected Project configuration") from exc
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +149,11 @@ def upstream_record(project_root: Path | None = None) -> UpstreamRecord | None:
         raise ValueError("[stealth] upstream_base must be a full immutable commit object ID")
     absolute = Path(repository).is_absolute()
     url = re.fullmatch(r"(?:https|ssh|file)://[^\s]+", repository)
-    scp = re.fullmatch(r"(?:[^\s/@:]+@)?[^\s/:]+:[^\s]+", repository)
+    scp = (
+        "://" not in repository
+        and "::" not in repository
+        and re.fullmatch(r"(?:[^\s/@:]+@)?[^\s/:]+:[^\s]+", repository)
+    )
     if not (absolute or url or scp):
         raise ValueError("[stealth] upstream_repository requires a literal URL or absolute path")
     return UpstreamRecord(repository, base.lower())

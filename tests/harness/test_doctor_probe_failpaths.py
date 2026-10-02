@@ -599,14 +599,21 @@ def test_vivado_outer_timeout_and_unavailable_runtime(monkeypatch):
     assert rec.kinds() == {"skip"}
 
 
-def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch):
+@pytest.mark.parametrize("delayed_exit", [False, True])
+def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch, delayed_exit):
     import os
+    import time
 
     fake = tmp_path / "bin"
     fake.mkdir()
     pid_file = tmp_path / "child.pid"
     vivado = fake / "vivado"
-    vivado.write_text(f'#!/bin/sh\nsleep 60 &\necho $! > "{pid_file}"\nwait\n')
+    child = (
+        "sh -c 'trap \"sleep 0.1; exit 0\" TERM; sleep 60' >/dev/null 2>&1"
+        if delayed_exit
+        else "sleep 60"
+    )
+    vivado.write_text(f'#!/bin/sh\n{child} &\necho $! > "{pid_file}"\nwait\n')
     vivado.chmod(0o755)
     monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("TMPDIR", str(tmp_path))
@@ -618,5 +625,16 @@ def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch):
     assert result.returncode == 124
     pid = int(pid_file.read_text())
     stat = Path(f"/proc/{pid}/stat")
-    assert not stat.exists() or stat.read_text().split()[2] == "Z"
+    # timeout waits for its direct child; group members finish asynchronously.
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            state = stat.read_text().split()[2]
+        except (FileNotFoundError, ProcessLookupError):
+            break
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"Vivado child {pid} did not terminate within 3 seconds")
     assert set(tmp_path.iterdir()) == {fake, pid_file}

@@ -368,6 +368,8 @@ class TestMain:
 
     def test_blocks_tracked_project_state_root(self, repo, monkeypatch, capsys):
         _configure_external_project_state(repo, monkeypatch)
+        # Isolate the tracked-path contract from strict configuration-node validation.
+        monkeypatch.setattr(pre_push_hook, "upstream_record", lambda root: None)
         (repo / ".booley_project").write_text("private project state\n", encoding="utf-8")
         _git(repo, "add", ".booley_project")
         _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add state")
@@ -1308,3 +1310,63 @@ def test_available_advertised_object_read_error_is_not_optional_discovery_failur
 
     monkeypatch.setattr(pre_push_hook, "_run_git", fail)
     assert _push(_head(repo)) == 1
+
+
+@pytest.mark.parametrize("node", ["objects/pack", "info/grafts"])
+@pytest.mark.parametrize("target", ["missing", "self"])
+def test_structural_inspection_broken_node_refuses(repo, node, target):
+    path = repo / ".git" / node
+    if path.is_dir():
+        path.rmdir()
+    try:
+        path.symlink_to(path.name if target == "self" else "missing")
+    except OSError:
+        pytest.skip("platform does not support symlink creation")
+    with pytest.raises((OSError, pre_push_hook.InspectionError)):
+        pre_push_hook._repository_state(repo, pre_push_hook._probe_environment(), complete=True)
+
+
+@pytest.mark.parametrize("label", ["HEAD~1", "@", "short"])
+def test_minimum_git_typed_push_source_label_uses_only_protocol_oid(matrix_repo, label):
+    repo = matrix_repo
+    _commit(repo, "fix(core): second clean commit")
+    source = _head(repo)[:7] if label == "short" else label
+    hook = repo / ".git" / "hooks" / "pre-push"
+    hook.write_text('#!/bin/sh\ncat > "$(git rev-parse --git-dir)/protocol-receipt"\n')
+    hook.chmod(0o755)
+    _git(repo, "push", "--dry-run", sys.argv[2], f"{source}:refs/heads/main")
+    protocol = (repo / ".git" / "protocol-receipt").read_text()
+    assert protocol.split()[0] == ("HEAD" if source == "@" else source)
+    with patch.object(sys, "stdin", io.StringIO(protocol)):
+        assert main() == 0
+
+
+def test_many_advertised_refs_use_bounded_inventory_arguments(repo, monkeypatch):
+    monkeypatch.chdir(repo)
+    oid = _head(repo)
+    payload = "".join(f"{oid}\trefs/heads/branch-{index}\n" for index in range(900)).encode()
+    original = pre_push_hook._run_git
+    calls = []
+
+    def advertisement(args, **kwargs):
+        calls.append((args, kwargs.get("data")))
+        if "ls-remote" in args:
+            return subprocess.CompletedProcess(args, 0, payload, b"")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", advertisement)
+    assert _push(oid) == 0
+    inspection = pre_push_hook._Inspection(repo)
+    assert inspection.inventory([oid], [oid] * 900) == []
+    assert any(data and len(data) > 32767 for args, data in calls if "rev-list" in args)
+    assert not any("check-ref-format" in args for args, _ in calls)
+    inventories = [(args, data) for args, data in calls if "rev-list" in args]
+    assert inventories and all("--stdin" in args and data for args, data in inventories)
+    assert all(len(args) < 10 for args, _ in inventories)
+
+
+def test_unrelated_non_utf8_git_config_preserves_push(repo, monkeypatch):
+    monkeypatch.chdir(repo)
+    with (repo / ".git" / "config").open("ab") as stream:
+        stream.write(b"\n[legacy]\n value = \xff\n")
+    assert _push(_head(repo)) == 0

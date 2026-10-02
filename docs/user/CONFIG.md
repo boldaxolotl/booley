@@ -1134,8 +1134,11 @@ permit them. Plaintext HTTP/Git, unsafe helpers, further `insteadOf` rewrites,
 detectably disabled SSH host/HTTPS certificate verification, and HTTPS redirects
 cannot establish authority. Default OpenSSH probes use batch mode and strict
 host checking. Owner SSH wrappers, SSH configuration, proxies, CA and trust-store
-choices remain trusted owner inputs; the hook does not audit them. Lookups have
-bounded timeouts and no stdin or terminal prompting.
+choices remain trusted owner inputs; the hook does not audit them. Lookups receive
+no stdin, and Git terminal prompting is disabled. Owner wrappers and nonstandard
+SSH variants must provide their own noninteractive behavior. The Git process has
+a timeout; descendant processes retaining Windows output pipes remain an owner
+transport limitation rather than a guaranteed process-tree deadline.
 
 Git 2.37.2 remains supported for complete repositories, including ordinary
 alternate/shared/symlink object storage. Git without `--no-lazy-fetch` support
