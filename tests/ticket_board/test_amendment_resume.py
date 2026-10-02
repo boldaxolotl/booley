@@ -258,6 +258,12 @@ def _apply_simulation_amendment(tio, cycle, kind):
         # Publish a second deterministic Simulator result below with an allowed result.
     else:
         request["criteria"] = [{"criterion": cycle, "make_optional": True}]
+        if kind.startswith("zero_mandatory"):
+            request["criteria"].extend(
+                {"criterion": row.identity, "make_optional": True}
+                for row in tio.load_document("amended").spec.criteria
+                if row.identity != cycle
+            )
     preview = preview_amendment(tio, "amended", request)
     return apply_amendment(tio, "amended", request, preview["digest"])
 
@@ -304,7 +310,7 @@ def _submit_execution_report(checkout):
     assert code == 0
 
 
-def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
+async def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
     from booley.ticket_board.acceptance_ledger import read_acceptance
     from booley.ticket_board.operations import op_handoff
     from booley.ticket_board.paths import human_log_file
@@ -335,17 +341,103 @@ def _finish_amended_execution(tio, state, ctx, kind, directory, monkeypatch):
     elif kind == "make_optional":
         assert state.criteria[cycle].mandatory is False
     _submit_execution_report(checkout)
+    if kind == "zero_mandatory_blocked":
+        _assert_current_declared_block(state._file_path, checkout, identity)
     human_log_file(tio.logs_dir, "amended", "run.log").write_text("Completed\n")
+    from booley.ticket_board import review_preparation as prep
+    from booley.ticket_board.review_lifecycle import approve_review_command
+
+    package = await prep.prepare_review(ctx.project_root, "amended")
+    assert package.ready, package.message
+    assert prep.verify_review_handoff(ctx.project_root, "amended").ready
     assert op_handoff(tio, "amended", expected_execution_id=ctx.execution_id)
     assert tio.read_progress("amended")["step"] == "summary"
     assert tio.find_ticket("amended")["status"] == "review"
+    if kind == "zero_mandatory_blocked":
+        _assert_real_package_rejections(ctx.project_root)
     frozen = read_acceptance(snapshot.parent).snapshot
     assert frozen is not None and frozen.ticket_identity == identity
+    assert prep.verify_review_handoff(ctx.project_root, "amended").ready
+    assert approve_review_command(ctx.project_root, "amended", no_merge=True, no_cleanup=True)
+    from booley.ticket_board.ticket_history import read_closed_ticket
+
+    assert read_closed_ticket(tio.tickets_dir, "amended") is not None
     return frozen
 
 
+def _assert_current_declared_block(state_path, checkout, identity):
+    from booley.criteria.state import CriterionEntry
+    from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
+
+    current = DevelopmentState.load(state_path)
+    reason = "Developer needs the exact Human decision?"
+    current.criteria["_blocked_reason"] = CriterionEntry(
+        met=True, mandatory=False, detail={"reason": reason}
+    )
+    current.save()
+    verdict = check_criteria_acceptance(state_path, work_dir=checkout, ticket_identity=identity)
+    assert verdict.disposition == "blocked"
+    assert verdict.blocked_reason == reason
+    current.set_criterion("_blocked_reason", False)
+    current.save()
+
+
+def _assert_real_package_rejections(root):
+    import json
+    from dataclasses import replace
+
+    from booley.ticket_board import review_preparation as prep
+
+    ctx = prep._resolve_context(root, "amended", allow_report_disabled=True)
+    path = prep._manifest_path(ctx)
+    original = path.read_bytes()
+    manifest = json.loads(original)
+    fields = (
+        "version",
+        "prompt_sha256",
+        "ticket_generation",
+        "base_sha",
+        "head_sha",
+        "source_sha256",
+    )
+    try:
+        changed = {**manifest, **dict.fromkeys(fields, "wrong")}
+        path.write_text(json.dumps(changed))
+        with pytest.raises(prep.ReviewPrepError) as error:
+            prep.verify_review_handoff(root, "amended")
+        for key in fields:
+            assert key in str(error.value)
+            assert f"expected={manifest[key]!r}" in str(error.value)
+        assert "actual='wrong'" in str(error.value)
+        path.write_text(json.dumps({**manifest, "status": "running"}))
+        with pytest.raises(prep.ReviewPrepError, match="status expected='ready' actual='running'"):
+            prep.verify_review_handoff(root, "amended")
+        path.write_text(json.dumps({**manifest, "inspection_artifacts": {"../escape": "wrong"}}))
+        assert "inspection artifacts" in prep.review_package_rejection(
+            replace(ctx, inspection={}),
+            json.loads(path.read_text()),
+            manifest["prompt_sha256"],
+            manifest["source_sha256"],
+        )
+        path.write_text(json.dumps({**manifest, "briefing_sha256": "wrong"}))
+        with pytest.raises(prep.ReviewPrepError, match="briefing missing or corrupt"):
+            prep.verify_review_handoff(root, "amended")
+    finally:
+        path.write_bytes(original)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["threshold", "scope_add", "make_optional", "threshold_reuse"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "threshold",
+        "scope_add",
+        "make_optional",
+        "threshold_reuse",
+        "zero_mandatory",
+        "zero_mandatory_blocked",
+    ],
+)
 @pytest.mark.parametrize("drop_snapshot", [False, True])
 async def test_amended_ticket_resumes_simulation_and_reaches_review(
     tmp_path: Path,
@@ -393,7 +485,9 @@ async def test_amended_ticket_resumes_simulation_and_reaches_review(
     state = DevelopmentState.load(state._file_path)
     if kind.startswith("threshold"):
         assert state.criteria[cycle].met is (kind == "threshold_reuse")
-    frozen = _finish_amended_execution(tio, state, ctx, kind, tmp_path / "fresh", monkeypatch)
+    frozen = await _finish_amended_execution(
+        tio, state, ctx, kind, tmp_path / "fresh", monkeypatch
+    )
     _assert_retired_simulation_history(state, result, frozen, snapshot, applied)
 
 
@@ -744,3 +838,120 @@ async def test_successful_old_amendment_runtime_is_repaired_without_pending_jour
     assert rebuilt.criteria["review_rtl_bugs_clean"].mandatory is False
     assert not rebuilt.criteria["review_rtl_bugs_clean"].met
     assert (history.parent / f"{result['operation_id']}.repair.prior-state.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_report_disabled_zero_mandatory_amendment_declares_gate_and_finalizes(
+    tmp_path, monkeypatch
+):
+    from booley.harness.setup.intake import run
+    from booley.runtime.project_dir import reset_cache
+    from booley.ticket_board.operations import op_block
+
+    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PROJECT_ROOT", str(root))
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
+    monkeypatch.setattr("booley.config.project_config.is_run_report_enabled", lambda: False)
+    reset_cache()
+    del state.criteria["_report_submitted"]
+    state.save()
+    old = tio.load_basis("amended").ticket_identity()
+    _publish_simulation(root, tio, state, old, tmp_path)
+    cycle = next(
+        name for name, entry in state.criteria.items() if "cycle_count_max" in entry.params
+    )
+    assert op_block(tio, "amended", "implementation", "Human amendment needed")
+    _apply_simulation_amendment(tio, cycle, "zero_mandatory")
+    ctx = await run("amended", root)
+    current = DevelopmentState.load(state._file_path)
+    assert "_report_submitted" in current.criteria
+    assert current.authorized_zero_mandatory_basis_id
+    await _finish_amended_execution(
+        tio, current, ctx, "zero_mandatory", tmp_path / "fresh", monkeypatch
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_compensation_cannot_resurrect_report_on_real_simulation_replay(
+    tmp_path, monkeypatch
+):
+    from booley.flows.execution_persistence import AcceptanceRecordingError
+    from booley.mcp.submit_run_report import SubmitRunReportMcpTool
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+    from booley.ticket_board.report_submission import read_receipt
+
+    root, tio, state, basis, identity, snapshot, checkout = _mounted_simulation_for_report(
+        tmp_path, monkeypatch
+    )
+    original_record = TicketAcceptanceRecorder.record_changes
+    original_publish = SubmitRunReportMcpTool.write_report
+    calls = 0
+
+    def record(self, state, changes, **kwargs):
+        if any(change.key == "_report_submitted" and not change.met for change in changes):
+            raise AcceptanceRecordingError("compensation unavailable")
+        return original_record(self, state, changes, **kwargs)
+
+    def publish(self, result):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("candidate publication failed")
+        return original_publish(self, result)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(TicketAcceptanceRecorder, "record_changes", record)
+        patch.setattr(SubmitRunReportMcpTool, "write_report", publish)
+        code = SubmitRunReportMcpTool().main(
+            [
+                "--work-dir",
+                str(checkout),
+                "--summary",
+                "Verified.",
+                "--coverage-added",
+                "Simulation.",
+                "--uncertainties",
+                "None.",
+                "--file-justifications",
+                "{}",
+            ]
+        )
+    assert code == 2
+    assert read_receipt(snapshot.parent)["status"] == "failed"
+    state = DevelopmentState.load(state._file_path)
+    _publish_simulation(root, tio, state, identity, tmp_path / "replay", current=375)
+    reloaded = DevelopmentState.load(state._file_path)
+    assert not reloaded.is_met("_report_submitted")
+    frozen = freeze_acceptance(
+        snapshot.parent,
+        reloaded,
+        execution_id="",
+        ticket_identity=identity,
+        participant_heads={"outer": basis.participant("outer").authoring_sha},
+    )
+    assert not frozen.criteria["_report_submitted"]["met"]
+
+
+def _mounted_simulation_for_report(tmp_path, monkeypatch):
+    from booley.ticket_board.ticket_baseline import worktree_for_ref
+
+    root, _ticket, tio, state, _ = _simulation_ticket(tmp_path)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PROJECT_ROOT", str(root))
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
+    from booley.runtime.project_dir import reset_cache
+
+    reset_cache()
+    basis = tio.load_basis("amended")
+    identity = basis.ticket_identity()
+    _publish_simulation(root, tio, state, identity, tmp_path / "first", current=375)
+    snapshot = tio.logs_dir / "amended/ticket.md"
+    snapshot.write_bytes(_ticket.read_bytes())
+    from types import SimpleNamespace
+
+    checkout = worktree_for_ref(root, basis.participant("outer").ticket_ref)
+    _mount_amended_execution(
+        SimpleNamespace(execution_id=""), state, snapshot, checkout, monkeypatch
+    )
+    return root, tio, state, basis, identity, snapshot, checkout

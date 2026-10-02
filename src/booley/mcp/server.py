@@ -3355,11 +3355,12 @@ async def _run_inline_endpoint(
     jobs: _JobManager,
     *,
     publish_activity: bool,
+    invocation_id: str | None = None,
 ) -> tuple[int, str, str, bool]:
     """Run inline work, recording only user-visible endpoint activity."""
     if publish_activity:
         return await jobs.run_synchronous(name, cmd, timeout)
-    identity = DisplayIdentity.current(uuid.uuid4().hex)
+    identity = DisplayIdentity.current(invocation_id or uuid.uuid4().hex)
     try:
         result = await _run_subprocess(
             cmd,
@@ -3406,22 +3407,97 @@ async def _dispatch_booley_mcp_tool(
     if name in _ASYNC_JOB_MCP_TOOLS:
         return await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs)
 
+    report_attempt = uuid.uuid4().hex if name == "submit_run_report" else None
     exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
         name,
         cmd,
         mcp_tool_timeout,
         jobs,
         publish_activity=bool(mcp_tool_def.get("is_flow") or mcp_tool_def.get("is_specialist")),
+        invocation_id=report_attempt,
     )
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
     )
     report = None if skip_report else _try_read_report()
+    report, stdout, stderr, exit_code = _report_completion(
+        report_attempt, report, stdout, stderr, exit_code
+    )
     content = [
         TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
     ]
     rendered = _with_structured_report(content, report)
     return _dispatch_result(rendered, is_error=exit_code != 0)
+
+
+def _report_completion(report_attempt, report, stdout, stderr, exit_code):
+    if report_attempt is not None:
+        report, diagnosis = _committed_submission_report(report, report_attempt, exit_code)
+        if diagnosis:
+            stderr = "\n".join(part for part in (stderr, diagnosis) if part)
+            stdout = ""
+            if report is None and exit_code == 0:
+                exit_code = 2
+    return report, stdout, stderr, exit_code
+
+
+def _current_report_met(log_dir: Path, identity: dict[str, Any]) -> bool:
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board.acceptance_ledger import project_report_state
+    from booley.ticket_board.paths import existing_ticket_runtime_file
+
+    state = DevelopmentState.load(existing_ticket_runtime_file(log_dir, "booley_state.json"))
+    project_report_state(state, log_dir, identity=identity)
+    entry = state.criteria.get("_report_submitted")
+    return entry is not None and entry.met
+
+
+def _committed_submission_report(report, submission_id, exit_code):
+    from booley.ticket_board import report_submission as submission
+
+    logs = os.environ.get("BOOLEY_LOGS_DIR")
+    try:
+        receipt = submission.read_receipt(Path(logs)) if logs else None
+    except submission.ReportSubmissionError as exc:
+        return None, f"Report submission completion could not be verified: {exc}"
+    if (
+        not receipt
+        or receipt["submission_id"] != submission_id
+        or receipt["status"] != "completed"
+    ):
+        return (
+            None,
+            "Report submission interrupted or failed before commit; submit the report again.",
+        )
+    try:
+        from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+
+        identity = TicketAcceptanceRecorder()._validated_ticket_identity()
+        if not submission.effective_met(
+            Path(logs),
+            True,
+            {submission.ID_KEY: submission_id, submission.DIGEST_KEY: receipt["report_sha256"]},
+            identity=identity,
+        ):
+            return None, "Committed report no longer matches current Ticket identity or digest."
+        met = _current_report_met(Path(logs), identity)
+    except (submission.ReportSubmissionError, RuntimeError, OSError) as exc:
+        return None, f"Report submission completion outcome could not be verified: {exc}"
+    if report and report.get("detail", {}).get("report_submission_id") != submission_id:
+        report = None
+    committed = dict(report or {})
+    committed.update(criterion_key="_report_submitted", criterion_met=met)
+    committed["report_text"] = "Report submission committed."
+    committed["detail"] = {**committed.get("detail", {}), "report_submission_status": "completed"}
+    diagnoses = []
+    if exit_code:
+        diagnoses.append("Report committed, but process completion was abnormal.")
+    if not met:
+        diagnoses.append(
+            "Report committed, but current report evidence was invalidated or is unavailable."
+        )
+    diagnosis = " ".join(diagnoses)
+    return committed, diagnosis
 
 
 def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> int:

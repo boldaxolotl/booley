@@ -586,7 +586,11 @@ def _freeze_handoff_snapshot(
         return False
     state = DevelopmentState.load(state_path)
     work_dir = Path(state.work_dir) if state.work_dir else None
-    verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
+    verdict = check_criteria_acceptance(
+        state_path,
+        work_dir=work_dir,
+        ticket_identity=tio._load_basis_unlocked(slug).ticket_identity(),
+    )
     if verdict.disposition != "review":
         print(
             f"Error: cannot hand off '{slug}': acceptance is {verdict.disposition}",

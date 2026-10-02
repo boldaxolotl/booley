@@ -31,12 +31,21 @@ import argparse
 import json
 import logging
 import os
+import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.flows.endpoint_session import PreparedExecution
 from booley.runtime import job_records as jobrec
+from booley.runtime.endpoint_execution import (
+    EndpointOutcome,
+    ExecutionResult,
+    normalize_completion_error,
+)
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import format_human_datetime, format_human_datetime_safe
+from booley.ticket_board import report_submission as submission
 from booley.ticket_board.paths import session_jobs_dir
 from booley.ticket_board.ticket_repositories import TicketWorkspaceError, pending_ticket_changes
 
@@ -79,6 +88,150 @@ class SubmitRunReportMcpTool(McpTool):
     )
     code_modifying: bool = False
     config_aware: bool = False
+
+    def _submission_identity(self) -> dict:
+        from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+
+        recorder = self._acceptance_recorder
+        if isinstance(recorder, TicketAcceptanceRecorder):
+            return recorder._validated_ticket_identity()
+        return {}
+
+    def _validate_submission_authority(self) -> None:
+        from booley.runtime.execution_lease import validate_recording
+
+        validate_recording(getattr(self.args, "work_dir", None))
+        if self._submission_identity() != self._submission_expected_identity:
+            raise submission.ReportSubmissionError(
+                "Ticket identity changed during report submission"
+            )
+        if os.environ.get("BOOLEY_EXECUTION_ID", "") != self._submission_execution_id:
+            raise submission.ReportSubmissionError(
+                "Ticket execution changed during report submission"
+            )
+
+    def record_acceptance(self, prepared: PreparedExecution, outcome: EndpointOutcome) -> None:
+        if outcome.exit_code == EXIT_SUCCESS and getattr(self, "_submission", None) is not None:
+            candidate = deepcopy(self.state)
+            changes = candidate.set_criterion(
+                _REPORT_CRITERION, True, detail=self._candidate_detail
+            )
+            if not changes:
+                raise submission.ReportSubmissionError(
+                    "report gate is undeclared; initialize Ticket Criteria before submitting"
+                )
+            self._record_acceptance_changes(changes)
+            self._candidate_entry = candidate.criteria[_REPORT_CRITERION]
+            self.state.criteria[_REPORT_CRITERION] = deepcopy(self._candidate_entry)
+            self.state.criteria[_REPORT_CRITERION].met = False
+        super().record_acceptance(prepared, outcome)
+
+    def _post_run(self, result: EndpointOutcome, duration: float) -> None:
+        if getattr(self, "_candidate_entry", None) is None:
+            super()._post_run(result, duration)
+            return
+        self.state.record_mcp_tool_run(
+            self.name,
+            result.exit_code,
+            endpoint_kind=self.endpoint_kind,
+            duration_s=duration,
+            criteria_set=list(self._pending_criteria_set or ()) or None,
+            cost_usd=result.cost_usd or None,
+        )
+        candidate = deepcopy(self.state)
+        candidate.criteria[_REPORT_CRITERION] = self._candidate_entry
+        candidate.save()
+        _emit_criteria_update(self.state)
+
+    def finish_execution(
+        self,
+        prepared: PreparedExecution,
+        outcome: EndpointOutcome,
+        *,
+        started: float | None,
+        acceptance_recorded: bool,
+    ) -> ExecutionResult:
+        attempt = getattr(self, "_submission", None)
+        try:
+            try:
+                result = super().finish_execution(
+                    prepared, outcome, started=started, acceptance_recorded=acceptance_recorded
+                )
+            except Exception as exc:  # noqa: BLE001 - normalize the submission lifecycle boundary
+                normalize_completion_error(outcome, exc, "publish report completion")
+                result = ExecutionResult(exit_code=EXIT_ERROR, outcome=outcome)
+            if attempt is None:
+                return result
+            if result.exit_code == EXIT_SUCCESS:
+                try:
+                    attempt.commit()
+                except submission.UnknownReportCommitError as exc:
+                    normalize_completion_error(result.outcome, exc, "commit report submission")
+                    result.outcome.criterion_key = None
+                    result.outcome.criterion_met = None
+                    self.state.criteria[_REPORT_CRITERION].met = False
+                    result.outcome.detail["report_submission_status"] = "unknown"
+                    self._publish_failed_completion(result.outcome)
+                    return ExecutionResult(exit_code=EXIT_ERROR, outcome=result.outcome)
+                except Exception as exc:  # noqa: BLE001 - normalize the submission lifecycle boundary
+                    normalize_completion_error(result.outcome, exc, "commit report submission")
+            if attempt.committed:
+                self.state.criteria[_REPORT_CRITERION].met = True
+                return ExecutionResult(exit_code=result.outcome.exit_code, outcome=result.outcome)
+            self._fail_submission(result.outcome)
+            return ExecutionResult(exit_code=EXIT_ERROR, outcome=result.outcome)
+        finally:
+            if attempt is not None:
+                attempt.close()
+
+    def _fail_submission(self, outcome: EndpointOutcome) -> None:
+        outcome.criterion_key = None
+        outcome.criterion_met = None
+        outcome.detail["report_submission_status"] = "uncommitted"
+        for operation, action in (
+            ("fence failed report", self._submission.fail),
+            ("invalidate report gate", self._invalidate_report_gate),
+        ):
+            try:
+                action()
+            except Exception as exc:  # noqa: BLE001 - normalize the submission lifecycle boundary
+                normalize_completion_error(outcome, exc, operation)
+        self._publish_failed_completion(outcome)
+
+    def _publish_failed_completion(self, outcome: EndpointOutcome) -> None:
+        from booley.flows.endpoint_events import _endpoint_end_event, _write_display_event
+
+        outcome.summary = "Report submission " + outcome.detail.get(
+            "report_submission_status", "uncommitted"
+        )
+        for operation, action in (
+            ("publish report failure diagnosis", lambda: self._publish_console_report(outcome)),
+            (
+                "publish report failure event",
+                lambda: _write_display_event(
+                    _endpoint_end_event(
+                        self.name, None, outcome, 0, identity=self._display_identity
+                    )
+                ),
+            ),
+        ):
+            try:
+                action()
+            except Exception as exc:  # noqa: BLE001 - completion publication boundary
+                normalize_completion_error(outcome, exc, operation)
+        for _attempt in range(2):
+            try:
+                self.write_report(outcome)
+                return
+            except Exception as exc:  # noqa: BLE001 - bounded structured report recovery
+                normalize_completion_error(outcome, exc, "publish report failure")
+
+    def _invalidate_report_gate(self) -> None:
+        changes = self.state.set_criterion(_REPORT_CRITERION, False)
+        try:
+            self._record_acceptance_changes(changes)
+        finally:
+            self.state.save()
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Refuse the final report until every detached ticket job is terminal."""
@@ -273,18 +426,18 @@ class SubmitRunReportMcpTool(McpTool):
             optional_criteria_justification=self.args.optional_criteria_justification,
         )
 
-        # Set the internal criterion so criteria_acceptance can verify the
-        # report was submitted before transitioning the ticket to review.
-        self.set_criterion(
-            _REPORT_CRITERION,
-            True,
-            detail={
-                "report_path": str(report_path) if report_path else "",
-                "ticket_type": ticket_type,
-                "unmet_optional_criteria": unmet_optional,
-                "file_justifications": self.file_justifications,
-            },
-        )
+        if _REPORT_CRITERION not in self.state.criteria:
+            raise submission.ReportSubmissionError(
+                "report gate is undeclared; initialize Ticket Criteria before submitting"
+            )
+        self._candidate_detail = {
+            "report_path": str(report_path) if report_path else "",
+            "ticket_type": ticket_type,
+            "unmet_optional_criteria": unmet_optional,
+            "file_justifications": self.file_justifications,
+            submission.ID_KEY: self._submission.row["submission_id"],
+            submission.DIGEST_KEY: self._submission.row["report_sha256"],
+        }
 
         wrote = (
             f"Wrote {report_path}"
@@ -293,9 +446,15 @@ class SubmitRunReportMcpTool(McpTool):
         )
         return McpToolResult(
             exit_code=EXIT_SUCCESS,
-            criterion_key=_REPORT_CRITERION,
-            criterion_met=True,
-            report_text=self._confirmation_text(wrote),
+            criterion_key=None,
+            criterion_met=None,
+            summary="Report candidate uncommitted; awaiting completion commit.",
+            report_text=self._confirmation_text(wrote)
+            + "\nReport candidate pending completion commit.",
+            detail={
+                "report_submission_status": "pending",
+                "report_submission_id": self._submission.row["submission_id"],
+            },
         )
 
     def _clean_worktree_gate(self) -> McpToolResult | None:
@@ -600,11 +759,7 @@ class SubmitRunReportMcpTool(McpTool):
         unmet_optional: list[str],
         optional_criteria_justification: str | None,
     ) -> str | None:
-        """Render REPORT.md and write it to the human-facing ticket log root.
-
-        Returns the absolute path written, or None when no report_dir is
-        configured (human / standalone mode).
-        """
+        """Render and stage REPORT.md, returning its path when configured."""
         logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
         report_dir = Path(logs_dir) if logs_dir else self.args.report_dir
         if report_dir is None:
@@ -640,9 +795,26 @@ class SubmitRunReportMcpTool(McpTool):
             f"{file_section}"
         )
 
+        return self._stage_report(report_dir, content)
+
+    def _stage_report(self, report_dir: Path, content: str) -> str:
+        """Stage bytes under one validated submission attempt."""
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / "REPORT.md"
-        report_path.write_text(content, encoding="utf-8")
+        from booley.runtime.execution_lease import validate_recording
+
+        validate_recording(getattr(self.args, "work_dir", None))
+        attempt_id = os.environ.get("BOOLEY_DISPLAY_INVOCATION_ID") or uuid.uuid4().hex
+        self._submission_expected_identity = self._submission_identity()
+        self._submission_execution_id = os.environ.get("BOOLEY_EXECUTION_ID", "")
+        self._submission = submission.Submission(
+            report_dir,
+            attempt_id,
+            self._submission_expected_identity,
+            self._submission_execution_id,
+            validate=self._validate_submission_authority,
+        )
+        self._submission.stage(content.encode("utf-8"))
         return str(report_path)
 
 

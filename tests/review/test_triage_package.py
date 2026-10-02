@@ -1196,3 +1196,30 @@ def test_reviewer_disposition_markdown_is_inert():
     rendered = "\n".join(lines)
     assert "\\<script>\\|bad" in rendered
     assert "bad\ntext" not in rendered
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_triage_uses_only_effective_report_and_justifications(tmp_path, completed):
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board import report_submission as rs
+
+    ctx = _context(tmp_path)
+    state = DevelopmentState.load(ctx.log_dir / ".runtime/booley_state.json")
+    state.set_criterion(rs.KEY, False)
+    attempt = rs.Submission(ctx.log_dir, "a" * 32, {}, "execution")
+    attempt.stage(b"candidate report")
+    detail = {
+        rs.ID_KEY: "a" * 32,
+        rs.DIGEST_KEY: attempt.row["report_sha256"],
+        "file_justifications": {"rtl/new.sv": "Explained change."},
+    }
+    state.set_criterion(rs.KEY, True, detail=detail)
+    state.save()
+    if completed:
+        attempt.commit()
+    attempt.close()
+    facts = _facts(ctx)
+    assert bool(facts["scope"]["file_justifications"]) is completed
+    report = Path(facts["developer_report_path"])
+    assert (report == ctx.log_dir / "REPORT.md") is completed
+    assert (b"candidate report" in report.read_bytes()) is completed

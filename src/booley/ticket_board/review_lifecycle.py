@@ -100,7 +100,13 @@ def _capture_state(ctx: prep.ReviewPrepContext) -> dict[str, Any]:
             criteria[key] = {"met": False, "mandatory": mandatory, "availability": "unavailable"}
     for key, value in criteria.items():
         require_dict(value, field=f"criterion {key}")
-    return {**state, "criteria": criteria}
+    from .acceptance_ledger import project_report_mapping as project_mapping
+    from .report_submission import synchronize
+
+    synchronize(ctx.log_dir)
+    return project_mapping(
+        {**state, "criteria": criteria}, ctx.log_dir, identity=ctx.ticket_identity
+    )
 
 
 def _capture(
@@ -194,6 +200,7 @@ def _acceptance_ready(tio: TicketIO, ctx: prep.ReviewPrepContext) -> None:
     verdict = check_criteria_acceptance(
         ctx.log_dir / ".runtime" / "booley_state.json",
         work_dir=ctx.worktree,
+        ticket_identity=ctx.ticket_identity,
     )
     if verdict.disposition != "review":
         raise ReviewEntryError(f"acceptance is {verdict.disposition}: {verdict}")
@@ -332,7 +339,12 @@ def _recover_publication(tio, slug, operation):
     _prompt, prompt_sha = prep._review_prompt(ctx)
     outcome = prep._fresh_outcome(ctx, manifest, prompt_sha, operation["source_sha"])
     if outcome is None:
-        raise ReviewEntryError("interrupted package is stale or corrupt")
+        raise ReviewEntryError(
+            "interrupted package is stale or corrupt: "
+            + str(
+                prep.review_package_rejection(ctx, manifest, prompt_sha, operation["source_sha"])
+            )
+        )
     _commit(tio, ctx, operation)
     return outcome
 
@@ -567,7 +579,10 @@ def _require_selected_package(
     manifest = prep._read_manifest(ctx)
     _prompt, prompt_sha = prep._review_prompt(ctx)
     if prep._fresh_outcome(ctx, manifest, prompt_sha, row["capture_sha"]) is None:
-        raise ReviewEntryError("selected package is missing or stale; run board review first")
+        raise ReviewEntryError(
+            "selected package is missing or stale; run board review first: "
+            + str(prep.review_package_rejection(ctx, manifest, prompt_sha, row["capture_sha"]))
+        )
 
 
 def _approve_done_ticket(tio: TicketIO, slug: str, *, no_merge: bool, no_cleanup: bool) -> bool:
@@ -761,8 +776,8 @@ def _verified_accepted_handoff(
         )
     except StaleAcceptanceError:
         raise
-    except (AcceptanceLedgerError, prep.ReviewPrepError, OSError, ValueError):
-        return prep.ReviewPrepOutcome("accepted", guidance)
+    except (AcceptanceLedgerError, prep.ReviewPrepError, OSError, ValueError) as exc:
+        return prep.ReviewPrepOutcome("accepted", guidance + f"; package verification: {exc}")
     return replace(outcome, message=guidance)
 
 

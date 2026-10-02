@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -94,6 +94,7 @@ def check_criteria_acceptance(
     *,
     work_dir: Path | None = None,
     provisional: ProvisionalJudge | None = None,
+    ticket_identity: Mapping[str, Any] | None = None,
 ) -> CriteriaVerdict:
     """Read state file and determine ticket disposition.
 
@@ -125,7 +126,7 @@ def check_criteria_acceptance(
     refresh_verification_freshness(state, work_dir=work_dir)
     _enforce_acceptance_evidence(state, work_dir=work_dir)
     stats = _compute_criteria_stats(state.criteria)
-    verdict = _determine_disposition(state, stats, provisional)
+    verdict = _determine_disposition(state, stats, provisional, ticket_identity=ticket_identity)
     verdict.unverified_transitions = _find_unverified_transitions(state.criteria)
     note = verdict.unverified_transitions_note()
     if note:
@@ -448,11 +449,10 @@ def _compute_criteria_stats(
     }
 
 
-def _active_declared_block_reason(state, stats: dict) -> str | None:
+def _active_declared_block_reason(state) -> str | None:
     """Return the active Developer Agent-declared reason for this projection."""
-    all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
     blocked_entry = state.criteria.get("_blocked_reason")
-    if blocked_entry and blocked_entry.met and not all_mandatory_met:
+    if blocked_entry and blocked_entry.met:
         return blocked_entry.detail.get("reason", "blocked by agent")
     return None
 
@@ -464,9 +464,7 @@ def project_active_declared_block_reason(state_path: Path, *, work_dir: Path | N
     state = DevelopmentState.load(state_path)
     if not state.criteria:
         return None
-    refresh_verification_freshness(state, work_dir=work_dir, persist=False)
-    _enforce_acceptance_evidence(state, work_dir=work_dir, persist=False)
-    return _active_declared_block_reason(state, _compute_criteria_stats(state.criteria))
+    return _active_declared_block_reason(state)
 
 
 def _missing_mandatory_verdict(state, base: dict) -> CriteriaVerdict:
@@ -483,9 +481,11 @@ def _missing_mandatory_verdict(state, base: dict) -> CriteriaVerdict:
     )
 
 
-def _all_mandatory_met_verdict(state, stats: dict, base: dict) -> CriteriaVerdict:
+def _all_mandatory_met_verdict(
+    state, stats: dict, base: dict, *, ticket_identity: Mapping[str, Any] | None = None
+) -> CriteriaVerdict:
     """Apply the Developer Report gate after all mandatory Criteria pass."""
-    report_error = _run_report_gate_error(state)
+    report_error = _run_report_gate_error(state, ticket_identity=ticket_identity)
     if report_error:
         logger.warning(
             "All visible mandatory criteria met for %s, but %s -- "
@@ -503,7 +503,11 @@ def _all_mandatory_met_verdict(state, stats: dict, base: dict) -> CriteriaVerdic
 
 
 def _determine_disposition(
-    state, stats: dict, provisional: ProvisionalJudge | None = None
+    state,
+    stats: dict,
+    provisional: ProvisionalJudge | None = None,
+    *,
+    ticket_identity: Mapping[str, Any] | None = None,
 ) -> CriteriaVerdict:
     """Decide ticket disposition from criteria stats and blocked reason."""
     all_mandatory_met = stats["mandatory_met"] == stats["mandatory"]
@@ -514,8 +518,8 @@ def _determine_disposition(
         "mandatory_met": stats["mandatory_met"],
     }
 
-    # Check _blocked_reason — only when mandatory criteria are NOT all met.
-    reason = _active_declared_block_reason(state, stats)
+    # Current Developer blocks apply independently of mandatory Criteria.
+    reason = _active_declared_block_reason(state)
     if reason is not None:
         logger.info("Ticket %s blocked: %s", state.slug, reason)
         return CriteriaVerdict(disposition="blocked", blocked_reason=reason, **base)
@@ -524,10 +528,10 @@ def _determine_disposition(
         return _missing_mandatory_verdict(state, base)
 
     if all_mandatory_met:
-        return _all_mandatory_met_verdict(state, stats, base)
+        return _all_mandatory_met_verdict(state, stats, base, ticket_identity=ticket_identity)
 
     if provisional is not None and set(stats["unmet"]) <= provisional(state, stats["unmet"]):
-        verdict = _all_mandatory_met_verdict(state, stats, base)
+        verdict = _all_mandatory_met_verdict(state, stats, base, ticket_identity=ticket_identity)
         if verdict.disposition == "review":
             verdict.provisional = tuple(sorted(stats["unmet"]))
             logger.info("Ticket %s met provisionally: %s", state.slug, verdict.provisional)
@@ -547,7 +551,9 @@ def _determine_disposition(
     )
 
 
-def _run_report_gate_error(state) -> str | None:
+def _run_report_gate_error(
+    state, *, ticket_identity: Mapping[str, Any] | None = None
+) -> str | None:
     """Return why final report evidence is insufficient, or ``None``."""
     from booley.config.project_config import is_run_report_enabled
     from booley.evidence.review_dispositions import review_report_required
@@ -564,6 +570,9 @@ def _run_report_gate_error(state) -> str | None:
     ):
         return None
 
+    from .acceptance_ledger import project_report_state as project_state
+
+    project_state(state, identity=ticket_identity)
     report_entry = state.criteria.get(_REPORT_CRITERION)
     if report_entry is None or not report_entry.met:
         return "run report was not submitted"
