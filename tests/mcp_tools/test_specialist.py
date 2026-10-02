@@ -634,6 +634,38 @@ def test_specialist_preserves_files_outside_its_selected_paths(monkeypatch):
     assert specialist._resolve_stageable_files(["selected.sv"]) == (["selected.sv"], [])
 
 
+def test_privacy_note_tracks_audited_default_vocabulary() -> None:
+    note = Specialist.commit_msg_banned_phrase_note().lower()
+    for term in (
+        "claude",
+        "anthropic",
+        "copilot",
+        "codex",
+        "openai",
+        "chatgpt",
+        "gemini",
+        "booley",
+        "ticket",
+        "cursor",
+        "gpt",
+        "llm",
+        "co-authored-by",
+    ):
+        assert term in note
+    for term in (
+        "generated",
+        "docker",
+        "agent",
+        "auto-review",
+        "auto-approve",
+        "per review findings",
+        "as suggested by",
+        "automated fix",
+        "suggested fix",
+    ):
+        assert term not in note
+
+
 def test_specialist_note_describes_both_matching_tiers(tmp_path):
     directory = tmp_path / ".booley_project"
     directory.mkdir()

@@ -744,6 +744,19 @@ def test_archive_refuses_a_ticket_with_a_live_owner(tio):
         owner.wait(timeout=10)
 
 
+def test_history_policy_preserves_removed_terms_and_scrubs_retained_metadata(
+    tmp_path: Path,
+) -> None:
+    root, _tio = _repository(tmp_path)
+    _policy(root, "")
+    ordinary = "fix(core): generated docker verification agent\n\nauto-review automated fix suggested fix\n"
+    assert history_publication._policy_message(root, ordinary, root) == ordinary
+    retained = history_publication._policy_message(
+        root, "chore(core): close Ticket with claude", root
+    )
+    assert retained == "chore(core): close redacted with redacted"
+
+
 def test_history_identifier_sanitization_with_active_project(tmp_path):
     root, tio = _repository(tmp_path)
     _policy(root, 'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]')

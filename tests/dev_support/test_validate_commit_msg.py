@@ -636,6 +636,18 @@ class TestVendoredStandaloneImport:
         assert "co-authored-by" in proc.stderr.lower()
 
 
+def test_default_staged_engineering_prose_is_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    (tmp_path / "generated.txt").write_text("generated docker verification agent\nautomated fix\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "generated.txt"], check=True, timeout=10)
+    monkeypatch.chdir(tmp_path)
+    assert validate_diff(tmp_path) == []
+
+
 def test_identifier_staged_content_is_rejected():
     with _git_ok("+booley_config = BooleyRunner\n+mybooleyfile = 1\n"):
         assert any("booley" in error for error in validate_diff())

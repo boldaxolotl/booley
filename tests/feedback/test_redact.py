@@ -260,6 +260,17 @@ def test_apply_plan_on_an_empty_plan_is_a_no_op(tmp_path):
     assert apply_plan("untouched text", plan) == ("untouched text", {})
 
 
+def test_feedback_custom_generic_vocabulary_stays_independent(project: Path) -> None:
+    text = "generated docker verification agent"
+    assert redact(text, project)[0] == text
+    config = project / ".booley_project" / "booley.toml"
+    config.write_text(
+        config.read_text() + '\n[stealth]\nbanned_words = ["generated", "docker", "agent"]\n'
+    )
+    output = redact(text, project)[0]
+    assert all(term not in output for term in ("generated", "docker", "agent"))
+
+
 def test_explicit_stealth_tiers_identifier_optout_and_hits(tmp_path):
     from booley.feedback.redact import apply_plan, build_plan
 
