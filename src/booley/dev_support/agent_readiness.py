@@ -737,7 +737,7 @@ def _verification_commands(python: Path, root: Path) -> tuple[Command, ...]:
         ),
         Command(
             "pytest.broad",
-            (*common, "pytest", "tests/"),
+            (*common, "pytest", "tests/", "-n", "8", "--dist=loadscope"),
             str(root),
             "test",
             "optional-broad-verification",

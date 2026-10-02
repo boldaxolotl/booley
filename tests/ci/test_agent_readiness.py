@@ -84,6 +84,15 @@ def test_verification_commands_are_stable(tmp_path):
         "tests/",
     )
     assert commands[0].required_at == "before-commit"
+    assert commands[-1].argv == (
+        str(tmp_path / "bin/python"),
+        "-m",
+        "pytest",
+        "tests/",
+        "-n",
+        "8",
+        "--dist=loadscope",
+    )
     assert commands[-1].required_at == "optional-broad-verification"
 
 
