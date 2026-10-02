@@ -737,12 +737,53 @@ def _verification_commands(python: Path, root: Path) -> tuple[Command, ...]:
         ),
         Command(
             "pytest.broad",
-            (*common, "pytest", "tests/", "-n", "8", "--dist=loadscope"),
+            (*common, "pytest", "tests/", *_broad_pytest_options(root)),
             str(root),
             "test",
             "optional-broad-verification",
         ),
     )
+
+
+# Local full-suite trials on a 24-CPU host: serial 18m25s, four workers 5m55s,
+# eight workers 4m15s. CI keeps its own four-worker setting for its smaller
+# runners; this cap only bounds local hosts with more CPUs.
+_BROAD_PYTEST_MAX_WORKERS = 8
+
+
+def _broad_pytest_options(root: Path) -> tuple[str, ...]:
+    """Return the xdist and temp-root options for the local full suite.
+
+    ``-n auto`` sizes the pool to the CPUs this process may use, capped at
+    ``_BROAD_PYTEST_MAX_WORKERS``; ``PYTEST_XDIST_AUTO_NUM_WORKERS`` lowers it
+    on a constrained host and omitting the xdist options runs serially. POSIX
+    runs pin ``--basetemp`` to a disk-backed per-checkout cache directory
+    because ``/tmp`` is often a small tmpfs that parallel ``tmp_path`` trees
+    can fill. Windows keeps pytest's default, which ``tests/conftest.py``
+    already keeps on the checkout's drive for FuseSoC.
+    """
+    options = (
+        "-n",
+        "auto",
+        f"--maxprocesses={_BROAD_PYTEST_MAX_WORKERS}",
+        "--dist=loadscope",
+    )
+    if sys.platform == "win32":
+        return options
+    return (*options, f"--basetemp={pytest_basetemp(root)}")
+
+
+def pytest_basetemp(root: Path) -> Path:
+    """Return the per-checkout pytest temp root inside the shared tools cache.
+
+    Keying by the resolved checkout path keeps concurrent worktrees apart:
+    pytest deletes ``--basetemp`` at the start of every run. It sits directly
+    in the tools root because pytest does not create missing parents and this
+    read-only check must not create them; the shared environment's install
+    already did.
+    """
+    checkout_key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
+    return agent_tools_root() / f"pytest-basetemp-{checkout_key}"
 
 
 def _within(path: Path, parent: Path) -> bool:
