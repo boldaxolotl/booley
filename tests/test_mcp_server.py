@@ -1024,7 +1024,15 @@ class TestMcpExposureFiltering:
         bwave_tools = self._bwave_mcp_tools_for_mode()
         assert {t["name"] for t in bwave_tools} == {"bwave"}
         by_name = {t["name"]: t for t in bwave_tools}
-        assert "RTL debug helper" in by_name["bwave"]["description"]
+        description = by_name["bwave"]["description"]
+        assert "RTL debug helper" in description
+        # Investigation contract: trace before hypothesizing, walk backwards from
+        # the wrong value, and check that a passing reproducer really triggered.
+        assert "rerun `sim` with `trace: true`" in description
+        assert "before acting on an RTL hypothesis" in description
+        assert "backwards cycle by cycle" in description
+        assert "suspected trigger actually occurred" in description
+        assert "before editing RTL" in description
         # Detailed syntax and presentation guidance are discovered through these entry points.
         assert 'extra_args=["skill"]' in by_name["bwave"]["description"]
         assert 'extra_args=["--help"]' in by_name["bwave"]["description"]
