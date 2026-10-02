@@ -1273,6 +1273,19 @@ def _report_repository_line_endings(
             f"git -C {repository.root} config --local core.autocrlf false   (or re-run `booley init`)",
         )
         return
+    policy_risk = _line_ending_observation(
+        report,
+        LineEndingObservationCode.LOCAL_POLICY_MISSING,
+        LineEndingObservationCode.LEAKED_ROOT_POLICY,
+        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+    )
+    if policy_risk is not None:
+        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=repository.role)
+        emit(
+            f"{identity}: {policy_risk.detail}",
+            "inspect attributes policy, then re-run booley init",
+        )
+        return
     if _report_unreadable_line_endings(report, identity, _warn):
         return
     stale = _line_ending_observation(report, LineEndingObservationCode.STALE_INDEX)

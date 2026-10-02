@@ -189,7 +189,7 @@ _FAILED_ACTION_DETAILS = {
     LineEndingActionKind.PIN_AUTOCRLF: "autocrlf update failed",
     LineEndingActionKind.NORMALIZE_FILES: "normalization failed",
     LineEndingActionKind.REFRESH_INDEX: "normalization failed",
-    LineEndingActionKind.PUBLISH_ATTRIBUTES: "normalization failed",
+    LineEndingActionKind.PUBLISH_ATTRIBUTES: "attributes publication failed",
 }
 
 _OBSERVATION_RESULT_DETAILS = (
@@ -214,6 +214,19 @@ def _render_line_ending_observations(report: RepositoryLineEndingReport) -> None
 
 
 def _render_line_ending_action(action: LineEndingActionResult) -> None:
+    if (
+        action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
+        and action.target
+        and action.target.local
+    ):
+        destination = f"{action.target.path} (repository-local; shared by linked worktrees)"
+        if action.state is LineEndingActionState.COMPLETED:
+            ok(f"added '{GITATTRIBUTES_RULE}' to {destination}")
+        elif action.state is LineEndingActionState.PLANNED:
+            info(f"  would add '{GITATTRIBUTES_RULE}' to {destination}")
+        elif action.detail:
+            warn(f"attributes publication {action.state}: {action.detail}")
+        return
     lines = _ACTION_LINES.get((action.state, action.kind))
     if lines is not None:
         if (
