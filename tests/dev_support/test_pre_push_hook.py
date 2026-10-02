@@ -833,12 +833,16 @@ def test_minimum_git_file_promisor_authority_preflight_before_upload_pack(
         return original(args, **kwargs)
 
     monkeypatch.setattr(pre_push_hook, "_run_git", observe)
-    before = sorted(str(path.relative_to(upstream)) for path in upstream.rglob("*"))
+    request_trace = repo.parent / "promisor-destination-requests.trace"
+    monkeypatch.setenv("GIT_TRACE_PACKET", str(request_trace))
+    before = _destination_inspection_state(upstream / "objects", request_trace)
     assert _push(_head(repo)) == 0
     assert "complete nonpromisor clone" in capsys.readouterr().err
-    assert before == sorted(str(path.relative_to(upstream)) for path in upstream.rglob("*"))
+    assert not calls
+    assert before == _destination_inspection_state(upstream / "objects", request_trace)
     assert _push(_commit(repo, "fix(core): claude fresh metadata")) == 1
-    assert str(upstream) not in calls
+    assert not calls
+    assert before == _destination_inspection_state(upstream / "objects", request_trace)
 
 
 @pytest.mark.parametrize(
@@ -1575,16 +1579,19 @@ def test_minimum_git_upload_pack_suffix_cannot_substitute_destination(
         return original(args, **kwargs)
 
     monkeypatch.setattr(pre_push_hook, "_run_git", observe)
-    before = sorted(str(path.relative_to(repo)) for path in (repo / ".git" / "objects").rglob("*"))
+    request_trace = repo.parent / "suffix-destination-requests.trace"
+    monkeypatch.setenv("GIT_TRACE_PACKET", str(request_trace))
+    objects = served / ("objects" if storage == "shared" else ".git/objects")
+    before = _destination_inspection_state(objects, request_trace)
     assert _push(base) == 0
     assert not advertisements
-    assert before == sorted(
-        str(path.relative_to(repo)) for path in (repo / ".git" / "objects").rglob("*")
-    )
+    assert before == _destination_inspection_state(objects, request_trace)
     assert "file authority must name its exact repository root" in capsys.readouterr().err
-
-    assert _push(_commit(repo, "fix(core): claude fresh local metadata")) == 1
+    fresh = _commit(repo, "fix(core): claude fresh local metadata")
+    before = _destination_inspection_state(objects, request_trace)
+    assert _push(fresh) == 1
     assert not advertisements
+    assert before == _destination_inspection_state(objects, request_trace)
 
 
 @pytest.mark.parametrize("form", ["bare", "worktree", "gitdir", "symlink"])
