@@ -37,6 +37,7 @@ class FpgaMetrics:
     comb_loops: int = 0
     multi_driven: int = 0
     returncode: int = 0
+    route_completed: bool = False
     timed_out: bool = False
     infra_error: str = ""
     # Error tail (log/stderr) surfaced on failure so the real diagnostic reaches

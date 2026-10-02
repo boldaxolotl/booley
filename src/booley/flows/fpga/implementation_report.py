@@ -69,7 +69,7 @@ def _run(metrics: FpgaMetrics) -> ImplementationRun:
         completion={
             "primary_metrics": metrics.has_primary_metrics,
             "timing": metrics.wns_ns is not None and metrics.whs_ns is not None,
-            "route": metrics.returncode == 0 and not metrics.infra_error,
+            "route": metrics.route_completed,
         },
         diagnostic_excerpt=metrics.failure_output or None,
         recipe_fingerprint=metrics.recipe_fingerprint or None,

@@ -1399,10 +1399,18 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.termination = "infrastructure_error"
         failure = None
         if metrics.termination not in {"timeout", "oom", "resource_killed"}:
-            failure = classify_eda_failure(
-                replace(result, stdout=output, stderr=""),
-                expected_token=getattr(outcome, "attempt_token", None),
-            )
+            boundary_result = replace(result, stdout=output, stderr="")
+            token = getattr(outcome, "attempt_token", None)
+            failure = classify_eda_failure(boundary_result, expected_token=token)
+            stage = getattr(outcome, "stage", None)
+            if (
+                failure is None
+                and re.fullmatch(r"[0-9a-f]{32}", token or "")
+                and stage in {"sv2v", "yosys", "openroad"}
+            ):
+                failure = classify_eda_failure(
+                    boundary_result, expected_stage=stage, expected_executable=stage
+                )
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
             metrics.infra_error = failure.reason
@@ -1413,7 +1421,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.returncode = 1
             metrics.termination = "eda_tool_failure"
         legacy_inline = (
-            not outcome.yosys_complete
+            not getattr(outcome, "attempt_token", "")
+            and not outcome.yosys_complete
             and metrics.has_metrics
             and bool(result.stdout.strip())
             and "BOOLEY_STAGE:" not in result.stdout
@@ -1446,7 +1455,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """Apply authoritative final-check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
-            not outcome.yosys_complete
+            not getattr(outcome, "attempt_token", "")
+            and not outcome.yosys_complete
             and not structural.complete
             and metrics.has_metrics
             and bool(stdout.strip())
