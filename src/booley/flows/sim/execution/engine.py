@@ -751,7 +751,7 @@ class SimulationExecution:
             raise SimulationBuildSlotError(
                 "Project compile inputs changed during Pre-Sim Commands"
             )
-        attempt = self._select_generation_for_group(handle, attempt)
+        attempt = self._select_generation_for_group(handle, attempt, prepared_inputs)
         attempt = _with_workload_inputs(handle, attempt)
         return self._run_authorized_group(handle, attempt, pre_sim, started)
 
@@ -772,13 +772,23 @@ class SimulationExecution:
         ):
             yield
 
-    def _select_generation_for_group(self, handle: TargetHandle, attempt: _Attempt) -> _Attempt:
-        """Resolve a post-hook cache decision without leaking candidate paths."""
+    def _select_generation_for_group(
+        self,
+        handle: TargetHandle,
+        attempt: _Attempt,
+        prepared_inputs: Mapping[str, str],
+    ) -> _Attempt:
+        """Resolve a post-hook cache decision without leaking candidate paths.
+
+        Pre-Sim Commands that only write run-time inputs elsewhere (firmware in
+        the run directory, say) keep reuse; output they wrote into the candidate
+        generation would be lost with it, so that candidate always builds.
+        """
         session = self._build_session
         if session is None or self._fresh_generation != attempt.prepared.work_root:
             return attempt
         inputs = session.capture_inputs(attempt.prepared)
-        key = session.reusable_key(attempt.prepared, inputs, hooks=bool(attempt.pre_sim_commands))
+        key = session.reusable_key(attempt.prepared, inputs, hooks=inputs != prepared_inputs)
         selected = session.try_reuse(attempt.prepared, key)
         generation = (
             selected.work_root.name if selected is not None else attempt.prepared.work_root.name

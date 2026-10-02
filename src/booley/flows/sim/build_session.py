@@ -13,6 +13,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import time
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -33,8 +34,13 @@ from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
+from . import build_reuse
 from . import edam as sim_edam
 from .build import PreparedSimulationBuild
+from .build_reuse import elf_dependencies as _elf_dependencies
+from .build_reuse import has_generated_core_behavior as _has_generated_core_behavior
+from .build_reuse import hash_file as _hash_file
+from .build_reuse import is_elf as _is_elf
 
 
 class SimulationBuildSlotError(RuntimeError):
@@ -42,19 +48,6 @@ class SimulationBuildSlotError(RuntimeError):
 
 
 _GENERATION_DIR = "g"
-
-
-def _hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _is_elf(path: Path) -> bool:
-    with path.open("rb") as stream:
-        return stream.read(4) == b"\x7fELF"
 
 
 def _runtime_artifacts(prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
@@ -163,23 +156,6 @@ def project_compile_surface(
     return result
 
 
-def _elf_dependencies(path: Path) -> tuple[Path, ...] | None:
-    """List dynamic libraries for a local ELF executable, or decline reuse."""
-    if not _is_elf(path):
-        return None
-    result = subprocess.run(
-        ["ldd", str(path)], capture_output=True, text=True, timeout=10, check=False
-    )
-    if result.returncode != 0 or "not found" in result.stdout:
-        return None
-    paths = []
-    for line in result.stdout.splitlines():
-        match = re.search(r"(/\S+)", line)
-        if match is not None:
-            paths.append(Path(match.group(1)))
-    return tuple(paths)
-
-
 def _icarus_tool_identity() -> str | None:
     """Hash the installed Icarus executables, modules, and dynamic libraries."""
     commands = ("iverilog", "vvp", "make", "sh")
@@ -234,22 +210,6 @@ def _python_recipe_identity() -> str | None:
         return digest.hexdigest()
     except OSError:
         return None
-
-
-def _has_generated_core_behavior(core_data: object) -> bool:
-    if not isinstance(core_data, dict):
-        return True
-    if any(
-        core_data.get(name) for name in ("generators", "generate", "scripts", "provider", "hooks")
-    ):
-        return True
-    targets = core_data.get("targets", {})
-    if not isinstance(targets, dict):
-        return True
-    return any(
-        not isinstance(target, dict) or target.get("generate") or target.get("hooks")
-        for target in targets.values()
-    )
 
 
 def _has_unsupported_source(prepared: PreparedSimulationBuild, core_file: Path) -> bool:
@@ -336,7 +296,7 @@ def _reuse_input_key(
     variant: str,
     project_root: Path,
 ) -> str | None:
-    """Recognize the first closed, ordinary Icarus recipe; decline all others."""
+    """Recognize the closed, ordinary Icarus recipe; decline all others."""
     if (
         variant
         or prepared.eda_tool != "icarus"
@@ -381,6 +341,83 @@ def _reuse_input_key(
         importlib.metadata.PackageNotFoundError,
     ):
         return None
+
+
+# Doctor's deliberately broken self-test image must never be retained.
+_DOCTOR_BAD_VARIANT = "doctor-selftest-bad"
+_REUSE_DECLINING_ENVIRONMENT = ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS")
+
+
+def _verilator_reuse_key(
+    prepared: PreparedSimulationBuild,
+    inputs: Mapping[str, str],
+    variant: str,
+    project_root: Path,
+) -> tuple[str, build_reuse.VerilatorIdentity] | None:
+    """Key a stock Edalize Verilator recipe by its complete pre-build identity.
+
+    Trace and coverage variants each own a slot, so the variant only gates
+    eligibility. Unlike Icarus, includes, dependency cores and C++/DPI sources
+    are accepted: the post-build read closure proves what was actually read.
+    """
+    if (
+        _DOCTOR_BAD_VARIANT in variant
+        or prepared.resolved.cocotb_module
+        or prepared.core_closure is None
+        or any(os.environ.get(name) for name in _REUSE_DECLINING_ENVIRONMENT)
+    ):
+        return None
+    try:
+        edam = yaml.safe_load(prepared.resolved.edam_path.read_text(encoding="utf-8"))
+        if not isinstance(edam, dict) or edam.get("hooks") or edam.get("vpi"):
+            return None
+        if build_reuse.unsupported_verilator_recipe(prepared.build_root):
+            return None
+        target_environment = _generation_neutral(prepared)
+        environment = {**os.environ, **target_environment}
+        identity = build_reuse.verilator_identity(environment)
+        recipe = _python_recipe_identity()
+        if identity is None or recipe is None:
+            return None
+        record = {
+            "schema": 1,
+            "tool_kind": "verilator",
+            "target": prepared.target_identity,
+            "inputs": dict(inputs),
+            "cores": dict(prepared.core_closure),
+            "tool": identity.digest,
+            "recipe": recipe,
+            "versions": {
+                name: importlib.metadata.version(name) for name in ("fusesoc", "edalize")
+            },
+            "environment": build_reuse.build_environment_digest(
+                environment, prepared.build_root, identity
+            ),
+            "target_environment": sorted(target_environment.items()),
+        }
+        digest = hashlib.sha256(json.dumps(record, sort_keys=True).encode("utf-8")).hexdigest()
+        return digest, identity
+    except (
+        OSError,
+        UnicodeError,
+        yaml.YAMLError,
+        importlib.metadata.PackageNotFoundError,
+    ):
+        return None
+
+
+def _generation_neutral(prepared: PreparedSimulationBuild) -> dict[str, str]:
+    """Return the Target build environment without its generation path.
+
+    The compiler cache stamps the generation into ``CCACHE_BASEDIR`` and a
+    ``-fdebug-prefix-map``; neither changes simulation behavior, and keeping
+    them would make every generation's key unique.
+    """
+    generation = str(prepared.build_root.absolute())
+    return {
+        name: value.replace(generation, "<generation>")
+        for name, value in prepared.environment.items()
+    }
 
 
 def _retained_build_root(slot: Path) -> tuple[Path, Path] | None:
@@ -429,6 +466,16 @@ def _matching_hashes(root: Path, raw: object) -> bool:
     return True
 
 
+def _expected_reusability(manifest: Mapping[str, object], reusable: bool | None) -> bool:
+    """Match a manifest's reusability; ``None`` accepts either well-formed state."""
+    recorded = manifest.get("reusable")
+    if not isinstance(recorded, bool):
+        return False
+    if recorded and not isinstance(manifest.get("input_key"), str):
+        return False
+    return reusable is None or recorded is reusable
+
+
 def simulation_build_slot(handle: TargetHandle, variant: str = "") -> Path:
     """Return a selector-independent, checkout-local slot for one Target variant."""
     parent = work_root_for(handle.project_root, "sim", "slot").parent
@@ -452,6 +499,10 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         self._lock: IO[str] | None = None
         self._lease_token: contextvars.Token[int | None] | None = None
         self.cache_decision = "unexamined"
+        # Set by the last Verilator ``reusable_key``; scopes read-closure paths.
+        self._verilator_identity: build_reuse.VerilatorIdentity | None = None
+        # Wall-clock time each generation's inputs were first captured.
+        self._captured_ns: dict[Path, int] = {}
 
     def __enter__(self) -> SimulationBuildSession:
         try:
@@ -500,14 +551,25 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         """Capture the bytes present immediately before compilation."""
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
+        self._captured_ns.setdefault(prepared.work_root, time.time_ns())
         return snapshot_build_inputs(prepared)
 
     def reusable_key(
         self, prepared: PreparedSimulationBuild, inputs: Mapping[str, str], *, hooks: bool
     ) -> str | None:
-        """Return a key only for an input and installation closure we can prove."""
+        """Return a key only for an input and installation closure we can prove.
+
+        *hooks* reports that Pre-Sim Commands wrote into this generation; such
+        a candidate is never reused because the hook output would be lost.
+        """
         if hooks:
             return None
+        if prepared.eda_tool == "verilator":
+            keyed = _verilator_reuse_key(prepared, inputs, self.variant, self.handle.project_root)
+            if keyed is None:
+                return None
+            key, self._verilator_identity = keyed
+            return key
         return _reuse_input_key(prepared, inputs, self.variant, self.handle.project_root)
 
     def try_reuse(
@@ -529,6 +591,8 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 raise ValueError("manifest path is a symlink")
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             rejection = self._hit_rejection(root, build_root, manifest, candidate, key)
+            if rejection is None and not self._read_closure_matches(root, manifest, candidate):
+                rejection = "changed source"
             if rejection is not None:
                 self.cache_decision = rejection
                 return None
@@ -557,6 +621,25 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             )
             return None
 
+    def retained_artifacts(self, prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
+        """Return the launch artifacts of an image ``try_reuse`` just verified."""
+        if self._lock is None:
+            raise SimulationBuildSlotError("Simulation slot is not leased")
+        return _runtime_artifacts(prepared)
+
+    def _read_closure_matches(
+        self, root: Path, manifest: Mapping[str, object], candidate: PreparedSimulationBuild
+    ) -> bool:
+        """Re-hash every file a retained Verilator build reported reading."""
+        if candidate.eda_tool != "verilator":
+            return True
+        identity = self._verilator_identity
+        if identity is None:
+            return False
+        return build_reuse.verify_read_closure(
+            manifest.get("read_closure"), root, identity, self.handle.project_root
+        )
+
     def _restore_prepared_build(
         self, root: Path, candidate: PreparedSimulationBuild
     ) -> PreparedSimulationBuild:
@@ -584,10 +667,23 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             make_argv=tuple(edam_layer.make_command(make_rel)),
             environment=candidate.environment,
             fileset=candidate.fileset,
+            core_closure=candidate.core_closure,
         )
 
     def verify_fresh_image(self, prepared: PreparedSimulationBuild) -> None:
         """Reauthenticate a non-reusable image while holding its Target lease."""
+        self._verify_image(prepared, reusable=False)
+
+    def verify_image(self, prepared: PreparedSimulationBuild) -> None:
+        """Reauthenticate a fresh or retained image, as its manifest records.
+
+        A promoted or reused image is retained and keyed; its sources may have
+        moved on since, but launching it only requires the recorded inputs and
+        image bytes to be intact.
+        """
+        self._verify_image(prepared, reusable=None)
+
+    def _verify_image(self, prepared: PreparedSimulationBuild, *, reusable: bool | None) -> None:
         if self._lock is None:
             raise SimulationBuildSlotError("Simulation slot is not leased")
         if prepared.work_root.parent != self.slot / _GENERATION_DIR:
@@ -601,7 +697,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 manifest.get("schema") != 1
                 or manifest.get("target_identity") != prepared.target_identity
                 or manifest.get("generation") != prepared.work_root.name
-                or manifest.get("reusable") is not False
+                or not _expected_reusability(manifest, reusable)
             ):
                 raise SimulationBuildSlotError("Simulation manifest identity changed")
             if not _matching_hashes(prepared.work_root, manifest.get("inputs")):
@@ -673,6 +769,9 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 raise SimulationBuildSlotError("Simulation build input changed during compilation")
             if key is not None and self.reusable_key(prepared, inputs, hooks=False) != key:
                 raise SimulationBuildSlotError("Simulation recipe changed during compilation")
+            closure, reason = self._fresh_read_closure(prepared, key)
+            if closure is None:
+                key = None
             artifacts = _runtime_artifacts(prepared)
             hashes = {}
             for path in artifacts:
@@ -683,7 +782,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 ):
                     raise SimulationBuildSlotError(f"unsafe Simulation image: {path}")
                 hashes[path.relative_to(root).as_posix()] = _hash_file(path)
-            self._write_manifest(prepared, inputs, key, hashes)
+            self._write_manifest(prepared, inputs, key, hashes, closure or {}, reason)
             for name, digest in hashes.items():
                 if _hash_file(root / name) != digest:
                     raise SimulationBuildSlotError(
@@ -695,22 +794,50 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         except (OSError, RuntimeError) as exc:
             raise SimulationBuildSlotError(f"cannot authorize Simulation image: {exc}") from exc
 
+    def _fresh_read_closure(
+        self, prepared: PreparedSimulationBuild, key: str | None
+    ) -> tuple[dict[str, str] | None, str]:
+        """Record what a keyed build read; ``None`` downgrades it to non-reusable."""
+        unproven = "complete compiler input closure not established"
+        if key is None:
+            return None, unproven
+        if prepared.eda_tool != "verilator":
+            return {}, ""
+        identity = self._verilator_identity
+        captured_ns = self._captured_ns.get(prepared.work_root)
+        if identity is None or captured_ns is None:
+            return None, unproven
+        try:
+            closure = build_reuse.collect_read_closure(
+                prepared.build_root,
+                prepared.work_root,
+                identity,
+                self.handle.project_root,
+                captured_ns,
+            )
+        except build_reuse.ReadClosureError as exc:
+            return None, f"{unproven}: {exc}"
+        return closure, ""
+
     @staticmethod
     def _write_manifest(
         prepared: PreparedSimulationBuild,
         inputs: Mapping[str, str],
         key: str | None,
         hashes: Mapping[str, str],
+        read_closure: Mapping[str, str],
+        reason: str,
     ) -> None:
         manifest = {
             "schema": 1,
             "target_identity": prepared.target_identity,
             "generation": prepared.work_root.name,
             "reusable": key is not None,
-            "reason": "" if key is not None else "complete compiler input closure not established",
+            "reason": reason,
             "input_key": key,
             "inputs": dict(inputs),
             "artifacts": dict(hashes),
+            "read_closure": dict(read_closure),
         }
         root = prepared.build_root
         temporary = root / f".booley-build-manifest-{secrets.token_hex(8)}.tmp"

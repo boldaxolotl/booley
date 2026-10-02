@@ -587,7 +587,13 @@ def test_authorization_rejects_unleased_escaped_and_changed_builds(tmp_path: Pat
         build.mkdir()
         source = work / "top.sv"
         source.write_bytes(b"changed")
-        prepared = SimpleNamespace(work_root=work, build_root=build, eda_tool="verilator")
+        prepared = SimpleNamespace(
+            work_root=work,
+            build_root=build,
+            eda_tool="verilator",
+            core_closure=None,
+            resolved=SimpleNamespace(cocotb_module=""),
+        )
         with pytest.raises(SimulationBuildSlotError, match="input changed"):
             session.authorize_fresh_image(prepared, {"top.sv": "old digest"})
         with pytest.raises(SimulationBuildSlotError, match="recipe changed"):
