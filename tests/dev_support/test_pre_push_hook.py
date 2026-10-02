@@ -12,6 +12,7 @@ import io
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import types
@@ -80,6 +81,13 @@ def _commit(repo: Path, message: str, *, author: str | None = None) -> str:
     return _head(repo)
 
 
+def _remove_loose_object(repo: Path, oid: str) -> None:
+    """Delete one loose object; Git writes them read-only, which Windows enforces."""
+    path = repo / ".git" / "objects" / oid[:2] / oid[2:]
+    path.chmod(path.stat().st_mode | stat.S_IWRITE)
+    path.unlink()
+
+
 def _commit_symlink(repo: Path, name: str, target: str) -> str:
     """Commit a symlink without reading through it from the worktree."""
     (repo / name).symlink_to(target)
@@ -122,6 +130,19 @@ class TestCommitFacts:
         assert "second body line" in facts[4]
         assert facts[0] == "Real Dev"  # identity fields unaffected by the body
 
+    def test_forged_author_is_reported_separately_from_committer(self, repo, monkeypatch):
+        """`--author` changes only the author — the exact shape of the real case."""
+        monkeypatch.chdir(repo)
+        sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
+        facts = _commit_facts(sha)
+        assert facts is not None
+        assert (facts[0], facts[1]) == ("mut-creator", "mut@local")
+        assert (facts[2], facts[3]) == ("Real Dev", "dev@example.com")
+
+    def test_unknown_sha_returns_none(self, repo, monkeypatch):
+        monkeypatch.chdir(repo)
+        assert _commit_facts("0" * 40) is None
+
 
 def test_project_dir_fallback_uses_hook_parent_when_runtime_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -138,19 +159,6 @@ def test_project_dir_fallback_uses_hook_parent_when_runtime_is_unavailable(
     monkeypatch.setitem(sys.modules, "booley.runtime.project_dir", runtime_module)
 
     assert pre_push_hook._guard_project_dir(tmp_path / "repo") == tmp_path
-
-    def test_forged_author_is_reported_separately_from_committer(self, repo, monkeypatch):
-        """`--author` changes only the author — the exact shape of the real case."""
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
-        facts = _commit_facts(sha)
-        assert facts is not None
-        assert (facts[0], facts[1]) == ("mut-creator", "mut@local")
-        assert (facts[2], facts[3]) == ("Real Dev", "dev@example.com")
-
-    def test_unknown_sha_returns_none(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        assert _commit_facts("0" * 40) is None
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +631,7 @@ def test_minimum_git_missing_inspected_objects_refuse(matrix_repo: Path, missing
         if missing == "commit"
         else _git(repo, "rev-parse", f"{sha}^{{tree}}" if missing == "tree" else f"{sha}:guide")
     )
-    (repo / ".git" / "objects" / oid[:2] / oid[2:]).unlink()
+    _remove_loose_object(repo, oid)
     assert _push(sha) == 1
 
 
@@ -1447,7 +1455,7 @@ def test_minimum_git_missing_advertised_tag_target_grants_no_exclusion(matrix_re
     )
     _git(repo, "tag", "-a", "withdrawn-object", target, "-m", "ordinary release")
     _git(repo, "push", "--no-verify", str(destination), "refs/tags/withdrawn-object")
-    (repo / ".git" / "objects" / target[:2] / target[2:]).unlink()
+    _remove_loose_object(repo, target)
     assert _push(_commit(repo, "fix(core): fresh ordinary work")) == 0
     assert _push(_commit(repo, "fix(core): claude fresh leak")) == 1
 
@@ -1566,7 +1574,8 @@ def test_minimum_git_upload_pack_suffix_cannot_substitute_destination(
         served = repo.parent / "shared-authority.git"
         _git(repo, "clone", "--bare", "--shared", str(repo), str(served))
     (parent / "up.git").symlink_to(served, target_is_directory=True)
-    assert _git(location, "rev-parse", "--show-toplevel") == str(parent)
+    # Git for Windows reports forward slashes; compare paths, not spellings.
+    assert Path(_git(location, "rev-parse", "--show-toplevel")) == parent
     advertisement = _git(repo, "ls-remote", "--refs", str(location))
     assert base in advertisement
     sys.argv[2] = str(location)
@@ -1643,7 +1652,7 @@ def test_minimum_git_missing_local_tag_target_has_fetch_repair(
     )
     _git(repo, "tag", "-a", "missing-local-target", target, "-m", "ordinary release")
     tag = _git(repo, "rev-parse", "refs/tags/missing-local-target")
-    (repo / ".git" / "objects" / target[:2] / target[2:]).unlink()
+    _remove_loose_object(repo, target)
     assert _push(tag) == 1
     assert "fetch missing pushed history" in capsys.readouterr().err
 
@@ -1829,3 +1838,365 @@ def test_minimum_git_zero_active_push_needs_no_selected_config(
     assert (
         "unsupported import settings" if configuration == "retired" else "cannot read selected"
     ) in error
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed boundaries, exercised without real Git where the input is synthetic
+# ---------------------------------------------------------------------------
+
+_OID = "a" * 40
+_OTHER_OID = "b" * 40
+
+
+def _fake_inspection(git_output=b"", objects=None) -> pre_push_hook._Inspection:
+    """An ``_Inspection`` whose Git reads return canned bytes (no repository needed).
+
+    *git_output* is either fixed bytes or a callable ``(args) -> bytes``;
+    *objects*, when given, maps object IDs to ``(type, body)`` or ``None``.
+    """
+    inspection = object.__new__(pre_push_hook._Inspection)
+    inspection.root = Path("synthetic-root")
+    inspection.oid_length = 40
+    inspection.stable = lambda: None
+    inspection.git = lambda args, *, data=None: (
+        git_output(args) if callable(git_output) else git_output
+    )
+    if objects is not None:
+        inspection.objects = lambda ids: {oid: objects.get(oid) for oid in ids}
+    return inspection
+
+
+def _fake_protocol() -> pre_push_hook._Protocol:
+    protocol = object.__new__(pre_push_hook._Protocol)
+    protocol.oid_length = 40
+    return protocol
+
+
+def test_bundle_import_falls_back_to_flat_commit_policy_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside the zip bundle the installed package is absent; the flat module is used."""
+    import importlib.util
+
+    flat = types.ModuleType("booley_commit_policy")
+    flat.validate_push_configuration = lambda root: "flat-module"
+    monkeypatch.setitem(sys.modules, "booley.commit_policy.policy", None)
+    monkeypatch.setitem(sys.modules, "booley_commit_policy", flat)
+    spec = importlib.util.spec_from_file_location("bundled_pre_push", pre_push_hook.__file__)
+    assert spec is not None and spec.loader is not None
+    bundled = importlib.util.module_from_spec(spec)
+    # Dataclass creation resolves annotations through the module registry.
+    monkeypatch.setitem(sys.modules, spec.name, bundled)
+    spec.loader.exec_module(bundled)
+    assert bundled.validate_push_configuration(Path()) == "flat-module"
+
+
+def test_unlaunchable_git_is_inspection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    with pytest.raises(pre_push_hook.InspectionError, match="inspection unavailable"):
+        pre_push_hook._run_git(["--version"])
+
+
+def test_unlaunchable_git_means_no_repository_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(args, **kwargs):
+        raise pre_push_hook.InspectionError("Git inspection unavailable")
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", unavailable)
+    assert pre_push_hook._repository_root() is None
+
+
+def test_valueless_config_entry_parses_as_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = b"Core.Bare\0user.name\nReal Dev\0"
+    monkeypatch.setattr(pre_push_hook, "_required_git", lambda args, **kwargs: raw)
+    values, returned = pre_push_hook._config(Path(), {})
+    assert values == {"core.bare": "", "user.name": "Real Dev"}
+    assert returned == raw
+
+
+def test_resolve_reraises_unrelated_runtime_error() -> None:
+    class Unresolvable:
+        def resolve(self, strict: bool = False) -> Path:
+            raise RuntimeError("unrelated failure")
+
+    with pytest.raises(RuntimeError, match="unrelated failure"):
+        pre_push_hook._resolve_repository_path(Unresolvable())
+
+
+def test_object_storage_that_is_not_a_directory_refuses(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repo / "objects-file").write_text("not a directory\n")
+    original = pre_push_hook._required_git
+
+    def objects_is_file(args, **kwargs):
+        if args == ["rev-parse", "--git-path", "objects"]:
+            return b"objects-file\n"
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_required_git", objects_is_file)
+    with pytest.raises(pre_push_hook.InspectionError, match="readable Git object storage"):
+        pre_push_hook._repository_state(repo, pre_push_hook._probe_environment(), complete=True)
+
+
+def test_unsupported_repository_format_refuses(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = pre_push_hook._config
+
+    def future_format(cwd, env):
+        values, raw = original(cwd, env)
+        return {**values, "core.repositoryformatversion": "2"}, raw
+
+    monkeypatch.setattr(pre_push_hook, "_config", future_format)
+    with pytest.raises(pre_push_hook.InspectionError, match="unsupported repository format"):
+        pre_push_hook._repository_state(repo, pre_push_hook._probe_environment(), complete=True)
+
+
+def test_unknown_object_format_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pre_push_hook, "_required_git", lambda args, **kwargs: b"md5\n")
+    with pytest.raises(pre_push_hook.InspectionError, match="unsupported Git object format"):
+        pre_push_hook._Protocol(Path())
+
+
+def test_unexpected_capability_probe_failure_refuses(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only Git's documented unknown-option answer means "old Git"; anything else refuses."""
+    original = pre_push_hook._run_git
+
+    def broken_probe(args, **kwargs):
+        if args == ["--no-lazy-fetch", "--version"]:
+            return subprocess.CompletedProcess(args, 128, b"", b"fatal: broken")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", broken_probe)
+    with pytest.raises(pre_push_hook.InspectionError, match="inspection capability"):
+        pre_push_hook._Inspection(repo)
+
+
+def test_inventory_without_tips_runs_no_git() -> None:
+    def forbidden(args):
+        pytest.fail("an empty inventory must not query Git")
+
+    assert _fake_inspection(forbidden).inventory([]) == []
+
+
+@pytest.mark.parametrize("output", [b"not-an-oid\n", f"{_OID}\n{_OID}\n".encode()])
+def test_malformed_or_duplicated_inventory_refuses(output: bytes) -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match="malformed outgoing commit inventory"):
+        _fake_inspection(output).inventory([_OID])
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        (b"", "truncated Git object batch"),
+        (b"garbled header\n", "malformed Git object batch"),
+        (f"{_OID} missing\ntrailing".encode(), "unexpected Git object batch trailer"),
+    ],
+)
+def test_malformed_object_batch_refuses(output: bytes, message: str) -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match=message):
+        _fake_inspection(output).objects([_OID])
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (f"object {_OID}\ntype tag\n".encode(), "cyclic annotated tag"),
+        (b"type commit\n", "malformed annotated tag"),
+        (b"object not-an-oid\n", "invalid annotated tag object"),
+    ],
+)
+def test_malformed_annotated_tag_chain_refuses(body: bytes, message: str) -> None:
+    inspection = _fake_inspection(objects={_OID: ("tag", body)})
+    with pytest.raises(pre_push_hook.InspectionError, match=message):
+        inspection.commits([_OID])
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        (f"refs/heads/main {_OID} HEAD {_ZERO_SHA}", "invalid pre-push ref name"),
+        (f"(delete) {_OID} refs/heads/main {_ZERO_SHA}", "invalid pre-push deletion"),
+    ],
+)
+def test_invalid_protocol_ref_or_deletion_refuses(line: str, message: str) -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match=message):
+        pre_push_hook._updates(line, _fake_protocol())
+
+
+def test_valid_deletion_produces_no_update() -> None:
+    line = f"(delete) {_ZERO_SHA} refs/heads/main {_OID}"
+    assert pre_push_hook._updates(line, _fake_protocol()) == []
+
+
+@pytest.mark.parametrize(
+    ("location", "message"),
+    [
+        ("/repo with space", "invalid repository location"),
+        ("file://remote-host/repo", "unsupported file authority"),
+        ("file:///repo%00name", "invalid file authority path"),
+        ("https:///no-host", "invalid authenticated repository URL"),
+    ],
+)
+def test_unestablishable_location_refuses(tmp_path: Path, location: str, message: str) -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match=message):
+        pre_push_hook._location(location, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("decoded", "windows", "expected"),
+    [
+        ("/C:/work/repo.git", True, "C:/work/repo.git"),
+        ("/c:/", True, "c:/"),
+        ("/C:/work/repo.git", False, "/C:/work/repo.git"),
+        ("/srv/repo.git", True, "/srv/repo.git"),
+        ("/C:relative", True, "/C:relative"),
+    ],
+)
+def test_file_url_drive_letter_path_matches_git(
+    decoded: str, windows: bool, expected: str
+) -> None:
+    """``file:///C:/x`` names drive C on Windows (as Git opens it), not ``\\C:\\x``."""
+    assert pre_push_hook._file_url_path(decoded, windows=windows) == expected
+
+
+def test_invalid_transport_policy_refuses(repo: Path) -> None:
+    _git(repo, "config", "protocol.allow", "sometimes")
+    with pytest.raises(pre_push_hook.InspectionError, match="invalid Git transport policy"):
+        pre_push_hook._transport_environment(repo, "https://example.test/repo.git")
+
+
+def test_unparseable_owner_ssh_command_refuses() -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match="invalid owner SSH command"):
+        pre_push_hook._secure_ssh({"core.sshcommand": 'ssh -o "unterminated'}, {})
+
+
+def test_undeterminable_https_policy_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    def config_error(args, **kwargs):
+        return subprocess.CompletedProcess(args, 128, b"", b"fatal: bad config")
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", config_error)
+    with pytest.raises(pre_push_hook.InspectionError, match="cannot determine HTTPS"):
+        pre_push_hook._secure_https(Path(), "https://example.test/repo.git", {})
+
+
+def _serve_advertisement(monkeypatch: pytest.MonkeyPatch, stdout: bytes, path=None) -> None:
+    monkeypatch.setattr(pre_push_hook, "_transport_environment", lambda root, location: ({}, path))
+    monkeypatch.setattr(
+        pre_push_hook,
+        "_run_git",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout, b""),
+    )
+
+
+def test_invalid_advertised_ref_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve_advertisement(monkeypatch, f"{_OID}\trefs/heads/bad..name\n".encode())
+    with pytest.raises(pre_push_hook.InspectionError, match="invalid advertised ref"):
+        pre_push_hook._advertised(_fake_inspection(), "https://example.test/repo.git")
+
+
+def test_file_authority_changed_during_advertisement_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _serve_advertisement(monkeypatch, f"{_OID}\trefs/heads/main\n".encode(), Path("authority"))
+    states = iter(["before", "after"])
+    monkeypatch.setattr(pre_push_hook, "_file_authority_state", lambda path, env: next(states))
+    with pytest.raises(pre_push_hook.InspectionError, match="file authority changed"):
+        pre_push_hook._advertised(_fake_inspection(), "authority")
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (None, "missing inspected commit object"),
+        (("tree", b""), "missing inspected commit object"),
+        (("commit", b"tree x\nauthor A <a@x> 1 +0000"), "malformed commit object"),
+        (("commit", b"tree x\n\nmessage"), "missing commit identities"),
+        (
+            ("commit", b"author no-email\ncommitter C <c@x> 1 +0000\n\nmessage"),
+            "malformed commit identity",
+        ),
+    ],
+)
+def test_malformed_commit_object_refuses(value, message: str) -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match=message):
+        pre_push_hook._parse_commit(value)
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        (b"unterminated", "truncated changed-tree batch"),
+        (f"{_OTHER_OID}\0".encode(), "unexpected changed-tree commit frame"),
+        (f":000000 100644 {_ZERO_SHA} {_OID} A\0path\0".encode(), "missing changed-tree frame"),
+        (f"{_OID}\0:000000 100644 short ids A\0path\0".encode(), "malformed changed-tree entry"),
+        (
+            f"{_OID}\0:000000 100644 {_ZERO_SHA} {_OTHER_OID} A\0../escape\0".encode(),
+            "invalid committed path",
+        ),
+    ],
+)
+def test_malformed_changed_tree_batch_refuses(output: bytes, message: str) -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match=message):
+        pre_push_hook._batch_trees(_fake_inspection(output), [_OID])
+
+
+@pytest.mark.parametrize(
+    ("output", "message"),
+    [
+        (b"", "truncated symlink size batch"),
+        (f"{_OID} blob {64 * 1024 + 1}\n".encode(), "oversized symlink target"),
+    ],
+)
+def test_unsafe_symlink_size_batch_refuses(output: bytes, message: str) -> None:
+    with pytest.raises(pre_push_hook.InspectionError, match=message):
+        pre_push_hook._check_symlink_sizes(_fake_inspection(output), {_OID})
+
+
+def test_unreadable_committed_symlink_blob_refuses() -> None:
+    def git(args):
+        if args[0] == "diff-tree":
+            return f"{_OID}\0:000000 120000 {_ZERO_SHA} {_OTHER_OID} A\0link\0".encode()
+        return f"{_OTHER_OID} blob 5\n".encode()
+
+    commit = ("commit", b"author A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nfix: link")
+    inspection = _fake_inspection(git, objects={_OID: commit, _OTHER_OID: None})
+    with pytest.raises(pre_push_hook.InspectionError, match="committed symlink target"):
+        pre_push_hook._inspect_commits(inspection, [_OID], [], None, None)
+
+
+def test_unreadable_commit_facts_are_an_offense(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(pre_push_hook, "_commit_facts", lambda sha: None)
+    assert _commit_offenses(_OID, [], repository_root=repo) == ["cannot inspect commit facts"]
+
+
+def test_unresolvable_root_is_an_offense(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(pre_push_hook, "_repository_root", lambda: None)
+    monkeypatch.setattr(
+        pre_push_hook,
+        "_commit_facts",
+        lambda sha: ("Real Dev", "dev@example.com", "Real Dev", "dev@example.com", "fix: x"),
+    )
+    policy = pre_push_hook.stealth_policy(repo)
+    assert policy.enabled
+    assert _commit_offenses(_OID, [], policy=policy) == [
+        "cannot resolve repository root to inspect tracked metadata"
+    ]
+
+
+def test_active_push_without_destination_arguments_refuses(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(sys, "argv", ["pre-push"])
+    assert _push(_head(repo)) == 1
+    assert "active push requires destination name and location" in capsys.readouterr().err

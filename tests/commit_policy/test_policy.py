@@ -652,6 +652,33 @@ def test_validate_push_configuration_stat_error_refuses(
         validate_push_configuration(tmp_path)
 
 
+def test_validate_push_configuration_unreadable_missing_node_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """stat() says missing but lstat() cannot tell: refuse rather than assume absent."""
+    config = tmp_path / ".booley_project" / "booley.toml"
+    config.parent.mkdir()
+    original = Path.lstat
+
+    def denied(path, *args, **kwargs):
+        if path == config:
+            raise PermissionError("denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", denied)
+    with pytest.raises(ValueError, match="cannot read selected") as caught:
+        validate_push_configuration(tmp_path)
+    assert isinstance(caught.value.__cause__, PermissionError)
+
+
+def test_validate_push_configuration_non_table_stealth_refuses(tmp_path: Path) -> None:
+    config = tmp_path / ".booley_project" / "booley.toml"
+    config.parent.mkdir()
+    config.write_text('stealth = "enabled"\n')
+    with pytest.raises(ValueError, match=r"\[stealth\] must be a table"):
+        validate_push_configuration(tmp_path)
+
+
 @pytest.mark.parametrize(
     "repository", ["http://example.test/repo", "git://example.test/repo", "ext::unsafe"]
 )

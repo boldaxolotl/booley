@@ -397,7 +397,7 @@ def _location(location, root):
             raise InspectionError("file authority requires valid UTF-8 URL encoding") from exc
         if "\0" in decoded:
             raise InspectionError("invalid file authority path")
-        return "file", _resolve_repository_path(Path(decoded))
+        return "file", _resolve_repository_path(Path(_file_url_path(decoded)))
     if Path(location).is_absolute() or (not parsed.scheme and ":" not in location):
         return "file", _resolve_repository_path(root / location)
     if parsed.scheme in ("https", "ssh"):
@@ -411,6 +411,18 @@ def _location(location, root):
     ):
         return "ssh", None
     raise InspectionError("repository transport cannot establish authority")
+
+
+def _file_url_path(decoded: str, *, windows: bool = os.name == "nt") -> str:
+    """Return the local path Git opens for a decoded ``file://`` URL path.
+
+    ``file:///C:/repo`` decodes to ``/C:/repo``; Git for Windows opens the
+    drive-letter path, so the leading separator before the drive is dropped.
+    On POSIX ``/C:/repo`` is an ordinary absolute path and stays unchanged.
+    """
+    if windows and re.fullmatch(r"/[A-Za-z]:/.*", decoded, flags=re.DOTALL):
+        return decoded[1:]
+    return decoded
 
 
 def _transport_environment(root, location):
