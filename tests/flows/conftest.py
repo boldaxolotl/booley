@@ -23,17 +23,12 @@ def _set_project_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _set_flow_project_root(monkeypatch, _flow_project_root):
-    """Bind source-root consumers even when a backend overrides data setup."""
+    """Supply fake checkout ownership only for data-config fallback."""
     from booley.runtime import shared_infra
 
     # The fixture's flattened data path does not prove checkout ownership.
     if _flow_project_root is not None:
-        from booley.flows.synth.backends import configure
-        from booley.flows.synth.backends.yosys import core
-
-        # These consumers imported the resolver by value; keep real discovery intact.
-        for consumer in (shared_infra, configure, core):
-            monkeypatch.setattr(
-                consumer, "resolve_project_root", lambda fallback_dir=None: _flow_project_root
-            )
+        monkeypatch.setattr(
+            shared_infra, "resolve_project_root", lambda fallback_dir=None: _flow_project_root
+        )
     monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)

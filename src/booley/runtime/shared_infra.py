@@ -122,8 +122,7 @@ def _load_rtl_config(project_root: Path | None = None) -> dict | None:
     if _TOML_CACHE is not None:
         return _TOML_CACHE
     project_path = resolve_toml(resolve_project_dir())
-    root_path = resolve_toml(resolve_project_root())
-    toml_path = project_path if project_path.exists() else root_path
+    toml_path = project_path if project_path.exists() else resolve_toml(resolve_project_root())
     if not toml_path.exists():
         return None
     with toml_path.open("rb") as f:
