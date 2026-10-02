@@ -520,12 +520,12 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
     assert project_discovery._data_root(nested, [nested]) is None
     (nested / ".git").mkdir()
     (nested / ".git" / "HEAD").write_text("ref: refs/heads/main")
-    (nested / "booley.toml").write_text(f'[project]\ndir = "{root}"\n')
+    (nested / "booley.toml").write_text(f'[project]\ndir = "{root.as_posix()}"\n')
     owner = tmp_path / "owner"
     owner.mkdir()
     (owner / ".git").mkdir()
     (owner / ".git" / "HEAD").write_text("ref: refs/heads/main")
-    (owner / "booley.toml").write_text(f'[project]\ndir = "{root}"\n')
+    (owner / "booley.toml").write_text(f'[project]\ndir = "{root.as_posix()}"\n')
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(unrelated))
     from booley.runtime.project_dir import reset_cache, resolve_project_dir
 

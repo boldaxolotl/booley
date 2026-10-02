@@ -6884,7 +6884,7 @@ class TestDisplayReportDir:
 
         mount = tmp_path / "project-mount"
         mount.mkdir()
-        monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(mount))
+        monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", mount.as_posix())
         project = SimpleNamespace(project_dir=mount)
         report_dir = mount / "tmp" / "doctor" / "flow-reports"
         hint = doctor._display_report_dir(project, report_dir)
@@ -8018,7 +8018,7 @@ def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
     root, alias = tmp_path / "selected", tmp_path / "alias"
     for directory in (root, alias):
         (directory / "reports").mkdir(parents=True)
-    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(root))
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", root.as_posix())
     original = Path.samefile
     calls = []
 
@@ -8060,7 +8060,7 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(
         Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
     )
-    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(root))
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", root.as_posix())
     assert (
         doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
         == ".booley_project/target (under the repo root)"
