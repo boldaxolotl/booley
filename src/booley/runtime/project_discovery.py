@@ -93,6 +93,15 @@ def _checkout_candidates(start: Path | None) -> tuple[Path, list[Path]]:
     return current, checkouts
 
 
+def _owning_checkouts(candidates: list[Path], data: Path) -> set[Path]:
+    """Require independent checkout-local ownership for every candidate."""
+    return {
+        p.resolve()
+        for p in candidates
+        if not p.resolve().is_relative_to(data) and has_git_worktree_marker(p) and _owns(p, data)
+    }
+
+
 def discover_project_root(start: Path | None = None, *, required: bool = False) -> Path | None:
     """Resolve explicit selection or an independently proven owning checkout."""
     current, checkouts = _checkout_candidates(start)
@@ -109,13 +118,14 @@ def discover_project_root(start: Path | None = None, *, required: bool = False) 
         candidates = checkouts[:]
         if os.environ.get("BOOLEY_CONTAINER") == "1":
             candidates.append(Path(WORK_DIR))
-        owners = {
-            p.resolve()
-            for p in candidates
-            if not p.resolve().is_relative_to(data)
-            and has_git_worktree_marker(p)
-            and _owns(p, data)
-        }
+        owners = _owning_checkouts(candidates, data)
+        if not owners and start is not None:
+            # A data-path lookup can originate in its owning checkout.
+            try:
+                _current, cwd_checkouts = _checkout_candidates(None)
+            except OSError:
+                cwd_checkouts = []
+            owners = _owning_checkouts(cwd_checkouts, data)
         if len(owners) == 1 and explicit is None:
             return owners.pop()
         raise ProjectRootDiscoveryError(

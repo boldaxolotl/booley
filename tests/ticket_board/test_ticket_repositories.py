@@ -348,7 +348,9 @@ def test_existing_ref_with_missing_object_stays_operational(tmp_path, monkeypatc
 
     root, _project = _paired_refresh_repositories(tmp_path, monkeypatch)
     sha = _git(root, "rev-parse", "refs/heads/main")
-    (root / ".git" / "objects" / sha[:2] / sha[2:]).unlink()
+    object_path = root / ".git" / "objects" / sha[:2] / sha[2:]
+    object_path.chmod(0o644)
+    object_path.unlink()
     with pytest.raises(
         ticket_baseline.TicketAncestryVerificationError, match="cannot verify ancestry"
     ) as caught:
@@ -473,7 +475,9 @@ def test_ticket_commit_trailer_read_failure_stays_operational(tmp_path, monkeypa
         else OSError("storage unavailable")
     )
     if failure_kind == "missing-object":
-        (root / ".git/objects" / sha[:2] / sha[2:]).unlink()
+        object_path = root / ".git/objects" / sha[:2] / sha[2:]
+        object_path.chmod(0o644)
+        object_path.unlink()
     else:
         monkeypatch.setattr(ticket_baseline.subprocess, "run", _raise_failure(failure))
     with pytest.raises(

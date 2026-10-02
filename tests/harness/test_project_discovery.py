@@ -35,7 +35,7 @@ def test_standalone_board_root_and_io_use_owning_checkout(tmp_path, monkeypatch,
     if sandbox:
         from booley.runtime import project_discovery
 
-        (outer / "booley.toml").write_text(f'[project]\ndir = "{data}"\n')
+        (outer / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         monkeypatch.setattr(project_discovery, "WORK_DIR", str(outer))
         monkeypatch.setattr(project_discovery, "PROJECT_DIR_TARGET", str(data))
@@ -51,6 +51,53 @@ def test_standalone_board_root_and_io_use_owning_checkout(tmp_path, monkeypatch,
     monkeypatch.chdir(data)
     assert detect_project_root() == outer
     assert TicketIO(data / "tickets")._project_root == outer
+
+
+@pytest.mark.parametrize("owning_cwd", [True, False])
+def test_ticket_io_external_data_checks_current_checkout(tmp_path, monkeypatch, owning_cwd):
+    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+    from booley.ticket_board.io import TicketIO
+
+    outer, data, unrelated = (tmp_path / name for name in ("checkout", "data", "other"))
+    for root in (outer, data, unrelated):
+        root.mkdir()
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+    (outer / "booley.toml").write_text(f"[project]\ndir = '{data.as_posix()}'\n")
+    monkeypatch.chdir(outer if owning_cwd else unrelated)
+    for name in ("RTL_PROJECT_ROOT", "PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    reset_cache()
+    if owning_cwd:
+        assert TicketIO(data / "tickets")._project_root == outer
+    else:
+        with pytest.raises(ProjectRootDiscoveryError, match="run from the Project checkout"):
+            TicketIO(data / "tickets")
+
+
+@pytest.mark.parametrize("failure_type", [OSError, ValueError])
+def test_ticket_io_current_checkout_failure_is_specific(tmp_path, monkeypatch, failure_type):
+    from booley.runtime import project_discovery
+    from booley.ticket_board.io import TicketIO
+
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    subprocess.run(["git", "init", str(data)], check=True, capture_output=True, timeout=30)
+    for name in ("RTL_PROJECT_ROOT", "PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+
+    def unavailable():
+        raise failure_type("current checkout unavailable")
+
+    expected = (
+        project_discovery.ProjectRootDiscoveryError if failure_type is OSError else ValueError
+    )
+    with monkeypatch.context() as isolated:
+        isolated.setattr(project_discovery.Path, "cwd", unavailable)
+        with pytest.raises(expected):
+            TicketIO(data / "tickets")
 
 
 @pytest.mark.parametrize("error_kind", ["authored", "baseline", "ancestry", "discovery"])
@@ -254,7 +301,7 @@ def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned)
     data.mkdir()
     subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
     if owned:
-        (outer / "booley.toml").write_text(f'[project]\ndir = "{data}"\n')
+        (outer / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
     monkeypatch.setattr(discovery, "WORK_DIR", str(outer))
     monkeypatch.setattr(discovery, "PROJECT_DIR_TARGET", str(data))
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")

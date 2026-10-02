@@ -79,7 +79,7 @@ def _resolve_from_toml(current: Path) -> Path | None:
             try:
                 with toml_path.open("rb") as f:
                     cfg = tomllib.load(f)
-                project = as_dict(cfg.get("project"), default={})
+                project = as_dict(cfg.get("project")) or {}
                 dir_val = as_str(project.get("dir"), default="")
                 if dir_val:
                     p = Path(dir_val)
