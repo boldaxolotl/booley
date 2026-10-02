@@ -6879,13 +6879,14 @@ class TestDisplayReportDir:
     <repo>/.booley_project/tmp/...).
     """
 
-    def test_container_mount_is_rendered_repo_relative(self):
+    def test_container_mount_is_rendered_repo_relative(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
 
-        from booley.runtime.devcontainer import PROJECT_DIR_TARGET
-
-        project = SimpleNamespace(project_dir=Path(PROJECT_DIR_TARGET))
-        report_dir = Path(PROJECT_DIR_TARGET) / "tmp" / "doctor" / "flow-reports"
+        mount = tmp_path / "project-mount"
+        mount.mkdir()
+        monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(mount))
+        project = SimpleNamespace(project_dir=mount)
+        report_dir = mount / "tmp" / "doctor" / "flow-reports"
         hint = doctor._display_report_dir(project, report_dir)
         assert hint == ".booley_project/tmp/doctor/flow-reports (under the repo root)"
 
@@ -8009,3 +8010,58 @@ def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
     assert not (tmp_path / ".git/info/attributes").exists()
     assert not (tmp_path / ".gitattributes").exists()
+
+
+def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root, alias = tmp_path / "selected", tmp_path / "alias"
+    for directory in (root, alias):
+        (directory / "reports").mkdir(parents=True)
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(root))
+    original = Path.samefile
+    calls = []
+
+    def samefile(path, other):
+        if {path, Path(other)} == {root, alias}:
+            calls.append(path)
+            return True
+        return original(path, other)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    project = SimpleNamespace(project_dir=root)
+    assert (
+        doctor._display_report_dir(project, alias / "reports")
+        == ".booley_project/reports (under the repo root)"
+    )
+    assert calls
+    (root / "internal").symlink_to(root / "reports", target_is_directory=True)
+    assert (
+        doctor._display_report_dir(project, root / "internal")
+        == ".booley_project/reports (under the repo root)"
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    assert doctor._display_report_dir(project, root / "escape") == str(root / "escape")
+    assert doctor._display_report_dir(project, outside) == str(outside)
+
+
+def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root, alias = tmp_path / "root", tmp_path / "alias"
+    for directory in (root, alias):
+        directory.mkdir()
+        (directory / "target").mkdir()
+    (alias / "input").mkdir()
+    (root / "input").symlink_to(alias / "target", target_is_directory=True)
+    original = Path.samefile
+    monkeypatch.setattr(
+        Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
+    )
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(root))
+    assert (
+        doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
+        == ".booley_project/target (under the repo root)"
+    )

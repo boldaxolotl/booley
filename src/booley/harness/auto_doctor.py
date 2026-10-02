@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.harness import doctor_stamp
 from booley.runtime.file_lock import try_file_lock
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import contains, resolve_project_dir
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp, utc_now_rfc3339
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ def _core_digest(project_root: Path, project_dir: Path) -> str:
         if not root.is_dir():
             continue
         for path in root.rglob("*.core"):
-            if root == project_root and path.is_relative_to(project_dir):
+            if root == project_root and contains(path, project_dir=project_dir) is not None:
                 continue
             try:
                 label = str(path.relative_to(root))

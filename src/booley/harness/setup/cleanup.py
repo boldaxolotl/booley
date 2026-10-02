@@ -24,7 +24,7 @@ from booley.feedback import materialize
 from booley.feedback.render import Environment
 from booley.harness.feedback_environment import resolve_feedback_environment
 from booley.runtime.process_group import ProcessGroup, is_process_group_alive
-from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
+from booley.runtime.project_dir import PROJECT_DIR_NAME, contains, resolve_checkout_project_dir
 
 MANIFEST_VERSION = 1
 SETUP_ROOT = Path(PROJECT_DIR_NAME)
@@ -228,11 +228,10 @@ def _safe_relative(root: Path, raw: str | Path) -> str:
     if project_dir.is_symlink():
         raise CleanupError(f"the Project directory must not be a symlink: {project_dir}")
     project_dir = project_dir.resolve()
-    try:
-        resolved.relative_to(project_dir)
-    except ValueError as exc:
-        raise CleanupError(f"path traverses outside {SETUP_ROOT}: {raw}") from exc
-    if resolved == project_dir:
+    canonical = contains(resolved, project_dir=project_dir)
+    if canonical is None:
+        raise CleanupError(f"path traverses outside {SETUP_ROOT}: {raw}")
+    if canonical == project_dir:
         raise CleanupError("the .booley_project root is never a cleanup target")
     return normalized.as_posix()
 
@@ -246,7 +245,9 @@ def _reject_shared_boundary(root: Path, absolute: Path, manifest_path: Path) -> 
     """Reject roots and control files that cannot be bounded as leaves."""
     project_dir = root / SETUP_ROOT
     forbidden = {project_dir, project_dir / "tmp", manifest_path.parent, manifest_path}
-    if absolute in forbidden:
+    canonical = contains(absolute, project_dir=project_dir)
+    boundaries = {contains(path, project_dir=project_dir) for path in forbidden}
+    if canonical is None or None in boundaries or canonical in boundaries:
         raise CleanupError(f"shared or cleanup-control path is not a candidate: {absolute}")
 
 

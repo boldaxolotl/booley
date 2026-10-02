@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from stat import S_ISDIR
 
 from booley.core.project_dir import (
     PROJECT_DIR_NAME,
@@ -18,6 +19,7 @@ from booley.core.project_dir import (
 __all__ = [
     "PROJECT_DIR_NAME",
     "checkout_project_dir_relative_to",
+    "contains",
     "init_project_dir_scope",
     "project_dir_for_init",
     "reset_cache",
@@ -39,3 +41,45 @@ def runtime_dir(start: Path | None = None) -> Path:
     directory = resolve_project_dir(start) / ".runtime"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def _identity_suffix(candidate: Path, root: Path) -> Path | None:
+    """Find a directory ancestor physically identical to the selected root."""
+    for ancestor in (candidate, *candidate.parents):
+        try:
+            directory = S_ISDIR(ancestor.stat().st_mode)
+        except FileNotFoundError:
+            continue
+        if directory and ancestor.samefile(root):
+            return candidate.relative_to(ancestor)
+    return None
+
+
+def contains(path: str | Path, *, project_dir: Path | None = None) -> Path | None:
+    """Return a canonical Project-data path, or None if membership is unproven.
+
+    Directory identity admits independent mount spellings, including missing
+    descendants of an existing root. File hardlinks do not establish membership.
+    Explicit ``project_dir`` supplies authority independently of active selection.
+    Filesystem errors fail closed; selection errors and malformed paths propagate.
+    This predicate does not authorize mutation or provide a race-free file open.
+    """
+    selected = resolve_project_dir() if project_dir is None else project_dir
+    candidate = Path(path)
+    try:
+        root = selected.resolve()
+        if not root.is_dir():
+            return None
+        suffix = _identity_suffix(candidate.resolve(), root)
+        if suffix is None:
+            return None
+        canonical = (root / suffix).resolve()
+        canonical_suffix = _identity_suffix(canonical, root)
+        if canonical_suffix is None:
+            return None
+        authoritative = root / canonical_suffix
+        if _identity_suffix(authoritative.resolve(), root) is None:
+            return None
+        return authoritative
+    except (OSError, RuntimeError):
+        return None
