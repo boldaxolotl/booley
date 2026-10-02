@@ -30,7 +30,7 @@ def _git(path: Path, *args: str, env: dict[str, str] | None = None) -> str:
     return result.stdout.strip()
 
 
-def test_interactive_identity_overrides_copied_global_config(tmp_path: Path) -> None:
+def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     project_dir = tmp_path / "project-data"
     workspace.mkdir()
@@ -76,7 +76,7 @@ def test_interactive_identity_overrides_copied_global_config(tmp_path: Path) -> 
     assert _git(workspace, "config", "user.name", env=env) == "Host Alias"
 
     subprocess.run(
-        [sys.executable, "-m", "booley.runtime.incontainer_git_identity"],
+        [sys.executable, "-m", "booley.runtime.incontainer_git_identity", "--ticket"],
         cwd=workspace,
         env=env,
         check=True,
@@ -228,3 +228,223 @@ def test_failed_publication_does_not_enable_worktree_config(tmp_path: Path) -> N
         timeout=10,
     )
     assert result.returncode == 1
+
+
+def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch):
+    from booley.runtime.devcontainer import build_devcontainer_spec, git_identity_command
+    from booley.ticket_board.waiver_approval import WaiverDecisionError, approver_identity
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    project = workspace / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text('[agent.git]\nname="Dev"\nemail="dev@localhost"\n')
+    _git(workspace, "init", "-q")
+    _git(workspace, "config", "user.name", "Human")
+    _git(workspace, "config", "user.email", "human@example.invalid")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        BOOLEY_PROJECT_DIR=str(project),
+        PYTHONPATH=str(Path(identity_setup.__file__).resolve().parents[2]),
+    )
+    spec = build_devcontainer_spec(app="codex", image="test", project_dir_source=str(project))
+    sandbox = {**env, **spec["containerEnv"]}
+    subprocess.run(
+        [sys.executable, *git_identity_command().split()[1:]],
+        cwd=workspace,
+        env=sandbox,
+        check=True,
+        timeout=10,
+    )
+    assert _git(workspace, "config", "user.name", env=env) == "Human"
+    for commit_env, expected in (
+        (env, "Human <human@example.invalid>"),
+        (sandbox, "Dev <dev@localhost>"),
+    ):
+        _git(
+            workspace,
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "identity",
+            env=commit_env,
+        )
+        assert (
+            _git(workspace, "show", "-s", "--format=%an <%ae>|%cn <%ce>", "HEAD", env=commit_env)
+            == f"{expected}|{expected}"
+        )
+    assert approver_identity(workspace) == "Human <human@example.invalid>"
+    for key, value in sandbox.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(WaiverDecisionError, match="approve waivers as yourself"):
+        approver_identity(workspace)
+
+
+@pytest.mark.parametrize(
+    "pair", [("Dev", "dev@localhost"), ("Custom Agent", "custom@example.invalid")]
+)
+def test_cleanup_recognized_pair_preserves_other_config(tmp_path, pair):
+    from booley.runtime.incontainer_git_identity_cleanup import cleanup_git_identity
+
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.name", "Human")
+    _git(tmp_path, "config", "user.email", "human@example.invalid")
+    apply_git_identity(tmp_path, GitIdentity(*pair))
+    target = tmp_path / ".git/config.worktree"
+    with target.open("a") as stream:
+        stream.write(
+            "[user]\n signingkey = abc\n[core]\n hooksPath = ../hooks\n autocrlf = false\n[include]\n path = absent-config\n"
+        )
+    for _ in range(2):
+        cleanup_git_identity(tmp_path, GitIdentity("Custom Agent", "custom@example.invalid"))
+    assert _git(tmp_path, "config", "user.name") == "Human"
+    assert _git(tmp_path, "config", "user.email") == "human@example.invalid"
+    assert _git(tmp_path, "config", "user.signingkey") == "abc"
+    assert _git(tmp_path, "config", "core.hooksPath") == "../hooks"
+    assert _git(tmp_path, "config", "extensions.worktreeConfig") == "true"
+    assert "path = absent-config" in target.read_text()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "[user]\nname=Dev\n",
+        "[user]\nname=Human\nemail=dev@localhost\n",
+        "[user]\nname=Dev\nemail=human@example.invalid\n",
+        "[user]\nname=Dev\nname=Dev\nemail=dev@localhost\n",
+        "[user]\nname=Historic Custom\nemail=historic@example.invalid\n",
+    ],
+)
+def test_cleanup_preserves_unrecognized_or_incomplete_pairs(tmp_path, contents):
+    from booley.runtime.incontainer_git_identity_cleanup import cleanup_git_identity
+
+    _git(tmp_path, "init", "-q")
+    target = tmp_path / ".git/config.worktree"
+    target.write_text(contents)
+    cleanup_git_identity(tmp_path, GitIdentity("Current", "current@example.invalid"))
+    assert target.read_text() == contents
+
+
+@pytest.mark.parametrize("problem", ["lock", "symlink", "malformed"])
+def test_cleanup_refuses_unsafe_config_without_mutation(tmp_path, problem):
+    from booley.runtime.incontainer_git_identity_cleanup import cleanup_git_identity
+
+    _git(tmp_path, "init", "-q")
+    apply_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    target = tmp_path / ".git/config.worktree"
+    if problem == "lock":
+        target.with_name("config.worktree.lock").write_text("someone else's lock")
+    elif problem == "symlink":
+        source = tmp_path / "source"
+        target.replace(source)
+        target.symlink_to(source)
+    else:
+        target.write_text("invalid {{{")
+    before = target.read_bytes()
+    with pytest.raises(GitIdentityError):
+        cleanup_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    assert target.read_bytes() == before
+    if problem == "lock":
+        assert target.with_name("config.worktree.lock").read_text() == "someone else's lock"
+    else:
+        assert not target.with_name("config.worktree.lock").exists()
+
+
+def test_cleanup_linked_human_project_and_missing_file(tmp_path):
+    from booley.runtime.incontainer_git_identity_cleanup import cleanup_git_identity
+
+    _git(tmp_path, "init", "-q")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=Human",
+        "-c",
+        "user.email=human@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "base",
+    )
+    checkout = tmp_path / "linked"
+    _git(tmp_path, "worktree", "add", "-qb", "linked", str(checkout))
+    cleanup_git_identity(checkout, GitIdentity("Dev", "dev@localhost"))
+    apply_git_identity(checkout, GitIdentity("Dev", "dev@localhost"))
+    cleanup_git_identity(checkout, GitIdentity("Dev", "dev@localhost"))
+    target = Path(_git(checkout, "rev-parse", "--git-path", "config.worktree"))
+    assert "name" not in target.read_text()
+    assert _git(tmp_path, "config", "extensions.worktreeConfig") == "true"
+
+
+@pytest.mark.parametrize(
+    "value", ["${localEnv:GITHUB_TOKEN}", "${containerEnv:SECRET}", "${anything}"]
+)
+def test_identity_rejects_devcontainer_interpolation(tmp_path, value):
+    (tmp_path / "booley.toml").write_text(f"[agent.git]\nname='{value}'\n")
+    with pytest.raises(GitIdentityError, match="interpolation"):
+        load_git_identity(tmp_path)
+    with pytest.raises(GitIdentityError, match="interpolation"):
+        identity_setup.git_identity_environment(GitIdentity(value, "dev@localhost"))
+
+
+def test_failed_cleanup_stage_preserves_original_and_removes_owned_lock(tmp_path, monkeypatch):
+    from booley.runtime import incontainer_git_identity_cleanup as cleanup
+
+    _git(tmp_path, "init", "-q")
+    apply_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    target = tmp_path / ".git/config.worktree"
+    before = target.read_bytes()
+
+    def fail(*_args):
+        raise GitIdentityError("forced stage failure")
+
+    monkeypatch.setattr(cleanup, "_remove_pair", fail)
+    with pytest.raises(GitIdentityError, match="forced stage"):
+        cleanup.cleanup_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    assert target.read_bytes() == before
+    assert not target.with_name("config.worktree.lock").exists()
+
+
+def test_cleanup_does_not_trust_inherited_git_config(tmp_path, monkeypatch):
+    from booley.runtime.incontainer_git_identity_cleanup import cleanup_git_identity
+
+    _git(tmp_path, "init", "-q")
+    apply_git_identity(tmp_path, GitIdentity("Human", "human@example.invalid"))
+    target = tmp_path / ".git/config.worktree"
+    before = target.read_bytes()
+    for key, value in identity_setup.git_identity_environment(
+        GitIdentity("Dev", "dev@localhost")
+    ).items():
+        monkeypatch.setenv(key, value)
+    cleanup_git_identity(tmp_path, GitIdentity("Dev", "dev@localhost"))
+    assert target.read_bytes() == before
+
+
+def test_stale_image_missing_cleanup_module_cannot_apply_identity(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _git(workspace, "init", "-q")
+    _git(workspace, "config", "user.name", "Human")
+    old_source = tmp_path / "old-source"
+    package = old_source / "booley/runtime"
+    package.mkdir(parents=True)
+    (old_source / "booley/__init__.py").touch()
+    (package / "__init__.py").touch()
+    (package / "incontainer_git_identity.py").write_text(
+        'raise AssertionError("old apply invoked")\n'
+    )
+    environment = {**os.environ, "PYTHONPATH": str(old_source)}
+    result = subprocess.run(
+        [sys.executable, "-m", "booley.runtime.incontainer_git_identity_cleanup"],
+        cwd=workspace,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert "No module named" in result.stderr
+    assert "old apply invoked" not in result.stderr
+    assert _git(workspace, "config", "user.name") == "Human"

@@ -1313,16 +1313,20 @@ name = "Expected Developer"
 email = "developer@example.com"
 ```
 
-Booley applies each configured value to the active checkout's worktree-specific
-Git configuration. This takes precedence over the host-global `.gitconfig` that
-VS Code copies into a Sandbox without changing the user's global Git
-configuration. A missing or empty `name` falls back to `Dev`; a missing or empty
-`email` falls back to `dev@localhost`.
+Interactive Mode supplies the configured identity through command-scope Git
+settings in both the Sandbox container and VS Code remote environment. These
+settings take precedence over copied host-global `.gitconfig` values and leave
+the host checkout's Git identity unchanged. A missing or empty `name` falls back
+to `Dev`; a missing or empty `email` falls back to `dev@localhost`.
 
-Interactive Mode refreshes the values when the Sandbox is created or
-started. Ticket Mode applies them when it creates a Ticket worktree. Explicit
-Git overrides such as `git commit --author` or the `GIT_AUTHOR_*` and
-`GIT_COMMITTER_*` environment variables still take precedence.
+Sandbox creation and startup with an updated image remove a complete legacy
+worktree identity pair matching the current settings or `Dev <dev@localhost>`;
+unrecognized custom overrides and other Git settings are preserved. Changed
+`[agent.git]` settings require refreshing and recreating the Sandbox to update
+its immutable environment. Ticket Mode still applies identity to each Ticket's
+worktree-specific Git configuration at creation. Explicit Git overrides such
+as `git commit --author` or the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment
+variables still take precedence.
 
 ### Developer Agent policy (`[developer]`)
 

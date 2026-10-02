@@ -1,7 +1,8 @@
-"""Apply a Project's Git identity to its Interactive Mode checkout."""
+"""Validate Sandbox Git environment and apply explicit Ticket identities."""
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -48,6 +49,8 @@ def _identity_field(git: Mapping[str, Any], field: str, default: str) -> str:
     text = text.strip()
     if not text:
         return default
+    if "${" in text:
+        raise GitIdentityError(f"[agent.git] {field} contains forbidden variable interpolation")
     if any(character in text for character in ("\0", "\r", "\n")):
         raise GitIdentityError(f"[agent.git] {field} contains a forbidden control character")
     return text
@@ -69,6 +72,17 @@ def load_git_identity(project_dir: Path) -> GitIdentity:
         _identity_field(git, "name", _DEFAULT_NAME),
         _identity_field(git, "email", _DEFAULT_EMAIL),
     )
+
+
+def git_identity_environment(identity: GitIdentity) -> dict[str, str]:
+    """Return validated command-scope Git defaults without changing any file."""
+    return {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "user.name",
+        "GIT_CONFIG_VALUE_0": _identity_field({"name": identity.name}, "name", _DEFAULT_NAME),
+        "GIT_CONFIG_KEY_1": "user.email",
+        "GIT_CONFIG_VALUE_1": _identity_field({"email": identity.email}, "email", _DEFAULT_EMAIL),
+    }
 
 
 def _git(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -164,7 +178,10 @@ def apply_git_identity(checkout: Path, identity: GitIdentity) -> None:
 
 
 def main() -> None:
-    """Apply the mounted Project configuration to the attached checkout."""
+    """Apply identity only when explicitly requested for a Ticket workspace."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ticket", action="store_true", required=True)
+    parser.parse_args()
     project_dir = Path(os.environ.get("BOOLEY_PROJECT_DIR", "/booley-project"))
     identity = load_git_identity(project_dir)
     checkout = Path(os.environ.get("BOOLEY_GIT_CHECKOUT", Path.cwd()))

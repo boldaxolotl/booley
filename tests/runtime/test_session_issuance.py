@@ -2112,3 +2112,129 @@ def test_issuance_document_rejects_malformed_layout_as_spec_error(
     _project, _spec, _path, stamp = issued
     with pytest.raises(runtime_spec.RuntimeSpecError):
         runtime_spec.issuance_from_document({**asdict(stamp), "project_data_layout": layout})
+
+
+@pytest.mark.parametrize("section", ["containerEnv", "remoteEnv"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_CONFIG_KEY_1",
+        "GIT_CONFIG_VALUE_1",
+    ],
+)
+@pytest.mark.parametrize("drift", [None, "different", "${localEnv:GITHUB_TOKEN}"])
+def test_issued_git_environment_rejects_missing_and_drift(issued, section, key, drift):
+    _project, spec, _path, stamp = issued
+    assert spec["containerEnv"][key] == spec["remoteEnv"][key]
+    if drift is None:
+        spec[section].pop(key)
+    else:
+        spec[section][key] = drift
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent.git\].*refresh.*recreate"):
+        runtime_spec._validate_git_identity_environment(spec, Path(stamp.project_data_source))
+
+
+def test_issuance_pins_authoritative_external_identity_and_detects_stale_config(issued, tmp_path):
+    _project, spec, _path, _stamp = issued
+    (tmp_path / "booley.toml").write_text(
+        '[agent.git]\nname="External Agent"\nemail="external@example.invalid"\n'
+    )
+    runtime_spec._pin_git_identity(spec, tmp_path)
+    for section in ("containerEnv", "remoteEnv"):
+        assert spec[section]["GIT_CONFIG_VALUE_0"] == "External Agent"
+        assert spec[section]["GIT_CONFIG_VALUE_1"] == "external@example.invalid"
+    runtime_spec._validate_git_identity_environment(spec, tmp_path)
+    (tmp_path / "booley.toml").write_text('[agent.git]\nname="Changed Agent"\n')
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="refresh and recreate"):
+        runtime_spec._validate_git_identity_environment(spec, tmp_path)
+
+
+def test_old_identity_lifecycle_is_rejected(issued):
+    _project, spec, _path, _stamp = issued
+    spec["postStartCommand"] = "python -m booley.runtime.incontainer_git_identity"
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="postStartCommand"):
+        runtime_spec._validate_lifecycle(spec)
+
+
+def test_seal_pins_external_project_identity_over_builder_defaults(issued, tmp_path, monkeypatch):
+    project, _spec, _path, _stamp = issued
+    external = tmp_path / "external-data"
+    external.mkdir()
+    (external / "booley.toml").write_text(
+        '[agent.git]\nname="Mounted Agent"\nemail="mounted@example.invalid"\n'
+    )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE, protected_devcontainer_source=str(project / ".devcontainer")
+    )
+    assert spec["remoteEnv"]["GIT_CONFIG_VALUE_0"] == "Dev"
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    for section in ("containerEnv", "remoteEnv"):
+        assert spec[section]["GIT_CONFIG_VALUE_0"] == "Mounted Agent"
+        assert spec[section]["GIT_CONFIG_VALUE_1"] == "mounted@example.invalid"
+
+
+def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch):
+    import sys
+
+    from booley.ticket_board.waiver_approval import WaiverDecisionError, approver_identity
+
+    project, spec, _path, stamp = issued
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(
+        PATH=os.defpath,
+        HOME=str(project.parent),
+        GIT_CONFIG_GLOBAL=str(project.parent / "global.gitconfig"),
+        GIT_CONFIG_NOSYSTEM="1",
+        PYTHONPATH=str(Path(dc.__file__).resolve().parents[2]),
+    )
+
+    def git(*args, env=environment):
+        return subprocess.run(
+            ["git", "-C", str(project), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "--global", "user.name", "Human Global")
+    git("config", "--global", "user.email", "global@example.invalid")
+    git("config", "user.name", "Human")
+    git("config", "user.email", "human@example.invalid")
+    sandbox = {
+        **environment,
+        **spec["containerEnv"],
+        "BOOLEY_PROJECT_DIR": stamp.project_data_source,
+        "BOOLEY_MCP_MODE": "interactive",
+    }
+    subprocess.run(
+        [sys.executable, *dc.git_identity_command().split()[1:]],
+        cwd=project,
+        env=sandbox,
+        check=True,
+        timeout=10,
+    )
+    for env, expected in (
+        (environment, "Human <human@example.invalid>"),
+        (sandbox, "Dev <dev@localhost>"),
+    ):
+        git("-c", "commit.gpgSign=false", "commit", "--allow-empty", "-qm", "identity", env=env)
+        assert (
+            git("show", "-s", "--format=%an <%ae>|%cn <%ce>", env=env) == f"{expected}|{expected}"
+        )
+    assert git("config", "user.name") == "Human"
+    assert git("config", "--global", "user.name") == "Human Global"
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+    assert approver_identity(project) == "Human <human@example.invalid>"
+    for key, value in sandbox.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(WaiverDecisionError, match="approve waivers as yourself"):
+        approver_identity(project)
