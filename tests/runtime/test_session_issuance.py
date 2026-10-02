@@ -25,6 +25,9 @@ from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
 
+# Issuance fixtures replace PATH with a synthetic launcher directory.
+_HOST_PATH = os.environ.get("PATH", os.defpath)
+
 
 def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Create a host-owned validator without relying on the runner's install layout."""
@@ -2186,7 +2189,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
     project, spec, _path, stamp = issued
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     environment.update(
-        PATH=os.defpath,
+        PATH=_HOST_PATH,
         HOME=str(project.parent),
         GIT_CONFIG_GLOBAL=str(project.parent / "global.gitconfig"),
         GIT_CONFIG_NOSYSTEM="1",

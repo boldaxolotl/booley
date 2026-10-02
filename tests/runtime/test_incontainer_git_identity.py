@@ -434,7 +434,12 @@ def test_stale_image_missing_cleanup_module_cannot_apply_identity(tmp_path):
     (package / "incontainer_git_identity.py").write_text(
         'raise AssertionError("old apply invoked")\n'
     )
-    environment = {**os.environ, "PYTHONPATH": str(old_source)}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) and key != "COVERAGE_FILE"
+    }
+    environment["PYTHONPATH"] = str(old_source)
     result = subprocess.run(
         [sys.executable, "-m", "booley.runtime.incontainer_git_identity_cleanup"],
         cwd=workspace,
