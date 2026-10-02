@@ -42,96 +42,27 @@ without writing.
 
 ### Building a development wheel
 
-Use the editable development environment above and a complete source checkout.
-Install the build frontend with `python3 -m pip install build`, then run this
-from the checkout root:
-
+Use the editable development environment and a complete checkout. From its root:
 ```bash
-PYTHONPATH=src python3 -P <<'PY'
-from pathlib import Path
-import shutil
-import subprocess
-import sys
-
-from booley.runtime.build_stamp import (
-    BuildProfile, development_context_path, stamp_path, write_build_stamp,
-)
-
-root = Path.cwd()
-shutil.rmtree(root / "build", ignore_errors=True)
-try:
-    write_build_stamp(root, profile=BuildProfile.DEVELOPMENT_WHEEL)
-    subprocess.run([sys.executable, "-P", "-m", "build", "--wheel"], check=True)
-finally:
-    stamp_path(root).unlink(missing_ok=True)
-    development_context_path(root).unlink(missing_ok=True)
-PY
+python3 -m pip install build
+wheel=$(python3 -P .github/scripts/build_development_wheel.py)
 ```
-
-Keep the generated stamp and development context until the build finishes;
-the `finally` block removes both on success and failure. Keep the editable
-contributor environment for building. To try the installed wheel, create a
-separate disposable virtual environment outside the checkout, install the
-selected wheel there, and inspect its version from outside the source tree.
-This environment is for candidate inspection, not Host Bootstrap.
-
+The script stamps `DEVELOPMENT_WHEEL`, removes generated src stamp/context even
+on failure, and prints the exact built wheel path. Only after a successful build,
+inspect it without replacing the editable install:
 ```bash
-# Use the exact wheel filename reported by the successful build above.
-wheel=/absolute/path/to/Booley/dist/selected.whl
-wheel_env=$(mktemp -d)
-python3 -m venv "$wheel_env/venv"
-"$wheel_env/venv/bin/python" -m pip install "$wheel"
-(cd "$wheel_env" && "$wheel_env/venv/bin/booley" --version)
+if [ -n "$wheel" ]; then
+    wheel_env=$(mktemp -d)
+    python3 -m venv "$wheel_env/venv"
+    "$wheel_env/venv/bin/python" -m pip install "$wheel"
+    (cd "$wheel_env" && "$wheel_env/venv/bin/booley" --version)
+    rm -rf -- "$wheel_env"
+fi
 ```
-
-Do not activate this environment or install the wheel into the contributor
-`.venv`. Host Bootstrap refuses virtual-environment and temporary installations.
-
-To use the development wheel for Host Bootstrap, intentionally replace the
-canonical host wheel and update its machine-global integrations. Keep the
-editable contributor `.venv` unchanged. Use the absolute `interpreter` and
-`executable` paths recorded in
-`${XDG_CONFIG_HOME:-$HOME/.config}/booley/host-installation.json`, rather than
-paths inferred from the active editable environment. The selected interpreter
-must be outside any virtual environment. If no canonical host exists, follow
+Host Bootstrap refuses disposable/virtualenv installs; follow
+[canonical host installation policy](../user/SETUP.md) and
 [host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment)
-to establish a suitable base interpreter first. Preserve the previous release
-version or absolute wheel path for rollback before changing the installation.
-
-The following example assumes an existing user-installed canonical host wheel.
-If the recorded executable is not that interpreter's user scripts executable,
-follow the host installation guidance rather than creating a second shadowing
-installation. `--force-reinstall` is required when the development and release
-wheels share the same version; it applies to this intentional canonical-host
-replacement, not the fresh candidate environment above.
-
-```bash
-base_python=/absolute/path/to/recorded/base/python
-host_booley=/absolute/path/to/recorded/booley
-"$base_python" -m pip install --user --force-reinstall "$wheel"
-(cd "$wheel_env" && "$host_booley" --version)
-# Confirm this shows the development build's commit before changing host identity.
-(cd "$wheel_env" && "$host_booley" bootstrap --update)
-```
-
-Compare the update output's payload fingerprint with the inspected build
-metadata; do not infer success from exit status alone. To return to the previous
-release, use the same base interpreter:
-
-```bash
-"$base_python" -m pip install --user --force-reinstall "booley-rtl==<previous-version>"
-# Alternatively, reinstall the preserved previous absolute wheel path.
-(cd "$wheel_env" && "$host_booley" --version)
-(cd "$wheel_env" && "$host_booley" bootstrap --update)
-```
-
-Inspect the restored version and payload as above. See
-[canonical host ownership](../user/SETUP.md), and ensure the normal host and
-Docker prerequisites. Remove the disposable environment with
-`rm -rf -- "$wheel_env"` when finished.
-
-The `runtime_image_build_stamp` helper is for a wheel embedded in Sandbox Images;
-use the explicit `DEVELOPMENT_WHEEL` profile for a host development distribution.
+to intentionally use this wheel on the host.
 
 ### Agent source-development checks
 

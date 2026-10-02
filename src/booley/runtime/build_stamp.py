@@ -460,11 +460,11 @@ def extracted_development_context() -> Iterator[Path]:
     if DEVELOPMENT_CONTEXT_SHA256 == "" and not embedded_official_release():
         raise ValueError(
             "wheel has a runtime-image-style stamp without development context. "
-            "From a complete source checkout, use "
+            "From a complete source checkout, run "
+            "python3 -P .github/scripts/build_development_wheel.py. The script uses "
             "write_build_stamp(root, profile=BuildProfile.DEVELOPMENT_WHEEL), then "
-            "python3 -P -m build --wheel. Remove src/booley/_build_commit.py and "
-            "src/booley/data/development-build-context.tar.gz after building, also on "
-            "failure, and reinstall the rebuilt wheel. See "
+            "python3 -P -m build --wheel, and removes src/booley/_build_commit.py and "
+            "src/booley/data/development-build-context.tar.gz even on failure. See "
             "docs/internals/CONTRIBUTING.md#building-a-development-wheel for the safe recipe."
         )
     if not _is_sha256(DEVELOPMENT_CONTEXT_SHA256) or not _is_sha256(PAYLOAD_FINGERPRINT):

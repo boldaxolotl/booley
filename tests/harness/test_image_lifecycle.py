@@ -4449,6 +4449,7 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
     assert "runtime-image-style" in message
     assert "BuildProfile.DEVELOPMENT_WHEEL" in message
     assert "python3 -P -m build --wheel" in message
+    assert "python3 -P .github/scripts/build_development_wheel.py" in message
     assert docker.mutations == []
 
 

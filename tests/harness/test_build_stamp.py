@@ -565,6 +565,7 @@ def test_runtime_image_stamp_has_actionable_recovery(repo, monkeypatch, official
     assert "runtime-image-style" in message
     assert "write_build_stamp(root, profile=BuildProfile.DEVELOPMENT_WHEEL)" in message
     assert "python3 -P -m build --wheel" in message
+    assert "python3 -P .github/scripts/build_development_wheel.py" in message
     assert "src/booley/_build_commit.py" in message
     assert "src/booley/data/development-build-context.tar.gz" in message
     assert "CONTRIBUTING.md#building-a-development-wheel" in message
