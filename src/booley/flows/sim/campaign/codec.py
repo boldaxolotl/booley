@@ -512,7 +512,11 @@ def _validate_build_result(value: Mapping[str, object]) -> None:
     states = {
         "ready": ({"ready"}, True, False),
         "design_failure": ({"pre_sim", "compile", "elaboration"}, False, True),
-        "infrastructure_error": ({"pre_sim", "build_transport", "storage"}, False, True),
+        "infrastructure_error": (
+            {"pre_sim", "compile", "elaboration", "build_transport", "storage"},
+            False,
+            True,
+        ),
     }
     if value["state"] not in states:
         raise SimulationCampaignIntegrityError("invalid build result state")
@@ -739,6 +743,9 @@ def _validate_result_state(
                 "blocked result cannot bind a bundle or snapshot"
             )
         return
+    if state == "aborted" and build_result["state"] == "infrastructure_error":
+        _validate_infrastructure_build_abort(value)
+        return
     if build_result["state"] != "ready":
         raise SimulationCampaignIntegrityError("non-blocked result requires ready build")
     _require_uuid(value["bundle_id"], "bundle_id")
@@ -748,6 +755,24 @@ def _validate_result_state(
     ):
         raise SimulationCampaignIntegrityError("post-launch result requires executable snapshot")
     _validate_executable_snapshot(value["executable_snapshot"], value["attempt_id"])
+
+
+def _validate_infrastructure_build_abort(value: Mapping[str, object]) -> None:
+    if value["bundle_id"] is not None or value["executable_snapshot"] is not None:
+        raise SimulationCampaignIntegrityError("infrastructure build abort cannot bind executable")
+    if value["runtime_inputs"] or value["grade"] != "error":
+        raise SimulationCampaignIntegrityError("infrastructure build abort has invalid execution")
+    observations = _exact_list(value["observations"], "observations", MAX_OBSERVATIONS)
+    if not observations or any(
+        not isinstance(item, dict)
+        or item.get("execution") != "aborted"
+        or item.get("failure_class") != "infrastructure"
+        or item.get("functional") != "not_observed"
+        or item.get("assertions") != "not_observed"
+        or item.get("cycle_count") is not None
+        for item in observations
+    ):
+        raise SimulationCampaignIntegrityError("infrastructure build abort has observed verdict")
 
 
 def _validate_executable_snapshot(value: object, attempt_id: object) -> None:

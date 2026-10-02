@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
+import pytest
+
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -14,6 +16,7 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
+from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.targets.domain import TargetHandle
 
@@ -153,8 +156,5 @@ def test_adapter_pass_cannot_override_nonzero_process_exit(tmp_path: Path) -> No
         stdout=f"BOOLEY_BUILD_STAGE token={_TOKEN} rc=0\n",
     )
 
-    outcome = _run(tmp_path, process, _passing_result())
-
-    assert outcome.verdict == "error"
-    assert outcome.infrastructure_failure is not None
-    assert "contradicts" in outcome.infrastructure_failure.detail
+    with pytest.raises(ArtifactValidationError, match="contradicts"):
+        _run(tmp_path, process, _passing_result())

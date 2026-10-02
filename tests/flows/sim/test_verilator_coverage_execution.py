@@ -19,7 +19,21 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
+from booley.flows.sim.campaign.coordinator import (
+    CampaignPolicy,
+    NewCampaignRunRequest,
+    SimulationCampaign,
+)
+from booley.flows.sim.campaign.coverage_execution import (
+    _coverage_observation,
+    _publish_coverage_build_failure,
+)
+from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+from booley.flows.sim.campaign.planning import finalize_manifest
+from booley.flows.sim.campaign.serial_execution import _attempt, _build_attempt
+from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.coverage_overlay import CoverageOverlay
+from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.verilator_coverage import (
@@ -38,6 +52,8 @@ from booley.flows.sim.verilator_coverage_execution import (
 )
 from booley.fusesoc.fusesoc_registry import core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
+from tests.flows.sim.test_campaign_crash_matrix import _admission
+from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
 
 
 def _build_coverage(
@@ -826,3 +842,175 @@ def test_tampered_retained_coverage_image_rebuilds(tmp_path: Path, monkeypatch) 
     assert rebuilt.success
     assert _build_stages(captured) == 2
     assert execution.authenticated_image()[0] != root
+
+
+@pytest.mark.parametrize(
+    "termination", ["disk_budget", "sim_time_stall", "trace_stall", "fatal_init"]
+)
+def test_coverage_infrastructure_guard_preserves_abort_evidence(
+    tmp_path: Path, monkeypatch, termination: str
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    detail = f"coverage guard {termination} stopped the simulator"
+    captured["result"] = AdapterResult(
+        passed=False,
+        inconclusive=False,
+        sva_errors=0,
+        tests=("wrap",),
+        termination=termination,
+        failure_kind="infrastructure",
+        detail=detail,
+        test_results=(
+            AdapterTestResult(
+                "wrap",
+                "fail",
+                detail=detail,
+                termination=termination,
+                failure_kind="infrastructure",
+            ),
+        ),
+    )
+
+    result = execution.run(_run_request(target, raw_path))
+
+    assert result.infrastructure_error is True
+    assert result.verdict == "fail"
+    assert result.termination == termination
+    assert result.failure_kind == "infrastructure"
+    assert result.simulator_returncode == 0
+    assert detail in result.output
+    observation = _coverage_observation(
+        {
+            "name": "wrap",
+            "verdict": result.verdict,
+            "termination": result.termination,
+            "failure_kind": result.failure_kind,
+            "error_tail": result.output,
+        }
+    )
+    assert observation["execution"] == "aborted"
+    assert observation["failure_class"] == "infrastructure"
+    assert observation["functional"] == "not_observed"
+    assert observation["assertions"] == "not_observed"
+    assert observation["detail"]["termination"] == termination
+
+
+class _CoverageFailedBuildExecutor:
+    def execute(self, request):
+        attempt, _run_directory = _attempt(request)
+        request.store.publish_attempt(request.attempt_directory, attempt)
+        directory = request.attempt_directory / "private-build"
+        directory.mkdir()
+        build_attempt = _build_attempt(request)
+        request.store.publish_build_attempt(directory, build_attempt)
+        outcome = CoverageTargetOutcome(
+            "sim",
+            2,
+            directory / "coverage.json",
+            directory / "sim.json",
+            {"error": "collector build transport unavailable"},
+        )
+        return _publish_coverage_build_failure(
+            request,
+            directory,
+            build_attempt,
+            outcome,
+            SimulationBuildResult(
+                success=False,
+                infrastructure_error=True,
+                reason="collector build transport unavailable",
+                output="compiler could not be started",
+            ),
+            0.1,
+            lambda _boundary: None,
+        )
+
+
+def _refresh_coverage_work_identity(document):
+    workload = document["workload"]
+    item = document["work_items"][0]
+    variant = document["build_variants"][0]
+    variant["kind"] = "coverage"
+    recipe = {
+        "kind": "coverage",
+        "source_closure": variant["source_closure"],
+        **{
+            key: workload[key]
+            for key in ("source_recipe", "build_recipe", "eda", "trace", "coverage")
+        },
+    }
+    variant["recipe_sha256"] = _sha(recipe)
+    variant["build_variant_id"] = "variant:" + _sha(recipe).removeprefix("sha256:")
+    item["build_variant_id"] = variant["build_variant_id"]
+    item_digest = _sha(
+        {
+            key: value
+            for key, value in item.items()
+            if key not in {"work_item_id", "fingerprint_sha256"}
+        }
+    )
+    item["fingerprint_sha256"] = item_digest
+    item["work_item_id"] = "item:0000:" + item_digest.removeprefix("sha256:")[:16]
+
+
+def _coverage_build_failure_request(tmp_path: Path):
+    document = _manifest()
+    document.pop("fingerprints")
+    workload = document["workload"]
+    workload["coverage"] = True
+    workload["eda"] = {"kind": "verilator", "version": "5.052"}
+    workload["build_recipe"]["eda_tool"] = "verilator"
+    item = document["work_items"][0]
+    item["kind"] = "coverage_aggregate"
+    item["selection"] = {"kind": "named", "names": ["wrap"]}
+    document["required_suite"]["names"] = ["wrap"]
+    document["required_suite"]["default_invocation"] = False
+    document["required_suite"]["source_path"] = "tests.toml"
+    _refresh_coverage_work_identity(document)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run").mkdir()
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    request = NewCampaignRunRequest(
+        create_simulation_campaign_plan(finalize_manifest(document)),
+        project,
+        invocation.parent,
+        CampaignPolicy(),
+        invocation,
+        _admission(),
+    )
+
+    return request, invocation
+
+
+def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request, invocation = _coverage_build_failure_request(tmp_path)
+    # Isolate Simulation build/result durability from nested collector publication.
+    monkeypatch.setattr(SimulationCampaign, "_publish_coverage_reference", lambda *_args: None)
+
+    outcome = SimulationCampaign(_CoverageFailedBuildExecutor()).run(request)
+
+    assert outcome.complete is True
+    assert outcome.aggregate_grade == "error"
+    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    recovery = store.scan()
+    assert recovery.complete
+    assert not recovery.interrupted
+    item = recovery.items[0]
+    result = json.loads((store.work_item_directory(item.work_item_id) / "result.json").read_text())
+    assert result["state"] == "aborted"
+    assert result["executable_snapshot"] is None
+    assert result["observations"]
+    observation = result["observations"][0]
+    assert observation["execution"] == "aborted"
+    assert observation["failure_class"] == "infrastructure"
+    assert observation["functional"] == "not_observed"
+    assert observation["detail"]["code"] == "build_transport"
+    resumed = SimulationCampaign(_CoverageFailedBuildExecutor()).run(request)
+    assert resumed.complete
+    assert store.scan().items[0].attempt_count == 1

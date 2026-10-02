@@ -1121,6 +1121,17 @@ class SimulationExecution:
         logs = _persist_run_logs(handle, attempt, output, self._artifact_root)
         trace = _trace_artifact(attempt, adapter, trace_policy)
         compatibility = _compatibility_artifacts(attempt, compatibility_policy)
+        if adapter is not None:
+            terminal = attempt.identity.result_path
+            compatibility = (
+                *compatibility,
+                SimulationArtifactEvidence(
+                    "simulation_adapter_result",
+                    str(terminal),
+                    terminal.stat().st_size,
+                    attempt.test_names,
+                ),
+            )
         archived = _archive_file_evidence(
             handle,
             attempt,
@@ -1222,7 +1233,12 @@ class SimulationExecution:
 def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) -> str | None:
     if build.design_failed:
         return None
+    if attempt.error_kind == "authentication":
+        raise ArtifactValidationError(attempt.error or "adapter authentication failed")
     if attempt.error is not None:
+        if attempt.error_kind == "cleanup" and attempt.result is not None:
+            original = attempt.result
+            return f"{original.termination}: {original.detail}; {attempt.error}"
         return attempt.error
     result = attempt.result
     if result is None:
@@ -1232,7 +1248,7 @@ def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) 
             else "adapter completed without authenticated terminal result"
         )
     if result.passed and (attempt.process.returncode != 0 or not build.passed):
-        return "adapter pass contradicts process or build evidence"
+        raise ArtifactValidationError("adapter pass contradicts process or build evidence")
     if result.failure_kind == "infrastructure" and result.termination == "completed":
         return result.detail or "adapter infrastructure failure"
     return None
@@ -1539,7 +1555,15 @@ def _adapter_failure_outcome(
         return _infrastructure_failure(handle, attempt, build, pre_sim, started)
     adapter_error = _adapter_attempt_error(executed, build)
     if adapter_error is not None:
-        return _transport_failure(handle, attempt, build, pre_sim, adapter_error, started)
+        return _transport_failure(
+            handle,
+            attempt,
+            build,
+            pre_sim,
+            adapter_error,
+            started,
+            "artifact_persistence" if executed.error_kind == "cleanup" else "adapter_protocol",
+        )
     return None
 
 
@@ -1550,8 +1574,9 @@ def _transport_failure(
     pre_sim: PreSimEvidence | None,
     detail: str,
     started: float,
+    kind: str = "adapter_protocol",
 ) -> SimulationTargetOutcome:
-    failure = SimulationInfrastructureFailure("adapter_protocol", detail, detail=detail)
+    failure = SimulationInfrastructureFailure(kind, detail, detail=detail)
     return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 
@@ -1931,7 +1956,15 @@ def _test_outcome(
         item, adapter
     )
     reason = _test_reason(
-        detail, termination, simulator_returncode, verdict, process, inconclusive, attempt, trace
+        detail,
+        termination,
+        simulator_returncode,
+        verdict,
+        process,
+        inconclusive,
+        attempt,
+        trace,
+        failure_kind,
     )
     return SimulationTestOutcome(
         name=name,
@@ -1961,7 +1994,7 @@ def _test_termination_evidence(item, adapter):
     termination = item.termination if item else adapter.termination if adapter else "completed"
     failure_kind = (
         item.failure_kind
-        if item and item.failure_kind
+        if item is not None and (item.failure_kind or item.verdict == "pass")
         else adapter.failure_kind
         if adapter
         else ""
@@ -1971,9 +2004,19 @@ def _test_termination_evidence(item, adapter):
 
 
 def _test_reason(
-    detail, termination, simulator_returncode, verdict, process, inconclusive, attempt, trace
+    detail,
+    termination,
+    simulator_returncode,
+    verdict,
+    process,
+    inconclusive,
+    attempt,
+    trace,
+    failure_kind=None,
 ) -> str:
     if termination != "completed" and detail:
+        if failure_kind == "infrastructure" and simulator_returncode in (None, 0):
+            return detail
         return f"{detail} (rc={simulator_returncode})"
     if verdict == "timeout" and not detail:
         return f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"

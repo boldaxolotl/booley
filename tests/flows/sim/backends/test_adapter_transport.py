@@ -538,3 +538,157 @@ def test_default_cocotb_partial_transport_discovers_current_attempt_names(tmp_pa
         "timeout",
         "timeout",
     ]
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_attempt_preserves_terminal_evidence_and_removes_own_partial(tmp_path, terminal) -> None:
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
+
+    identity = _identity(tmp_path)
+    partial = partial_result_identity(identity)
+    unrelated = tmp_path / "other.json.partial"
+    unrelated.write_bytes(b"other attempt")
+    result = AdapterResult(
+        True, False, 0, ("reset",), test_results=(AdapterTestResult("reset", "pass"),)
+    )
+
+    def invoke(command, *, timeout):
+        write_adapter_result(partial, result)
+        if terminal:
+            write_adapter_result(identity, result)
+        return SubprocessResult(returncode=0, timed_out=not terminal)
+
+    outcome = execute_adapter_attempt(
+        invoke, AdapterAttemptRequest(("adapter",), 1, identity, tmp_path)
+    )
+    assert outcome.result == result
+    assert read_adapter_result(identity) == result
+    assert not partial.result_path.exists()
+    assert unrelated.read_bytes() == b"other attempt"
+
+
+def test_attempt_classifies_malformed_transport_as_authentication(tmp_path) -> None:
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
+
+    identity = _identity(tmp_path)
+    partial = partial_result_identity(identity)
+
+    def invoke(command, *, timeout):
+        identity.result_path.write_text("{}")
+        partial.result_path.write_text("{}")
+        return SubprocessResult(returncode=0)
+
+    outcome = execute_adapter_attempt(
+        invoke, AdapterAttemptRequest(("adapter",), 1, identity, tmp_path)
+    )
+    assert outcome.error_kind == "authentication"
+    assert outcome.error
+    assert not partial.result_path.exists()
+
+
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_attempt_without_evidence_is_runtime_failure(tmp_path, timed_out) -> None:
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
+
+    identity = _identity(tmp_path)
+    outcome = execute_adapter_attempt(
+        lambda command, timeout: SubprocessResult(returncode=-9, timed_out=timed_out),
+        AdapterAttemptRequest(("adapter",), 1, identity, tmp_path),
+    )
+    assert outcome.result is None
+    assert outcome.error_kind == "runtime"
+
+
+def test_attempt_cleanup_error_keeps_authenticated_result(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
+
+    identity = _identity(tmp_path)
+    partial = partial_result_identity(identity)
+    result = AdapterResult(
+        True, False, 0, ("reset",), test_results=(AdapterTestResult("reset", "pass"),)
+    )
+    unlink = Path.unlink
+
+    def failing_unlink(path, *args, **kwargs):
+        if path == partial.result_path:
+            raise OSError("cleanup denied")
+        return unlink(path, *args, **kwargs)
+
+    def invoke(command, *, timeout):
+        write_adapter_result(identity, result)
+        write_adapter_result(partial, result)
+        return SubprocessResult(returncode=0)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    outcome = execute_adapter_attempt(
+        invoke, AdapterAttemptRequest(("adapter",), 1, identity, tmp_path)
+    )
+    assert outcome.result == result
+    assert outcome.error_kind == "cleanup"
+    assert "cleanup denied" in outcome.cleanup_error
+    assert read_adapter_result(identity) == result
+
+
+@pytest.mark.parametrize("defect", ["token", "target", "stale"])
+def test_attempt_rejects_unauthenticated_evidence(tmp_path, defect) -> None:
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
+
+    identity = _identity(tmp_path)
+    result = AdapterResult(
+        True, False, 0, ("reset",), test_results=(AdapterTestResult("reset", "pass"),)
+    )
+    if defect == "stale":
+        write_adapter_result(identity, result)
+
+    def invoke(command, *, timeout):
+        if defect == "token":
+            write_adapter_result(replace(identity, attempt_token="foreign"), result)
+        elif defect == "target":
+            write_adapter_result(replace(identity, target_identity="foreign#sim"), result)
+        return SubprocessResult(returncode=0)
+
+    outcome = execute_adapter_attempt(
+        invoke, AdapterAttemptRequest(("adapter",), 1, identity, tmp_path)
+    )
+    assert outcome.result is None
+    assert outcome.error_kind == "authentication"
+    assert outcome.error
+
+
+def test_attempt_failed_promotion_preserves_only_durable_partial(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
+
+    identity = _identity(tmp_path)
+    partial = partial_result_identity(identity)
+    result = AdapterResult(
+        True, False, 0, ("reset",), test_results=(AdapterTestResult("reset", "pass"),)
+    )
+    replace_path = Path.replace
+
+    def failing_replace(path, target):
+        if path == partial.result_path:
+            raise OSError("promotion denied")
+        return replace_path(path, target)
+
+    def invoke(command, *, timeout):
+        write_adapter_result(partial, result)
+        return SubprocessResult(returncode=-9, timed_out=True)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+    outcome = execute_adapter_attempt(
+        invoke, AdapterAttemptRequest(("adapter",), 1, identity, tmp_path)
+    )
+    assert outcome.result == result
+    assert outcome.error_kind == "cleanup"
+    assert read_adapter_result(partial) == result
+    assert not identity.result_path.exists()
