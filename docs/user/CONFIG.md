@@ -1052,9 +1052,9 @@ it is the final nonblank body line and its entire visible payload matches one
 entry in the active banned-word vocabulary. Markdown-linked payloads are
 compared by their visible label. The hook leaves the raw message unchanged and
 tells you to remove the footer and retry. This avoids both silent deletion and
-recognizable redaction debris. Ordinary prose such as "Generated with Docker
-for reproducibility." is not rejected, though any banned words in it are still
-redacted.
+recognizable redaction debris while preserving ordinary prose such as
+"Generated with care by the whole team" or "Generated with Docker for
+reproducibility."
 
 An empty `banned_words = []`, with `banned_substrings` absent or empty, disables
 vocabulary redaction and therefore cannot confirm that an ambiguous plain "Generated with …" line names a protected
@@ -1120,20 +1120,11 @@ allowed_authors = [
 ]
 ```
 
-Unset or `[]` disables the check.
-
-**What counts as outgoing.** The hook asks the destination remote which commits
-it already has and skips those. Everything else in the push is checked
-(messages, identities, paths, symlinks), including imported upstream history on
-a first push to an empty remote, so an allowlist has to cover your
-collaborators' and upstream authors' identities too. If the remote can't be
-queried (network, credentials, or an insecure transport such as plain HTTP),
-the hook warns and checks everything it can't prove the remote already has.
-
-The push is blocked, not skipped, when `booley.toml` is malformed or the
-history is incomplete (e.g. a shallow clone: `git fetch --unshallow` and
-retry). `BOOLEY_SKIP_PUSH_GUARD=1` skips all checks for one push. After
-upgrading, rerun `booley init` to refresh the installed hooks.
+Unset or `[]` disables the check. The hook skips commits the remote already
+has and checks the rest, including imported upstream history, so the allowlist
+must cover collaborators' and upstream authors' identities too. A malformed
+`booley.toml` or a shallow clone blocks the push. `BOOLEY_SKIP_PUSH_GUARD=1`
+skips the scan for one push.
 
 #### What survives a fresh clone
 
