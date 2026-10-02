@@ -904,7 +904,14 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
     assert persisted.criteria[key].met is True
     assert persisted.criteria[key].detail["selected_tests"] == ["half"]
     assert persisted.timeline[-1]["criteria_set"] == [key]
-    assert check_criteria_acceptance(state_path).passed is True
+    assert (
+        check_criteria_acceptance(
+            state_path,
+            log_dir=tmp_path / "logs",
+            ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+        ).passed
+        is True
+    )
 
 
 def _retained_invocation(

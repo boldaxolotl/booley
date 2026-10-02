@@ -177,7 +177,13 @@ def _verdict(state_path: Path, context: TicketCoverageContext):
     def judge(state, unmet):
         return evaluate_ticket_provisional_coverage(state, unmet, context).met_keys
 
-    return check_criteria_acceptance(state_path, work_dir=context.worktree, provisional=judge)
+    return check_criteria_acceptance(
+        state_path,
+        work_dir=context.worktree,
+        provisional=judge,
+        log_dir=context.log_dir,
+        ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    )
 
 
 def test_strict_failure_without_candidates_stays_failed(ticket) -> None:

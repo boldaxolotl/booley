@@ -1641,7 +1641,9 @@ async def _resolve_ticket_disposition(
     from .colors import bold_red, yellow
 
     judge = _ProvisionalCoverageJudge(ctx, project_root)
-    verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir, provisional=judge)
+    verdict = check_criteria_acceptance(
+        state_path, work_dir=ctx.work_dir, provisional=judge, log_dir=ctx.logs_dir
+    )
     logger.info("Criteria verdict for %s: %s", ctx.slug, verdict.disposition)
     _display_criteria_verdict(state_path, verdict, endpoint_catalog)
 
