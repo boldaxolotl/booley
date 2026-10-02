@@ -4209,3 +4209,152 @@ def test_official_project_check_accepts_the_published_release_image(
     )
 
     assert result.status is lifecycle.Status.CURRENT
+
+
+def _layout_build_probe(probe: SimpleNamespace, context, spec) -> int:
+    probe.specs.append(spec)
+    probe.contexts.append(context)
+    assert spec.context.is_dir()
+    assert spec.network == "none"
+    assert spec.parent_artifact == probe.parent["Id"]
+    assert spec.build_args == ("--build-arg", "BOOLEY_LAYOUT_USER=1000:1000")
+    assert spec.capacity_plan.requests == (spec.capacity_request,)
+    assert dict(spec.labels)[lifecycle.LABEL_WHEEL_SHA256] == "b" * 64
+    tag = spec.build_contexts[0][1].removeprefix("docker-image://")
+    assert probe.docker.image_id(tag) == probe.parent["Id"]
+    if probe.failure == "parent":
+        probe.docker.images[tag] = ("substituted", probe.labels)
+    if probe.failure == "cleanup":
+
+        def refuse_cleanup(_tag: str) -> None:
+            raise OSError("cleanup refused")
+
+        probe.monkeypatch.setattr(probe.docker, "remove_tag", refuse_cleanup)
+    probe.docker.images[spec.image] = ("candidate-id", dict(spec.labels))
+    return 1 if probe.failure == "build" else 0
+
+
+def _layout_builder_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> SimpleNamespace:
+    from booley.harness.setup import docker_image
+
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_DATA_LAYOUT, source="wheel")
+    parent_id = "sha256:" + "a" * 64
+    labels = {
+        lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT: "wheel",
+        lifecycle.LABEL_WHEEL_SHA256: "b" * 64,
+    }
+    parent = {"Id": parent_id, "Config": {"User": "1000:1000", "Labels": labels}}
+    docker = FakeDocker({"parent": (parent_id, labels)})
+    adapter = harness_lifecycle._IncrementalBuildAdapter(
+        tmp_path, docker, verbose=False, requests=(harness_lifecycle._capacity_request(node),)
+    )
+    probe = SimpleNamespace(
+        node=node,
+        parent=parent,
+        labels=labels,
+        docker=docker,
+        adapter=adapter,
+        failure=failure,
+        monkeypatch=monkeypatch,
+        specs=[],
+        verified=[],
+        contexts=[],
+    )
+    monkeypatch.setattr(
+        lifecycle.project_image,
+        "inspect_layout_image",
+        lambda image: parent if image == parent_id else {"Id": image},
+    )
+
+    def verify(actual_parent, candidate) -> None:
+        probe.verified.append((actual_parent, candidate))
+        if failure == "verify":
+            raise RuntimeError("candidate changed runtime configuration")
+
+    monkeypatch.setattr(
+        docker_image,
+        "_docker_build_image",
+        lambda context, spec: _layout_build_probe(probe, context, spec),
+    )
+    monkeypatch.setattr(lifecycle.project_image, "verify_layout_image", verify)
+    return probe
+
+
+@pytest.mark.parametrize("failure", [None, "build", "parent", "verify", "cleanup"])
+def test_layout_builder_pins_parent_and_cleans_temporary_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    probe = _layout_builder_probe(tmp_path, monkeypatch, failure)
+    adapter = probe.adapter
+    if failure in {"build", "parent", "verify"}:
+        with pytest.raises(lifecycle.ImageLifecycleError):
+            adapter.prepare(probe.node, candidate_reference="candidate", parent_reference="parent")
+        assert adapter._next_request_index == 0
+    else:
+        assert (
+            adapter.prepare(probe.node, candidate_reference="candidate", parent_reference="parent")
+            == "candidate"
+        )
+        assert adapter._next_request_index == 1
+        assert probe.verified == [(probe.parent, {"Id": "candidate"})]
+    assert probe.docker.image_id("parent") == probe.parent["Id"]
+    assert not probe.specs[0].context.exists()
+    temporary = [name for name in probe.docker.images if "layout-parent:candidate" in name]
+    assert bool(temporary) == (failure in {"parent", "cleanup"})
+    if failure == "cleanup":
+        warning = probe.contexts[0].results[-1]
+        assert warning.status == "warn"
+        assert warning.detail == "cleanup refused"
+
+
+@pytest.mark.parametrize("failure", ["missing", "identity", "wheel", "user"])
+def test_layout_builder_rejects_untrusted_parent_before_tagging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_DATA_LAYOUT, source="wheel")
+    parent_id = "sha256:" + "a" * 64
+    labels = {
+        lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT: "wheel",
+        lifecycle.LABEL_WHEEL_SHA256: "b" * 64,
+    }
+    docker = FakeDocker({"parent": (parent_id, labels)})
+    parent = {"Id": parent_id, "Config": {"User": "1000", "Labels": labels}}
+    if failure == "identity":
+        parent["Id"] = "other-id"
+    elif failure == "wheel":
+        labels.pop(lifecycle.LABEL_WHEEL_SHA256)
+    elif failure == "user":
+        parent["Config"]["User"] = "root;exit"
+    else:
+        docker.images.clear()
+    monkeypatch.setattr(lifecycle.project_image, "inspect_layout_image", lambda _image: parent)
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
+    with pytest.raises(lifecycle.ImageLifecycleError):
+        adapter.prepare(node, candidate_reference="candidate", parent_reference="parent")
+    assert docker.mutations == []
+    assert docker.image_id("candidate") is None
+
+
+@pytest.mark.parametrize("failure", ["absent", "tag-substitution"])
+def test_layout_builder_refuses_parent_before_docker_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    probe = _layout_builder_probe(tmp_path, monkeypatch, None)
+    parent_reference = None if failure == "absent" else "parent"
+    if failure == "tag-substitution":
+        tag = probe.docker.tag
+
+        def substitute(source: str, target: str) -> None:
+            tag(source, target)
+            probe.docker.images[target] = ("substituted", probe.labels)
+
+        monkeypatch.setattr(probe.docker, "tag", substitute)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="parent"):
+        probe.adapter.prepare(
+            probe.node, candidate_reference="candidate", parent_reference=parent_reference
+        )
+    assert probe.specs == []
+    assert probe.docker.image_id("candidate") is None
+    assert probe.docker.image_id("parent") == probe.parent["Id"]

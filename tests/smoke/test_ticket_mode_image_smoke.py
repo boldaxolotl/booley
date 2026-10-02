@@ -186,10 +186,13 @@ def test_enqueue_recovers_across_session_runtime_project_aliases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_value = os.environ.get("BOOLEY_ENQUEUE_ALIAS_PROJECT")
-    if project_value is None:
+    data_value = os.environ.get("BOOLEY_ENQUEUE_ALIAS_DATA")
+    if project_value is None and data_value is None:
         pytest.skip("requires the production dual-mount Sandbox fixture")
+    if project_value is None or data_value is None:
+        pytest.fail("dual-mount fixture requires both alias environment variables")
     project = _initialize_project_at(Path(project_value))
-    active_project_dir = Path("/booley-project")
+    active_project_dir = Path(data_value)
     checkout_project_dir = project / ".booley_project"
     assert active_project_dir.samefile(checkout_project_dir)
     assert active_project_dir.resolve() != checkout_project_dir.resolve()
@@ -586,3 +589,14 @@ def test_ticket_mode_mandatory_sim_failure_moves_ticket_to_blocked(
     assert json.loads(manifest.read_text(encoding="utf-8"))["status"] == "ready"
     _assert_retained_worktree(project, slug, [])
     _assert_no_live_jobs()
+
+
+@pytest.mark.parametrize("variable", ["BOOLEY_ENQUEUE_ALIAS_PROJECT", "BOOLEY_ENQUEUE_ALIAS_DATA"])
+def test_enqueue_alias_fixture_rejects_partial_environment(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    monkeypatch.delenv("BOOLEY_ENQUEUE_ALIAS_PROJECT", raising=False)
+    monkeypatch.delenv("BOOLEY_ENQUEUE_ALIAS_DATA", raising=False)
+    monkeypatch.setenv(variable, "/fixture-not-created")
+    with pytest.raises(pytest.fail.Exception, match="requires both alias environment variables"):
+        test_enqueue_recovers_across_session_runtime_project_aliases(monkeypatch)

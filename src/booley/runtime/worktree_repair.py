@@ -249,11 +249,11 @@ def repair_acceptance_worktrees(root: Path, rows: tuple[tuple[Path, Path, str], 
                     _git(owner, "rev-parse", "--path-format=absolute", "--git-common-dir")
                 )
                 head = _text(common / "worktrees" / admin_name / "HEAD")
-                proof = _prove(owner.resolve(), checkout, head)
                 if head.startswith("ref: "):
                     raise WorktreeRepairError(
                         "retained acceptance candidate is no longer detached"
                     )
+                proof = _prove(owner.resolve(), checkout, head)
                 _git(owner, "merge-base", "--is-ancestor", prepared_sha, head)
                 proofs.append(proof)
             _repair_proofs(root, proofs)

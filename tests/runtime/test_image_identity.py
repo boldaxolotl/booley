@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from booley.runtime import image_identity as identity
 
 
@@ -592,3 +594,91 @@ def test_layout_rejects_matching_labels_for_local_data_topology(monkeypatch, tmp
         "issued", "configured", images.get, project_root=root
     )
     assert result.status is identity.Status.UNKNOWN
+
+
+@pytest.mark.parametrize("output", ["not json", "{}", "[]", "[{}, {}]", "[null]"])
+def test_layout_inspection_rejects_malformed_or_multiple_docker_records(
+    monkeypatch: pytest.MonkeyPatch, output: str
+) -> None:
+    from types import SimpleNamespace
+
+    from booley.runtime import project_image
+
+    monkeypatch.setattr(
+        project_image.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(stdout=output)
+    )
+    with pytest.raises(RuntimeError, match="layout image"):
+        project_image.inspect_layout_image("candidate")
+
+
+def test_layout_inspection_preserves_exact_docker_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from booley.runtime import project_image
+
+    record = {"Id": "sha256:" + "a" * 64, "Config": {"User": "1000"}}
+    commands = []
+
+    def inspect(command, **kwargs):
+        commands.append((command, kwargs))
+        return SimpleNamespace(stdout=json.dumps([record]))
+
+    monkeypatch.setattr(project_image.subprocess, "run", inspect)
+    assert project_image.inspect_layout_image("candidate", executable="docker-fixture") == record
+    assert commands[0][0] == ["docker-fixture", "image", "inspect", "candidate"]
+    assert commands[0][1]["timeout"] == 30
+
+
+def test_layout_inspection_transport_failure_is_controlled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.runtime import project_image
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("Docker unavailable")
+
+    monkeypatch.setattr(project_image.subprocess, "run", unavailable)
+    with pytest.raises(RuntimeError, match="cannot inspect"):
+        project_image.inspect_layout_image("candidate")
+
+
+@pytest.mark.parametrize("entry", ["unknown operation", "/bin/sh -c change payload"])
+def test_layout_history_rejects_untrusted_derivative_operations(
+    monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    from booley.runtime import project_image
+
+    monkeypatch.setattr(
+        project_image,
+        "_image_history",
+        lambda image, _executable: ["base"] if image == "parent" else [entry, "base"],
+    )
+    with pytest.raises(RuntimeError, match="history"):
+        project_image._verify_layout_history("parent", "candidate", "docker")
+
+
+def test_layout_history_refuses_unbounded_docker_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from booley.runtime import project_image
+
+    monkeypatch.setattr(
+        project_image.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="x" * 1_048_577),
+    )
+    with pytest.raises(RuntimeError, match="exceeds bounds"):
+        project_image._image_history("candidate", "docker")
+
+
+@pytest.mark.parametrize("labels", [["untrusted"], "untrusted"])
+def test_layout_verification_refuses_malformed_parent_labels(
+    labels: object,
+) -> None:
+    from booley.runtime import project_image
+
+    records = _layout_inspections("parent", "candidate", {}, {})
+    records["parent"]["Config"]["Labels"] = labels
+    with pytest.raises(RuntimeError, match="labels are invalid"):
+        project_image.verify_layout_image(records["parent"], records["candidate"])

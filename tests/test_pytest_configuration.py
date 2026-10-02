@@ -5,6 +5,7 @@ from __future__ import annotations
 import ntpath
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -825,17 +826,34 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "assert_junit.py" in coverage["run"]
     assert "--min-tests 21 --max-skips 0" in coverage["run"]
     ticket_mode = next(step for step in validations if step["name"].startswith("Run Ticket Mode"))
-    assert "install -d -m 0777" in ticket_mode["run"]
-    assert '"${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]
-    assert '"${VALIDATION_TMP}/alias-project/.booley_project"' in ticket_mode["run"]
-    assert 'sudo chown -R 1000:1000 "${VALIDATION_TMP}/alias-project"' in ticket_mode["run"]
-    assert "dst=/booley-project" in ticket_mode["run"]
-    assert "BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project" in ticket_mode["run"]
+    _assert_ticket_mode_alias_fixture(steps, ticket_mode)
     assert "native_fst_verilator_test.py" in rendered
     assert "simulator_ground_truth_test.py" in rendered
     assert "cd /validation-tmp/project" in rendered
     cleanup_wrapper = ".github/scripts/run_with_container_cleanup.sh"
     assert all(cleanup_wrapper in step["run"] for step in validations)
+
+
+def _assert_ticket_mode_alias_fixture(steps: list[dict], ticket_mode: dict) -> None:
+    preparation = next(
+        step
+        for step in steps
+        if step.get("name") == "Prepare isolated validation temp directories"
+    )
+    alias = "${RUNNER_TEMP}/bwave-smoke/ticket-mode/alias-project"
+    assert "install -d -m 0777" in preparation["run"]
+    assert f'"{alias}"' in preparation["run"]
+    assert f'"{alias}/.booley_project"' in preparation["run"]
+    assert f'sudo chown -R 1000:1000 "{alias}"' in preparation["run"]
+    assert (
+        'src="${VALIDATION_TMP}/alias-project/.booley_project",dst=/booley-enqueue-alias'
+        in ticket_mode["run"]
+    )
+    assert "BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project" in ticket_mode["run"]
+    assert "BOOLEY_ENQUEUE_ALIAS_DATA=/booley-enqueue-alias" in ticket_mode["run"]
+    tokens = shlex.split(ticket_mode["run"])
+    assert tokens[tokens.index("--") + 1] == ".github/scripts/run_with_container_cleanup.sh"
+    assert "&&" not in tokens
 
 
 def test_image_validation_cleanup_wrapper_terminates_containers() -> None:
