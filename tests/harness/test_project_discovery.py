@@ -76,7 +76,10 @@ def test_ticket_io_external_data_checks_current_checkout(tmp_path, monkeypatch, 
             TicketIO(data / "tickets")
 
 
-def test_ticket_io_invalid_utf8_checkout_config_refuses_cleanly(tmp_path, monkeypatch):
+@pytest.mark.parametrize("config_name", ["booley.toml", "pyproject.toml"])
+def test_ticket_io_invalid_utf8_checkout_config_refuses_cleanly(
+    tmp_path, monkeypatch, config_name
+):
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
     from booley.ticket_board.io import TicketIO
 
@@ -84,7 +87,24 @@ def test_ticket_io_invalid_utf8_checkout_config_refuses_cleanly(tmp_path, monkey
     for root in (outer, data):
         root.mkdir()
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
-    (outer / "booley.toml").write_bytes(b'[project]\ndir = "\xff"\n')
+    (outer / config_name).write_bytes(b'[project]\ndir = "\xff"\n')
+    monkeypatch.chdir(outer)
+    for name in ("RTL_PROJECT_ROOT", "PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project checkout"):
+        TicketIO(data / "tickets")
+
+
+def test_ticket_io_nul_config_path_refuses_cleanly(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+    from booley.ticket_board.io import TicketIO
+
+    outer, data = tmp_path / "checkout", tmp_path / "data"
+    for root in (outer, data):
+        root.mkdir()
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+    (outer / "booley.toml").write_text('[project]\ndir = "a\\u0000b"\n', encoding="utf-8")
     monkeypatch.chdir(outer)
     for name in ("RTL_PROJECT_ROOT", "PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(name, raising=False)

@@ -81,7 +81,7 @@ def _resolve_from_toml(current: Path) -> Path | None:
                     cfg = tomllib.load(f)
                 project = as_dict(cfg.get("project")) or {}
                 dir_val = as_str(project.get("dir"), default="")
-                if dir_val:
+                if dir_val and "\x00" not in dir_val:
                     p = Path(dir_val)
                     if not p.is_absolute():
                         p = (parent / p).resolve()
