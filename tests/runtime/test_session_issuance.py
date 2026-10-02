@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 from contextlib import contextmanager, nullcontext
@@ -27,6 +28,7 @@ from booley.runtime.project_dir import reset_cache
 
 # Issuance fixtures replace PATH with a synthetic launcher directory.
 _HOST_PATH = os.environ.get("PATH", os.defpath)
+_HOST_GIT = shutil.which("git", path=_HOST_PATH)
 
 
 def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -2186,6 +2188,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
 
     from booley.ticket_board.waiver_approval import WaiverDecisionError, approver_identity
 
+    assert _HOST_GIT is not None, "real Git is required for the identity regression"
     project, spec, _path, stamp = issued
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     environment.update(
@@ -2198,7 +2201,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
 
     def git(*args, env=environment):
         return subprocess.run(
-            ["git", "-C", str(project), *args],
+            [_HOST_GIT, "-C", str(project), *args],
             env=env,
             capture_output=True,
             text=True,
