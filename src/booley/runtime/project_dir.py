@@ -62,6 +62,7 @@ def contains(path: str | Path, *, project_dir: Path | None = None) -> Path | Non
     descendants of an existing root. File hardlinks do not establish membership.
     Explicit ``project_dir`` supplies authority independently of active selection.
     Resolve internal symlinks while retaining the selected root spelling for aliases.
+    Rebasing selects root authority; asymmetric mounts need not preserve leaf identity.
     Filesystem errors fail closed; selection errors and malformed paths propagate.
     This predicate does not authorize mutation or provide a race-free file open.
     """
