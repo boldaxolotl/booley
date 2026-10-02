@@ -1012,22 +1012,10 @@ when relying on this switch.
 When enabled, a commit-msg hook rejects recognized machine-attribution footers,
 then sanitizes the built-in banned-word list out of all other commit-message
 prose. An already-installed hook no-ops at commit time when the flag is off.
-`banned_words` replaces (not extends) the built-in list. The defaults retain
-`claude`, `anthropic`, `copilot`, `codex`, `openai`, `chatgpt`, `gemini`, and
-`booley`, plus `ticket`, `cursor`, `gpt`, `llm`, and `co-authored-by`. Ordinary
-`generated`, `agent`, `docker`, `auto-review`, `auto-approve`, `per review
-findings`, `as suggested by`, `automated fix`, and `suggested fix` are no longer
-default bans. Custom vocabulary still redacts these terms when selected.
 
-No import settings are needed. Pre-push automatically excludes history already
-advertised by the actual destination. All newly exposed history is checked,
-including imported history: generated-only first imports pass with the default
-vocabulary, while protected identities, authors outside an allowlist, protected
-paths, and committed symlink targets may block a first push to an empty destination.
-Remove obsolete `upstream_repository` and `upstream_base` settings from `[stealth]`;
-removing them does not grant an imported-history exemption.
-
-`banned_words` replaces (not extends) the built-in list; `banned_substrings`
+The built-in list is `claude`, `anthropic`, `copilot`, `codex`, `openai`,
+`chatgpt`, `gemini`, `booley`, `cursor`, `ticket`, `gpt`, `llm`, and
+`co-authored-by`. `banned_words` replaces (not extends) it; `banned_substrings`
 adds literal substring terms. Both lists are combined case-insensitively without
 duplicates. An absent `banned_words` keeps the built-in vocabulary, while an
 explicit empty list never restores defaults.
@@ -1064,10 +1052,9 @@ it is the final nonblank body line and its entire visible payload matches one
 entry in the active banned-word vocabulary. Markdown-linked payloads are
 compared by their visible label. The hook leaves the raw message unchanged and
 tells you to remove the footer and retry. This avoids both silent deletion and
-recognizable redaction debris. Ordinary prose such as "Generated with care by
-the whole team" or "Generated with Docker for reproducibility." is not rejected;
-banned words inside it are still redacted. These examples remain verbatim with
-the default vocabulary, but custom bans may change them.
+recognizable redaction debris. Ordinary prose such as "Generated with Docker
+for reproducibility." is not rejected, though any banned words in it are still
+redacted.
 
 An empty `banned_words = []`, with `banned_substrings` absent or empty, disables
 vocabulary redaction and therefore cannot confirm that an ambiguous plain "Generated with …" line names a protected
@@ -1121,8 +1108,8 @@ project-state directory. The reserved repository spelling `.booley_project/`
 is blocked independently of the Sandbox's absolute project-state path,
 and changing the worktree link after committing does not bypass the check.
 
-Both the **author and the committer** of every newly exposed checked commit must
-match at least one entry. Each entry is an fnmatch glob, matched case-insensitively
+Both the **author and the committer** of every outgoing commit must match at
+least one entry. Each entry is an fnmatch glob, matched case-insensitively
 against the bare email, the bare name, and the full `Name <email>` ident:
 
 ```toml
@@ -1133,53 +1120,20 @@ allowed_authors = [
 ]
 ```
 
-Unset or `[]` disables the identity allowlist. Pre-push checks the complete
-newly exposed range, excluding ancestry already reachable from the actual
-destination's advertised locally available refs, available old tips supplied by
-Git's push protocol. New local commits, merges, and newly reachable side branches outside those exclusions still
-receive every message, identity, tracked-path, and committed-symlink check.
-Collaborators' identities in that checked range must match the allowlist.
+Unset or `[]` disables the check.
 
-Malformed or unreadable selected Project configuration blocks active pushes:
-repair the file and retry so configured allowlists and custom vocabulary remain
-in effect. Valid disabled policies and Booley source checkouts still no-op.
-Valid no-update and deletion-only pushes need no configuration validation or
-destination discovery.
+**What counts as outgoing.** The hook asks the destination remote which commits
+it already has and skips those. Everything else in the push is checked
+(messages, identities, paths, symlinks), including imported upstream history on
+a first push to an empty remote, so an allowlist has to cover your
+collaborators' and upstream authors' identities too. If the remote can't be
+queried (network, credentials, or an insecure transport such as plain HTTP),
+the hook warns and checks everything it can't prove the remote already has.
 
-Destination advertisement failure or denied transport grants no advertised
-exclusion. The hook warns that discovery is unavailable and scans the complete
-conservative superset, retaining available push-protocol old tips. Historical findings may already be present on the
-destination; repair credentials/network or canonical transport and retry verified
-discovery. Range, object, or batch failures block the push. Fetch complete missing history and retry; when a selected shallow
-boundary remains, fetch complete pushed history from its source with
-`--unshallow`. The hook does not fetch objects or choose credentials interactively.
-
-Authority discovery permits file, SSH, and HTTPS only where effective Git
-specific/global protocol settings and the caller's `GIT_ALLOW_PROTOCOL` both
-permit them. Plaintext HTTP/Git, unsafe helpers, further `insteadOf` rewrites,
-detectably disabled SSH host/HTTPS certificate verification, and HTTPS redirects
-cannot establish authority. Default OpenSSH probes use batch mode and strict
-host checking. Owner SSH wrappers, SSH configuration, proxies, CA and trust-store
-choices remain trusted owner inputs; the hook does not audit them. Lookups receive
-no stdin, and Git terminal prompting is disabled. Owner wrappers and nonstandard
-SSH variants must provide their own noninteractive behavior. The Git process has
-a timeout; descendant processes retaining Windows output pipes remain an owner
-transport limitation rather than a guaranteed process-tree deadline.
-
-Git 2.37.2 remains supported for complete repositories, including ordinary
-alternate/shared/symlink object storage. Git without `--no-lazy-fetch` support
-first proves that the inspected repository has no partial/promisor configuration
-or promisor-pack state. Unsupported partial/promisor repositories require a
-complete nonpromisor clone or Git supporting no-lazy-fetch inspection. File
-repository authorities receive the structural preflight before upload-pack on
-both capability paths. Missing inspected objects and changed inspection state
-fail closed.
-
-After upgrading, rerun `booley init` to reconcile the managed hooks. Cached
-unrelated remote refs never grant an exemption. There is no configured import
-exemption, and unadvertised imported history containing protected metadata may
-refuse a first push. `BOOLEY_SKIP_PUSH_GUARD=1` remains an explicit all-checks
-override for one push.
+The push is blocked, not skipped, when `booley.toml` is malformed or the
+history is incomplete (e.g. a shallow clone: `git fetch --unshallow` and
+retry). `BOOLEY_SKIP_PUSH_GUARD=1` skips all checks for one push. After
+upgrading, rerun `booley init` to refresh the installed hooks.
 
 #### What survives a fresh clone
 
