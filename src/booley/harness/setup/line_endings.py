@@ -1304,43 +1304,65 @@ def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, 
     return inputs
 
 
+def _nonlocal_attributes_plan(repository: LineEndingRepository, target: AttributesTarget):
+    observations: list[LineEndingObservation] = []
+    if repository.role == "project-checkout":
+        try:
+            common = _common_attributes(repository.root)
+            _, content = _policy_content(common)
+            if _local_default(content):
+                observations.append(
+                    _observation(
+                        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+                        detail=f"{common}: existing local default conflicts with Stealth opt-out; inspect and remove the local rule if appropriate (Booley cannot prove ownership)",
+                    )
+                )
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            # This read-only migration check must not block the existing root writer.
+            observations.append(
+                _observation(
+                    LineEndingObservationCode.UPSTREAM_POLICY,
+                    detail=f"could not inspect repository-local attributes for Stealth opt-out: {exc}; root policy behavior is unchanged",
+                )
+            )
+    return target, {}, _eol_policy_is_user_owned(repository.root), False, observations, None
+
+
 def _attributes_plan(repository: LineEndingRepository, stealth: bool):
     local = stealth and repository.role == "project-checkout"
     target = AttributesTarget(repository.root / ".gitattributes", local=local)
+    if not local:
+        return _nonlocal_attributes_plan(repository, target)
     observations: list[LineEndingObservation] = []
     inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
     try:
         common = _common_attributes(repository.root)
-        if local:
-            target = AttributesTarget(common, local=True)
+        target = AttributesTarget(common, local=True)
         common_identity, common_content = _policy_content(common)
         inputs = _upstream_attributes(repository.root)
-        if local:
-            inputs.update(_effective_user_inputs(repository.root))
+        inputs.update(_effective_user_inputs(repository.root))
         upstream = _upstream_owned(inputs)
         default = _local_default(common_content)
-        if default and (upstream or not local):
+        if default and upstream:
             observations.append(
                 _observation(
                     LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
-                    detail=f"{common}: existing local default conflicts with attributes policy or Stealth opt-out; inspect and remove the local rule if appropriate (Booley cannot prove ownership)",
+                    detail=f"{common}: existing local default conflicts with attributes policy; inspect and remove the local rule if appropriate (Booley cannot prove ownership)",
                 )
             )
-        if local:
-            if default and _crlf_index_dirt(repository.root):
-                observations.append(
-                    _observation(
-                        LineEndingObservationCode.CANDIDATE_UNSAFE,
-                        detail="tracked CRLF index blobs have meaningful changes; index content is preserved, inspect git diff before claiming a clean repair",
-                    )
+        if default and _crlf_index_dirt(repository.root):
+            observations.append(
+                _observation(
+                    LineEndingObservationCode.CANDIDATE_UNSAFE,
+                    detail="tracked CRLF index blobs have meaningful changes; index content is preserved, inspect git diff before claiming a clean repair",
                 )
-            _record_stealth_policy(
-                repository.root, common, common_content, upstream, inputs, observations
             )
-            inputs[str(common)] = (common_identity, common_content)
-            owned = upstream or _local_policy_owned(common_content)
-            return target, inputs, owned, not owned, observations, None
-        return target, {}, _eol_policy_is_user_owned(repository.root), False, observations, None
+        _record_stealth_policy(
+            repository.root, common, common_content, upstream, inputs, observations
+        )
+        inputs[str(common)] = (common_identity, common_content)
+        owned = upstream or _local_policy_owned(common_content)
+        return target, inputs, owned, not owned, observations, None
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return (
             target,

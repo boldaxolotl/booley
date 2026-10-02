@@ -1131,6 +1131,57 @@ def test_non_stealth_root_publication_does_not_read_inaccessible_user_attributes
     assert (root / ".gitattributes").read_bytes() == b"* text=auto eol=lf\n"
 
 
+def test_non_stealth_root_publication_does_not_read_unsafe_nested_attributes(tmp_path):
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root, enabled=False)
+    assert _git(root, "config", "--unset", "core.autocrlf").returncode == 0
+    nested = root / "nested"
+    nested.mkdir()
+    # A nonregular nested policy must not change the existing root-only writer.
+    (nested / ".gitattributes").mkdir()
+
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    assert (root / ".gitattributes").read_bytes() == b"* text=auto eol=lf\n"
+    assert (nested / ".gitattributes").is_dir()
+
+
+def test_non_stealth_root_publication_preserves_unsafe_common_attributes(tmp_path):
+    root = tmp_path / "checkout"
+    data = _stealth_repo(root, enabled=False)
+    assert _git(root, "config", "--unset", "core.autocrlf").returncode == 0
+    attrs = root / ".git/info/attributes"
+    attrs.mkdir()
+
+    report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    assert (root / ".gitattributes").read_bytes() == b"* text=auto eol=lf\n"
+    assert attrs.is_dir()
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_project_data_local_default_is_not_a_stealth_opt_out(tmp_path, linked):
+    outer = tmp_path / "outer"
+    data = tmp_path / "data"
+    _stealth_repo(outer)
+    if linked:
+        assert _git(outer, "worktree", "add", "-b", "data", str(data)).returncode == 0
+    else:
+        _init(data)
+        (data / ".git/info/attributes").write_bytes(b"* text=auto eol=lf\n")
+
+    report = reconcile_project_line_endings(outer, data, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    assert not any(
+        item.code is LineEndingObservationCode.LOCAL_POLICY_CONFLICT
+        for repository in report.repositories
+        for item in repository.observations
+    )
+
+
 def test_older_git_with_unknown_system_path_suppresses_default_with_diagnostic(
     tmp_path, monkeypatch
 ):
