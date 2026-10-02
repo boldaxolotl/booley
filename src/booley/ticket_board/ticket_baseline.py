@@ -1449,23 +1449,13 @@ def _descendant_ref_commit(
     kind: str,
     role: str,
 ) -> str:
-    if ref.startswith("refs/") and (
-        not _named_ref_exists(repository, ref) or not _named_ref_is_commit(repository, ref)
+    result = _identity_git_result(repository, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    if (
+        result.returncode != 0
+        and ref.startswith("refs/")
+        and (not _named_ref_exists(repository, ref) or not _named_ref_is_commit(repository, ref))
     ):
         raise TicketBaselineError(f"Ticket baseline {kind} ref is unavailable: {ref}")
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
-            cwd=repository,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise TicketAncestryVerificationError(
-            f"cannot verify ancestry in {repository} ({kind} ref {ref!r}): {exc}"
-        ) from exc
     if result.returncode != 0 or not _COMMIT_RE.fullmatch(result.stdout.strip()):
         raise TicketAncestryVerificationError(
             f"cannot verify ancestry in {repository} ({kind} ref {ref!r}, rc {result.returncode}): "

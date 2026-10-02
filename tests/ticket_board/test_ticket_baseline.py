@@ -2721,3 +2721,24 @@ def test_board_renders_commit_identity_failure_after_valid_conversion(
         result = cli.main(["show", slug])
     assert result == 2
     assert "Ticket commit identity changed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("adapter", ["baseline", "workspace"])
+def test_valid_named_commit_does_not_need_failure_classification(tmp_path, monkeypatch, adapter):
+    from booley.ticket_board import ticket_baseline
+
+    root, _data, _tio = _paired_basis_project(tmp_path)
+    expected = _git(root, "rev-parse", "HEAD")
+    module = ticket_baseline if adapter == "baseline" else workspace_ops
+
+    def unavailable_proof(*_args):
+        raise ticket_baseline.TicketAncestryVerificationError("failure-only proof unavailable")
+
+    monkeypatch.setattr(module, "_named_ref_exists", unavailable_proof)
+    if adapter == "baseline":
+        actual = ticket_baseline._descendant_ref_commit(
+            root, "refs/heads/main", expected, kind="destination", role="outer"
+        )
+    else:
+        actual = workspace_ops._verified_basis_commit(root, "refs/heads/main")
+    assert actual == expected
