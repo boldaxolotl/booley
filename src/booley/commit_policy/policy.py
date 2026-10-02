@@ -43,13 +43,7 @@ logger = logging.getLogger(__name__)
 # Default banned phrases (used when booley.toml has no [stealth] section).
 _DEFAULT_BANNED_PHRASES = [
     # Multi-word phrases
-    "auto-review",
-    "auto-approve",
-    "per review findings",
-    "as suggested by",
     "co-authored-by",
-    "automated fix",
-    "suggested fix",
     # Single words
     "claude",
     "anthropic",
@@ -59,12 +53,9 @@ _DEFAULT_BANNED_PHRASES = [
     "openai",
     "chatgpt",
     "gemini",
-    "generated",
-    "agent",
     "ticket",
     "gpt",
     "llm",
-    "docker",
     "booley",
 ]
 
@@ -138,7 +129,7 @@ _TOML_SUBDIRS = [Path(".booley_project"), Path(".booley") / "project"]
 _TOML_NAMES = ("booley.toml", "pipeline.toml")
 
 
-def _load_booley_config(project_root: Path | None = None) -> dict:
+def _load_booley_config(project_root: Path | None = None, *, strict: bool = False) -> dict:
     """Return the parsed ``booley.toml`` as a dict, or ``{}`` if unavailable.
 
     Callers pass the repository they are operating on.  Omitting it means
@@ -162,13 +153,47 @@ def _load_booley_config(project_root: Path | None = None) -> dict:
     for subdir in directories:
         for name in _TOML_NAMES:
             toml_path = root / subdir / name
-            if toml_path.exists():
+            if _configuration_candidate(toml_path, strict=strict):
                 try:
                     with toml_path.open("rb") as f:
                         return tomllib.load(f)
                 except (OSError, tomllib.TOMLDecodeError) as e:
+                    if strict:
+                        raise ValueError("cannot read selected Project configuration") from e
                     logger.warning("Failed to parse %s: %s", toml_path, e)
     return {}
+
+
+def _configuration_candidate(path: Path, *, strict: bool) -> bool:
+    if not strict:
+        return path.exists()
+    try:
+        path.stat()
+    except FileNotFoundError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise ValueError("cannot read selected Project configuration") from exc
+        raise ValueError("cannot read selected Project configuration") from None
+    except OSError as exc:
+        raise ValueError("cannot read selected Project configuration") from exc
+    return True
+
+
+def validate_push_configuration(project_root: Path | None = None) -> None:
+    """Strictly validate the selected policy before checking an active push."""
+    if source_checkout_policy_owner(project_root):
+        return
+    section = _load_booley_config(project_root, strict=True).get("stealth", {})
+    if not isinstance(section, dict):
+        raise ValueError("[stealth] must be a table")
+    if "upstream_repository" in section or "upstream_base" in section:
+        raise ValueError(
+            "[stealth]: remove these unsupported import settings; "
+            "all newly exposed history is checked"
+        )
 
 
 def _stealth_section(project_root: Path | None = None) -> dict:

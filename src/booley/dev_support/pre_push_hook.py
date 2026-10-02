@@ -4,8 +4,8 @@
 The commit-msg sanitizer covers ``git commit`` and ``git merge`` — but git
 runs no message hook at all for ``git revert``/``git cherry-pick``, and
 ``--no-verify`` disables commit-msg entirely (F-17). This hook is the safety
-net at the last interception point git offers: it scans every commit about to
-leave the machine and refuses the push on any of these offenses:
+net at the last interception point git offers: it scans every newly exposed commit
+outside actual destination history and refuses the push on any of these offenses:
 
 1. **Banned phrases** in the message, either identity, a changed tracked path,
    or a changed symlink target.
@@ -21,8 +21,8 @@ leave the machine and refuses the push on any of these offenses:
 Packaged into the Project's ``.booley_project/.managed/project-git-hooks.pyz``
 bundle by ``booley init``. Its flat imports resolve from the zip root, so Git
 operations do not need an installed Booley package. Escape hatch:
-``BOOLEY_SKIP_PUSH_GUARD=1`` skips the scan for one push (e.g. the first push
-of pre-existing upstream history that predates the hook).
+``BOOLEY_SKIP_PUSH_GUARD=1`` explicitly skips all checks for one push.
+History already advertised by the actual destination is excluded automatically.
 
 Exit 0 = allow push; exit 1 = reject with diagnostic naming the commits.
 """
@@ -30,10 +30,13 @@ Exit 0 = allow push; exit 1 = reject with diagnostic naming the commits.
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 # Ensure the bundle root is on sys.path so flat imports resolve when called
 # from the standalone zip application.
@@ -50,13 +53,11 @@ from commit_msg_utils import (
     stealth_policy,
 )
 
-_ZERO_SHA_PREFIX = "0000000"
+try:
+    from booley.commit_policy.policy import validate_push_configuration
+except ImportError:
+    from booley_commit_policy import validate_push_configuration
 
-# A push of deep pre-Booley history (e.g. the first push of an imported repo)
-# is not this hook's threat model; scanning thousands of upstream commits
-# both slows the push and invites false positives. Scan a bounded window of
-# the newest outgoing commits instead.
-_MAX_COMMITS_SCANNED = 500
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"
 # Kept local because this module is packaged into Projects and must run without
@@ -71,24 +72,620 @@ class _TreeEntry:
     path: str
 
 
-def _outgoing_commits(local_sha: str, remote_sha: str) -> list[str]:
-    """SHAs about to be pushed for one ref, newest first (bounded)."""
-    if remote_sha.startswith(_ZERO_SHA_PREFIX):
-        # New remote branch: everything not already on some remote is outgoing.
-        range_args = [local_sha, "--not", "--remotes"]
-    else:
-        range_args = [f"{remote_sha}..{local_sha}"]
-    result = subprocess.run(
-        ["git", "rev-list", f"--max-count={_MAX_COMMITS_SCANNED}", *range_args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        check=False,
+class InspectionError(ValueError):
+    """A push cannot be completely inspected or its authority proved."""
+
+
+@dataclass(frozen=True)
+class _Update:
+    local: str
+    old: str
+
+
+def _run_git(args, *, cwd=None, env=None, data=None, timeout=60):
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            env=env,
+            input=data,
+            stdin=subprocess.DEVNULL if data is None else None,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise InspectionError(
+            "Git inspection timed out; repair slow Git/transport or reduce the selected "
+            "range with complete inspected history and retry"
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise InspectionError(
+            "Git inspection unavailable; repair repository access and retry"
+        ) from exc
+    return result
+
+
+def _required_git(args, **kwargs):
+    result = _run_git(args, **kwargs)
+    if result.returncode:
+        raise InspectionError("Git inspection failed; fetch complete history and retry")
+    return result.stdout
+
+
+def _probe_environment(*, external=False):
+    env = dict(os.environ)
+    if external:
+        for key in (
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_INDEX_FILE",
+            "GIT_PREFIX",
+        ):
+            env.pop(key, None)
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1", LC_ALL="C")
+    return env
+
+
+def _config(cwd, env):
+    raw = _required_git(["config", "--null", "--list"], cwd=cwd, env=env)
+    values = {}
+    for field in raw.split(b"\0"):
+        if not field:
+            continue
+        key, separator, value = field.partition(b"\n")
+        if not separator:
+            value = b""
+        values[key.decode("utf-8", "surrogateescape").lower()] = value.decode(
+            "utf-8", "surrogateescape"
+        )
+    return values, raw
+
+
+def _structural_node_present(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _resolve_repository_path(path: Path, *, strict: bool = False) -> Path:
+    try:
+        return path.resolve(strict=strict)
+    except RuntimeError as exc:
+        # Python 3.11/3.12 report this filesystem error as RuntimeError, not OSError.
+        if not str(exc).startswith("Symlink loop from "):
+            raise
+        raise InspectionError("cannot resolve repository symlink loop; repair the path") from exc
+
+
+def _repository_state(cwd, env, *, complete):
+    config, raw = _config(cwd, env)
+    common = Path(
+        _required_git(["rev-parse", "--git-common-dir"], cwd=cwd, env=env).decode().strip()
     )
-    if result.returncode != 0:
-        return []
-    return [s for s in result.stdout.split() if s]
+    objects = Path(
+        _required_git(["rev-parse", "--git-path", "objects"], cwd=cwd, env=env).decode().strip()
+    )
+    common = _resolve_repository_path(
+        cwd / common if not common.is_absolute() else common, strict=True
+    )
+    objects = _resolve_repository_path(
+        cwd / objects if not objects.is_absolute() else objects, strict=True
+    )
+    if not common.is_dir() or not objects.is_dir():
+        raise InspectionError("cannot resolve readable Git object storage")
+    version = config.get("core.repositoryformatversion", "0")
+    if version not in ("0", "1"):
+        raise InspectionError("unsupported repository format")
+    pack = objects / "pack"
+    markers = (
+        tuple(sorted(item for item in pack.iterdir() if item.name.endswith(".promisor")))
+        if _structural_node_present(pack)
+        else ()
+    )
+    promisor = any(
+        key == "extensions.partialclone"
+        or (key.startswith("remote.") and key.endswith((".promisor", ".partialclonefilter")))
+        for key in config
+    )
+    if complete and (promisor or markers):
+        raise InspectionError(
+            "materialize a complete nonpromisor clone, or use Git supporting no-lazy-fetch inspection"
+        )
+    grafts = Path(env.get("GIT_GRAFT_FILE", str(common / "info" / "grafts")))
+    graft_data = grafts.read_bytes() if _structural_node_present(grafts) else b""
+    if graft_data.strip():
+        raise InspectionError("remove active Git grafts before inspection")
+    stat = tuple((str(item), item.stat().st_mtime_ns, item.stat().st_size) for item in markers)
+    return common, objects, (raw, version, stat, graft_data)
+
+
+def _file_authority_state(path, env):
+    git_dir = _resolve_repository_path(
+        Path(
+            _required_git(["rev-parse", "--absolute-git-dir"], cwd=path, env=env).decode().strip()
+        ),
+        strict=True,
+    )
+    if path != git_dir:
+        result = _run_git(["rev-parse", "--show-toplevel"], cwd=path, env=env)
+        if result.returncode:
+            raise InspectionError(
+                "file authority must name its exact repository root or Git directory"
+            )
+        top = _resolve_repository_path(
+            Path(result.stdout.decode().strip()),
+            strict=True,
+        )
+        if path != top:
+            raise InspectionError(
+                "file authority must name its exact repository root or Git directory"
+            )
+    return _repository_state(path, env, complete=True)
+
+
+class _Protocol:
+    """Non-object-resolving validation of Git's complete hook input."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.env = _probe_environment()
+        format_name = (
+            _required_git(["rev-parse", "--show-object-format"], cwd=root, env=self.env)
+            .decode()
+            .strip()
+        )
+        if format_name not in ("sha1", "sha256"):
+            raise InspectionError("unsupported Git object format")
+        self.oid_length = 40 if format_name == "sha1" else 64
+
+    def oid(self, value: str) -> bool:
+        return re.fullmatch(rf"[0-9a-fA-F]{{{self.oid_length}}}", value) is not None
+
+
+class _Inspection(_Protocol):
+    """Bounded, graph-independent, nonfetching object reads for one push."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        probe = _run_git(["--no-lazy-fetch", "--version"], cwd=root, env=self.env, timeout=10)
+        unsupported = (
+            probe.returncode == 129 and b"unknown option: --no-lazy-fetch" in probe.stderr
+        )
+        if probe.returncode and not unsupported:
+            raise InspectionError("cannot determine safe Git object inspection capability")
+        self.modern = probe.returncode == 0
+        self.state = _repository_state(root, self.env, complete=not self.modern)
+        self.env.update(GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="")
+        self.prefix = (["--no-lazy-fetch"] if self.modern else []) + [
+            "-c",
+            "core.commitGraph=false",
+        ]
+
+    def stable(self) -> None:
+        current = _repository_state(self.root, _probe_environment(), complete=not self.modern)
+        if current != self.state:
+            raise InspectionError("repository configuration changed during inspection; retry")
+
+    def git(self, args: list[str], *, data: bytes | None = None) -> bytes:
+        return _required_git([*self.prefix, *args], cwd=self.root, env=self.env, data=data)
+
+    def inventory(self, tips: list[str], exclusions=()) -> list[str]:
+        if not tips:
+            return []
+        revisions = [*tips, *("^" + oid for oid in exclusions)]
+        raw = (
+            self.git(["rev-list", "--stdin"], data=("\n".join(revisions) + "\n").encode("ascii"))
+            .decode("ascii")
+            .splitlines()
+        )
+        if any(not self.oid(value) for value in raw) or len(raw) != len(set(raw)):
+            raise InspectionError("malformed outgoing commit inventory")
+        return raw
+
+    def objects(self, ids) -> dict[str, tuple[str, bytes] | None]:
+        self.stable()
+        requested = list(dict.fromkeys(ids))
+        if not requested:
+            return {}
+        raw = self.git(["cat-file", "--batch"], data=("\n".join(requested) + "\n").encode())
+        offset = 0
+        result = {}
+        for oid in requested:
+            end = raw.find(b"\n", offset)
+            if end < 0:
+                raise InspectionError("truncated Git object batch")
+            header = raw[offset:end].decode("ascii").split()
+            offset = end + 1
+            if header == [oid, "missing"]:
+                result[oid] = None
+                continue
+            if len(header) != 3 or header[0] != oid or not header[2].isdigit():
+                raise InspectionError("malformed Git object batch")
+            size = int(header[2])
+            if offset + size >= len(raw) or raw[offset + size] != 10:
+                raise InspectionError("truncated Git object contents")
+            result[oid] = (header[1], raw[offset : offset + size])
+            offset += size + 1
+        if offset != len(raw):
+            raise InspectionError("unexpected Git object batch trailer")
+        return result
+
+    def commits(self, ids) -> list[str]:
+        pending = {oid: oid for oid in ids}
+        seen = {oid: set() for oid in pending}
+        resolved = []
+        while pending:
+            objects = self.objects(pending.values())
+            following = {}
+            for requested, oid in pending.items():
+                value = objects[oid]
+                if value is None:
+                    continue
+                if value[0] == "commit":
+                    resolved.append(oid)
+                elif value[0] == "tag":
+                    if oid in seen[requested]:
+                        raise InspectionError("cyclic annotated tag")
+                    seen[requested].add(oid)
+                    first = value[1].split(b"\n", 1)[0]
+                    if not first.startswith(b"object "):
+                        raise InspectionError("malformed annotated tag")
+                    target = first[7:].decode("ascii")
+                    if not self.oid(target):
+                        raise InspectionError("invalid annotated tag object")
+                    following[requested] = target
+            pending = following
+        return list(dict.fromkeys(resolved))
+
+
+def _valid_ref_name(ref: str) -> bool:
+    if not ref.startswith("refs/") or ref.endswith(("/", ".")):
+        return False
+    if (
+        ".." in ref
+        or "@{" in ref
+        or any(ord(char) < 33 or ord(char) == 127 or char in "~^:?*[\\" for char in ref)
+    ):
+        return False
+    return all(
+        part and not part.startswith(".") and not part.endswith(".lock") for part in ref.split("/")
+    )
+
+
+def _updates(text, inspection):
+    updates = []
+    for line in text.splitlines():
+        fields = line.rsplit(None, 3)
+        if len(fields) != 4:
+            raise InspectionError("malformed pre-push protocol")
+        local_ref, local, remote_ref, old = fields
+        if not inspection.oid(local) or not inspection.oid(old):
+            raise InspectionError("invalid pre-push object ID")
+        if not _valid_ref_name(remote_ref):
+            raise InspectionError("invalid pre-push ref name")
+        if local_ref == "(delete)":
+            if set(local) != {"0"}:
+                raise InspectionError("invalid pre-push deletion")
+        elif local_ref.startswith("refs/") and not _valid_ref_name(local_ref):
+            raise InspectionError("invalid pre-push ref name")
+        # Git preserves typed revision labels; only validated protocol OIDs reach queries.
+        if set(local) != {"0"}:
+            updates.append(_Update(local.lower(), old.lower()))
+    return updates
+
+
+def _location(location, root):
+    if any(char.isspace() or ord(char) < 32 for char in location):
+        raise InspectionError("invalid repository location")
+    if location.startswith("~") and ":" not in location:
+        raise InspectionError("home-expanded authority requires an absolute repository path")
+    parsed = urlsplit(location)
+    if parsed.scheme == "file":
+        if not location.startswith("file://"):
+            raise InspectionError("file authority requires a literal file:// URL")
+        if parsed.netloc not in ("", "localhost") or parsed.query or parsed.fragment:
+            raise InspectionError("unsupported file authority")
+        try:
+            decoded = unquote(parsed.path, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise InspectionError("file authority requires valid UTF-8 URL encoding") from exc
+        if "\0" in decoded:
+            raise InspectionError("invalid file authority path")
+        return "file", _resolve_repository_path(Path(_file_url_path(decoded)))
+    if Path(location).is_absolute() or (not parsed.scheme and ":" not in location):
+        return "file", _resolve_repository_path(root / location)
+    if parsed.scheme in ("https", "ssh"):
+        if not parsed.hostname or parsed.fragment:
+            raise InspectionError("invalid authenticated repository URL")
+        return parsed.scheme, None
+    if (
+        "://" not in location
+        and "::" not in location
+        and re.fullmatch(r"(?:[^\s/@:]+@)?[^\s/:]+:[^\s]+", location)
+    ):
+        return "ssh", None
+    raise InspectionError("repository transport cannot establish authority")
+
+
+def _file_url_path(decoded: str, *, windows: bool = os.name == "nt") -> str:
+    """Return the local path Git opens for a decoded ``file://`` URL path.
+
+    ``file:///C:/repo`` decodes to ``/C:/repo``; Git for Windows opens the
+    drive-letter path, so the leading separator before the drive is dropped.
+    On POSIX ``/C:/repo`` is an ordinary absolute path and stays unchanged.
+    """
+    if windows and re.fullmatch(r"/[A-Za-z]:/.*", decoded, flags=re.DOTALL):
+        return decoded[1:]
+    return decoded
+
+
+def _transport_environment(root, location):
+    env = _probe_environment()
+    config, raw_config = _config(root, env)
+    protocol, path = _location(location, root)
+    allowed = []
+    for name in ("file", "ssh", "https"):
+        policy = config.get(
+            f"protocol.{name}.allow",
+            config.get("protocol.allow", "user" if name == "file" else "always"),
+        )
+        if policy not in ("always", "never", "user"):
+            raise InspectionError("invalid Git transport policy")
+        if policy == "always" or (
+            policy == "user" and env.get("GIT_PROTOCOL_FROM_USER", "1") == "1"
+        ):
+            allowed.append(name)
+    if "GIT_ALLOW_PROTOCOL" in env:
+        allowed = [name for name in allowed if name in env["GIT_ALLOW_PROTOCOL"].split(":")]
+    if protocol not in allowed:
+        raise InspectionError("repository transport denied by effective Git policy")
+    for field in raw_config.split(b"\0"):
+        key, _, replacement = field.partition(b"\n")
+        key = key.decode("utf-8", "surrogateescape").lower()
+        replacement = replacement.decode("utf-8", "surrogateescape")
+        if (
+            key.startswith("url.")
+            and key.endswith(".insteadof")
+            and location.startswith(replacement)
+        ):
+            raise InspectionError("configure the canonical unrewritten repository location")
+    env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
+    if protocol == "ssh":
+        _secure_ssh(config, env)
+    if protocol == "https":
+        _secure_https(root, location, env)
+    return env, path
+
+
+def _secure_ssh(config, env):
+    command = env.get("GIT_SSH_COMMAND") or config.get("core.sshcommand") or env.get("GIT_SSH")
+    if command:
+        try:
+            tokens = shlex.split(command)
+        except ValueError as exc:
+            raise InspectionError("invalid owner SSH command") from exc
+        compact = " ".join(tokens).lower()
+        compact = re.sub(
+            r"(stricthostkeychecking|userknownhostsfile)\s*(?:=|\s)\s*", r"\1=", compact
+        )
+        compact = compact.replace(" ", "")
+        insecure = (
+            "stricthostkeychecking=no",
+            "stricthostkeychecking=off",
+            "stricthostkeychecking=accept-new",
+            "userknownhostsfile=/dev/null",
+            "userknownhostsfile=nul",
+        )
+        if any(option in compact for option in insecure):
+            raise InspectionError("SSH authority requires host verification")
+    elif env.get("GIT_SSH_VARIANT", config.get("ssh.variant", "ssh")) in ("ssh", "auto"):
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"
+
+
+def _secure_https(root, location, env):
+    if "GIT_SSL_NO_VERIFY" in env:
+        raise InspectionError("HTTPS authority requires certificate verification")
+    for key in ("http.sslVerify", "http.followRedirects"):
+        result = _run_git(
+            [
+                "-c",
+                "http.followRedirects=false",
+                "config",
+                *(["--bool"] if key.endswith("sslVerify") else []),
+                "--get-urlmatch",
+                key,
+                location,
+            ],
+            cwd=root,
+            env=env,
+        )
+        if result.returncode not in (0, 1):
+            raise InspectionError("cannot determine HTTPS authority policy")
+        value = result.stdout.decode().strip().lower()
+        if (key.endswith("sslVerify") and value in ("false", "0", "no", "off")) or (
+            key.endswith("followRedirects") and value not in ("", "false", "0", "no", "off")
+        ):
+            raise InspectionError(
+                "HTTPS authority requires certificate verification and disabled redirects"
+            )
+
+
+def _advertised(inspection, location):
+    env, path = _transport_environment(inspection.root, location)
+    if path is not None:
+        external = _probe_environment(external=True)
+        authority = _file_authority_state(path, external)
+        for key in (
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        ):
+            env.pop(key, None)
+    result = _run_git(
+        ["-c", "http.followRedirects=false", "ls-remote", "--refs", "--", location],
+        cwd=inspection.root,
+        env=env,
+        timeout=10,
+    )
+    if result.returncode:
+        raise InspectionError(
+            "advertisement unavailable; repair credentials/network or fetch and retry"
+        )
+    ids = []
+    for line in result.stdout.splitlines():
+        fields = line.decode("utf-8", "strict").split("\t")
+        if len(fields) != 2 or not inspection.oid(fields[0]) or not fields[1].startswith("refs/"):
+            raise InspectionError("malformed repository advertisement")
+        if not _valid_ref_name(fields[1]):
+            raise InspectionError("invalid advertised ref")
+        ids.append(fields[0].lower())
+    if (
+        path is not None
+        and _file_authority_state(path, _probe_environment(external=True)) != authority
+    ):
+        raise InspectionError("file authority changed during advertisement")
+    return ids
+
+
+def _outgoing_range(inspection, updates, destination):
+    tips = inspection.commits([update.local for update in updates])
+    # Different tags may peel to the same commit; validate each local update.
+    if len(tips) != len({update.local for update in updates}) and any(
+        not inspection.commits([update.local]) for update in updates
+    ):
+        raise InspectionError(
+            "missing or noncommit local update cannot be inspected; fetch missing pushed "
+            "history or select a commit update and retry"
+        )
+    old = inspection.commits([update.old for update in updates if set(update.old) != {"0"}])
+    excluded, unavailable = _destination_exclusions(inspection, destination, old)
+    candidate = inspection.inventory(tips, excluded)
+    shallow = Path(inspection.git(["rev-parse", "--git-path", "shallow"]).decode().strip())
+    shallow = inspection.root / shallow if not shallow.is_absolute() else shallow
+    if shallow.exists() and set(shallow.read_text().split()).intersection(candidate):
+        raise InspectionError(
+            "fetch complete pushed history from its source with --unshallow and retry"
+        )
+    return candidate, unavailable
+
+
+def _parse_identity(raw):
+    match = re.fullmatch(rb"(.*) <([^<>]*)> -?[0-9]+ [+-][0-9]{4}", raw)
+    if match is None:
+        raise InspectionError("malformed commit identity")
+    return tuple(value.decode("utf-8", "replace") for value in match.groups())
+
+
+def _parse_commit(value):
+    if value is None or value[0] != "commit":
+        raise InspectionError("missing inspected commit object")
+    headers, separator, message = value[1].partition(b"\n\n")
+    if not separator:
+        raise InspectionError("malformed commit object")
+    author = [line[7:] for line in headers.splitlines() if line.startswith(b"author ")]
+    committer = [line[10:] for line in headers.splitlines() if line.startswith(b"committer ")]
+    if len(author) != 1 or len(committer) != 1:
+        raise InspectionError("missing commit identities")
+    return (
+        *_parse_identity(author[0]),
+        *_parse_identity(committer[0]),
+        message.decode("utf-8", "replace"),
+    )
+
+
+def _batch_trees(inspection, commits):
+    if not commits:
+        return {}
+    raw = inspection.git(
+        ["diff-tree", "--stdin", "--always", "--root", "-m", "-r", "--no-renames", "--raw", "-z"],
+        data=("\n".join(commits) + "\n").encode(),
+    )
+    fields = raw.split(b"\0")
+    if fields[-1] != b"":
+        raise InspectionError("truncated changed-tree batch")
+    result = {sha: [] for sha in commits}
+    framed = set()
+    current = None
+    offset = 0
+    while offset < len(fields) - 1:
+        field = fields[offset]
+        offset += 1
+        if not field.startswith(b":"):
+            current = field.decode("ascii")
+            if current not in result:
+                raise InspectionError("unexpected changed-tree commit frame")
+            framed.add(current)
+            continue
+        if current is None or offset >= len(fields) - 1:
+            raise InspectionError("missing changed-tree frame or path")
+        metadata = field.decode("ascii").split()
+        if (
+            len(metadata) != 5
+            or not inspection.oid(metadata[2])
+            or not inspection.oid(metadata[3])
+        ):
+            raise InspectionError("malformed changed-tree entry")
+        path = fields[offset].decode("utf-8", "replace")
+        offset += 1
+        if not path or path.startswith("/") or ".." in Path(path).parts:
+            raise InspectionError("invalid committed path")
+        if metadata[1] != "000000":
+            result[current].append(_TreeEntry(metadata[1], metadata[3], path))
+    if framed != set(commits):
+        raise InspectionError("missing changed-tree commit frames")
+    return result
+
+
+def _check_symlink_sizes(inspection, ids):
+    if not ids:
+        return
+    requested = sorted(ids)
+    raw = inspection.git(
+        ["cat-file", "--batch-check"], data=("\n".join(requested) + "\n").encode()
+    )
+    lines = raw.decode("ascii").splitlines()
+    if len(lines) != len(requested):
+        raise InspectionError("truncated symlink size batch")
+    for oid, line in zip(requested, lines, strict=True):
+        fields = line.split()
+        if len(fields) != 3 or fields[:2] != [oid, "blob"] or not fields[2].isdigit():
+            raise InspectionError("cannot inspect symlink object size")
+        if int(fields[2]) > _MAX_SYMLINK_TARGET_BYTES:
+            raise InspectionError("cannot safely inspect oversized symlink target")
+
+
+def _inspect_commits(inspection, commits, allowlist, project_dir, policy):
+    facts = inspection.objects(commits)
+    trees = _batch_trees(inspection, commits)
+    symlinks = {
+        entry.object_id
+        for entries in trees.values()
+        for entry in entries
+        if entry.mode == _SYMLINK_MODE
+    }
+    _check_symlink_sizes(inspection, symlinks)
+    blobs = inspection.objects(symlinks)
+    targets = {}
+    for oid, value in blobs.items():
+        if value is None or value[0] != "blob" or len(value[1]) > _MAX_SYMLINK_TARGET_BYTES:
+            raise InspectionError("cannot safely inspect committed symlink target")
+        targets[oid] = value[1].decode("utf-8", "replace")
+    offenders = []
+    for sha in commits:
+        offenses = _fact_offenses(_parse_commit(facts[sha]), allowlist, policy)
+        offenses.extend(_entry_offenses(trees[sha], inspection.root, project_dir, policy, targets))
+        if offenses:
+            offenders.append((sha, list(dict.fromkeys(offenses))))
+    inspection.stable()
+    return offenders
 
 
 # Identity fields first, one per line, then the message last — the message is
@@ -101,8 +698,7 @@ _IDENTITY_FIELDS = 4
 def _commit_facts(sha: str) -> tuple[str, str, str, str, str] | None:
     """``(author_name, author_email, committer_name, committer_email, message)``.
 
-    None when git cannot read the commit — the caller treats that as "nothing
-    to report" rather than blocking a push on a git failure it cannot explain.
+    None when Git cannot read the commit; callers refuse incomplete inspection.
     """
     result = subprocess.run(
         ["git", "log", "-1", f"--format={_COMMIT_FORMAT}", sha],
@@ -124,17 +720,13 @@ def _commit_facts(sha: str) -> tuple[str, str, str, str, str] | None:
 
 def _repository_root() -> Path | None:
     """Return the current repository root, or ``None`` when Git cannot."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=10,
-        check=False,
-    )
+    try:
+        result = _run_git(["rev-parse", "--show-toplevel"], env=_probe_environment(), timeout=10)
+    except InspectionError:
+        return None
     if result.returncode != 0 or not result.stdout.strip():
         return None
-    return Path(result.stdout.strip()).resolve()
+    return Path(os.fsdecode(result.stdout.strip())).resolve()
 
 
 def _guard_project_dir(repository_root: Path) -> Path | None:
@@ -266,6 +858,10 @@ def _tree_offenses(
     if entries is None:
         return ["cannot inspect changed tracked paths"]
 
+    return _entry_offenses(entries, repository_root, project_dir, policy)
+
+
+def _entry_offenses(entries, repository_root, project_dir, policy, targets=None):
     offenses: list[str] = []
     for entry in entries:
         path_leaks = policy.find_banned(entry.path)
@@ -279,7 +875,9 @@ def _tree_offenses(
             offenses.append(f"tracked path exposes project state: {entry.path}")
         if entry.mode != _SYMLINK_MODE:
             continue
-        target, error = _symlink_target(entry)
+        target, error = (
+            _symlink_target(entry) if targets is None else (targets[entry.object_id], None)
+        )
         if error:
             offenses.append(error)
             continue
@@ -315,7 +913,17 @@ def _commit_offenses(
 
     facts = _commit_facts(sha)
     if facts is None:
-        return []
+        return ["cannot inspect commit facts"]
+    offenses = _fact_offenses(facts, allowlist, active_policy)
+    if root is None:
+        offenses.append("cannot resolve repository root to inspect tracked metadata")
+    else:
+        state = project_dir if project_dir is not None else _guard_project_dir(root)
+        offenses.extend(_tree_offenses(sha, root, state, active_policy))
+    return offenses
+
+
+def _fact_offenses(facts, allowlist, active_policy):
     author_name, author_email, committer_name, committer_email, message = facts
 
     offenses: list[str] = []
@@ -334,11 +942,6 @@ def _commit_offenses(
     ):
         if not identity_allowed(name, email, allowlist):
             offenses.append(f"{role} not in [stealth] allowed_authors: {name} <{email}>")
-    if root is None:
-        offenses.append("cannot resolve repository root to inspect tracked metadata")
-    else:
-        state = project_dir if project_dir is not None else _guard_project_dir(root)
-        offenses.extend(_tree_offenses(sha, root, state, active_policy))
     return offenses
 
 
@@ -356,36 +959,41 @@ def main() -> int:
     if not stealth_enabled(repository_root):
         return 0
 
-    policy = stealth_policy(repository_root)
-    allowlist = allowed_authors(repository_root)
-    project_dir = _guard_project_dir(repository_root)
-
-    offenders: list[tuple[str, list[str]]] = []
-    seen: set[str] = set()
-    for line in sys.stdin:
-        parts = line.split()
-        if len(parts) != 4:
-            continue
-        _local_ref, local_sha, _remote_ref, remote_sha = parts
-        if local_sha.startswith(_ZERO_SHA_PREFIX):
-            continue  # branch deletion — nothing outgoing
-        for sha in _outgoing_commits(local_sha, remote_sha):
-            if sha in seen:
-                continue
-            seen.add(sha)
-            offenses = _commit_offenses(
-                sha,
-                allowlist,
-                repository_root=repository_root,
-                project_dir=project_dir,
-                policy=policy,
-            )
-            if offenses:
-                offenders.append((sha, offenses))
+    try:
+        offenders, unavailable = _inspect_push(repository_root)
+    except (InspectionError, OSError, UnicodeError, ValueError) as exc:
+        print(f"ERROR: push blocked: {exc}", file=sys.stderr)
+        return 1
 
     if not offenders:
         return 0
 
+    return _report_offenders(offenders, unavailable)
+
+
+def _inspect_push(repository_root):
+    # Consume the complete hook protocol before any child can acquire stdin.
+    protocol = sys.stdin.read()
+    updates = _updates(protocol, _Protocol(repository_root))
+    if not updates:
+        return [], False
+    validate_push_configuration(repository_root)
+    if len(sys.argv) != 3 or not sys.argv[1] or not sys.argv[2]:
+        raise InspectionError("active push requires destination name and location")
+    inspection = _Inspection(repository_root)
+    commits, unavailable = _outgoing_range(inspection, updates, sys.argv[2])
+    policy = stealth_policy(repository_root)
+    offenders = _inspect_commits(
+        inspection,
+        commits,
+        allowed_authors(repository_root),
+        _guard_project_dir(repository_root),
+        policy,
+    )
+    return offenders, unavailable
+
+
+def _report_offenders(offenders, unavailable):
     print("ERROR: push blocked by leak-guard pre-push hook.", file=sys.stderr)
     print(
         "Outgoing commit(s) expose stealth metadata, carry banned terms, or have "
@@ -395,14 +1003,32 @@ def main() -> int:
     for sha, offenses in offenders:
         print(f"  - {sha[:12]}: {'; '.join(offenses)}", file=sys.stderr)
     print("", file=sys.stderr)
+    if unavailable:
+        print(
+            "Some reported historical commits may already exist on the destination; "
+            "repair credentials/network and retry verified discovery.",
+            file=sys.stderr,
+        )
     print(
-        "Fix: rewrite the offending commits (e.g. git rebase -i, or "
-        "git commit --amend --reset-author to reclaim a misattributed one), "
-        "or set BOOLEY_SKIP_PUSH_GUARD=1 to push anyway (e.g. pre-existing "
-        "upstream history whose authors predate the allowlist).",
+        "Fix: rewrite offending commits, or repair destination discovery and retry.",
         file=sys.stderr,
     )
     return 1
+
+
+def _destination_exclusions(inspection, destination, old):
+    try:
+        ids = _advertised(inspection, destination)
+    except (InspectionError, OSError, UnicodeError) as exc:
+        reason = str(exc) if isinstance(exc, InspectionError) else "authority lookup failed"
+        print(
+            f"WARNING: destination advertisement unavailable ({reason}); scanning complete conservative history. "
+            "Repair credentials/network/canonical transport and retry verified discovery.",
+            file=sys.stderr,
+        )
+        return old, True
+    # Object-reading failures are not optional advertisement failures.
+    return [*old, *inspection.commits(ids)], False
 
 
 if __name__ == "__main__":

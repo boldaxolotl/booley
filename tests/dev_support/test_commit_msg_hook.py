@@ -13,6 +13,11 @@ import pytest
 from booley.dev_support.commit_msg_hook import AttributionPolicyError, main, sanitize_message
 
 
+def test_default_generated_footer_is_preserved_verbatim(tmp_path: Path) -> None:
+    message = "fix(core): repair widget\n\nGenerated with care by the whole team\n"
+    assert sanitize_message(message, tmp_path) == message
+
+
 @pytest.fixture(autouse=True)
 def _project_hook_has_no_ambient_source_policy():
     """Unit-test the vendored Project hook, not this source checkout's role."""
@@ -37,9 +42,9 @@ class TestSanitizeMessage:
 
     def test_body_banned_words_redacted_in_place(self):
         """A body line naming a tool keeps its prose; only the word is scrubbed."""
-        msg = "fix(core): repair widget\n\nRan the docker build to check the fix.\n"
+        msg = "fix(core): repair widget\n\nRan the claude build to check the fix.\n"
         result = sanitize_message(msg)
-        assert "docker" not in result
+        assert "claude" not in result
         assert "Ran the redacted build to check the fix." in result
 
     @pytest.mark.parametrize(
@@ -233,8 +238,8 @@ class TestSanitizeMessage:
 
     def test_redacts_banned_word_in_subject(self):
         """Banned word in the summary is scrubbed in place, not left to leak."""
-        result = sanitize_message("fix(sim): rebuild the docker base image\n")
-        assert "docker" not in result
+        result = sanitize_message("fix(sim): rebuild the claude base image\n")
+        assert "claude" not in result
         assert result == "fix(sim): rebuild the redacted base image\n"
 
     def test_redacts_banned_scope_keeping_format(self):
@@ -406,7 +411,7 @@ class TestMain:
         but the IP-leak scrub still runs — the banned word goes, the prose stays."""
         msg_file = tmp_path / "COMMIT_EDITMSG"
         msg_file.write_text(
-            "Upstream style summary\n\nrebuilt the docker image\n", encoding="utf-8"
+            "Upstream style summary\n\nrebuilt the claude image\n", encoding="utf-8"
         )
         monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
 
@@ -421,7 +426,7 @@ class TestMain:
 
         assert rc == 0
         written = msg_file.read_text(encoding="utf-8")
-        assert "docker" not in written
+        assert "claude" not in written
         assert written == "Upstream style summary\n\nrebuilt the redacted image\n"
 
     def test_standalone_hook_leaves_source_checkout_message_unchanged(self, tmp_path: Path):
@@ -494,7 +499,7 @@ class TestRedactionNotice:
         assert "booley" not in capsys.readouterr().err
 
     def test_rewritten_body_is_announced(self, tmp_path: Path, capsys):
-        written = self._run(tmp_path, "fix(core): repair edge case\n\nchecked the docker image\n")
+        written = self._run(tmp_path, "fix(core): repair edge case\n\nchecked the claude image\n")
         err = capsys.readouterr().err
         assert "rewrote the commit body" in err
         # And it says so *because* it edited the body, not because it dropped it.
@@ -512,7 +517,7 @@ class TestRedactionNotice:
         # without a word.
         written = self._run(
             tmp_path,
-            "feat(booley): wire the thing\n\nBuilt the docker image.\n",
+            "feat(booley): wire the thing\n\nBuilt the claude image.\n",
         )
         err = capsys.readouterr().err
         assert "stealth-mode redaction" in err
@@ -520,7 +525,7 @@ class TestRedactionNotice:
         assert "Built the redacted image." in written
 
     def test_sanitization_notice_names_the_opt_out(self, tmp_path: Path, capsys):
-        self._run(tmp_path, "fix(core): repair edge case\n\nbuilt the docker image\n")
+        self._run(tmp_path, "fix(core): repair edge case\n\nbuilt the claude image\n")
         err = capsys.readouterr().err
         assert "[stealth]" in err and "enabled = false" in err
 
