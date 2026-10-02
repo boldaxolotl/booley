@@ -1133,18 +1133,18 @@ allowed_authors = [
 ]
 ```
 
-Malformed or unreadable selected Project configuration blocks active pushes:
-repair the file and retry so configured allowlists and custom vocabulary remain
-in effect. Valid disabled policies and Booley source checkouts still no-op.
-Valid no-update and deletion-only pushes need no configuration validation or
-destination discovery.
-
 Unset or `[]` disables the identity allowlist. Pre-push checks the complete
 newly exposed range, excluding ancestry already reachable from the actual
 destination's advertised locally available refs, available old tips supplied by
 Git's push protocol. New local commits, merges, and newly reachable side branches outside those exclusions still
 receive every message, identity, tracked-path, and committed-symlink check.
 Collaborators' identities in that checked range must match the allowlist.
+
+Malformed or unreadable selected Project configuration blocks active pushes:
+repair the file and retry so configured allowlists and custom vocabulary remain
+in effect. Valid disabled policies and Booley source checkouts still no-op.
+Valid no-update and deletion-only pushes need no configuration validation or
+destination discovery.
 
 Destination advertisement failure or denied transport grants no advertised
 exclusion. The hook warns that discovery is unavailable and scans the complete
