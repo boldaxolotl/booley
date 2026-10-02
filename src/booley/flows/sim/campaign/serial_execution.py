@@ -59,6 +59,7 @@ from booley.targets.catalog import TargetCatalog
 
 from ..build import SimulationBuildInfrastructureError
 from .codec import (
+    RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -1066,10 +1067,66 @@ def _shared_ready_result_document(
     }
 
 
+# Campaign readers load build-execution evidence under ``RECORD_MAX_BYTES``,
+# but a compiler can print far more (a traced build of a large design easily
+# exceeds 1 MiB). Each captured text field therefore keeps a fixed head and
+# tail; the full output stays in every test's ``run.log``.
+BUILD_EXECUTION_TEXT_HEAD_CHARS = 16 * 1024
+BUILD_EXECUTION_TEXT_TAIL_CHARS = 16 * 1024
+_BOUNDED_BUILD_TEXT_FIELDS = (("process", "stdout"), ("process", "stderr"), ("build", "output"))
+# Canonical JSON escapes a control character as ``\u00XX``: six bytes for one
+# character, the worst expansion. Even then the kept text stays well inside
+# the reader's ceiling, leaving room for the markers and the scalar fields.
+_WORST_CASE_TEXT_BYTES = (
+    6
+    * len(_BOUNDED_BUILD_TEXT_FIELDS)
+    * (BUILD_EXECUTION_TEXT_HEAD_CHARS + BUILD_EXECUTION_TEXT_TAIL_CHARS)
+)
+assert _WORST_CASE_TEXT_BYTES <= RECORD_MAX_BYTES * 3 // 4
+
+
+def bounded_build_execution_document(document: Mapping[str, object]) -> dict[str, object]:
+    """Return *document* with each compiler text field cut to its head and tail.
+
+    Text within the budget is kept verbatim. Longer text keeps the first
+    ``BUILD_EXECUTION_TEXT_HEAD_CHARS`` and last
+    ``BUILD_EXECUTION_TEXT_TAIL_CHARS`` characters around a marker that names
+    how many UTF-8 bytes were omitted. *document* itself is not modified.
+    """
+    bounded: dict[str, object] = {
+        key: dict(value) if isinstance(value, Mapping) else value
+        for key, value in document.items()
+    }
+    for section, field in _BOUNDED_BUILD_TEXT_FIELDS:
+        values = cast(dict[str, object], bounded[section])
+        values[field] = _head_and_tail(cast(str, values[field]))
+    return bounded
+
+
+def _head_and_tail(text: str) -> str:
+    head_chars = BUILD_EXECUTION_TEXT_HEAD_CHARS
+    tail_chars = BUILD_EXECUTION_TEXT_TAIL_CHARS
+    if len(text) <= head_chars + tail_chars:
+        return text
+    omitted = len(text[head_chars:-tail_chars].encode("utf-8", "surrogatepass"))
+    marker = (
+        f"\n[... {omitted} bytes omitted from build-execution evidence;"
+        " the test run.log keeps the full compiler output ...]\n"
+    )
+    return text[:head_chars] + marker + text[-tail_chars:]
+
+
 def _capture_build_execution(
     directory: Path, build_attempt_id: str, document: Mapping[str, object]
 ) -> dict[str, object]:
-    raw = canonical_json_bytes(document)
+    raw = canonical_json_bytes(bounded_build_execution_document(document))
+    if len(raw) > RECORD_MAX_BYTES:
+        # Only the scalar fields remain unbounded; refuse to publish a record
+        # that every reader would reject.
+        raise SimulationCampaignIntegrityError(
+            f"build execution evidence is {len(raw)} bytes, over the {RECORD_MAX_BYTES}-byte"
+            " record ceiling"
+        )
     path = directory / "evidence" / "build-execution.json"
     _create_immutable(path, raw)
     return _record_ref(
