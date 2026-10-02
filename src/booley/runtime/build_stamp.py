@@ -214,6 +214,24 @@ def resolve_wheel_source_fingerprint(booley_root: Path) -> str | None:
     return digest.hexdigest()
 
 
+def wheel_embedded_commit(wheel: Path) -> str:
+    """Read the embedded commit from a wheel without executing its contents."""
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            source = archive.read("booley/_build_commit.py").decode("utf-8")
+        module = ast.parse(source)
+    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile, SyntaxError) as exc:
+        raise ValueError(f"wheel build commit is invalid in {wheel}") from exc
+    for statement in module.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name) and target.id == "COMMIT":
+                value = ast.literal_eval(statement.value)
+                if isinstance(value, str):
+                    return value
+    raise ValueError(f"wheel build commit is missing in {wheel}")
+
+
 def wheel_embedded_source_fingerprint(wheel: Path) -> str:
     """Read the wheel-source identity from one built wheel without importing it."""
     try:

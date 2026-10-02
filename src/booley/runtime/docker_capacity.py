@@ -244,7 +244,7 @@ def _failure_message(
         "If you free unused build cache with `docker builder prune`, note that pruning may "
         "evict layers this sequence would otherwise reuse. Booley will not delete cache, "
         "images, volumes, Project artifacts, or user data. Recheck the complete sequence "
-        f"after cleanup, or bypass once with {SKIP_PREFLIGHT_ENV}=1 when Docker storage "
+        f"after cleanup, or bypass once with {SKIP_PREFLIGHT_ENV}=1 to accept the risk of disk exhaustion or when Docker storage "
         "is reported elsewhere."
     )
 

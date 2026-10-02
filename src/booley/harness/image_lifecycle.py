@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -44,7 +45,6 @@ DockerPort = runtime_lifecycle.DockerPort
 HostImageScope = runtime_lifecycle.HostImageScope
 ImageCleanup = runtime_lifecycle.ImageCleanup
 ImageLifecycleError = runtime_lifecycle.ImageLifecycleError
-IncrementalPlanUnavailableError = runtime_lifecycle.IncrementalPlanUnavailableError
 InstalledImageContractError = runtime_lifecycle.InstalledImageContractError
 ImageNode = runtime_lifecycle.ImageNode
 ImageScope = runtime_lifecycle.ImageScope
@@ -81,15 +81,8 @@ class _LegacyBuildAdapter:
         force: bool,
         source: ArtifactSource,
     ) -> str | None:
-        if node.role is ImageRole.PROJECT_DATA_LAYOUT:
-            adapter = _IncrementalBuildAdapter(
-                self.project_root, self.docker, verbose=self.verbose
-            )
-            return adapter.prepare(
-                node,
-                candidate_reference=f"booley-lifecycle-{os.getpid()}-{uuid4().hex}-layout:candidate",
-                parent_reference=node.parent,
-            )
+        if node.reference != BASE_IMAGE:
+            raise ImageLifecycleError("legacy builder is restricted to Host Bootstrap")
         if source is ArtifactSource.VERIFIED_RELEASE_PULL:
             return self._pull_release(node)
         self._build_local(node, force=force)
@@ -111,20 +104,16 @@ class _LegacyBuildAdapter:
 
     def _build_local(self, node: ImageNode, *, force: bool) -> None:
         from booley.harness.setup.common import InitContext
-        from booley.harness.setup.docker_image import ensure_flavor_image
 
+        if node.reference != BASE_IMAGE:
+            raise ImageLifecycleError("Project images require the transaction planner")
         context = InitContext(
             project_root=self.project_root,
             force=force,
             verbose=self.verbose,
             show_step_banners=False,
         )
-        if node.reference == BASE_IMAGE:
-            self._build_base(node, context)
-        elif node.reference in FLAVOR_RECIPES:
-            ensure_flavor_image(context, node.reference, allow_pull=False)
-        else:
-            self._build_project(node, context)
+        self._build_base(node, context)
         failures = [result.detail for result in context.results if result.status == "err"]
         if failures:
             raise ImageLifecycleError("; ".join(failures))
@@ -166,28 +155,6 @@ class _LegacyBuildAdapter:
             raise ImageLifecycleError(
                 f"cannot verify the development Sandbox Image build context: {error}"
             ) from error
-
-    def _build_project(self, node: ImageNode, context: InitContext) -> None:
-        from booley.harness import init_cmd
-
-        docker_dir = resolve_checkout_project_dir(self.project_root) / "docker"
-        user_owned = any(
-            path.is_file() and not project_image.is_managed_generated_file(path)
-            for path in (docker_dir / "Dockerfile", docker_dir / "requirements.txt")
-        )
-        if not user_owned:
-            init_cmd._step_project_image(context)
-            return
-        if not (docker_dir / "Dockerfile").is_file():
-            raise ImageLifecycleError(
-                f"cannot refresh {node.reference}: {docker_dir / 'Dockerfile'} is missing"
-            )
-        if not project_image.build_project_image(
-            node.reference,
-            docker_dir,
-            verbose=self.verbose,
-        ):
-            raise ImageLifecycleError(f"failed to rebuild {node.reference}")
 
 
 def _capacity_request(node: ImageNode, *, output_tag: str | None = None) -> DockerBuildRequest:
@@ -245,6 +212,7 @@ class _IncrementalBuildAdapter:
         self.docker = docker
         self.verbose = verbose
         self._wheel_sha256: str | None = None
+        self.preserve_stamp = False
         self._requests = requests
         self._next_request_index = 0
         import booley
@@ -258,6 +226,10 @@ class _IncrementalBuildAdapter:
         candidate_reference: str,
         parent_reference: str | None,
     ) -> str:
+        if node.role is ImageRole.RUNTIME_BASE:
+            raise ImageLifecycleError(
+                "Project builders cannot acquire the runtime base; run booley bootstrap"
+            )
         if node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
             return self._pull_complete_release(node)
         from booley.harness.setup.common import InitContext
@@ -283,7 +255,20 @@ class _IncrementalBuildAdapter:
             raise ImageLifecycleError("; ".join(failures))
         if self.docker.image_id(candidate_reference) is None:
             raise ImageLifecycleError(f"candidate build produced no image {candidate_reference!r}")
+        if node.manual_parent is not None:
+            self._verify_manual_ancestry(candidate_reference, parent_id)
         return candidate_reference
+
+    @staticmethod
+    def _verify_manual_ancestry(candidate: str, parent_id: str | None) -> None:
+        parent = project_image.inspect_layout_image(parent_id or "")
+        child = project_image.inspect_layout_image(candidate)
+        layers = parent.get("RootFS", {}).get("Layers", [])
+        actual = child.get("RootFS", {}).get("Layers", [])
+        if not layers or actual[: len(layers)] != layers:
+            raise ImageLifecycleError(
+                "manual Project recipe final image does not descend from the verified selected parent"
+            )
 
     def _build_layout(
         self, context, node: ImageNode, candidate: str, parent_id: str | None
@@ -375,29 +360,32 @@ class _IncrementalBuildAdapter:
     def _pull_complete_release(self, node: ImageNode) -> str:
         from booley.harness.setup.docker_image import _try_pull_image, remote_tag
 
-        if node.role is not ImageRole.WHEEL_OVERLAY or node.reference not in {
+        published = node.published_reference or node.reference
+        if node.role is not ImageRole.WHEEL_OVERLAY or published not in {
             BASE_IMAGE,
             *FLAVOR_RECIPES,
         }:
             raise ImageLifecycleError(
                 f"no complete published Sandbox Image exists for {node.reference}"
             )
-        if not _try_pull_image(node.payload.version, node.reference, adopt=False):
+        if not _try_pull_image(node.payload.version, published, adopt=False):
             raise ImageLifecycleError(
                 f"could not pull current packaged Sandbox Image {node.reference}"
             )
-        return remote_tag(node.reference, node.payload.version)
+        return remote_tag(published, node.payload.version)
 
     def _materialize_managed_project_recipe(self, node: ImageNode) -> None:
         if node.role not in {ImageRole.PROJECT_SUBSTRATE, ImageRole.PROJECT_OVERLAY}:
             return
+        if node.manual_parent is not None:
+            return
         root = resolve_checkout_project_dir(self.project_root)
-        body = runtime_lifecycle._project_requirements_body(self.project_root)
-        project_image.write_project_image_files(
-            root / "docker",
-            body or "",
-            parent_image=project_image.MANAGED_PROJECT_PARENT,
-        )
+        docker_dir = root / "docker"
+        docker_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in node.generated_files:
+            target = docker_dir / name
+            if project_image.is_managed_generated_file(target):
+                target.write_text(body, encoding="utf-8")
 
     def _build_role(
         self,
@@ -424,24 +412,23 @@ class _IncrementalBuildAdapter:
                 f"not {node.reference!r}"
             )
         current = _capacity_request(node, output_tag=candidate)
-        if planned_index is None:
-            tail = DockerBuildPlan((current,))
-        else:
-            tail = DockerBuildPlan((current, *self._requests[planned_index + 1 :]))
-        spec = docker_image._DockerBuildSpec(
-            dockerfile=node.recipe,
-            context=build_context,
-            exists=False,
-            image=candidate,
-            build_contexts=contexts,
-            build_args=build_args,
-            parent_artifact=parent_id,
-            labels=tuple(self._build_labels(node, parent_id)),
-            build_note=f"preparing {node.role.value}",
-            capacity_request=current,
-            capacity_plan=tail,
-        )
-        result = docker_image._docker_build_image(context, spec)
+        remaining = () if planned_index is None else self._requests[planned_index + 1 :]
+        tail = DockerBuildPlan((current, *remaining))
+        with self._role_context(node, build_context) as (recipe, prepared_context):
+            spec = docker_image._DockerBuildSpec(
+                dockerfile=recipe,
+                context=prepared_context,
+                exists=False,
+                image=candidate,
+                build_contexts=contexts,
+                build_args=build_args,
+                parent_artifact=parent_id,
+                labels=tuple(self._build_labels(node, parent_id)),
+                build_note=f"preparing {node.role.value}",
+                capacity_request=current,
+                capacity_plan=tail,
+            )
+            result = docker_image._docker_build_image(context, spec)
         if result is None:
             return
         if result != 0:
@@ -449,6 +436,27 @@ class _IncrementalBuildAdapter:
             return
         if planned_index is not None:
             self._next_request_index += 1
+
+    @staticmethod
+    @contextmanager
+    def _role_context(node: ImageNode, build_context: Path):
+        if not node.generated_files:
+            yield node.recipe, build_context
+            return
+        with tempfile.TemporaryDirectory(prefix="booley-project-build-") as directory:
+            context = Path(directory) / "context"
+            if build_context.is_dir():
+                shutil.copytree(build_context, context, symlinks=True)
+            else:
+                context.mkdir()
+            for name, body in node.generated_files:
+                target = context / name
+                target.unlink(missing_ok=True)
+                target.write_text(body, encoding="utf-8")
+            recipe = (
+                context / "Dockerfile" if node.role is ImageRole.PROJECT_SUBSTRATE else node.recipe
+            )
+            yield recipe, context
 
     def _inherited_wheel_sha(self, node, parent_id) -> str:
         if node.role is ImageRole.PROJECT_OVERLAY and parent_id is not None:
@@ -522,14 +530,14 @@ class _IncrementalBuildAdapter:
         if node.role in {ImageRole.PROJECT_SUBSTRATE, ImageRole.PROJECT_OVERLAY}:
             return (
                 resolve_checkout_project_dir(self.project_root) / "docker",
-                ((project_image.MANAGED_PROJECT_PARENT, parent),),
+                ((node.manual_parent or project_image.MANAGED_PROJECT_PARENT, parent),),
                 (),
             )
         if node.role is not ImageRole.WHEEL_OVERLAY:
             raise ImageLifecycleError(f"unsupported image role {node.role!r}")
         if root is None:
             raise ImageLifecycleError("wheel build has no verified source context")
-        if not docker_image._docker_build_wheel(context, root):
+        if not docker_image._docker_build_wheel(context, root, preserve_stamp=self.preserve_stamp):
             return None
         wheels = sorted((root / "dist").glob("booley_rtl-*.whl"))
         if len(wheels) != 1:
@@ -555,17 +563,9 @@ class _IncrementalBuildAdapter:
         root: Path | None,
         parent: str,
     ) -> tuple[Path, tuple[tuple[str, str], ...], tuple[str, ...]] | None:
-        from booley.harness.setup import docker_image
 
         if node.role is ImageRole.RUNTIME_BASE:
-            if root is None:
-                raise ImageLifecycleError("runtime-base build has no verified source context")
-            actual = source_image_build_contracts(root).runtime_base
-            if actual != node.effective_inputs:
-                raise ImageLifecycleError(
-                    "runtime-base build context differs from the planned compatibility inputs"
-                )
-            return root, (), tuple(docker_image._runtime_base_build_metadata_args(root, actual))
+            raise ImageLifecycleError("runtime-base acquisition belongs to Host Bootstrap")
         if node.role is ImageRole.STANDARD_SUBSTRATE:
             if root is None:
                 raise ImageLifecycleError(
@@ -634,6 +634,8 @@ def _uses_managed_project_overlay(project_root: Path) -> bool:
     if selected != project_image.project_image_name(project_root):
         return False
     dockerfile = resolve_checkout_project_dir(project_root) / "docker" / "Dockerfile"
+    if runtime_lifecycle._manual_parent(project_root) is not None:
+        return True
     return runtime_lifecycle._project_requirements_body(project_root) is not None and (
         not dockerfile.is_file() or project_image.is_managed_generated_file(dockerfile)
     )
@@ -658,9 +660,8 @@ def reconcile(
         root = scope.project_root.resolve()
     else:
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    layout_result = _planned_layout_reconciliation(scope, intent, docker, verbose)
-    if layout_result is not None:
-        return layout_result
+    if isinstance(scope, ProjectImageScope):
+        return reconcile_planned(scope, intent, verbose=verbose)
     builder = (
         None
         if intent is Intent.CHECK
@@ -765,6 +766,8 @@ def prepare(
             remaining_plan=build_plan,
         )
 
+    import booley
+
     needs_source = any(
         node.role
         in {ImageRole.RUNTIME_BASE, ImageRole.STANDARD_SUBSTRATE, ImageRole.WHEEL_OVERLAY}
@@ -779,6 +782,9 @@ def prepare(
             requests=build_plan.requests if build_plan is not None else (),
         )
         builder.source_root = source_root
+        builder.preserve_stamp = (
+            needs_source and booley.version_attribution.origin is VersionOrigin.DISTRIBUTION
+        )
         return runtime_lifecycle.prepare(
             lifecycle_plan,
             docker=docker,
@@ -809,28 +815,14 @@ def reconcile_planned(
     verbose: bool = False,
 ) -> LifecycleResult:
     """Plan, preflight, prepare, and atomically adopt one Project image graph."""
-    prepared = prepare(plan(scope, intent=intent), verbose=verbose)
+    observed = plan(scope, intent=intent)
+    if intent is Intent.CHECK or (
+        observed.nodes[0].role is ImageRole.EXTERNAL and len(observed.nodes) == 1
+    ):
+        return runtime_lifecycle.planned_result(observed, _docker_adapter())
+    prepared = prepare(observed, verbose=verbose)
     try:
         return commit(prepared)
     except BaseException:
         abort(prepared)
         raise
-
-
-def _planned_layout_reconciliation(scope, intent, docker, verbose) -> LifecycleResult | None:
-    if not isinstance(scope, ProjectImageScope) or intent is Intent.CHECK:
-        return None
-    root = scope.project_root.resolve()
-    if runtime_lifecycle._external_data_layout(root):
-        selected = runtime_lifecycle._selected_reference(root)
-        selected_id = docker.image_id(selected)
-        if (
-            selected_id
-            and selected in {BASE_IMAGE, *FLAVOR_RECIPES, project_image.project_image_name(root)}
-            and runtime_lifecycle._layout_alias_capable(selected_id)
-        ):
-            try:
-                return reconcile_planned(scope, intent, verbose=verbose)
-            except runtime_lifecycle.IncrementalPlanUnavailableError:
-                pass  # Preserve user-owned recipes through the legacy builder.
-    return None

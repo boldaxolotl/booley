@@ -480,7 +480,6 @@ def _layout_parent_id(metadata: ImageMetadata, project_root: Path) -> str | None
         labels.get(LABEL_SCHEMA) != PROVENANCE_SCHEMA
         or labels.get(LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_LOCAL_IMAGE_ID
         or labels.get(LABEL_RECIPE_FINGERPRINT) != recipe
-        or re.fullmatch(r".+-booley-sandbox-layout-[0-9a-f]{24}-[0-9a-f]{16}", scope) is None
         or _SHA256_HEX.fullmatch(inputs) is None
         or not scope.endswith(inputs[:16])
         or re.fullmatch(r"sha256:[0-9a-f]{64}", parent_id) is None

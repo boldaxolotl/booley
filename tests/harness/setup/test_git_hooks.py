@@ -15,6 +15,7 @@ import os
 import shlex
 import subprocess
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -607,7 +608,7 @@ class TestInstalledPrePushGuard:
         assert "tracked path exposes project state" in result.stderr
 
     def test_external_runtime_alias_cannot_hide_tracked_project_state(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch, request
     ):
         from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.project_dir import reset_cache
@@ -621,6 +622,7 @@ class TestInstalledPrePushGuard:
         project_dir.mkdir()
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
         reset_cache()
+        request.addfinalizer(reset_cache)
         _step_project_git_hooks(_ctx(main))
 
         leaked = main / ".booley_project" / "docs" / "example.md"
@@ -649,6 +651,16 @@ class TestInstalledPrePushGuard:
 
 
 class TestProjectGitHookMigration:
+    @pytest.fixture(autouse=True)
+    def project_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        from booley.runtime.project_dir import reset_cache
+
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        (tmp_path / ".booley_project").mkdir()
+        reset_cache()
+        yield
+        reset_cache()
+
     def test_reconciliation_transaction_restores_files_directories_and_missing_paths(
         self, tmp_path: Path
     ) -> None:
@@ -2509,11 +2521,16 @@ class TestDetachGuidanceHardlinks:
 )
 @pytest.mark.parametrize("rollback", [False, True])
 def test_policy_git_environment_reads_writes_discovery_and_rollback(
-    tmp_path, monkeypatch, keys, rollback
+    tmp_path, monkeypatch, keys, rollback, request
 ):
+    from booley.runtime.project_dir import reset_cache
+
+    reset_cache()
+    request.addfinalizer(reset_cache)
     root, data, foreign = (tmp_path / name for name in ("root", "data", "foreign"))
     for repository in (root, data, foreign):
         _git_init(repository)
+    (root / ".booley_project").mkdir()
     for repository, value in ((root, "false"), (foreign, "true")):
         assert git_hooks._set_local_config(repository, value) is None
     foreign_before = (foreign / ".git" / "config").read_bytes()

@@ -785,6 +785,14 @@ class TestInitInteractive:
             pytest.fail("missing Project data unexpectedly passed validation")
 
         monkeypatch.setattr(runtime_spec, "preview", strict_preview)
+        current_image = init_cmd.LifecycleResult(
+            selected_reference=init_cmd.pi.project_image_name(tmp_path),
+            selected_id="sha256:" + "a" * 64,
+            status=init_cmd.ImageLifecycleStatus.CURRENT,
+        )
+        monkeypatch.setattr(
+            init_cmd.image_lifecycle, "reconcile_planned", lambda *_args, **_kwargs: current_image
+        )
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
         rc = init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "subscription"))

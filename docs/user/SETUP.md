@@ -77,8 +77,9 @@ matching published image; Booley validates the exact payload, recipe, and
 parent provenance before adopting the canonical local name. `--check-only`
 reports which action would occur without pulling or building.
 
-Skipping the explicit command is supported: ordinary `booley init` performs
-the same reconciliation before it changes a Project.
+Run Host Bootstrap before Project Initialization. `booley init` observes its
+prerequisites without mutating shared images. A current runtime base can support
+a Project-only wheel refresh even when the host wheel overlay is stale.
 
 Reserve about 4 GB of Docker storage for the standard sandbox or 6 GB for the
 complete RISC-V demo stack, plus Project artifacts and temporary upgrade/build
@@ -88,8 +89,11 @@ data. On the measured containerd store, the current Linux/AMD64 images occupy
 Local image builds need temporary Docker headroom. Before the first build,
 Booley checks the complete known sequence on Docker's reported storage
 filesystem. Required space is the largest retained-output-plus-current-peak
-point, plus one 5 GiB reserve: 40 GiB for the cold standard three-build
-sequence, 47 GiB for RISC-V, and 10 GiB for an overlay-only refresh.
+point, plus one 5 GiB reserve: Host Bootstrap and maintenance need 40 GiB for
+the cold standard three-build sequence or 47 GiB for RISC-V; an overlay-only
+refresh needs 10 GiB. Project initialization excludes the runtime-base build
+and charges only uncached substrates and descendants, reusing compatible
+artifacts by immutable identity.
 Heavyweight builds use a 30 GiB cold peak, reduced to 10 GiB only when a managed
 image's expected role, recipe, input or contract labels and non-empty build cache
 prove reuse. Fixed wheel overlays and Booley sidecars use 5 GiB; arbitrary
@@ -99,11 +103,15 @@ Before each build, Booley rechecks that build and the remaining tail without
 charging completed work. Pull downloads are outside the estimate, so local work
 is rechecked after a pull. Errors list each image estimate, one reserve, and
 total and reclaimable build cache. Booley never deletes cache, images, volumes,
-Project artifacts, or user data; pruning may evict reusable layers. If Docker
-reports the wrong storage filesystem, set `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`
-for that command; every other value keeps the check enabled.
+Project artifacts, or user data; pruning may evict reusable layers. To explicitly
+accept disk-exhaustion risk, or bypass a misreported Docker storage filesystem,
+set `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1` for that one command; every other value
+keeps the check enabled.
 
 ## Initialize the Project · host
+
+Host Bootstrap owns the local runtime base. If it is absent or stale, run
+`booley bootstrap --update` before retrying local-source Project initialization.
 
 Run Project Initialization on the host before the skill takes over. The host versus
 Sandbox split is described in [ARCHITECTURE.md](../internals/ARCHITECTURE.md#overview).

@@ -1722,6 +1722,7 @@ def _session_prepare(_args: argparse.Namespace, project_root: Path) -> int:
 def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
     """Drive the Sandbox container headlessly (no VS Code, no UI)."""
     from booley.runtime import session_runtime as sr
+    from booley.runtime.docker_capacity import DockerCapacityError
 
     handlers: dict[str, Callable[[argparse.Namespace, Path], int]] = {
         "up": _session_up,
@@ -1739,6 +1740,9 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
         return 2
     try:
         return handler(args, project_root)
+    except DockerCapacityError as exc:
+        print(f"[XX] image-capacity: {exc}", file=sys.stderr)
+        return 2
     except sr.SessionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

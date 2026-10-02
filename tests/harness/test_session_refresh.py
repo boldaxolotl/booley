@@ -504,7 +504,12 @@ def test_init_runtime_image_inspection_reports_stale_steps(monkeypatch, tmp_path
 
     plan = SimpleNamespace(
         selected_reference="booley-sandbox",
-        nodes=(SimpleNamespace(wheel_source_fingerprint="wheel"),),
+        nodes=(
+            SimpleNamespace(
+                role=init_cmd.image_lifecycle.ImageRole.WHEEL_OVERLAY,
+                wheel_source_fingerprint="wheel",
+            ),
+        ),
         steps=(
             SimpleNamespace(action=PlanAction.REUSE, reason=SimpleNamespace(code="current")),
             SimpleNamespace(
@@ -527,7 +532,9 @@ def test_init_runtime_image_inspection_reports_stale_steps(monkeypatch, tmp_path
     assert result.wheel_source_fingerprint == "wheel"
 
 
-def test_init_runtime_image_inspection_translates_plan_errors(monkeypatch, tmp_path: Path) -> None:
+def test_init_runtime_image_inspection_preserves_actionable_plan_errors(
+    monkeypatch, tmp_path: Path
+) -> None:
     from booley.harness import init_cmd
     from booley.runtime.image_lifecycle import ImageLifecycleError
 
@@ -536,7 +543,7 @@ def test_init_runtime_image_inspection_translates_plan_errors(monkeypatch, tmp_p
         "plan",
         lambda *_args: (_ for _ in ()).throw(ImageLifecycleError("user-managed")),
     )
-    with pytest.raises(RuntimeError, match="cannot use managed refresh"):
+    with pytest.raises(RuntimeError, match="user-managed"):
         init_cmd.inspect_refreshable_runtime_image(tmp_path)
 
 

@@ -126,6 +126,7 @@ class ImageRole(StrEnum):
     PROJECT_OVERLAY = "project-overlay"
     WHEEL_OVERLAY = "wheel-overlay"
     PROJECT_DATA_LAYOUT = "project-data-layout"
+    EXTERNAL = "external"
 
 
 class PlanAction(StrEnum):
@@ -138,10 +139,6 @@ class PlanAction(StrEnum):
 
 class ImageLifecycleError(RuntimeError):
     """A managed Sandbox Image could not be reconciled or verified."""
-
-
-class IncrementalPlanUnavailableError(ImageLifecycleError):
-    """The selected image must use the compatibility reconciliation path."""
 
 
 class InstalledImageContractError(ImageLifecycleError):
@@ -231,6 +228,7 @@ class PlanStep:
     role: ImageRole
     action: PlanAction
     reason: Diagnostic
+    source_reference: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,6 +303,9 @@ class ImageNode:
     standard_substrate_contract: str | None = None
     logical_selection_fingerprint: str | None = None
     acquisition_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY
+    published_reference: str | None = None
+    manual_parent: str | None = None
+    generated_files: tuple[tuple[str, str], ...] = ()
 
     @property
     def expected_labels(self) -> tuple[tuple[str, str], ...]:
@@ -344,6 +345,8 @@ class DockerPort(Protocol):
     def image_id(self, image: str) -> str | None: ...
 
     def label(self, image: str, name: str) -> str | None: ...
+
+    def image_layers(self, image: str) -> tuple[str, ...]: ...
 
     def repo_digests(self, image: str) -> tuple[str, ...]: ...
 
@@ -465,7 +468,10 @@ def _direct_project_dir(project_root: Path) -> Path:
 
 
 def _sandbox_config(project_root: Path) -> dict[str, object]:
-    config = _direct_project_dir(project_root) / "booley.toml"
+    try:
+        config = _direct_project_dir(project_root) / "booley.toml"
+    except FileNotFoundError:
+        return {}
     if not config.is_file():
         return {}
     try:
@@ -506,44 +512,68 @@ def _project_requirements_body(project_root: Path) -> str | None:
             "configured sandbox pip requirements are missing: " + ", ".join(missing)
         )
     if not requirements:
-        return None
+        return _user_project_requirements(project_root)
     body, kept, _skipped, _dropped = project_image.consolidated_requirements(
         project_root, requirements
     )
     return body if kept else None
 
 
-def _prepare_project_recipe(project_root: Path, requirements_body: str | None) -> None:
-    """Refresh Booley-owned recipe files while preserving any user-owned recipe."""
-    docker_dir = _direct_project_dir(project_root) / "docker"
-    dockerfile = docker_dir / "Dockerfile"
-    requirements = docker_dir / "requirements.txt"
-    if not project_image.is_managed_generated_file(dockerfile):
-        return
-    if not project_image.is_managed_generated_file(requirements):
-        if not dockerfile.is_file():
-            project_image.write_managed_dockerfile(docker_dir)
-        return
-    if requirements_body is None:
-        dockerfile.unlink(missing_ok=True)
-        requirements.unlink(missing_ok=True)
-        return
-    project_image.write_project_image_files(docker_dir, requirements_body)
+def _user_project_requirements(project_root: Path) -> str | None:
+    try:
+        requirements = _direct_project_dir(project_root) / "docker" / "requirements.txt"
+    except FileNotFoundError:
+        return None
+    if not requirements.is_file() or project_image.is_managed_generated_file(requirements):
+        return None
+    try:
+        return requirements.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ImageLifecycleError(
+            f"cannot read Project requirements {requirements}: {exc}"
+        ) from exc
 
 
 def _selected_reference(project_root: Path) -> str:
+    from booley.config.sandbox import project_sandbox_image
+
+    return project_sandbox_image(project_root)
+
+
+def _logical_reference(project_root: Path) -> str:
     configured = _configured_image(project_root)
-    requirements_body = _project_requirements_body(project_root)
-    if configured in FLAVOR_RECIPES and requirements_body is not None:
-        return project_image.project_image_name(project_root)
-    if configured:
-        return configured
-    dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
     return (
-        project_image.project_image_name(project_root)
-        if dockerfile.is_file() or requirements_body is not None
-        else BASE_IMAGE
+        BASE_IMAGE
+        if not configured or configured == project_image.project_image_name(project_root)
+        else configured
     )
+
+
+def _manual_parent(project_root: Path) -> str | None:
+    try:
+        recipe = _direct_project_dir(project_root) / "docker" / "Dockerfile"
+    except FileNotFoundError:
+        return None
+    if not recipe.is_file():
+        return None
+    if project_image.is_managed_generated_file(recipe):
+        return None
+    observed = project_image.dockerfile_parent_image(recipe)
+    normalized = observed or ""
+    if normalized.startswith("docker.io/library/"):
+        normalized = normalized.removeprefix("docker.io/library/")
+    if normalized.endswith(":latest"):
+        normalized = normalized.removesuffix(":latest")
+    if normalized == _logical_reference(project_root):
+        return observed
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "Project Docker recipe ignored: selected image %r differs from parsed FROM %r (or ambiguous ancestry)",
+        _logical_reference(project_root),
+        observed,
+    )
+    return None
 
 
 def _base_node(payload: PayloadProvenance) -> ImageNode:
@@ -553,17 +583,6 @@ def _base_node(payload: PayloadProvenance) -> ImageNode:
         recipe=recipe,
         payload=payload,
         build=BuildProvenance(resolve_recipe_fingerprint((recipe,)), None),
-    )
-
-
-def _flavor_node(reference: str, parent: ImageNode, payload: PayloadProvenance) -> ImageNode:
-    recipe = docker_data_dir() / FLAVOR_RECIPES[reference]
-    return ImageNode(
-        reference=reference,
-        recipe=recipe,
-        payload=payload,
-        build=BuildProvenance(resolve_recipe_fingerprint((recipe,)), parent.reference),
-        parent=parent.reference,
     )
 
 
@@ -577,9 +596,7 @@ def _project_recipe_fingerprint(
     dockerfile = docker_dir / "Dockerfile"
     requirements = docker_dir / "requirements.txt"
     overrides = None
-    managed_recipe = project_image.is_managed_generated_file(
-        dockerfile
-    ) and project_image.is_managed_generated_file(requirements)
+    managed_recipe = project_image.is_managed_generated_file(dockerfile)
     if requirements_body is None and managed_recipe and dockerfile.is_file():
         return hashlib.sha256(b"<no-managed-project-image>").hexdigest()
     if requirements_body is not None and managed_recipe:
@@ -587,74 +604,10 @@ def _project_recipe_fingerprint(
             requirements_body,
             parent_image=parent_image,
         )
-        overrides = {
-            "Dockerfile": dockerfile_body.encode(),
-            "requirements.txt": requirements_content.encode(),
-        }
+        overrides = {"Dockerfile": dockerfile_body.encode()}
+        if project_image.is_managed_generated_file(requirements):
+            overrides["requirements.txt"] = requirements_content.encode()
     return resolve_build_context_fingerprint(docker_dir, overrides)
-
-
-def _project_node(
-    project_root: Path, parent_reference: str, payload: PayloadProvenance
-) -> ImageNode:
-    docker_dir = _direct_project_dir(project_root) / "docker"
-    dockerfile = docker_dir / "Dockerfile"
-    return ImageNode(
-        reference=project_image.project_image_name(project_root),
-        recipe=dockerfile,
-        payload=payload,
-        build=BuildProvenance(
-            _project_recipe_fingerprint(project_root, _project_requirements_body(project_root)),
-            parent_reference,
-        ),
-        parent=parent_reference,
-    )
-
-
-def _nodes(
-    project_root: Path,
-    selected: str,
-    docker: DockerPort,
-    *,
-    release_only: bool = False,
-) -> tuple[ImageNode, ...]:
-    if release_only and (selected == BASE_IMAGE or selected in FLAVOR_RECIPES):
-        return (_published_release_node(selected, _expected_image_build_contracts()),)
-    payload = PayloadProvenance(
-        PROVENANCE_SCHEMA,
-        _expected_version(),
-        _expected_payload_fingerprint(),
-    )
-    if selected == BASE_IMAGE:
-        return _with_parent_artifacts((_base_node(payload),), docker)
-    if selected in FLAVOR_RECIPES:
-        base = _base_node(payload)
-        return _with_parent_artifacts((base, _flavor_node(selected, base, payload)), docker)
-    generated = project_image.project_image_name(project_root)
-    if selected != generated:
-        raise ImageLifecycleError(f"unsupported managed Sandbox Image {selected!r}")
-    parent_name = project_image.dockerfile_parent_image(
-        _direct_project_dir(project_root) / "docker" / "Dockerfile"
-    )
-    dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
-    if parent_name is None and dockerfile.is_file():
-        raise ImageLifecycleError(
-            "the automatically managed project image has ambiguous ancestry; "
-            "use a single concrete FROM or add '# booley:parent=<image>'"
-        )
-    nodes: list[ImageNode] = []
-    parent_reference = BASE_IMAGE
-    if parent_name in FLAVOR_RECIPES:
-        base = _base_node(payload)
-        parent = _flavor_node(parent_name, base, payload)
-        nodes.extend((base, parent))
-        parent_reference = parent.reference
-    elif parent_name in (None, BASE_IMAGE):
-        nodes.append(_base_node(payload))
-    else:
-        parent_reference = parent_name
-    nodes.append(_project_node(project_root, parent_reference, payload))
-    return _with_parent_artifacts(tuple(nodes), docker)
 
 
 def _with_parent_artifacts(
@@ -750,30 +703,55 @@ def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
     docker_dir = docker_data_dir()
     contracts = _expected_image_build_contracts()
     runtime, standard = _source_graph_base(contracts, docker_dir)
+    standard = replace(standard, reference=f"{selected}-standard-substrate")
     nodes = [runtime, standard]
     substrate = standard
-    if _configured_image(project_root) == "booley-sandbox-riscv":
-        substrate = _source_graph_riscv(standard, docker_dir)
+    if _logical_reference(project_root) == "booley-sandbox-riscv":
+        substrate = replace(
+            _source_graph_riscv(standard, docker_dir), reference=f"{selected}-riscv-substrate"
+        )
         nodes.append(substrate)
-    if selected == project_image.project_image_name(project_root):
+    manual = _manual_parent(project_root)
+    if manual is None and _project_requirements_body(project_root) is not None:
         project_node = _source_graph_project(project_root, selected, substrate)
         nodes.append(project_node)
         substrate = project_node
-    overlay_recipe = docker_dir / "Dockerfile.wheel"
     wheel_source = _expected_wheel_source_fingerprint()
     if wheel_source is None:
         raise ImageLifecycleError("could not determine the Booley wheel-source fingerprint")
     overlay = _graph_node(
-        reference=selected,
+        reference=f"{selected}-wheel" if manual else selected,
         role=ImageRole.WHEEL_OVERLAY,
-        recipe=overlay_recipe,
+        recipe=docker_dir / "Dockerfile.wheel",
         effective_inputs=wheel_source,
         parent=substrate,
         wheel_source_fingerprint=wheel_source,
         image_build_contracts=contracts,
     )
     nodes.append(overlay)
-    return _stamp_logical_selection(selected, tuple(nodes))
+    if manual:
+        nodes.append(_manual_overlay(project_root, selected, overlay, manual))
+    return _stamp_logical_selection(_logical_reference(project_root), tuple(nodes))
+
+
+def _manual_overlay(project_root, selected, parent, observed):
+    recipe = _direct_project_dir(project_root) / "docker" / "Dockerfile"
+    fingerprint = _project_recipe_fingerprint(project_root, None)
+    node = _graph_node(
+        reference=selected,
+        role=ImageRole.PROJECT_OVERLAY,
+        recipe=recipe,
+        effective_inputs=fingerprint,
+        parent=parent,
+        recipe_fingerprint=resolve_recipe_fingerprint((recipe,)),
+        wheel_source_fingerprint=parent.wheel_source_fingerprint,
+    )
+    return replace(
+        node,
+        manual_parent=observed,
+        runtime_base_contract=parent.runtime_base_contract,
+        standard_substrate_contract=parent.standard_substrate_contract,
+    )
 
 
 def _stamp_logical_selection(
@@ -785,7 +763,7 @@ def _stamp_logical_selection(
             node.role.value if node.role else "",
             "" if node.role is ImageRole.WHEEL_OVERLAY else (node.effective_inputs or ""),
             node.build.recipe_fingerprint,
-            node.runtime_base_contract or "",
+            "" if node.role is ImageRole.RUNTIME_BASE else node.runtime_base_contract or "",
             node.standard_substrate_contract or "",
         )
         for node in nodes
@@ -808,6 +786,7 @@ def _source_graph_base(
         effective_inputs=contracts.runtime_base,
         parent=None,
     )
+    runtime = replace(runtime, runtime_base_contract=contracts.runtime_base)
     standard = _graph_node(
         reference=STANDARD_SUBSTRATE_IMAGE,
         role=ImageRole.STANDARD_SUBSTRATE,
@@ -831,25 +810,26 @@ def _source_graph_riscv(standard: ImageNode, docker_dir: Path) -> ImageNode:
 def _source_graph_project(project_root: Path, selected: str, substrate: ImageNode) -> ImageNode:
     requirements_body = _project_requirements_body(project_root)
     dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
-    if dockerfile.is_file() and not project_image.is_managed_generated_file(dockerfile):
-        raise IncrementalPlanUnavailableError(
-            "wheel-only convergence is unavailable for a user-owned Project Docker "
-            "recipe; preserve its exact ancestry and rebuild it explicitly"
-        )
-    generated_recipe, _ = project_image.managed_project_image_files(
+    generated_recipe, requirements_content = project_image.managed_project_image_files(
         requirements_body or "", parent_image=project_image.MANAGED_PROJECT_PARENT
     )
-    return _graph_node(
+    files = (("Dockerfile", generated_recipe),)
+    if _user_project_requirements(project_root) is None:
+        files = (*files, ("requirements.txt", requirements_content))
+    node = _graph_node(
         reference=f"{selected}-substrate",
         role=ImageRole.PROJECT_SUBSTRATE,
         recipe=dockerfile,
-        effective_inputs=_project_recipe_fingerprint(
-            project_root,
-            requirements_body,
-            parent_image=project_image.MANAGED_PROJECT_PARENT,
+        effective_inputs=resolve_build_context_fingerprint(
+            dockerfile.parent,
+            {name: body.encode() for name, body in files},
         ),
         parent=substrate,
         recipe_fingerprint=hashlib.sha256(generated_recipe.encode()).hexdigest(),
+    )
+    return replace(
+        node,
+        generated_files=files,
     )
 
 
@@ -934,6 +914,12 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
     requirements_body = _project_requirements_body(project_root)
     if requirements_body is None:
         raise ImageLifecycleError("managed Project overlay has no Project requirements")
+    generated_recipe, requirements_content = project_image.managed_project_image_files(
+        requirements_body, parent_image=project_image.MANAGED_PROJECT_PARENT
+    )
+    files = (("Dockerfile", generated_recipe),)
+    if _user_project_requirements(project_root) is None:
+        files = (*files, ("requirements.txt", requirements_content))
     recipe = docker_data_dir() / "Dockerfile.project-overlay"
     node = _graph_node(
         reference=selected,
@@ -951,6 +937,7 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
 
     return replace(
         node,
+        generated_files=files,
         payload=parent.payload,
         runtime_base_contract=parent.runtime_base_contract,
         standard_substrate_contract=parent.standard_substrate_contract,
@@ -964,10 +951,19 @@ def _hybrid_release_graph(
 ) -> tuple[ImageNode, ...]:
     configured = _configured_image(project_root)
     published_parent = configured if configured in FLAVOR_RECIPES else BASE_IMAGE
-    parent = _complete_release_node(published_parent, contracts)
+    parent = replace(
+        _complete_release_node(published_parent, contracts),
+        reference=f"{selected}-release",
+        published_reference=published_parent,
+    )
     return _stamp_logical_selection(
         selected,
-        (parent, _release_project_overlay(project_root, selected, parent)),
+        (
+            parent,
+            _manual_overlay(project_root, selected, parent, manual)
+            if (manual := _manual_parent(project_root))
+            else _release_project_overlay(project_root, selected, parent),
+        ),
     )
 
 
@@ -1039,6 +1035,10 @@ def _node_identity_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | N
 
 
 def _node_ancestry_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | None:
+    if node.role is ImageRole.RUNTIME_BASE and docker.label(node.reference, LABEL_PARENT_ARTIFACT):
+        return Diagnostic(
+            "parent-changed", "runtime base cannot declare a logical runtime-base parent"
+        )
     if node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
         recorded = docker.label(node.reference, LABEL_PARENT_ARTIFACT)
         if (
@@ -1058,6 +1058,11 @@ def _node_ancestry_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | N
             or docker.label(node.reference, LABEL_PARENT_ARTIFACT) != expected_parent
         ):
             return Diagnostic("parent-changed", "recorded immutable parent differs")
+        layers = docker.image_layers(expected_parent)
+        if not layers or docker.image_layers(node.reference)[: len(layers)] != layers:
+            return Diagnostic(
+                "parent-changed", "filesystem layers do not descend from the verified parent"
+            )
     return None
 
 
@@ -1071,48 +1076,110 @@ def plan(
     """Observe and purely plan the minimal invalid closure for one Project."""
     if not isinstance(scope, ProjectImageScope):
         raise TypeError("incremental planning requires a ProjectImageScope")
-    contracts = _expected_image_build_contracts()
     resolved_docker = docker or _docker_adapter()
     root = scope.project_root.resolve()
     selected = _selected_reference(root)
-    if selected not in {
-        BASE_IMAGE,
-        "booley-sandbox-riscv",
-        project_image.project_image_name(root),
-    }:
-        raise IncrementalPlanUnavailableError(f"Sandbox Image {selected!r} is externally managed")
-    if artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
-        nodes = (_complete_release_node(selected, contracts),)
-    elif artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL:
-        nodes = _hybrid_release_graph(root, selected, contracts)
-    else:
-        nodes = _source_graph(root, selected)
-    parent_id = resolved_docker.image_id(nodes[-1].reference)
-    if _external_data_layout(root) and parent_id and _layout_alias_capable(parent_id):
-        nodes = (*nodes, _layout_node(root, nodes[-1], parent_id))
-        selected = nodes[-1].reference
+    nodes = _planned_nodes(root, selected, resolved_docker, artifact_policy)
     steps = _plan_steps(nodes, resolved_docker, intent)
-    return LifecyclePlan(nodes, steps, selected, _snapshot(nodes), root, artifact_policy)
+    parent_source = steps[-1].source_reference or nodes[-1].reference
+    parent_id = resolved_docker.image_id(parent_source)
+    if _external_data_layout(root) and parent_id and _layout_alias_capable(parent_id):
+        layout = _layout_node(root, nodes[-1], parent_id)
+        nodes = (*nodes, layout)
+        selected = layout.reference
+        layout_steps = _plan_steps(
+            (replace(layout, parent=parent_source),), resolved_docker, intent
+        )
+        steps = (*steps, *layout_steps)
+    snapshot = _snapshot(nodes)
+    identities = tuple(
+        (
+            ref,
+            inputs,
+            recipe,
+            resolved_docker.image_id(ref) if ref == STABLE_RUNTIME_BASE_IMAGE else parent,
+        )
+        for ref, inputs, recipe, parent in snapshot.identities
+    )
+    return LifecyclePlan(nodes, steps, selected, InputSnapshot(identities), root, artifact_policy)
+
+
+def _planned_nodes(root, selected, resolved_docker, artifact_policy):
+    logical = _logical_reference(root)
+    if logical not in {BASE_IMAGE, *FLAVOR_RECIPES}:
+        _external_result(selected, resolved_docker)
+        node = ImageNode(
+            selected,
+            Path(),
+            PayloadProvenance(PROVENANCE_SCHEMA, "", None),
+            BuildProvenance("", None),
+            role=ImageRole.EXTERNAL,
+            wheel_source_fingerprint=resolved_docker.label(
+                selected, LABEL_WHEEL_SOURCE_FINGERPRINT
+            )
+            or "",
+            logical_selection_fingerprint=resolved_docker.label(
+                selected, LABEL_LOGICAL_SELECTION_FINGERPRINT
+            )
+            or "",
+            runtime_base_contract=resolved_docker.label(selected, LABEL_RUNTIME_BASE_CONTRACT)
+            or "",
+            standard_substrate_contract=resolved_docker.label(
+                selected, LABEL_STANDARD_SUBSTRATE_CONTRACT
+            )
+            or "",
+        )
+        nodes = (node,)
+    else:
+        contracts = _expected_image_build_contracts()
+        if artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
+            nodes = (
+                replace(
+                    _complete_release_node(logical, contracts),
+                    reference=selected,
+                    published_reference=logical,
+                ),
+            )
+        elif artifact_policy is ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL:
+            nodes = _hybrid_release_graph(root, selected, contracts)
+        else:
+            nodes = _source_graph(root, selected)
+    return nodes
 
 
 def _plan_steps(nodes, docker, intent) -> tuple[PlanStep, ...]:
     invalid = False
     steps = []
+    sources = {}
     for node in nodes:
-        reason = (
-            Diagnostic("refresh", "explicit refresh requested")
-            if intent is Intent.REFRESH
-            else _planned_reason(node, docker, parent_invalid=invalid)
-        )
-        if reason is None:
+        if node.role is ImageRole.EXTERNAL:
             steps.append(
                 PlanStep(
                     node.reference,
                     node.role,
                     PlanAction.REUSE,
-                    Diagnostic("current", "verified compatible artifact"),
+                    Diagnostic("external", "externally managed image"),
                 )
             )
+            continue
+        observed = replace(node, parent=sources.get(node.parent, node.parent))
+        reason = _planned_reason(observed, docker, parent_invalid=invalid)
+        if node.role is ImageRole.RUNTIME_BASE:
+            if reason is not None:
+                raise ImageLifecycleError(
+                    f"Host runtime base {node.reference!r} is missing or stale ({reason.message}); "
+                    "run `booley bootstrap --update` on the host before retrying Project initialization"
+                )
+        elif intent is Intent.REFRESH:
+            reason = Diagnostic("refresh", "explicit refresh requested")
+        if reason is not None and not invalid and intent is not Intent.REFRESH:
+            reusable = _compatible_reference(observed, docker)
+            if reusable is not None:
+                sources[node.reference] = reusable
+                steps.append(_reuse_step(node, reusable))
+                continue
+        if reason is None:
+            steps.append(_reuse_step(node))
             continue
         invalid = True
         action = (
@@ -1122,6 +1189,28 @@ def _plan_steps(nodes, docker, intent) -> tuple[PlanStep, ...]:
         )
         steps.append(PlanStep(node.reference, node.role, action, reason))
     return tuple(steps)
+
+
+def _reuse_step(node, source=None):
+    return PlanStep(
+        node.reference,
+        node.role,
+        PlanAction.REUSE,
+        Diagnostic("current", "verified compatible immutable artifact"),
+        source,
+    )
+
+
+def _compatible_reference(node, docker):
+    if node.role is ImageRole.PROJECT_DATA_LAYOUT:
+        return None
+    for artifact in sorted(docker.image_references(), key=lambda row: row.reference):
+        if artifact.reference.startswith("booley-lifecycle-"):
+            continue
+        candidate = replace(node, reference=artifact.reference)
+        if _planned_reason(candidate, docker, parent_invalid=False) is None:
+            return artifact.reference
+    return None
 
 
 def _candidate_reference(transaction_id: str, node: ImageNode) -> str:
@@ -1142,14 +1231,26 @@ def _verify_prepared_image(
     if parent_artifact is None and node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
         parent_artifact = _verify_release_parent(reference, docker)
     mismatched = [
-        name for name, expected in required.items() if docker.label(reference, name) != expected
+        name
+        for name, expected in required.items()
+        if (docker.label(reference, name) or "") != expected
     ]
     if mismatched:
         raise ImageLifecycleError(
             f"prepared candidate {reference!r} has invalid provenance: " + ", ".join(mismatched)
         )
+    if parent_artifact is not None and node.parent is not None:
+        layers = docker.image_layers(parent_artifact)
+        if not layers or docker.image_layers(reference)[: len(layers)] != layers:
+            raise ImageLifecycleError(
+                f"prepared candidate {reference!r} does not descend from its verified immutable parent"
+            )
     wheel_sha256 = docker.label(reference, LABEL_WHEEL_SHA256)
-    if node.role in {ImageRole.WHEEL_OVERLAY, ImageRole.PROJECT_DATA_LAYOUT} and not wheel_sha256:
+    if (
+        node.role
+        in {ImageRole.WHEEL_OVERLAY, ImageRole.PROJECT_DATA_LAYOUT, ImageRole.PROJECT_OVERLAY}
+        and not wheel_sha256
+    ):
         raise ImageLifecycleError(f"prepared wheel overlay {reference!r} has no wheel SHA-256")
     return PreparedImage(node.reference, reference, image_id, parent_artifact, wheel_sha256)
 
@@ -1173,6 +1274,9 @@ def _prepared_provenance(node: ImageNode, parent_artifact: str | None) -> dict[s
         and node.acquisition_policy is not ArtifactPolicy.VERIFIED_RELEASE_ONLY
     ):
         required[LABEL_LOGICAL_SELECTION_FINGERPRINT] = node.logical_selection_fingerprint
+    if node.role is ImageRole.RUNTIME_BASE:
+        required[LABEL_PARENT_ARTIFACT] = ""
+        required[LABEL_PARENT_ARTIFACT_KIND] = ""
     if node.role is ImageRole.PROJECT_DATA_LAYOUT:
         required[project_image.LABEL_LAYOUT_REFERENCE] = node.reference
     required.update(_image_contract_labels(node))
@@ -1211,6 +1315,13 @@ def prepare(
 ) -> PreparedConvergence:
     """Acquire and verify candidates without changing any managed image tag."""
     resolved_docker = docker or _docker_adapter()
+    current = plan(
+        ProjectImageScope(lifecycle_plan.project_root),
+        docker=resolved_docker,
+        artifact_policy=lifecycle_plan.acquisition_policy,
+    )
+    if current.input_snapshot != lifecycle_plan.input_snapshot:
+        raise ImageLifecycleError("image inputs or Bootstrap base changed before preparation")
     _discard_orphaned_candidates(resolved_docker)
     resolved_builder = builder or _transaction_build_adapter(
         lifecycle_plan.project_root,
@@ -1255,7 +1366,8 @@ def _prepare_graph(lifecycle_plan, transaction_id, resolved_docker, resolved_bui
     prior_tags = tuple(
         TagSnapshot(node.reference, resolved_docker.image_id(node.reference))
         for node in lifecycle_plan.nodes
-        if node.role is not ImageRole.PROJECT_DATA_LAYOUT
+        if node.role
+        not in {ImageRole.PROJECT_DATA_LAYOUT, ImageRole.RUNTIME_BASE, ImageRole.EXTERNAL}
     )
     candidate_references: list[str] = []
     try:
@@ -1302,7 +1414,17 @@ def _prepare_node(
         parent.image_id if parent else docker.image_id(node.parent) if node.parent else None
     )
     if step.action is PlanAction.REUSE:
-        return _verify_prepared_image(node, node.reference, parent_artifact, docker), ()
+        source = step.source_reference or node.reference
+        if node.role is ImageRole.EXTERNAL:
+            return PreparedImage(node.reference, source, docker.image_id(source), None), ()
+        verified = _verify_prepared_image(node, source, parent_artifact, docker)
+        if source != node.reference:
+            candidate = _candidate_reference(transaction_id, node)
+            docker.tag(verified.image_id, candidate)
+            return replace(verified, reference=node.reference, candidate_reference=candidate), (
+                candidate,
+            )
+        return replace(verified, reference=node.reference), ()
     candidate = _candidate_reference(transaction_id, node)
     candidates = [candidate]
     try:
@@ -1347,6 +1469,10 @@ def validate(
         )
     for image in prepared.candidates:
         if image.candidate_reference == image.reference:
+            if resolved_docker.image_id(image.reference) != image.image_id:
+                raise ImageLifecycleError(
+                    f"immutable dependency {image.reference!r} changed before commit"
+                )
             continue
         if resolved_docker.image_id(image.candidate_reference) != image.image_id:
             raise ImageLifecycleError(
@@ -1379,7 +1505,8 @@ def abort(
     resolved_docker = docker or _docker_adapter()
     for image in prepared.candidates:
         if (
-            image.candidate_reference != image.reference
+            image.candidate_reference.startswith("booley-lifecycle-")
+            and image.candidate_reference != image.reference
             and resolved_docker.image_id(image.candidate_reference) is not None
         ):
             resolved_docker.remove_tag(image.candidate_reference)
@@ -1400,7 +1527,7 @@ def commit(
     changed: list[str] = []
     try:
         for step, image in zip(prepared.plan.steps, prepared.candidates, strict=True):
-            if step.action is PlanAction.REUSE:
+            if step.action is PlanAction.REUSE and image.candidate_reference == image.reference:
                 continue
             resolved_docker.tag(image.image_id, image.reference)
             if resolved_docker.image_id(image.reference) != image.image_id:
@@ -1906,17 +2033,35 @@ def reconcile(
         return _reconcile_host(intent, resolved_docker, builder, artifact_policy.sources)
     if not isinstance(scope, ProjectImageScope):
         raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    result = _reconcile_project(
-        scope,
-        intent,
-        resolved_docker,
-        builder,
-        artifact_policy.sources,
+    lifecycle_plan = plan(
+        scope, docker=resolved_docker, artifact_policy=artifact_policy, intent=intent
     )
-    result = _reconcile_legacy_layout(
-        scope.project_root.resolve(), result, intent, resolved_docker, builder
+    if intent is Intent.CHECK or (
+        lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL and len(lifecycle_plan.nodes) == 1
+    ):
+        return planned_result(lifecycle_plan, resolved_docker)
+    return commit(
+        prepare(lifecycle_plan, docker=resolved_docker, verbose=verbose), docker=resolved_docker
     )
-    return _cleanup_layout_result(scope.project_root, result, intent, resolved_docker)
+
+
+def planned_result(lifecycle_plan: LifecyclePlan, docker: DockerPort) -> LifecycleResult:
+    """Project an observed plan without builds, pulls, or file writes."""
+    stale = tuple(step for step in lifecycle_plan.steps if step.action is not PlanAction.REUSE)
+    external = lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL
+    return LifecycleResult(
+        lifecycle_plan.selected_reference,
+        docker.image_id(
+            lifecycle_plan.steps[-1].source_reference or lifecycle_plan.selected_reference
+        ),
+        Status.STALE if stale else Status.EXTERNAL if external else Status.CURRENT,
+        diagnostics=tuple(step.reason for step in stale),
+        wheel_source_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
+        wheel_sha256=docker.label(
+            lifecycle_plan.steps[-1].source_reference or lifecycle_plan.selected_reference,
+            LABEL_WHEEL_SHA256,
+        ),
+    )
 
 
 def _reconcile_host(
@@ -1969,122 +2114,17 @@ def _reconcile_host(
     return _with_cleanup(result, cleanup)
 
 
-def _reconcile_project(
-    scope: ProjectImageScope,
-    intent: Intent,
-    docker: DockerPort,
-    builder: BuildPort | None,
-    shipped_sources: tuple[ArtifactSource, ...],
-) -> LifecycleResult:
-    root = scope.project_root.resolve()
-    selected = _selected_reference(root)
-    generated = project_image.project_image_name(root)
-    if selected not in {BASE_IMAGE, generated, *FLAVOR_RECIPES}:
-        return _external_result(selected, docker)
-    if intent is not Intent.CHECK and selected == generated:
-        _prepare_project_recipe(root, _project_requirements_body(root))
-        selected = _selected_reference(root)
-    selected_id = docker.image_id(selected)
-    if (
-        intent is Intent.CHECK
-        and _external_data_layout(root)
-        and selected_id
-        and _layout_alias_capable(selected_id)
-    ):
-        try:
-            return _check_layout_graph(scope, shipped_sources, docker)
-        except IncrementalPlanUnavailableError:
-            pass  # User-owned recipes retain the complete legacy graph.
-    if selected == BASE_IMAGE and scope.base is not None:
-        _verify_host_base(scope.base, docker)
-        return LifecycleResult(
-            BASE_IMAGE,
-            scope.base.selected_id,
-            Status.CURRENT,
-            payload_fingerprint=scope.base.payload_fingerprint,
-        )
-    nodes = _nodes(root, selected, docker, release_only=_release_only(shipped_sources))
-    if scope.base is not None:
-        _verify_host_base(scope.base, docker)
-    return _reconcile_project_nodes(
-        root,
-        selected,
-        nodes,
-        intent,
-        docker,
-        builder,
-        shipped_sources,
-    )
-
-
 def _external_result(selected: str, docker: DockerPort) -> LifecycleResult:
+    if docker.image_id(selected) is None:
+        raise ImageLifecycleError(
+            f"externally managed Sandbox Image {selected!r} is missing; build or pull it explicitly"
+        )
     return LifecycleResult(
         selected,
         docker.image_id(selected),
         Status.EXTERNAL,
         diagnostics=(Diagnostic("external", "image lifecycle is externally managed"),),
     )
-
-
-def _reconcile_project_nodes(
-    root: Path,
-    selected: str,
-    nodes: tuple[ImageNode, ...],
-    intent: Intent,
-    docker: DockerPort,
-    builder: BuildPort | None,
-    shipped_sources: tuple[ArtifactSource, ...],
-) -> LifecycleResult:
-    stale, legacy_diagnostics = _inspect_nodes(nodes, docker, shipped_sources)
-    if intent is Intent.CHECK:
-        result = _check_result(
-            selected,
-            nodes,
-            docker,
-            stale,
-            legacy_diagnostics,
-            shipped_sources,
-        )
-        if selected in FLAVOR_RECIPES:
-            cleanup = _reconcile_release_tag_cleanup(selected, intent, docker)
-            return _with_cleanup(result, cleanup)
-        return result
-    if builder is None:
-        raise TypeError("mutating image reconciliation requires a build adapter")
-    refreshable = frozenset({node.reference for node in nodes if node.reference != BASE_IMAGE})
-    changed = _mutate(
-        str(root),
-        nodes,
-        intent,
-        docker,
-        builder,
-        refreshable=refreshable if intent is Intent.REFRESH else None,
-        shipped_sources=shipped_sources,
-    )
-    result = _verified_result(
-        selected,
-        nodes[-1],
-        changed,
-        legacy_diagnostics,
-        docker,
-        shipped_sources,
-    )
-    if selected in FLAVOR_RECIPES:
-        cleanup = _reconcile_release_tag_cleanup(selected, intent, docker)
-        return _with_cleanup(result, cleanup)
-    return result
-
-
-def _verify_host_base(result: LifecycleResult, docker: DockerPort) -> None:
-    if result.selected_reference != BASE_IMAGE or result.status not in {
-        Status.CURRENT,
-        Status.CHANGED,
-    }:
-        raise ImageLifecycleError(
-            "Project image reconciliation requires a current host base image"
-        )
-    if result.selected_id is None or docker.image_id(BASE_IMAGE) != result.selected_id:
-        raise ImageLifecycleError("host base image identity changed before Project reconciliation")
 
 
 def _verified_result(
@@ -2148,6 +2188,16 @@ class _DockerCli:
             f"could not inspect Docker label {name!r} on {image!r}: "
             f"{detail or f'Docker exited {result.returncode}'}"
         )
+
+    def image_layers(self, image: str) -> tuple[str, ...]:
+        try:
+            metadata = project_image.inspect_layout_image(image)
+        except RuntimeError as exc:
+            raise ImageLifecycleError(str(exc)) from exc
+        layers = metadata.get("RootFS", {}).get("Layers")
+        if not is_str_list(layers):
+            raise ImageLifecycleError(f"Docker returned invalid filesystem layers for {image!r}")
+        return tuple(layers)
 
     def repo_digests(self, image: str) -> tuple[str, ...]:
         """Return normalized registry identities attached to a local image."""
@@ -2366,13 +2416,7 @@ def _prepare_layout_child(
         steps = tuple(
             step for step in original.steps if step.role is not ImageRole.PROJECT_DATA_LAYOUT
         )
-        updated = replace(
-            original,
-            nodes=upstream,
-            steps=steps,
-            selected_reference=upstream[-1].reference,
-            input_snapshot=_snapshot(upstream),
-        )
+        updated = _prepared_layout_plan(original, upstream, steps)
         return updated, None, (), None
     node = _layout_node(original.project_root, upstream[-1], parent_image.image_id)
     reason = _planned_reason(node, docker, parent_invalid=False)
@@ -2386,18 +2430,30 @@ def _prepare_layout_child(
         *tuple(step for step in original.steps if step.role is not ImageRole.PROJECT_DATA_LAYOUT),
         step,
     )
-    updated = replace(
-        original,
-        nodes=nodes,
-        steps=steps,
-        selected_reference=node.reference,
-        input_snapshot=_snapshot(nodes),
-    )
+    updated = _prepared_layout_plan(original, nodes, steps)
     return (
         updated,
         acquired,
         candidates,
         TagSnapshot(node.reference, docker.image_id(node.reference)),
+    )
+
+
+def _prepared_layout_plan(original, nodes, steps):
+    upstream_refs = {
+        node.reference for node in nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT
+    }
+    identities = tuple(
+        row for row in original.input_snapshot.identities if row[0] in upstream_refs
+    )
+    if nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT:
+        identities = (*identities, *_snapshot((nodes[-1],)).identities)
+    return replace(
+        original,
+        nodes=nodes,
+        steps=steps,
+        selected_reference=nodes[-1].reference,
+        input_snapshot=InputSnapshot(identities),
     )
 
 
@@ -2479,87 +2535,3 @@ def _cleanup_layout_result(root, result, intent, docker) -> LifecycleResult:
         return replace(
             result, diagnostics=(*result.diagnostics, Diagnostic("cleanup-deferred", str(exc)))
         )
-
-
-def _reconcile_legacy_layout(root, result, intent, docker, builder) -> LifecycleResult:
-    if (
-        not _external_data_layout(root)
-        or result.status is Status.EXTERNAL
-        or not result.selected_id
-        or result.selected_reference.startswith(project_image.project_layout_prefix(root))
-    ):
-        return result
-    if not _layout_alias_capable(result.selected_id):
-        return result
-    parent = _nodes(root, result.selected_reference, docker)[-1]
-    parent = replace(
-        parent,
-        wheel_source_fingerprint=docker.label(
-            result.selected_reference, LABEL_WHEEL_SOURCE_FINGERPRINT
-        ),
-        logical_selection_fingerprint=docker.label(
-            result.selected_reference, LABEL_LOGICAL_SELECTION_FINGERPRINT
-        ),
-    )
-    node = _layout_node(root, parent, result.selected_id)
-    reason = _planned_reason(node, docker, parent_invalid=False)
-    if intent is Intent.CHECK:
-        return replace(
-            result,
-            selected_reference=node.reference,
-            selected_id=docker.image_id(node.reference),
-            status=Status.STALE if reason or result.status is Status.STALE else result.status,
-            diagnostics=(*result.diagnostics, *((reason,) if reason else ())),
-            wheel_source_fingerprint=parent.wheel_source_fingerprint,
-            wheel_sha256=docker.label(node.reference, LABEL_WHEEL_SHA256),
-        )
-    if result.status is Status.STALE:
-        return result
-    changed = _adopt_legacy_layout(node, result, reason, docker, builder)
-    return replace(
-        result,
-        selected_reference=node.reference,
-        selected_id=docker.image_id(node.reference),
-        status=Status.CHANGED if changed else result.status,
-        changed_images=(*result.changed_images, *changed),
-        requires_spec_reseed=bool(changed) or result.requires_spec_reseed,
-        requires_runtime_recreation=bool(changed) or result.requires_runtime_recreation,
-        wheel_source_fingerprint=parent.wheel_source_fingerprint,
-        wheel_sha256=docker.label(node.reference, LABEL_WHEEL_SHA256),
-    )
-
-
-def _check_layout_graph(scope, shipped_sources, docker) -> LifecycleResult:
-    policy = next(policy for policy in ArtifactPolicy if policy.sources == shipped_sources)
-    observed = plan(scope, docker=docker, artifact_policy=policy)
-    stale = tuple(step.reason for step in observed.steps if step.action is not PlanAction.REUSE)
-    final = observed.nodes[-1]
-    return LifecycleResult(
-        observed.selected_reference,
-        docker.image_id(observed.selected_reference),
-        Status.STALE if stale else Status.CURRENT,
-        diagnostics=stale,
-        payload_fingerprint=final.wheel_source_fingerprint,
-        wheel_source_fingerprint=final.wheel_source_fingerprint,
-        wheel_sha256=docker.label(observed.selected_reference, LABEL_WHEEL_SHA256),
-    )
-
-
-def _adopt_legacy_layout(node, result, reason, docker, builder) -> tuple[str, ...]:
-    changed = ()
-    if reason is not None:
-        if builder is None:
-            raise TypeError("layout reconciliation requires a build adapter")
-        candidate = builder.build(node, force=True, source=ArtifactSource.LOCAL_BUILD)
-        if candidate is None or candidate == node.reference:
-            raise ImageLifecycleError("layout builder must return a transaction-owned candidate")
-        try:
-            prepared = _verify_prepared_image(node, candidate, result.selected_id, docker)
-            if docker.image_id(result.selected_reference) != result.selected_id:
-                raise ImageLifecycleError("legacy layout parent changed before adoption")
-            docker.tag(prepared.image_id, node.reference)
-            changed = (node.reference,)
-        finally:
-            if docker.image_id(candidate) is not None:
-                docker.remove_tag(candidate)
-    return changed

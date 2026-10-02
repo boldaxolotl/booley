@@ -18,12 +18,12 @@ class TestImageName:
     def test_slug_from_dir(self, tmp_path):
         d = tmp_path / "myproj"
         d.mkdir()
-        assert pi.project_image_name(d) == "myproj-booley-sandbox"
+        assert pi.project_image_name(d).startswith("myproj-booley-sandbox-")
 
     def test_sanitizes(self, tmp_path):
         d = tmp_path / "My Proj!"
         d.mkdir()
-        assert pi.project_image_name(d) == "my-proj-booley-sandbox"
+        assert pi.project_image_name(d).startswith("my-proj-booley-sandbox-")
 
 
 class TestProjectSandboxImage:
@@ -32,7 +32,7 @@ class TestProjectSandboxImage:
         project_dir.mkdir()
         (project_dir / "booley.toml").write_text('sandbox = "wrong shape"\n')
 
-        assert pi.project_sandbox_image(tmp_path) == pi.BASE_IMAGE
+        assert pi.project_sandbox_image(tmp_path) == pi.project_image_name(tmp_path)
 
     def test_riscv_with_requirements_selects_generated_final_image(self, tmp_path):
         project_dir = tmp_path / ".booley_project"

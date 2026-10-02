@@ -1091,14 +1091,9 @@ def _sandbox_image(project: ProjectAudit | None) -> str:
     """Return configured sandbox image, falling back to the base image."""
     if project is None:
         return DOCKER_IMAGE
-    raw = project.booley_toml.get("sandbox", {}).get("image", "")
-    if isinstance(raw, str) and raw.strip():
-        return raw
-    if (project.project_dir / "docker" / "Dockerfile").is_file():
-        from booley.runtime.project_image import project_image_name
+    from booley.config.sandbox import project_sandbox_image
 
-        return project_image_name(project.project_root)
-    return DOCKER_IMAGE
+    return project_sandbox_image(project.project_root)
 
 
 def _docker_image_exists_by_name(image: str) -> bool:

@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from booley.config.jobs import SlotCaps, parse_caps
-from booley.config.sandbox import SANDBOX_IMAGE, project_image_name
+from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.config_paths import resolve_toml
 
 if TYPE_CHECKING:
@@ -491,12 +491,7 @@ def _load_toml_agent_config(
             data = tomllib.load(f)
 
         sandbox_cfg = _parse_sandbox_config(data)
-        sandbox_section = data.get("sandbox", {})
-        has_explicit_image = isinstance(sandbox_section, dict) and bool(
-            str(sandbox_section.get("image", "")).strip()
-        )
-        if not has_explicit_image and (project_data / "docker" / "Dockerfile").is_file():
-            sandbox_cfg = replace(sandbox_cfg, image=project_image_name(project_root))
+        sandbox_cfg = replace(sandbox_cfg, image=project_sandbox_image(project_root))
         jobs_cfg = _parse_jobs_config(data)
         (auth, tier_overrides, provider, role_models) = _parse_agent_and_models(data, auth)
         logger.debug(

@@ -194,7 +194,9 @@ def _seed_interactive(root: Path) -> None:
     devcontainer spec and the git info/exclude entries."""
     from booley.runtime import devcontainer as dc
 
-    dc.write_devcontainer(root, dc.build_devcontainer_spec(dc.APP_NONE))
+    dc.write_devcontainer(
+        root, dc.build_devcontainer_spec(dc.APP_NONE, image=doctor.pi.project_image_name(root))
+    )
     info_dir = root / ".git" / "info"
     info_dir.mkdir(parents=True, exist_ok=True)
     (info_dir / "attributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
