@@ -7,6 +7,7 @@ import json
 import pytest
 
 from booley.runtime import devcontainer as dc
+from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
 
 # ===========================================================================
 # build_devcontainer_spec
@@ -136,7 +137,8 @@ class TestBuildSpec:
     def test_cache_identity_is_container_wide_without_eda_environment(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE)
         assert spec["containerEnv"] == {
-            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache"
+            **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
+            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
         }
 
     def test_fixed_container_env_is_literal_host_policy(self):
@@ -145,6 +147,7 @@ class TestBuildSpec:
             fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
         )
         assert spec["containerEnv"] == {
+            **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
             "XILINXD_LICENSE_FILE": "2100@booley-license-xilinx",
             "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
         }

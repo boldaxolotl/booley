@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import tomllib
@@ -150,7 +151,12 @@ def approver_identity(project_root: Path) -> str:
         raise WaiverDecisionError(
             f"set git user.name and user.email in {project_root} before approving waivers"
         )
-    agent = load_git_identity(resolve_checkout_project_dir(project_root))
+    mounted = os.environ.get("BOOLEY_PROJECT_DIR")
+    interactive = os.environ.get("BOOLEY_MCP_MODE") == "interactive"
+    project_data = (
+        Path(mounted) if interactive and mounted else resolve_checkout_project_dir(project_root)
+    )
+    agent = load_git_identity(project_data)
     if (name, email) == (agent.name, agent.email):
         raise WaiverDecisionError(
             "the Project checkout's Git identity is the Developer Agent's [agent.git] "
