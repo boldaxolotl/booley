@@ -5,6 +5,11 @@ import importlib
 import pytest
 
 
+@pytest.fixture
+def _flow_project_root() -> None:
+    """Exercise the actual lazy root resolver rather than the synthetic checkout."""
+
+
 def test_import_is_lazy_but_implicit_operation_refuses(tmp_path, monkeypatch):
     data = tmp_path / ".booley_project"
     data.mkdir()
