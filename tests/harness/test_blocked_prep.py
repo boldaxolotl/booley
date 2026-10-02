@@ -460,3 +460,25 @@ async def _prepared_inputs(ctx: bp.BlockedContext, tmp_path: Path) -> bp.SourceI
     assert outcome.ready
     manifest = json.loads((ctx.runtime_dir / "blocked-manifest.json").read_text())
     return bp._manifest_inputs(manifest["source_inputs"])
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_blocked_snapshot_uses_effective_report_gate(tmp_path, completed):
+    from booley.ticket_board import report_submission as rs
+
+    ctx = _context(tmp_path)
+    state = DevelopmentState.load(ctx.log_dir / ".runtime/booley_state.json")
+    state.init_criteria({rs.KEY: True})
+    attempt = rs.Submission(ctx.log_dir, "a" * 32, {}, "execution")
+    attempt.stage(b"candidate")
+    state.set_criterion(
+        rs.KEY, True, detail={rs.ID_KEY: "a" * 32, rs.DIGEST_KEY: attempt.row["report_sha256"]}
+    )
+    state.save()
+    if completed:
+        attempt.commit()
+    attempt.close()
+    labels = dict(bp._evidence_paths(ctx))
+    assert ("developer_report" in labels) is completed
+    raw = bp._evidence_bytes(ctx, "state", labels["state"])
+    assert json.loads(raw)["criteria"][rs.KEY]["met"] is completed

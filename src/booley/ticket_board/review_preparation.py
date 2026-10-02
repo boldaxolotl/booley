@@ -14,7 +14,7 @@ import tempfile
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
 from functools import partial
@@ -49,6 +49,7 @@ from booley.review.generation import (
     open_package_diffs,
     render_explanation_html,
     render_review_briefing,
+    saved_file_justifications,
     validate_assessment,
     write_triage_package,
 )
@@ -135,13 +136,34 @@ def _review_dirty_paths(ctx: ReviewPrepContext) -> list[str]:
     return dirty
 
 
+def _project_review_report(
+    state: Mapping[str, Any], log_dir: Path, *, identity: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    from .acceptance_ledger import project_report_mapping
+    from .persistence import atomic_replace_bytes
+
+    saved_file_justifications(state)
+    projected = project_report_mapping(state, log_dir, identity=identity)
+    if projected.get("criteria", {}).get("_report_submitted", {}).get("met") is not True:
+        atomic_replace_bytes(
+            log_dir / ".runtime" / "unsubmitted-report.md",
+            b"Report submission is uncommitted or unavailable.\n",
+            mode=0o644,
+        )
+    return projected
+
+
 def _build_review_facts(ctx: ReviewPrepContext) -> dict[str, Any]:
+    from .report_submission import synchronize
+
+    synchronize(ctx.log_dir)
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"
     state = (
         ctx.inspection["state"]
         if ctx.inspection is not None
         else _read_review_mapping(state_path, field="review state")
     )
+    state = _project_review_report(state, ctx.log_dir, identity=ctx.ticket_identity)
     scope = _read_review_mapping(
         ctx.log_dir / ".runtime" / "scope_deviations.json",
         field="review scope",
@@ -263,6 +285,7 @@ class ReviewPrepContext:
     project_repository: ProjectReviewRepository | None = None
     inspection: ReviewInspection | None = None
     accepted_head_drift: AcceptanceHeadDrift | None = None
+    ticket_identity: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -415,7 +438,9 @@ def _review_snapshot_heads(
         )
     if accepted.kind != "accepted":
         if status == "review":
-            raise ReviewPrepError("review Ticket has no Criteria Satisfaction Record")
+            raise ReviewPrepError(
+                "review Ticket has no Criteria Satisfaction Record: " + accepted.reason
+            )
         return None
     expected_roles = {participant.role for participant in basis.participants}
     if set(accepted.snapshot.participant_heads) != expected_roles:
@@ -576,6 +601,7 @@ def _build_review_context(
         head_sha=head_sha,
         feature_branch=outer.ticket_ref.removeprefix("refs/heads/"),
         ticket_generation=inputs.basis.ticket_identity()["generation"],
+        ticket_identity=inputs.basis.ticket_identity(),
         triage_report_enabled=inputs.report_enabled,
         project_repository=project_repository,
         inspection=selected,
@@ -708,6 +734,7 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
     paths = [("ticket", ctx.ticket_path)]
     for relative in (
         "REPORT.md",
+        ".runtime/report-submission.json",
         ".runtime/booley_state.json",
         ".runtime/scope_deviations.json",
         ".runtime/developer",
@@ -874,16 +901,25 @@ def _inspection_artifacts_valid(ctx: ReviewPrepContext, manifest: dict[str, Any]
     return True
 
 
-def _fresh_outcome(
+def _bounded_value(value: Any) -> str:
+    rendered = repr(value)
+    return rendered if len(rendered) <= 180 else rendered[:177] + "..."
+
+
+def review_package_rejection(
     ctx: ReviewPrepContext,
-    manifest: dict[str, Any] | None,
+    manifest: Mapping[str, Any] | None,
     prompt_sha: str,
     source_sha: str,
-) -> ReviewPrepOutcome | None:
-    if not manifest or manifest.get("status") != "ready":
-        return None
+) -> str | None:
+    """Explain the same integrity checks used by the current-package projection."""
+    if not manifest:
+        return "manifest missing"
+    reasons = []
+    if manifest.get("status") != "ready":
+        reasons.append(f"status expected='ready' actual={_bounded_value(manifest.get('status'))}")
     if ctx.inspection is not None and not _inspection_artifacts_valid(ctx, manifest):
-        return None
+        reasons.append("inspection artifacts missing, corrupt, or outside package")
     expected = {
         "version": _PROMPT_VERSION,
         "prompt_sha256": prompt_sha,
@@ -892,16 +928,28 @@ def _fresh_outcome(
         "head_sha": ctx.head_sha,
         "source_sha256": source_sha,
     }
-    if any(manifest.get(key) != value for key, value in expected.items()):
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            reasons.append(
+                f"{key} expected={_bounded_value(value)} actual={_bounded_value(manifest.get(key))}"
+            )
+    if _verified_artifact(manifest, "briefing") is None:
+        reasons.append("briefing missing or corrupt")
+    if manifest.get("html_path") is not None:
+        if _verified_artifact(manifest, "html") is None:
+            reasons.append("HTML missing or corrupt")
+    elif not isinstance(manifest.get("html_error"), str) or not manifest["html_error"].strip():
+        reasons.append("HTML unavailable marker missing or invalid")
+    return "; ".join(reasons)[:3000] if reasons else None
+
+
+def _fresh_outcome(ctx, manifest, prompt_sha, source_sha) -> ReviewPrepOutcome | None:
+    if review_package_rejection(ctx, manifest, prompt_sha, source_sha) is not None:
         return None
     briefing_path = _verified_artifact(manifest, "briefing")
-    if briefing_path is None:
-        return None
-    has_html = manifest.get("html_path") is not None
-    html_path = _verified_artifact(manifest, "html") if has_html else None
-    html_unavailable = not has_html and isinstance(manifest.get("html_error"), str)
-    if (has_html and html_path is None) or (not has_html and not html_unavailable):
-        return None
+    html_path = (
+        _verified_artifact(manifest, "html") if manifest.get("html_path") is not None else None
+    )
     message = (
         "existing review package is current"
         if html_path is not None
@@ -1070,6 +1118,8 @@ def _copy_review_input(source: Path, destination: Path) -> Path | None:
 
 def _review_sources(ctx: ReviewPrepContext, evidence: dict[str, Path]) -> dict[str, Path]:
     """Return every named source governed by the review-evidence contract."""
+    from .acceptance_ledger import effective_state_bytes, submitted_report
+
     candidates = {
         **evidence,
         "ticket": ctx.ticket_path,
@@ -1082,6 +1132,20 @@ def _review_sources(ctx: ReviewPrepContext, evidence: dict[str, Path]) -> dict[s
         "specialist_reports": ctx.log_dir / ".runtime" / "mcp-tool-reports",
         "triage_facts": ctx.runtime_dir / "facts.json",
     }
+    if submitted_report(ctx.log_dir, identity=ctx.ticket_identity) is None:
+        candidates.pop("developer_report", None)
+    state_path = candidates["state"]
+    if state_path.is_file():
+        from .persistence import atomic_replace_bytes
+
+        effective = ctx.runtime_dir / "effective-state.json"
+        atomic_replace_bytes(
+            effective,
+            effective_state_bytes(
+                ctx.log_dir, state_path.read_bytes(), identity=ctx.ticket_identity
+            ),
+        )
+        candidates["state"] = effective
     return {
         name: path for name, path in candidates.items() if path.exists() and not path.is_symlink()
     }
@@ -1791,9 +1855,13 @@ def verify_review_handoff(
     )
     _prompt, prompt_sha = _review_prompt(ctx)
     source_sha = _source_fingerprint(ctx)
-    outcome = _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
+    manifest = _read_manifest(ctx)
+    outcome = _fresh_outcome(ctx, manifest, prompt_sha, source_sha)
     if outcome is None:
-        raise ReviewPrepError(f"ticket {slug!r} has no current, integrity-checked review package")
+        reason = review_package_rejection(ctx, manifest, prompt_sha, source_sha)
+        raise ReviewPrepError(
+            f"ticket {slug!r} has no current, integrity-checked review package: {reason}"
+        )
     return outcome
 
 

@@ -22,6 +22,7 @@ from .triage_package import (
     load_triage_package,
     open_package_diffs,
     render_review_briefing,
+    saved_file_justifications,
     validate_assessment,
     write_triage_package,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "open_package_diffs",
     "render_explanation_html",
     "render_review_briefing",
+    "saved_file_justifications",
     "validate_assessment",
     "write_triage_package",
 ]

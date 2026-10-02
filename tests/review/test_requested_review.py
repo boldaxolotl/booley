@@ -2172,3 +2172,68 @@ def test_mechanical_move_to_review_is_rejected(tmp_path, capsys):
     tio = TicketIO(tickets, project_root=tmp_path)
     assert not tio._move_prerequisite("demo", TicketState.REVIEW, None)
     assert "requires board review --request" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("retained_mandatory", [None, False, True])
+@pytest.mark.parametrize("optional_met", [False, True])
+# Real endpoint, repository and review lifecycle on Windows exceeds the CI 60s unit bound.
+@pytest.mark.timeout(180)
+def test_conditional_report_gate_requested_finalization(
+    blocked, monkeypatch, enabled, retained_mandatory, optional_met
+):
+    from booley.criteria.state import CriterionEntry
+    from booley.harness.setup.intake import _ensure_run_report_gate
+    from booley.ticket_board.review_lifecycle import approve_review_command
+
+    root, tio, _worktree = blocked
+    monkeypatch.setattr("booley.config.project_config.is_run_report_enabled", lambda: enabled)
+    path = tio.logs_dir / "demo" / ".runtime" / "booley_state.json"
+    state = DevelopmentState.load(path)
+    state.criteria.pop("_report_submitted")
+    if retained_mandatory is not None:
+        state.criteria["_report_submitted"] = CriterionEntry(
+            met=False, mandatory=retained_mandatory
+        )
+    state.set_criterion("implementation_done", True)
+    state.criteria["additional_optional"] = CriterionEntry(met=optional_met, mandatory=False)
+    state.save()
+    _ensure_run_report_gate(SimpleNamespace(_tickets_dir=tio.tickets_dir, slug="demo"))
+    declared = DevelopmentState.load(path).criteria["_report_submitted"].mandatory
+    assert declared is (enabled if retained_mandatory is None else retained_mandatory)
+    request = asyncio.run(request_review_command(root, "demo", reason="inspect"))
+    assert request.ready, request.message
+    if enabled or not optional_met:
+        refused = asyncio.run(request_review_command(root, "demo", action="finalize"))
+        assert not refused.ready
+        _submit_requested_report(root, monkeypatch)
+    outcome = asyncio.run(request_review_command(root, "demo", action="finalize"))
+    assert outcome.ready, outcome.message
+    assert DevelopmentState.load(path).criteria["_report_submitted"].mandatory is declared
+    assert approve_review_command(root, "demo", no_merge=True, no_cleanup=True)
+    _assert_closed_done(tio, "demo")
+
+
+def _submit_requested_report(root, monkeypatch):
+    import sys
+
+    from booley.ticket_board.review_execution import run_review_command
+
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2] / "src"))
+    report = [
+        sys.executable,
+        "-m",
+        "booley.mcp.submit_run_report",
+        "--summary",
+        "Verified the implementation.",
+        "--uncertainties",
+        "None",
+        "--design-decisions",
+        "No source changes.",
+        "--file-justifications",
+        "{}",
+        "--optional-criteria-justification",
+        "Human accepted the optional criterion",
+    ]
+    assert run_review_command(root, "demo", report) == 0

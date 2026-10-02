@@ -8,6 +8,7 @@ production code.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -95,23 +96,27 @@ def _submit_report(work_dir: Path, monkeypatch):
     justifications = {
         path: "Record the reviewed UART source and fixture state." for path in changed if path
     }
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(work_dir.parent / "report-logs"))
     report = SubmitRunReportMcpTool()
-    report.parse_args(
-        [
-            "--work-dir",
-            str(work_dir),
-            "--file-justifications",
-            json.dumps(justifications),
-            "--summary",
-            "Changed UART.",
-            "--root-cause",
-            "Test reproduction.",
-            "--uncertainties",
-            "None.",
-        ]
-    )
-    report.read_state()
-    return report._run()
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+        exit_code = report.main(
+            [
+                "--work-dir",
+                str(work_dir),
+                "--file-justifications",
+                json.dumps(justifications),
+                "--summary",
+                "Changed UART.",
+                "--root-cause",
+                "Test reproduction.",
+                "--uncertainties",
+                "None.",
+            ]
+        )
+    from booley.mcp.base import McpToolResult
+
+    return McpToolResult(exit_code=exit_code, report_text=output.getvalue())
 
 
 def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatch):

@@ -171,6 +171,10 @@ def _evidence_paths(ctx: BlockedContext) -> list[tuple[str, Path]]:
         "flow_reports": ctx.log_dir / ".runtime" / "flow-reports",
         "specialist_reports": ctx.log_dir / ".runtime" / "mcp-tool-reports",
     }
+    from booley.ticket_board.acceptance_ledger import submitted_report
+
+    if submitted_report(ctx.log_dir) is None:
+        candidates.pop("developer_report", None)
     rows: list[tuple[str, Path]] = []
     for label, path in candidates.items():
         if path.is_file() and not path.is_symlink():
@@ -265,11 +269,18 @@ def _worktree_records(ctx: BlockedContext) -> dict[str, SourceInputRecord]:
     return records
 
 
+def _evidence_bytes(ctx: BlockedContext, label: str, path: Path) -> bytes:
+    from booley.ticket_board.acceptance_ledger import effective_state_bytes
+
+    content = path.read_bytes()
+    return effective_state_bytes(ctx.log_dir, content) if label == "state" else content
+
+
 def _collect_live_inputs(ctx: BlockedContext) -> SourceInputs:
     records: dict[str, SourceInputRecord] = {}
     for label, path in _evidence_paths(ctx):
         try:
-            records[label] = _evidence_record(label, path.read_bytes())
+            records[label] = _evidence_record(label, _evidence_bytes(ctx, label, path))
         except OSError as exc:
             raise RuntimeError(f"{label} collection failed: {exc}") from exc
     records.update(_worktree_records(ctx))
@@ -281,7 +292,7 @@ def _snapshot_inputs(ctx: BlockedContext) -> tuple[SourceInputs, list[tuple[str,
     records: dict[str, SourceInputRecord] = {}
     prompt_paths: list[tuple[str, Path]] = []
     for label, path in _evidence_paths(ctx):
-        raw = path.read_bytes()
+        raw = _evidence_bytes(ctx, label, path)
         snapshot = snapshot_root / label
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         snapshot.write_bytes(raw)
