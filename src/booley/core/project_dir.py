@@ -87,7 +87,7 @@ def _resolve_from_toml(current: Path) -> Path | None:
                         p = (parent / p).resolve()
                     if p.is_dir():
                         return p
-            except (OSError, tomllib.TOMLDecodeError) as e:
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
                 logger.warning("Failed to read %s: %s", toml_path, e)
             # booley.toml found but no override — fall through
             break

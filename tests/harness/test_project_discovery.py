@@ -76,6 +76,23 @@ def test_ticket_io_external_data_checks_current_checkout(tmp_path, monkeypatch, 
             TicketIO(data / "tickets")
 
 
+def test_ticket_io_invalid_utf8_checkout_config_refuses_cleanly(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+    from booley.ticket_board.io import TicketIO
+
+    outer, data = tmp_path / "checkout", tmp_path / "data"
+    for root in (outer, data):
+        root.mkdir()
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+    (outer / "booley.toml").write_bytes(b'[project]\ndir = "\xff"\n')
+    monkeypatch.chdir(outer)
+    for name in ("RTL_PROJECT_ROOT", "PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project checkout"):
+        TicketIO(data / "tickets")
+
+
 @pytest.mark.parametrize("failure_type", [OSError, ValueError])
 def test_ticket_io_current_checkout_failure_is_specific(tmp_path, monkeypatch, failure_type):
     from booley.runtime import project_discovery
