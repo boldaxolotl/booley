@@ -804,8 +804,10 @@ def test_generation_snapshot_sees_mode_and_empty_directory_changes(tmp_path: Pat
     inputs = snapshot_build_inputs(prepared)
     before = snapshot_generation_files(prepared)
 
-    source.chmod(0o755)
+    # Read-only is the one mode change Windows honours (it ignores execute bits).
+    source.chmod(0o444)
     after_chmod = snapshot_generation_files(prepared)
+    source.chmod(0o644)  # writable again so tmp_path cleanup works on Windows
     assert after_chmod != before
     assert snapshot_build_inputs(prepared) == inputs
 
