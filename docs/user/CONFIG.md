@@ -992,7 +992,40 @@ when relying on this switch.
 When enabled, a commit-msg hook rejects recognized machine-attribution footers,
 then sanitizes the built-in banned-word list out of all other commit-message
 prose. An already-installed hook no-ops at commit time when the flag is off.
-`banned_words` replaces (not extends) the built-in list.
+`banned_words` replaces (not extends) the built-in list. The defaults retain
+`claude`, `anthropic`, `copilot`, `codex`, `openai`, `chatgpt`, `gemini`, and
+`booley`, plus `ticket`, `cursor`, `gpt`, `llm`, and `co-authored-by`. Ordinary
+`generated`, `agent`, `docker`, `auto-review`, `auto-approve`, `per review
+findings`, `as suggested by`, `automated fix`, and `suggested fix` are no longer
+default bans. Custom vocabulary still redacts these terms when selected.
+
+To exempt imported ancestry, explicitly record its trusted repository and full
+immutable commit object ID in this Project's configuration:
+
+```toml
+[stealth]
+upstream_repository = "/absolute/path/to/independent/upstream.git"
+upstream_base = "0123456789abcdef0123456789abcdef01234567"
+```
+
+Both settings are required together. The base must be a locally available
+commit, using the repository's 40- or 64-digit object format. The location must
+be a literal SSH/HTTPS/file URL or absolute local repository path, never a
+remote-name alias or relative upstream path. Local authority must use a
+different Git common directory and independent object storage; the current
+checkout, worktrees, aliases, shared stores, and alternate-backed upstream
+repositories cannot prove import provenance. Complete alternate-backed Projects
+and destination repositories remain supported.
+
+There is no automatic baseline. Without the pair, newly exposed history is
+fully checked: generated-only imported history passes with the reduced defaults,
+while protected identities and identities outside an allowlist remain checked.
+The base's ancestry is exempt only after the exact configured repository's
+advertised history positively proves it. A missing base blocks active pushes;
+fetch/reconcile the recorded base and retry. An applicable base still needs
+verified upstream access on a first import, even when offline scanning would
+otherwise pass. Destination-covered or unrelated ancestry avoids that lookup.
+No-update and deletion-only pushes do not need network discovery.
 
 Project Initialization keeps `.booley_project/hooks/` for Project-authored
 `post-setup` and `post-developer` lifecycle hooks. Booley-managed commit and
@@ -1008,9 +1041,10 @@ it is the final nonblank body line and its entire visible payload matches one
 entry in the active banned-word vocabulary. Markdown-linked payloads are
 compared by their visible label. The hook leaves the raw message unchanged and
 tells you to remove the footer and retry. This avoids both silent deletion and
-recognizable redaction debris while preserving ordinary prose such as
-"Generated with care by the whole team" or "Generated with Docker for
-reproducibility."
+recognizable redaction debris. Ordinary prose such as "Generated with care by
+the whole team" or "Generated with Docker for reproducibility." is not rejected;
+banned words inside it are still redacted. These examples remain verbatim with
+the default vocabulary, but custom bans may change them.
 
 An empty `banned_words = []` disables vocabulary redaction and therefore cannot
 confirm that an ambiguous plain "Generated with …" line names a protected
@@ -1064,8 +1098,8 @@ project-state directory. The reserved repository spelling `.booley_project/`
 is blocked independently of the Sandbox's absolute project-state path,
 and changing the worktree link after committing does not bypass the check.
 
-Both the **author and the committer** of every outgoing commit must match at
-least one entry. Each entry is an fnmatch glob, matched case-insensitively
+Both the **author and the committer** of every newly exposed checked commit must
+match at least one entry. Each entry is an fnmatch glob, matched case-insensitively
 against the bare email, the bare name, and the full `Name <email>` ident:
 
 ```toml
@@ -1076,10 +1110,47 @@ allowed_authors = [
 ]
 ```
 
-Unset or `[]` disables the check. Remember that a push carries *every* outgoing
-commit, so an allowlist has to cover your collaborators' historical identities
-too, not just your own — otherwise pushing a branch that contains their work is
-blocked. `BOOLEY_SKIP_PUSH_GUARD=1` skips the scan for one push.
+Unset or `[]` disables the identity allowlist. Pre-push checks the complete
+newly exposed range, excluding ancestry already reachable from the actual
+destination's advertised locally available refs, available old tips supplied by
+Git's push protocol, or a positively verified recorded upstream base. New local
+commits, merges, and newly reachable side branches outside those exclusions still
+receive every message, identity, tracked-path, and committed-symlink check.
+Collaborators' identities in that checked range must match the allowlist.
+
+Destination advertisement failure or denied transport grants no advertised
+exclusion. The hook warns that discovery is unavailable and scans the complete
+conservative superset, retaining available push-protocol old tips and separately
+verified upstream ancestry. Historical findings may already be present on the
+destination; repair credentials/network or canonical transport and retry verified
+discovery. Required upstream proof, range, object, batch, or provenance failures
+block the push. Fetch complete missing history and retry; when a selected shallow
+boundary remains, fetch `--unshallow` from the trusted repository. The hook does
+not fetch objects or choose credentials interactively.
+
+Authority discovery permits file, SSH, and HTTPS only where effective Git
+specific/global protocol settings and the caller's `GIT_ALLOW_PROTOCOL` both
+permit them. Plaintext HTTP/Git, unsafe helpers, further `insteadOf` rewrites,
+detectably disabled SSH host/HTTPS certificate verification, and HTTPS redirects
+cannot establish authority. Default OpenSSH probes use batch mode and strict
+host checking. Owner SSH wrappers, SSH configuration, proxies, CA and trust-store
+choices remain trusted owner inputs; the hook does not audit them. Lookups have
+bounded timeouts and no stdin or terminal prompting.
+
+Git 2.37.2 remains supported for complete repositories, including ordinary
+alternate/shared/symlink object storage. Git without `--no-lazy-fetch` support
+first proves that the inspected repository has no partial/promisor configuration
+or promisor-pack state. Unsupported partial/promisor repositories require a
+complete nonpromisor clone or Git supporting no-lazy-fetch inspection. File
+repository authorities receive the structural preflight before upload-pack on
+both capability paths. Missing inspected objects and changed inspection state
+fail closed.
+
+After upgrading, rerun `booley init` to reconcile the managed hooks. Cached
+unrelated upstream remote refs are no longer implicit authority: clone-first
+workflows importing protected history must record the explicit pair.
+`BOOLEY_SKIP_PUSH_GUARD=1` remains an explicit all-checks override for one push;
+verified imported ancestry does not require it.
 
 #### What survives a fresh clone
 

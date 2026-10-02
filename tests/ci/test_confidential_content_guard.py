@@ -1293,3 +1293,13 @@ def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> N
     )
     assert allowed_identity in pr_scan
     assert allowed_identity in main_scan
+
+
+def test_source_guard_synthetic_generic_vocabulary_remains_independent(tmp_path):
+    repo, _base = _repository(tmp_path)
+    config = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["generated"]\n'.encode()
+    ).decode()
+    result = _scan_pr_text(repo, stdin="ordinary generated prose", config=config)
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr

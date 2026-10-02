@@ -43,13 +43,7 @@ logger = logging.getLogger(__name__)
 # Default banned phrases (used when booley.toml has no [stealth] section).
 _DEFAULT_BANNED_PHRASES = [
     # Multi-word phrases
-    "auto-review",
-    "auto-approve",
-    "per review findings",
-    "as suggested by",
     "co-authored-by",
-    "automated fix",
-    "suggested fix",
     # Single words
     "claude",
     "anthropic",
@@ -59,12 +53,9 @@ _DEFAULT_BANNED_PHRASES = [
     "openai",
     "chatgpt",
     "gemini",
-    "generated",
-    "agent",
     "ticket",
     "gpt",
     "llm",
-    "docker",
     "booley",
 ]
 
@@ -73,7 +64,7 @@ _TOML_SUBDIRS = [Path(".booley_project"), Path(".booley") / "project"]
 _TOML_NAMES = ("booley.toml", "pipeline.toml")
 
 
-def _load_booley_config(project_root: Path | None = None) -> dict:
+def _load_booley_config(project_root: Path | None = None, *, strict: bool = False) -> dict:
     """Return the parsed ``booley.toml`` as a dict, or ``{}`` if unavailable.
 
     Callers pass the repository they are operating on.  Omitting it means
@@ -102,8 +93,48 @@ def _load_booley_config(project_root: Path | None = None) -> dict:
                     with toml_path.open("rb") as f:
                         return tomllib.load(f)
                 except (OSError, tomllib.TOMLDecodeError) as e:
+                    if strict:
+                        raise ValueError("cannot read selected Project configuration") from e
                     logger.warning("Failed to parse %s: %s", toml_path, e)
     return {}
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamRecord:
+    """Owner-selected repository authority and immutable imported commit."""
+
+    repository: str
+    base: str
+
+
+def upstream_record(project_root: Path | None = None) -> UpstreamRecord | None:
+    """Read an explicit paired upstream authority, never infer one from refs."""
+    if source_checkout_policy_owner(project_root):
+        return None
+    section = _load_booley_config(project_root, strict=True).get("stealth", {})
+    if not isinstance(section, dict):
+        raise ValueError("[stealth] must be a table")
+    repository = section.get("upstream_repository")
+    base = section.get("upstream_base")
+    if repository is None and base is None:
+        return None
+    if (
+        not isinstance(repository, str)
+        or not repository.strip()
+        or repository != repository.strip()
+    ):
+        raise ValueError("[stealth] upstream_repository and upstream_base require a complete pair")
+    if (
+        not isinstance(base, str)
+        or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", base) is None
+    ):
+        raise ValueError("[stealth] upstream_base must be a full immutable commit object ID")
+    absolute = Path(repository).is_absolute()
+    url = re.fullmatch(r"(?:https|ssh|file)://[^\s]+", repository)
+    scp = re.fullmatch(r"(?:[^\s/@:]+@)?[^\s/:]+:[^\s]+", repository)
+    if not (absolute or url or scp):
+        raise ValueError("[stealth] upstream_repository requires a literal URL or absolute path")
+    return UpstreamRecord(repository, base.lower())
 
 
 def _stealth_section(project_root: Path | None = None) -> dict:
