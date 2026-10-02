@@ -749,3 +749,15 @@ def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
     assert flags["yosys"] is (failing_stage == "openroad")
     assert flags["timing"] is False
     assert flags["ppa"] is False
+
+
+@pytest.mark.parametrize("stage", ["sv2v", "yosys", "openroad"])
+def test_startup_stage_requires_fresh_stage_log(tmp_path, stage):
+    plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+    for name in ["sv2v.log", "yosys.log", "openroad.log"]:
+        (plan.build_dir / name).write_text("diagnostic")
+    selected = plan.build_dir / f"{stage}.log"
+    outcome = syn_make.boundary_output(plan, 1, is_stale=lambda path: path != selected)
+    assert outcome.stage == stage
+    outcome = syn_make.boundary_output(plan, 1, is_stale=lambda path: True)
+    assert outcome.stage is None

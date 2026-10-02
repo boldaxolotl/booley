@@ -1399,13 +1399,18 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.termination = "infrastructure_error"
         failure = None
         if metrics.termination not in {"timeout", "oom", "resource_killed"}:
-            failure = classify_eda_failure(
-                replace(result, stdout=output, stderr=""),
-                expected_token=getattr(outcome, "attempt_token", None),
-                authenticated_build=bool(
-                    re.fullmatch(r"[0-9a-f]{32}", getattr(outcome, "attempt_token", "") or "")
-                ),
-            )
+            boundary_result = replace(result, stdout=output, stderr="")
+            token = getattr(outcome, "attempt_token", None)
+            failure = classify_eda_failure(boundary_result, expected_token=token)
+            stage = getattr(outcome, "stage", None)
+            if (
+                failure is None
+                and re.fullmatch(r"[0-9a-f]{32}", token or "")
+                and stage in {"sv2v", "yosys", "openroad"}
+            ):
+                failure = classify_eda_failure(
+                    boundary_result, expected_stage=stage, expected_executable=stage
+                )
         if failure is not None and failure.kind == "infrastructure":
             metrics.returncode = 2
             metrics.infra_error = failure.reason

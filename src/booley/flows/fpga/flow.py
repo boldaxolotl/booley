@@ -809,7 +809,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         completion_error = fpga_edam.profile_completion_error(
             log_text + "\n" + report_text, prepared.ppa_profile
         )
-        if completion_error:
+        if completion_error and route_completed:
             metrics.returncode = 2
             metrics.infra_error = completion_error
         if result.timed_out:
@@ -907,7 +907,13 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             (
                 line[:500]
                 for line in lines
-                if re.search(r"error|fatal|failed|cannot|missing", line, re.IGNORECASE)
+                if re.search(
+                    r"^(?:ERROR|FATAL)(?::|\s)|"
+                    r"^[\w.+/-]+:\s*(?:error|fatal)(?::|\s)|"
+                    r"^(?:could not|cannot|failed to|missing)\b",
+                    line,
+                    re.IGNORECASE,
+                )
             ),
             "no route completion evidence",
         )
@@ -1361,7 +1367,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         lines, failures = self._aggregate_head(short_sha, baseline_results, implementation_reports)
         self._append_target_results(lines, failures, configs, current_results, baseline_results)
         lines.append("")
-        lines.append("RESULT: PASS" if not failures else f"RESULT: FAIL ({'; '.join(failures)})")
+        verdict = {0: "PASS", 1: "FAIL", 2: "ERROR"}[implementation_aggregate.exit_code]
+        suffix = f" ({'; '.join(failures)})" if failures else ""
+        lines.append(f"RESULT: {verdict}{suffix}")
         return EndpointOutcome(
             exit_code=implementation_aggregate.exit_code,
             report_text="\n".join(lines),

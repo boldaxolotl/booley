@@ -4496,6 +4496,7 @@ def test_authenticated_synth_loader_is_infrastructure(tmp_path, executable, retu
         forced_failure=None,
         yosys_complete=False,
         attempt_token="0123456789abcdef0123456789abcdef",
+        stage=executable,
     )
     diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
     flow._apply_boundary_completion(
@@ -4523,3 +4524,22 @@ def test_authenticated_synth_cannot_use_inline_metric_decoy(tmp_path):
     )
     assert not metrics.yosys_complete
     assert not metrics.structural_checks_complete
+
+
+@pytest.mark.parametrize("executable", ["vivado", "vvp", "verible-verilog-lint", "openroad"])
+def test_authenticated_yosys_stage_rejects_unrelated_loader(tmp_path, executable):
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    metrics = SynthMetrics()
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=False,
+        attempt_token="0123456789abcdef0123456789abcdef",
+        stage="yosys",
+    )
+    diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
+    flow._apply_boundary_completion(
+        metrics, outcome, SubprocessResult(returncode=1, stderr=diagnostic), diagnostic
+    )
+    assert not metrics.infra_error

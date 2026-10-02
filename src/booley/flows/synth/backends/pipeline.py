@@ -115,6 +115,7 @@ class BoundaryOutcome:
     # stage reached its contractual statistics/check boundary.
     yosys_complete: bool = False
     attempt_token: str = ""
+    stage: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +500,18 @@ def boundary_output(
         if provenance:
             parts.append(provenance)
 
+    stage = next(
+        (
+            stage
+            for stage, name in (
+                ("openroad", "openroad.log"),
+                ("yosys", "yosys.log"),
+                ("sv2v", "sv2v.log"),
+            )
+            if fresh_text(name) is not None
+        ),
+        None,
+    )
     if returncode == 0 and re.fullmatch(r"[0-9a-f]{32}", plan.attempt_token):
         required_outputs = [
             ("yosys", f"stat_{spec.design_name}.txt", stat_text),
@@ -550,6 +563,7 @@ def boundary_output(
             )
         ),
         attempt_token=plan.attempt_token,
+        stage=stage,
     )
 
 

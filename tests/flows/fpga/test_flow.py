@@ -1725,8 +1725,9 @@ def test_rc0_stderr_syntax_rejection_is_design():
         ("ERROR: [Synth 8-2715] syntax error near endmodule", 1),
     ],
 )
+@pytest.mark.parametrize("profile", ["balanced", "max_frequency"])
 def test_fake_vivado_generated_command_startup(
-    tmp_path, state_file, monkeypatch, diagnostic, expected
+    tmp_path, state_file, monkeypatch, diagnostic, expected, profile
 ):
     _write_project_config(tmp_path)
     flow = _flow(tmp_path, state_file)
@@ -1754,7 +1755,15 @@ def test_fake_vivado_generated_command_startup(
         work_root=root,
     )
     edam_layer.configure("vivado", edam, root)
-    prepared = _PreparedFpgaCommand(fpga_edam.fpga_run_command(root, tmp_path), root, "", False)
+    from booley.flows.fpga.profiles import VIVADO_PROFILES
+
+    prepared = _PreparedFpgaCommand(
+        fpga_edam.fpga_run_command(root, tmp_path),
+        root,
+        "",
+        False,
+        ppa_profile=VIVADO_PROFILES[profile],
+    )
     monkeypatch.setattr(flow, "_prepare_fpga_command", lambda target: prepared)
     result = flow._run()
     assert result.exit_code == expected
@@ -1763,6 +1772,7 @@ def test_fake_vivado_generated_command_startup(
     if expected == 2:
         assert "Vivado" in report["infra_error"]
         assert diagnostic in report["infra_error"]
+        assert "RESULT: ERROR" in result.report_text
 
 
 @pytest.mark.parametrize("decoy", [True, False])
@@ -1772,11 +1782,12 @@ def test_route_witness_only_from_fresh_impl_runlog(tmp_path, state_file, decoy):
     impl.mkdir(parents=True)
     name = "top_timing_summary_routed.rpt" if decoy else "runme.log"
     (impl / name).write_text("route_design completed successfully\n")
-    completed, error = flow._route_evidence(tmp_path / "wr", min_mtime=time.time() - 1)
+    os.utime(impl / name, (100, 100))
+    completed, error = flow._route_evidence(tmp_path / "wr", min_mtime=99)
     assert completed is not decoy
     if not decoy:
         assert "required report" in error
-    completed, _ = flow._route_evidence(tmp_path / "wr", min_mtime=time.time() + 10)
+    completed, _ = flow._route_evidence(tmp_path / "wr", min_mtime=101)
     assert not completed
 
 
@@ -1802,6 +1813,7 @@ def test_completed_route_missing_required_report_retains_route_fact(
         (impl / name).write_text(
             "route_design completed successfully" if name == "runme.log" else "data"
         )
+        os.utime(impl / name, (100, 100))
     selected = impl / report
     if state == "missing":
         selected.unlink()
@@ -1817,7 +1829,7 @@ def test_completed_route_missing_required_report_retains_route_fact(
     monkeypatch.setattr(
         flow,
         "_execute_boundary",
-        lambda argv, **kwargs: SubprocessResult(returncode=0, dispatched_unix=time.time() - 1),
+        lambda argv, **kwargs: SubprocessResult(returncode=0, dispatched_unix=99),
     )
     metrics = flow._run_single_target("default")
     assert metrics.returncode == 2
@@ -1840,3 +1852,9 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
     assert metrics.returncode == 2
     assert metrics.infra_error
     assert metrics.route_completed
+
+
+def test_startup_cause_skips_success_summary_and_echoed_tcl():
+    diagnostic = "ERROR: Tcl initialization failed: libncurses.so.5 unavailable"
+    text = '0 Critical Warnings and 0 Errors encountered.\nputs "error"\n' + diagnostic
+    assert FpgaImplFlow._first_startup_cause(text) == diagnostic
