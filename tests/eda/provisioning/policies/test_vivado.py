@@ -134,7 +134,9 @@ def _run_wrapper(wrapper: Path, inherited: str | None = "/caller/libs", *args: s
     )
 
 
-def test_wrapper_adds_highest_bundled_ubuntu_library(wrapper_install):
+def test_wrapper_adds_highest_bundled_ubuntu_library(
+    wrapper_install: tuple[Path, Path, Path],
+) -> None:
     wrapper, _root, libraries = wrapper_install
     result = _run_wrapper(wrapper)
     assert result.returncode == 0, result.stderr
@@ -147,7 +149,9 @@ def test_wrapper_adds_highest_bundled_ubuntu_library(wrapper_install):
 @pytest.mark.parametrize(
     "selection", ["Ubuntu/24", "Ubuntu/26", "Rhel/9", "Default", "unknown", "failure", "missing"]
 )
-def test_wrapper_preserves_vendor_selection(wrapper_install, inherited, selection):
+def test_wrapper_preserves_vendor_selection(
+    wrapper_install: tuple[Path, Path, Path], inherited: str | None, selection: str
+) -> None:
     wrapper, root, libraries = wrapper_install
     selector = root / "bin" / "ldlibpath.sh"
     if selection == "missing":
@@ -164,7 +168,9 @@ def test_wrapper_preserves_vendor_selection(wrapper_install, inherited, selectio
     assert observed["library"] == inherited
 
 
-def test_wrapper_numeric_candidates_and_idempotence(wrapper_install):
+def test_wrapper_numeric_candidates_and_idempotence(
+    wrapper_install: tuple[Path, Path, Path],
+) -> None:
     wrapper, _root, libraries = wrapper_install
     ubuntu = libraries / "Ubuntu"
     for name in ("9", "100", "024", "nonnumeric"):
@@ -185,21 +191,27 @@ def test_wrapper_numeric_candidates_and_idempotence(wrapper_install):
     assert json.loads(_run_wrapper(wrapper).stdout)["library"] == "/caller/libs"
 
 
-def test_wrapper_resolves_launcher_symlink_and_preserves_arguments(wrapper_install):
+def test_wrapper_resolves_launcher_symlink_and_preserves_arguments(
+    wrapper_install: tuple[Path, Path, Path],
+) -> None:
     wrapper, root, _libraries = wrapper_install
+    resolved_root = root.with_name("resolved Vivado")
+    root.rename(resolved_root)
+    root.symlink_to(resolved_root, target_is_directory=True)
     launcher = root / "bin" / "vivado"
     actual = launcher.with_name("actual-vivado")
     launcher.rename(actual)
     launcher.symlink_to(actual)
-    before = os.environ.copy()
     result = _run_wrapper(wrapper, None, "argument with spaces", "*.sv", "")
     assert json.loads(result.stdout)["argv"] == ["argument with spaces", "*.sv", ""]
-    assert os.environ == before
+    assert json.loads(result.stdout)["library"] == str(
+        resolved_root / "lib" / "lnx64.o" / "Ubuntu" / "24"
+    )
     actual.write_text("#!/bin/sh\nexit 37\n")
     assert _run_wrapper(wrapper).returncode == 37
 
 
-def test_wrapper_refuses_self_resolution(wrapper_install):
+def test_wrapper_refuses_self_resolution(wrapper_install: tuple[Path, Path, Path]) -> None:
     wrapper, root, _libraries = wrapper_install
     launcher = root / "bin" / "vivado"
     launcher.unlink()

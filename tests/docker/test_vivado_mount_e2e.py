@@ -102,17 +102,48 @@ test ! -e /root/.ssh
 test ! -S /var/run/docker.sock
 test "$(command -v vivado)" = /usr/local/bin/vivado
 test "$(sha256sum /usr/local/bin/vivado | cut -d' ' -f1)" = {wrapper_sha256()}
-! touch {CONTAINER_TARGET}/.booley-write-probe
-! sh -c ': > /work/.devcontainer/devcontainer.json'
-! sh -c 'printf drift > /tmp/new-spec && mv -f /tmp/new-spec /work/.devcontainer/devcontainer.json'
-! chmod 600 /work/.devcontainer/devcontainer.json
-! mv /work/.devcontainer/devcontainer.json /work/.devcontainer/changed
-! rm /work/.devcontainer/devcontainer.json
-! mv /work/.devcontainer /work/.devcontainer-old
-! ln -s /tmp/owned /work/.devcontainer/owned-link
+{_expect_denied_script()}
+expect_denied touch {CONTAINER_TARGET}/.booley-write-probe
+expect_denied sh -c ': > /work/.devcontainer/devcontainer.json'
+expect_denied sh -c 'printf drift > /tmp/new-spec && mv -f /tmp/new-spec /work/.devcontainer/devcontainer.json'
+expect_denied chmod 600 /work/.devcontainer/devcontainer.json
+expect_denied mv /work/.devcontainer/devcontainer.json /work/.devcontainer/changed
+expect_denied rm /work/.devcontainer/devcontainer.json
+expect_denied mv /work/.devcontainer /work/.devcontainer-old
+expect_denied ln -s /tmp/owned /work/.devcontainer/owned-link
 """
     result = _exec(docker, container, "sh", "-c", script)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _expect_denied_script() -> str:
+    return r"""
+expect_denied() {
+    if "$@"; then
+        printf 'Unexpected boundary write success: %s\n' "$*" >&2
+        exit 1
+    fi
+}
+"""
+
+
+@pytest.mark.parametrize("command", ["true", "false"])
+def test_runtime_boundary_guard_rejects_successful_writes(command: str) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX shell guard")
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            "set -eu\n" + _expect_denied_script() + f"\nexpect_denied {command}\nprintf finished",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is (command == "false"), result.stdout + result.stderr
+    assert ("finished" in result.stdout) is (command == "false")
 
 
 def _assert_host_gateway_is_unreachable(docker: str, container: str) -> None:
@@ -453,8 +484,7 @@ set -eu
 test "$ID:$VERSION_ID" = {shlex.quote(expected)}
 libroot={CONTAINER_TARGET}/Vivado/lib/lnx64.o
 test "$("{CONTAINER_TARGET}/Vivado/bin/ldlibpath.sh" "$libroot")" = "$libroot/Ubuntu:$libroot"
-! find /lib /usr/lib -name libncurses.so.5 -o -name libtinfo.so.5 | grep .
-! dpkg-query -W libncurses5 libtinfo5
+{_no_system_vivado_libraries_script()}
 sha256sum /usr/local/bin/vivado
 cat /etc/os-release
 """
@@ -472,6 +502,59 @@ cat /etc/os-release
     print(result.stdout)
 
 
+def _no_system_vivado_libraries_script() -> str:
+    return r"""
+files=$(find /lib /usr/lib \( -name libncurses.so.5 -o -name libtinfo.so.5 \))
+if [ -n "$files" ]; then
+    printf 'Unexpected system Vivado compatibility files: %s\n' "$files" >&2
+    exit 1
+fi
+for package in libncurses5 libtinfo5; do
+    status=$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)
+    if [ "$status" = installed ]; then
+        printf 'Unexpected system Vivado compatibility package: %s\n' "$package" >&2
+        exit 1
+    fi
+done
+"""
+
+
+@pytest.mark.parametrize("workaround", ["none", "file", "libncurses5", "libtinfo5", "find-error"])
+def test_vivado_library_guard_rejects_system_workarounds(tmp_path: Path, workaround: str) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX shell guard")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, body in (
+        (
+            "find",
+            'case "$WORKAROUND" in file) echo /usr/lib/libncurses.so.5 ;; find-error) exit 2 ;; esac',
+        ),
+        ("dpkg-query", 'if [ "$3" = "$WORKAROUND" ]; then printf installed; else exit 1; fi'),
+    ):
+        executable = tools / name
+        executable.write_text("#!/bin/sh\n" + body + "\n")
+        executable.chmod(0o755)
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            "set -eu\n" + _no_system_vivado_libraries_script() + "\nprintf finished",
+        ],
+        env={
+            **os.environ,
+            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+            "WORKAROUND": workaround,
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is (workaround == "none"), result.stdout + result.stderr
+    assert ("finished" in result.stdout) is (workaround == "none")
+
+
 @pytest.mark.slow()
 def test_vivado_wrapper_bundled_library_environment(tmp_path: Path) -> None:
     if os.environ.get("BOOLEY_VIVADO_WRAPPER_DOCKER") != "1":
@@ -480,54 +563,67 @@ def test_vivado_wrapper_bundled_library_environment(tmp_path: Path) -> None:
     assert docker is not None, "Docker is required for opted-in wrapper proof"
     release = _synthetic_vivado_release(tmp_path)
     root = release / "Vivado"
-    for version in ("26.04", "24.04"):
+    libroot = f"{CONTAINER_TARGET}/Vivado/lib/lnx64.o"
+    for version, newest in (("26.04", "100"), ("24.04", "24"), ("26.04", "24")):
+        if newest == "24":
+            highest = root / "lib" / "lnx64.o" / "Ubuntu" / "100"
+            if highest.exists():
+                highest.rmdir()
         (root / "bin" / "os-release").write_text(f"ID=ubuntu\nVERSION_ID={version}\n")
-        result = subprocess.run(
-            [
-                docker,
-                "run",
-                "--rm",
-                "--network",
-                "none",
-                "--mount",
-                f"type=bind,source={release},target={CONTAINER_TARGET},readonly",
-                "--mount",
-                f"type=bind,source={Path(__file__).resolve().parents[2] / 'src/booley/data/docker/vivado-wrapper'},target=/usr/local/bin/vivado,readonly",
-                "--env",
-                "LD_LIBRARY_PATH=/caller/libs",
-                "--entrypoint",
-                "/bin/sh",
-                _IMAGE,
-                "/usr/local/bin/vivado",
-                "argument with spaces",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
+        result = _run_packaged_vivado_wrapper(docker, release)
         assert result.returncode == 0, result.stdout + result.stderr
         expected = (
-            f"{CONTAINER_TARGET}/Vivado/lib/lnx64.o/Ubuntu/100:/caller/libs"
-            if version == "26.04"
-            else "/caller/libs"
+            f"{libroot}/Ubuntu/{newest}:/caller/libs" if version == "26.04" else "/caller/libs"
         )
         assert result.stdout.splitlines() == [
             f"LIB={expected}",
+            f"DOWNSTREAM={libroot}/Ubuntu{'/24' if version == '24.04' else ''}:{libroot}:{expected}",
             "PRELOAD=/lib/x86_64-linux-gnu/libudev.so.1",
             "ARG=argument with spaces",
         ]
+
+
+def _run_packaged_vivado_wrapper(docker: str, release: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--mount",
+            f"type=bind,source={release},target={CONTAINER_TARGET},readonly",
+            "--mount",
+            f"type=bind,source={Path(__file__).resolve().parents[2] / 'src/booley/data/docker/vivado-wrapper'},target=/usr/local/bin/vivado,readonly",
+            "--env",
+            "LD_LIBRARY_PATH=/caller/libs",
+            "--entrypoint",
+            "/bin/sh",
+            _IMAGE,
+            "/usr/local/bin/vivado",
+            "argument with spaces",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
 
 
 def _synthetic_vivado_release(tmp_path: Path) -> Path:
     release = tmp_path / "synthetic release"
     root = release / "Vivado"
     (root / "bin").mkdir(parents=True)
-    for name in ("9", "24", "100"):
+    for name in ("9", "024", "24", "100"):
         (root / "lib" / "lnx64.o" / "Ubuntu" / name).mkdir(parents=True)
     launcher = root / "bin" / "vivado"
     launcher.write_text(
-        '#!/bin/sh\nprintf "LIB=%s\\nPRELOAD=%s\\nARG=%s\\n" "${LD_LIBRARY_PATH-unset}" "$LD_PRELOAD" "$1"\n'
+        "#!/bin/sh\nroot=${0%/bin/*}\n"
+        'selected=$("$root/bin/ldlibpath.sh" "$root/lib/lnx64.o")\n'
+        'printf "LIB=%s\\nDOWNSTREAM=%s\\nPRELOAD=%s\\nARG=%s\\n" '
+        '"${LD_LIBRARY_PATH-unset}" "$selected${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$LD_PRELOAD" "$1"\n'
     )
     launcher.chmod(0o755)
     selector = root / "bin" / "ldlibpath.sh"
