@@ -17,6 +17,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 
+@pytest.fixture
+def isolated_git_attributes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attribute boundary tests select their own policy instead of the host's."""
+    monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "isolated-git.config"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "isolated-xdg"))
+
+
 def symlink_or_skip(link: Path, target: Path | str, **kwargs: object) -> None:
     """``link.symlink_to(target)``, skipping the test if the OS forbids it.
 

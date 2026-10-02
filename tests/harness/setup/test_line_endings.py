@@ -19,6 +19,8 @@ from booley.harness.setup.line_endings import (
     reconcile_project_line_endings,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+
 
 def _git(root: Path, *args: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -1239,10 +1241,12 @@ def test_common_default_respects_sibling_worktree_user_policy(tmp_path, monkeypa
         )
     else:
         conditional = home / "conditional.config"
-        conditional.write_text(f'[core]\nattributesFile = "{attrs}"\n')
+        conditional.write_text(f'[core]\nattributesFile = "{attrs.as_posix()}"\n')
         actual = _git(sibling, "rev-parse", "--absolute-git-dir").stdout.decode().strip()
         common = Path(actual)
-        (home / "config").write_text(f'[includeIf "gitdir:{common}"]\npath = "{conditional}"\n')
+        (home / "config").write_text(
+            f'[includeIf "gitdir:{common.as_posix()}"]\npath = "{conditional.as_posix()}"\n'
+        )
     assert _git(sibling, "check-attr", "eol", "--", "a.txt").stdout == b"a.txt: eol: crlf\n"
     before = _snapshot(attrs)
     report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)

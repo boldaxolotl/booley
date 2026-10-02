@@ -53,6 +53,8 @@ from tests.diagnostic_helpers import (
     _Rec,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+
 
 def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> None:
     (tmp_path / "conditional.core").write_text(
@@ -195,6 +197,7 @@ def _seed_interactive(root: Path) -> None:
     dc.write_devcontainer(root, dc.build_devcontainer_spec(dc.APP_NONE))
     info_dir = root / ".git" / "info"
     info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "attributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
     (info_dir / "exclude").write_text(
         "/.devcontainer\n/.booley_project\n",
         encoding="utf-8",
@@ -272,6 +275,12 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"{root / '.git'}\n".encode(), stderr=b""
             )
+        if cmd[:2] == ["git", "--literal-pathspecs"] and "worktree" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=os.fsencode(f"worktree {root}\0\0"), stderr=b""
+            )
+        if cmd[:2] == ["git", "-C"] and "var" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"")
         if cmd[:2] == ["git", "--literal-pathspecs"] and "ls-files" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
         if cmd[:2] == ["git", "-C"] and "--show-toplevel" in cmd:
@@ -7979,6 +7988,8 @@ def _disable_line_ending_stealth(root: Path) -> None:
     config = data / "booley.toml"
     existing = config.read_text() if config.exists() else ""
     config.write_text(existing + "\n[stealth]\nenabled = false\n")
+    # This fixture starts non-Stealth; it is not an on-to-off migration case.
+    (root / ".git/info/attributes").unlink(missing_ok=True)
 
 
 def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):

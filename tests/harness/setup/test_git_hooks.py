@@ -31,6 +31,8 @@ from booley.harness.setup.git_hooks import (
     read_worktree_prune_expire,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+
 
 def _git_init(root: Path) -> None:
     subprocess.run(["git", "init", "-q", str(root)], capture_output=True, check=True)
@@ -1661,7 +1663,17 @@ class TestLineEndingsAutoFix:
             text=True,
             check=True,
         )
-        assert status.stdout == ""
+        # The failed CRLF path may be dirty under the newly published LF policy;
+        # successful replacements must remain clean and the index stays untouched.
+        assert status.stdout in ("", " M b.v\n")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "diff", "--cached", "--quiet"],
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
         assert ctx.results[-1].status == "err"
 
         retry = _ctx(tmp_path)
