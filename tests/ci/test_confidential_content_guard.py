@@ -1293,3 +1293,24 @@ def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> N
     )
     assert allowed_identity in pr_scan
     assert allowed_identity in main_scan
+
+
+def test_source_guard_synthetic_vocabulary_contract(monkeypatch):
+    import runpy
+
+    monkeypatch.syspath_prepend(str(SCANNER.parent))
+    guard = runpy.run_path(str(SCANNER))
+    words, authors, ignored = guard["_config_lists"](
+        {
+            "guard": {"words": ["quokka"], "banned_words": ["narwhal__"]},
+            "stealth": {"banned_substrings": ["booley"]},
+        }
+    )
+    assert (words, authors, ignored) == (["quokka", "narwhal__"], [], [])
+    token = guard["_compile_term"]("quokka", b"0" * 32)
+    prefix = guard["_compile_term"]("narwhal__", b"0" * 32)
+    assert token.regex.search("path/quokka_file")
+    assert not token.regex.search("myquokkafile QuokkaRunner")
+    assert prefix.regex.search("narwhal__private_suffix").group() == "narwhal__private_suffix"
+    assert not prefix.regex.search("narwhal__")
+    assert "quokka" not in token.term_id

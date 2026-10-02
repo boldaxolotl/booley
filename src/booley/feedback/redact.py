@@ -17,9 +17,9 @@ the bare directory name inside it):
 4. Design identifiers — the project name, ``.core`` VLNV/target/toplevel names —
    mapped to stable ``<module-N>`` placeholders so the report stays readable and
    two mentions of the same module still correlate.
-5. Anything the project listed explicitly (``[feedback] redact_extra``, and
-   ``[stealth] banned_words`` when a project has overridden it with its own IP
-   vocabulary).
+5. Anything the project listed explicitly in ``[feedback] redact_extra`` or
+   the ``[stealth] banned_words`` and ``banned_substrings`` tiers. Stealth terms
+   use the shared privacy matcher without importing shipped defaults.
 
 What is deliberately *not* scrubbed, because a report without it is unusable:
 EDA tool names and versions, Booley's own vocabulary, error text, and Python
@@ -36,6 +36,8 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from booley.commit_policy.policy import banned_spans, parse_stealth_vocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +115,19 @@ class RedactionPlan:
     ``literals`` are normally matched as plain substrings (URLs and identities),
     while keys named by ``path_literals`` require path-token boundaries.
     ``identifiers`` match on word boundaries (module names, which must not
-    match inside a longer name).
+    match inside a longer name). ``stealth_terms`` and ``stealth_substrings``
+    carry explicitly configured privacy terms with their shared matching rules.
     """
 
     literals: dict[str, str] = field(default_factory=dict)
     #: Literal keys that represent filesystem paths and require token boundaries.
     path_literals: set[str] = field(default_factory=set)
     identifiers: dict[str, str] = field(default_factory=dict)
-    #: Regex rules applied after the literals, for shapes we can't enumerate.
+    #: Regex rules for shapes we cannot enumerate; literals take precedence.
     patterns: list[tuple[re.Pattern[str], str]] = field(default_factory=list)
+
+    stealth_terms: dict[str, str] = field(default_factory=dict)
+    stealth_substrings: tuple[str, ...] = ()
 
     def mapping(self) -> dict[str, str]:
         """Everything being replaced → its placeholder, for local inspection.
@@ -129,10 +135,10 @@ class RedactionPlan:
         Never write this to anything leaving the machine: it is precisely the
         secret-to-placeholder key.
         """
-        return {**self.literals, **self.identifiers}
+        return {**self.literals, **self.identifiers, **self.stealth_terms}
 
     def is_empty(self) -> bool:
-        return not (self.literals or self.identifiers or self.patterns)
+        return not (self.literals or self.identifiers or self.patterns or self.stealth_terms)
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -216,21 +222,13 @@ def _config_identifiers(booley_toml: dict) -> set[str]:
 
 
 def _extra_terms(booley_toml: dict) -> set[str]:
-    """Terms the project asked for explicitly.
-
-    ``[stealth] banned_words`` counts only when the project overrode it: the
-    shipped default exists to keep agent and EDA-tool names out of commit messages and
-    includes "booley" itself, which would gut a Booley bug report.
-    """
+    """Additional feedback identifiers; Stealth terms retain their own tiers."""
     terms: set[str] = set()
     feedback = booley_toml.get("feedback")
     if isinstance(feedback, dict):
         extra = feedback.get("redact_extra")
         if isinstance(extra, list):
             terms.update(str(t).strip() for t in extra if str(t).strip())
-    stealth = booley_toml.get("stealth")
-    if isinstance(stealth, dict) and isinstance(stealth.get("banned_words"), list):
-        terms.update(str(t).strip() for t in stealth["banned_words"] if str(t).strip())
     return terms
 
 
@@ -310,50 +308,87 @@ def build_plan(project_root: Path, project_dir: Path | None = None) -> Redaction
         if term not in plan.identifiers and term not in plan.literals:
             plan.identifiers[term] = "<redacted>"
 
+    stealth = booley_toml.get("stealth")
+    words, plan.stealth_substrings = parse_stealth_vocabulary(
+        stealth if isinstance(stealth, dict) else {}, defaults=False
+    )
+    for term in words:
+        plan.stealth_terms[term] = plan.identifiers.get(
+            term, plan.literals.get(term, "<redacted>")
+        )
+
     return plan
 
 
 def apply_plan(text: str, plan: RedactionPlan) -> tuple[str, dict[str, int]]:
     """Redact *text*, returning the result and a hit count per placeholder.
 
-    Idempotent: the placeholders contain none of the secrets, so a second pass
-    finds nothing to do. That matters because the report is re-rendered on every
-    setup re-run and must not accumulate ``<<repo>>`` nesting.
+    Match original text once, without processing newly inserted placeholders.
+    New substring entries cannot match reserved placeholders themselves; legacy
+    token entries and matches across replacement edges can still match on a
+    later call.
     """
-    hits: dict[str, int] = {}
-
-    def bump(placeholder: str, n: int) -> None:
-        if n:
-            hits[placeholder] = hits.get(placeholder, 0) + n
-
-    # Literals longest-first: '/home/u/proj' must win over '/home/u'.
-    for secret in sorted(plan.literals, key=len, reverse=True):
-        placeholder = plan.literals[secret]
-        if secret in plan.path_literals:
-            pattern = _path_literal_pattern(secret)
-            text, count = pattern.subn(
-                lambda _match, replacement=placeholder: replacement,
-                text,
+    candidates = _plan_spans(text, plan)
+    # All rules inspect the original text. Merge overlapping covered regions,
+    # taking the highest-priority (longest literal/identifier) placeholder.
+    regions: list[tuple[int, int, int, str]] = []
+    for start, end, priority, placeholder in sorted(candidates):
+        if regions and start < regions[-1][1]:
+            old_start, old_end, old_priority, old_placeholder = regions[-1]
+            winner = (
+                (priority, placeholder)
+                if priority < old_priority
+                else (old_priority, old_placeholder)
             )
+            regions[-1] = (old_start, max(old_end, end), *winner)
         else:
-            count = text.count(secret)
-            if count:
-                text = text.replace(secret, placeholder)
-        bump(placeholder, count)
-
-    # Identifiers on word boundaries, longest-first so 'foo_top' is consumed
-    # before 'foo'.
-    for secret in sorted(plan.identifiers, key=len, reverse=True):
-        placeholder = plan.identifiers[secret]
-        pattern = re.compile(r"\b" + re.escape(secret) + r"\b", re.IGNORECASE)
-        text, count = pattern.subn(placeholder, text)
-        bump(placeholder, count)
-
-    for pattern, placeholder in plan.patterns:
-        text, count = pattern.subn(placeholder, text)
-        bump(placeholder, count)
-
+            regions.append((start, end, priority, placeholder))
+    hits: dict[str, int] = {}
+    for start, end, _priority, placeholder in reversed(regions):
+        text = text[:start] + placeholder + text[end:]
+        hits[placeholder] = hits.get(placeholder, 0) + 1
     return text, hits
+
+
+def _plan_spans(text: str, plan: RedactionPlan) -> list[tuple[int, int, int, str]]:
+    rules = []
+    for secret in sorted(plan.literals, key=len, reverse=True):
+        pattern = (
+            _path_literal_pattern(secret)
+            if secret in plan.path_literals
+            else re.compile(re.escape(secret))
+        )
+        rules.append((pattern, plan.literals[secret]))
+    for secret in sorted(plan.identifiers, key=len, reverse=True):
+        rules.append(
+            (re.compile(r"\b" + re.escape(secret) + r"\b", re.I), plan.identifiers[secret])
+        )
+    spans = [
+        (match.start(), match.end(), priority, placeholder)
+        for priority, (pattern, placeholder) in enumerate(rules)
+        for match in pattern.finditer(text)
+    ]
+    spans.extend(
+        (match.start(), match.end(), len(rules) + 1 + index, placeholder)
+        for index, (pattern, placeholder) in enumerate(plan.patterns)
+        for match in pattern.finditer(text)
+    )
+    # Existing rules consume matches in their established priority order.
+    # A later overlapping identifier must not extend the first replacement.
+    selected: list[tuple[int, int, int, str]] = []
+    for span in sorted(spans, key=lambda item: (item[2], item[0])):
+        start, end, _priority, _placeholder = span
+        if not any(start < old_end and old_start < end for old_start, old_end, _, _ in selected):
+            selected.append(span)
+    # Stealth protects every original occurrence, including portions extending
+    # beyond an existing replacement; only these spans expand covered regions.
+    selected.extend(
+        (start, end, len(rules), plan.stealth_terms[term])
+        for start, end, term in banned_spans(
+            text, tuple(plan.stealth_terms), plan.stealth_substrings
+        )
+    )
+    return selected
 
 
 def _path_literal_pattern(secret: str) -> re.Pattern[str]:

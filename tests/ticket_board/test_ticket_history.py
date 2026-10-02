@@ -742,3 +742,14 @@ def test_archive_refuses_a_ticket_with_a_live_owner(tio):
     finally:
         owner.kill()
         owner.wait(timeout=10)
+
+
+def test_history_identifier_sanitization_with_active_project(tmp_path):
+    root, tio = _repository(tmp_path)
+    _policy(root, 'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]')
+    slug = "booley_config-myquokkafile-reagent-precursor"
+    _close(tio, slug)
+    assert _commit(tio, slug)
+    subject = _git(root, "log", "--format=%s", "-1")
+    assert "redacted_config-myredactedfile-reagent-precursor" in subject
+    assert find_banned(subject, root) == []

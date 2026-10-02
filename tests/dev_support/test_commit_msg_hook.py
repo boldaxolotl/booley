@@ -536,3 +536,25 @@ class TestRedactionNotice:
         # git's own '# ...' lines are not the author's body.
         self._run(tmp_path, "fix(core): repair edge case\n# please enter a message\n")
         assert capsys.readouterr().err == ""
+
+
+def test_identifier_sanitization_preserves_original_unicode_bytes():
+    message = (
+        "fix(qa): tune booley_config and BooleyRunner\n\né mybooleyfile reagent precursor Ω\n"
+    )
+    expected = "fix(qa): tune redacted_config and redactedRunner\n\né myredactedfile reagent precursor Ω\n"
+    assert sanitize_message(message).encode() == expected.encode()
+
+
+def test_attribution_payload_equality_is_not_broadened_by_substrings(tmp_path):
+    directory = tmp_path / ".booley_project"
+    directory.mkdir()
+    (directory / "booley.toml").write_text(
+        '[stealth]\nbanned_words = []\nbanned_substrings = ["quokka"]\n'
+    )
+    assert (
+        sanitize_message("fix: repair\n\nGenerated with QuokkaRunner\n", tmp_path)
+        == "fix: repair\n\nGenerated with redactedRunner\n"
+    )
+    with pytest.raises(AttributionPolicyError):
+        sanitize_message("fix: repair\n\nGenerated with quokka\n", tmp_path)
