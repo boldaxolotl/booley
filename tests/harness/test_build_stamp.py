@@ -56,7 +56,11 @@ WHEEL_NAME = "booley_rtl-0.2.3-py3-none-any.whl"
 def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
     wheel = root / "dist" / name
     wheel.parent.mkdir(parents=True, exist_ok=True)
-    wheel.write_bytes(b"wheel")
+    with zipfile.ZipFile(wheel, "w") as archive:
+        stamp = stamp_path(root)
+        archive.writestr(
+            "booley/_build_commit.py", stamp.read_text() if stamp.is_file() else "COMMIT = ''\n"
+        )
     return wheel
 
 

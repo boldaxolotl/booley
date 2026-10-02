@@ -2733,7 +2733,8 @@ class TestImageDriftWarning:
 
     def test_matching_image_is_silent(self, wired, caplog):
         workspace, _run = wired
-        self._set_toml_image(workspace, "booley-sandbox")  # == spec image
+        self._set_toml_image(workspace, "booley-sandbox")
+        _write_spec(workspace, _spec(image=sr.project_image.project_image_name(workspace)))
 
         self._up_running(workspace)
 
@@ -2745,12 +2746,18 @@ class TestImageDriftWarning:
 
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image,
+            "project_sandbox_image",
+            lambda _root: sr.project_image.project_image_name(workspace),
         )
         monkeypatch.setattr(
             sr.idk,
             "image_id",
-            lambda image: digest if image in {digest, "booley-sandbox-riscv"} else None,
+            lambda image: (
+                digest
+                if image in {digest, sr.project_image.project_image_name(workspace)}
+                else None
+            ),
         )
 
         sr._warn_on_image_drift({"image": digest}, workspace)
@@ -2761,7 +2768,9 @@ class TestImageDriftWarning:
 
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image,
+            "project_sandbox_image",
+            lambda _root: sr.project_image.project_image_name(workspace),
         )
         fingerprint = "f" * 64
 
@@ -2792,7 +2801,9 @@ class TestImageDriftWarning:
     ):
         digest = "sha256:" + "a" * 64
         monkeypatch.setattr(
-            sr.project_image, "project_sandbox_image", lambda _root: "booley-sandbox-riscv"
+            sr.project_image,
+            "project_sandbox_image",
+            lambda _root: sr.project_image.project_image_name(workspace),
         )
         monkeypatch.setattr(
             sr.idk,
@@ -2804,7 +2815,9 @@ class TestImageDriftWarning:
 
         sr._warn_on_image_drift({"image": digest}, workspace)
 
-        assert "!= [sandbox].image 'booley-sandbox-riscv'" in caplog.text
+        assert (
+            f"!= [sandbox].image '{sr.project_image.project_image_name(workspace)}'" in caplog.text
+        )
 
     def test_rebuilt_external_image_warns_despite_inherited_labels(
         self, workspace: Path, caplog, monkeypatch
@@ -2829,6 +2842,7 @@ class TestImageDriftWarning:
         # No .booley_project at all: the resolver falls back to the base image,
         # which is exactly what the generated spec carries — no drift.
         workspace, _run = wired
+        _write_spec(workspace, _spec(image=sr.project_image.project_image_name(workspace)))
 
         self._up_running(workspace)
 

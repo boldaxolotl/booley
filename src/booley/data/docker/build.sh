@@ -19,6 +19,16 @@ BOOLEY_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 # that has no *pypa* build, then `-P -m build` fails with "No module named build".
 # That is the exact false pass this guard exists to prevent, so it has to test
 # the same interpreter state the real invocation runs under.
+BASE_REFRESH=()
+DOCKER_ARGS=()
+for argument in "$@"; do
+  if [ "$argument" = --refresh-base ]; then
+    BASE_REFRESH=(--refresh)
+  else
+    DOCKER_ARGS+=("$argument")
+  fi
+done
+set -- "${DOCKER_ARGS[@]}"
 PYBUILD=""
 for cand in "${PYTHON:-}" python3 /usr/bin/python3 python; do
   [ -n "$cand" ] || continue
@@ -52,7 +62,9 @@ STAMP="$BOOLEY_ROOT/src/booley/_build_commit.py"
 # Transient: the stamp only has to survive until the wheel is built and the
 # docker COPY layer runs. Leaving it behind makes the checkout report a
 # baked commit it doesn't have (and fails test_absent_stamp_module_yields_none).
-trap 'rm -f "$STAMP"' EXIT
+OWN_CAPACITY_PLAN=""
+WHEEL_MARKER=""
+trap 'rm -f "$STAMP" "${WHEEL_MARKER:-}" "${OWN_CAPACITY_PLAN:-}"' EXIT
 COMMIT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
   'import sys; from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; print(write_build_stamp(Path(sys.argv[1]), profile=BuildProfile.RUNTIME_IMAGE))' \
   "$BOOLEY_ROOT")"
@@ -74,7 +86,7 @@ rm -f "$BOOLEY_ROOT"/dist/booley_rtl-*.whl
 # step ever exits 0 without producing a wheel, we still fail loud here instead of
 # baking a stale wheel into the image (the very failure the guard above prevents).
 WHEEL_MARKER="$(mktemp)"
-trap 'rm -f "$STAMP" "$WHEEL_MARKER"' EXIT
+
 (cd "$BOOLEY_ROOT" && "$PYBUILD" -P -m build --wheel --outdir dist/)
 
 # Exactly one wheel in dist/ must be newer than the marker, or Docker's glob
@@ -121,17 +133,12 @@ SELECTION_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -c \
   runtime-base "$BASE_CONTRACT" "$BASE_RECIPE" "" "" \
   standard-substrate "$STANDARD_INPUTS" "$STANDARD_RECIPE" "" "" \
   wheel-overlay "" "$OVERLAY_RECIPE" "$BASE_CONTRACT" "$STANDARD_INPUTS")"
-BASE_METADATA_ARGS=(
-  --build-arg "BOOLEY_BASE_SOURCE_REVISION=${COMMIT:-unknown}"
-  --build-arg "BOOLEY_BASE_CONTRACT=$BASE_CONTRACT"
-  --build-arg "BOOLEY_BASE_BUILT_AT=$IMAGE_BUILT_AT"
-)
 
 CAPACITY_PLAN_INDEX="${BOOLEY_IMAGE_BUILD_PLAN_INDEX:-0}"
 if [ -z "${BOOLEY_IMAGE_BUILD_PLAN_FILE:-}" ]; then
   BOOLEY_IMAGE_BUILD_PLAN_FILE="$(mktemp "${TMPDIR:-/tmp}/booley-image-plan.XXXXXX")"
   chmod 600 "$BOOLEY_IMAGE_BUILD_PLAN_FILE"
-  trap 'rm -f "$BOOLEY_IMAGE_BUILD_PLAN_FILE"' EXIT
+  OWN_CAPACITY_PLAN="$BOOLEY_IMAGE_BUILD_PLAN_FILE"
   printf '%s\n' '{"requests":[' \
     '{"managed_image":"runtime base","output_tag":"booley-runtime-base:local","estimate_class":"heavyweight"},' \
     '{"managed_image":"standard substrate","output_tag":"booley-sandbox-standard-substrate:local","estimate_class":"heavyweight"},' \
@@ -149,14 +156,11 @@ run_docker_build() {
   CAPACITY_PLAN_INDEX=$((CAPACITY_PLAN_INDEX + 1))
 }
 
-echo ">>> Building stable EDA/runtime base (cacheable across candidate changes)..."
-run_docker_build booley-runtime-base:local docker build "${BASE_METADATA_ARGS[@]}" "$@" \
-  --label "io.booley.provenance.schema=3" \
-  --label "io.booley.artifact.role=runtime-base" \
-  --label "io.booley.artifact.effective-inputs=$BASE_CONTRACT" \
-  --label "io.booley.build.recipe-fingerprint=$BASE_RECIPE" \
-  --label "io.booley.build.origin=local" \
-  -t booley-runtime-base:local -f "$SCRIPT_DIR/Dockerfile.base" "$BOOLEY_ROOT"
+echo ">>> Acquiring Bootstrap-owned EDA/runtime base..."
+PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -P -m booley.runtime.host_base_acquisition \
+  --repo "$BOOLEY_ROOT" "${BASE_REFRESH[@]}" \
+  --plan-file "$BOOLEY_IMAGE_BUILD_PLAN_FILE" --current-index "$CAPACITY_PLAN_INDEX"
+CAPACITY_PLAN_INDEX=$((CAPACITY_PLAN_INDEX + 1))
 RUNTIME_BASE_ID="$(docker image inspect booley-runtime-base:local --format '{{.Id}}')"
 
 echo ">>> Building standard tool substrate..."

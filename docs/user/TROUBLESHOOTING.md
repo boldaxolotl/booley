@@ -292,8 +292,9 @@ experiment, not a setup requirement.
   the complete-sequence estimate before choosing that tradeoff. This is related
   to the recovery behavior discussed in [issue #790](https://github.com/boldaxolotl/booley/issues/790).
   Booley never prunes cache or removes images, volumes, Project artifacts, or
-  user data automatically. If Docker's reported root is not the filesystem that
-  actually stores its data, bypass only that invocation with
+  user data automatically. To explicitly accept disk-exhaustion risk, or when
+  Docker's reported root is not the filesystem that actually stores its data,
+  bypass only that invocation with
   `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`; any other value keeps the check enabled.
 
 - **Docker reports `No space left on device` after the capacity preflight

@@ -348,7 +348,7 @@ FULL_RESULTS_JSON_NAME = "cocotb_results.json"
 # support. Named as a constant so simulate's tests can assert the wording.
 COCOTB_CONFIG_MISSING_MSG = (
     "cocotb-config not found — the sandbox image predates cocotb support; "
-    "rebuild the sandbox image (src/booley/data/docker/build.sh)"
+    "run booley bootstrap --update on the host, then refresh the Project Sandbox"
 )
 
 

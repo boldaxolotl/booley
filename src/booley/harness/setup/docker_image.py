@@ -12,6 +12,7 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import os
 import re
@@ -31,6 +32,7 @@ from booley.runtime.build_stamp import (
     resolve_payload_fingerprint,
     resolve_source_updated_at,
     resolve_wheel_source_fingerprint,
+    wheel_embedded_commit,
 )
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.docker_capacity import (
@@ -38,8 +40,10 @@ from booley.runtime.docker_capacity import (
     DockerBuildPlan,
     DockerBuildRequest,
     DockerCacheEvidence,
+    DockerCapacityError,
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
+from booley.runtime.image_lifecycle import HostImageScope
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -682,6 +686,7 @@ def _docker_local_build(
         booley_root,
         rebuild=rebuild_runtime_base,
         capacity_plan=capacity_plan,
+        scope=HostImageScope(),
     )
     if runtime_base_id is None:
         return
@@ -802,50 +807,27 @@ def _acquire_runtime_base(
     booley_root: Path,
     *,
     rebuild: bool,
+    scope: HostImageScope,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> str | None:
     """Return one compatible immutable runtime-base ID, building when required."""
+    from booley.runtime.host_base_acquisition import acquire
+
     try:
         contract = source_image_build_contracts(booley_root).runtime_base
-    except (OSError, ValueError) as error:
-        err(f"stable runtime-base contract failed: {error}")
-        ctx.record("docker_image", "err", "runtime-base contract failed")
-        return None
-
-    image_id = _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE)
-    installed_contract = (
-        _image_label(image_id, LABEL_RUNTIME_BASE_CONTRACT) if image_id is not None else None
-    )
-    if image_id is not None and installed_contract == contract and not rebuild:
-        skip(f"reusing {LOCAL_RUNTIME_BASE_IMAGE} (contract {_short_contract(contract)})")
-        ctx.record("runtime_base", "skip", "current")
-        return image_id
-
-    if rebuild:
-        reason = "explicit refresh"
-    elif image_id is None:
-        reason = "image missing"
-    elif installed_contract is None:
-        reason = "contract unavailable"
-    else:
-        reason = (
-            f"contract changed ({_short_contract(installed_contract)} -> "
-            f"{_short_contract(contract)})"
+        return acquire(
+            booley_root,
+            scope=scope,
+            rebuild=rebuild,
+            capacity_plan=capacity_plan,
+            build=lambda: _docker_build_runtime_base(
+                ctx, dockerfile, booley_root, contract, capacity_plan=capacity_plan
+            ),
         )
-    info(f"rebuilding {LOCAL_RUNTIME_BASE_IMAGE}: {reason}")
-    if not _docker_build_runtime_base(
-        ctx,
-        dockerfile,
-        booley_root,
-        contract,
-        capacity_plan=capacity_plan,
-    ):
+    except (OSError, ValueError, RuntimeError) as exc:
+        err(f"runtime-base acquisition failed: {exc}")
+        ctx.record("runtime_base", "err", str(exc))
         return None
-    built_id = _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE)
-    if built_id is None:
-        err("could not resolve the stable runtime-base artifact after its build")
-        ctx.record("docker_image", "err", "runtime-base identity missing")
-    return built_id
 
 
 def _docker_build_runtime_base(
@@ -857,13 +839,20 @@ def _docker_build_runtime_base(
     capacity_plan: DockerBuildPlan | None = None,
 ) -> bool:
     """Build the local named base consumed by the thin candidate Dockerfile."""
+    from booley.runtime import image_lifecycle
+
+    node, _ = image_lifecycle._source_graph_base(
+        source_image_build_contracts(booley_root), dockerfile.parent
+    )
+    labels = image_lifecycle._prepared_provenance(node, None)
     build_args = _runtime_base_build_metadata_args(booley_root, contract)
     build = _DockerBuildSpec(
         dockerfile=dockerfile,
         context=booley_root,
         exists=_docker_image_exists(LOCAL_RUNTIME_BASE_IMAGE),
         image=LOCAL_RUNTIME_BASE_IMAGE,
-        build_note="stable EDA/runtime layers are cached across source changes",
+        build_note="reusing layers when runtime-base Dockerfile inputs are unchanged",
+        labels=tuple(labels.items()),
         build_args=tuple(build_args),
         capacity_request=capacity_plan.current if capacity_plan is not None else None,
         capacity_plan=capacity_plan,
@@ -973,7 +962,21 @@ def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
     stamp_file = booley_root / "src" / "booley" / "_build_commit.py"
     if not stamp_file.is_file():
         raise OSError("verified development build stamp is missing")
-    return contextlib.nullcontext("<embedded>")
+    tree = ast.parse(stamp_file.read_text(encoding="utf-8"))
+    commit = next(
+        (
+            ast.literal_eval(node.value)
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "COMMIT" for target in node.targets
+            )
+        ),
+        "",
+    )
+    if not isinstance(commit, str) or not commit:
+        raise OSError("verified development build commit is missing")
+    return contextlib.nullcontext(commit)
 
 
 def _docker_build_wheel(
@@ -1018,8 +1021,13 @@ def _docker_build_wheel(
                     "expected exactly one"
                 ),
             )
+        if commit and wheel_embedded_commit(wheels[0]) != commit:
+            return _report_wheel_failure(
+                ctx,
+                RuntimeError("built wheel commit differs from the expected nonempty build stamp"),
+            )
         return True
-    except (subprocess.SubprocessError, OSError) as e:
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
         return _report_wheel_failure(ctx, e)
 
 
@@ -1134,6 +1142,8 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
             ctx.record(spec.record_key, "err", "build timed out")
             return None
         return result.returncode
+    except DockerCapacityError:
+        raise
     except subprocess.TimeoutExpired:
         err(
             f"docker build timed out after {build_timeout // 60} minutes "
@@ -1289,12 +1299,15 @@ def ensure_flavor_image(
     ctx: InitContext,
     image: str,
     *,
+    scope: HostImageScope,
     ensure_base: Callable[[], None] | None = None,
     allow_pull: bool = True,
 ) -> bool:
     """Pull, build, or refresh the selected Booley-shipped sandbox flavor.
     Return whether this run changed the image.
     """
+    if not isinstance(scope, HostImageScope):
+        raise TypeError("shared flavor maintenance requires HostImageScope")
     dockerfile, exists, fingerprint, expected_version = _flavor_inputs(image)
     prepared = _prepare_flavor_without_build(
         ctx,

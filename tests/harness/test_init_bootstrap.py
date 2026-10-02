@@ -155,7 +155,7 @@ def test_bootstrap_failure_precedes_every_project_write(
     assert not (tmp_path / ".devcontainer").exists()
 
 
-def test_init_force_refreshes_complete_host_bootstrap(
+def test_init_force_observes_host_bootstrap_without_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed = []
@@ -168,7 +168,7 @@ def test_init_force_refreshes_complete_host_bootstrap(
     ctx = init_cmd.InitContext(project_root=tmp_path, force=True)
 
     assert init_cmd._reconcile_init_bootstrap(ctx, _args(force=True)) is not None
-    assert observed == [(Intent.REFRESH, {"verbose": False})]
+    assert observed == [(Intent.CHECK, {"verbose": False})]
 
 
 def test_init_without_a_usable_bootstrap_base_keeps_legacy_project_reconciliation(
@@ -209,20 +209,17 @@ def test_init_managed_project_uses_planned_reconciliation(
     assert observed == [Intent.REFRESH]
 
 
-def test_init_external_image_falls_back_to_compatibility_reconciliation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_init_external_image_uses_explicit_plan_result(tmp_path, monkeypatch):
     expected = LifecycleResult("external/image", "sha256:image", Status.EXTERNAL)
     monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "reconcile_planned",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            init_cmd.image_lifecycle.IncrementalPlanUnavailableError("externally managed")
-        ),
+        init_cmd.image_lifecycle, "reconcile_planned", lambda *_args, **_kwargs: expected
     )
-    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: expected)
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_images",
+        lambda *_args, **_kwargs: pytest.fail("legacy fallback invoked"),
+    )
     ctx = init_cmd.InitContext(project_root=tmp_path)
-
     assert init_cmd._step_image_lifecycle(ctx) is expected
     assert ctx.results[-1].detail == "user-managed image"
 
