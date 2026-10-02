@@ -211,6 +211,7 @@ class PreparedOrdinaryGroup:
         sources_before: Mapping[str, str],
         prepared_surface: Mapping[str, str],
         prepared_inputs: Mapping[str, str],
+        generation_before: Mapping[str, str],
     ) -> None:
         self._execution = execution
         self._handle = handle
@@ -221,6 +222,9 @@ class PreparedOrdinaryGroup:
         self._sources_before = sources_before
         self._prepared_surface = prepared_surface
         self._prepared_inputs = prepared_inputs
+        # Every candidate-generation file before any legacy per-test Pre-Sim
+        # Command ran; a hook that wrote into the candidate forbids reuse.
+        self._generation_before = generation_before
         self._lease_active = True
         self._build_process: SubprocessResult | None = None
         self._build: BuildOutcome | None = None
@@ -339,22 +343,34 @@ class PreparedOrdinaryGroup:
             raise SimulationBuildSlotError(
                 "Project compile inputs changed during Pre-Sim Commands"
             )
+        attempt = self._execution._select_generation_for_group(
+            self._handle, attempt, self._generation_before
+        )
         attempt = _with_workload_inputs(self._handle, attempt)
-        inputs = self._session.capture_inputs(attempt.prepared)
+        self._attempt = attempt
+        if attempt.reused:
+            return self._adopt_retained_image(attempt)
+        return self._build_fresh_image(attempt)
+
+    def _adopt_retained_image(self, attempt: _Attempt) -> BuildOutcome:
+        """Serve this group from the verified retained image without building."""
+        self._build_process = SubprocessResult(returncode=0, stdout=_REUSE_PROCESS_NOTE)
+        self._build = _reused_build_outcome(attempt)
+        self._artifact_paths = self._session.retained_artifacts(attempt.prepared)
+        return self._build
+
+    def _build_fresh_image(self, attempt: _Attempt) -> BuildOutcome:
+        """Compile the candidate generation and retain it when its key is proven."""
+        inputs = attempt.build_inputs or self._session.capture_inputs(attempt.prepared)
         script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
         timeout_s = self._execution._build_timeout_s()
         process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
-        build = classify_build_outcome(
-            process,
-            attempt.identity.attempt_token,
-            timeout_s=timeout_s,
-        )
-        self._attempt = attempt
+        build = _fresh_build_outcome(attempt, process, timeout_s)
         self._build_process = process
         self._build = build
         if build.passed and process.returncode == 0 and not process.timed_out:
             self._artifact_paths = self._session.authorize_fresh_image(
-                attempt.prepared, inputs, None
+                attempt.prepared, inputs, attempt.cache_key
             )
         return build
 
@@ -537,6 +553,34 @@ class PreparedOrdinaryGroup:
         self._lease_active = False
 
 
+_REUSE_REASON = "verified Simulation build reuse"
+# Stands in for the build process a reuse hit never ran, so evidence readers
+# can tell the recorded process apart from a real (silent) compiler run.
+_REUSE_PROCESS_NOTE = "no build process ran: verified Simulation build reuse\n"
+
+
+def _reused_build_outcome(attempt: _Attempt) -> BuildOutcome:
+    """Normalize a verified reuse hit: nothing ran, and the cached image passed."""
+    return BuildOutcome(
+        ran=False,
+        verdict="pass",
+        failure_kind=None,
+        returncode=0,
+        reason=_REUSE_REASON,
+        cache_decision=attempt.cache_decision,
+    )
+
+
+def _fresh_build_outcome(
+    attempt: _Attempt, process: SubprocessResult, timeout_s: int
+) -> BuildOutcome:
+    """Classify a real compiler run and stamp the cache decision that caused it."""
+    return replace(
+        classify_build_outcome(process, attempt.identity.attempt_token, timeout_s=timeout_s),
+        cache_decision=attempt.cache_decision,
+    )
+
+
 def _planning_disclosure(entries: tuple[dict[str, object], ...]) -> dict[str, object]:
     try:
         version = importlib.metadata.version("fusesoc")
@@ -606,6 +650,7 @@ class SimulationExecution:
                     sources_before,
                     project_compile_surface(compile_surface, include_operational_cores=True),
                     snapshot_build_inputs(attempt.prepared),
+                    snapshot_generation_files(attempt.prepared),
                 )
                 yield group
             finally:
@@ -805,7 +850,11 @@ class SimulationExecution:
         if selected is None:
             return replace(attempt, build_inputs=inputs, cache_key=key, cache_decision=decision)
         candidate = attempt.prepared.work_root
-        reused = self._prepare_attempt(handle, attempt.test_names, prepared_override=selected)
+        reused = self._prepare_attempt(
+            handle,
+            attempt.test_names,
+            prepared_override=(selected, TraceMode(attempt.work.trace_mode)),
+        )
         self._fresh_generation = None
         session.discard_candidate(candidate)
         try:
@@ -835,22 +884,9 @@ class SimulationExecution:
         process = executed.process
         processing_started = time.monotonic()
         build = (
-            BuildOutcome(
-                ran=False,
-                verdict="pass",
-                failure_kind=None,
-                reason="verified Simulation build reuse",
-                cache_decision=attempt.cache_decision,
-            )
+            _reused_build_outcome(attempt)
             if attempt.reused
-            else replace(
-                classify_build_outcome(
-                    process,
-                    attempt.identity.attempt_token,
-                    timeout_s=self._build_timeout_s(),
-                ),
-                cache_decision=attempt.cache_decision,
-            )
+            else _fresh_build_outcome(attempt, process, self._build_timeout_s())
         )
         early_failure = _adapter_failure_outcome(
             handle, attempt, executed, build, pre_sim, started
@@ -969,13 +1005,16 @@ class SimulationExecution:
         handle: TargetHandle,
         test_names: tuple[str, ...],
         *,
-        prepared_override: PreparedSimulationBuild | None = None,
+        prepared_override: tuple[PreparedSimulationBuild, TraceMode] | None = None,
     ) -> _Attempt:
+        """Prepare a fresh candidate, or rebind *prepared_override*'s retained image.
+
+        The override carries the candidate's resolved trace mode: a retained
+        image was built from the same trace recipe, so it must launch with it.
+        """
         started = time.monotonic()
         prepared, trace_mode = (
-            (prepared_override, TraceMode.VCD_FIFO)
-            if prepared_override is not None
-            else self._prepare_build(handle)
+            prepared_override if prepared_override is not None else self._prepare_build(handle)
         )
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         configured_run_cwd = _configured_run_cwd(handle.project_root)

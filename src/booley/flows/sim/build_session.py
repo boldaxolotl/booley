@@ -12,6 +12,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import time
 from collections.abc import Mapping
@@ -101,13 +102,33 @@ def snapshot_build_inputs(prepared: PreparedSimulationBuild) -> dict[str, str]:
 
 
 def snapshot_generation_files(prepared: PreparedSimulationBuild) -> dict[str, str]:
-    """Hash every generation file except the live run log, reserved names included.
+    """Fingerprint the whole generation tree except the live run log.
 
     Pre-Sim Command detection uses this stricter view, so a hook cannot hide a
-    write into the generation behind a name :func:`snapshot_build_inputs`
-    deliberately ignores.
+    change to the generation: reserved names :func:`snapshot_build_inputs`
+    deliberately ignores are included, every file records its permission bits
+    next to its content hash, and every directory is recorded with its mode, so
+    a chmod-only or empty-directory change is visible too.
     """
-    return _hash_generation(prepared, skip_reserved=False)
+    entries = _hash_generation(prepared, skip_reserved=False)
+    for relative, digest in tuple(entries.items()):
+        entries[relative] = f"{digest} mode={_permission_bits(prepared.work_root / relative)}"
+    try:
+        for directory in prepared.work_root.rglob("*"):
+            if directory.is_dir() and not directory.is_symlink():
+                relative = directory.relative_to(prepared.work_root).as_posix()
+                entries[f"{relative}/"] = f"directory mode={_permission_bits(directory)}"
+    except OSError as exc:
+        raise SimulationBuildSlotError(f"cannot read generation directory: {exc}") from exc
+    return entries
+
+
+def _permission_bits(path: Path) -> str:
+    """Return *path*'s permission and special mode bits as octal text."""
+    try:
+        return oct(stat.S_IMODE(path.lstat().st_mode))
+    except OSError as exc:
+        raise SimulationBuildSlotError(f"cannot read generation file mode: {exc}") from exc
 
 
 def _hash_generation(prepared: PreparedSimulationBuild, *, skip_reserved: bool) -> dict[str, str]:

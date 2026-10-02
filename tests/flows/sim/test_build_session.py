@@ -780,10 +780,35 @@ def test_generation_snapshot_keeps_reserved_names_the_input_snapshot_ignores(
     prepared = SimpleNamespace(work_root=work, build_root=build)
 
     assert set(snapshot_build_inputs(prepared)) == {"build/top.sv"}
-    # Only Booley's live run log is excluded from the Pre-Sim write detector.
+    # Only Booley's live run log is excluded from the Pre-Sim write detector,
+    # which also records every directory.
     assert set(snapshot_generation_files(prepared)) == {
+        "build/",
         "build/top.sv",
         "build/.booley-adapter-x.json",
         "build/.a-1.json",
+        ".booley-runtime-inputs/",
         ".booley-runtime-inputs/fw.hex",
     }
+
+
+def test_generation_snapshot_sees_mode_and_empty_directory_changes(tmp_path: Path) -> None:
+    """A chmod-only or empty-directory change is a Pre-Sim change; inputs ignore it."""
+    work = tmp_path / "g"
+    build = work / "build"
+    build.mkdir(parents=True)
+    source = build / "top.sv"
+    source.write_text("module top; endmodule\n", encoding="utf-8")
+    source.chmod(0o644)
+    prepared = SimpleNamespace(work_root=work, build_root=build)
+    inputs = snapshot_build_inputs(prepared)
+    before = snapshot_generation_files(prepared)
+
+    source.chmod(0o755)
+    after_chmod = snapshot_generation_files(prepared)
+    assert after_chmod != before
+    assert snapshot_build_inputs(prepared) == inputs
+
+    (build / "empty").mkdir()
+    assert snapshot_generation_files(prepared) != after_chmod
+    assert snapshot_build_inputs(prepared) == inputs
