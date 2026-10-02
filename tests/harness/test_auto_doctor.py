@@ -275,7 +275,7 @@ def test_containment_alias_core_exclusion(tmp_path, monkeypatch):
     assert calls
 
 
-def test_containment_symlink_core_exclusion(tmp_path):
+def test_containment_checkout_core_symlink_remains_fingerprinted(tmp_path):
     root = tmp_path / "checkout"
     root.mkdir()
     selected = tmp_path / "selected"
@@ -285,4 +285,4 @@ def test_containment_symlink_core_exclusion(tmp_path):
     (root / "duplicate.core").symlink_to(core)
     before = auto_doctor._core_digest(root, selected)
     core.write_text("second")
-    assert auto_doctor._core_digest(root, selected) == before
+    assert auto_doctor._core_digest(root, selected) != before

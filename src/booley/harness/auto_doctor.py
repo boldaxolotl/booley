@@ -92,7 +92,7 @@ def _core_digest(project_root: Path, project_dir: Path) -> str:
         if not root.is_dir():
             continue
         for path in root.rglob("*.core"):
-            if root == project_root and contains(path, project_dir=project_dir) is not None:
+            if root == project_root and contains(path.parent, project_dir=project_dir) is not None:
                 continue
             try:
                 label = str(path.relative_to(root))
