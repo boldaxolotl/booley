@@ -74,14 +74,28 @@ def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
     return None
 
 
+def _checkout_candidates(start: Path | None) -> tuple[Path, list[Path]]:
+    logical = Path(start or Path.cwd()).absolute()
+    current = logical.resolve()
+    if start is None and os.environ.get("PWD"):
+        candidate = Path(os.environ["PWD"])
+        try:
+            if candidate.samefile(current):
+                logical = candidate.absolute()
+        except OSError:
+            pass
+    paths = (current, *current.parents, logical, *logical.parents)
+    checkouts = list(
+        dict.fromkeys(
+            p.resolve() for p in paths if p.name != ".booley" and has_git_worktree_marker(p)
+        )
+    )
+    return current, checkouts
+
+
 def discover_project_root(start: Path | None = None, *, required: bool = False) -> Path | None:
     """Resolve explicit selection or an independently proven owning checkout."""
-    current = Path(start or Path.cwd()).resolve()
-    checkouts = [
-        p
-        for p in (current, *current.parents)
-        if p.name != ".booley" and has_git_worktree_marker(p)
-    ]
+    current, checkouts = _checkout_candidates(start)
     data = _data_root(current, checkouts)
     env = os.environ.get("RTL_PROJECT_ROOT")
     explicit = Path(env).resolve() if env else None
@@ -90,7 +104,7 @@ def discover_project_root(start: Path | None = None, *, required: bool = False) 
             p for p in (explicit, *explicit.parents) if has_git_worktree_marker(p)
         ]
         explicit_data = _data_root(explicit, explicit_checkouts)
-        if explicit_data is None and (data is None or not explicit.is_relative_to(data)):
+        if explicit_data is None:
             return explicit
         data = data or explicit_data
     if data is not None:

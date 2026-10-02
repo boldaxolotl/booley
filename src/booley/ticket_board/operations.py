@@ -1880,7 +1880,12 @@ def _reset_ticket_branches(
             str(entry.get("branch", "")),
             plan=reset_plan,
         )
-    except (TicketBaselineOperationError, TicketBaselineError, OSError) as exc:
+    except (
+        TicketBaselineOperationError,
+        TicketBaselineError,
+        TicketAncestryVerificationError,
+        OSError,
+    ) as exc:
         print(
             f"Error: reset could not restore the Ticket baseline for '{slug}': {exc}",
             file=sys.stderr,
@@ -1910,7 +1915,12 @@ def _preflight_reset_branches(
             basis,
             str(entry.get("branch", "")),
         )
-    except (TicketBaselineOperationError, TicketBaselineError, OSError) as exc:
+    except (
+        TicketBaselineOperationError,
+        TicketBaselineError,
+        TicketAncestryVerificationError,
+        OSError,
+    ) as exc:
         print(
             f"Error: reset could not preflight the Ticket baseline for '{slug}': {exc}",
             file=sys.stderr,

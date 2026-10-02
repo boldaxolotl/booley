@@ -254,9 +254,12 @@ def test_promotion_reconstructs_paired_basis_before_provider_validation(
     )
 
 
-@pytest.mark.parametrize("returncode", [1, 128])
+@pytest.mark.parametrize(
+    ("returncode", "failure_kind"),
+    [(1, "ancestry"), (128, "ancestry"), (128, "identity"), (128, "timeout")],
+)
 def test_provider_refresh_ancestry_failure_preserves_policy_distinction(
-    tmp_path, monkeypatch, capsys, returncode
+    tmp_path, monkeypatch, capsys, returncode, failure_kind
 ):
     from booley.ticket_board import workspace_ops
 
@@ -272,8 +275,15 @@ def test_provider_refresh_ancestry_failure_preserves_policy_distinction(
     checks = []
 
     def git(repository, *args, **kwargs):
+        if failure_kind == "identity" and args[:2] == ("rev-parse", "--verify"):
+            checks.append(repository)
+            return original(repository, *args[:2], "f" * 40 + "^{commit}", **kwargs)
         if args[:2] == ("merge-base", "--is-ancestor"):
             checks.append(repository)
+            if failure_kind == "timeout":
+                raise workspace_ops.TicketBaselineOperationError(
+                    "Git ancestry verification timed out"
+                )
             return subprocess.CompletedProcess(args, returncode, "", "fatal: missing object")
         return original(repository, *args, **kwargs)
 

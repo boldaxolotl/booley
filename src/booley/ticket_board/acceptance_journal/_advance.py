@@ -1338,7 +1338,7 @@ def _ensure_sources(
                 slug=transaction.slug,
                 destination_branch=destination_branch,
             )
-        except TicketBaselineOperationError as exc:
+        except (TicketBaselineOperationError, TicketAncestryVerificationError) as exc:
             raise AcceptanceOperationError(str(exc)) from exc
     if expected_sources is not None:
         expected = dict(expected_sources)

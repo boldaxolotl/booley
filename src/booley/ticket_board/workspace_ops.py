@@ -1774,7 +1774,12 @@ def _authoring_repositories(root: Path, slug: str) -> dict[str, Path]:
 
 
 def _require_ancestor(repository: Path, ancestor: str, descendant: str, message: str) -> None:
-    result = _git(repository, "merge-base", "--is-ancestor", ancestor, descendant)
+    try:
+        result = _git(repository, "merge-base", "--is-ancestor", ancestor, descendant)
+    except TicketBaselineOperationError as exc:
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} ({ancestor} -> {descendant}): {exc}"
+        ) from exc
     if result.returncode == 0:
         return
     if result.returncode == 1:
@@ -1819,6 +1824,15 @@ def pin_basis_refs(
     return sources
 
 
+def _verified_basis_commit(repository: Path, ref: str) -> str:
+    try:
+        return _full_commit(repository, ref)
+    except (TicketBaselineOperationError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} (identity {ref!r}): {exc}"
+        ) from exc
+
+
 def _validate_basis_participant(
     repository: Path,
     participant: BasisParticipant,
@@ -1835,10 +1849,10 @@ def _validate_basis_participant(
         raise TicketBaselineOperationError(
             f"Ticket baseline outer destination does not match Ticket {slug!r}"
         )
-    authoring = _full_commit(repository, participant.authoring_sha)
-    destination_identity = _full_commit(repository, participant.destination_sha)
-    destination = _full_commit(repository, destination_ref)
-    source_sha = _full_commit(repository, ticket_ref)
+    authoring = _verified_basis_commit(repository, participant.authoring_sha)
+    destination_identity = _verified_basis_commit(repository, participant.destination_sha)
+    destination = _verified_basis_commit(repository, destination_ref)
+    source_sha = _verified_basis_commit(repository, ticket_ref)
     if exact_ticket_head and source_sha != authoring:
         raise TicketBaselineOperationError(
             f"ticket ref {ticket_ref!r} moved after enqueue preparation"

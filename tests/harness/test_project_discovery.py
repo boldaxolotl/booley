@@ -20,6 +20,66 @@ def test_nested_data_repository_selects_checkout(tmp_path, monkeypatch):
     assert find_project_root() == outer
 
 
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_standalone_board_root_and_io_use_owning_checkout(tmp_path, monkeypatch, sandbox):
+    from booley.runtime.project_dir import reset_cache
+    from booley.ticket_board.helpers import detect_project_root
+    from booley.ticket_board.io import TicketIO
+
+    outer = tmp_path / "checkout"
+    data = tmp_path / "data" if sandbox else outer / ".booley_project"
+    data.mkdir(parents=True)
+    outer.mkdir(exist_ok=True)
+    for root in (outer, data):
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+    if sandbox:
+        from booley.runtime import project_discovery
+
+        (outer / "booley.toml").write_text(f'[project]\ndir = "{data}"\n')
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        monkeypatch.setattr(project_discovery, "WORK_DIR", str(outer))
+        monkeypatch.setattr(project_discovery, "PROJECT_DIR_TARGET", str(data))
+    for name in (
+        "RTL_PROJECT_ROOT",
+        "PROJECT_ROOT",
+        "BOOLEY_CONTROL_PROJECT_ROOT",
+        "BOOLEY_TICKET_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    reset_cache()
+    monkeypatch.chdir(data)
+    assert detect_project_root() == outer
+    assert TicketIO(data / "tickets")._project_root == outer
+
+
+@pytest.mark.parametrize("error_kind", ["authored", "ancestry", "discovery"])
+def test_standalone_board_typed_errors_render_cleanly(tmp_path, monkeypatch, capsys, error_kind):
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+    from booley.ticket_board import cli
+    from booley.ticket_board.io import TicketValidationError
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    errors = {
+        "authored": TicketValidationError,
+        "ancestry": TicketAncestryVerificationError,
+        "discovery": ProjectRootDiscoveryError,
+    }
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(cli, "detect_tickets_dir", lambda: tmp_path / "tickets")
+    monkeypatch.setattr(cli, "open_board", lambda *a, **kw: None)
+
+    def fail(*args):
+        raise errors[error_kind]("actionable failure")
+
+    if error_kind == "discovery":
+        monkeypatch.setattr(cli, "TicketIO", fail)
+    else:
+        monkeypatch.setitem(cli.HANDLERS, "show", fail)
+    assert cli.main(["show", "ticket"]) == 2
+    assert "actionable failure" in capsys.readouterr().err
+
+
 def test_missing_object_is_operational_ancestry_failure(tmp_path):
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
     with pytest.raises(RuntimeError, match="cannot verify ancestry") as caught:
@@ -100,6 +160,8 @@ def test_ticket_design_worktree_inside_data_keeps_checkout(tmp_path, monkeypatch
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     assert discover_project_root(worktree) == worktree
     assert discover_project_root(snapshot) == worktree
+    if explicit:
+        assert discover_project_root(data) == worktree
 
 
 def test_detached_data_refuses_and_explicit_outer_disambiguates(tmp_path, monkeypatch):
@@ -250,3 +312,78 @@ def test_promotion_git_failure_does_not_block_or_publish(tmp_path, monkeypatch, 
     assert state == {"failed": False, "operation": ""}
     assert updates == {}
     assert "acceptance-input-change-required" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("use_start", [False, True])
+def test_checkout_owned_external_symlink_data_resolves_logical_parent(
+    tmp_path, monkeypatch, use_start
+):
+    from booley.runtime.project_discovery import discover_project_root
+
+    outer = tmp_path / "checkout"
+    data = tmp_path / "external-data"
+    outer.mkdir()
+    data.mkdir()
+    (outer / ".booley_project").symlink_to(data, target_is_directory=True)
+    for root in (outer, data):
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.chdir(data)
+    monkeypatch.setenv("PWD", str(outer / ".booley_project"))
+    assert discover_project_root(outer / ".booley_project" if use_start else None) == outer
+
+
+@pytest.mark.parametrize("config", ['project = "invalid"', "[project]\ndir = 12"])
+def test_malformed_project_selection_does_not_crash_discovery(tmp_path, monkeypatch, config):
+    from booley.runtime.project_discovery import discover_project_root
+
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
+    (tmp_path / "booley.toml").write_text(config)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    assert discover_project_root(tmp_path) == tmp_path
+
+
+@pytest.mark.parametrize("failure_kind", ["timeout", "oserror"])
+def test_baseline_transport_failure_is_typed_operational_error(
+    tmp_path, monkeypatch, failure_kind
+):
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    failure = (
+        subprocess.TimeoutExpired("git", 30)
+        if failure_kind == "timeout"
+        else OSError("git unavailable")
+    )
+
+    def fail(*a, **kw):
+        raise failure
+
+    monkeypatch.setattr(ticket_baseline.subprocess, "run", fail)
+    with pytest.raises(TicketAncestryVerificationError, match="cannot verify ancestry") as caught:
+        ticket_baseline._descendant_commit(tmp_path, "child", "parent", role="outer")
+    assert caught.value.__cause__ is failure
+
+
+@pytest.mark.parametrize("failure_kind", ["missing", "timeout", "oserror"])
+def test_baseline_ref_identity_failure_is_operational(tmp_path, monkeypatch, failure_kind):
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
+    if failure_kind != "missing":
+        failure = (
+            subprocess.TimeoutExpired("git", 30)
+            if failure_kind == "timeout"
+            else OSError("git unavailable")
+        )
+
+        def fail(*a, **kw):
+            raise failure
+
+        monkeypatch.setattr(ticket_baseline.subprocess, "run", fail)
+    with pytest.raises(TicketAncestryVerificationError, match="cannot verify ancestry") as caught:
+        ticket_baseline._descendant_ref_commit(
+            tmp_path, "missing-ref", "a" * 40, kind="ticket", role="outer"
+        )
+    assert "acceptance-input-change-required" not in str(caught.value)

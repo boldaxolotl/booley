@@ -169,19 +169,17 @@ def detect_project_root() -> Path:
         # Fallback for source-tree-only invocations that do not have an RTL
         # project nearby. This preserves the historical behavior.
         return Path(__file__).resolve().parents[3]
+    from booley.runtime.project_discovery import discover_project_root, has_git_worktree_marker
+
     root = project_dir.parent
-    # Convention: the data dir lives inside the repo as <repo>/.booley_project,
-    # so its parent is the repo root. The Sandbox breaks that — it can
-    # bind-mount the data dir as a top-level sibling named /booley-project (no
-    # leading dot), whose parent is the filesystem root. `/` is never a project
-    # root, and returning it makes every scope/TB/branch check resolve against
-    # the wrong tree (QA_REPORT D1). Recover the real root from the cwd (the
-    # repo the caller stands in — /work in the in-container session).
-    if root == root.parent:
-        cwd = Path.cwd().resolve()
-        for cand in [cwd, *cwd.parents]:
-            if (cand / ".booley_project").is_dir():
-                return cand
+    if (
+        root == root.parent
+        or os.environ.get("RTL_PROJECT_ROOT")
+        or any(has_git_worktree_marker(p) for p in (project_dir, *project_dir.parents))
+    ):
+        inferred = discover_project_root(project_dir, required=True)
+        if inferred is not None:
+            return inferred
     return root
 
 

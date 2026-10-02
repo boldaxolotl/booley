@@ -1367,16 +1367,24 @@ def _descendant_ref_commit(
     kind: str,
     role: str,
 ) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} ({kind} ref {ref!r}): {exc}"
+        ) from exc
     if result.returncode != 0 or not _COMMIT_RE.fullmatch(result.stdout.strip()):
-        raise TicketBaselineError(f"Ticket baseline {kind} ref is unavailable: {ref}")
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} ({kind} ref {ref!r}, rc {result.returncode}): "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
     return _descendant_commit(repository, result.stdout.strip(), recorded_sha, role=role, ref=ref)
 
 
@@ -1388,14 +1396,19 @@ def _descendant_commit(
     role: str,
     ref: str | None = None,
 ) -> str:
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", recorded_sha, commit],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    try:
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", recorded_sha, commit],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise TicketAncestryVerificationError(
+            f"cannot verify ancestry in {repository} ({recorded_sha} -> {ref or commit}): {exc}"
+        ) from exc
     if ancestor.returncode not in (0, 1):
         raise TicketAncestryVerificationError(
             f"cannot verify ancestry in {repository} (rc {ancestor.returncode}, "

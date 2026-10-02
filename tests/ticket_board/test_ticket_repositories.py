@@ -285,3 +285,56 @@ def _intake_boundary_outcome(boundary, root, ticket, tio, monkeypatch, fail, fai
             asyncio.run(intake.run("ticket", root))
     assert caught.value.__cause__ is failure
     return caught.value
+
+
+@pytest.mark.parametrize("operation", ["reset", "preflight", "acceptance-sources"])
+def test_workspace_operational_error_is_contained_at_operation_boundary(
+    tmp_path, monkeypatch, capsys, operation
+):
+    from booley.ticket_board import operations, workspace_ops
+    from booley.ticket_board.acceptance_journal import _advance
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    failure = TicketAncestryVerificationError("cannot verify ancestry: missing object")
+    fail = _raise_failure(failure)
+    if operation == "acceptance-sources":
+        monkeypatch.setattr(_advance, "pin_basis_refs", fail)
+        transaction = SimpleNamespace(
+            journal=SimpleNamespace(sources={}), root=tmp_path, basis=object(), slug="ticket"
+        )
+        with pytest.raises(_advance.AcceptanceOperationError) as caught:
+            _advance._ensure_sources(transaction, "main", None)
+        assert caught.value.__cause__ is failure
+        text = str(caught.value)
+    else:
+        monkeypatch.setattr(workspace_ops, "reset_basis_worktrees", fail)
+        monkeypatch.setattr(workspace_ops, "preflight_basis_reset", fail)
+        entry = {"machine": {}, "branch": "main"}
+        if operation == "reset":
+            assert not operations._reset_ticket_branches(tmp_path, "ticket", entry, object())
+        else:
+            assert (
+                operations._preflight_reset_branches(tmp_path, "ticket", entry, object()) is None
+            )
+        text = capsys.readouterr().err
+    assert str(failure) in text
+    assert "acceptance-input-change-required" not in text
+
+
+@pytest.mark.parametrize("failure_kind", ["timeout", "oserror"])
+def test_workspace_ancestry_transport_failure_keeps_original_cause(
+    tmp_path, monkeypatch, failure_kind
+):
+    from booley.ticket_board import workspace_ops
+    from booley.ticket_board.ticket_baseline import TicketAncestryVerificationError
+
+    failure = (
+        subprocess.TimeoutExpired("git", 120)
+        if failure_kind == "timeout"
+        else OSError("git unavailable")
+    )
+    monkeypatch.setattr(workspace_ops.subprocess, "run", _raise_failure(failure))
+    with pytest.raises(TicketAncestryVerificationError, match="cannot verify ancestry") as caught:
+        workspace_ops._require_ancestor(tmp_path, "parent", "child", "not descendant")
+    assert caught.value.__cause__.__cause__ is failure
+    assert "acceptance-input-change-required" not in str(caught.value)
