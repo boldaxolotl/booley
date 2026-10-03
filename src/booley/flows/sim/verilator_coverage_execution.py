@@ -41,6 +41,7 @@ from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
     resolve_pre_sim_commands,
 )
+from booley.flows.sim.coverage_campaign import CoverageFinding
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
@@ -704,6 +705,16 @@ def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> Si
         termination=test.termination,
         failure_kind=test.failure_kind,
         simulator_returncode=attempt.result.simulator_returncode,
+        diagnostics=(
+            CoverageFinding(
+                "warning",
+                "COV_ARTIFACT_PERSISTENCE_CLEANUP_FAILED",
+                "/tests/runs",
+                attempt.error or attempt.cleanup_error or "adapter partial cleanup failed",
+            ),
+        )
+        if cleanup
+        else (),
     )
 
 

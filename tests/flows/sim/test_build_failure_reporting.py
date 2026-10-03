@@ -560,6 +560,18 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
         infrastructure_failure=replace(outcome.infrastructure_failure, detail="界" * 4000),
         builds=(replace(outcome.builds[0], reason="compiler failed: " + "界" * 200),),
     )
+    from booley.flows.sim.execution.contract import SimulationTestOutcome
+
+    if not sharing:
+        outcome = replace(
+            outcome,
+            tests=tuple(
+                SimulationTestOutcome(
+                    name, "elab_error", False, reason="x" * 500 + "tail sentinel"
+                )
+                for name in names
+            ),
+        )
     root = tmp_path / "failed-build"
     root.mkdir()
 
@@ -596,6 +608,8 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
     assert endpoint.detail["build_stage"]["timed_out"] is True
     assert "compiler failed:" in campaign.observations[0]["detail"]["reason"]
+    if not sharing:
+        assert "tail sentinel" in campaign.observations[0]["detail"]["reason"]
 
 
 def test_escaped_build_metadata_stays_within_canonical_detail_budget(

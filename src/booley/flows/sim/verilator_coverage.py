@@ -197,6 +197,7 @@ class SimulationRunResult:
     termination: RunTerminationKind = "completed"
     failure_kind: SimulationFailureKind = ""
     simulator_returncode: int | None = None
+    diagnostics: tuple[CoverageFinding, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -402,6 +403,18 @@ def _collect_one_run(
 ) -> _CollectedRun:
     context = _prepare_run(request, index, selected)
     result = execution.run(_run_request(request, context))
+    try:
+        collected = _collect_run_result(request, context, result)
+    except OSError as exc:
+        collected = _collected_infrastructure_failure(
+            request, context, replace(result, output=f"{result.output}\n{exc}".strip())
+        )
+    return replace(collected, findings=(*collected.findings, *result.diagnostics))
+
+
+def _collect_run_result(
+    request: CoverageCollectionRequest, context: _RunContext, result: SimulationRunResult
+) -> _CollectedRun:
     if result.infrastructure_error and result.verdict != "elab_error":
         return _collected_infrastructure_failure(request, context, result)
     if result.pre_sim is not None and result.pre_sim.status != "passed":
@@ -1308,6 +1321,10 @@ def _merge_collection(
     collected: tuple[_CollectedRun, ...],
 ) -> CoverageCollectionResult:
     capabilities, normalization_findings = _capabilities_and_findings(collected)
+    normalization_findings = (
+        *(finding for item in collected for finding in item.findings),
+        *normalization_findings,
+    )
     try:
         merged_artifact, merged_records = _merge(request, execution, collected)
     except _MergeError as exc:
@@ -1403,7 +1420,7 @@ def collect(
 
 def _finish_collection(request, execution, build, collected) -> CoverageCollectionResult:
     findings = tuple(finding for item in collected for finding in item.findings)
-    if findings:
+    if any(finding.severity not in {"warning", "info"} for finding in findings):
         capabilities, capability_findings = _capabilities_and_findings(collected)
         compatibility = (
             "incompatible"

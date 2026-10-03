@@ -1201,3 +1201,48 @@ def test_native_source_presence_precedes_metric_filtering(tmp_path, record_type,
     if record_type == "future":
         assert not result.points
         assert result.unrecognized_records
+
+
+@pytest.mark.parametrize("verdict", ["pass", "fail"])
+@pytest.mark.parametrize("artifact_error", [False, True])
+def test_authenticated_cleanup_warning_survives_collection(
+    tmp_path, monkeypatch, verdict, artifact_error
+) -> None:
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.adapter_transport import AdapterResult, AdapterTestResult
+    from booley.flows.sim.execution.attempt import AdapterAttemptOutcome
+    from booley.flows.sim.verilator_coverage_execution import _simulation_run_result
+
+    class Execution(_GeneratedMainExecution):
+        def run(self, request):
+            super().run(request)
+            result = AdapterResult(
+                verdict == "pass",
+                False,
+                0,
+                (request.test.name,),
+                detail="primary diagnostic",
+                test_results=(AdapterTestResult(request.test.name, verdict),),
+            )
+            return _simulation_run_result(
+                AdapterAttemptOutcome(
+                    SubprocessResult(returncode=0), result, "partial cleanup denied", "cleanup"
+                ),
+                request.test.name,
+            )
+
+    if artifact_error:
+
+        def denied_artifact(*_args, **_kwargs):
+            raise OSError("raw evidence read denied")
+
+        monkeypatch.setattr("booley.flows.sim.verilator_coverage._artifact", denied_artifact)
+    result = collect(_request(tmp_path, "smoke"), Execution())
+    assert result.runs[0].simulation_verdict == verdict
+    assert result.status == ("collector_error" if artifact_error else "complete")
+    assert result.merge.status == ("not_run" if artifact_error else "equivalent")
+    warning = next(
+        item for item in result.findings if item.code == "COV_ARTIFACT_PERSISTENCE_CLEANUP_FAILED"
+    )
+    assert warning.severity == "warning"
+    assert warning.message == "partial cleanup denied"

@@ -1669,7 +1669,9 @@ def _observed_infrastructure_tests(
                 cycle_count=None,
             )
             observation["detail"] = _compact_build_detail(
-                _build_failure_detail(outcome, str(observation["detail"]["reason"])),
+                _build_failure_detail(
+                    outcome, outcome.tests[index].reason or outcome.tests[index].error_tail
+                ),
                 1 if index == 0 else len(observations),
             )
     return observations

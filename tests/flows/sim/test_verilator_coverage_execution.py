@@ -1050,3 +1050,5 @@ def test_coverage_cleanup_failure_retains_authenticated_result(verdict) -> None:
     assert outcome.infrastructure_error is guarded
     assert "primary diagnostic" in outcome.output
     assert "artifact_persistence: partial cleanup denied" in outcome.output
+    assert outcome.diagnostics[0].severity == "warning"
+    assert outcome.diagnostics[0].code == "COV_ARTIFACT_PERSISTENCE_CLEANUP_FAILED"
