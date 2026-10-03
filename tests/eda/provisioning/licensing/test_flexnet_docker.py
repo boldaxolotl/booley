@@ -34,6 +34,8 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
 from booley.eda.provisioning.licensing.flexnet_relay import RelayConfigError
 
 IMAGE_ID = "sha256:" + "a" * 64
+# FakeDocker health entry that makes `container inspect` itself fail.
+INSPECT_FAILURE = "<inspect-failure>"
 
 
 def _profile() -> RelayProfile:
@@ -64,11 +66,7 @@ class FakeDocker:
         if args[:2] == ["image", "inspect"]:
             return _result(stdout=f"{IMAGE_ID}\n")
         if args[:3] == ["container", "inspect", args[2]]:
-            # Bare health values imply a running container; "<state> <health>"
-            # entries model a relay that stopped.
-            status = self.health.pop(0) if self.health else "starting"
-            state = status if " " in status else f"running {status}"
-            return _result(stdout=f"{state}\n")
+            return self._next_health()
         if args[:2] == ["container", "logs"]:
             return _result(stderr=self.relay_log)
         if self.fail_prefix and tuple(args[: len(self.fail_prefix)]) == self.fail_prefix:
@@ -76,6 +74,16 @@ class FakeDocker:
         if self.cleanup_failure and args[-1] == self.cleanup_failure and "rm" in args:
             return _result(1, stderr="still attached")
         return _result()
+
+    def _next_health(self) -> subprocess.CompletedProcess[str]:
+        """Answer one relay health inspect from the scripted sequence."""
+        # Bare health values imply a running container; "<state> <health>"
+        # entries model a relay that stopped.
+        status = self.health.pop(0) if self.health else "starting"
+        if status == INSPECT_FAILURE:
+            return _result(1, stderr="daemon busy")
+        state = status if " " in status else f"running {status}"
+        return _result(stdout=f"{state}\n")
 
 
 def _relay_state(
@@ -622,6 +630,34 @@ def test_startup_failure_without_relay_log_omits_excerpt() -> None:
     with pytest.raises(RelayDockerError) as raised:
         provision_relay(_profile(), "session-a", runner=docker, poll_interval=0)
     assert "relay log" not in str(raised.value)
+
+
+def test_transient_inspect_failure_keeps_polling_until_healthy() -> None:
+    docker = FakeDocker(health=(INSPECT_FAILURE, "starting", "healthy"))
+    provision_relay(_profile(), "session-a", runner=docker, poll_interval=0)
+    assert docker.health == []
+
+
+def test_persistent_inspect_failure_exhausts_budget_and_reports_it() -> None:
+    docker = FakeDocker(health=(INSPECT_FAILURE,) * 3)
+    with pytest.raises(RelayDockerError, match="container: inspect-error, health: unknown"):
+        provision_relay(_profile(), "session-a", runner=docker, health_attempts=3, poll_interval=0)
+    assert docker.health == []
+
+
+def test_relay_log_fetch_error_keeps_original_startup_failure() -> None:
+    docker = FakeDocker(health=("unhealthy",), relay_log="never read")
+
+    def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["container", "logs"]:
+            raise subprocess.TimeoutExpired(args, timeout)
+        return docker(args, timeout)
+
+    with pytest.raises(RelayDockerError) as raised:
+        provision_relay(_profile(), "session-a", runner=runner, poll_interval=0)
+    message = str(raised.value)
+    assert "container: running, health: unhealthy" in message
+    assert "relay log" not in message
 
 
 def test_remove_is_bounded_and_reports_residual_objects() -> None:
