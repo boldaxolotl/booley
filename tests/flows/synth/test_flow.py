@@ -2063,6 +2063,30 @@ class TestBoundaryCommand:
         assert _BOUNDARY_COMMAND_RE.fullmatch(" ".join(cmd))
 
 
+def _write_final_structural_failure(build_dir: Path, returncode: int) -> None:
+    """Write completed structural evidence, optionally followed by a tool crash."""
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (build_dir / "yosys.log").write_text(
+        "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+        encoding="utf-8",
+    )
+    (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+    (build_dir / "check_dut.txt").write_text(
+        "Warning: found logic loop in module dut:\n    wire \\feedback\n"
+        "Warning: multiple conflicting drivers for dut.sig:\n"
+        "    port Q[0] of cell $procdff$1 ($dff)\n"
+        "Found and reported 2 problems.\n",
+        encoding="utf-8",
+    )
+    (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
+    if returncode:
+        with (build_dir / "yosys.log").open("a") as log:
+            log.write("ERROR: unknown tool exception after final outputs\n")
+    fresh = time.time() + 1
+    for artifact in build_dir.iterdir():
+        os.utime(artifact, (fresh, fresh))
+
+
 class TestFileBasedInterpretation:
     """Results come from files under the build dir, stale-gated by dispatch time."""
 
@@ -2157,26 +2181,7 @@ class TestFileBasedInterpretation:
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
-                encoding="utf-8",
-            )
-            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
-            (build_dir / "check_dut.txt").write_text(
-                "Warning: found logic loop in module dut:\n    wire \\feedback\n"
-                "Warning: multiple conflicting drivers for dut.sig:\n"
-                "    port Q[0] of cell $procdff$1 ($dff)\n"
-                "Found and reported 2 problems.\n",
-                encoding="utf-8",
-            )
-            (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
-            if returncode:
-                with (build_dir / "yosys.log").open("a") as log:
-                    log.write("ERROR: unknown tool exception after final outputs\n")
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
+            _write_final_structural_failure(build_dir, returncode)
             return SubprocessResult(returncode=returncode, stdout="", stderr="", duration_s=1.0)
 
         with patch.object(flow, "_execute", side_effect=mock_execute):
