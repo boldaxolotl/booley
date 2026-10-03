@@ -1173,7 +1173,7 @@ def test_declared_custom_flow_prepared_headline(
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
-@pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first"])
+@pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first", "other:lib:x#first"])
 @pytest.mark.parametrize("other_target", ["first", "second"])
 def test_custom_fallback_excludes_only_proven_other_target(
     runtime, monkeypatch, endpoint_kind, target, other_target
@@ -1221,12 +1221,15 @@ def test_custom_identity_uncertainty_respects_selected_workload(
             key: {
                 "target": "acme:lib:dut:1#first",
                 "test": "selected",
-                "test_selector": "selected",
+                **({"test_selector": "selected"} if family != "cycle_count" else {}),
             }
         },
     )
     state.save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
     flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
     result = flow.execute_cli(["--target", "first", "--test", test, "--work-dir", str(runtime)])
     expected = ("drc_clean_first", True) if test == "other" else ("", None)
@@ -1234,6 +1237,66 @@ def test_custom_identity_uncertainty_respects_selected_workload(
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
     report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
     assert (report["criterion_key"], report["criterion_met"]) == expected
+
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("binding", ["stored_selector", "legacy"])
+def test_custom_alternate_selector_keeps_unevaluated_potential(
+    runtime, monkeypatch, endpoint_kind, binding
+):
+    from booley.criteria.state import DevelopmentState
+
+    params = {"target": "first"}
+    if binding == "stored_selector":
+        params = {"target": "acme:lib:dut:1#first", "_target_selector": "first"}
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria(
+        {"drc_clean_first": True, "drc_rules_policy73": True},
+        strict=False,
+        criterion_params={"drc_rules_policy73": params},
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
+    result = flow.execute_cli(["--target", "dut#first", "--work-dir", str(runtime)])
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+def test_custom_evaluated_uncertain_false_is_a_verdict(runtime, monkeypatch, endpoint_kind):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    key = "drc_clean_policy42"
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria(
+        {key: True},
+        strict=False,
+        criterion_params={key: {"target": "acme:lib:dut:1#first"}},
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    endpoint_type = _report_extension_type(endpoint_kind, key)
+
+    def run(self):
+        self.set_criterion(key, False)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(endpoint_type, "_run", run)
+    flow = endpoint_type()
+    result = flow.execute_cli(["--target", "first", "--work-dir", str(runtime)])
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (key, False)
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == (key, False)
 
 
 @pytest.mark.parametrize("ticket", ["none", "nonstrict", "strict"])

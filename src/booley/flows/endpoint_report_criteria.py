@@ -279,13 +279,11 @@ def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[s
         } and not endpoint.state._alias_matches_run(key, detail):
             continue
         if params.get("_target_selector") != token and params.get("target") != token:
-            identity = params.get("target")
+            expected = params.get("_target_selector", params.get("target"))
             if (
                 key not in keys
-                and "_target_selector" not in params
-                and isinstance(identity, str)
-                and "#" in identity
-                and split_selector(identity)[1] == split_selector(token)[1]
+                and isinstance(expected, str)
+                and split_selector(expected)[1] == split_selector(token)[1]
             ):
                 # Name inequality rules a Target out; equality cannot resolve its core.
                 # Actual evaluation resolves only this key, not other potential keys.
