@@ -3056,6 +3056,7 @@ def _run_ticket_preflight_parity_checks(
             reporter.pass_,
             reporter.warn_,
             _note=reporter.note_,
+            deep=reporter.profile.deep,
         )
 
 
@@ -3319,6 +3320,7 @@ def _check_agent_backend_health(
     _warn: Check,
     *,
     _note: Check | None = None,
+    deep: bool = False,
 ) -> None:
     _warn = _warning_sink(_warn, "agent.backend-health")
     try:
@@ -3332,7 +3334,7 @@ def _check_agent_backend_health(
         return
     if warning:
         _warn(f"worker backend ({cfg.active_backend.name}): {warning}")
-    else:
+    elif not deep:
         note_sink = _note or _pass
         note_sink(
             f"worker backend configured locally: {cfg.active_backend.name}; "
