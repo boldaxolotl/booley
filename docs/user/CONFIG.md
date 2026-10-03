@@ -195,6 +195,13 @@ are not imported by that scan. To import a nested Project, run
 `booley projects discover <nested path>` on it directly.
 `booley projects forget <project>` removes an
 obsolete remembered root only after its live Grants have been revoked.
+Forget then releases that root's issued-image keeper tag when no container uses
+its immutable image; an in-use keeper is retained while the root is forgotten.
+Docker inspection or removal failure preserves the inventory entry for retry.
+If a present root's keeper was released, run `booley init` before using it again.
+For keepers left by earlier forgotten Projects, preview with
+`booley projects prune-keepers`, then apply that exact preview with
+`booley projects prune-keepers --confirm <digest>`.
 
 EDA administration prints human-readable confirmations by default. Add
 `--json` to a public leaf operation when a script needs the stable structured

@@ -12,6 +12,7 @@ import subprocess
 import time
 
 import pytest
+from tests.sidecar_image_helpers import assert_python_version
 
 from booley.docker import reaper
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -85,6 +86,7 @@ def test_wait_for_tcp_listeners_retries_until_both_ports_are_bound(monkeypatch) 
 @pytest.mark.slow()
 def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
     _require_docker()
+    assert_python_version(RELAY_IMAGE)
     identity = "production-flexnet-relay-e2e"
     labels = ("booley.project-id=e2e-project", "booley.spec-digest=e2e-spec")
     profile = RelayProfile("10.20.30.40", "license-server-01", 32100, 32101)

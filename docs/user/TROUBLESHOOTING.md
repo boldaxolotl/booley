@@ -628,6 +628,37 @@ After every Grant for that root is gone, remove the obsolete inventory entry
 with `booley projects forget /exact/deleted/project`.
 
 
+## Retained issued Sandbox Images
+
+`booley session down` and Grant revocation retain issued-image keeper tags.
+`booley projects forget <project>` first checks that no live Grants remain,
+then releases only that root's keeper when no container uses its immutable image.
+An in-use keeper remains, but forgetting succeeds; Docker inspection or removal
+failure preserves the inventory entry for retry. A present forgotten Project
+whose keeper was released needs `booley init` before session reuse.
+
+To reclaim keepers from Projects forgotten before this behavior was available:
+
+```bash
+booley projects prune-keepers
+booley projects prune-keepers --confirm <digest>
+```
+
+Copy the digest from the preview. Confirmation rechecks the candidate set;
+a changed preview requires a new confirmation. Inventory absence is the explicit
+orphan policy, including historical issuance records: remember Projects whose
+pins you want to preserve. Inventoried roots (including missing, uninitialized,
+and Grant-only roots) and images used by any container are protected.
+Stopped and foreign containers count too. VS Code session down stops its
+container; explicitly remove that container before reclaiming its keeper.
+
+The command releases exact keeper tags without force. Other tags or containers
+may retain the image bytes, so a released tag does not guarantee disk space was
+freed. External Docker changes cannot be atomic with these checks. A partial
+failure reports tags already released and returns an error; preview again before
+retrying. Doctor only reports retained keepers and never removes them.
+
+
 ## Coverage Campaign diagnostics and retention
 
 Coverage collection requires explicit `sim --coverage` / `--cov` or MCP

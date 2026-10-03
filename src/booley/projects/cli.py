@@ -7,8 +7,17 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import Protocol
 
-from booley.projects import inventory
+from booley.projects import image_keepers, inventory
+
+
+class KeeperOperations(Protocol):
+    """Host-coordinated keeper operations supplied by the command composition layer."""
+
+    def forget_project(self, project: Path) -> tuple[Path, image_keepers.KeeperRelease]: ...
+
+    def prune_keepers(self, confirm: str | None = None) -> image_keepers.PruneResult: ...
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -17,7 +26,9 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "projects", help="List remembered Project paths and their Project Grants"
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    actions = parser.add_subparsers(dest="projects_action", metavar="{discover,forget}")
+    actions = parser.add_subparsers(
+        dest="projects_action", metavar="{discover,forget,prune-keepers}"
+    )
     discover = actions.add_parser(
         "discover", help="Remember initialized Projects beneath explicit search roots"
     )
@@ -37,17 +48,30 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Emit machine-readable JSON",
     )
 
+    prune = actions.add_parser("prune-keepers", help="Preview orphan issued image keepers")
+    prune.add_argument("--confirm", metavar="DIGEST", help="Release exactly the confirmed preview")
+    prune.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
-def run(args: argparse.Namespace) -> int:
+
+def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None = None) -> int:
     """Execute one Project Inventory operation."""
     try:
         action = getattr(args, "projects_action", None)
         if action == "discover":
             discovered = inventory.discover_projects(tuple(args.search_roots))
             return _render_discovered(discovered, json_output=getattr(args, "json", False))
+        if action in {"forget", "prune-keepers"} and keeper_operations is None:
+            raise inventory.ProjectInventoryError(
+                "Project keeper access requires host lifecycle coordination"
+            )
         if action == "forget":
-            forgotten = inventory.forget_project(args.project)
-            return _render_forgotten(forgotten, json_output=getattr(args, "json", False))
+            assert keeper_operations is not None
+            forgotten, keeper = keeper_operations.forget_project(args.project)
+            return _render_forgotten(forgotten, keeper, json_output=getattr(args, "json", False))
+        if action == "prune-keepers":
+            assert keeper_operations is not None
+            result = keeper_operations.prune_keepers(args.confirm)
+            return _render_prune(result, json_output=getattr(args, "json", False))
         entries = inventory.project_inventory()
     except inventory.ProjectInventoryError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -73,12 +97,37 @@ def _render_discovered(discovered: tuple[Path, ...], *, json_output: bool) -> in
     return 0
 
 
-def _render_forgotten(forgotten: Path, *, json_output: bool) -> int:
+def _render_forgotten(
+    forgotten: Path, keeper: image_keepers.KeeperRelease, *, json_output: bool
+) -> int:
     if json_output:
-        print(json.dumps({"schema": 1, "forgotten": str(forgotten)}, indent=2))
+        print(
+            json.dumps(
+                {"schema": 1, "forgotten": str(forgotten), "keeper": asdict(keeper)}, indent=2
+            )
+        )
     else:
         print(f"Forgot remembered Project path: {forgotten}")
+        image = f" ({keeper.image_id})" if keeper.image_id is not None else ""
+        print(f"Keeper {keeper.status}: {keeper.tag}{image}")
     return 0
+
+
+def _render_prune(result: image_keepers.PruneResult, *, json_output: bool) -> int:
+    if json_output:
+        print(json.dumps(asdict(result), indent=2))
+    else:
+        for candidate in result.candidates:
+            print(f"{candidate.tag} {candidate.image_id} [{candidate.reason}]")
+        print(f"Preview digest: {result.digest}")
+        print("Confirm with: booley projects prune-keepers --confirm " + result.digest)
+        for tag in result.released:
+            print(f"Keeper tag released: {tag}")
+        for tag in result.retained:
+            print(f"Keeper tag retained or unresolved: {tag}")
+        for error in result.errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+    return 2 if result.errors else 0
 
 
 def _json_document(
