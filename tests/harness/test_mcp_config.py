@@ -99,15 +99,8 @@ assert "tomli" not in sys.modules
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("kind", ["developer", "nested", "text-only"])
-@pytest.mark.parametrize("failure", ["missing", "stale", "broken-import"])
-def test_private_writer_installation_failure_preserves_destination(
-    tmp_path, monkeypatch, caplog, kind, failure
-):
-    import builtins
-
+def _private_codex_destination(tmp_path, monkeypatch, kind):
     from booley.runtime import _codex_backend as cb
-    from booley.runtime import mcp_config
     from booley.runtime.agent_backend import AgentCallParams
     from booley.runtime.text_only_agent import prepare_codex_text_only
 
@@ -147,8 +140,23 @@ def test_private_writer_installation_failure_preserves_destination(
         def create():
             return Path(writer("test", ["lint"])) / ".codex"
 
-    config = create() / "config.toml"
+    return create, create() / "config.toml"
+
+
+@pytest.mark.parametrize("kind", ["developer", "nested", "text-only"])
+@pytest.mark.parametrize("failure", ["missing", "stale", "broken-import", "nonbool"])
+def test_private_writer_invalid_or_incompatible_config_preserves_destination(
+    tmp_path, monkeypatch, caplog, kind, failure
+):
+    import builtins
+
+    from booley.runtime import _codex_backend as cb
+    from booley.runtime import mcp_config
+
+    create, config = _private_codex_destination(tmp_path, monkeypatch, kind)
     source = b"suppress_unstable_features_warning=false\nfeatures={\n mcp_2026_07_28=true,\n}\n"
+    if failure == "nonbool":
+        source = source.replace(b"warning=false", b'warning="invalid"')
     config.write_bytes(source)
     cb._NESTED_HOMES.clear()
     mcp_config._codex_toml_parser.cache_clear()
@@ -163,11 +171,16 @@ def test_private_writer_installation_failure_preserves_destination(
         raise ValueError("TOML1.0-only capability failure")
 
     monkeypatch.setattr(builtins, "__import__", import_parser)
-    monkeypatch.setitem(
-        sys.modules, "tomli", None if failure == "missing" else SimpleNamespace(loads=stale_loads)
-    )
+    if failure != "nonbool":
+        monkeypatch.setitem(
+            sys.modules,
+            "tomli",
+            None if failure == "missing" else SimpleNamespace(loads=stale_loads),
+        )
     try:
-        with pytest.raises(RuntimeError, match=r"installation.*tomli>=2\.4\.0"):
+        error_type = ValueError if failure == "nonbool" else RuntimeError
+        message = "boolean" if failure == "nonbool" else r"installation.*tomli>=2\.4\.0"
+        with pytest.raises(error_type, match=message):
             create()
         assert config.read_bytes() == source
         assert "malformed" not in caplog.text
