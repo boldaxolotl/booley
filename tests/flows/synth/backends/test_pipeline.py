@@ -859,6 +859,8 @@ def _fake_generic_master_bin(tmp_path):
         ("yosys", "ERROR: unknown command read_slang", False),
         ("yosys", "ABC: Error loading recipe", False),
         ("yosys", "Unsupported command abc", False),
+        ("yosys", "dut.sv:2:3: error: include file missing.vh not found", False),
+        ("yosys", "dut.v:2: ERROR: plugin dependency unavailable", False),
         ("yosys", "Unsupported RTL construct at dut.sv:2", True),
     ],
 )

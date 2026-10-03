@@ -2149,8 +2149,9 @@ class TestFileBasedInterpretation:
         assert criterion.detail["latches"] == 1
         assert criterion.detail["has_critical"] is True
 
+    @pytest.mark.parametrize("returncode", [0, 2])
     def test_final_check_structural_findings_fail_and_reach_every_report_surface(
-        self, flow_and_state, tmp_path: Path
+        self, flow_and_state, tmp_path: Path, returncode
     ):
         flow, state_file = flow_and_state
         build_dir = self._build_dir(tmp_path)
@@ -2169,15 +2170,19 @@ class TestFileBasedInterpretation:
                 "Found and reported 2 problems.\n",
                 encoding="utf-8",
             )
+            (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
+            if returncode:
+                with (build_dir / "yosys.log").open("a") as log:
+                    log.write("ERROR: unknown tool exception after final outputs\n")
             fresh = time.time() + 1
             for artifact in build_dir.iterdir():
                 os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+            return SubprocessResult(returncode=returncode, stdout="", stderr="", duration_s=1.0)
 
         with patch.object(flow, "_execute", side_effect=mock_execute):
             result = flow._run()
 
-        assert result.exit_code == EXIT_FAILURE
+        assert result.exit_code == (EXIT_ERROR if returncode else EXIT_FAILURE)
         assert "1 comb loop" in result.report_text
         assert "1 multi-driven" in result.report_text
         target = result.detail["lite"]
@@ -2186,11 +2191,19 @@ class TestFileBasedInterpretation:
         assert target["comb_loops"] == 1
         assert target["multi_driven"] == 1
         report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+        assert report["termination"] == (
+            "infrastructure_error" if returncode else "design_failure"
+        )
+        assert report["returncode"] == (2 if returncode else 1)
+        if returncode:
+            assert "unknown tool exception" in report["infra_error"]
+            assert "RESULT: ERROR" in result.report_text
         assert report["total_warnings"] == 2
         assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
-        criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
-        assert criterion.met is False
-        assert criterion.detail["total_warnings"] == 2
+        if not returncode:
+            criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
+            assert criterion.met is False
+            assert criterion.detail["total_warnings"] == 2
 
     def test_yosys_loop_fails_even_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
         flow, state_file = flow_and_state
@@ -2223,7 +2236,8 @@ class TestFileBasedInterpretation:
         assert target["comb_loops"] == 1
         assert target["passed"] is False
         report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-        assert report["returncode"] == 0
+        assert report["returncode"] == 1
+        assert report["termination"] == "design_failure"
         assert report["passed"] is False
         assert report["implementation"]["conditions"]["has_critical"] is True
         criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
@@ -5083,14 +5097,25 @@ def test_generic_failure_summary_separates_expected_latches(formatter):
 
 
 @pytest.mark.parametrize(
-    ("diagnostic", "expected_exit", "termination"),
+    ("tool", "diagnostic", "expected_exit", "termination"),
     [
-        ("sv2v: unrecognized option --bogus", EXIT_ERROR, "infrastructure_error"),
-        ("dut.sv:2:3: Parse error: unexpected token 'killed'", EXIT_FAILURE, "design_failure"),
+        ("sv2v", "sv2v: unrecognized option --bogus", EXIT_ERROR, "infrastructure_error"),
+        (
+            "sv2v",
+            "dut.sv:2:3: Parse error: unexpected token 'killed'",
+            EXIT_FAILURE,
+            "design_failure",
+        ),
+        (
+            "yosys",
+            "dut.sv:2:3: error: include file missing.vh not found",
+            EXIT_ERROR,
+            "infrastructure_error",
+        ),
     ],
 )
 def test_1095_public_frontend_failure(
-    flow_and_state, tmp_path, diagnostic, expected_exit, termination
+    flow_and_state, tmp_path, tool, diagnostic, expected_exit, termination
 ):
     flow, _ = flow_and_state
     stub = _stub_plan(tmp_path, "lite", mode="logical")
@@ -5098,11 +5123,11 @@ def test_1095_public_frontend_failure(
 
     def execute(*_args, **_kwargs):
         plan.build_dir.mkdir(parents=True, exist_ok=True)
-        path = plan.build_dir / "sv2v.log"
+        path = plan.build_dir / f"{tool}.log"
         path.write_text(diagnostic + "\n")
         os.utime(path, (100, 100))
         return SubprocessResult(
-            returncode=2, stdout="BOOLEY_STAGE: sv2v\nmake: *** Error 1", dispatched_unix=99
+            returncode=2, stdout=f"BOOLEY_STAGE: {tool}\nmake: *** Error 1", dispatched_unix=99
         )
 
     with (
@@ -5156,7 +5181,12 @@ def test_1095_first_diagnostic_survives_long_stage_tail(flow_and_state, tmp_path
     def execute(*_args, **_kwargs):
         plan.build_dir.mkdir(parents=True, exist_ok=True)
         path = plan.build_dir / "sv2v.log"
-        path.write_text(diagnostic + "\n" + "\n".join(f"context {i}" for i in range(40)))
+        path.write_text(
+            "Errors: 0\nReading error_model.v\nunknown cells: 0\n"
+            + diagnostic
+            + "\n"
+            + "\n".join(f"context {i}" for i in range(40))
+        )
         os.utime(path, (100, 100))
         return SubprocessResult(
             returncode=2, stdout="BOOLEY_STAGE: sv2v\nmake: *** Error 1", dispatched_unix=99

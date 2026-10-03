@@ -1456,8 +1456,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             diagnostic = f"unmapped {kind}: {diagnostic}"
         elif getattr(outcome, "design_diagnostic", None):
             diagnostic = outcome.design_diagnostic
-        elif result.returncode == 0 and metrics.unexpected_latches:
-            diagnostic = _latch_diagnostic(metrics)
+        elif result.returncode == 0 and metrics.has_critical:
+            diagnostic = (
+                _latch_diagnostic(metrics)
+                if metrics.unexpected_latches
+                else "critical structural conditions"
+            )
         elif (
             metrics.has_critical
             and result.returncode != 0
@@ -2850,7 +2854,10 @@ def _first_tool_diagnostic(text: str) -> str:
         (
             line
             for line in lines
-            if re.search(r"(?i)error|fatal|unrecognized|unknown|unsupported|not found|usage", line)
+            if re.search(
+                r"(?i)(?:^|:\s|\]\s)(?:error|fatal)\b|\bunrecognized (?:option|argument)\b|\bunknown (?:command|option|argument)\b|\bunsupported (?:command|option)\b|\b(?:not found|no such file|permission denied)\b|^usage:",
+                line,
+            )
         ),
         lines[0] if lines else "no diagnostic available",
     )

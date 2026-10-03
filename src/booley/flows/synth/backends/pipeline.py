@@ -489,13 +489,13 @@ _DESIGN_PATTERNS = {
     "sv2v": (
         rf"(?i)(?:parse|syntax) error[^\n]*{_SOURCE_LOCATION}",
         rf"(?i){_SOURCE_LOCATION}[^\n]*(?:parse|syntax) error",
-        rf"(?i)unsupported[^\n]*{_SOURCE_LOCATION}",
+        rf"(?i)unsupported (?:RTL construct|SystemVerilog feature)[^\n]*{_SOURCE_LOCATION}",
     ),
     "yosys": (
-        rf"(?i){_SOURCE_LOCATION}:?\s*(?:ERROR|error):[^\n]*",
+        rf"(?i){_SOURCE_LOCATION}:?\s*(?:ERROR|error):\s*(?:syntax error|parse error|expected expression|use of undeclared identifier)\b[^\n]*",
         rf"(?i)ERROR: syntax error at {_SOURCE_LOCATION}",
         r"ERROR: Module [^\n]+ referenced in module [^\n]+ in cell [^\n]+ is not part of the design\.",
-        rf"(?i)unsupported[^\n]*{_SOURCE_LOCATION}",
+        rf"(?i)unsupported (?:RTL construct|SystemVerilog feature)[^\n]*{_SOURCE_LOCATION}",
         r"Area for cell type (?!\$scopeinfo\b)\S+ is unknown!",
     ),
 }
