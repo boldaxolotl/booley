@@ -406,11 +406,10 @@ the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
 `passed` flag, and a `tests`
 list: Simulation Campaign entries contain `name`, `passed`, nullable `cycles`,
 `sva_errors`, `timed_out`, `execution`, `failure_kind`, and `error_tail`.
-Legacy/unprepared entries additionally carry `verdict`, a typed
-`cycle_observation` status, and a workload fingerprint when resolved inputs
-are available. Complete observational counts also appear in the invocation
-report's top-level `cycle_counts.<selector>[]` mapping; progress and inline
-MCP output carry only the bounded rich observation preview. For native HDL Targets, every entry also carries
+Legacy/unprepared entries also carry `verdict`, `cycle_observation`, and a
+workload fingerprint when resolved inputs are available. Full cycle counts are
+also copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For
+native HDL Targets, every entry also carries
 `artifacts.run_log`, a work-directory-relative pointer to an atomic,
 unabridged, attempt-specific copy of that test's simulator output. A grouped
 run preserves this copy before starting the next test, including for failed,

@@ -136,9 +136,10 @@ no longer be resumed.
 - Target-level `coverage.json` uses `booley.coverage-campaign-reference/v1`.
 - The selected nested `coverage.json` is the current Coverage Campaign manifest.
 
-To find a Simulation Campaign Target's results, follow the structured
-`detail.campaigns.<selector>.artifacts.simulation` reference in `report.json`.
-Legacy/unprepared reports retain their historical artifact hints. Every path inside these files is relative, and each reference
+To find a Simulation Campaign Target's results, follow
+`detail.campaigns.<selector>.artifacts.simulation` in `report.json` (legacy
+reports keep their old artifact hints). Every path inside these files is
+relative, and each reference
 says what it is relative to: `report_invocation` (this run's directory),
 `reports_root` (the report root, used when a resumed run points at the original
 run's Campaign), or `external_origin_target` (an original run under a different
@@ -150,15 +151,13 @@ copying only the resumed run leaves those references dangling.
 If writing the final report fails, the run exits `2` with
 `detail.completion_error`; results already written are kept.
 
-The invocation report also persists complete observational counts in top-level
-`cycle_counts.<Target selector>[]` rows `{test, cycle_count}`, preserving
-`test: null` for unnamed tests and nullable counts. The shared rich preview
-`detail.campaigns.<selector>.observations` keeps only the first 32 entries.
-This new mapping differs from legacy `detail.cycle_counts[]` rows
-`{target, target_identity, test, verdict, cycles, observation}`. MCP removes
-only the new full mapping before its structured budget check; remaining
-content is preserved when it fits. Metadata-only failures instead persist
-`cycle_counts_error: unavailable` without changing verdict or Criteria.
+`report.json` also stores every observed cycle count in top-level
+`cycle_counts.<Target selector>[]` rows `{test, cycle_count}`; both fields are
+nullable (`test: null` = unnamed test). This is distinct from the legacy
+`detail.cycle_counts[]` rows. The `detail.campaigns.<selector>.observations`
+preview keeps only the first 32. Inline MCP output drops the full mapping. If
+the counts can't be computed, the report records `cycle_counts_error:
+unavailable` instead; the verdict and Criteria are unaffected.
 
 ### `simulation.json`
 
@@ -173,11 +172,9 @@ content is preserved when it fits. Metadata-only failures instead persist
 | `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
 | `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
 
-Simulation Campaign projections contain `name`, `passed`, nullable `cycles`,
-`sva_errors`, `timed_out`, `execution`, `failure_kind`, and `error_tail`; they
-do not contain `verdict` or `cycle_observation`. Unnamed tests use `default`
-here. The following richer fields belong to legacy/unprepared projections.
-Each legacy `tests[]` entry has `name`, `passed`, `verdict`, `termination`,
+Simulation Campaign entries have `name` (`default` for an unnamed test),
+`passed`, nullable `cycles`, `sva_errors`, `timed_out`, `execution`,
+`failure_kind`, and `error_tail`. Each legacy/unprepared `tests[]` entry has `name`, `passed`, `verdict`, `termination`,
 `failure_kind`, `timed_out`,
 `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`,
 `error_tail`, `test_validated`, `phase_timings_s`, and `resources`

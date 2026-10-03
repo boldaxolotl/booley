@@ -480,16 +480,12 @@ numbered report directory (qualified Target selectors are percent-encoded):
       hooks/                 hook evidence, when collected
 ```
 
-The numbered `report.json` stores complete observational counts in top-level
-`cycle_counts.<Target selector>[]` rows `{test, cycle_count}`; unnamed tests keep
-`test: null`. Metadata computation or serialization failure instead records
-`cycle_counts_error: unavailable`. The rich
-`detail.campaigns.<selector>.observations` preview is
-limited to 32 entries. Full Target `simulation.json` uses `tests[].cycles` and
-is linked by `detail.campaigns.<selector>.artifacts.simulation`, whose
-`path_base` can refer to the retained origin after resume. Native Coverage
-currently produces null counts. The CLI/MCP card adds globally bounded
-`cycles=N` lines (at most 32) and an omission notice when space permits.
+Cycle counts: the numbered `report.json` lists every test's count under
+`cycle_counts.<Target selector>[]` as `{test, cycle_count}` (`test: null` for
+an unnamed test, or `cycle_counts_error: unavailable` if counts couldn't be
+collected). Each Target's `simulation.json` has them as `tests[].cycles`; find
+it via `detail.campaigns.<selector>.artifacts.simulation`, whose `path_base`
+may point at the original run after a resume.
 
 The Target reference's `coverage_campaign.path` resolves from the origin Target
 directory, as declared by `coverage_campaign.path_base: origin_target`. The

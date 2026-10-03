@@ -854,15 +854,10 @@ Structured campaign output reports `grade`, `complete`, aggregate
 `observation_counts`, and a maximum-32 `observations` preview. Every preview
 entry retains `test`, `execution`, `functional`, `assertions`,
 `assertion_count`, nullable `cycle_count`, and bounded `detail`; `observation_total` and
-`observations_truncated` disclose whether the preview is complete. The
-complete count mapping is persisted only in top-level
-`report.json.cycle_counts.<selector>[]` rows `{test, cycle_count}` (raw unnamed
-identity is null). MCP omits this full mapping before its 64 KiB structured
-budget check; all other fields survive when the remaining report fits, with
-the existing fallback otherwise. Read the durable numbered report or its
-`detail.campaigns.<selector>.artifacts.simulation` reference for full counts.
-A metadata computation or serialization failure instead records bounded
-`cycle_counts_error: unavailable`, without changing the verdict or Criteria.
+`observations_truncated` disclose whether the preview is complete. The full
+`report.json.cycle_counts` mapping (see
+[FLOW_REPORTS.md](FLOW_REPORTS.md)) is dropped from inline output before the
+64 KiB structured budget check; read the numbered report for all counts.
 The independent observation axes mean:
 
 - `execution`: whether the simulator completed, timed out, was guard-aborted,
