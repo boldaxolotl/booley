@@ -817,7 +817,7 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
             "done",
             "20c",
             "--limit",
-            "5000",
+            "2000",
         ]
     ]
 
@@ -842,7 +842,7 @@ def test_query_resolves_v02_diff_markers(tmp_path, monkeypatch):
         bwave.cmd_query(argparse.Namespace(extra=["@dut", "diff", "start", "done"]))
 
     assert exc.value.code == 0
-    assert calls == [["bwave-bin", "diff", str(trace), "10c", "20c", "--limit", "5000"]]
+    assert calls == [["bwave-bin", "diff", str(trace), "10c", "20c", "--limit", "2000"]]
 
 
 def test_meta_query_bypasses_alias_resolution(monkeypatch):

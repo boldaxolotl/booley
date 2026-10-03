@@ -66,11 +66,11 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert "YOSYS_REF" in base
     assert (
         "FROM docker.io/openroad/ubuntu26.04@sha256:"
-        "63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66"
+        "c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d"
     ) in base
     assert (
         "FROM docker.io/openroad/ubuntu26.04-dev@sha256:"
-        "9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 "
+        "a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 "
         "AS eda-artifacts"
     ) in base
     assert (
@@ -416,14 +416,20 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
 
 
-def test_openroad_uses_verified_26q3_oci_artifact() -> None:
+def test_openroad_uses_verified_26q4_oci_artifact() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8" in dockerfile
-    assert "ARG OPENROAD_BINARY_VERSION=26Q2-2580-ga9147cf3ae" in dockerfile
+    assert "ARG OPENROAD_VERSION=26Q4" in dockerfile
+    manifest = json.loads((_DOCKER_DIR / "openroad-source-manifest.json").read_text())
+    assert manifest["revision"] == "c4d317e4fa2398b9880920a1411c20258a2175a9"
+    assert len(manifest["submodules"]) == 5
+    sta = next(item for item in manifest["submodules"] if item["path"] == "src/sta")
+    assert sta["revision"] == "e983e15b2cb346badf8f23725fd3914d25312c44"
+    assert "ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9" in dockerfile
+    assert "ARG OPENROAD_BINARY_VERSION=26Q3-2927-gc4d317e4fa" in dockerfile
     assert (
         "ARG OPENROAD_SOURCE_SENTINEL_SHA256="
-        "c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f"
+        "8f72ff3a40bf361df9eee1d4a6ecf163285ebabca3d49c0f8eb958810f65a590"
     ) in dockerfile
     assert "./src/rsz/src/Resizer.tcl | sha256sum" in dockerfile
     assert (
@@ -431,7 +437,7 @@ def test_openroad_uses_verified_26q3_oci_artifact() -> None:
         in dockerfile
     )
     assert "--exclude='./build'" in dockerfile
-    assert "OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz" in dockerfile
+    assert "OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz" in dockerfile
     assert "openroad -version" in dockerfile
     assert "COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE" in dockerfile
     assert "Precision-Innovations/OpenROAD/releases/download" not in dockerfile
@@ -484,7 +490,10 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     spike_ref = re.search(r"^ARG SPIKE_REF=([0-9a-f]{40})$", riscv, re.MULTILINE)
 
     assert spike_ref is not None
-    assert spike_ref.group(1) == "c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb"
+    assert spike_ref.group(1) == "609dbe0b9994154833039209fa37151e7c05e9d4"
+    # The user-facing tool list names the exact pin, so it must move with it.
+    supported_tools = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
+    assert f"`{spike_ref.group(1)}`" in supported_tools
     assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
     assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 

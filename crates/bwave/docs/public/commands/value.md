@@ -25,8 +25,8 @@ as a tick and the output reports `at_unit: "tick"`.
 ## Defaults and requiredness
 
 - `<FST_FILE>` required.
-- `--at N` required. Integer, signed (negative cycles are
-  valid before reset deasserts when `--with-reset`).
+- `--at N` required. Negative points precede the physical
+  origin and exit with code 2, including with `--with-reset`.
 - `-s PATTERN` optionally selects stored and Virtual Signal
   rows. Without it, every stored and virtual row is selected.
 - Standard global options apply.
@@ -37,11 +37,8 @@ Text mode prints a header line and then one signal per
 row:
 
 ```
-# Snapshot at cycle 1234 (tick 12345)
-state          'h2
-data_out       'h0000DEAD
-valid          'h1
-ready          'h0
+# Snapshot at 1000
+b                                        = 1
 ```
 
 JSON mode emits a `valueData` envelope:

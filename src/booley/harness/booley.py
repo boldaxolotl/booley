@@ -2021,7 +2021,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
         project_tools = None
     endpoints = discover_mcp_tools(
         project_mcp_tools_dir=project_tools,
-        mcp_tool_config=config,
+        specialist_config=config,
         flow_config=flows,
     )
     info = _select_endpoint(args, endpoints, "specialist")
@@ -2869,11 +2869,12 @@ def _run_ticket_command(args: argparse.Namespace, project_root: Path) -> int:
 
 def main() -> int:
     """Run the CLI with one rendering boundary for lifecycle contention."""
+    from booley.mcp.endpoint_config import EndpointConfigError
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
     try:
         return _dispatch_main()
-    except (LifecycleLockError, ProjectRootDiscoveryError) as exc:
+    except (LifecycleLockError, ProjectRootDiscoveryError, EndpointConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

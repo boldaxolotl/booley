@@ -33,14 +33,14 @@ json`:
 - `find`: see `commands/find`
 - `stats`: see `commands/stats`
 
-The other subcommands accept `--format json` on the CLI
-(it's in the global options) but **still emit text**.
-This is a known gap; track Phase 2+ work for expansion.
+The other query subcommands reject `--format json` with
+exit code 2: `JSON output is not implemented for <command>;
+use find/value/stats/list`.
 
 Commands that **do not** currently emit JSON:
 
 - `signal`, `wave`, `sample`, `diff`, `distance`,
-  `stuck`: text mode only, even with `--format json`.
+  `stuck`: text mode only; JSON requests exit with code 2.
 - `build`: produces a binary file, no envelope.
 - `schema`: produces the JSON Schema itself (no
   envelope around it; it *is* the schema).

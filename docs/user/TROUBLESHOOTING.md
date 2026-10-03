@@ -92,8 +92,10 @@ file for diagnosis, repair or remove only the malformed metadata, and rerun
 Every valid built-in and custom MCP tool is discovered by default. The old
 `[tools].builtin` and `[tools].custom` keys are migration errors and Doctor
 rejects them. To remove a Booley Flow from agent and autonomous discovery, set
-`[flows.<name>].enabled = false`; for a Specialist or other non-Flow endpoint,
-set `[mcp_tools.<name>].enabled = false`.
+`[flows.<name>].enabled = false`; for a Specialist,
+set `[specialists.<name>].enabled = false`. The retired `[mcp_tools.*]` table
+is rejected; rename its Specialist sections to `[specialists.*]` and remove
+protocol utility settings. Utilities have no Project enable switch.
 
 Two intentional visibility cases remain. Interactive Mode hides
 `submit_run_report` because it finalizes autonomous Ticket runs. `tb_coder` is
@@ -106,7 +108,7 @@ still report its configured flow as disabled when invoked directly.
 For any other missing MCP tool:
 
 1. Check that the applicable `[flows.<name>].enabled` or
-   `[mcp_tools.<name>].enabled` is not `false`.
+   `[specialists.<name>].enabled` is not `false`.
 2. For a custom MCP tool, fix Python syntax and make `name` and `description` literal
    class attributes so AST discovery can read them.
 3. Restart the Sandbox after adding or renaming the file.

@@ -884,7 +884,7 @@ class DiscoveredMcpSurface:
 
     discovered_mcp_tools: list
     mcp_tool_names: list[str]
-    mcp_tool_config: dict
+    specialist_config: dict
     flow_config: dict
     booley_src: Path
     project_mcp_tools_dir: Path
@@ -911,14 +911,14 @@ async def _discover_mcp_surface(
     """Discover the MCP endpoints exposed to this ticket."""
     booley_src = Path(__file__).resolve().parent.parent
     project_mcp_tools_dir = project_root / ".booley_project" / "mcp_tools"
-    mcp_tool_config, flow_config = _load_endpoint_config(project_root)
+    specialist_config, flow_config = _load_endpoint_config(project_root)
 
     from booley.mcp.registry import discover_mcp_tools
 
     discovered_mcp_tools = discover_mcp_tools(
         booley_src=booley_src,
         project_mcp_tools_dir=project_mcp_tools_dir,
-        mcp_tool_config=mcp_tool_config,
+        specialist_config=specialist_config,
         flow_config=flow_config,
     )
     mcp_tool_names = [t.name for t in discovered_mcp_tools]
@@ -938,7 +938,7 @@ async def _discover_mcp_surface(
     return DiscoveredMcpSurface(
         discovered_mcp_tools=discovered_mcp_tools,
         mcp_tool_names=mcp_tool_names,
-        mcp_tool_config=mcp_tool_config,
+        specialist_config=specialist_config,
         flow_config=flow_config,
         booley_src=booley_src,
         project_mcp_tools_dir=project_mcp_tools_dir,
@@ -954,7 +954,7 @@ def _validate_required_endpoints_available(criteria: dict, mcp_tool_names: list[
     raise RuntimeError(
         "Ticket run requires unavailable Booley Flow(s) or Specialist(s): "
         f"{', '.join(missing)}. Check [flows.<name>].enabled, "
-        "[mcp_tools.<name>].enabled, and package installation."
+        "[specialists.<name>].enabled, and package installation."
     )
 
 
@@ -1779,7 +1779,7 @@ def _build_prompt_context(
     state_path: Path,
     endpoint_catalog: CriterionEndpointCatalog,
     discovered_mcp_tools: list,
-    mcp_tool_config: dict,
+    specialist_config: dict,
     flow_config: dict,
     booley_src: str,
     project_mcp_tools_dir: str | None,
@@ -1802,7 +1802,7 @@ def _build_prompt_context(
             criteria=ctx.criteria,
             criterion_endpoint_catalog=endpoint_catalog,
             mcp_tools=discovered_mcp_tools,
-            mcp_tool_config=mcp_tool_config,
+            specialist_config=specialist_config,
             flow_config=flow_config,
             booley_src=booley_src,
             project_mcp_tools_dir=project_mcp_tools_dir,
@@ -1888,7 +1888,7 @@ async def _prepare_developer_invocation(
         state_path,
         endpoint_catalog,
         surface.discovered_mcp_tools,
-        surface.mcp_tool_config,
+        surface.specialist_config,
         surface.flow_config,
         surface.booley_src,
         surface.project_mcp_tools_dir,
@@ -2429,13 +2429,8 @@ def _paired_project_repository_required(cwd: Path, project_root: Path | None) ->
 
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict, dict]:
-    """Load the ``[mcp_tools]`` and ``[flows]`` config namespaces."""
-    from booley.config.settings import _load_booley_toml
+    """Load the ``[specialists]`` and ``[flows]`` config namespaces."""
+    from booley.config.settings import resolve_booley_toml
+    from booley.mcp.endpoint_config import read_endpoint_config
 
-    data = _load_booley_toml(project_root)
-    if "tools" in data:
-        raise ValueError(
-            "booley.toml [tools] is retired; use [flows.*] for deterministic "
-            "Flows and [mcp_tools.*] for Specialists"
-        )
-    return data.get("mcp_tools", {}), data.get("flows", {})
+    return read_endpoint_config(resolve_booley_toml(project_root))

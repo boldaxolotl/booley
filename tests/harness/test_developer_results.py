@@ -97,7 +97,7 @@ async def _run_with_budget(coro, _budget):
 def _patch_developer_path(monkeypatch, tmp_path: Path, *, agent_result):
     surface = SimpleNamespace(
         discovered_mcp_tools=[],
-        mcp_tool_config={},
+        specialist_config={},
         flow_config={},
         booley_src=tmp_path,
         project_mcp_tools_dir=tmp_path,
