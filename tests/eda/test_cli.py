@@ -374,3 +374,57 @@ def test_project_binding_permission_error_is_clean(tmp_path, monkeypatch, capsys
     assert _run(_parse("grant", action, str(tmp_path), "--kind", "vivado"), tmp_path) == 2
     assert "Project checkout is unreadable" in capsys.readouterr().err
     assert calls == []
+
+
+def test_project_binding_inaccessible_revoke_keeps_source_grant(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    source = tmp_path / "source"
+    (source / ".booley_project").mkdir(parents=True)
+    (source / ".git").mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    grant = authority._add_grant(source, "vivado", license_profile="registered")
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    stat = Path.stat
+    exists = Path.exists
+
+    def inaccessible(path, **kwargs):
+        if path == source:
+            raise PermissionError("Project parent is unreadable")
+        return stat(path, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", inaccessible)
+    monkeypatch.setattr(Path, "exists", lambda path: False if path == source else exists(path))
+    assert _run(_parse("grant", "revoke", str(source), "--kind", "vivado"), tmp_path) == 2
+    assert "unreadable" in capsys.readouterr().err
+    assert authority.load_state().grants == (grant,)
+
+
+def test_project_binding_cleanup_permission_error_propagates(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    project = tmp_path / "project"
+    (project / ".booley_project").mkdir(parents=True)
+    (project / ".git").mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    authority._add_grant(project, "vivado", license_profile="registered")
+    revoke = authority._revoke_grant
+
+    def cleanup_failure(target, kind):
+        revoke(target, kind)
+        raise PermissionError("cleanup failed after revocation")
+
+    monkeypatch.setattr(authority, "_revoke_grant", cleanup_failure)
+    with pytest.raises(PermissionError, match="cleanup failed after revocation"):
+        _run(_parse("grant", "revoke", str(project), "--kind", "vivado"), tmp_path)
+    assert authority.load_state().grants == ()

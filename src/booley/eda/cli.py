@@ -110,7 +110,7 @@ def run(
     """Execute one authority operation with human output or explicit JSON."""
     try:
         value = _dispatch(args, grant_mutator=grant_mutator)
-    except (authority.AuthorityError, SourceCheckoutProjectError, PermissionError) as exc:
+    except (authority.AuthorityError, SourceCheckoutProjectError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     legacy_grant_list = args.eda_group == "grant" and args.eda_action == "list"
@@ -196,8 +196,7 @@ def _grant_action(
             else (Path(os.path.normpath(str(args.project.absolute()))), args.project)
         )
         for target in role_targets:
-            if action == "add" or target.exists():
-                require_project_checkout(target)
+            _require_grant_checkout(target, allow_missing=action == "revoke")
     if action == "add":
         grant = grant_mutator.add(
             args.project,
@@ -212,6 +211,21 @@ def _grant_action(
         result["residual_resources"] = []
         return result
     return [asdict(item) for item in authority.load_state().grants]
+
+
+def _require_grant_checkout(project: Path, *, allow_missing: bool) -> None:
+    """Inspect checkout role without treating denied access as missing state."""
+    try:
+        if allow_missing:
+            try:
+                project.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                return
+        require_project_checkout(project)
+    except PermissionError as exc:
+        raise authority.AuthorityError(
+            f"cannot inspect Project checkout {project}: {exc}"
+        ) from exc
 
 
 def _render_human(args: argparse.Namespace, value: _Result) -> None:
