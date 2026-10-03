@@ -57,8 +57,9 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.targets.catalog import TargetCatalog
 
-from ..build import SimulationBuildInfrastructureError
+from ..build import build_output_tail
 from .codec import (
+    MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -334,8 +335,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             infrastructure=infrastructure,
             checkpoint=self._publication_checkpoint,
         )
-        if infrastructure:
-            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
         failure = _fresh_shared_failure(directory, result, outcome)
         self._shared_failure[key] = failure
         return _blocked_shared_result(request, failure, time.monotonic() - started)
@@ -539,11 +538,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             infrastructure=infrastructure,
             checkpoint=self._publication_checkpoint,
         )
-        if infrastructure:
-            # No design verdict exists, so the campaign stays interrupted and
-            # resumable, exactly like the shared-build path.
-            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
-        return _blocked_result(request, build_directory, result, outcome, elapsed)
+        return _blocked_result(
+            request, build_directory, result, outcome, elapsed, infrastructure=infrastructure
+        )
 
     def _run_ready_group(
         self,
@@ -808,7 +805,12 @@ def _fresh_shared_failure(
         ),
         "build failed",
     )
-    return _SharedFailure(directory, result, FailureClass.DESIGN, detail[-1536:])
+    return _SharedFailure(
+        directory,
+        result,
+        FailureClass.INFRASTRUCTURE if outcome.infrastructure_failure else FailureClass.DESIGN,
+        _bounded_reason(detail) if outcome.infrastructure_failure else detail[-1536:],
+    )
 
 
 def _setup_result(
@@ -1232,7 +1234,9 @@ def _failed_build_result(
         )
         | {"build_attempt_id": build_attempt_id},
         "state": state,
-        "phase": "storage" if infrastructure else "elaboration",
+        "phase": "pre_sim"
+        if failure is not None and failure.kind == "pre_sim_spawn"
+        else "elaboration",
         "finished_at": _now(),
         "elapsed_seconds": elapsed,
         "bundle": None,
@@ -1240,7 +1244,9 @@ def _failed_build_result(
             "class": "infrastructure" if infrastructure else "design",
             "code": failure.kind if failure is not None else "elaboration",
             "message": (failure.message if failure is not None else "Simulation build failed"),
-            "detail": {"text": detail[:1536]},
+            "detail": _build_failure_detail(outcome, detail)
+            if infrastructure
+            else {"text": detail[:1536]},
         },
         "evidence": [],
     }
@@ -1255,25 +1261,31 @@ def _blocked_result(
     elapsed: float,
     *,
     infrastructure: bool = False,
+    evidence: list[dict[str, object]] | None = None,
 ) -> SimulationResult:
-    observations = [_observation(test, execution="blocked_by_build") for test in outcome.tests]
+    observations = (
+        _infrastructure_observations(request, outcome, build_failure=True)
+        if infrastructure
+        else [_observation(test, execution="blocked_by_build") for test in outcome.tests]
+    )
     selection = cast(Mapping[str, object], request.work_item["selection"])
     if selection["kind"] == "unfiltered":
         observations = observations[:1]
         observations[0]["test"] = None
-    if infrastructure:
+    pre_sim_failure = build_result.document["phase"] == "pre_sim"
+    if infrastructure and pre_sim_failure:
         for observation in observations:
-            observation["failure_class"] = "infrastructure"
+            observation["execution"] = "blocked_by_build"
     return _result(
         request,
         build_directory,
         build_result,
-        state="blocked_by_build",
+        state="aborted" if infrastructure and not pre_sim_failure else "blocked_by_build",
         bundle_id=None,
         snapshot=None,
         observations=observations,
         elapsed=elapsed,
-        evidence=[],
+        evidence=evidence or [],
     )
 
 
@@ -1292,7 +1304,7 @@ def _blocked_shared_result(
         target = cast(Mapping[str, object], request.manifest.document["target"])
         identities = (cast(str, target["selector"]),)
     observations = []
-    for identity in identities:
+    for index, identity in enumerate(identities):
         test = SimulationTestOutcome(
             name=identity or "",
             verdict="elab_error",
@@ -1300,14 +1312,27 @@ def _blocked_shared_result(
             elab_failed=True,
             error_tail=failure.detail,
         )
-        observation = _observation(test, execution="blocked_by_build")
+        observation = _observation(
+            test,
+            execution="aborted"
+            if failure.failure_class == FailureClass.INFRASTRUCTURE
+            else "blocked_by_build",
+        )
+        if failure.failure_class == FailureClass.INFRASTRUCTURE:
+            observation["functional"] = observation["assertions"] = "not_observed"
+            observation["detail"] = _compact_build_detail(
+                cast(Mapping[str, object], failure.result.document["observation"])["detail"],
+                1 if index == 0 else len(identities),
+            )
         observation["failure_class"] = failure.failure_class.value
         observations.append(observation)
     return _result(
         request,
         failure.directory,
         failure.result,
-        state="blocked_by_build",
+        state="aborted"
+        if failure.failure_class == FailureClass.INFRASTRUCTURE
+        else "blocked_by_build",
         bundle_id=None,
         snapshot=None,
         observations=observations,
@@ -1336,10 +1361,6 @@ def _launch_snapshot(
     outcome = group.launch_snapshot(snapshot_root, run_cwd)  # type: ignore[attr-defined]
     post_exit = authenticate_executable_snapshot(snapshot, snapshot_root)
     publication_checkpoint("integrity:post_exit_authentication")
-    if outcome.infrastructure_failure is not None:
-        raise SimulationCampaignIntegrityError(
-            outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
-        )
     return _snapshot_result(
         request,
         build_directory,
@@ -1378,8 +1399,14 @@ def _snapshot_result(
         "executable_snapshot_manifest",
         request.attempt_id,
     )
-    observations = [_observation(test) for test in outcome.tests]
-    state = _result_state(outcome.tests)
+    observations = (
+        _infrastructure_observations(request, outcome)
+        if outcome.infrastructure_failure is not None
+        else [_observation(test) for test in outcome.tests]
+    )
+    state = (
+        "aborted" if outcome.infrastructure_failure is not None else _result_state(outcome.tests)
+    )
     publication_checkpoint("before:execution_evidence")
     evidence = _capture_outcome_evidence(request, outcome)
     publication_checkpoint("after:execution_evidence")
@@ -1402,6 +1429,9 @@ def _snapshot_result(
         elapsed=time.monotonic() - started,
         evidence=evidence,
         runtime_inputs=_runtime_documents(request, bindings),
+        diagnostics=tuple(
+            item for item in outcome.diagnostics if item.startswith("artifact_persistence:")
+        ),
     )
 
 
@@ -1441,6 +1471,7 @@ def _result(
     elapsed: float,
     evidence: list[dict[str, object]],
     runtime_inputs: list[dict[str, object]] | None = None,
+    diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
     grades = [
         grade_observations(
@@ -1471,8 +1502,15 @@ def _result(
         "observations": observations,
         "grade": grade,
         "diagnostics": [
-            {"severity": "warning", "code": "execution", "pointer": "", "message": item}
-            for item in outcome_diagnostics_safe(evidence, request)
+            {
+                "severity": "warning",
+                "code": "artifact_persistence"
+                if item.startswith("artifact_persistence:")
+                else "execution",
+                "pointer": "",
+                "message": _bounded_reason(item),
+            }
+            for item in (*outcome_diagnostics_safe(evidence, request), *diagnostics)
         ],
         "evidence": evidence,
     }
@@ -1487,10 +1525,12 @@ def outcome_diagnostics_safe(
 
 
 def _observation(
-    test: SimulationTestOutcome, *, execution: str | None = None
+    test: SimulationTestOutcome, *, execution: str | None = None, reason_limit: int = 768
 ) -> dict[str, object]:
     observed_execution = execution or (
-        "timeout"
+        "aborted"
+        if test.failure_kind == "infrastructure"
+        else "timeout"
         if test.timed_out
         else "crash"
         if test.crashed
@@ -1530,9 +1570,152 @@ def _observation(
         "functional": functional,
         "assertions": assertions,
         "assertion_count": test.sva_errors,
-        "detail": {"reason": (test.reason or test.error_tail)[-1536:]},
+        "detail": (
+            {
+                "reason": _bounded_reason(test.reason or test.error_tail, reason_limit),
+                "termination": test.termination,
+                "code": test.failure_kind,
+                "simulator_returncode": test.simulator_returncode,
+            }
+            if test.failure_kind == "infrastructure"
+            else {"reason": (test.reason or test.error_tail)[-1536:]}
+        ),
         "cycle_count": test.cycles if observed_execution == "completed" else None,
     }
+
+
+def _bounded_reason(text: str, limit: int = 768) -> str:
+    return text.encode("utf-8")[-limit:].decode("utf-8", errors="ignore")
+
+
+def _build_failure_detail(outcome: SimulationTargetOutcome, reason: str) -> dict[str, object]:
+    failure = outcome.infrastructure_failure
+    header = outcome.builds[-1].reason if outcome.builds else reason.splitlines()[0]
+    text = header.encode("utf-8")[:256].decode("utf-8", errors="ignore")
+    tail = _bounded_reason(build_output_tail(reason), 384)
+    if tail and tail != text:
+        text += "\n--- output tail ---\n" + tail
+    detail: dict[str, object] = {"reason": text, "text": text}
+    if failure is not None:
+        detail.update(
+            code=_bounded_reason(failure.kind, 128),
+            phase="pre_sim" if failure.kind == "pre_sim_spawn" else "elaboration",
+            missing_executable=_bounded_reason(failure.missing_executable, 128),
+        )
+    if outcome.builds and not outcome.builds[-1].passed:
+        build = outcome.builds[-1]
+        detail["build_stage"] = {
+            "ran": build.ran,
+            "verdict": build.verdict,
+            "failure_class": build.failure_kind,
+            "elapsed_s": round(build.elapsed_s, 3),
+            "terminal_record": build.terminal_record,
+            "cache_decision": build.cache_decision,
+            "returncode": build.returncode,
+            "timed_out": build.timed_out,
+            "peak_rss_mb": build.peak_rss_mb,
+            "oom_kill_delta": build.oom_kill_delta,
+            "reason": _bounded_reason(build.reason, 128),
+        }
+    return _bounded_build_detail(detail)
+
+
+def _bounded_build_detail(detail: dict[str, object]) -> dict[str, object]:
+    for limit in (512, 256, 128, 64, 32, 16):
+        if len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES:
+            return detail
+        for key, value in detail.items():
+            if isinstance(value, str):
+                detail[key] = value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+            elif isinstance(value, dict):
+                for nested, item in value.items():
+                    if isinstance(item, str):
+                        value[nested] = item.encode("utf-8")[:limit].decode(
+                            "utf-8", errors="ignore"
+                        )
+    assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES, (
+        "build metadata exceeds detail budget"
+    )
+    return detail
+
+
+def _compact_build_detail(detail: Mapping[str, object], count: int) -> dict[str, object]:
+    if count <= 128:
+        return dict(detail)
+    return {
+        "reason": _bounded_reason(str(detail["reason"]), 16),
+        "code": detail.get("code", "build"),
+        "phase": detail.get("phase", "elaboration"),
+    }
+
+
+def _observed_infrastructure_tests(
+    outcome: SimulationTargetOutcome, *, build_failure: bool
+) -> list[dict[str, object]]:
+    observations = [
+        _observation(test, reason_limit=16 if len(outcome.tests) > 128 else 768)
+        for test in outcome.tests
+    ]
+    if build_failure or (
+        outcome.builds
+        and not outcome.builds[-1].passed
+        and outcome.infrastructure_failure is not None
+    ):
+        for index, observation in enumerate(observations):
+            observation.update(
+                execution="aborted",
+                failure_class="infrastructure",
+                functional="not_observed",
+                assertions="not_observed",
+                cycle_count=None,
+            )
+            observation["detail"] = _compact_build_detail(
+                _build_failure_detail(
+                    outcome, outcome.tests[index].reason or outcome.tests[index].error_tail
+                ),
+                1 if index == 0 else len(observations),
+            )
+    return observations
+
+
+def _infrastructure_observations(
+    request, outcome: SimulationTargetOutcome, *, build_failure: bool = False
+) -> list[dict[str, object]]:
+    if outcome.tests:
+        return _observed_infrastructure_tests(outcome, build_failure=build_failure)
+    selection = cast(Mapping[str, object], request.work_item["selection"])
+    identities = (None,) if selection["kind"] == "unfiltered" else selection["names"]
+    failure = outcome.infrastructure_failure
+    assert failure is not None
+    if build_failure:
+        detail = _build_failure_detail(outcome, failure.detail or failure.message)
+    else:
+        detail = {
+            "reason": _bounded_reason(failure.detail or failure.message),
+            "termination": failure.kind,
+            "code": failure.kind,
+        }
+    if len(identities) > 128 and not build_failure:
+        detail = {
+            "reason": _bounded_reason(failure.message, 16),
+            "code": failure.kind,
+            "termination": failure.kind,
+        }
+    return [
+        {
+            "test": name,
+            "execution": "aborted",
+            "failure_class": "infrastructure",
+            "functional": "not_observed",
+            "assertions": "not_observed",
+            "assertion_count": 0,
+            "detail": _compact_build_detail(detail, len(identities))
+            if build_failure and index > 0
+            else detail,
+            "cycle_count": None,
+        }
+        for index, name in enumerate(identities)
+    ]
 
 
 def _result_state(tests: tuple[SimulationTestOutcome, ...]) -> str:
@@ -1612,7 +1795,11 @@ def _capture_outcome_evidence(
                     "source_bytes": len(source_raw),
                     "source_sha256": _sha_evidence_bytes(source_raw),
                     "source_observations": source_observations,
-                    "observations": [_observation(test) for test in outcome.tests],
+                    "observations": (
+                        _infrastructure_observations(request, outcome)
+                        if outcome.infrastructure_failure is not None
+                        else [_observation(test) for test in outcome.tests]
+                    ),
                 }
             )
             _create_immutable(destination, raw)
@@ -1625,6 +1812,32 @@ def _capture_outcome_evidence(
                 request.attempt_directory,
                 raw,
                 "cocotb_results" if artifact.kind == "cocotb_results_json" else artifact.kind,
+                request.attempt_id,
+            )
+        )
+    if outcome.infrastructure_failure is not None and not outcome.tests:
+        failure = outcome.infrastructure_failure
+        selection = cast(Mapping[str, object], request.work_item["selection"])
+        names = [None] if selection["kind"] == "unfiltered" else list(selection["names"])
+        raw = canonical_json_bytes(
+            {
+                "$schema": "booley.simulation-infrastructure-failure/v1",
+                "attempt_id": request.attempt_id,
+                "work_item_id": request.work_item["work_item_id"],
+                "selected_tests": names,
+                "code": failure.kind,
+                "termination": failure.kind,
+                "source": "process",
+            }
+        )
+        destination = evidence_root / "infrastructure-failure.json"
+        _create_immutable(destination, raw)
+        references.append(
+            _record_ref(
+                destination,
+                request.attempt_directory,
+                raw,
+                "simulation_infrastructure_failure",
                 request.attempt_id,
             )
         )

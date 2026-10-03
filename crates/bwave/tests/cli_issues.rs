@@ -914,8 +914,9 @@ fn async_level_sample_uses_selected_virtual_row_change_ticks() {
         stdout.contains("70 low 0"),
         "virtual change was not sampled: {stdout}"
     );
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["70 low 0"]);
     assert!(
-        stderr.contains("# 2 trigger events"),
+        stderr.contains("# 1 trigger events"),
         "async level callback schedule is wrong: {stderr}"
     );
 }
@@ -2001,7 +2002,14 @@ fn async_wave_columns_ignore_unselected_virtual_helper_transitions() {
         .expect("wave header")
         .split_whitespace()
         .collect();
-    assert_eq!(headers, vec!["time", "15", "70"]);
+    // The initial predicate value belongs to tick zero; only the actual
+    // transition at 70 belongs in the selected-row event columns.
+    assert_eq!(headers, vec!["time", "0", "70"]);
+    let row = stdout.lines().nth(1).unwrap();
+    assert_eq!(
+        row.split_whitespace().collect::<Vec<_>>(),
+        vec!["result", "0", "1"]
+    );
     assert!(
         !stdout.contains("helper"),
         "unselected helper leaked into async output: {stdout}"

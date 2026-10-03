@@ -255,3 +255,187 @@ def test_token_absence_checks_managed_and_unmanaged_claims(tmp_path: Path, monke
     monkeypatch.setattr(child_protocol, "read_json", lambda _path: {"execution_id": execution_id})
     with pytest.raises(SimulationCampaignIntegrityError, match="cannot be reconciled"):
         registry._assert_no_unmanaged_token(execution_id)
+
+
+def test_cocotb_infrastructure_source_requires_independent_guard() -> None:
+    from booley.flows.sim.campaign.store import _validate_cocotb_source
+
+    observation = {
+        "test": "smoke",
+        "execution": "aborted",
+        "failure_class": "infrastructure",
+        "functional": "not_observed",
+        "assertions": "not_observed",
+        "detail": {"reason": "guard", "termination": "disk_budget"},
+    }
+    source = [{"test": "smoke", "verdict": "fail", "detail": "guard"}]
+    _validate_cocotb_source(source, (observation,), infrastructure_tests=frozenset({"smoke"}))
+    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
+        _validate_cocotb_source(source, (observation,))
+
+
+def test_cocotb_completed_source_still_rejects_forged_abort() -> None:
+    from booley.flows.sim.campaign.store import _validate_cocotb_source
+
+    observation = {
+        "test": "smoke",
+        "execution": "aborted",
+        "failure_class": "infrastructure",
+        "functional": "not_observed",
+        "assertions": "not_observed",
+        "detail": {"reason": "guard"},
+    }
+    source = [{"test": "smoke", "verdict": "pass", "detail": "guard"}]
+    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
+        _validate_cocotb_source(source, (observation,), infrastructure_tests=frozenset({"smoke"}))
+
+
+@pytest.mark.parametrize("mutation", [None, "owner", "selection", "digest", "no_evidence"])
+def test_missing_cocotb_transport_requires_authenticated_process_failure(
+    tmp_path: Path, mutation: str | None
+) -> None:
+    from booley.flows.sim.campaign.codec import decode_simulation_result
+    from booley.flows.sim.campaign.store import _validate_result_selection
+    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+
+    document = json.loads(_simulation_result("aborted"))
+    document["observations"][0]["detail"] = {
+        "reason": "spawn failed",
+        "termination": "adapter_protocol",
+        "code": "adapter_protocol",
+    }
+    payload = {
+        "$schema": "booley.simulation-infrastructure-failure/v1",
+        "attempt_id": document["attempt_id"],
+        "work_item_id": document["work_item_id"],
+        "selected_tests": ["smoke"],
+        "source": "process",
+        "code": "adapter_protocol",
+        "termination": "adapter_protocol",
+    }
+    if mutation == "selection":
+        payload["selected_tests"] = ["other"]
+    raw = canonical_json_bytes(payload)
+    (tmp_path / "failure.json").write_bytes(raw)
+    import hashlib
+
+    reference = {
+        "kind": "simulation_infrastructure_failure",
+        "path": "failure.json",
+        "bytes": len(raw),
+        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "owner": document["attempt_id"],
+    }
+    if mutation == "owner":
+        reference["owner"] = "550e8400-e29b-41d4-a716-446655440002"
+    if mutation == "digest":
+        reference["sha256"] = "sha256:" + "0" * 64
+    document["evidence"] = [] if mutation == "no_evidence" else [reference]
+    result = decode_simulation_result(canonical_json_bytes(document))
+    item = {"kind": "cocotb_batch", "selection": {"kind": "named", "names": ("smoke",)}}
+    if mutation is None:
+        _validate_result_selection(item, result, tmp_path)
+    else:
+        with pytest.raises(SimulationCampaignIntegrityError):
+            _validate_result_selection(item, result, tmp_path)
+
+
+@pytest.mark.parametrize("failure_kind", ["infrastructure", "design"])
+def test_missing_cocotb_transport_requires_real_adapter_guard(
+    tmp_path: Path, failure_kind: str
+) -> None:
+    import hashlib
+
+    from booley.flows.sim.adapter_transport import (
+        AdapterResult,
+        AdapterTestResult,
+        AdapterTransportIdentity,
+        write_adapter_result,
+    )
+    from booley.flows.sim.campaign.codec import decode_simulation_result
+    from booley.flows.sim.campaign.store import _validate_result_selection
+    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+
+    document = json.loads(_simulation_result("aborted"))
+    path = tmp_path / "adapter.json"
+    identity = AdapterTransportIdentity("cocotb", "token", "target", ("smoke",), path)
+    termination = "disk_budget" if failure_kind == "infrastructure" else "missing_input"
+    document["observations"][0]["detail"] = {"reason": "guard", "termination": termination}
+    if failure_kind == "design":
+        termination = "timeout"
+        failure_kind = "timeout"
+    verdict = "timeout" if termination == "timeout" else "fail"
+    write_adapter_result(
+        identity,
+        AdapterResult(
+            passed=False,
+            inconclusive=False,
+            sva_errors=0,
+            tests=("smoke",),
+            simulator_returncode=0,
+            termination=termination,
+            failure_kind=failure_kind,
+            detail="guard",
+            test_results=(
+                AdapterTestResult("smoke", verdict, 0.0, "guard", termination, failure_kind),
+            ),
+        ),
+    )
+    raw = path.read_bytes()
+    document["evidence"] = [
+        {
+            "kind": "simulation_adapter_result",
+            "path": "adapter.json",
+            "owner": document["attempt_id"],
+            "bytes": len(raw),
+            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        }
+    ]
+    result = decode_simulation_result(canonical_json_bytes(document))
+    item = {"kind": "cocotb_batch", "selection": {"kind": "named", "names": ("smoke",)}}
+    if failure_kind == "infrastructure":
+        _validate_result_selection(item, result, tmp_path)
+    else:
+        with pytest.raises(SimulationCampaignIntegrityError, match="authenticated transport"):
+            _validate_result_selection(item, result, tmp_path)
+
+
+@pytest.mark.parametrize("count", [1, 129])
+def test_cocotb_guard_source_reconciles_bounded_unicode_detail(count: int) -> None:
+    from booley.flows.sim.campaign.store import _validate_cocotb_source
+
+    full_detail = "watchdog: " + "界" * 400
+    limit = 16 if count > 128 else 768
+    bounded = full_detail.encode("utf-8")[-limit:].decode("utf-8", errors="ignore")
+    observations = tuple(
+        {
+            "test": f"test_{i}",
+            "execution": "aborted",
+            "failure_class": "infrastructure",
+            "functional": "not_observed",
+            "assertions": "not_observed",
+            "detail": {"reason": bounded},
+        }
+        for i in range(count)
+    )
+    source = [
+        {"test": item["test"], "verdict": "fail", "detail": full_detail} for item in observations
+    ]
+    guards = frozenset(item["test"] for item in observations)
+    _validate_cocotb_source(source, observations, infrastructure_tests=guards)
+    observations[0]["detail"]["reason"] = "unrelated"
+    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
+        _validate_cocotb_source(source, observations, infrastructure_tests=guards)
+
+
+def test_unfiltered_cocotb_infrastructure_abort_requires_provenance(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign.codec import decode_simulation_result
+    from booley.flows.sim.campaign.store import _validate_result_selection
+    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+
+    document = json.loads(_simulation_result("aborted"))
+    document["observations"][0]["test"] = None
+    result = decode_simulation_result(canonical_json_bytes(document))
+    item = {"kind": "cocotb_batch", "selection": {"kind": "unfiltered", "names": ()}}
+    with pytest.raises(SimulationCampaignIntegrityError, match="authenticated"):
+        _validate_result_selection(item, result, tmp_path)

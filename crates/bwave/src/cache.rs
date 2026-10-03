@@ -527,7 +527,7 @@ fn build_virtuals(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<VirtualEntry>
             &resolved,
             &prior_transitions,
             &real_transitions,
-            cache.sim_start_tick,
+            0,
             cache.sim_end_tick,
         );
 
@@ -641,14 +641,19 @@ fn compute_toggle_pct(value_hist: &HashMap<String, u64>, width: u32) -> f64 {
         return 0.0;
     }
     let n_nibbles = ((width + 3) / 4) as usize;
-    let padded: Vec<Vec<u8>> = value_hist
+    let padded: Vec<Vec<Option<u8>>> = value_hist
         .keys()
         .map(|v| {
-            let nibs: Vec<u8> = v
+            let nibs: Vec<Option<u8>> = v
                 .chars()
-                .map(|c| c.to_digit(16).unwrap_or(0) as u8)
+                .map(|c| c.to_digit(16).map(|digit| digit as u8))
                 .collect();
-            let mut p = vec![0u8; n_nibbles.saturating_sub(nibs.len())];
+            let padding = if nibs.first() == Some(&None) {
+                None
+            } else {
+                Some(0u8)
+            };
+            let mut p = vec![padding; n_nibbles.saturating_sub(nibs.len())];
             p.extend(nibs);
             p
         })
@@ -659,8 +664,8 @@ fn compute_toggle_pct(value_hist: &HashMap<String, u64>, width: u32) -> f64 {
         let bit_in_nib = bit_pos % 4;
         let (mut s0, mut s1) = (false, false);
         for val in &padded {
-            if nib_idx < val.len() {
-                if val[nib_idx] & (1 << bit_in_nib) != 0 {
+            if let Some(Some(nibble)) = val.get(nib_idx) {
+                if nibble & (1 << bit_in_nib) != 0 {
                     s1 = true;
                 } else {
                     s0 = true;
@@ -689,12 +694,79 @@ pub struct CacheStatsEntry {
     pub time_in_state: HashMap<String, u64>,
 }
 
+fn query_reset_deassert_tick(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<u64> {
+    if !cfg.with_reset && !cfg.async_mode {
+        find_reset_deassert_tick(cache, cfg)
+    } else {
+        None
+    }
+}
+
+/// Scan actual changes separately from positive-duration occupied runs.
+fn scan_stats(
+    transitions: &[(u64, String)],
+    start: u64,
+    end: u64,
+    strict_boundary: bool,
+    initial: &str,
+    name: String,
+    width: u32,
+) -> CacheStatsEntry {
+    let mut stats = CacheStatsEntry {
+        name,
+        width,
+        transitions: 0,
+        toggle_pct: 0.0,
+        value_pct: 0.0,
+        value_hist: HashMap::new(),
+        time_in_state: HashMap::new(),
+    };
+    let mut last_tick = start;
+    let mut last_value = initial.to_string();
+    for (tick, value) in transitions {
+        // Initialization at zero establishes a state, not a transition.
+        if *tick < start || (*tick == start && (start == 0 || strict_boundary)) {
+            last_value = value.clone();
+            continue;
+        }
+        if *tick > end {
+            break;
+        }
+        if *value == last_value {
+            continue;
+        }
+        record_occupied_run(&mut stats, &last_value, tick.saturating_sub(last_tick));
+        stats.transitions += 1;
+        last_value = value.clone();
+        last_tick = *tick;
+    }
+    record_occupied_run(&mut stats, &last_value, end.saturating_sub(last_tick));
+    stats.toggle_pct = compute_toggle_pct(&stats.value_hist, width);
+    let known_values = stats
+        .value_hist
+        .keys()
+        .filter(|value| value.chars().all(|digit| digit.is_ascii_hexdigit()))
+        .count();
+    stats.value_pct = compute_value_pct(known_values, width);
+    stats
+}
+
+fn record_occupied_run(stats: &mut CacheStatsEntry, value: &str, elapsed: u64) {
+    if elapsed > 0 {
+        *stats.time_in_state.entry(value.to_string()).or_insert(0) += elapsed;
+        *stats.value_hist.entry(value.to_string()).or_insert(0) += 1;
+    }
+}
+
 /// Run stats query from cache.
 pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let matched = cache.match_signals(&cfg.patterns);
     let virtuals = build_virtuals(cache, cfg);
 
-    let total_ticks = cache.sim_end_tick.saturating_sub(cache.sim_start_tick);
+    let sync_mode = !cfg.async_mode;
+    let reset_deassert_tick = query_reset_deassert_tick(cache, cfg);
+    let effective_start = reset_deassert_tick.unwrap_or(0);
+    let total_ticks = cache.sim_end_tick.saturating_sub(effective_start);
     let total_ns = (total_ticks as f64 * cache.ticks_to_ns) as i64;
 
     if matched.is_empty() && virtuals.is_empty() {
@@ -726,15 +798,6 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
     }
     let radix_map = build_radix_map(cache, &matched, cfg);
-    let sync_mode = !cfg.async_mode;
-
-    // Determine reset deassert tick for stats rebasing
-    let reset_deassert_tick = if !cfg.with_reset && sync_mode {
-        find_reset_deassert_tick(cache, cfg)
-    } else {
-        None
-    };
-
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let stderr = io::stderr();
@@ -766,7 +829,6 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // at the deassert tick. Signals sharing clock's data_offset use > T
     // when clock_before_reset is true; all others use >= T.
     let mut entries: Vec<CacheStatsEntry> = Vec::new();
-    let effective_start = reset_deassert_tick.unwrap_or(cache.sim_start_tick);
 
     // Find clock signal data_offset for boundary disambiguation
     let clock_group_id: Option<u64> = if reset_deassert_tick.is_some() && !cache.clock_id.is_empty()
@@ -788,102 +850,29 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let sig = &cache.signals[sig_idx];
         let is_clock_sig = clock_group_id == Some(sig.group_id);
 
-        let mut stats = CacheStatsEntry {
-            name: sig.name.clone(),
-            width: sig.width,
-            transitions: 0,
-            toggle_pct: 0.0,
-            value_pct: 0.0,
-            value_hist: HashMap::new(),
-            time_in_state: HashMap::new(),
-        };
-
-        let mut last_tick = effective_start;
-        let mut last_value = "x".to_string();
-
-        // Clock signals at the deassert tick: use > T if clock came before
-        // reset in VCD file order (its event was cleared by rebase), else >= T.
-        let use_strict =
+        let strict_boundary =
             is_clock_sig && cache.clock_before_reset_at_deassert && reset_deassert_tick.is_some();
-        if use_strict {
-            for (tick, val) in &transitions {
-                if *tick > effective_start {
-                    break;
-                }
-                last_value = val.clone();
-            }
-        } else {
-            for (tick, val) in &transitions {
-                if *tick >= effective_start {
-                    break;
-                }
-                last_value = val.clone();
-            }
-        }
-        let count_from = if use_strict {
-            effective_start + 1
-        } else {
-            effective_start
-        };
-        for (tick, val) in &transitions {
-            if *tick < count_from {
-                continue;
-            }
-            // Same-value rewrites (VCD dump noise) are not transitions:
-            // FST dedups them at write time, and counting them here made
-            // the metric depend on the simulator's dump style.
-            if *val == last_value {
-                continue;
-            }
-            let elapsed = tick.saturating_sub(last_tick);
-            *stats.time_in_state.entry(last_value.clone()).or_insert(0) += elapsed;
-            stats.transitions += 1;
-            *stats.value_hist.entry(val.clone()).or_insert(0) += 1;
-            last_value = val.clone();
-            last_tick = *tick;
-        }
-        // Finalize: time from last change to sim_end
-        let final_elapsed = cache.sim_end_tick.saturating_sub(last_tick);
-        *stats.time_in_state.entry(last_value).or_insert(0) += final_elapsed;
-        stats.toggle_pct = compute_toggle_pct(&stats.value_hist, stats.width);
-        stats.value_pct = compute_value_pct(stats.value_hist.len(), stats.width);
-
-        entries.push(stats);
+        entries.push(scan_stats(
+            &transitions,
+            effective_start,
+            cache.sim_end_tick,
+            strict_boundary,
+            "x",
+            sig.name.clone(),
+            sig.width,
+        ));
     }
 
-    // Virtual signal stats
     for ve in &virtuals {
-        let mut stats = CacheStatsEntry {
-            name: ve.name.clone(),
-            width: 1,
-            transitions: 0,
-            toggle_pct: 0.0,
-            value_pct: 0.0,
-            value_hist: HashMap::new(),
-            time_in_state: HashMap::new(),
-        };
-
-        let mut last_tick = effective_start;
-        let mut last_value = "0".to_string();
-
-        for (tick, val) in &ve.transitions {
-            if *tick < effective_start {
-                last_value = val.clone();
-                continue;
-            }
-            let elapsed = tick.saturating_sub(last_tick);
-            *stats.time_in_state.entry(last_value.clone()).or_insert(0) += elapsed;
-            stats.transitions += 1;
-            *stats.value_hist.entry(val.clone()).or_insert(0) += 1;
-            last_value = val.clone();
-            last_tick = *tick;
-        }
-        let final_elapsed = cache.sim_end_tick.saturating_sub(last_tick);
-        *stats.time_in_state.entry(last_value).or_insert(0) += final_elapsed;
-        stats.toggle_pct = compute_toggle_pct(&stats.value_hist, stats.width);
-        stats.value_pct = compute_value_pct(stats.value_hist.len(), stats.width);
-
-        entries.push(stats);
+        entries.push(scan_stats(
+            &ve.transitions,
+            effective_start,
+            cache.sim_end_tick,
+            false,
+            "0",
+            ve.name.clone(),
+            1,
+        ));
     }
 
     // Sort by transitions descending
@@ -1057,15 +1046,11 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         // false all-clear. Total miss is the same hard error as elsewhere.
         exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
     }
-    let total_ticks = cache.sim_end_tick.saturating_sub(cache.sim_start_tick);
     let sync_mode = !cfg.async_mode;
 
-    let reset_deassert_tick = if !cfg.with_reset && sync_mode {
-        find_reset_deassert_tick(cache, cfg)
-    } else {
-        None
-    };
-    let effective_start = reset_deassert_tick.unwrap_or(cache.sim_start_tick);
+    let reset_deassert_tick = query_reset_deassert_tick(cache, cfg);
+    let effective_start = reset_deassert_tick.unwrap_or(0);
+    let total_ticks = cache.sim_end_tick.saturating_sub(effective_start);
 
     let radix_map = build_radix_map(cache, &matched, cfg);
     let stdout = io::stdout();
@@ -1076,22 +1061,22 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let transitions = cache.read_transitions(sig_idx);
         let sig = &cache.signals[sig_idx];
 
-        let count_from = effective_start;
         let mut trans_count = 0u64;
         let mut last_value = "x".to_string();
         for (tick, val) in &transitions {
-            if *tick >= count_from {
+            if *tick < effective_start || (*tick == 0 && effective_start == 0) {
+                last_value = val.clone();
+                continue;
+            }
+            if *tick > cache.sim_end_tick {
                 break;
+            }
+            if *val != last_value {
+                trans_count += 1;
             }
             last_value = val.clone();
         }
-        let stuck_value = last_value.clone();
-        for (tick, _) in &transitions {
-            if *tick < count_from {
-                continue;
-            }
-            trans_count += 1;
-        }
+        let stuck_value = last_value;
 
         if trans_count > 0 {
             continue;
@@ -1934,7 +1919,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 let _ = writeln!(err,
                     "ERROR: --at-time {} (cycle) is beyond simulation range (sim length: {} cycles)",
                     at_time, total_cycles);
-                let sim_start_ns = (cache.sim_start_tick as f64 * cache.ticks_to_ns) as i64;
+                let sim_start_ns = (effective_start as f64 * cache.ticks_to_ns) as i64;
                 let sim_end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
                 let _ = writeln!(err,
                     "HINT: did you mean --at-time {} with --async? In sync mode, --at-time expects a cycle number (0..{}). Simulation time range: {}ns..{}ns",
@@ -2839,7 +2824,7 @@ pub fn list_signals_from_cache(
         } else {
             Some(cache.clock_id.clone())
         };
-        let total_ticks = cache.sim_end_tick.saturating_sub(cache.sim_start_tick);
+        let total_ticks = cache.sim_end_tick;
         // An empty *store* (not an empty match) rides along as a warning so
         // JSON consumers can tell "bad pattern" from "bad trace". It ALSO
         // goes to stderr like the text path does — stderr is free in JSON
@@ -3559,6 +3544,62 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn issue_1098_virtual_and_real_statistics_share_occupied_run_semantics() {
+        let events = vec![
+            (0, "1".to_string()),
+            (5, "1".to_string()),
+            (10, "0".to_string()),
+            (20, "1".to_string()),
+            (30, "0".to_string()),
+        ];
+        for initial in ["x", "0"] {
+            let stats = super::scan_stats(&events, 0, 30, false, initial, "held".into(), 1);
+            assert_eq!(stats.transitions, 3);
+            assert_eq!(stats.value_hist.get("1"), Some(&2));
+            assert_eq!(stats.value_hist.get("0"), Some(&1));
+            assert_eq!(stats.time_in_state.get("1"), Some(&20));
+            assert_eq!(stats.time_in_state.get("0"), Some(&10));
+            assert!(!stats.time_in_state.contains_key("x"));
+        }
+    }
+
+    #[test]
+    fn issue_1098_unknown_occupancy_does_not_inflate_binary_coverage() {
+        for unknown in ["x", "z"] {
+            let events = vec![(10, "0".into()), (20, "1".into())];
+            let stats = super::scan_stats(&events, 0, 30, false, unknown, "late".into(), 1);
+            assert_eq!(stats.time_in_state.get(unknown), Some(&10));
+            assert_eq!(stats.value_hist.get(unknown), Some(&1));
+            assert_eq!(stats.value_pct, 100.0);
+            let only_one =
+                super::scan_stats(&[(10, "1".into())], 0, 20, false, unknown, "late".into(), 1);
+            assert_eq!(only_one.value_pct, 50.0);
+            assert_eq!(only_one.toggle_pct, 0.0);
+            let wide = super::scan_stats(
+                &[(10, "80".into())],
+                0,
+                20,
+                false,
+                unknown,
+                "wide".into(),
+                8,
+            );
+            assert_eq!(wide.toggle_pct, 0.0);
+        }
+        let mixed = super::scan_stats(
+            &[(0, "x0".into()), (10, "z1".into())],
+            0,
+            20,
+            false,
+            "x",
+            "mixed".into(),
+            8,
+        );
+        assert_eq!(mixed.value_pct, 0.0);
+        assert_eq!(mixed.toggle_pct, 12.5);
+    }
+
     use super::*;
     use std::io::BufReader;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -470,3 +470,38 @@ def test_simulation_attempt_rejects_access_and_directory_kinds() -> None:
     document["run_directory"]["kind"] = "unknown"  # type: ignore[index]
     with pytest.raises(SimulationCampaignIntegrityError, match="directory kind"):
         codec.decode_simulation_attempt(codec.canonical_json_bytes(document))
+
+
+def _infrastructure_build_abort() -> dict[str, object]:
+    document = json.loads(_simulation_result("aborted"))
+    document["build_result"]["state"] = "infrastructure_error"
+    document["bundle_id"] = None
+    document["executable_snapshot"] = None
+    return document
+
+
+def test_infrastructure_build_abort_has_no_executable_snapshot() -> None:
+    document = _infrastructure_build_abort()
+    result = codec.decode_simulation_result(codec.canonical_json_bytes(document))
+    assert result.document["grade"] == "error"
+
+
+@pytest.mark.parametrize("mutation", ["design", "bundle", "observed", "runtime_inputs"])
+def test_infrastructure_build_abort_rejects_forged_execution(mutation: str) -> None:
+    document = _infrastructure_build_abort()
+    if mutation == "design":
+        document["build_result"]["state"] = "design_failure"
+    elif mutation == "bundle":
+        document["bundle_id"] = "6ba7b810-9dad-41d1-80b4-00c04fd430c8"
+    elif mutation == "observed":
+        document["observations"][0].update(
+            execution="completed", failure_class=None, functional="pass", assertions="clean"
+        )
+    else:
+        document["runtime_inputs"] = [{}]
+    with pytest.raises(SimulationCampaignIntegrityError):
+        codec.decode_simulation_result(codec.canonical_json_bytes(document))
+
+
+def test_launched_abort_still_requires_snapshot() -> None:
+    _reject_result(("executable_snapshot",), None, "aborted")
