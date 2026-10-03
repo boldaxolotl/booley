@@ -2211,3 +2211,53 @@ def test_issue_1108_wrapper_preserves_native_input_errors(monkeypatch, extra):
     with pytest.raises(SystemExit) as exc:
         bwave.cmd_query(argparse.Namespace(extra=extra))
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["value", "--at", "0", "--limit", "2", "--limit=3"],
+        ["value", "--at", "0", "--limit"],
+        ["value", "--at", "0", "--limit=bad"],
+    ],
+)
+def test_issue_1108_invalid_limits_reach_native_dispatch(monkeypatch, capsys, extra):
+    from booley.bwave import cli as bwave
+
+    captured = []
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/tmp/trace.fst")
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave"])
+    monkeypatch.setattr(bwave, "_run", lambda args: captured.extend(args) or 2)
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra.copy()))
+    assert exc.value.code == 2
+    assert captured == ["bwave", "value", "/tmp/trace.fst", *extra[1:]]
+    assert "--wrapper-warning" not in captured
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    ("extra", "diagnostic"),
+    [
+        (["--wave", "--stats"], "multiple query modes are mutually exclusive"),
+        (["--distance", "a"], "--distance requires PATTERN VALUE"),
+    ],
+)
+def test_issue_1108_invalid_legacy_modes_fail_before_dispatch(
+    monkeypatch, capsys, extra, diagnostic
+):
+    from booley.bwave import cli as bwave
+
+    captured = []
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/tmp/trace.fst")
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave"])
+    monkeypatch.setattr(bwave, "_run", lambda args: captured.extend(args) or 0)
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra))
+    assert exc.value.code == 2
+    assert diagnostic in capsys.readouterr().err
+    assert captured == []
