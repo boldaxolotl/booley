@@ -446,7 +446,7 @@ class _FailedBuildGroup:
         )
 
 
-def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
+def _failed_build_plan(failure_path):
     document = _manifest()
     document.pop("fingerprints")
     document["workload"]["pre_sim_build_access"] = (  # type: ignore[index]
@@ -461,6 +461,11 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
             document["target"], workload["source_recipe"], workload["build_recipe"], workload
         )
     plan = create_simulation_campaign_plan(finalize_manifest(document))
+    return plan
+
+
+def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
+    plan = _failed_build_plan(failure_path)
     project = tmp_path / "project"
     project.mkdir()
     (project / "run").mkdir()
@@ -573,3 +578,60 @@ def test_failed_build_partial_terminal_result_fails_closed(
 
     with pytest.raises(SimulationCampaignIntegrityError):
         SimulationCampaign(executor).run(request)
+
+
+def _resume_real_hook_crash(tmp_path, invocation, store):
+    from tests.flows.sim.test_campaign_phase3_integrity import (
+        _executor,
+        _handle,
+        _legacy_disclosures,
+    )
+
+    manifest = store.load_manifest()
+    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
+    project = tmp_path / "project"
+    validated = ValidatedResumeManifest(node, (), (_handle(project),))
+    destination = invocation.parent / "2"
+    destination.mkdir()
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    resumed = SimulationCampaign(
+        _executor(tmp_path / "build", counters, disclosures=_legacy_disclosures())
+    ).run(
+        ResumeCampaignRunRequest(
+            validated,
+            create_simulation_campaign_plan(manifest),
+            project,
+            invocation.parent,
+            CampaignPolicy(),
+            destination,
+            _admission(),
+        )
+    )
+    return resumed, counters
+
+
+@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
+    tmp_path, monkeypatch, access, side
+):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    crash = _CrashOnce(f"{side}:pre_sim_evidence")
+    with pytest.raises(_InjectedProcessDeath):
+        _successful_pre_sim_campaign(tmp_path, monkeypatch, access, checkpoint=crash)
+    assert crash.tripped
+    invocation = tmp_path / "reports/1"
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    old = store.read_pre_sim_firings()
+    assert len(old) == int(side == "after")
+    assert store.scan().interrupted
+    before_bytes = {firing.path: firing.path.read_bytes() for firing in old}
+    resumed, counters = _resume_real_hook_crash(tmp_path, invocation, store)
+    assert counters["launch"] == 1
+    assert len(resumed.current_pre_sim_keys) == 1
+    assert len(resumed.pre_sim_firings) == 1 + len(old)
+    assert all(path.read_bytes() == raw for path, raw in before_bytes.items())
+    assert all(
+        firing.document["stdout_tail"] == "hook-out\n" for firing in resumed.pre_sim_firings
+    )

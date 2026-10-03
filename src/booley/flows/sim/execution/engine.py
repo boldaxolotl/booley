@@ -704,7 +704,10 @@ class SimulationExecution:
         elif isinstance(error, _BuildRootResetError):
             outcome = _build_root_failure(handle, error, started)
         elif isinstance(error, PreSimScopeStoppedError):
-            outcome = _build_slot_failure(handle, SimulationBuildSlotError(str(error)), started)
+            failure = SimulationInfrastructureFailure(
+                "build", "Simulation execution scope stopped", detail=str(error)
+            )
+            outcome = _setup_infrastructure_failure(handle, failure, started)
         else:
             outcome = _setup_failure(handle, str(error), started)
         return replace(outcome, pre_sim_runs=tuple(self._pre_sim_firings))

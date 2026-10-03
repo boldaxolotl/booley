@@ -1314,13 +1314,10 @@ def _assert_child_claim_integrity(invocation, slot_store, plan) -> None:
         store.scan()
 
 
-@pytest.mark.parametrize("scope_stop", [True, False])
+@pytest.mark.parametrize("scope_stop", [True, False, "coverage"])
 def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool
 ) -> None:
-    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
-    from booley.runtime.supervised_execution import current_supervised_execution
-
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
@@ -1334,22 +1331,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     child_finished = threading.Event()
     child_ids = []
 
-    def execute(_attempt, child_id, _entry_digest):
-        if child_id is None:
-            assert child_finished.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            return
-        child_ids.append(child_id)
-        scope = current_supervised_execution()
-        assert scope is not None
-        _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[0]) == 2)
-        for token in slots.snapshot(CLASS_HEAVY)[0]:
-            if str(token.execution_id) == child_id:
-                token.path.unlink()
-        _wait_until(scope.cancelled)
-        child_finished.set()
-        if scope_stop:
-            raise HeavyCapacityError("scope stopped") from PreSimScopeStoppedError("hook stopped")
-        raise HeavyCapacityError("unrelated publication failure")
+    execute = _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path)
 
     capacity = HeavyCapacity(
         _managed(slots, outer),
@@ -1372,6 +1354,35 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     assert slots.snapshot(CLASS_HEAVY) == ([], [])
 
 
+def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+    from booley.runtime.supervised_execution import current_supervised_execution
+
+    def execute(_attempt, child_id, _entry_digest):
+        if child_id is None:
+            assert child_finished.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            return
+        child_ids.append(child_id)
+        scope = current_supervised_execution()
+        assert scope is not None
+        _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[0]) == 2)
+        for token in slots.snapshot(CLASS_HEAVY)[0]:
+            if str(token.execution_id) == child_id:
+                token.path.unlink()
+        _wait_until(scope.cancelled)
+        child_finished.set()
+        if scope_stop == "coverage":
+            try:
+                _execute_pre_cancelled_coverage(tmp_path)
+            except PreSimScopeStoppedError as exc:
+                raise HeavyCapacityError("scope stopped") from exc
+        if scope_stop:
+            raise HeavyCapacityError("scope stopped") from PreSimScopeStoppedError("hook stopped")
+        raise HeavyCapacityError("unrelated publication failure")
+
+    return execute
+
+
 def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop):
     assert len(child_ids) == 1
     terminal = read_json(
@@ -1382,3 +1393,31 @@ def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_
         (campaign_store.root / "child-executions/retired" / f"{child_ids[0]}.json").read_bytes()
     )
     assert retired["terminal_cause"] == terminal["terminal_cause"]
+
+
+def _execute_pre_cancelled_coverage(tmp_path):
+    from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+    from tests.flows.sim.test_campaign_phase3_integrity import (
+        _maximum_hook_selection_plan,
+        _request,
+    )
+
+    plan, _ = _maximum_hook_selection_plan(("alpha",))
+    store = CampaignStore(tmp_path / "coverage-cancel")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+
+    def must_not_spawn(*_args):
+        pytest.fail("pre-cancelled coverage must not construct or spawn execution")
+
+    executor = CoverageAggregateExecutor(plans={}, execution_factory=must_not_spawn)
+    executor.prepare_attempt(request)
+    try:
+        executor.execute(request)
+    except PreSimScopeStoppedError:
+        assert not list(store.root.glob("**/pre-sim/*.json"))
+        raise
+    pytest.fail("actual coverage scope gate must raise PreSimScopeStoppedError")

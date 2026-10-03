@@ -150,6 +150,15 @@ def _invoke_pre_sim(
             time.monotonic() - started,
             bounded_pre_sim_text(str(exc)),
         )
+    return _completed_pre_sim_evidence(commands, test_names, result, time.monotonic() - started)
+
+
+def _completed_pre_sim_evidence(
+    commands: tuple[str, ...],
+    test_names: tuple[str, ...],
+    result: subprocess.CompletedProcess[str],
+    elapsed: float,
+) -> PreSimEvidence:
     detail = result.stderr.strip() or result.stdout.strip()
     status = (
         "passed"
@@ -162,7 +171,7 @@ def _invoke_pre_sim(
         commands,
         test_names,
         status,
-        time.monotonic() - started,
+        elapsed,
         bounded_pre_sim_text(detail),
         result.returncode,
         bounded_pre_sim_text(result.stdout),

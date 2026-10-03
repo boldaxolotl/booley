@@ -55,41 +55,12 @@ class RetainedCampaignStatus:
 def read_pre_sim_firings(manifest_path: Path) -> tuple[PreSimFiring, ...]:
     """Read authenticated firing evidence without exposing a mutable store to Flow."""
     store = _store_for_manifest(manifest_path)
-    store.scan()
-    return store.read_pre_sim_firings()
+    return store.inspect_pre_sim_firings()
 
 
 def collect_pre_sim_firings(manifest_path: Path) -> tuple[PreSimFiring, ...]:
     """Follow the bounded prerequisite DAG and deduplicate by full firing identity."""
-    pending = [(manifest_path, None, frozenset())]
-    visited: set[str] = set()
-    firings = {}
-    for _ in range(4096):
-        if not pending:
-            return tuple(firings.values())
-        path, expected, ancestors = pending.pop()
-        store = _store_for_manifest(path)
-        manifest = store.load_manifest()
-        if expected is not None and manifest_digest(manifest) != expected:
-            raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
-        campaign_id = str(manifest.document["campaign_id"])
-        if campaign_id in ancestors:
-            raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
-        if campaign_id in visited:
-            continue
-        visited.add(campaign_id)
-        for firing in store.read_pre_sim_firings():
-            firings[firing.key] = firing
-        for entry in manifest.document["prerequisites"]:
-            reference = entry["manifest"]
-            pending.append(
-                (
-                    store.root.parents[2] / reference["path"],
-                    reference["sha256"],
-                    ancestors | {campaign_id},
-                )
-            )
-    raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
+    return _store_for_manifest(manifest_path).collect_pre_sim_firings()
 
 
 def read_invocation_pre_sim_firings(invocation: Path) -> tuple[PreSimFiring, ...]:

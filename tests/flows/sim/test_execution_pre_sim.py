@@ -102,3 +102,32 @@ def test_legacy_two_groups_retain_both_real_hooks_after_second_integrity_failure
     assert all(firing.stdout_tail == "actual-hook\n" for firing in outcome.pre_sim_runs)
     lines = SimulateFlow._pre_sim_output_lines(outcome)
     assert "for sim_a/a: rc=0" in lines[0] and "for sim_a/b: rc=0" in lines[1]
+
+
+def test_legacy_scope_stop_reports_execution_failure_with_actual_hook_evidence(tmp_path):
+    import time
+
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
+    from booley.flows.sim.execution.engine import SimulationExecution
+
+    handle = SimpleNamespace(project_root=tmp_path, selector="sim", identity="fixture#sim")
+    evidence = run_pre_sim_commands(
+        handle,
+        test_names=("smoke",),
+        build_root=tmp_path / "build",
+        eda_tool="icarus",
+        timeout_s=5,
+        commands=("echo retained-hook",),
+    )
+    assert evidence.returncode == 0
+    execution = SimulationExecution(
+        invoke=lambda *_args, **_kwargs: None, options=SimulationOptions()
+    )
+    execution._pre_sim_firings = [evidence]
+    outcome = execution._group_exception_outcome(
+        handle, PreSimScopeStoppedError("lost execution lease"), time.monotonic()
+    )
+    assert outcome.infrastructure_failure.message == "Simulation execution scope stopped"
+    assert outcome.infrastructure_failure.detail == "lost execution lease"
+    assert outcome.pre_sim_runs == (evidence,)
+    assert outcome.pre_sim_runs[0].stdout_tail == "retained-hook\n"

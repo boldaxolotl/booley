@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
@@ -19,17 +20,14 @@ from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime, utc_n
 
 from .codec import (
     MANIFEST_MAX_BYTES,
-    RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
-    decode_simulation_attempt,
 )
 from .planning import manifest_digest
 
 if TYPE_CHECKING:
     from .coordinator import WorkExecutionRequest
     from .model import SimulationAttempt, SimulationCampaignManifest
-    from .store import CampaignStore
 
 _SCHEMA = "booley.pre-sim-evidence/v1"
 _FIELDS = frozenset(
@@ -89,13 +87,18 @@ def _reference(path: Path, raw: bytes, owner: str) -> dict[str, object]:
 
 
 def publish_pre_sim_firing(
-    request: WorkExecutionRequest, evidence: PreSimEvidence, *, ordinal: int = 1
+    request: WorkExecutionRequest,
+    evidence: PreSimEvidence,
+    *,
+    ordinal: int = 1,
+    checkpoint: Callable[[str], None] | None = None,
 ) -> Mapping[str, object]:
     """Publish before later build checks or simulator work can fail."""
+    decoder = PreSimFiringDecoder(request.manifest)
     document = {
         "$schema": _SCHEMA,
         "campaign_id": request.manifest.document["campaign_id"],
-        "manifest_sha256": manifest_digest(request.manifest),
+        "manifest_sha256": decoder.manifest_sha256,
         "work_item_id": request.work_item["work_item_id"],
         "attempt_id": request.attempt_id,
         "producer_invocation_id": request.producer_invocation_id,
@@ -109,15 +112,33 @@ def publish_pre_sim_firing(
     raw = canonical_json_bytes(document)
     if len(raw) > MANIFEST_MAX_BYTES:
         raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
-    attempt = decode_simulation_attempt(
-        request.store._read(request.attempt_directory / "attempt.json", limit=RECORD_MAX_BYTES)
-    )
-    decode_pre_sim_firing(raw, request.manifest, request.work_item, attempt)
+    attempt = request.store.read_attempt(request.attempt_directory)
+    decoder.decode(raw, request.work_item, attempt)
+    if checkpoint is not None:
+        checkpoint("before:pre_sim_evidence")
     path = request.store.publish_pre_sim_evidence(request.attempt_directory, ordinal, raw)
+    if checkpoint is not None:
+        checkpoint("after:pre_sim_evidence")
     scope = current_supervised_execution()
     if scope is not None and scope.cancelled():
         raise PreSimScopeStoppedError("execution scope stopped after Pre-Sim Commands")
     return _reference(path, raw, request.attempt_id)
+
+
+@dataclass(frozen=True)
+class PreSimFiringDecoder:
+    """Reuse one immutable manifest's authenticated identity across a snapshot read."""
+
+    manifest: SimulationCampaignManifest
+    manifest_sha256: str = dataclass_field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "manifest_sha256", manifest_digest(self.manifest))
+
+    def decode(
+        self, raw: bytes, item: Mapping[str, object], attempt: SimulationAttempt
+    ) -> Mapping[str, object]:
+        return _decode_pre_sim_firing(raw, self.manifest, item, attempt, self.manifest_sha256)
 
 
 def decode_pre_sim_firing(
@@ -126,14 +147,24 @@ def decode_pre_sim_firing(
     item: Mapping[str, object],
     attempt: SimulationAttempt,
 ) -> Mapping[str, object]:
+    return PreSimFiringDecoder(manifest).decode(raw, item, attempt)
+
+
+def _decode_pre_sim_firing(
+    raw: bytes,
+    manifest: SimulationCampaignManifest,
+    item: Mapping[str, object],
+    attempt: SimulationAttempt,
+    authenticated_manifest_sha256: str,
+) -> Mapping[str, object]:
     """Reject unbound, malformed, or over-budget records at the storage boundary."""
     try:
         value = json.loads(raw)
         _validate_fields(value, raw)
-        _validate_attempt_binding(manifest, item, attempt)
+        _validate_attempt_binding(manifest, item, attempt, authenticated_manifest_sha256)
         expected = {
             "campaign_id": manifest.document["campaign_id"],
-            "manifest_sha256": manifest_digest(manifest),
+            "manifest_sha256": authenticated_manifest_sha256,
             "work_item_id": item["work_item_id"],
             "attempt_id": attempt.document["attempt_id"],
             "producer_invocation_id": attempt.document["producer_invocation_id"],
@@ -163,10 +194,10 @@ def decode_pre_sim_firing(
     return MappingProxyType(value)
 
 
-def _validate_attempt_binding(manifest, item, attempt) -> None:
+def _validate_attempt_binding(manifest, item, attempt, authenticated_manifest_sha256) -> None:
     expected = {
         "campaign_id": manifest.document["campaign_id"],
-        "manifest_sha256": manifest_digest(manifest),
+        "manifest_sha256": authenticated_manifest_sha256,
         "workload_sha256": manifest.document["fingerprints"]["workload_sha256"],
         "work_item_id": item["work_item_id"],
         "build_variant_id": item["build_variant_id"],
@@ -213,17 +244,3 @@ def _validate_names(names: object) -> None:
         text = require_str_value(name, field="test name")
         if not text or len(text.encode("utf-8")) > 512:
             raise ValueError("invalid hook test name")
-
-
-def attempt_pre_sim_references(store: CampaignStore, directory: Path) -> list[dict[str, object]]:
-    """Read immutable sidecars through the store's contained regular-file reader."""
-    root = directory / "pre-sim"
-    if root.is_symlink() or (root.exists() and not root.is_dir()):
-        raise SimulationCampaignIntegrityError("invalid Pre-Sim Commands evidence directory")
-    paths = sorted(root.glob("*.json"))
-    return [
-        _reference(
-            path, store._read(path, limit=MANIFEST_MAX_BYTES), directory.name.split("-", 1)[1]
-        )
-        for path in paths
-    ]

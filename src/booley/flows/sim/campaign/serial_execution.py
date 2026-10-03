@@ -93,7 +93,7 @@ from .model import (
     grade_observations,
 )
 from .planning import manifest_digest
-from .pre_sim_evidence import attempt_pre_sim_references, publish_pre_sim_firing
+from .pre_sim_evidence import publish_pre_sim_firing
 from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
 
 
@@ -499,40 +499,31 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             commands=_frozen_hook_commands(request),
         )
         if pre_sim is not None:
-            publish_pre_sim_firing(request, pre_sim)
+            publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
         if pre_sim is None or pre_sim.status == "passed":
             return None
         outcome = _hook_failure_outcome(handle.selector, names, pre_sim)
         elapsed = time.monotonic() - started
-        if pre_sim.status == "spawn_error":
+        infrastructure = pre_sim.status == "spawn_error"
+        if infrastructure:
             outcome = _hook_infrastructure_outcome(outcome, pre_sim.detail)
-            result = _publish_failed_build_result(
-                request,
-                build_directory,
-                build_attempt,
-                outcome,
-                elapsed,
-                infrastructure=True,
-                checkpoint=self._publication_checkpoint,
-            )
-            return _blocked_result(
-                request,
-                build_directory,
-                result,
-                outcome,
-                elapsed,
-                infrastructure=True,
-            )
         result = _publish_failed_build_result(
             request,
             build_directory,
             build_attempt,
             outcome,
             elapsed,
-            infrastructure=False,
+            infrastructure=infrastructure,
             checkpoint=self._publication_checkpoint,
         )
-        return _blocked_result(request, build_directory, result, outcome, elapsed)
+        return _blocked_result(
+            request,
+            build_directory,
+            result,
+            outcome,
+            elapsed,
+            infrastructure=infrastructure,
+        )
 
     def _compile_failure(
         self,
@@ -604,6 +595,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 bindings,
                 access,
                 started,
+                self._publication_checkpoint,
             )
             if failure is not None:
                 return failure
@@ -656,6 +648,7 @@ def _immutable_hook_failure(
     bindings,
     access,
     started,
+    checkpoint,
 ) -> SimulationResult | None:
     if access != "immutable":
         return None
@@ -671,7 +664,7 @@ def _immutable_hook_failure(
         commands=_frozen_hook_commands(request),
     )
     if pre_sim is not None:
-        publish_pre_sim_firing(request, pre_sim)
+        publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
     if project_compile_surface(compile_surface) != surface:
         raise SimulationCampaignIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
@@ -1508,19 +1501,6 @@ def _result(
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
-    grades = [
-        grade_observations(
-            ExecutionObservation(cast(str, item["execution"])),
-            FailureClass(cast(str, item["failure_class"]))
-            if item["failure_class"] is not None
-            else None,
-            FunctionalObservation(cast(str, item["functional"])),
-            AssertionObservation(cast(str, item["assertions"])),
-        )
-        for item in observations
-    ]
-    precedence = {"pass": 0, "inconclusive": 1, "fail": 2, "error": 3}
-    grade = max(grades, key=lambda item: precedence[item.value]).value
     document = {
         "$schema": "booley.simulation-result/v2",
         **_common(request),
@@ -1535,7 +1515,7 @@ def _result(
         "executable_snapshot": snapshot,
         "runtime_inputs": runtime_inputs or [],
         "observations": observations,
-        "grade": grade,
+        "grade": _result_grade(observations),
         "diagnostics": [
             {
                 "severity": "warning",
@@ -1549,10 +1529,26 @@ def _result(
         ],
         "evidence": [
             *evidence,
-            *attempt_pre_sim_references(request.store, request.attempt_directory),
+            *request.store.pre_sim_references(request.attempt_directory),
         ],
     }
     return decode_simulation_result(canonical_json_bytes(document))
+
+
+def _result_grade(observations: list[dict[str, object]]) -> str:
+    grades = [
+        grade_observations(
+            ExecutionObservation(cast(str, item["execution"])),
+            FailureClass(cast(str, item["failure_class"]))
+            if item["failure_class"] is not None
+            else None,
+            FunctionalObservation(cast(str, item["functional"])),
+            AssertionObservation(cast(str, item["assertions"])),
+        )
+        for item in observations
+    ]
+    precedence = {"pass": 0, "inconclusive": 1, "fail": 2, "error": 3}
+    return max(grades, key=lambda item: precedence[item.value]).value
 
 
 def outcome_diagnostics_safe(

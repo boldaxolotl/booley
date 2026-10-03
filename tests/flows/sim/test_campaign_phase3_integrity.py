@@ -256,8 +256,10 @@ def _executor(
     *,
     mutate_snapshot: bool = False,
     disclosures: dict[str, object] | None = None,
+    checkpoint=None,
 ) -> OrdinaryHdlSerialExecutor:
     return OrdinaryHdlSerialExecutor(
+        publication_checkpoint=checkpoint,
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _Execution(
             build_root,
@@ -559,14 +561,8 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
     assert list(request.attempt_directory.glob("pre-sim/*.json")) == []
 
 
-def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
-    from booley.flows.sim.campaign import read_pre_sim_firings
-    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
-    from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.flow import _campaign_pre_sim_details
+def _maximum_hook_selection_plan(names):
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
-
-    names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 
     def transform(document):
         workload = document["workload"]
@@ -586,6 +582,18 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
         )
 
     plan, _disclosures = _pre_sim_plan("immutable", ("true",), transform)
+    return plan, _disclosures
+
+
+def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
+    from booley.flows.sim.campaign import read_pre_sim_firings
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.execution.contract import PreSimEvidence
+    from booley.flows.sim.flow import _campaign_pre_sim_details
+
+    names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
+
+    plan, _disclosures = _maximum_hook_selection_plan(names)
     invocation = tmp_path / "reports/1"
     store = CampaignStore(invocation / "targets/sim/campaign")
     store.publish_manifest(plan.manifest)
@@ -607,7 +615,16 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     assert len(canonical_json_bytes(reference)) < 1024
     firings = read_pre_sim_firings(store.manifest_path)
     assert firings[0].document["test_names"] == names
-    detail = _campaign_pre_sim_details([SimpleNamespace(pre_sim_firings=firings)], invocation)
+    detail = _campaign_pre_sim_details(
+        [
+            SimpleNamespace(
+                pre_sim_firings=firings,
+                producer_invocation_directory=invocation.absolute(),
+                current_pre_sim_keys=frozenset(f.key for f in firings),
+            )
+        ],
+        invocation,
+    )
     assert len(json.dumps(detail["pre_sim_runs"]).encode()) <= 16 * 1024
     assert detail["pre_sim_runs"][0]["test_count"] == 4000
     assert len(detail["pre_sim_runs"][0]["test_names"]) == 8
@@ -807,3 +824,68 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
     assert firings[0].document["returncode"] == 0
     assert firings[0].document["stdout_tail"] == "actual-hook\n"
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
+
+
+def _aggregate_result_bound_fixture(tmp_path):
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.execution.contract import PreSimEvidence
+    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+
+    names = tuple(f"test{index:04d}" for index in range(4000))
+    plan, _ = _maximum_hook_selection_plan(names)
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+    _executor(tmp_path / "build", {}).prepare_attempt(request)
+    for ordinal, name in enumerate(names, 1):
+        publish_pre_sim_firing(
+            request,
+            PreSimEvidence(("true",), (name,), "passed", 0.0, returncode=0),
+            ordinal=ordinal,
+        )
+    document = json.loads(_simulation_result("completed"))
+    document.update(serial_execution._common(request))
+    document["attempt_id"] = request.attempt_id
+    document["executable_snapshot"]["manifest"]["owner"] = request.attempt_id
+    document["evidence"] = store.pre_sim_references(request.attempt_directory)
+    document["observations"] = [
+        serial_execution._observation(
+            SimulationTestOutcome(name=name, verdict="pass", passed=True)
+        )
+        for name in names
+    ]
+    return store, request, document
+
+
+def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_path):
+    from booley.flows.sim.campaign.codec import RECORD_MAX_BYTES, decode_simulation_result
+
+    store, request, document = _aggregate_result_bound_fixture(tmp_path)
+    raw = canonical_json_bytes(document)
+    assert len(document["evidence"]) == len(document["observations"]) == 4000
+    assert len(raw) > RECORD_MAX_BYTES
+    (tmp_path / "result-bound-proof.json").write_text(
+        json.dumps(
+            {
+                "firings": len(document["evidence"]),
+                "observations": len(document["observations"]),
+                "hooked_result_bytes": len(raw),
+                "without_hooks_bytes": len(canonical_json_bytes({**document, "evidence": []})),
+                "record_limit_bytes": RECORD_MAX_BYTES,
+                "fixture": "normalized sidecars and production observation serializer; wire-bound proof, not 4000 shell runs",
+            },
+            indent=2,
+        )
+    )
+    with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
+        store.publish_result(request.work_item["work_item_id"], decode_simulation_result(raw))
+    assert not (request.attempt_directory.parent.parent / "result.json").exists()
+    assert len(store.read_pre_sim_firings()) == 4000
+    without_hooks = {**document, "evidence": []}
+    assert len(canonical_json_bytes(without_hooks)) < RECORD_MAX_BYTES
+    assert (
+        len(decode_simulation_result(canonical_json_bytes(without_hooks)).document["observations"])
+        == 4000
+    )

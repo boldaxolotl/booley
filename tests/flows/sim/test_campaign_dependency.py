@@ -17,21 +17,10 @@ def _origin(tmp_path):
     return origin, digest
 
 
-def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
-    tmp_path, monkeypatch
-):
+def _add_observed_cycles(monkeypatch):
     from dataclasses import replace
 
-    from booley.flows.sim.campaign import collect_pre_sim_firings
-    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-    from booley.flows.sim.campaign.store import CampaignStore
-    from booley.flows.sim.flow import (
-        SimulateFlow,
-        _campaign_pre_sim_details,
-        _campaign_pre_sim_report_lines,
-    )
     from tests.flows.sim.test_campaign_phase3_integrity import _Group
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     original = _Group.launch_snapshot
 
@@ -45,6 +34,22 @@ def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
         )
 
     monkeypatch.setattr(_Group, "launch_snapshot", with_cycles)
+
+
+def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
+    tmp_path, monkeypatch
+):
+    from booley.flows.sim.campaign import collect_pre_sim_firings
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.flow import (
+        SimulateFlow,
+        _campaign_pre_sim_details,
+        _campaign_pre_sim_report_lines,
+    )
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    _add_observed_cycles(monkeypatch)
     baseline_root = tmp_path / "baseline"
     baseline_root.mkdir()
     candidate_root = tmp_path / "candidate"

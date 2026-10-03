@@ -73,7 +73,8 @@ from .model import (
     SimulationResult,
     SimulatorBundle,
 )
-from .pre_sim_evidence import PreSimFiring, attempt_pre_sim_references, decode_pre_sim_firing
+from .planning import manifest_digest
+from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder, _reference
 
 _T = TypeVar("_T", bound=SimulationCampaignDocument)
 _SUMMARY_SCHEMA = "booley.simulation-campaign-summary/v1"
@@ -501,7 +502,7 @@ class CampaignStore:
         for reference in references:
             self._authenticate_reference(attempt_directory, reference)
         hook_refs = [ref for ref in references if ref["kind"] == "pre_sim_commands"]
-        actual_refs = attempt_pre_sim_references(self, attempt_directory)
+        actual_refs = self.pre_sim_references(attempt_directory)
         if hook_refs != actual_refs:
             raise SimulationCampaignIntegrityError("Pre-Sim Commands result references disagree")
         if actual_refs:
@@ -511,10 +512,10 @@ class CampaignStore:
                 for item in manifest.document["work_items"]
                 if item["work_item_id"] == document["work_item_id"]
             )
+            decoder = PreSimFiringDecoder(manifest)
             for reference in actual_refs:
-                decode_pre_sim_firing(
+                decoder.decode(
                     self._read(attempt_directory / reference["path"], limit=MANIFEST_MAX_BYTES),
-                    manifest,
                     item,
                     attempt,
                 )
@@ -529,9 +530,77 @@ class CampaignStore:
             bundle,
         )
 
-    def read_pre_sim_firings(self) -> tuple[PreSimFiring, ...]:
+    def read_attempt(self, directory: Path) -> SimulationAttempt:
+        """Read one immutable contained attempt through the storage boundary."""
+        return decode_simulation_attempt(
+            self._read(directory / "attempt.json", limit=RECORD_MAX_BYTES)
+        )
+
+    def pre_sim_references(self, directory: Path) -> list[dict[str, object]]:
+        """Read contained immutable sidecars in their ordinal order."""
+        root = directory / "pre-sim"
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            raise SimulationCampaignIntegrityError("invalid Pre-Sim Commands evidence directory")
+        paths = sorted(root.glob("*.json"))
+        if len(paths) > 4096:
+            raise SimulationCampaignIntegrityError("too many Pre-Sim Commands firings")
+        return [
+            _reference(
+                path, self._read(path, limit=MANIFEST_MAX_BYTES), directory.name.split("-", 1)[1]
+            )
+            for path in paths
+        ]
+
+    def collect_pre_sim_firings(self) -> tuple[PreSimFiring, ...]:
+        """Read the bounded prerequisite DAG through its storage owner."""
+        pending = [(self.manifest_path, None, frozenset())]
+        visited: set[str] = set()
+        firings = {}
+        for _ in range(4096):
+            if not pending:
+                return tuple(firings.values())
+            path, expected, ancestors = pending.pop()
+            if path.name != "manifest.json" or path.parent.name != "campaign":
+                raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
+            store = CampaignStore(path.parent)
+            manifest = store.load_manifest()
+            if expected is not None and manifest_digest(manifest) != expected:
+                raise SimulationCampaignIntegrityError(
+                    "prerequisite hook manifest digest disagrees"
+                )
+            campaign_id = str(manifest.document["campaign_id"])
+            if campaign_id in ancestors:
+                raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
+            if campaign_id in visited:
+                continue
+            visited.add(campaign_id)
+            for firing in store.inspect_pre_sim_firings(manifest):
+                firings[firing.key] = firing
+            for entry in manifest.document["prerequisites"]:
+                reference = entry["manifest"]
+                pending.append(
+                    (
+                        store.root.parents[2] / reference["path"],
+                        reference["sha256"],
+                        ancestors | {campaign_id},
+                    )
+                )
+        raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
+
+    def inspect_pre_sim_firings(
+        self, manifest: SimulationCampaignManifest | None = None
+    ) -> tuple[PreSimFiring, ...]:
+        """Return firings from the same authenticated snapshot used by the full scan."""
+        manifest = manifest or self.load_manifest()
+        firings: list[PreSimFiring] = []
+        self._scan_manifest(manifest, _manifest_sha256(manifest), pre_sim_receiver=firings.extend)
+        return tuple(firings)
+
+    def read_pre_sim_firings(
+        self, manifest: SimulationCampaignManifest | None = None
+    ) -> tuple[PreSimFiring, ...]:
         """Authenticate every retained attempt, including interrupted and older attempts."""
-        manifest = self.load_manifest()
+        manifest = manifest or self.load_manifest()
         firings: list[PreSimFiring] = []
         for item in cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]):
             work_root = self.work_item_directory(cast(str, item["work_item_id"]))
@@ -556,7 +625,7 @@ class CampaignStore:
         attempt = decode_simulation_attempt(
             self._read(directory / "attempt.json", limit=RECORD_MAX_BYTES)
         )
-        references = attempt_pre_sim_references(self, directory)
+        references = self.pre_sim_references(directory)
         if (
             directory.name
             != f"{attempt.document['attempt_ordinal']:04d}-{attempt.document['attempt_id']}"
@@ -564,10 +633,15 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError("hook attempt directory owner disagrees")
         if len(references) > 4096:
             raise SimulationCampaignIntegrityError("too many Pre-Sim Commands firings")
+        decoder = PreSimFiringDecoder(manifest)
         for ordinal, reference in enumerate(references, start=1):
             path = directory / cast(str, reference["path"])
             raw = self._read(path, limit=MANIFEST_MAX_BYTES)
-            document = decode_pre_sim_firing(raw, manifest, item, attempt)
+            if _reference(path, raw, attempt.document["attempt_id"]) != reference:
+                raise SimulationCampaignIntegrityError(
+                    "Pre-Sim Commands sidecar changed during read"
+                )
+            document = decoder.decode(raw, item, attempt)
             if document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
                 raise SimulationCampaignIntegrityError("Pre-Sim Commands ordinal disagrees")
             completed = (
@@ -742,8 +816,12 @@ class CampaignStore:
         self,
         manifest: SimulationCampaignManifest,
         manifest_sha256: str,
+        *,
+        pre_sim_receiver: Callable[[tuple[PreSimFiring, ...]], None] | None = None,
     ) -> CampaignRecovery:
-        self.read_pre_sim_firings()
+        firings = self.read_pre_sim_firings(manifest)
+        if pre_sim_receiver is not None:
+            pre_sim_receiver(firings)
         expected_workload = cast(Mapping[str, str], manifest.document["fingerprints"])[
             "workload_sha256"
         ]

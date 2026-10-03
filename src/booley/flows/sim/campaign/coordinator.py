@@ -30,7 +30,6 @@ from .codec import (
     encode_simulation_campaign_manifest,
 )
 from .facts import AcceptanceFacts
-from .inspection import collect_pre_sim_firings
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import WorkloadMismatch, compare_manifests, manifest_digest
 from .pre_sim_evidence import PreSimFiring
@@ -225,6 +224,8 @@ class CampaignOutcome:
     recovery: CampaignRecoveryStatus
     diagnostics: tuple[str, ...] = ()
     pre_sim_firings: tuple[PreSimFiring, ...] = ()
+    current_pre_sim_keys: frozenset[tuple[str, str, str, int]] = frozenset()
+    producer_invocation_directory: Path | None = None
 
 
 def _coverage_attempt_directory(
@@ -335,6 +336,7 @@ class SimulationCampaign:
     ) -> CampaignOutcome:
         self._raise_if_cancelled(request)
         self._preflight_owner(store, manifest, authenticated_sha256, request)
+        before_keys = {firing.key for firing in store.collect_pre_sim_firings()}
         self._run_prerequisites(store, manifest, request, set())
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
@@ -357,7 +359,14 @@ class SimulationCampaign:
                 str(exc), replace(failure_context, coverage_reference=reference)
             ) from exc
         final = _scan_recovery(store, manifest, authenticated_sha256)
-        return _outcome(store, manifest, summary, final, reference)
+        outcome = _outcome(store, manifest, summary, final, reference)
+        return replace(
+            outcome,
+            producer_invocation_directory=request.invocation_directory.absolute(),
+            current_pre_sim_keys=frozenset(
+                f.key for f in outcome.pre_sim_firings if f.key not in before_keys
+            ),
+        )
 
     @staticmethod
     def _raise_if_cancelled(request: CampaignRunRequest) -> None:
@@ -893,7 +902,7 @@ def _outcome(
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
         _recovery_status(store.manifest_path, manifest_digest(manifest), recovery),
-        pre_sim_firings=collect_pre_sim_firings(store.manifest_path),
+        pre_sim_firings=store.collect_pre_sim_firings(),
     )
 
 

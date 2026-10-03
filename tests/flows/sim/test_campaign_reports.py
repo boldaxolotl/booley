@@ -98,12 +98,7 @@ def test_campaign_build_diagnostics_survive_preview_limit() -> None:
     assert preview["build_stage"] == [stage]
 
 
-@pytest.mark.parametrize("interrupted", [False, True])
-def test_resume_separates_historical_hooks_from_real_new_firings(
-    tmp_path, monkeypatch, interrupted
-):
-    from types import SimpleNamespace
-
+def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False):
     from booley.flows.sim.campaign.coordinator import (
         CampaignPolicy,
         ResumeCampaignRunRequest,
@@ -113,7 +108,6 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     from booley.flows.sim.campaign.planning import manifest_digest
     from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
     from booley.flows.sim.campaign.store import CampaignStore
-    from booley.flows.sim.flow import SimulateFlow
     from tests.flows.sim.test_campaign_phase3_integrity import _admission, _executor, _handle
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
@@ -125,8 +119,8 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     node = ValidatedManifestNode(original.manifest_path, manifest, manifest_digest(manifest))
     project = tmp_path / "project"
     validated = ValidatedResumeManifest(node, (), (_handle(project),))
-    invocation = origin.parent / "2"
-    invocation.mkdir()
+    invocation = tmp_path / "external/reports/1" if external else origin.parent / "2"
+    invocation.mkdir(parents=True)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     resumed = SimulationCampaign(_executor(tmp_path / "build", counters)).run(
         ResumeCampaignRunRequest(
@@ -138,6 +132,20 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
             invocation,
             _admission(),
         )
+    )
+    return original, resumed, counters, invocation
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_resume_separates_historical_hooks_from_real_new_firings(
+    tmp_path, monkeypatch, interrupted
+):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.flow import SimulateFlow
+
+    original, resumed, counters, invocation = _resume_hook_campaign(
+        tmp_path, monkeypatch, interrupted
     )
     expected_runs = int(interrupted)
     assert counters == {"compile": expected_runs, "durable_reuse": 0, "launch": expected_runs}
@@ -187,3 +195,27 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
         **options,
     )
     assert resolved.path == outcome.pre_sim_firings[0].path
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_external_resume_number_collision_reports_only_actual_new_firings(
+    tmp_path, monkeypatch, interrupted
+):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.flow import SimulateFlow
+
+    original, resumed, counters, invocation = _resume_hook_campaign(
+        tmp_path, monkeypatch, interrupted, external=True
+    )
+    assert original.producer_invocation_directory.name == invocation.name == "1"
+    assert original.producer_invocation_directory != invocation
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([resumed])
+    assert counters["launch"] == int(interrupted)
+    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
+    assert result.detail["pre_sim_current"] == int(interrupted)
+    assert result.detail["pre_sim_historical"] == 1
+    assert result.report_text.count("pre_run_commands") == int(interrupted)

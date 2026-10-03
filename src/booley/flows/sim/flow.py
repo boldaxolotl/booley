@@ -568,6 +568,51 @@ def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[s
     return lines
 
 
+def _append_missing_report_lines(result: EndpointOutcome, lines: list[str]) -> EndpointOutcome:
+    present = Counter(result.report_text.splitlines())
+    missing = []
+    for line in lines:
+        if present[line]:
+            present[line] -= 1
+        else:
+            missing.append(line)
+    if missing:
+        result.report_text += "\n" + "\n".join(missing)
+    return result
+
+
+def _pre_sim_integrity_failure(result: EndpointOutcome, error: Exception) -> EndpointOutcome:
+    result.exit_code = EXIT_ERROR
+    result.criterion_met = False
+    references = [record.get("reference") for record in result.detail.get("pre_sim_runs", ())]
+    result.detail = {
+        key: value for key, value in result.detail.items() if not key.startswith("pre_sim_")
+    }
+    result.detail.update(
+        pre_sim_unauthenticated_references=references, pre_sim_integrity_error=str(error)
+    )
+    result.report_text = "\n".join(
+        line
+        for line in result.report_text.splitlines()
+        if not line.startswith("pre_run_commands ")
+    )
+    result.report_text += f"\nPre-Sim Commands evidence integrity failure: {error}"
+    return result
+
+
+def _current_pre_sim_keys(
+    outcomes, invocation: Path | None
+) -> frozenset[tuple[str, str, str, int]]:
+    if invocation is None:
+        return frozenset()
+    return frozenset(
+        key
+        for outcome in outcomes
+        if getattr(outcome, "producer_invocation_directory", None) == invocation.absolute()
+        for key in getattr(outcome, "current_pre_sim_keys", ())
+    )
+
+
 def _campaign_pre_sim_details(outcomes, invocation: Path | None) -> dict[str, object]:
     from .execution.pre_sim_reporting import pre_sim_report_line
 
@@ -576,35 +621,24 @@ def _campaign_pre_sim_details(outcomes, invocation: Path | None) -> dict[str, ob
         for outcome in outcomes
         for firing in getattr(outcome, "pre_sim_firings", ())
     }
-    current_id = int(invocation.name) if invocation is not None else None
+    current_keys = _current_pre_sim_keys(outcomes, invocation)
+    manifest_refs = {}
     lines = []
     preview = []
+    preview_full = False
     roles: dict[str, dict[str, object]] = {}
     for firing in firings.values():
         document = firing.document
-        current = document["producer_invocation_id"] == current_id
+        current = firing.key in current_keys
         if current:
             lines.append(pre_sim_report_line(document["target"]["selector"], document))
-        role = str(document["role"])
-        role_detail = roles.setdefault(role, {"total": 0, "current": 0, "manifests": []})
-        role_detail["total"] += 1
-        role_detail["current"] += int(current)
-        manifest_ref = _report_artifact_reference(
-            firing.manifest_path,
-            report_invocation=invocation,
-            external_origin_target=firing.manifest_path.parent.parent,
-            kind="simulation_campaign_manifest",
-            owner=str(document["campaign_id"]),
-            maximum=16 * 1024 * 1024,
-        )
-        if manifest_ref not in role_detail["manifests"]:
-            role_detail["manifests"].append(manifest_ref)
-        role_detail["external_origin_requires_context"] = role_detail.get(
-            "external_origin_requires_context", False
-        ) or (manifest_ref is not None and manifest_ref["path_base"] == "external_origin_target")
-        record = _pre_sim_preview_record(firing, invocation)
-        if len(preview) < 32 and len(json.dumps([*preview, record]).encode("utf-8")) <= 16384:
-            preview.append(record)
+        _register_pre_sim_role(roles, manifest_refs, firing, invocation, current)
+        if not preview_full and len(preview) < 32:
+            record = _pre_sim_preview_record(firing, invocation)
+            if len(json.dumps([*preview, record]).encode("utf-8")) <= 16384:
+                preview.append(record)
+            else:
+                preview_full = True
     return {
         "pre_sim_lines": lines,
         "pre_sim_runs": preview,
@@ -614,6 +648,29 @@ def _campaign_pre_sim_details(outcomes, invocation: Path | None) -> dict[str, ob
         "pre_sim_preview_truncated": len(preview) != len(firings),
         "pre_sim_roles": roles,
     }
+
+
+def _register_pre_sim_role(roles, manifest_refs, firing, invocation, current) -> None:
+    document = firing.document
+    role = str(document["role"])
+    role_detail = roles.setdefault(role, {"total": 0, "current": 0, "manifests": []})
+    role_detail["total"] += 1
+    role_detail["current"] += int(current)
+    if firing.manifest_path not in manifest_refs:
+        manifest_refs[firing.manifest_path] = _report_artifact_reference(
+            firing.manifest_path,
+            report_invocation=invocation,
+            external_origin_target=firing.manifest_path.parent.parent,
+            kind="simulation_campaign_manifest",
+            owner=str(document["campaign_id"]),
+            maximum=16 * 1024 * 1024,
+        )
+    manifest_ref = manifest_refs[firing.manifest_path]
+    if manifest_ref not in role_detail["manifests"]:
+        role_detail["manifests"].append(manifest_ref)
+    role_detail["external_origin_requires_context"] = role_detail.get(
+        "external_origin_requires_context", False
+    ) or (manifest_ref is not None and manifest_ref["path_base"] == "external_origin_target")
 
 
 def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object]:
@@ -646,11 +703,12 @@ def _campaign_pre_sim_report_lines(outcomes, invocation: Path | None) -> list[st
 
     if invocation is None:
         return []
+    current_keys = _current_pre_sim_keys(outcomes, invocation)
     firings = {
         firing.key: firing
         for outcome in outcomes
         for firing in getattr(outcome, "pre_sim_firings", ())
-        if firing.document["producer_invocation_id"] == int(invocation.name)
+        if firing.key in current_keys
     }
     groups: dict[str, list[str]] = {}
     for firing in firings.values():
@@ -2226,6 +2284,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         admission: object | None,
     ) -> EndpointOutcome:
         """Run one immutable preflight with its explicitly borrowed admission."""
+        self._capture_pre_sim_before(prepared)
         if prepared.resume is not None:
             result = self._run_campaign_resume(prepared.resume, admission)
             return self._attach_published_pre_sim(result, prepared.resume.path)
@@ -2236,6 +2295,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         result.detail["mode"] = self._mode.value
         return self._attach_published_pre_sim(result)
+
+    def _capture_pre_sim_before(self, prepared: PreparedSimulationEndpoint) -> None:
+        """Capture authenticated history before any baseline or candidate can execute."""
+        from .campaign import collect_pre_sim_firings, read_invocation_pre_sim_firings
+
+        invocation = self.context._reserved_invocation_dir
+        firings = list(read_invocation_pre_sim_firings(invocation)) if invocation else []
+        if prepared.resume is not None:
+            firings.extend(collect_pre_sim_firings(prepared.resume.path))
+        self._pre_sim_before_keys = frozenset(firing.key for firing in firings)
 
     def _attach_published_pre_sim(
         self, result: EndpointOutcome, origin_manifest: Path | None = None
@@ -2252,42 +2321,27 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             firings = list(read_invocation_pre_sim_firings(invocation))
             if origin_manifest is not None:
                 firings.extend(collect_pre_sim_firings(origin_manifest))
-            hook_detail = _campaign_pre_sim_details(
-                [SimpleNamespace(pre_sim_firings=firings)], invocation
+            context = SimpleNamespace(
+                pre_sim_firings=firings,
+                producer_invocation_directory=invocation.absolute(),
+                current_pre_sim_keys=frozenset(f.key for f in firings)
+                - getattr(self, "_pre_sim_before_keys", frozenset()),
             )
+            hook_detail = _campaign_pre_sim_details([context], invocation)
         except (OSError, ValueError) as exc:
-            result.exit_code = EXIT_ERROR
-            result.criterion_met = False
-            references = [
-                record.get("reference") for record in result.detail.get("pre_sim_runs", ())
-            ]
-            result.detail = {
-                key: value
-                for key, value in result.detail.items()
-                if not key.startswith("pre_sim_")
-            }
-            result.detail["pre_sim_unauthenticated_references"] = references
-            result.detail["pre_sim_integrity_error"] = str(exc)
-            result.report_text = "\n".join(
-                line
-                for line in result.report_text.splitlines()
-                if not line.startswith("pre_run_commands ")
-            )
-            result.report_text += f"\nPre-Sim Commands evidence integrity failure: {exc}"
-            return result
+            return _pre_sim_integrity_failure(result, exc)
         if not firings:
             return result
         result.detail.update(hook_detail)
-        present = Counter(result.report_text.splitlines())
-        added = []
-        for line in hook_detail["pre_sim_lines"]:
-            if present[line]:
-                present[line] -= 1
-            else:
-                added.append(line)
-        if added:
-            result.report_text += "\n" + "\n".join(added)
-        return result
+        result.report_text = "\n".join(
+            line
+            for line in result.report_text.splitlines()
+            if not line.startswith("pre_run_commands ")
+            and line not in {"Candidate:", "Cycle Count baseline:"}
+        )
+        return _append_missing_report_lines(
+            result, _campaign_pre_sim_report_lines([context], invocation)
+        )
 
     def _prepare_campaign_targets(
         self,
@@ -3578,7 +3632,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
         return EndpointOutcome(
             exit_code=max((item.exit_code for item in outcomes), default=2),
-            detail={"coverage": True, "targets": targets},
+            detail={
+                "coverage": True,
+                "targets": targets,
+                "pre_sim_lines": [line for line in lines if line.startswith("pre_run_commands ")],
+            },
             report_text="\n".join(lines),
         )
 
@@ -3630,7 +3688,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             with lifecycle:
                 prepared = self._prepare_legacy_run(targets, test_names_map, results)
                 if isinstance(prepared, EndpointOutcome):
-                    return self._attach_legacy_pre_sim(prepared)
+                    result = self._attach_legacy_pre_sim(prepared)
+                    return result
                 lines, passed = prepared
                 result = self._legacy_endpoint_outcome(
                     targets,
@@ -3653,10 +3712,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     if self.context._reserved_invocation_dir is not None
                     else None,
                 )
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                detail={"progress_error": str(exc)},
-                report_text=f"sim: progress publication failed: {exc}",
+            return self._attach_legacy_pre_sim(
+                EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    detail={"progress_error": str(exc)},
+                    report_text=f"sim: progress publication failed: {exc}",
+                )
             )
 
     def _prepare_legacy_run(self, targets, test_names_map, results):
@@ -3685,16 +3746,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         runs = getattr(self, "_legacy_pre_sim_runs", [])
         lines = [pre_sim_report_line(target, record) for target, record in runs]
         result.detail.update(pre_sim_runs=[record for _, record in runs], pre_sim_lines=lines)
-        present = Counter(result.report_text.splitlines())
-        missing = []
-        for line in lines:
-            if present[line]:
-                present[line] -= 1
-            else:
-                missing.append(line)
-        if missing:
-            result.report_text += "\n" + "\n".join(missing)
-        return result
+        return _append_missing_report_lines(result, lines)
 
     def _record_legacy_target(self, targets, results, result) -> None:
         self._attach_workload_snapshots(result)
