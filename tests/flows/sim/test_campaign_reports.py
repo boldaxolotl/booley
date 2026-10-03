@@ -526,18 +526,25 @@ def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_pa
 def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     tmp_path, monkeypatch
 ):
-    import shutil
-
     from booley.flows.sim.campaign import SimulationCampaign, SimulationCampaignIntegrityError
+    from tests.conftest import require_symlinks, symlink_or_skip
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
+    require_symlinks(tmp_path)
     _invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = campaign.pre_sim_firings[0]
     directory = firing.path.parent.parent
     copy = tmp_path / "copied-attempt"
-    shutil.copytree(directory, copy)
-    shutil.rmtree(directory)
-    directory.symlink_to(copy, target_is_directory=True)
-    assert firing.path.read_bytes() == (copy / "pre-sim/0001.json").read_bytes()
+    sidecar_bytes = firing.path.read_bytes()
+    snapshot = next(directory.rglob("simv"))
+    snapshot_relative = snapshot.relative_to(directory)
+    snapshot_bytes, snapshot_mode = snapshot.read_bytes(), snapshot.stat().st_mode
+    directory.rename(copy)
+    assert (copy / snapshot_relative).read_bytes() == snapshot_bytes
+    assert (copy / snapshot_relative).stat().st_mode == snapshot_mode
+    assert not snapshot_mode & 0o222
+    assert (copy / "pre-sim/0001.json").read_bytes() == sidecar_bytes
+    symlink_or_skip(directory, copy, target_is_directory=True)
+    assert firing.path.read_bytes() == sidecar_bytes
     with pytest.raises(SimulationCampaignIntegrityError):
         SimulationCampaign.reauthenticate_pre_sim_firings((firing,))

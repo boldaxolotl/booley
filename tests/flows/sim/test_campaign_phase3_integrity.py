@@ -889,3 +889,163 @@ def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_
         len(decode_simulation_result(canonical_json_bytes(without_hooks)).document["observations"])
         == 4000
     )
+
+
+def _hook_publication_request(root, names=("alpha", "beta"), invocation=1):
+    plan, _ = _maximum_hook_selection_plan(names)
+    store = CampaignStore(root / "campaign")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store,
+        plan.manifest,
+        plan.manifest.document["work_items"][0],
+        root,
+        invocation=invocation,
+    )
+    _executor(root / "build", {}).prepare_attempt(request)
+    return request
+
+
+def _publish_request_hook(request, name="alpha", ordinal=1, status="passed", returncode=0):
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.execution.contract import PreSimEvidence
+
+    return publish_pre_sim_firing(
+        request,
+        PreSimEvidence(("true",), (name,), status, 0.0, returncode=returncode),
+        ordinal=ordinal,
+    )
+
+
+def test_request_reuses_authenticated_manifest_across_firings(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign import pre_sim_evidence
+
+    original = pre_sim_evidence.manifest_digest
+    calls = []
+
+    def authenticated_digest(manifest):
+        calls.append(manifest)
+        return original(manifest)
+
+    monkeypatch.setattr(pre_sim_evidence, "manifest_digest", authenticated_digest)
+    request = _hook_publication_request(tmp_path)
+    first = _publish_request_hook(request)
+    second = _publish_request_hook(request, "beta", 2)
+    assert len(calls) == 1
+    assert first["path"] == "pre-sim/0001.json"
+    assert second["path"] == "pre-sim/0002.json"
+    assert len(request.store.read_pre_sim_firings()) == 2
+
+
+def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from booley.flows.sim.campaign import pre_sim_evidence
+
+    original = pre_sim_evidence.manifest_digest
+    calls = []
+
+    def authenticated_digest(manifest):
+        calls.append(manifest)
+        return original(manifest)
+
+    monkeypatch.setattr(pre_sim_evidence, "manifest_digest", authenticated_digest)
+    first = _hook_publication_request(tmp_path / "first")
+    second = _hook_publication_request(tmp_path / "second", ("gamma",), invocation=2)
+    copied = replace(first, pre_sim_firing_published=lambda _key: None)
+    changed = replace(
+        first,
+        store=second.store,
+        manifest=second.manifest,
+        work_item=second.work_item,
+        attempt_id=second.attempt_id,
+        attempt_ordinal=second.attempt_ordinal,
+        attempt_directory=second.attempt_directory,
+        producer_invocation_id=2,
+    )
+    assert len(calls) == 4
+    assert len({id(r.pre_sim_decoder) for r in (first, second, copied, changed)}) == 4
+    assert first.pre_sim_decoder.manifest_sha256 != changed.pre_sim_decoder.manifest_sha256
+    _publish_request_hook(first)
+    _publish_request_hook(changed, "gamma")
+    assert len(calls) == 4
+    records = changed.store.read_pre_sim_firings()
+    assert records[0].document["manifest_sha256"] == changed.pre_sim_decoder.manifest_sha256
+    assert records[0].document["producer_invocation_id"] == 2
+    with pytest.raises((TypeError, ValueError), match="init=False"):
+        replace(first, pre_sim_decoder=second.pre_sim_decoder)
+    with pytest.raises(SimulationCampaignIntegrityError):
+        _publish_request_hook(replace(first, producer_invocation_id=2), "beta", 2)
+    assert not (first.attempt_directory / "pre-sim/0002.json").exists()
+
+
+@pytest.mark.parametrize("corruption", ["type", "fingerprint", "structure"])
+def test_request_rejects_malformed_manifest_at_construction(tmp_path, corruption):
+    from dataclasses import replace
+
+    from booley.flows.sim.campaign.model import SimulationCampaignManifest
+
+    request = _hook_publication_request(tmp_path)
+    document = json.loads(canonical_json_bytes(request.manifest.document))
+    if corruption == "fingerprint":
+        document["fingerprints"]["workload_sha256"] = "sha256:" + "0" * 64
+    else:
+        document.pop("work_items")
+    invalid = object() if corruption == "type" else SimulationCampaignManifest(document)
+    with pytest.raises(SimulationCampaignIntegrityError):
+        replace(request, manifest=invalid)
+    assert list(request.attempt_directory.glob("pre-sim/*.json")) == []
+
+
+def test_request_isolates_frozen_manifest_from_caller_mutation(tmp_path):
+    from dataclasses import replace
+
+    from booley.flows.sim.campaign.model import SimulationCampaignManifest
+
+    request = _hook_publication_request(tmp_path)
+    document = json.loads(canonical_json_bytes(request.manifest.document))
+    manifest = SimulationCampaignManifest(document)
+    frozen = replace(request, manifest=manifest)
+    digest = frozen.pre_sim_decoder.manifest_sha256
+    document["workload"]["source_recipe"]["pre_sim_commands"].append("wrong")
+    document["work_items"][0]["selection"]["names"].append("outside")
+    _publish_request_hook(frozen)
+    assert frozen.pre_sim_decoder.manifest is manifest
+    assert frozen.pre_sim_decoder.manifest_sha256 == digest
+    assert manifest.document["workload"]["source_recipe"]["pre_sim_commands"] == ("true",)
+    assert manifest.document["work_items"][0]["selection"]["names"] == ("alpha", "beta")
+    assert frozen.store.read_pre_sim_firings()[0].document["manifest_sha256"] == digest
+
+
+@pytest.mark.parametrize("corruption", ["manifest", "producer", "selection", "ordinal", "status"])
+def test_request_publication_rejects_changed_attempt_after_success(tmp_path, corruption):
+    from dataclasses import replace
+
+    request = _hook_publication_request(tmp_path)
+    published = []
+    request = replace(request, pre_sim_firing_published=published.append)
+    _publish_request_hook(request)
+    first_bytes = (request.attempt_directory / "pre-sim/0001.json").read_bytes()
+    if corruption in {"manifest", "producer"}:
+        path = request.attempt_directory / "attempt.json"
+        document = json.loads(path.read_bytes())
+        key = "manifest_sha256" if corruption == "manifest" else "producer_invocation_id"
+        document[key] = "sha256:" + "0" * 64 if corruption == "manifest" else 2
+        path.write_bytes(canonical_json_bytes(document))
+    name = "outside" if corruption == "selection" else "beta"
+    ordinal = 0 if corruption == "ordinal" else 2
+    status = "timed_out" if corruption == "status" else "passed"
+    with pytest.raises(SimulationCampaignIntegrityError):
+        _publish_request_hook(request, name, ordinal, status)
+    assert published == [
+        (
+            request.manifest.document["campaign_id"],
+            request.work_item["work_item_id"],
+            request.attempt_id,
+            1,
+        )
+    ]
+    assert (request.attempt_directory / "pre-sim/0001.json").read_bytes() == first_bytes
+    assert sorted(p.name for p in (request.attempt_directory / "pre-sim").iterdir()) == [
+        "0001.json"
+    ]

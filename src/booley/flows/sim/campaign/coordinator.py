@@ -6,7 +6,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
@@ -32,7 +32,7 @@ from .codec import (
 from .facts import AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import WorkloadMismatch, compare_manifests, manifest_digest
-from .pre_sim_evidence import PreSimFiring
+from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
 from .run_directory import (
     cleanup_interrupted_run_directory,
@@ -199,6 +199,10 @@ class WorkExecutionRequest:
     child_execution_id: str | None = None
     child_entry_sha256: str | None = None
     pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
+    pre_sim_decoder: PreSimFiringDecoder = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pre_sim_decoder", PreSimFiringDecoder(self.manifest))
 
 
 class SerialWorkExecutor(Protocol):

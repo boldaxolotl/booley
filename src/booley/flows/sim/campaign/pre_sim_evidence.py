@@ -94,7 +94,7 @@ def publish_pre_sim_firing(
     checkpoint: Callable[[str], None] | None = None,
 ) -> Mapping[str, object]:
     """Publish before later build checks or simulator work can fail."""
-    decoder = PreSimFiringDecoder(request.manifest)
+    decoder = request.pre_sim_decoder
     document = {
         "$schema": _SCHEMA,
         "campaign_id": request.manifest.document["campaign_id"],

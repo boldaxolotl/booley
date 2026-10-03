@@ -730,7 +730,7 @@ def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str
     from .execution.pre_sim_reporting import pre_sim_report_line
 
     normalized = dict(evidence)
-    normalized.setdefault("command_count", len(evidence.get("commands", ())))
+    normalized.setdefault("command_count", len(cast(Sequence[str], evidence.get("commands", ()))))
     normalized.setdefault("test_names", (str(test_name),))
     return pre_sim_report_line(selector, normalized)
 
