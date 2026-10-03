@@ -1061,7 +1061,7 @@ resolved nested path; the Target reference is a separate schema. The Coverage
 Analyst requires the canonical Target-level reference and matching completed
 `simulation.json`; it resolves and authenticates the nested manifest internally
 and does not accept the nested path as its input.
-`booley.simulation-report/v2` artifact
+`booley.simulation-report/v3` artifact
 references use `report_invocation` or `reports_root`, resolved from the containing
 `report.json`; cross-root resume references instead use `external_origin_target`,
 resolved from an explicitly supplied origin Target directory. Resume reports do

@@ -41,7 +41,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 |---|---|
 | `flow`, `target`, `argv` | Which Flow ran, the requested Target selector, and the parsed arguments. |
 | `exit_code`, `passed` | The overall result. |
-| `criterion_key`, `criterion_met` | The Criterion result, when the run maps to exactly one Criterion. Empty or false for multi-Target runs. |
+| `criterion_key`, `criterion_met` | The effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and the Ticket slug (empty outside a Ticket). |
 | `detail` | Flow-specific results and pointers to per-Target files. |
 | `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |
@@ -132,7 +132,7 @@ no longer be resumed.
 ### Report schemas and references
 
 - `simulation.json` uses `booley.simulation-projection/v2`.
-- `report.json` uses `booley.simulation-report/v2`.
+- `report.json` uses `booley.simulation-report/v3`; other Flow reports use `booley.flow-report/v1` and Specialist reports use `booley.specialist-report/v1`. Older v2 and unversioned files retain their historical ambiguity; existing files are not migrated.
 - Target-level `coverage.json` uses `booley.coverage-campaign-reference/v1`.
 - The selected nested `coverage.json` is the current Coverage Campaign manifest.
 

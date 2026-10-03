@@ -250,12 +250,16 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     Also writes a flat ``{endpoint_name}.json`` copy for backward compatibility
     (developer prompt rule 11, MCP ``_try_read_report``).
     """
+    from booley.flows.endpoint_report_criteria import project
+
+    project(endpoint, result)
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
     if not getattr(endpoint, "_skip_report_detail_refresh", False):
         _refresh_report_detail(endpoint, result)
+    project(endpoint, result)
     report = _report_document(endpoint, result)
     inv_dir = endpoint._reserved_invocation_dir
     if inv_dir is None:
@@ -291,7 +295,13 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
-    if endpoint.name == "sim":
+    if endpoint.endpoint_kind == "flow":
+        report["$schema"] = (
+            "booley.simulation-report/v3" if endpoint.name == "sim" else "booley.flow-report/v1"
+        )
+    elif endpoint.endpoint_kind == "specialist":
+        report["$schema"] = "booley.specialist-report/v1"
+    elif endpoint.name == "sim":
         report["$schema"] = "booley.simulation-report/v2"
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
