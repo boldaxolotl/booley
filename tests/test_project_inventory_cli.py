@@ -662,7 +662,6 @@ def test_keeper_release_refuses_pending_recovery(
     capsys: pytest.CaptureFixture[str],
     operation: str,
 ) -> None:
-
     project = _remember(tmp_path)
     tag = keeper_image(project)
     keeper_host.tags[tag] = "sha256:" + "a" * 64

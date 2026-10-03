@@ -65,9 +65,11 @@ def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None 
                 "Project keeper access requires host lifecycle coordination"
             )
         if action == "forget":
+            assert keeper_operations is not None
             forgotten, keeper = keeper_operations.forget_project(args.project)
             return _render_forgotten(forgotten, keeper, json_output=getattr(args, "json", False))
         if action == "prune-keepers":
+            assert keeper_operations is not None
             result = keeper_operations.prune_keepers(args.confirm)
             return _render_prune(result, json_output=getattr(args, "json", False))
         entries = inventory.project_inventory()
