@@ -163,6 +163,45 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
     assert resolved == [True]
 
 
+def test_endpoint_cycle_budget_includes_pre_sim_hook_lines(monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim import flow
+
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "200")
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "200")
+    hooks = ["pre-sim " + "h" * 130]
+    calls = []
+    monkeypatch.setattr(
+        flow, "_campaign_pre_sim_report_lines", lambda *_args: calls.append(True) or hooks
+    )
+    for symbol in (
+        "_resolved_coverage_campaigns",
+        "_campaign_structured_details",
+        "_campaign_pre_sim_details",
+        "_campaign_build_infrastructure_detail",
+    ):
+        monkeypatch.setattr(flow, symbol, lambda *_args: {})
+    monkeypatch.setattr(flow, "_coverage_compatibility_targets", lambda *_args: [])
+    owner = SimpleNamespace(
+        context=SimpleNamespace(_reserved_invocation_dir=None),
+        _campaign_completed_display_label=lambda _outcomes: None,
+    )
+    outcome = SimpleNamespace(
+        target={"selector": "sim"},
+        aggregate_grade="pass",
+        coverage_reference=None,
+        observations=[{"test": "test" * 30, "cycle_count": None, "detail": {}}],
+    )
+    baseline = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
+    assert baseline.endswith(hooks[0]) and len(baseline.encode()) < 200
+    outcome.observations = [{"test": "test" * 30, "cycle_count": 7, "detail": {}}]
+    rendered = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
+    assert rendered.endswith(hooks[0]) and len(rendered.encode()) <= 200
+    assert rendered == baseline
+    assert calls == [True, True]
+
+
 @pytest.mark.parametrize("failure", [None, "retention", "supersede"])
 def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch, failure):
     from booley.flows.sim.flow import SimulateFlow

@@ -514,6 +514,7 @@ def _resolved_coverage_campaigns(
 def _campaign_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+    trailing_lines: Sequence[str] = (),
 ) -> list[str]:
     if coverage_campaigns is None and any(
         getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
@@ -521,7 +522,7 @@ def _campaign_report_lines(
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
     blocks = _campaign_base_report_lines(outcomes, coverage_campaigns)
     stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
-    base_bytes = len("\n".join(blocks).encode("utf-8")) + 2
+    base_bytes = len("\n".join((*blocks, *trailing_lines)).encode("utf-8")) + 2
     budget = min(stream // 4, max(0, stream - base_bytes))
     additions = _campaign_cycle_lines(outcomes, budget)
     if not any(additions):
@@ -4500,7 +4501,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         threshold_missed = any(
             campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
         )
-        lines = _campaign_report_lines(outcomes, coverage_campaigns)
+        hook_lines = _campaign_pre_sim_report_lines(
+            outcomes, self.context._reserved_invocation_dir
+        )
+        lines = _campaign_report_lines(outcomes, coverage_campaigns, hook_lines)
         campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
         coverage_targets = _coverage_compatibility_targets(
             outcomes,
@@ -4510,9 +4514,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         detail: dict[str, object] = {"campaigns": campaigns}
         hook_detail = _campaign_pre_sim_details(outcomes, self.context._reserved_invocation_dir)
         detail.update(hook_detail)
-        lines.extend(
-            _campaign_pre_sim_report_lines(outcomes, self.context._reserved_invocation_dir)
-        )
+        lines.extend(hook_lines)
         detail.update(_campaign_build_infrastructure_detail(outcomes))
         if coverage_targets:
             detail.update(
