@@ -33,6 +33,8 @@ from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevel
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
+_REAL_RESOLVE_TARGET_HANDLE = fusesoc_registry.resolve_target_handle
+_REAL_SETUP_COMMAND_FOR_HANDLE = fusesoc_registry.setup_command_for_handle
 
 
 def _target_handle(
@@ -314,6 +316,7 @@ class TestLintResolution:
             )
 
     def test_real_fusesoc_lint_setup(self, tmp_path: Path, state_file: Path, monkeypatch):
+        """Real catalog-authorized setup emits a relocatable Verilator lint build."""
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
         work_dir = tmp_path / "proj"
@@ -326,7 +329,7 @@ class TestLintResolution:
         command = [sys.executable, "-c", "from fusesoc.main import main; main()"]
         _real_lint_setup(monkeypatch, command, tmp_path)
         prepared = flow._prepare_lint_command(
-            _target_handle("lite", project_root=work_dir, vlnv="::lint_demo:0")
+            _REAL_CATALOG_BUILD(work_dir).select("lite", for_flow="lint")
         )
         cmd, _resolved = prepared.command, prepared.resolved
 
@@ -2558,11 +2561,17 @@ def test_authored_verible_public_plan(tmp_path: Path, state_file: Path, capsys, 
 
 
 def _real_lint_setup(monkeypatch, command: list[str], root: Path) -> None:
-    real_resolve = fusesoc_registry.resolve_target_handle
+    real_resolve = _REAL_RESOLVE_TARGET_HANDLE
+    monkeypatch.setattr(
+        fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_COMMAND_FOR_HANDLE
+    )
     config = root / "isolated-fusesoc.conf"
     config.write_text("[main]\n", encoding="utf-8")
     command = [*command, "--config", str(config)]
-    env = {**os.environ, "XDG_CONFIG_HOME": str(root / "isolated-config")}
+    env = dict(os.environ)
+    env.pop("FUSESOC_CORES", None)
+    for kind in ("CONFIG", "CACHE", "DATA"):
+        env[f"XDG_{kind}_HOME"] = str(root / f"isolated-{kind.lower()}")
 
     def bounded_runner(*args, **kwargs):
         assert kwargs["env"] == env
@@ -2582,6 +2591,7 @@ def _assert_verible_rule_path(makefile: str, edam_path: Path) -> None:
     rule_file = next(
         file["name"] for file in edam["files"] if file["file_type"] == "veribleLintRules"
     )
+    assert Path(rule_file).parts[-2:] == ("lint", "rules.cfg")
     recipe = next(line for line in makefile.splitlines() if "verible-verilog-lint " in line)
     assert f"--rules_config={rule_file}" in shlex.split(recipe.strip())
 

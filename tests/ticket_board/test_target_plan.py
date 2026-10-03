@@ -879,9 +879,11 @@ def test_lint_replacement_requires_drivable_candidate(repository, eda_tool, lega
 def _replace_lint_selection(path: Path, name: str, selection: str) -> None:
     """Change exactly one canonical declaration, asserting the edit is real."""
     old = f"  {name}:\n    flow: lint\n    flow_options: {{tool: verilator}}"
-    text = path.read_text()
-    assert old in text
-    path.write_text(text.replace(old, f"  {name}:\n    flow: lint\n    {selection}", 1))
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1
+    path.write_text(
+        text.replace(old, f"  {name}:\n    flow: lint\n    {selection}", 1), encoding="utf-8"
+    )
 
 
 def test_lint_replacement_rejects_undrivable_baseline(repository):
