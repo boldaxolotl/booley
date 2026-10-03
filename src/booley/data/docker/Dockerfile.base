@@ -2,19 +2,19 @@
 # Candidate application code, B-Wave, and repository patches belong in Dockerfile.
 #
 # OpenROAD's public Debian channel ended after the 2024-12-14 release. Extract
-# the exact 26Q3 binary and Corresponding Source from its official builder, but
+# the exact 26Q4 binary and Corresponding Source from its official builder, but
 # run from the exact dependency image used by upstream's final stage. The
 # builder is intentionally throwaway: its object files and regression fixtures
 # account for most of the old Sandbox Image.
-FROM docker.io/openroad/ubuntu26.04@sha256:63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66 AS openroad-artifacts
+FROM docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d AS openroad-artifacts
 
 USER root
-ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8
-RUN tar --sort=name --mtime='UTC 2026-06-30' --owner=0 --group=0 --numeric-owner \
+ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9
+RUN tar --sort=name --mtime='UTC 2026-10-01' --owner=0 --group=0 --numeric-owner \
         --exclude='./build' -C /OpenROAD -czf \
         "/tmp/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" .
 
-FROM docker.io/openroad/ubuntu26.04-dev@sha256:9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 AS eda-artifacts
+FROM docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 AS eda-artifacts
 
 # Heavy compilers and development packages stay in this throwaway stage. The
 # runtime below receives only the installed EDA artifacts.
@@ -132,7 +132,7 @@ RUN echo ">>> Installing minimal runtime dependencies and Python 3.14..." \
         libbz2-1.0 libffi8 libgomp1 liblz4-dev libpixman-1-0 libpython3.14 \
         libreadline8t64 libtcl8.6 libudev1 libyaml-cpp0.8 tcl tcllib zlib1g \
         libgl1 libopengl0 libqt5charts5 libqt5core5t64 libqt5gui5t64 \
-        libqt5widgets5t64 qt5-image-formats-plugins \
+        libqt5widgets5t64 libxcb-cursor0 qt5-image-formats-plugins \
         python3.14 python3.14-dev python3.14-venv python3-pip \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/* \
@@ -165,22 +165,22 @@ COPY --from=eda-artifacts /usr/local/share/man/man1/verilator* /usr/local/share/
 # wire RC. The binary remains byte-identical to the digest-pinned builder. Its
 # runtime receives only the OR-Tools library closure, not its 177 MB development
 # headers, examples, executables, or CMake metadata.
-ARG OPENROAD_VERSION=26Q3
-ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8
-ARG OPENROAD_BINARY_VERSION=26Q2-2580-ga9147cf3ae
-ARG OPENROAD_SOURCE_SENTINEL_SHA256=c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f
+ARG OPENROAD_VERSION=26Q4
+ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9
+ARG OPENROAD_BINARY_VERSION=26Q3-2927-gc4d317e4fa
+ARG OPENROAD_SOURCE_SENTINEL_SHA256=8f72ff3a40bf361df9eee1d4a6ecf163285ebabca3d49c0f8eb958810f65a590
 COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad
 COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/
 COPY --from=openroad-artifacts /OpenROAD/LICENSE /usr/local/share/doc/openroad/LICENSE
 COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE /usr/local/share/doc/openroad/OpenSTA-LICENSE
-COPY --from=openroad-artifacts /tmp/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz /usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz
+COPY --from=openroad-artifacts /tmp/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz /usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz
 COPY src/booley/data/docker/openroad-source-manifest.json /usr/local/share/doc/openroad/source-manifest.json
 RUN echo ">>> Verifying OpenROAD ${OPENROAD_VERSION} (${OPENROAD_SOURCE_REF})..." \
     && test "$(/usr/bin/openroad -version | xargs)" = "${OPENROAD_BINARY_VERSION}" \
     && test "$(tar -xOf "/usr/local/share/doc/openroad/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" \
         ./src/rsz/src/Resizer.tcl | sha256sum | awk '{print $1}')" = \
         "${OPENROAD_SOURCE_SENTINEL_SHA256}" \
-    && python3 -c 'import json; manifest=json.load(open("/usr/local/share/doc/openroad/source-manifest.json")); assert manifest["revision"] == "a9147cf3aebe65e058bb3fa89c1f9e524488dbb8"; assert len(manifest["submodules"]) == 5' \
+    && python3 -c 'import json; manifest=json.load(open("/usr/local/share/doc/openroad/source-manifest.json")); assert manifest["revision"] == "c4d317e4fa2398b9880920a1411c20258a2175a9"; assert len(manifest["submodules"]) == 5' \
     && test -f /usr/local/share/doc/openroad/LICENSE \
     && test -f /usr/local/share/doc/openroad/OpenSTA-LICENSE \
     && ln -s /usr/bin/openroad /usr/local/bin/openroad \
@@ -407,9 +407,9 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       org.opencontainers.image.created=${BOOLEY_BASE_BUILT_AT} \
       io.booley.runtime-base.contract=${BOOLEY_BASE_CONTRACT} \
       io.booley.runtime-base.package-inventory=/usr/local/share/booley/base-package-inventory.json \
-      io.booley.openroad.source-revision=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8 \
-      io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66 \
-      io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 \
+      io.booley.openroad.source-revision=c4d317e4fa2398b9880920a1411c20258a2175a9 \
+      io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d \
+      io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 \
       io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 
 WORKDIR /work

@@ -13,13 +13,15 @@ upstream packages.
 ## Sandbox tool: OpenROAD and OpenSTA
 
 The sandbox image includes the OpenROAD executable from the official,
-digest-pinned `openroad/ubuntu24.04` OCI artifact. The selected artifact maps
-to OpenROAD 26Q3 source commit
-`a9147cf3aebe65e058bb3fa89c1f9e524488dbb8`. Its complete machine-readable
-source and build tree accompanies the executable at `/OpenROAD` in the image;
-the OpenROAD license is `/OpenROAD/LICENSE` and the OpenSTA license is
-`/OpenROAD/src/sta/LICENSE`. The immutable upstream artifact and source
-directions are also recorded in
+digest-pinned `openroad/ubuntu26.04` OCI artifact. The selected artifact maps
+to OpenROAD 26Q4 source commit
+`c4d317e4fa2398b9880920a1411c20258a2175a9`. Its Corresponding Source
+(excluding build outputs) accompanies the executable
+at `/usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz`,
+with recursive revisions in `source-manifest.json` in the same directory.
+The licenses are `/usr/local/share/doc/openroad/LICENSE` and
+`/usr/local/share/doc/openroad/OpenSTA-LICENSE`. The immutable upstream artifact
+and source directions are also recorded in
 `/usr/local/share/doc/openroad/BOOLEY-SOURCE.txt`.
 
 OpenROAD's top-level code is BSD-3-Clause. Its binary links OpenSTA, whose

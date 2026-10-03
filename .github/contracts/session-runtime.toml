@@ -49,7 +49,7 @@ required_paths = [
   "/etc/claude-code/managed-settings.json",
   "/etc/codex/requirements.toml",
   "/opt/or-tools/lib/libortools.so.9",
-  "/usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz",
+  "/usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz",
   "/usr/local/share/doc/openroad/source-manifest.json",
   "/usr/local/include/iverilog/vpi_user.h",
   "/usr/include/zlib.h",

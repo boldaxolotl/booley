@@ -166,7 +166,7 @@ may override the Python rows (see
 | Icarus Verilog | v13_0 |
 | Yosys | v0.69, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
 | sv2v | v0.0.13 |
-| OpenROAD | 26Q3 source commit `a9147cf3aebe65e058bb3fa89c1f9e524488dbb8` (the exact upstream OCI binary reports `26Q2-2580-ga9147cf3ae`) |
+| OpenROAD | 26Q4 source commit `c4d317e4fa2398b9880920a1411c20258a2175a9` (the exact upstream OCI binary reports `26Q3-2927-gc4d317e4fa`) |
 | Verible | v0.0-4296-g0f262651 |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.3 |
@@ -187,10 +187,13 @@ booley session enter -- python -m pip list        # the Python side
 
 The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
 and a tested official-master Spike snapshot at
-`c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb` (`1.1.1-dev`) on top of these.
+`609dbe0b9994154833039209fa37151e7c05e9d4` (`1.1.1-dev`) on top of these.
 Upstream has no maintained stable release suitable for Ubuntu 26.04, so Booley
-moves this exact official-master pin only after its image and RISC-V acceptance
-gates pass. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
+refreshes this exact official-master pin once per Booley release, after its
+image and RISC-V acceptance gates pass; see
+[ADR 0069](../adr/0069-follow-tested-spike-master-snapshots.md). This is
+upstream Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation
+needs. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 Future commercial EDA integrations require their own built-in provisioning,
 licensing, Doctor, security, and full-Flow evidence before they can join this
