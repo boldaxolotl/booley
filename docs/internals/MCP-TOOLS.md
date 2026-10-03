@@ -297,28 +297,31 @@ normally remains a `BooleyFlow` so it inherits the common in-runtime lifecycle.
 McpToolResult(
     exit_code: int,           # 0 = met, 1 = unmet, 2 = unable to run
     criterion_key: str,       # which criterion was evaluated
-    criterion_met: bool,      # did it pass?
+    criterion_met: bool | None, # default False; Flow/Specialist absence projects to None
     report_text: str,         # human-readable output (tail of log)
 )
 ```
 
-Criterion-aware results normally set these four fields. An unable-to-run result
-may leave `criterion_key` empty and `criterion_met` at its default because no
-Criterion verdict was reached. `McpToolResult` also carries optional fields,
+Flow and Specialist results supply `exit_code` and `report_text`; their headline
+Criterion fields are derived centrally from effective `set_criterion()` evaluations.
+Exactly one mapped and evaluated Criterion yields its key and boolean verdict;
+zero/multiple mapped Criteria, no evaluation, or multiple selected Targets yield
+an empty key and `None`. `McpToolResult` also carries optional fields,
 most usefully `detail: dict` for structured evidence (written into
 `report.json`). Token/cost fields are populated automatically by `Specialist`;
 line-count fields (`lines_added`/`lines_removed`) are stamped by the base
 `McpTool` for any code-modifying endpoint.
 
-**`set_criterion()` vs. `McpToolResult`:** they are two different sinks.
-`set_criterion(key, met)` writes the verdict into the persistent ticket state
-(the file the harness gates completion on; direct standalone runs have no ticket state), while the
-returned `McpToolResult` is the report contract: what lands in `report.json` and
-what the Developer Agent reads back. Call `set_criterion` once per criterion
-you evaluated (a multi-criterion MCP tool calls it several times); `criterion_key`
-/ `criterion_met` on `McpToolResult` carry the headline verdict for the report.
-Keep them consistent. The state file, not the report, is what completion is
-judged on.
+**`set_criterion()` and reports:** call `set_criterion(key, met)` for each Criterion
+you evaluate. The effective changes determine the Flow/Specialist report even if
+later persistence fails; `exit_code` independently exposes that failure. Ticket
+completion is judged on persistent state. Standalone evaluations remain in memory.
+Flow/Specialist extensions that supplied result-only headlines must migrate to
+`set_criterion()`; explicit result fields no longer determine their final headline.
+Generic `mcp_tool` endpoints retain their existing result-field contract, including
+the default `False` and an explicitly supplied `None`. Acceptance/history hooks
+before projection retain raw fields; `_post_run` and `ExecutionResult.outcome`
+receive the centrally projected Flow/Specialist headline.
 
 ### Common Artifact Contract
 
@@ -482,8 +485,6 @@ class DrcCheckFlow(BooleyFlow):
         if result.timed_out or result.returncode not in {0, 1}:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                criterion_key=keys[0],
-                criterion_met=False,
                 report_text=(evidence or "DRC command could not run")[-2000:],
             )
 
@@ -492,8 +493,6 @@ class DrcCheckFlow(BooleyFlow):
             self.set_criterion(key, passed)
         return McpToolResult(
             exit_code=0 if passed else 1,
-            criterion_key=keys[0],
-            criterion_met=passed,
             report_text=evidence[-2000:],
         )
 
@@ -543,8 +542,6 @@ class ProtocolReviewerSpecialist(Specialist):
         self.set_criterion("protocol_compliant", passed)
         return McpToolResult(
             exit_code=0 if passed else 1,
-            criterion_key="protocol_compliant",
-            criterion_met=passed,
             report_text=output[-3000:],
         )
 
@@ -695,8 +692,8 @@ category    = "rtl"
 2. Add its `description`, `workflow_region`, `per_target`, and `category` fields to `.booley_project/criteria.toml`.
 3. Add the base name to one custom MCP tool's literal `satisfies` list.
 4. If invocation arguments differ by Criterion, add literal `satisfies_args` prompt hints.
-5. For `per_target = true`, set the expanded `<criterion>_<target>` key from the MCP tool result.
-6. Keep the persistent `set_criterion()` verdict consistent with the headline `McpToolResult` verdict.
+5. For `per_target = true`, supply the expanded `<criterion>_<target>` key to `set_criterion()`.
+6. Flow/Specialist headline fields are derived centrally from `set_criterion()` evaluations; generic `mcp_tool` endpoints retain their result-field contract.
 7. Run `booley doctor`, then inspect the live catalog with `booley cheat --criteria`.
 
 ---

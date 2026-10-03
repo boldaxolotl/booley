@@ -406,6 +406,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     cli = LintFlow().execute_cli(["--target", "lite"])
     assert cli.exit_code == 0
     cli_report = json.loads((runtime / "runtime/flow-reports/lint.json").read_text())
+    assert (cli_report["criterion_key"], cli_report["criterion_met"]) == ("lint_clean_lite", True)
 
     async def dispatch():
         jobs = server._JobManager(Mock())
@@ -653,3 +654,817 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
     assert report_root / "lint/1" not in diagnostic.parents
     output = capsys.readouterr()
     assert "Traceback" not in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    "flow_type,family",
+    [
+        (LintFlow, "lint_clean"),
+        (AsicSynthesizeFlow, "synthesis_ok"),
+        (FpgaImplFlow, "fpga_impl_ok"),
+        (SimulateFlow, "sim_pass"),
+    ],
+)
+@pytest.mark.parametrize("target", ["first", "first,second"])
+@pytest.mark.parametrize("met", [True, False])
+def test_partial_evaluation_final_report_and_completion(
+    flow_type, family, target, met, runtime, monkeypatch
+):
+    from booley.flows import endpoint_reporting
+
+    events = []
+    monkeypatch.setattr(endpoint_reporting, "_write_display_event", events.append)
+    flow = flow_type()
+
+    def run():
+        flow.set_criterion(f"{family}_first", met)
+        raise RuntimeError("second workload infrastructure failed")
+
+    monkeypatch.setattr(flow, "_run", run)
+    result = flow.execute(flow.request_type(target=target, work_dir=runtime))
+    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
+    expected = (f"{family}_first", met) if target == "first" else ("", None)
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    assert report["passed"] is False
+    assert report["exit_code"] == 2
+    end = events[-1]
+    assert (end["criterion_key"], end["criterion_met"]) == expected
+    assert flow.state.criteria[f"{family}_first"].met is met
+
+
+def test_reused_endpoint_resets_evaluation_before_early_gate(runtime, monkeypatch):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = LintFlow()
+
+    def run():
+        flow.set_criterion("lint_clean_first", True)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(flow, "_run", run)
+    request = flow.request_type(target="first", work_dir=runtime)
+    assert flow.execute(request).outcome.criterion_met is True
+    monkeypatch.setattr(flow, "_pre_state_gate", lambda: EndpointOutcome(exit_code=2))
+    result = flow.execute(request)
+    assert result.outcome.criterion_key == ""
+    assert result.outcome.criterion_met is None
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_candidate_mapping_excludes_baseline_prerequisite(runtime, monkeypatch, resume):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.targets.catalog import TargetCatalog
+
+    (runtime / "design.core").write_text(
+        "CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  candidate:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb\n  baseline:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb\n"
+    )
+    candidate, baseline = TargetCatalog.build(runtime).select_many(
+        "candidate,baseline", for_flow="sim"
+    )
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria({"sim_pass_candidate": True}, strict=True)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    manifest = SimpleNamespace(
+        document={
+            "target": {"vlnv": "acme:lib:dut:1", "name": "candidate", "selector": "candidate"},
+            "required_suite": {"names": ["smoke"], "default_invocation": False},
+            "work_items": [
+                {"role": "candidate", "selection": {"kind": "named", "names": ["smoke"]}}
+            ],
+        }
+    )
+    validated = SimpleNamespace(
+        candidate=SimpleNamespace(manifest=manifest),
+        target_handles=(candidate, baseline),
+        binding_for=lambda _manifest: SimpleNamespace(handle=candidate),
+    )
+    prepared = PreparedSimulationEndpoint(
+        (candidate, baseline),
+        validated if resume else None,
+        () if resume else ("candidate",),
+        {"candidate": ["smoke"]},
+    )
+    flow = SimulateFlow()
+    monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: prepared)
+    monkeypatch.setattr(FlowSession, "admission", lambda *_args: nullcontext())
+
+    def run(*_args):
+        flow.set_criterion("sim_pass_candidate", True)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(flow, "run_prepared_simulation", run)
+    result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
+    report = json.loads((runtime / "flow-reports/sim.json").read_text())
+    assert result.exit_code == 0
+    assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_candidate", True)
+
+
+@pytest.mark.parametrize(
+    "flow_type,family", [(AsicSynthesizeFlow, "synthesis_ok"), (FpgaImplFlow, "fpga_impl_ok")]
+)
+def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
+    flow_type, family, runtime, monkeypatch
+):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {f"{family}_first": True, f"{family}_second": True},
+        flow_key_aliases={f"{family}_demo": [f"{family}_first", f"{family}_second"]},
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    flow = flow_type()
+
+    def run():
+        flow.set_criterion(f"{family}_first", False)
+        return EndpointOutcome(exit_code=2)
+
+    monkeypatch.setattr(flow, "_run", run)
+    result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
+    assert result.exit_code == 2
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+
+
+def test_override_freezes_parameter_bound_candidate_criteria(runtime, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {"sim_pass_candidate": True, "cycle_count_policy": True},
+        criterion_params={
+            "cycle_count_policy": {
+                "target": "acme:lib:dut:1#candidate",
+                "_target_selector": "candidate",
+                "test": "smoke",
+                "cycle_count_max": 100,
+            }
+        },
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    flow = SimulateFlow()
+
+    def run():
+        flow.set_criterion("sim_pass_candidate", True)
+        return EndpointOutcome(exit_code=2)
+
+    monkeypatch.setattr(flow, "_run", run)
+    result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
+    report = json.loads((runtime / "flow-reports/sim.json").read_text())
+    assert result.exit_code == 2
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert flow.state.criteria["sim_pass_candidate"].met is True
+
+
+@pytest.mark.parametrize(
+    "flow_type,family,eda",
+    [(AsicSynthesizeFlow, "synthesis_ok", "yosys"), (FpgaImplFlow, "fpga_impl_ok", "vivado")],
+)
+def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_binding(
+    flow_type, family, eda, runtime, monkeypatch
+):
+    from booley.criteria.state import DevelopmentState
+    from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    (runtime / "design.core").write_text(
+        f"CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  demo:\n    default_tool: {eda}\n    toplevel: dut\n"
+    )
+    key = f"{family}_demo"
+    other = f"{family}_other"
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {key: True, other: True},
+        criterion_params={
+            key: {"target": "acme:lib:dut:1#demo", "_target_selector": "demo"},
+            other: {"target": "acme:lib:dut:1#other", "_target_selector": "other"},
+        },
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    flow = flow_type()
+    bindings = (
+        AcceptanceTargetBinding(
+            flow.name,
+            f"criteria.mandatory.{key}",
+            "acme:lib:dut:1#base",
+            "acme:lib:dut:1#demo",
+            "base",
+            "demo",
+        ),
+        AcceptanceTargetBinding(
+            flow.name,
+            f"criteria.mandatory.{other}",
+            "acme:lib:dut:1#demo",
+            "acme:lib:dut:1#other",
+            "demo",
+            "other",
+        ),
+    )
+
+    class BoundExecution(StandaloneFlowExecution):
+        def validate_and_resolve(self, _request):
+            return ResolvedFlowAcceptance(bindings)
+
+    def run(self):
+        self.set_criterion(key, True)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(flow_type, "_run", run)
+    result = flow.execute(
+        flow.request_type(target="demo", work_dir=runtime), adapter=BoundExecution()
+    )
+    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
+    assert result.exit_code == 0
+    assert (report["criterion_key"], report["criterion_met"]) == (key, True)
+
+
+def _report_targets(root, names=("first", "second"), flow="sim"):
+    tools = {"lint": "verible", "synth": "yosys", "fpga": "vivado"}
+    declaration = (
+        "flow: sim\n    flow_options: {tool: verilator}"
+        if flow == "sim"
+        else f"default_tool: {tools[flow]}"
+    )
+    entries = "".join(f"  {name}:\n    {declaration}\n    toplevel: dut\n" for name in names)
+    (root / "design.core").write_text("CAPI=2:\nname: acme:lib:dut:1\ntargets:\n" + entries)
+
+
+@pytest.mark.parametrize(
+    "flow_type,family",
+    [
+        (LintFlow, "lint_clean"),
+        (AsicSynthesizeFlow, "synthesis_ok"),
+        (FpgaImplFlow, "fpga_impl_ok"),
+        (SimulateFlow, "sim_pass"),
+    ],
+)
+@pytest.mark.parametrize("met", [True, False])
+def test_prepared_identity_partial_report_is_null(flow_type, family, met, runtime, monkeypatch):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    _report_targets(runtime, flow=flow_type.name)
+    flow = flow_type()
+    if flow_type is SimulateFlow:
+        monkeypatch.setattr(flow_type, "prepare_simulation_endpoint", lambda self: None)
+
+    def run(self):
+        self.set_criterion(f"{family}_first", met)
+        return EndpointOutcome(exit_code=2, report_text="second workload unavailable")
+
+    monkeypatch.setattr(flow_type, "_run", run)
+    result = flow.execute(flow.request_type(target="first,second", work_dir=runtime))
+    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
+    assert result.exit_code == 2
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    identities = frozenset({"acme:lib:dut:1#first", "acme:lib:dut:1#second"})
+    assert self_scope(flow) == identities
+    assert flow.context._report_criteria.targets == identities
+    assert flow.state.criteria[f"{family}_first"].met is met
+
+
+def self_scope(flow):
+    return {handle.identity for handle in flow._selected_target_handles()}
+
+
+def _report_campaign_document(handle, inspection, preview, mode, selected):
+    from dataclasses import replace
+
+    from tests.flows.sim.test_campaign_flow_planning import _plan
+
+    if mode in {"unfiltered", "coverage"}:
+        from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
+
+        inspection = replace(
+            inspection, flow_options={"cocotb_module": "tests"} if mode == "unfiltered" else {}
+        )
+        if mode == "coverage":
+            preview = replace(preview, groups=(selected,), commands=(("run",),))
+        document = plan_coarse_simulation_campaign(
+            handle=handle,
+            inspection=inspection,
+            preview=preview,
+            selected_tests=selected if mode == "coverage" else (),
+            required_suite=selected,
+            revision="abc123",
+            invocation_id=1,
+            execution_id="",
+            trace=False,
+            kind="coverage_aggregate" if mode == "coverage" else "cocotb_batch",
+            required_suite_catalog_backed=True,
+        ).manifest.document
+    else:
+        document = _plan(handle, inspection, preview, selected, catalog_backed=mode != "default")
+    return document
+
+
+def _prepared_report_campaign(runtime, mode, resume):
+    from dataclasses import replace
+
+    from booley.flows.sim.campaign.codec import (
+        decode_simulation_campaign_manifest,
+        encode_simulation_campaign_manifest,
+    )
+    from booley.flows.sim.campaign.model import SimulationCampaignManifest
+    from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.targets.catalog import TargetCatalog
+    from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
+
+    project, handle, inspection, preview = _planning_fixture(runtime)
+    (runtime / "design.core").write_text(
+        "CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  sim:\n    flow: sim\n    flow_options: {tool: icarus}\n    toplevel: tb\n"
+    )
+    handle = TargetCatalog.build(runtime).select("sim", for_flow="sim")
+    inspection = replace(inspection, handle=handle)
+    selected = ("reset", "count") if mode != "default" else ()
+    if mode in {"default", "unfiltered"}:
+        preview = replace(preview, groups=((),), commands=(("run",),))
+    document = _report_campaign_document(handle, inspection, preview, mode, selected)
+    manifest = decode_simulation_campaign_manifest(
+        encode_simulation_campaign_manifest(SimulationCampaignManifest(document))
+    )
+    # This is a codec-validated production manifest, not a stub with item.test.
+    suite = ("reset", "count") if mode != "default" else ()
+    cycle_test = "reset" if mode != "default" else "default"
+    node = ValidatedManifestNode(project / "manifest.json", manifest, "unused")
+    validated = ValidatedResumeManifest(node, (), (handle,))
+    prepared = PreparedSimulationEndpoint(
+        (handle,), validated if resume else None, () if resume else ("sim",), {"sim": list(suite)}
+    )
+    return prepared, handle, cycle_test
+
+
+def _report_campaign_state(runtime, handle, cycle_test, mode, missing_cycle):
+    from booley.criteria.state import DevelopmentState
+
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {"sim_pass_sim": True, "cycle_count_policy": True},
+        criterion_params={
+            "cycle_count_policy": {
+                "target": handle.identity,
+                "_target_selector": "sim",
+                "test": cycle_test,
+                "cycle_count_max": 100,
+            }
+        },
+        strict=True,
+    )
+    if mode == "coverage":
+        state.init_criteria(
+            {"sim_pass_sim": True, "cycle_count_policy": True, "coverage_sim": True},
+            strict=True,
+            criterion_params={
+                "cycle_count_policy": {
+                    "target": handle.identity,
+                    "_target_selector": "sim",
+                    "test": cycle_test,
+                    "cycle_count_max": 100,
+                }
+            },
+        )
+    if missing_cycle:
+        del state.criteria["cycle_count_policy"]
+    state.save()
+    return state_path
+
+
+@pytest.mark.parametrize("mode", ["named", "default", "unfiltered", "coverage"])
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("missing_cycle", [False, True])
+def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
+    runtime, monkeypatch, mode, resume, missing_cycle
+):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    prepared, handle, cycle_test = _prepared_report_campaign(runtime, mode, resume)
+    state_path = _report_campaign_state(runtime, handle, cycle_test, mode, missing_cycle)
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: prepared)
+
+    def run(self, *_args):
+        self.set_criterion("sim_pass_sim", True)
+        return EndpointOutcome(exit_code=2, report_text="cycle workload unavailable")
+
+    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
+    flow = SimulateFlow()
+    from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
+
+    class BoundExecution(StandaloneFlowExecution):
+        def validate_and_resolve(self, _request):
+            if not missing_cycle:
+                return super().validate_and_resolve(_request)
+            return ResolvedFlowAcceptance(
+                (
+                    AcceptanceTargetBinding(
+                        "sim",
+                        "criteria.mandatory.cycle_count_policy",
+                        handle.identity,
+                        handle.identity,
+                        "sim",
+                        "sim",
+                    ),
+                )
+            )
+
+    result = flow.execute(
+        flow.request_type(target="sim", work_dir=runtime, coverage=mode == "coverage"),
+        adapter=BoundExecution(),
+    )
+    assert result.exit_code == 2, result.outcome.report_text
+    report = json.loads((flow.context.args.report_dir / "sim.json").read_text())
+    assert result.exit_code == 2
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+
+
+def _report_extension_type(endpoint_kind, key):
+    from typing import ClassVar
+
+    from booley.flows.base import BooleyFlow
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.specialists.specialist import Specialist
+
+    base = BooleyFlow if endpoint_kind == "flow" else Specialist
+
+    class DrcFlow(base):
+        name = "drc_check"
+
+        def _build_prompt(self):
+            return "unused"
+
+        def _interpret_output(self, output, structured):
+            raise AssertionError("agent not invoked")
+
+        satisfies: ClassVar[list[str]] = ["drc_clean", "drc_rules", "cycle_count"]
+
+        def _add_args(self, parser):
+            parser.add_argument("--test")
+
+        def _run(self):
+            self.set_criterion(key, True)
+            return EndpointOutcome()
+
+    return DrcFlow
+
+
+@pytest.mark.parametrize("binding", ["name", "identity", "named_identity"])
+@pytest.mark.parametrize("ticket", ["none", "single", "plural"])
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("catalog", [True, False])
+@pytest.mark.parametrize("target", ["first", "first,second"])
+def test_declared_custom_flow_prepared_headline(
+    runtime, monkeypatch, binding, ticket, endpoint_kind, catalog, target
+):
+    from booley.criteria.state import DevelopmentState
+
+    key = "drc_clean_policy42" if binding == "identity" else "drc_clean_first"
+    other = "drc_rules_policy73" if binding == "identity" else "drc_rules_first"
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    if ticket != "none":
+        path = runtime / "state.json"
+        state = DevelopmentState.load(path)
+        criteria = {key: True}
+        if ticket == "plural":
+            criteria[other] = True
+        state.init_criteria(
+            criteria,
+            strict=False,
+            criterion_params={name: {"target": "acme:lib:dut:1#first"} for name in criteria}
+            if binding != "name"
+            else None,
+        )
+        state.save()
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+
+    if catalog:
+        _report_targets(runtime)
+
+    flow = _report_extension_type(endpoint_kind, key)()
+    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
+    expected = (key, True) if target == "first" and ticket != "plural" else ("", None)
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first", "other:lib:x#first"])
+@pytest.mark.parametrize("other_target", ["first", "second"])
+def test_custom_fallback_excludes_only_proven_other_target(
+    runtime, monkeypatch, endpoint_kind, target, other_target
+):
+    from booley.criteria.state import DevelopmentState
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria(
+        {"drc_clean_first": True, "drc_rules_policy73": True},
+        strict=False,
+        criterion_params={"drc_rules_policy73": {"target": f"acme:lib:dut:1#{other_target}"}},
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
+    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
+    expected = ("drc_clean_first", True) if other_target == "second" else ("", None)
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("family", ["drc_rules", "cycle_count"])
+@pytest.mark.parametrize("test", ["selected", "other"])
+def test_custom_identity_uncertainty_respects_selected_workload(
+    runtime, monkeypatch, endpoint_kind, family, test
+):
+    from booley.criteria.state import DevelopmentState
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    key = f"{family}_policy73"
+    state.init_criteria(
+        {"drc_clean_first": True, key: True},
+        strict=False,
+        criterion_params={
+            key: {
+                "target": "acme:lib:dut:1#first",
+                "test": "selected",
+                **({"test_selector": "selected"} if family != "cycle_count" else {}),
+            }
+        },
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
+    result = flow.execute_cli(["--target", "first", "--test", test, "--work-dir", str(runtime)])
+    expected = ("drc_clean_first", True) if test == "other" else ("", None)
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("binding", ["stored_selector", "legacy"])
+@pytest.mark.parametrize("direction", ["bare_to_qualified", "qualified_to_bare"])
+@pytest.mark.parametrize("name", ["first", "second"])
+def test_custom_alternate_selector_keeps_unevaluated_potential(
+    runtime, monkeypatch, endpoint_kind, binding, direction, name
+):
+    from booley.criteria.state import DevelopmentState
+
+    target = "dut#first" if direction == "bare_to_qualified" else "first"
+    selector = name if direction == "bare_to_qualified" else f"dut#{name}"
+    params = {"target": selector}
+    if binding == "stored_selector":
+        params = {"target": f"acme:lib:dut:1#{name}", "_target_selector": selector}
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria(
+        {"drc_clean_first": True, "drc_rules_policy73": True},
+        strict=False,
+        criterion_params={"drc_rules_policy73": params},
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
+    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
+    expected = ("", None) if name == "first" else ("drc_clean_first", True)
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+def test_custom_evaluated_uncertain_false_is_a_verdict(runtime, monkeypatch, endpoint_kind):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    key = "drc_clean_policy42"
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria(
+        {key: True},
+        strict=False,
+        criterion_params={key: {"target": "acme:lib:dut:1#first"}},
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    endpoint_type = _report_extension_type(endpoint_kind, key)
+
+    def run(self):
+        self.set_criterion(key, False)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(endpoint_type, "_run", run)
+    flow = endpoint_type()
+    result = flow.execute_cli(["--target", "first", "--work-dir", str(runtime)])
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (key, False)
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == (key, False)
+
+
+@pytest.mark.parametrize("ticket", ["none", "nonstrict", "strict"])
+@pytest.mark.parametrize("calls", ["both", "aggregate", "elab"])
+def test_combined_prepared_mode_freezes_both_eligible_families(
+    runtime, monkeypatch, ticket, calls
+):
+    from booley.criteria.state import DevelopmentState
+
+    _report_targets(runtime, ("first",))
+    if ticket != "none":
+        path = runtime / "state.json"
+        state = DevelopmentState.load(path)
+        state.init_criteria({"elaborate_standalone": True}, strict=ticket == "strict")
+        state.save()
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+
+    from booley.flows.sim.build import BuildOutcome
+    from booley.flows.sim.flow import ElabOnlyTargetResult
+    from booley.flows.sim.standalone import _StandaloneOutcome
+
+    def build(self, target):
+        verdict = None if calls == "aggregate" else "pass"
+        return ElabOnlyTargetResult(
+            target,
+            outcome=BuildOutcome(True, verdict, "infrastructure" if verdict is None else None),
+        )
+
+    def sweep(self, targets, **kwargs):
+        if calls == "elab":
+            raise OSError("module sweep infrastructure failed")
+        self.set_criterion("elaborate_standalone", True)
+        return _StandaloneOutcome(passed=True)
+
+    monkeypatch.setattr(SimulateFlow, "_elab_only_preflight", lambda self: ["first"])
+    monkeypatch.setattr(SimulateFlow, "_run_one_elab_only", build)
+    monkeypatch.setattr(SimulateFlow, "_run_standalone_check", sweep)
+    flow = SimulateFlow()
+    result = flow.execute(
+        flow.request_type(target="first", work_dir=runtime, mode="elab_only_standalone")
+    )
+    expected = (
+        ("elaborate_standalone", True) if ticket == "strict" and calls != "elab" else ("", None)
+    )
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+
+
+@pytest.mark.parametrize("name", ["mutation_tester", "coverage_analyst", "tb_coder"])
+def test_specialist_public_completion_projects_actual_evaluations(runtime, monkeypatch, name):
+    from booley.mcp.base import McpToolResult
+    from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
+    from booley.specialists.mutation_tester import MutationTesterSpecialist
+    from booley.specialists.tb_coder import TbCoderSpecialist
+
+    _report_targets(runtime, ("first",))
+    classes = {
+        "mutation_tester": MutationTesterSpecialist,
+        "coverage_analyst": CoverageAnalystSpecialist,
+        "tb_coder": TbCoderSpecialist,
+    }
+    endpoint_type = classes[name]
+    extras = {
+        "mutation_tester": ["--target", "first", "--scope", "rtl"],
+        "coverage_analyst": ["--campaign", str(runtime / "coverage.json")],
+        "tb_coder": ["--instruction-file", str(runtime / "instruction.md"), "--scope", "tb"],
+    }[name]
+
+    def run(self):
+        if name == "mutation_tester":
+            self.set_criterion("mutation_score_first", False)
+        return McpToolResult(exit_code=1, criterion_key="stale", criterion_met=True)
+
+    monkeypatch.setattr(endpoint_type, "_run", run)
+    result = endpoint_type().execute_cli(
+        ["--work-dir", str(runtime), "--report-dir", str(runtime / "reports"), *extras]
+    )
+    expected = ("mutation_score_first", False) if name == "mutation_tester" else ("", None)
+    report = json.loads((runtime / "reports" / f"{name}.json").read_text())
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("mode", ["dry_run", "diagnostic"])
+def test_prepared_lint_without_evaluation_has_null_completion(runtime, monkeypatch, mode):
+    from booley.flows import endpoint_reporting
+    from booley.flows.base import SubprocessResult
+
+    _report_targets(runtime, ("first",), flow="lint")
+    events = []
+    monkeypatch.setattr(endpoint_reporting, "_write_display_event", events.append)
+    monkeypatch.setattr(
+        LintFlow, "_execute", lambda *_args, **_kwargs: SubprocessResult(returncode=0)
+    )
+    flow = LintFlow()
+    result = flow.execute(flow.request_type(target="first", work_dir=runtime, **{mode: True}))
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
+    assert (events[-1]["criterion_key"], events[-1]["criterion_met"]) == ("", None)
+
+
+def test_public_hooks_see_raw_then_projected_headline(runtime, monkeypatch):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    _report_targets(runtime, ("first",), flow="lint")
+    observed = []
+
+    def run(self):
+        self.set_criterion("lint_clean_first", True)
+        return EndpointOutcome(criterion_key="producer_raw", criterion_met=False)
+
+    from booley.flows.endpoint_state import EndpointState
+
+    original_record = EndpointState.record_acceptance
+    original_post = EndpointState._post_run
+
+    def record(self, prepared, outcome):
+        observed.append(("acceptance", outcome.criterion_key, outcome.criterion_met))
+        return original_record(self, prepared, outcome)
+
+    def post(self, outcome, duration):
+        observed.append(("post", outcome.criterion_key, outcome.criterion_met))
+        return original_post(self, outcome, duration)
+
+    monkeypatch.setattr(LintFlow, "_run", run)
+    monkeypatch.setattr(EndpointState, "record_acceptance", record)
+    monkeypatch.setattr(EndpointState, "_post_run", post)
+    result = LintFlow().execute(LintFlow.request_type(target="first", work_dir=runtime))
+    assert observed == [("acceptance", "producer_raw", False), ("post", "lint_clean_first", True)]
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (
+        "lint_clean_first",
+        True,
+    )
+
+
+def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.specialists.reviewer import ReviewerSpecialist
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria({"review_rtl_bugs_done": True, "review_rtl_bugs_clean": True})
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+
+    def run(self):
+        self.set_criterion("review_rtl_bugs_done", True)
+        return EndpointOutcome()
+
+    class StableDisplayReviewer(ReviewerSpecialist):
+        display_tag = "review"
+
+    monkeypatch.setattr(StableDisplayReviewer, "_run", run)
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    reviewer = StableDisplayReviewer()
+    result = reviewer.execute_cli(
+        ["--scope", ".", "--category", "rtl", "--focus", "bugs", "--work-dir", str(runtime)]
+    )
+    assert result.exit_code == 0, result.outcome
+    assert reviewer._report_criteria.known is False
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
+    report = json.loads((reviewer.args.report_dir / "reviewer.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == ("", None)

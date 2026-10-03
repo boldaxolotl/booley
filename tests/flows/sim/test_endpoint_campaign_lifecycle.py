@@ -257,6 +257,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     import json
     import time
 
+    from booley.flows.endpoint_report_criteria import ReportCriteria
     from booley.flows.endpoint_reporting import write_report
     from booley.flows.sim.campaign.coordinator import (
         CampaignPolicy,
@@ -299,6 +300,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
         flow=flow,
         name="sim",
         endpoint_kind="flow",
+        _report_criteria=ReportCriteria(frozen=True),
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
         _selected_target="sim",
@@ -316,3 +318,70 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
         assert detail["termination_counts"][termination] > 0
         assert detail["observations"][0]["failure_class"] == "infrastructure"
         assert detail["observations"][0]["detail"]["termination"] == termination
+
+
+def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
+    import json
+
+    from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
+    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
+    from tests.mcp_tools.test_base import ConcreteMcpTool
+
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    tool.state._file_path = tmp_path / "state.json"
+    tool.state.init_criteria({"sim_pass_sim": True}, strict=True)
+
+    class FailedRecorder:
+        def record_or_verify_transaction(self, *_args, **_kwargs):
+            raise OSError("campaign ledger unavailable")
+
+    outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
+    context = AcceptanceContext(
+        "ticket",
+        {},
+        "generation",
+        tool.state,
+        FailedRecorder(),
+        "invocation",
+        observer=tool.record_report_criteria,
+    )
+    with pytest.raises(OSError):
+        SimulationAcceptanceCoordinator().reconcile(outcome, context)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(tool)
+    report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_sim", True)
+    assert report["passed"] is False
+    assert tool.state.criteria["sim_pass_sim"].met is False
+
+
+@pytest.mark.parametrize("conclusive", [True, False])
+def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_path, conclusive):
+    import json
+    from dataclasses import replace
+
+    from booley.flows.sim.acceptance import _record_standalone_campaign
+    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
+    from tests.mcp_tools.test_base import ConcreteMcpTool
+
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
+    if not conclusive:
+        outcome = replace(outcome, complete=False)
+    _record_standalone_campaign(tool, outcome)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(tool)
+    report = json.loads(tool.write_report(EndpointOutcome()).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == (
+        ("sim_pass_sim", True) if conclusive else ("", None)
+    )
+    assert tool.state._file_path is None
+    assert not (tmp_path / "state.json").exists()

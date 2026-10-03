@@ -2016,6 +2016,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if outcomes and invocation is not None:
             result.detail["campaigns"] = _campaign_structured_details(outcomes, invocation)
 
+    def report_simulation_criterion_keys(
+        self, identity: str, selector: str, name: str, registered: set[str], selected: set[str]
+    ) -> set[str]:
+        """Expose campaign eligibility to reporting without preparing EDA again."""
+        from .acceptance import eligible_simulation_keys
+
+        return eligible_simulation_keys(self.state, identity, selector, name, registered, selected)
+
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
     ) -> PreparedSimulationEndpoint | EndpointOutcome | None:
@@ -3364,6 +3372,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 self.state,
                 self.context._acceptance_recorder,
                 diagnostic=self.args.diagnostic,
+                observer=self.context.record_report_criteria,
             ),
         )
         options = SimulationOptions(
@@ -4632,7 +4641,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _record_elab_only_criterion(self, result: ElabOnlyTargetResult) -> None:
         """Write elaboration evidence only when a real design verdict exists."""
-        if self.args.state_file is None or result.outcome.verdict is None:
+        if result.outcome.verdict is None:
             return
         self.set_criterion(
             f"elab_pass_{result.target}",
@@ -5022,16 +5031,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
 
     def _record_sim_criterion(self, target_result: TargetResult) -> None:
-        """Set per-config sim_pass criterion (skip when inconclusive).
-
-        No-ops outside a ticket run (Interactive / standalone mode, where
-        ``state_file`` is unset): there is no criteria registry to satisfy, so
-        the write would only auto-create an unknown optional ``sim_pass_<target>``
-        criterion — the benign-but-noisy DEBUG line the sandbox agent sees on
-        every bare ``simulate`` run.
-        """
-        if self.args.state_file is None:
-            return
+        """Evaluate the actual selected workload, including memory-only runs."""
         if target_result.inconclusive:
             return
         crit_key = f"sim_pass_{target_result.target}"
