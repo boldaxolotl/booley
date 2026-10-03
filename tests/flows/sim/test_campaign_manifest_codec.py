@@ -48,7 +48,7 @@ from booley.targets.catalog import TargetCatalog
 
 
 def _sha(value: object) -> str:
-    raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
@@ -1072,3 +1072,774 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
     finally:
         flow.context.publication_resources.close()
     assert not roots[0].exists()
+
+
+def _diagnostic_document(*, sources=(), parameters=(), names=()):
+    document = _manifest()
+    document.pop("fingerprints")
+    document["workload"]["source_recipe"]["sources"] = list(sources)
+    document["workload"]["source_recipe"]["parameters"] = list(parameters)
+    document["build_variants"][0]["source_closure"] = list(sources)
+    document["required_suite"]["names"] = list(names)
+    document["required_suite"]["default_invocation"] = not names
+    if names:
+        document["required_suite"]["source_path"] = ".booley_project/tests.toml"
+        document["work_items"][0]["kind"] = "cocotb_batch"
+        document["work_items"][0]["selection"] = {"kind": "unfiltered", "names": []}
+    return document
+
+
+def _diagnostic_source(path, *, digest="a", size=1):
+    return {"path": path, "bytes": size, "sha256": "sha256:" + digest * 64, "kind": "testbench"}
+
+
+def _finalize_diagnostic_document(document):
+    workload = document["workload"]
+    variant = document["build_variants"][0]
+    recipe = {
+        "kind": variant["kind"],
+        "source_closure": variant["source_closure"],
+        "source_recipe": workload["source_recipe"],
+        "build_recipe": workload["build_recipe"],
+        "eda": workload["eda"],
+        "trace": workload["trace"],
+        "coverage": workload["coverage"],
+    }
+    variant["recipe_sha256"] = _sha(recipe)
+    variant["build_variant_id"] = "variant:" + _sha(recipe)[7:]
+    item = document["work_items"][0]
+    item["target"] = document["target"]
+    item["revision"] = document["target"]["revision"]
+    item["build_variant_id"] = variant["build_variant_id"]
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"work_item_id", "fingerprint_sha256"}
+    }
+    item["fingerprint_sha256"] = _sha(identity)
+    item["work_item_id"] = "item:0000:" + _sha(identity)[7:23]
+    return finalize_manifest(document)
+
+
+def _project_diagnostics(old, new):
+    from booley.flows.sim.campaign.planning import (
+        SimulationCampaignWorkloadMismatchError,
+        verify_workload,
+    )
+
+    left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
+    raw = compare_manifests(left, right)
+    with pytest.raises(SimulationCampaignWorkloadMismatchError) as exc:
+        verify_workload(left, right)
+    assert exc.value.diagnostic.mismatches == raw
+    assert exc.value.diagnostic.detail["mismatches"] == [item.message for item in raw]
+    return exc.value.diagnostic
+
+
+@pytest.mark.parametrize(
+    ("old_paths", "new_paths", "lines"),
+    [
+        (("a.sv",), ("head.sv", "a.sv"), ("source added: head.sv",)),
+        (("a.sv", "b.sv"), ("b.sv",), ("source removed: a.sv",)),
+        (("a.sv",), ("b.sv",), ("source removed: a.sv", "source added: b.sv")),
+        (("a.sv", "b.sv"), ("b.sv", "a.sv"), ("source order changed",)),
+    ],
+)
+def test_source_diagnostics_align_paths_across_positional_diff(old_paths, new_paths, lines):
+    old = _diagnostic_document(sources=[_diagnostic_source(path) for path in old_paths])
+    new = _diagnostic_document(sources=[_diagnostic_source(path) for path in new_paths])
+    diagnostic = _project_diagnostics(old, new)
+    assert set(diagnostic.mismatch_summary) == set(lines)
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+@pytest.mark.parametrize("duplicate_digest", ["a", "b"])
+def test_duplicate_source_paths_preserve_second_entry_evidence(duplicate_digest):
+    old = _diagnostic_document(
+        sources=[_diagnostic_source("a.sv"), _diagnostic_source("a.sv", digest=duplicate_digest)]
+    )
+    new = json.loads(json.dumps(old))
+    new["workload"]["source_recipe"]["sources"][1]["bytes"] = 2
+    new["build_variants"][0]["source_closure"][1]["bytes"] = 2
+    diagnostic = _project_diagnostics(old, new)
+    assert "source paths ambiguous: duplicate source path" in diagnostic.mismatch_summary
+    assert any("/sources/1/bytes" in line for line in diagnostic.mismatch_summary)
+    assert any("/source_closure/1/bytes" in line for line in diagnostic.mismatch_summary)
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+def test_conflicting_source_replica_remains_visible():
+    old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
+    new = json.loads(json.dumps(old))
+    new["workload"]["source_recipe"]["sources"][0]["bytes"] = 2
+    new["build_variants"][0]["source_closure"][0]["bytes"] = 3
+    diagnostic = _project_diagnostics(old, new)
+    assert "source changed: a.sv" in diagnostic.mismatch_summary
+    assert any("/source_closure/0/bytes" in line for line in diagnostic.mismatch_summary)
+
+
+@pytest.mark.parametrize(
+    ("old_names", "new_names", "line"),
+    [
+        (("a", "b"), ("b", "c"), "suite changed: +c -a"),
+        (("a", "b"), ("b", "a"), "suite order changed"),
+    ],
+)
+def test_suite_names_are_manifest_projection_cases(old_names, new_names, line):
+    diagnostic = _project_diagnostics(
+        _diagnostic_document(names=old_names), _diagnostic_document(names=new_names)
+    )
+    assert diagnostic.mismatch_summary == (line,)
+
+
+@pytest.mark.parametrize(
+    ("old_parameters", "new_parameters", "line"),
+    [
+        (
+            ({"name": "a/~b", "value": False},),
+            ({"name": "a/~b", "value": "false"},),
+            'parameter a/~b: false → "false"',
+        ),
+        ((), ({"name": "N", "value": "<absent>"},), 'parameter N: <absent> → "<absent>"'),
+        ((), ({"name": "N", "value": 2},), "parameter N: <absent> → 2"),
+        (({"name": "N", "value": 2},), (), "parameter N: 2 → <absent>"),
+    ],
+)
+def test_parameter_diagnostics_preserve_values_and_absence(old_parameters, new_parameters, line):
+    diagnostic = _project_diagnostics(
+        _diagnostic_document(parameters=old_parameters),
+        _diagnostic_document(parameters=new_parameters),
+    )
+    assert diagnostic.mismatch_summary == (line,)
+
+
+def test_runtime_declarations_are_aligned_by_destination():
+    from booley.flows.sim.campaign.planning import canonical_sha256
+
+    old, new = _diagnostic_document(), _diagnostic_document()
+    for document, source in ((old, "old/data.bin"), (new, "new/data.bin")):
+        declaration = {"destination": "input/data.bin", "source_artifact_path": source}
+        document["workload"]["runtime_inputs"] = [
+            {**declaration, "declaration_id": canonical_sha256(declaration)}
+        ]
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ("runtime input changed: input/data.bin",)
+    assert diagnostic.derived_fingerprint_count == 1
+
+
+def test_opaque_command_model_digest_is_a_named_root_cause():
+    old, new = _diagnostic_document(), _diagnostic_document()
+    new["workload"]["build_recipe"]["command_model_sha256"] = "sha256:" + "b" * 64
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ("build command model changed",)
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+def test_fingerprint_only_report_retains_details():
+    from booley.flows.sim.campaign.planning import WorkloadDiagnostic, WorkloadMismatch
+
+    finding = WorkloadMismatch("/build_variants/0/recipe_sha256", "sha256:old", "sha256:new")
+    diagnostic = WorkloadDiagnostic((finding,), (), 1)
+    assert "no root cause identified" in diagnostic.report()
+    assert "1 derived fingerprints differ" in diagnostic.report()
+    assert finding.message in diagnostic.report(verbose=True)
+
+
+def test_target_revision_fallback_collapses_verified_replicas():
+    old, new = _diagnostic_document(), _diagnostic_document()
+    new["target"]["revision"] = "changed"
+    diagnostic = _project_diagnostics(old, new)
+    assert len(diagnostic.mismatch_summary) == 1
+    assert "/target/revision" in diagnostic.mismatch_summary[0]
+    assert diagnostic.derived_fingerprint_count == 2
+
+
+def test_controls_in_source_labels_are_escaped():
+    old = _diagnostic_document(sources=[_diagnostic_source("a\n.sv")])
+    new = _diagnostic_document(sources=[_diagnostic_source("a\n.sv", size=2)])
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ('source changed: "a\\n.sv"',)
+
+
+def test_zero_mismatch_verification_remains_successful():
+    from booley.flows.sim.campaign.planning import project_workload_mismatches, verify_workload
+
+    manifest = finalize_manifest(_diagnostic_document())
+    verify_workload(manifest, manifest)
+    diagnostic = project_workload_mismatches(manifest, manifest)
+    assert diagnostic.detail == {
+        "mismatches": [],
+        "mismatch_summary": [],
+        "derived_fingerprint_count": 0,
+    }
+
+
+def test_parameter_nested_json_values_are_rendered_as_json():
+    old = _diagnostic_document(parameters=[{"name": "shape", "value": {"x": [1, False]}}])
+    new = _diagnostic_document(parameters=[{"name": "shape", "value": {"x": [2, True]}}])
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ('parameter shape: {"x":[1,false]} → {"x":[2,true]}',)
+
+
+@pytest.mark.parametrize("region", ["planning_disclosures", "prerequisites"])
+def test_independent_container_additions_preserve_raw_fallback(region):
+    old, new = _diagnostic_document(), _diagnostic_document()
+    if region == "planning_disclosures":
+        new[region] = [
+            {
+                "planner": "setup",
+                "scratch_inputs": [],
+                "generated_files": [],
+                "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
+                "cleanup": {"removed": True},
+            }
+        ]
+    else:
+        target = dict(old["target"])
+        target.update(role="cycle_count_baseline", revision="baseline")
+        new[region] = [
+            {
+                "role": "cycle_count_baseline",
+                "target": target,
+                "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+                "work_item_id": "item:0000:0123456789abcdef",
+                "required_observation": "cycle_count",
+                "manifest": {
+                    "path_base": "origin_invocation",
+                    "path": "targets/baseline/campaign/manifest.json",
+                    "bytes": 1,
+                    "sha256": "sha256:" + "a" * 64,
+                    "kind": "simulation_campaign_manifest",
+                    "owner": "550e8400-e29b-41d4-a716-446655440000",
+                },
+            }
+        ]
+    diagnostic = _project_diagnostics(old, new)
+    assert len(diagnostic.mismatch_summary) == 1
+    assert (
+        diagnostic.mismatch_summary[0] == "workload changed: " + diagnostic.mismatches[0].message
+    )
+    assert f"/{region}/0" in diagnostic.mismatch_summary[0]
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+@pytest.mark.parametrize("field", ["sharing_eligible", "eda_version", "run_cwd"])
+def test_unrecognized_identity_changes_remain_visible(field):
+    old, new = _diagnostic_document(), _diagnostic_document()
+    if field == "sharing_eligible":
+        new["build_variants"][0][field] = False
+        pointer = "/build_variants/0/sharing_eligible"
+    elif field == "eda_version":
+        new["workload"]["eda"]["version"] = "13"
+        pointer = "/workload/eda/version"
+    else:
+        new["workload"]["run_cwd"]["configured"] = "other"
+        pointer = "/workload/run_cwd/configured"
+    diagnostic = _project_diagnostics(old, new)
+    assert any(pointer in line for line in diagnostic.mismatch_summary)
+
+
+@pytest.mark.parametrize(
+    ("old_destinations", "new_destinations", "line"),
+    [
+        (("a",), ("head", "a"), "runtime input added: head"),
+        (("a", "b"), ("b",), "runtime input removed: a"),
+        (("a", "b"), ("b", "a"), "runtime input order changed"),
+    ],
+)
+def test_runtime_declaration_list_changes_use_destination_identity(
+    old_destinations, new_destinations, line
+):
+    from booley.flows.sim.campaign.planning import canonical_sha256
+
+    old, new = _diagnostic_document(), _diagnostic_document()
+    for document, destinations in ((old, old_destinations), (new, new_destinations)):
+        declarations = []
+        for destination in destinations:
+            declaration = {"destination": destination, "source_artifact_path": destination}
+            declarations.append({**declaration, "declaration_id": canonical_sha256(declaration)})
+        document["workload"]["runtime_inputs"] = declarations
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == (line,)
+
+
+def test_parameter_order_refusal_remains_visible():
+    parameters = [{"name": "A", "value": 1}, {"name": "B", "value": 2}]
+    diagnostic = _project_diagnostics(
+        _diagnostic_document(parameters=parameters),
+        _diagnostic_document(parameters=list(reversed(parameters))),
+    )
+    assert diagnostic.mismatch_summary == ("parameter order changed",)
+
+
+def test_raw_comparator_pointer_value_contract_is_unchanged():
+    old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
+    new = _diagnostic_document(sources=[_diagnostic_source("a.sv", size=2)])
+    left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
+    raw = compare_manifests(left, right)
+    assert [item.pointer for item in raw] == [
+        "/build_variants/0/build_variant_id",
+        "/build_variants/0/recipe_sha256",
+        "/build_variants/0/source_closure/0/bytes",
+        "/work_items/0/build_variant_id",
+        "/work_items/0/fingerprint_sha256",
+        "/work_items/0/work_item_id",
+        "/workload/source_recipe/sources/0/bytes",
+    ]
+    assert (raw[-1].expected, raw[-1].actual) == (1, 2)
+    assert (
+        raw[-1].message
+        == "/workload/source_recipe/sources/0/bytes: manifest has 1, current workload has 2"
+    )
+
+
+def test_independent_work_item_arguments_remain_visible():
+    old, new = _diagnostic_document(), _diagnostic_document()
+    new["work_items"][0]["arguments"] = ["+extra"]
+    diagnostic = _project_diagnostics(old, new)
+    assert any("/work_items/0/arguments/0" in line for line in diagnostic.mismatch_summary)
+    assert diagnostic.derived_fingerprint_count == 2
+
+
+def test_diagnostic_projection_needs_no_path_read_bytes_or_text(monkeypatch):
+    from booley.flows.sim.campaign.planning import project_workload_mismatches
+
+    old = _diagnostic_document(sources=[_diagnostic_source("relative/a.sv")])
+    new = _diagnostic_document(sources=[_diagnostic_source("relative/a.sv", size=2)])
+    left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
+
+    def forbidden_read(*_args, **_kwargs):
+        pytest.fail("diagnostic projection must not read files")
+
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read)
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    diagnostic = project_workload_mismatches(left, right)
+    assert diagnostic.mismatch_summary == ("source changed: relative/a.sv",)
+
+
+def test_absolute_source_paths_remain_rejected_before_projection():
+    with pytest.raises(SimulationCampaignIntegrityError, match="relative"):
+        _finalize_diagnostic_document(
+            _diagnostic_document(sources=[_diagnostic_source("/absolute/a.sv")])
+        )
+
+
+@pytest.mark.parametrize(
+    ("old_value", "new_value", "line"),
+    [
+        (False, 0, "parameter N: false → 0"),
+        (True, 1, "parameter N: true → 1"),
+        (1, 1.0, "parameter N: 1 → 1.0"),
+        ([1], [True], "parameter N: [1] → [true]"),
+        ({"x": 0}, {"x": False}, 'parameter N: {"x":0} → {"x":false}'),
+    ],
+)
+def test_typed_json_parameter_causes_preserve_static_digest_raw_comparison(
+    old_value, new_value, line
+):
+    old = _diagnostic_document(parameters=[{"name": "N", "value": old_value}])
+    new = _diagnostic_document(parameters=[{"name": "N", "value": new_value}])
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == (line,)
+    assert diagnostic.derived_fingerprint_count == 5
+    assert not any(
+        item.pointer.startswith("/workload/source_recipe/parameters")
+        for item in diagnostic.mismatches
+    )
+
+
+def _prepared_disclosure(sources):
+    return {
+        "planner": "fusesoc_setup",
+        "scratch_inputs": [],
+        "generated_files": [{**source, "kind": "generated_input"} for source in sources],
+        "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
+        "cleanup": {"removed": True},
+    }
+
+
+def _prepared_diagnostic_pair():
+    old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
+    new = _diagnostic_document(sources=[_diagnostic_source("a.sv", size=2, digest="b")])
+    for document in (old, new):
+        document["planning_disclosures"] = [
+            _prepared_disclosure(document["workload"]["source_recipe"]["sources"])
+        ]
+    return old, new
+
+
+def test_prepared_path_and_content_equality_collapses_across_multiple_disclosures():
+    old, new = _prepared_diagnostic_pair()
+    for document in (old, new):
+        document["planning_disclosures"] *= 2
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ("source changed: a.sv",)
+    assert diagnostic.derived_fingerprint_count == 5
+    assert (
+        len(
+            [
+                item
+                for item in diagnostic.mismatches
+                if item.pointer.startswith("/planning_disclosures/")
+            ]
+        )
+        == 4
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "disclosure_duplicate",
+        "planner",
+        "kind",
+        "contract",
+        "version",
+        "unmatched",
+    ],
+)
+def test_ambiguous_or_unmatched_prepared_disclosure_changes_preserve_fallback(changed):
+    old, new = _prepared_diagnostic_pair()
+    disclosure = new["planning_disclosures"][0]
+    if changed == "disclosure_duplicate":
+        for document in (old, new):
+            document["planning_disclosures"][0]["generated_files"] *= 2
+    elif changed == "unmatched":
+        disclosure["generated_files"][0]["path"] = "other.sv"
+    elif changed == "planner":
+        disclosure["planner"] = "other"
+    else:
+        field = {"kind": "kind", "contract": "contract_version", "version": "version"}[changed]
+        disclosure["tool_provenance"][field] = "other"
+    diagnostic = _project_diagnostics(old, new)
+    assert any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
+    assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
+
+
+def test_unremoved_planning_scratch_is_rejected_before_diagnostic_projection():
+    _old, new = _prepared_diagnostic_pair()
+    new["planning_disclosures"][0]["cleanup"]["removed"] = False
+    with pytest.raises(SimulationCampaignIntegrityError, match="planning scratch must be removed"):
+        _finalize_diagnostic_document(new)
+
+
+@pytest.mark.parametrize("change", ["add", "remove", "reorder"])
+def test_disclosure_source_list_shifts_preserve_whole_entry_and_positional_fallback(change):
+    paths = {
+        "add": (("a.sv",), ("head.sv", "a.sv")),
+        "remove": (("a.sv", "b.sv"), ("b.sv",)),
+        "reorder": (("a.sv", "b.sv"), ("b.sv", "a.sv")),
+    }[change]
+    old, new = [
+        _diagnostic_document(sources=[_diagnostic_source(path) for path in side]) for side in paths
+    ]
+    for document in (old, new):
+        document["planning_disclosures"] = [
+            _prepared_disclosure(document["workload"]["source_recipe"]["sources"])
+        ]
+    diagnostic = _project_diagnostics(old, new)
+    assert any(
+        "/planning_disclosures/0/generated_files/" in line for line in diagnostic.mismatch_summary
+    )
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+def test_standalone_prepared_source_edit_is_not_misattributed_to_unchanged_recipe():
+    old, _new = _prepared_diagnostic_pair()
+    new = json.loads(json.dumps(old))
+    new["planning_disclosures"][0]["generated_files"][0]["bytes"] = 2
+    diagnostic = _project_diagnostics(old, new)
+    assert len(diagnostic.mismatch_summary) == 1
+    assert diagnostic.mismatch_summary == ("prepared source changed: a.sv",)
+    assert "/planning_disclosures/0/generated_files/0/bytes" in diagnostic.mismatches[0].message
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+def test_explicit_zero_findings_produces_no_typed_parameter_roots():
+    from booley.flows.sim.campaign.planning import project_workload_mismatches
+
+    old = _finalize_diagnostic_document(
+        _diagnostic_document(parameters=[{"name": "N", "value": False}])
+    )
+    new = _finalize_diagnostic_document(
+        _diagnostic_document(parameters=[{"name": "N", "value": 0}])
+    )
+    diagnostic = project_workload_mismatches(old, new, ())
+    assert diagnostic.mismatch_summary == ()
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+def _own_prepared_pair(changes):
+    old, new = _diagnostic_document(), _diagnostic_document()
+    for document, endpoint in ((old, 1), (new, 2)):
+        document["planning_disclosures"] = [
+            _prepared_disclosure([_diagnostic_source(path, size=values[endpoint - 1])])
+            for path, *values in changes
+        ]
+    return old, new
+
+
+@pytest.mark.parametrize(
+    "changes,lines",
+    [
+        (
+            [("staged/a.sv", 1, 2), ("staged/a.sv", 1, 2)],
+            ("prepared source changed: staged/a.sv",),
+        ),
+        (
+            [("a.sv", 1, 2), ("a.sv", 1, 3)],
+            (
+                "prepared source changed: a.sv (planning disclosure 0)",
+                "prepared source changed: a.sv (planning disclosure 1)",
+            ),
+        ),
+        (
+            [("a.sv", 1, 2), ("a.sv", 3, 2)],
+            (
+                "prepared source changed: a.sv (planning disclosure 0)",
+                "prepared source changed: a.sv (planning disclosure 1)",
+            ),
+        ),
+        (
+            [("a.sv", 1, 2), ("a.sv", 1, 3), ("a.sv", 1, 2)],
+            (
+                "prepared source changed: a.sv (planning disclosures 0, 2)",
+                "prepared source changed: a.sv (planning disclosure 1)",
+            ),
+        ),
+    ],
+)
+def test_own_prepared_changes_group_only_identical_observed_facts(changes, lines):
+    diagnostic = _project_diagnostics(*_own_prepared_pair(changes))
+    assert diagnostic.mismatch_summary == lines
+    assert len(diagnostic.mismatches) == len(changes)
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+def test_prepared_render_collision_retains_all_colliding_original_leaves():
+    changes = [("x.sv", 1, 2), ("x.sv", 1, 3), ("x.sv (planning disclosure 1)", 1, 2)]
+    diagnostic = _project_diagnostics(*_own_prepared_pair(changes))
+    assert (
+        diagnostic.mismatch_summary[0] == "prepared source changed: x.sv (planning disclosure 0)"
+    )
+    assert set(diagnostic.mismatch_summary[1:]) == {
+        "workload changed: " + item.message for item in diagnostic.mismatches[1:]
+    }
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+@pytest.mark.parametrize("changed", ["recipe_duplicate", "bytes", "hash", "staged"])
+def test_unmatched_prepared_facts_are_named_without_recipe_correspondence(changed):
+    old, new = _prepared_diagnostic_pair()
+    if changed == "recipe_duplicate":
+        for document in (old, new):
+            document["workload"]["source_recipe"]["sources"] *= 2
+            document["build_variants"][0]["source_closure"] *= 2
+    elif changed == "staged":
+        for document in (old, new):
+            document["planning_disclosures"][0]["generated_files"][0]["path"] = "staged/a.sv"
+    else:
+        field, value = ("bytes", 3) if changed == "bytes" else ("sha256", "sha256:" + "c" * 64)
+        new["planning_disclosures"][0]["generated_files"][0][field] = value
+    diagnostic = _project_diagnostics(old, new)
+    expected_path = "staged/a.sv" if changed == "staged" else "a.sv"
+    assert f"prepared source changed: {expected_path}" in diagnostic.mismatch_summary
+    assert not any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+@pytest.mark.parametrize("own_count", [1, 2])
+def test_equality_collapsed_occurrences_do_not_affect_own_key_suffixes(own_count):
+    old, new = _prepared_diagnostic_pair()
+    for document, endpoint in ((old, 0), (new, 1)):
+        document["planning_disclosures"] += [
+            _prepared_disclosure(
+                [_diagnostic_source("a.sv", size=(3 + index, 5 + index)[endpoint])]
+            )
+            for index in range(own_count)
+        ]
+    diagnostic = _project_diagnostics(old, new)
+    prepared = [line for line in diagnostic.mismatch_summary if line.startswith("prepared source")]
+    assert prepared == (
+        ["prepared source changed: a.sv"]
+        if own_count == 1
+        else [
+            "prepared source changed: a.sv (planning disclosure 1)",
+            "prepared source changed: a.sv (planning disclosure 2)",
+        ]
+    )
+    assert diagnostic.mismatch_summary[0] == "source changed: a.sv"
+
+
+@pytest.mark.parametrize("changed", ["scratch", "path_layout", "entry_kind"])
+def test_prepared_pair_and_entry_guards_retain_otherwise_collapsible_leaves(changed):
+    old, new = _prepared_diagnostic_pair()
+    if changed == "scratch":
+        new["planning_disclosures"][0]["scratch_inputs"] = [_diagnostic_source("scratch.sv")]
+    elif changed == "entry_kind":
+        new["planning_disclosures"][0]["generated_files"][0]["kind"] = "rtl"
+    else:
+        new["planning_disclosures"][0]["generated_files"].append(
+            {**_diagnostic_source("head.sv"), "kind": "generated_input"}
+        )
+    diagnostic = _project_diagnostics(old, new)
+    original = [
+        item.message
+        for item in diagnostic.mismatches
+        if item.pointer.startswith("/planning_disclosures/")
+    ]
+    assert {"workload changed: " + item for item in original} <= set(diagnostic.mismatch_summary)
+    assert not any(
+        line.startswith("prepared source changed:") for line in diagnostic.mismatch_summary
+    )
+
+
+@pytest.mark.parametrize("side", [0, 1])
+@pytest.mark.parametrize("field,value", [("bytes", 7), ("sha256", "sha256:" + "c" * 64)])
+def test_either_side_unequal_prepared_content_has_its_own_named_cause(side, field, value):
+    old, new = _prepared_diagnostic_pair()
+    (old, new)[side]["planning_disclosures"][0]["generated_files"][0][field] = value
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ("source changed: a.sv", "prepared source changed: a.sv")
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+def test_distinct_prepared_hash_only_changes_preserve_each_observed_cause():
+    old, new = _own_prepared_pair([("staged.sv", 1, 1), ("staged.sv", 1, 1)])
+    for position, digest in enumerate(("b", "c")):
+        new["planning_disclosures"][position]["generated_files"][0]["sha256"] = (
+            "sha256:" + digest * 64
+        )
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == (
+        "prepared source changed: staged.sv (planning disclosure 0)",
+        "prepared source changed: staged.sv (planning disclosure 1)",
+    )
+    assert [item.pointer for item in diagnostic.mismatches] == [
+        "/planning_disclosures/0/generated_files/0/sha256",
+        "/planning_disclosures/1/generated_files/0/sha256",
+    ]
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+@pytest.mark.parametrize("side", [0, 1])
+def test_generated_path_duplicates_on_either_side_block_prepared_naming(side):
+    old, new = _prepared_diagnostic_pair()
+    (old, new)[side]["planning_disclosures"][0]["generated_files"] *= 2
+    diagnostic = _project_diagnostics(old, new)
+    original = [
+        item.message
+        for item in diagnostic.mismatches
+        if item.pointer.startswith("/planning_disclosures/")
+    ]
+    assert {"workload changed: " + item for item in original} <= set(diagnostic.mismatch_summary)
+
+
+@pytest.mark.parametrize("changed", ["planner", "kind", "contract", "version"])
+def test_unknown_preparation_metadata_falls_back_but_equal_versions_allow_collapse(changed):
+    old, new = _prepared_diagnostic_pair()
+    for document in (old, new):
+        disclosure = document["planning_disclosures"][0]
+        if changed == "planner":
+            disclosure["planner"] = "unknown"
+        else:
+            field = {"kind": "kind", "contract": "contract_version", "version": "version"}[changed]
+            disclosure["tool_provenance"][field] = (
+                "unavailable" if changed == "version" else "unknown"
+            )
+    diagnostic = _project_diagnostics(old, new)
+    if changed == "version":
+        assert diagnostic.mismatch_summary == ("source changed: a.sv",)
+    else:
+        assert any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
+
+
+def test_repeated_diagnostic_region_lookups_do_not_rescan_original_findings():
+    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
+
+    class CountingFindings(tuple):
+        walks = 0
+        indexed_reads = 0
+
+        def __getitem__(self, index):
+            self.indexed_reads += 1
+            return super().__getitem__(index)
+
+        def __iter__(self):
+            self.walks += 1
+            return super().__iter__()
+
+    findings = CountingFindings(
+        [WorkloadMismatch(f"/build_variants/{index}/sha256", "old", "new") for index in range(200)]
+        + [WorkloadMismatch("/build_variants/0/sha256", "other", "new")]
+    )
+    projection = _DiagnosticProjection(findings)
+    original_walks = findings.walks
+    original_indexed_reads = findings.indexed_reads
+    for _ in range(20):
+        assert projection.indices("/build_variants/0/sha256") == {0, 200}
+        assert projection.indices("/build_variants/0") == {0, 200}
+        assert projection.indices("/build_variants") == set(range(201))
+        assert projection.indices("/build_variants/20") == {20}
+        assert projection.indices("/build_variants/2") == {2}
+        assert projection.indices("/absent") == set()
+    assert findings.walks == original_walks
+    assert findings.indexed_reads == original_indexed_reads
+    projection.explain({0, 200}, ("same region changed",))
+    projection.derived.add(1)
+    diagnostic = projection.finish()
+    assert diagnostic.mismatches is findings
+    assert diagnostic.derived_fingerprint_count == 1
+    assert len(diagnostic.mismatch_summary) == 199
+
+
+def test_parameter_display_escapes_nested_controls_without_changing_raw_values():
+    old = _diagnostic_document(parameters=[{"name": "N", "value": {"x": ["safe"]}}])
+    controls = "\u0085\u202e\u2066\u2028\u2029"
+    new = _diagnostic_document(parameters=[{"name": "N", "value": {"x": [controls]}}])
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == (
+        'parameter N: {"x":["safe"]} → {"x":["\\u0085\\u202e\\u2066\\u2028\\u2029"]}',
+    )
+    assert not any(character in diagnostic.report() for character in controls)
+    assert any(item.actual == controls for item in diagnostic.mismatches)
+    assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
+
+
+def test_diagnostic_prefix_lookup_preserves_root_and_escaped_component_boundaries():
+    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
+
+    pointers = ("", "/", "//child", "/scope/~1x", "/scope/~1x/child", "/scope/~1xy")
+    projection = _DiagnosticProjection(tuple(WorkloadMismatch(p, "old", "new") for p in pointers))
+    assert projection.indices("") == set(range(6))
+    assert projection.indices("/") == {1, 2}
+    assert projection.indices("/scope/~1x") == {3, 4}
+    assert projection.indices("/scope/~1") == set()
+    selected = projection.indices("/scope/~1x")
+    selected.clear()
+    assert projection.indices("/scope/~1x") == {3, 4}
+
+
+def test_projected_root_membership_does_not_scan_ordered_output():
+    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
+
+    class CountingRoots(list):
+        membership_checks = 0
+
+        def __contains__(self, line):
+            self.membership_checks += 1
+            return super().__contains__(line)
+
+    finding = WorkloadMismatch("/unknown", "old", "new")
+    projection = _DiagnosticProjection((finding, finding))
+    projection.roots = CountingRoots()
+    expected = [f"source changed: source_{index}.sv" for index in range(200)]
+    projection.explain(set(), expected)
+    projection.explain(set(), list(reversed(expected)))
+    assert projection.roots == expected
+    assert projection.roots.membership_checks == 0
+    diagnostic = projection.finish()
+    fallback = f"workload changed: {finding.message}"
+    assert diagnostic.mismatch_summary == (*expected, fallback, fallback)
+    assert projection.root_lines == set(diagnostic.mismatch_summary)
+    assert diagnostic.mismatches == (finding, finding)

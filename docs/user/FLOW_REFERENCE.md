@@ -144,6 +144,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |
 | `--no-waivers` | With `--coverage`, report raw coverage without applying approved waivers. With a Coverage Criterion it also needs `--diagnostic` (see [Collecting vs. gating](#collecting-vs-gating)). |
 | `--resume-from <manifest.json>` | Resume an interrupted run (see [Resuming](#resuming-an-interrupted-run)). |
+| `--verbose` | With `--resume-from`, include full Simulation Campaign mismatch pointers and values (also with `--dry-run`). |
 | `--result-verbosity <compact\|full>` | cocotb console detail. `full` prints every testcase; the complete XML/JSON is always kept. |
 | `--no-kill` | Skip the pre-run cleanup of stale simulator processes. Diagnostic use only. |
 

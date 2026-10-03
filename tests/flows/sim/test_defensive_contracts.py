@@ -206,3 +206,9 @@ def test_campaign_model_only_freezes_json_shaped_values() -> None:
         _freeze_json({1: "value"})
     with pytest.raises(TypeError, match="non-JSON"):
         _freeze_json(object())
+
+
+@pytest.mark.parametrize("value", [None, "true", 0, 1, [], {}])
+def test_verbose_requires_strict_boolean_at_request_boundary(value):
+    with pytest.raises(ValueError, match="verbose must be a boolean"):
+        SimRequest(target="sim", verbose=value)
