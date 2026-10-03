@@ -18,7 +18,7 @@ pub struct ExtractConfig {
     pub patterns: Vec<String>,
     /// Whether row selectors came from explicit user input.
     pub explicit_selectors: bool,
-    /// Wrapper diagnostics to merge into supported JSON envelopes.
+    /// Query diagnostics to merge into supported JSON envelopes.
     pub warnings: Vec<String>,
     pub async_mode: bool,
     pub clock_pattern: Option<String>,

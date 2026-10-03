@@ -435,7 +435,9 @@ fn alias_warnings(
             .enumerate()
             .filter(|(_, s)| match_signal(&s.name, &matchers))
         {
-            if (!event && rows.contains(&i)) || representative.get(&signal.group_id) == Some(&i) {
+            if (!event && rows.binary_search(&i).is_ok())
+                || representative.get(&signal.group_id) == Some(&i)
+            {
                 continue;
             }
             if let Some(&shown) = representative.get(&signal.group_id) {
@@ -757,6 +759,18 @@ fn build_radix_map(
     // Track each request (idx, radix) so we can detect collisions even when
     // one of the radixes is the default Hex (which build_radix_map drops).
     let mut requested: HashMap<usize, Vec<Radix>> = HashMap::new();
+    let exact_patterns: Vec<String> = cfg
+        .patterns
+        .iter()
+        .filter(|p| !explicit_glob(p))
+        .cloned()
+        .collect();
+    let exact_matchers = compile_patterns(&exact_patterns).expect("row selectors were validated");
+    let retained_exact: std::collections::HashSet<usize> = matched
+        .iter()
+        .copied()
+        .filter(|&idx| match_signal(&cache.signals[idx].name, &exact_matchers))
+        .collect();
     for (pat, radix) in &cfg.signal_radixes {
         if let Ok(matchers) = compile_patterns(&[pat.clone()]) {
             let selected_groups: std::collections::HashSet<u64> = cache
@@ -768,13 +782,9 @@ fn build_radix_map(
             for &idx in matched {
                 let signal = &cache.signals[idx];
                 let matches = match_signal(&signal.name, &matchers);
-                let retained_exact = cfg.patterns.iter().filter(|p| !explicit_glob(p)).any(|p| {
-                    compile_patterns(std::slice::from_ref(p))
-                        .is_ok_and(|m| match_signal(&signal.name, &m))
-                });
                 if (matches && !explicit_glob(pat))
                     || (explicit_glob(pat)
-                        && !retained_exact
+                        && !retained_exact.contains(&idx)
                         && selected_groups.contains(&signal.group_id))
                 {
                     requested.entry(idx).or_default().push(*radix);
@@ -2119,6 +2129,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     };
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
+    let _ = err.flush();
     let unsigned_time = u64::try_from(at_time).unwrap_or_else(|_| {
         eprintln!("ERROR: value time {at_time} is outside simulation range");
         std::process::exit(2);
@@ -2870,8 +2881,7 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
         for cycle in start_cycle..=end_cycle {
             let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-            record_limit(cfg, matched.len());
-            for (si, &sig_idx) in matched.iter().take(cfg.max_lines).enumerate() {
+            for (si, &sig_idx) in matched.iter().enumerate() {
                 let val = value_at_tick(&sig_data[si], tick);
                 let changed = match &prev_vals[si] {
                     Some(pv) => pv != &val,

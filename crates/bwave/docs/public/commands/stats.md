@@ -98,10 +98,6 @@ See `reference/json-envelope` for the full schema.
 
 - **`total_cycles: null`**: no clock detected. Pass
   `--clock PATTERN` or accept the tick-only summary.
-- **`time_in_state` values don't sum to `total_ticks`**:
-  the signal had X / Z values that don't appear in the
-  histogram, or the time window (`-t`) was narrower than
-  the full simulation.
 - **Output truncated**: `--limit` hit. Narrow with
   `-s` or bump the limit.
 - **`--virtual` rejected**: `stats` doesn't accept

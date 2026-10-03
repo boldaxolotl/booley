@@ -3364,3 +3364,53 @@ fn issue_1108_brace_glob_aliases_are_deduplicated() {
     assert!(err.contains("shown once"), "{err}");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn issue_1108_sync_signal_limits_changed_records() {
+    let dir = std::env::temp_dir().join(format!("bwave-1108-sync-limit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcd = dir.join("input.vcd");
+    let fst = dir.join("input.fst");
+    std::fs::write(&vcd, "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$var wire 1 \" first $end\n$var wire 1 # later $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n0\"\n0#\n#5\n1!\n#10\n0!\n1#\n#15\n1!\n#20\n0!\n0#\n#25\n1!\n#30\n0!\n#35\n1!\n#40\n0!\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let p = fst.to_str().unwrap();
+    for (window, withheld) in [("2:2", false), ("2:3", true)] {
+        let (out, err, code) = run(&[
+            "signal", p, "-s", "first", "-s", "later", "-t", window, "--limit", "1",
+        ]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(out, "2 later 1\n", "{err}");
+        assert_eq!(
+            err.matches("output truncated").count(),
+            usize::from(withheld),
+            "{err}"
+        );
+        assert!(!err.contains("showing held values"), "{err}");
+    }
+    let (out, err, code) = run(&[
+        "signal", p, "-s", "first", "-s", "later", "-t", "2:3", "--limit", "2",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "2 later 1\n3 later 0\n");
+    assert!(!err.contains("output truncated"), "{err}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_point_errors_preserve_buffered_diagnostics() {
+    let (dir, fst) = issue_1108_store("point-error-diagnostics");
+    let p = fst.to_str().unwrap();
+    for point in ["-1", "100001"] {
+        let (out, err, code) = run(&["value", p, "--at", point, "-s", "b"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(out.is_empty(), "{out}");
+        assert!(err.contains("# scope: tb"), "{err}");
+        let warning = err
+            .find("no clock signal found, falling back to async mode")
+            .expect(&err);
+        let error = err.find("ERROR: value time").expect(&err);
+        assert!(warning < error, "{err}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
