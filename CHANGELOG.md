@@ -160,6 +160,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- License relay startup now waits for the relay's full Docker health-check
+  window (about 70 seconds instead of 12), so a slow or busy host no longer
+  tears down a relay that would have become healthy. A relay that exits, or
+  that Docker marks unhealthy, now fails at once instead of waiting out the
+  budget. The error now gives the container state and the last lines of the
+  relay log.
+  ([#1067](https://github.com/boldaxolotl/Booley/issues/1067))
+
 - `booley doctor --deep` now prints a flushed `RUN` line before each long
   check (the agent-backed developer probe, every deep Flow smoke, every
   self-test case, and `.core` resolution) with its timeout, so redirected

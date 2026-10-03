@@ -9,7 +9,12 @@ from pathlib import Path
 
 import yaml
 from tests.sandbox_image_contract import logical_instructions
-from tests.sidecar_image_helpers import DIND_IMAGE
+from tests.sidecar_image_helpers import (
+    DIND_IMAGE,
+    SIDECAR_ALPINE_BASE,
+    SIDECAR_BOOKWORM_BASE,
+    SIDECAR_PYTHON_VERSION,
+)
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
 _DOCKER_DIR = _DOCKERFILE.parent
@@ -296,18 +301,12 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert evidence_script.count(":py314") >= 3
     assert ":py313" not in evidence_script
     assert '"Python 3.13.15"' not in evidence_script
-    assert '"Python 3.14.8"' in evidence_script
+    assert f'"{SIDECAR_PYTHON_VERSION}"' in evidence_script
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
-    assert (
-        'readonly BOOKWORM_CANDIDATE="python:3.14.8-slim-bookworm@sha256:'
-        'c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88"' in evidence_script
-    )
-    assert (
-        'readonly ALPINE_CANDIDATE="python:3.14.8-alpine3.24@sha256:'
-        '8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"' in evidence_script
-    )
+    assert f'readonly BOOKWORM_CANDIDATE="{SIDECAR_BOOKWORM_BASE}"' in evidence_script
+    assert f'readonly ALPINE_CANDIDATE="{SIDECAR_ALPINE_BASE}"' in evidence_script
     assert (
         'readonly DOCKER_CLI="docker:29.8.2-cli@sha256:'
         'b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"' in evidence_script
@@ -357,19 +356,13 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
 
 
-def test_sidecars_pin_python_3_14_8_without_changing_distributions() -> None:
+def test_sidecars_pin_expected_python_bases_without_changing_distributions() -> None:
     egress = (_DOCKER_DIR / "Dockerfile.egress-proxy").read_text(encoding="utf-8")
     flexnet = (_DOCKER_DIR / "Dockerfile.flexnet-relay").read_text(encoding="utf-8")
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
-    assert (
-        "FROM python:3.14.8-slim-bookworm@sha256:"
-        "c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88" in egress
-    )
-    alpine = (
-        "FROM python:3.14.8-alpine3.24@sha256:"
-        "8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"
-    )
+    assert f"FROM {SIDECAR_BOOKWORM_BASE}" in egress
+    alpine = f"FROM {SIDECAR_ALPINE_BASE}"
     assert alpine in flexnet
     assert alpine in reaper
 
