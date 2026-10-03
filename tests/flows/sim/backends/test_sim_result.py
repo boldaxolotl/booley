@@ -278,6 +278,8 @@ class TestHarnessInfraLines:
             "ERROR: memory elaboration failed in bank 3",
             "ERROR: fetch simulation timed out waiting for grant",
             "ERROR: alu executable path not found",
+            "ERROR: simulation aborted: watchdog expired",
+            "ERROR: simulation aborted: run directory /work grew by 1 bytes",
         ],
     )
     def test_testbench_prose_is_not_mistaken_for_infra(self, line):

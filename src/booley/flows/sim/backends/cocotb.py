@@ -579,7 +579,6 @@ def _stream_output(
     lines: deque[str] = deque(maxlen=5_000)
     cpu_started = child_cpu_snapshot()
     # The pre-spawn baseline prevents simulator output from escaping the budget while walking.
-    # otherwise land in the baseline free of charge (fpu F-23).
     disk_baseline = snapshot_dir_baseline(run_cwd, max_rundir_bytes)
     proc = subprocess.Popen(
         cmd,
