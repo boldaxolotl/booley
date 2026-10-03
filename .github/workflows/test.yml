@@ -805,7 +805,7 @@ jobs:
           BUILD_STABLE_BASE: >-
             ${{ needs.changes.outputs.build_stable_base == 'true' ||
                 (github.event_name == 'pull_request' && github.base_ref != 'main') }}
-          PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:main
+          PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:d141e728ed4f4eeba5052a79b7668a7427f71caf
         run: |
           if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
             echo "build=true" >> "${GITHUB_OUTPUT}"
