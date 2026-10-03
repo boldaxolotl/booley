@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "repository": "https://github.com/The-OpenROAD-Project/OpenROAD.git",
-  "revision": "a9147cf3aebe65e058bb3fa89c1f9e524488dbb8",
+  "revision": "c4d317e4fa2398b9880920a1411c20258a2175a9",
   "submodules": [
     {
       "path": "src/sta",
       "repository": "https://github.com/The-OpenROAD-Project/OpenSTA.git",
-      "revision": "8572175ac45c42ce8d3d772f73bbb059786b9c66"
+      "revision": "e983e15b2cb346badf8f23725fd3914d25312c44"
     },
     {
       "path": "third-party/abc",
