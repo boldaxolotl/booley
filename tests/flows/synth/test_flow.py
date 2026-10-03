@@ -4687,6 +4687,50 @@ def test_captured_real_yosys_stat_grammar(text, cells, wires, latches, area):
     assert _count_latches(text) == latches
 
 
+@pytest.mark.parametrize("cell", ["DLH_X1", "DLL_X1", "custom_latch"])
+@pytest.mark.parametrize("row", ["  {cell} 2", "  2 {cell}", "  2 5.32 {cell}"])
+def test_mapped_latches_use_dfflibmap_types_and_final_inventory(cell, row):
+    from booley.flows.synth.backends.yosys.parsing import parse_stat
+
+    text = (
+        f"    \\{cell} _DLATCH_P_ (.D( D), .G( E), .Q( Q));\n"
+        "    \\DFF_X1 _DFF_P_ (.CK( C), .D( D), .Q( Q));\n"
+        "Printing statistics.\n=== top ===\n  3 cells\n  3 $_DLATCH_P_\n"
+        "End of script.\n--- stat_top.txt ---\n"
+        "Printing statistics.\n=== top ===\n  4 10.0 cells\n"
+        f"{row.format(cell=cell)}\n  1 2.66 $_DLATCH_N_\n  1 4.52 DFF_X1\n"
+    )
+    metrics = _parse_synth_output(text, 0.1)
+    assert metrics.latches == 3
+    assert parse_stat(text).latch_types == {cell: 2, "$_DLATCH_N_": 1}
+    assert metrics.unexpected_latches == 3
+    assert metrics.has_critical
+    metrics.expected_latches = 3
+    assert metrics.unexpected_latches == 0
+    assert not metrics.has_critical
+
+
+def test_mapped_latches_count_hierarchy_once_and_ignore_unused_mapping():
+    from booley.flows.synth.flow import _count_latches
+
+    text = (
+        "    \\DLH_X1 _DLATCH_P_ (.D( D), .G( E), .Q( Q));\n"
+        "    \\DLL_X1 _DLATCH_N_ (.D( D), .GN( E), .Q( Q));\n"
+        "Printing statistics.\n=== top ===\n  2 cells\n  2 child\n"
+        "=== child ===\n  1 cells\n  1 2.66 DLH_X1\n"
+        "=== design hierarchy ===\n  2 cells\n  2 5.32 DLH_X1\n"
+        "End of script.\n--- openroad.log ---\n  99 2.66 DLL_X1\n"
+    )
+    assert _count_latches(text) == 2
+
+
+def test_latch_like_library_names_are_not_classified_without_mapping():
+    from booley.flows.synth.flow import _count_latches
+
+    text = "Printing statistics.\n=== top ===\n  2 cells\n  1 DLH_X1\n  1 latch_buffer\n"
+    assert _count_latches(text) == 0
+
+
 def test_stat_top_area_preference_survives_module_inventory_selection():
     text = (
         "Printing statistics.\n=== top ===\n  Number of cells: 2\n"
