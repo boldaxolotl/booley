@@ -54,12 +54,16 @@ _SUMMARY_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 _CELL_RE = re.compile(
-    rf"^\s+(?:(?P<cell_first>\$\S+)\s+(?P<old_count>\d+)(?:\s+(?P<old_area>{_AREA_COLUMN}))?|"
-    rf"(?P<count>\d+)(?:\s+(?P<area>{_AREA_COLUMN}))?\s+(?P<cell>\$\S+))\s*$",
+    rf"^\s+(?:(?P<cell_first>\S+)\s+(?P<old_count>\d+)(?:\s+(?P<old_area>{_AREA_COLUMN}))?|"
+    rf"(?P<count>\d+)(?:\s+(?P<area>{_AREA_COLUMN}))?\s+(?P<cell>\S+))\s*$",
     re.MULTILINE,
 )
 _LATCH_RE = re.compile(
     r"\$(?:a?dlatch|dlatchsr|_DLATCH_[NP]+[01]?_|_DLATCHSR_[NP]{3}_)", re.IGNORECASE
+)
+_LATCH_MAPPING_RE = re.compile(
+    r"^\s+\\(?P<cell>\S+)\s+(?P<internal>_DLATCH(?:SR)?_[NP]+[01]?_)\s+\(",
+    re.MULTILINE,
 )
 _CHIP_AREA_RE = re.compile(r"Chip area for (?P<module>[^\n:]+):\s*(?P<value>\S+)")
 
@@ -97,12 +101,14 @@ def _summary_counts(section: str) -> dict[str, int]:
     return counts
 
 
-def _cell_inventory(section: str) -> dict[str, int]:
+def _cell_inventory(section: str, mapped_latches: frozenset[str] = frozenset()) -> dict[str, int]:
     inventory = {}
     for match in _CELL_RE.finditer(section):
         if not _valid_column(match["area"] or match["old_area"]):
             continue
-        cell = match["cell"] or match["cell_first"]
+        cell = (match["cell"] or match["cell_first"]).removeprefix("\\")
+        if not cell.startswith("$") and cell not in mapped_latches:
+            continue
         inventory[cell] = int(match["count"] or match["old_count"])
     return inventory
 
@@ -173,8 +179,20 @@ def parse_stat(output: str) -> StatSummary:
     module = _selected_module(section)
     assert module is not None
     counts = _summary_counts(module)
-    inventory = _cell_inventory(module)
-    latches = {cell: count for cell, count in inventory.items() if _LATCH_RE.fullmatch(cell)}
+    # dfflibmap's final mapping table identifies Liberty latch cells without
+    # relying on PDK-specific names. Count only their final instances, never
+    # mapping messages or pre-mapping inventories repeated in yosys.log.
+    mapped_latches = frozenset(
+        match["cell"]
+        for match in _LATCH_MAPPING_RE.finditer(output)
+        if _LATCH_RE.fullmatch("$" + match["internal"])
+    )
+    inventory = _cell_inventory(module, mapped_latches)
+    latches = {
+        cell: count
+        for cell, count in inventory.items()
+        if _LATCH_RE.fullmatch(cell) or cell in mapped_latches
+    }
     return StatSummary(
         section=section,
         area_um2=_chip_area(section),
