@@ -1365,7 +1365,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 }
 
                 if sync_mode && !(mode == TriggerMode::Change && cache.clock_period_ticks == 0) {
-                    if cache.clock_period_ticks > 0 && cb > 0 {
+                    if cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change) {
                         let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                         if (cycle as i64) < cfg.time_min {
                             prev_val = Some(val.as_str());
@@ -1431,6 +1431,12 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     } else {
                         *tick
                     };
+                    if mode == TriggerMode::Change
+                        && ((time as i64) < cfg.time_min
+                            || cfg.time_max.is_some_and(|max| (time as i64) > max))
+                    {
+                        continue;
+                    }
                     record_match!(time, dname.as_str(), val.clone(), val);
                     if truncated {
                         break 'vouter;
@@ -2192,7 +2198,8 @@ fn collect_event_ticks(
             }
 
             // Time range filtering
-            if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
+            if sync_mode && cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change)
+            {
                 let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                 if (cycle as i64) < cfg.time_min {
                     prev_val = Some(val.as_str());
@@ -2233,7 +2240,8 @@ fn collect_event_ticks(
             }
 
             // Time range filtering
-            if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
+            if sync_mode && cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change)
+            {
                 let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                 if (cycle as i64) < cfg.time_min {
                     prev_val = Some(val.as_str());
@@ -2295,6 +2303,13 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         None
     };
     let effective_start = reset_deassert_tick.unwrap_or(0);
+    let event_start = |value: &str| {
+        if sync_mode || TriggerMode::classify(value) == TriggerMode::Change {
+            effective_start
+        } else {
+            0
+        }
+    };
     let cb = cycle_base(cache, effective_start);
     let virtuals = build_virtuals(cache, cfg);
 
@@ -2304,7 +2319,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         cache,
         pat_a,
         val_a,
-        effective_start,
+        event_start(val_a),
         sync_mode,
         cfg,
         cb,
@@ -2338,7 +2353,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut err = BufWriter::new(stderr.lock());
 
     let tick_to_display = |tick: u64| -> String {
-        if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
+        if sync_mode && cache.clock_period_ticks > 0 && (cb > 0 || change_query) {
             format!("{}", tick_to_cycle(tick, cb, cache.clock_period_ticks))
         } else {
             format!("{}", tick)
@@ -2353,7 +2368,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             cache,
             pat_b,
             val_b,
-            effective_start,
+            event_start(val_b),
             sync_mode,
             cfg,
             cb,
@@ -3809,5 +3824,111 @@ $enddefinitions $end
             msg.to_lowercase().contains("has no signals"),
             "marker NO_SIGNALS_IN_STORE_MARKER lost from: {msg}"
         );
+    }
+    #[test]
+    fn issue_1100_zero_cycle_base_query_agreement() {
+        const CHILD: &str = "BOOLEY_ISSUE_1100_ZERO_BASE_CHILD";
+        if let Ok(query) = std::env::var(CHILD) {
+            println!();
+            let mut cache = build_cache("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! sig $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#7\n1!\n#9\n0!\n#17\n1!\n#19\n0!\n#27\n1!\n#29\n0!\n");
+            cache.override_clock(10, 0, "test_clock");
+            let name = if query.ends_with(":virtual") {
+                "v"
+            } else {
+                "sig"
+            };
+            let mut cfg = ExtractConfig {
+                patterns: vec![name.into()],
+                with_reset: true,
+                time_min: 2,
+                time_max: Some(2),
+                virtual_defs: vec!["v=tb.sig=='b1".into()],
+                ..Default::default()
+            };
+            if query.starts_with("find:") {
+                cfg.find_pattern = Some(name.into());
+                cfg.find_value = Some("change".into());
+                find_value_from_cache(&cache, &cfg);
+            } else if query.starts_with("sample:") {
+                cfg.sample_at_pattern = Some(name.into());
+                cfg.sample_at_value = Some("change".into());
+                sample_at_from_cache(&cache, &cfg);
+            } else {
+                cfg.distance_a = Some((name.into(), "change".into()));
+                if query.ends_with(":mixed-forward") {
+                    cfg.distance_a = Some(("sig".into(), "rising".into()));
+                    cfg.distance_b = Some(("v".into(), "change".into()));
+                } else if query.ends_with(":mixed-reverse") {
+                    cfg.distance_a = Some(("v".into(), "change".into()));
+                    cfg.distance_b = Some(("sig".into(), "falling".into()));
+                } else if query.ends_with(":directional-only") {
+                    cfg.distance_a = Some(("sig".into(), "rising".into()));
+                }
+                distance_from_cache(&cache, &cfg);
+            }
+            return;
+        }
+        for kind in [
+            "physical",
+            "virtual",
+            "mixed-forward",
+            "mixed-reverse",
+            "directional-only",
+        ] {
+            for command in ["find", "sample", "distance"] {
+                if kind != "physical" && kind != "virtual" && command != "distance" {
+                    continue;
+                }
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "cache::tests::issue_1100_zero_cycle_base_query_agreement",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD, format!("{command}:{kind}"))
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while child.try_wait().unwrap().is_none() {
+                    if std::time::Instant::now() >= deadline {
+                        child.kill().unwrap();
+                        panic!("zero-base query timeout");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let text = String::from_utf8(output.stdout).unwrap();
+                let rows = text
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("cycle ")
+                            || line
+                                .split_whitespace()
+                                .next()
+                                .is_some_and(|token| token.parse::<u64>().is_ok())
+                            || line.starts_with("@ ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let name = if kind == "virtual" { "v" } else { "sig" };
+                let expected = match command {
+                    "find" => format!("cycle 2 {name} 1\ncycle 2 {name} 0"),
+                    "sample" => format!("2 {name} 1\n2 {name} 0"),
+                    _ if kind == "mixed-forward" => "@ 1 -> @ 2  d=1\n@ 2 -> @ 2  d=0".into(),
+                    _ if kind == "mixed-reverse" => "@ 2 -> @ 2  d=0\n@ 2 -> @ 3  d=1".into(),
+                    _ if kind == "directional-only" => "@ 7 -> @ 17  d=1\n@ 17 -> @ 27  d=1".into(),
+                    _ => "@ 2 -> @ 2  d=0".into(),
+                };
+                assert_eq!(rows, expected, "{command} {kind}: {text}");
+            }
+        }
     }
 }

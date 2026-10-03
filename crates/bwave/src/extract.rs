@@ -76,7 +76,7 @@ pub struct Extractor {
     find_target_indices: Vec<usize>, // sig indices that match find pattern
     find_target_names: FxHashMap<usize, String>,
     find_val_cached: String, // cached find_value for hot-path (avoids per-cycle clone)
-    find_mode: TriggerMode,  // "rising"/"falling" or None
+    find_mode: TriggerMode,
     prev_find_vals: Vec<String>, // indexed by sig_idx (only find targets used)
     find_count: usize,
     find_last_result: Option<String>, // buffer for --last mode
@@ -166,18 +166,29 @@ impl ChangeSpool {
                 .ok_or_else(error)?;
         }
         let index_bytes = std::mem::size_of::<(usize, u64)>();
-        let total = self
-            .used
-            .checked_add(bytes)
-            .and_then(|n| n.checked_add(index_bytes))
-            .ok_or_else(error)?;
+        let mut total = self.used.checked_add(bytes).ok_or_else(error)?;
         if total > self.cap {
             return Err(error());
         }
-        // Exact reservation keeps index storage within the accounted cap.
-        self.index
-            .try_reserve_exact(1)
-            .map_err(|e| format!("Change spool index: {e}"))?;
+        if self.index.len() == self.index.capacity() {
+            let capacity = self.index.capacity();
+            let available = (self.cap - total) / index_bytes;
+            if available == 0 {
+                return Err(error());
+            }
+            // Amortized growth, with every reserved slot charged to the cap.
+            let extra = capacity.max(1).min(available);
+            self.index
+                .try_reserve_exact(extra)
+                .map_err(|e| format!("Change spool index: {e}"))?;
+            let reserved = self.index.capacity() - capacity;
+            total = total
+                .checked_add(reserved.checked_mul(index_bytes).ok_or_else(error)?)
+                .ok_or_else(error)?;
+            if total > self.cap {
+                return Err(error());
+            }
+        }
         #[cfg(test)]
         if self.fail_write {
             return Err("Change spool injected writer failure".into());
@@ -1493,6 +1504,29 @@ impl Extractor {
         self.id_str_to_idx.keys().cloned().collect()
     }
 
+    fn accumulate_stats(&mut self, idx: usize, formatted: &str) {
+        if !self.stats_data.is_empty() {
+            if let Some(ref mut sd) = self.stats_data.get_mut(idx).and_then(|o| o.as_mut()) {
+                let tick = self.sim_end_tick;
+                let elapsed = tick.saturating_sub(sd.last_change_tick);
+                if let Some(t) = sd.time_in_state.get_mut(&sd.last_value) {
+                    *t += elapsed;
+                } else {
+                    sd.time_in_state.insert(sd.last_value.clone(), elapsed);
+                }
+                sd.transitions += 1;
+                if let Some(c) = sd.value_hist.get_mut(formatted) {
+                    *c += 1;
+                } else {
+                    sd.value_hist.insert(formatted.to_string(), 1);
+                }
+                sd.last_change_tick = tick;
+                sd.last_value.clear();
+                sd.last_value.push_str(formatted);
+            }
+        }
+    }
+
     // -- Unified value-change handler ----------------------------------
 
     /// Handle a value change for any signal (scalar or vector).
@@ -1551,6 +1585,10 @@ impl Extractor {
             {
                 self.change_dirty.insert(idx);
             }
+            // Combined statistics retain the established reset-time policy.
+            if !self.sync_mode || !self.skip_reset || !self.reset_active {
+                self.accumulate_stats(idx, formatted);
+            }
             return;
         }
 
@@ -1559,31 +1597,12 @@ impl Extractor {
             return;
         }
 
-        // Stats accumulation (do NOT return early -- find-value/sample-at
-        // paths below must still execute when combined with --stats)
-        if !self.stats_data.is_empty() {
-            if let Some(ref mut sd) = self.stats_data.get_mut(idx).and_then(|o| o.as_mut()) {
-                let tick = self.sim_end_tick;
-                let elapsed = tick.saturating_sub(sd.last_change_tick);
-                if let Some(t) = sd.time_in_state.get_mut(&sd.last_value) {
-                    *t += elapsed;
-                } else {
-                    sd.time_in_state.insert(sd.last_value.clone(), elapsed);
-                }
-                sd.transitions += 1;
-                if let Some(c) = sd.value_hist.get_mut(formatted) {
-                    *c += 1;
-                } else {
-                    sd.value_hist.insert(formatted.to_string(), 1);
-                }
-                sd.last_change_tick = tick;
-                sd.last_value.clear();
-                sd.last_value.push_str(formatted);
-                // Only return early when stats is the sole output mode
-                if self.cfg.find_pattern.is_none() && self.cfg.sample_at_pattern.is_none() {
-                    return;
-                }
-            }
+        self.accumulate_stats(idx, formatted);
+        if self.stats_data.get(idx).is_some_and(Option::is_some)
+            && self.cfg.find_pattern.is_none()
+            && self.cfg.sample_at_pattern.is_none()
+        {
+            return;
         }
 
         // Find mode (async)
@@ -1702,7 +1721,7 @@ impl VcdHandler for Extractor {
                     // on_value_change; just consume it.
                     triggered = self.sample_at_triggered;
                     self.sample_at_triggered = false;
-                } else if self.sample_mode == TriggerMode::Literal {
+                } else {
                     // Level mode: literal comparison against TRIGGER_VAL (sa_val).
                     // Do NOT use values_match on edge keywords like "rising" --
                     // that was the previous silent-no-op bug.
@@ -1794,7 +1813,7 @@ impl VcdHandler for Extractor {
                 // Edge/change mode: trigger flag was set in on_value_change.
                 triggered = self.sample_at_triggered;
                 self.sample_at_triggered = false;
-            } else if self.sample_mode == TriggerMode::Literal {
+            } else {
                 // Level mode: literal comparison against TRIGGER_VAL (sa_val).
                 let sa_val = self.cfg.sample_at_value.clone().unwrap_or_default();
                 for i in 0..self.sample_at_current_vals.len() {
@@ -1917,8 +1936,8 @@ impl VcdHandler for Extractor {
                 };
                 if self.reset_active && !is_asserted {
                     self.reset_active = false;
-                    // Rebase stats
-                    if !self.stats_data.is_empty() {
+                    // Automatic no-clock fallback keeps whole-trace statistics.
+                    if self.sync_mode && !self.stats_data.is_empty() {
                         let tick = self.sim_end_tick;
                         for (i, sd) in self.stats_data.iter_mut().enumerate() {
                             if let Some(ref mut entry) = sd {
@@ -2798,23 +2817,25 @@ $enddefinitions $end
             "{}#0\n0!\n0%\n#7\n1!\n#10\n1%\n#15\n0!\n",
             CHANGE_HEADER.replace("$var wire 1 $ clk $end\n", "")
         );
-        let mut reader = std::io::BufReader::new(vcd.as_bytes());
-        let header = parse_header(&mut reader);
-        let mut cfg = issue_1100_cfg(false, false);
-        cfg.with_reset = false;
-        cfg.patterns = vec!["a".into()];
-        let mut ext = Extractor::new(cfg);
-        ext.init_from_header(&header, &header.signals).unwrap();
-        let watched = ext.watched_ids();
-        parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize().unwrap();
-        assert_eq!(
-            ext.change_events
-                .iter()
-                .map(|event| event.0)
-                .collect::<Vec<_>>(),
-            vec![15]
-        );
+        for sample in [false, true] {
+            let mut reader = std::io::BufReader::new(vcd.as_bytes());
+            let header = parse_header(&mut reader);
+            let mut cfg = issue_1100_cfg(sample, false);
+            cfg.with_reset = false;
+            cfg.patterns = vec!["a".into()];
+            let mut ext = Extractor::new(cfg);
+            ext.init_from_header(&header, &header.signals).unwrap();
+            let watched = ext.watched_ids();
+            parse_streaming(&mut reader, &watched, &mut ext);
+            ext.finalize().unwrap();
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![15]
+            );
+        }
     }
 
     #[test]
@@ -2945,5 +2966,199 @@ $enddefinitions $end
                 .collect::<Vec<_>>(),
             vec![15, 25]
         );
+    }
+    #[test]
+    fn issue_1100_legacy_change_combined_stats() {
+        for sample in [false, true] {
+            let mut cfg = issue_1100_cfg(sample, true);
+            cfg.stats_mode = true;
+            cfg.patterns = vec!["a".into()];
+            let ext = issue_1100_legacy("#0\n0!\n#10\n1!\n#20\n0!\n#30\n", cfg);
+            let stats = ext.stats_data[ext.id_str_to_idx["!"]].as_ref().unwrap();
+            assert_eq!(stats.transitions, 3);
+            assert_eq!(stats.value_hist["0"], 2);
+            assert_eq!(stats.value_hist["1"], 1);
+            assert_eq!(stats.time_in_state["0"], 20);
+            assert_eq!(stats.time_in_state["1"], 10);
+        }
+    }
+
+    #[test]
+    fn issue_1100_legacy_periodic_reset_and_one_rise_windows() {
+        let periodic = "#0\n0!\n0$\n0%\n#5\n1$\n#7\n1!\n#10\n0$\n1%\n#15\n1$\n#17\n0!\n#20\n0$\n0%\n#25\n1$\n#27\n1!\n";
+        let one_rise = "#0\n0!\n0$\n1%\n#5\n1$\n#7\n1!\n#9\n0!\n#17\n1!\n";
+        for sample in [false, true] {
+            let mut cfg = issue_1100_cfg(sample, false);
+            cfg.with_reset = false;
+            cfg.time_min = 1;
+            cfg.time_max = Some(2);
+            let ext = issue_1100_legacy(periodic, cfg);
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![1, 2]
+            );
+            let mut cfg = issue_1100_cfg(sample, false);
+            cfg.time_min = 7;
+            cfg.time_max = Some(9);
+            let ext = issue_1100_legacy(one_rise, cfg);
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![7, 9]
+            );
+        }
+    }
+    #[test]
+    fn issue_1100_spool_index_growth_is_amortized_and_accounted() {
+        let mut spool = ChangeSpool::new(64 * 1024).unwrap();
+        let mut growths = 0;
+        for tick in 0..1000 {
+            let capacity = spool.index.capacity();
+            spool.append(tick, 0, &[]).unwrap();
+            growths += usize::from(spool.index.capacity() != capacity);
+            assert_eq!(
+                spool.used,
+                (tick as usize + 1) * 24
+                    + spool.index.capacity() * std::mem::size_of::<(usize, u64)>()
+            );
+            assert!(spool.used <= spool.cap);
+        }
+        assert!(growths <= 11, "{growths} allocations for 1000 records");
+        let mut constrained = ChangeSpool::new(64 * 1024).unwrap();
+        for tick in 0..4 {
+            constrained.append(tick, 0, &[]).unwrap();
+        }
+        let capacity = constrained.index.capacity();
+        while constrained.index.len() < capacity {
+            constrained
+                .append(constrained.index.len() as u64, 0, &[])
+                .unwrap();
+        }
+        let count = constrained.index.len();
+        // Leave room for a record and one slot, without assuming the allocator
+        // grants exactly the requested capacity. Over-allocation must error.
+        constrained.cap = constrained.used + 24 + std::mem::size_of::<(usize, u64)>();
+        match constrained.append(count as u64, 0, &[]) {
+            Ok(()) => {
+                assert!(constrained.used <= constrained.cap);
+                assert_eq!(constrained.index.len(), count + 1);
+                assert!(constrained.append(count as u64 + 1, 0, &[]).is_err());
+            }
+            Err(_) => assert_eq!(constrained.index.len(), count),
+        }
+        let last = *constrained.index.last().unwrap();
+        assert_eq!(
+            constrained.read(last.1).unwrap().tick,
+            constrained.index.len() as u64 - 1
+        );
+        let mut no_index_room = ChangeSpool::new(24).unwrap();
+        assert!(no_index_room.append(0, 0, &[]).is_err());
+        assert!(no_index_room.index.is_empty());
+        assert_eq!(no_index_room.file.as_file().metadata().unwrap().len(), 0);
+    }
+    #[test]
+    fn issue_1100_legacy_late_first_write_initializes() {
+        for sample in [false, true] {
+            let ext = issue_1100_legacy("#0\n#10\n1!\n#20\n0!\n", issue_1100_cfg(sample, true));
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![20]
+            );
+        }
+    }
+    #[test]
+    fn issue_1100_no_clock_change_stats_preserve_fallback_policy() {
+        let vcd = format!(
+            "{}#0\n0!\n0%\n#10\n1!\n#20\n1%\n#30\n0!\n#40\n",
+            CHANGE_HEADER.replace("$var wire 1 $ clk $end\n", "")
+        );
+        for sample in [false, true] {
+            let mut histories = Vec::new();
+            for change in [false, true] {
+                let mut cfg = issue_1100_cfg(sample, false);
+                cfg.with_reset = false;
+                cfg.stats_mode = true;
+                cfg.patterns = vec!["a".into()];
+                if !change {
+                    if sample {
+                        cfg.sample_at_value = Some("1".into());
+                    } else {
+                        cfg.find_value = Some("1".into());
+                    }
+                }
+                let mut reader = std::io::BufReader::new(vcd.as_bytes());
+                let header = parse_header(&mut reader);
+                let mut ext = Extractor::new(cfg);
+                ext.init_from_header(&header, &header.signals).unwrap();
+                let watched = ext.watched_ids();
+                parse_streaming(&mut reader, &watched, &mut ext);
+                ext.finalize().unwrap();
+                if change {
+                    assert_eq!(
+                        ext.change_events
+                            .iter()
+                            .map(|event| event.0)
+                            .collect::<Vec<_>>(),
+                        vec![30]
+                    );
+                }
+                let stats = ext.stats_data[ext.id_str_to_idx["!"]].as_ref().unwrap();
+                histories.push((
+                    stats.transitions,
+                    stats.value_hist.clone(),
+                    stats.time_in_state.clone(),
+                ));
+            }
+            assert_eq!(histories[0].0, 3);
+            assert_eq!(histories[1], histories[0]);
+        }
+    }
+    #[test]
+    fn issue_1100_clocked_change_stats_preserve_reset_rebase() {
+        let body = "#0\n0!\n0$\n0%\n#5\n1$\n#10\n0$\n1!\n#15\n1$\n#20\n0$\n1%\n#25\n1$\n#30\n0$\n0!\n#35\n1$\n#40\n0$\n";
+        for sample in [false, true] {
+            let mut histories = Vec::new();
+            for change in [false, true] {
+                let mut cfg = issue_1100_cfg(sample, false);
+                cfg.with_reset = false;
+                cfg.stats_mode = true;
+                cfg.patterns = vec!["a".into()];
+                if !change {
+                    if sample {
+                        cfg.sample_at_value = Some("1".into());
+                    } else {
+                        cfg.find_value = Some("1".into());
+                    }
+                }
+                let ext = issue_1100_legacy(body, cfg);
+                if change {
+                    assert_eq!(
+                        ext.change_events
+                            .iter()
+                            .map(|event| event.0)
+                            .collect::<Vec<_>>(),
+                        vec![1]
+                    );
+                }
+                let stats = ext.stats_data[ext.id_str_to_idx["!"]].as_ref().unwrap();
+                assert_eq!(stats.transitions, 1);
+                assert_eq!(stats.time_in_state["1"], 10);
+                assert_eq!(stats.time_in_state["0"], 10);
+                histories.push((
+                    stats.transitions,
+                    stats.value_hist.clone(),
+                    stats.time_in_state.clone(),
+                ));
+            }
+            assert_eq!(histories[1], histories[0]);
+        }
     }
 }
