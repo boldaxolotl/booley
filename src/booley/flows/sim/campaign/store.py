@@ -634,7 +634,7 @@ class CampaignStore:
         manifest = manifest or self.load_manifest()
         firings: list[PreSimFiring] = []
         for item in cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]):
-            work_root = self.work_item_directory(cast(str, item["work_item_id"]))
+            work_root = self._work_item_directory(item)
             terminal = None
             result_path = work_root / "result.json"
             if result_path.exists() or result_path.is_symlink():
