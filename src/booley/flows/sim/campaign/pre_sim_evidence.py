@@ -141,15 +141,6 @@ class PreSimFiringDecoder:
         return _decode_pre_sim_firing(raw, self.manifest, item, attempt, self.manifest_sha256)
 
 
-def decode_pre_sim_firing(
-    raw: bytes,
-    manifest: SimulationCampaignManifest,
-    item: Mapping[str, object],
-    attempt: SimulationAttempt,
-) -> Mapping[str, object]:
-    return PreSimFiringDecoder(manifest).decode(raw, item, attempt)
-
-
 def _decode_pre_sim_firing(
     raw: bytes,
     manifest: SimulationCampaignManifest,
