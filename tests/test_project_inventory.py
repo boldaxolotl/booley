@@ -238,3 +238,21 @@ def test_inventory_wraps_authority_store_errors(
         project_inventory.ProjectInventoryError, match="cannot read Project Grants"
     ):
         project_inventory.project_inventory()
+
+
+def test_before_forget_receives_stored_identity_and_failure_keeps_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    project = tmp_path / "project"
+    (project / ".booley_project").mkdir(parents=True)
+    project_inventory.remember_project(project)
+    shutil.rmtree(project)
+    observed = []
+
+    def fail(root):
+        observed.append(str(root))
+        raise RuntimeError("release failed")
+
+    with pytest.raises(RuntimeError, match="release failed"):
+        project_inventory.forget_project(project, before_forget=fail)
+    assert observed == [str(project)]
+    assert project_inventory.project_inventory()[0].remembered

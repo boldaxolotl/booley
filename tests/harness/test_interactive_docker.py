@@ -511,3 +511,53 @@ class TestStateVolumes:
     def test_empty_on_docker_error(self, fake_docker):
         fake_docker([(lambda a: a[:2] == ["volume", "ls"], _cp(1, stderr="boom"))])
         assert idk.state_volumes() == []
+
+
+@pytest.mark.parametrize("output", ["short", "sha256:bad", "", "sha256:" + "A" * 64])
+def test_keeper_cleanup_rejects_invalid_container_image(output, monkeypatch):
+    import subprocess
+
+    def fake(args, **kwargs):
+        value = "c" * 64 if args[:2] == ["container", "ls"] else output
+        return subprocess.CompletedProcess(args, 0, value, "")
+
+    monkeypatch.setattr(idk, "_run_docker", fake)
+    with pytest.raises(RuntimeError, match="invalid immutable"):
+        idk.container_image_ids_strict()
+
+
+@pytest.mark.parametrize("operation", ["issued_image_tags_strict", "container_image_ids_strict"])
+def test_keeper_cleanup_daemon_failure_is_not_empty_inventory(operation, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(
+        idk,
+        "_run_docker",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 1, "", "daemon unavailable"),
+    )
+    with pytest.raises(RuntimeError, match="daemon unavailable"):
+        getattr(idk, operation)()
+
+
+@pytest.mark.parametrize(
+    "failure", [FileNotFoundError("docker"), subprocess.TimeoutExpired("docker", 30)]
+)
+@pytest.mark.parametrize("operation", ["issued_image_tags_strict", "container_image_ids_strict"])
+def test_keeper_cleanup_missing_docker_and_timeout_fail_closed(failure, operation, monkeypatch):
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(idk, "_run_docker", fail)
+    with pytest.raises(RuntimeError, match="cannot observe"):
+        getattr(idk, operation)()
+
+
+def test_keeper_cleanup_disappearing_container_fails_closed(monkeypatch):
+    def fake(args, **kwargs):
+        if args[:2] == ["container", "ls"]:
+            return _cp(stdout="c" * 64)
+        return _cp(1, stderr="No such container")
+
+    monkeypatch.setattr(idk, "_run_docker", fake)
+    with pytest.raises(RuntimeError, match="No such container"):
+        idk.container_image_ids_strict()
