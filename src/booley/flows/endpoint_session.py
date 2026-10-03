@@ -79,6 +79,9 @@ def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
+    reset = getattr(endpoint, "reset_report_metadata", None)
+    if callable(reset):
+        reset()
     endpoint._report_criteria = ReportCriteria()
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:

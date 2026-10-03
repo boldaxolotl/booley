@@ -515,6 +515,73 @@ def _campaign_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
 ) -> list[str]:
+    blocks = _campaign_base_report_lines(outcomes, coverage_campaigns)
+    stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
+    base_bytes = len("\n".join(blocks).encode("utf-8")) + 2
+    budget = min(stream // 4, max(0, stream - base_bytes))
+    additions = _campaign_cycle_lines(outcomes, budget)
+    for index, outcome in enumerate(outcomes):
+        if not additions[index]:
+            continue
+        reasons = {
+            item["detail"].get("reason")
+            for item in outcome.observations
+            if isinstance(item.get("detail"), Mapping)
+            and isinstance(item["detail"].get("reason"), str)
+            and item["detail"].get("reason")
+        }
+        lines = blocks[index].splitlines()
+        reason_lines = sum(len(str(reason).splitlines()) for reason in reasons)
+        lines[1 + reason_lines : 1 + reason_lines] = additions[index]
+        blocks[index] = "\n".join(lines)
+    return blocks
+
+
+def _campaign_cycle_lines(outcomes: Sequence[CampaignOutcome], budget: int) -> list[list[str]]:
+    additions: list[list[str]] = [[] for _ in outcomes]
+    records = [
+        (index, item)
+        for index, outcome in enumerate(outcomes)
+        for item in outcome.observations
+        if item.get("cycle_count") is not None
+    ]
+    if not records:
+        return additions
+    notice = f"  {len(records)} cycle counts omitted"
+    remaining = max(0, budget - len(notice.encode("utf-8")) - 1)
+    shown = 0
+    for index, item in records[:32]:
+        line = _cycle_display_line(item, remaining)
+        if line is None:
+            continue
+        additions[index].append(line)
+        remaining -= len(line.encode("utf-8")) + 1
+        shown += 1
+    omitted = len(records) - shown
+    notice = f"  {omitted} cycle counts omitted"
+    if omitted and len(notice.encode("utf-8")) + 1 <= budget:
+        additions[-1].append(notice)
+    return additions
+
+
+def _cycle_display_line(item: Mapping[str, object], budget: int) -> str | None:
+    try:
+        suffix = f": cycles={item['cycle_count']}"
+    except ValueError:
+        return None
+    name = str(item["test"] or "default").replace("\n", " ").replace("\r", " ")
+    available = budget - len(suffix.encode("utf-8")) - 3
+    if available < 3:
+        return None
+    if len(name.encode("utf-8")) > available:
+        name = name.encode("utf-8")[: available - 3].decode("utf-8", errors="ignore") + "…"
+    return f"  {name}{suffix}"
+
+
+def _campaign_base_report_lines(
+    outcomes: Sequence[CampaignOutcome],
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+) -> list[str]:
     resolved = coverage_campaigns
     if resolved is None and any(
         getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
@@ -784,6 +851,7 @@ def _campaign_observation_preview(
             "functional": item["functional"],
             "assertions": item["assertions"],
             "assertion_count": item["assertion_count"],
+            "cycle_count": item.get("cycle_count"),
             "detail": _structured_json(item["detail"]),
         }
         for item in observations[:limit]
@@ -2009,6 +2077,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         record_campaign_acceptance(self.context, outcomes)
 
+    def persisted_cycle_counts(self) -> dict[str, list[dict[str, object]]]:
+        """Derive complete observational counts without affecting acceptance."""
+        return {
+            str(outcome.target["selector"]): [
+                {"test": item["test"], "cycle_count": item["cycle_count"]}
+                for item in outcome.observations
+            ]
+            for outcome in self.context._simulation_report_outcomes
+        }
+
     def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
         """Bind final projection references after acceptance publication."""
         outcomes = getattr(self.context, "_simulation_campaign_outcomes", ())
@@ -3198,6 +3276,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 outcome = campaign.run(request)
             except SimulationCampaignCancellationError as exc:
+                self.context._simulation_report_outcomes = tuple(outcomes)
                 return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
@@ -3236,6 +3315,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
+        self.context._simulation_report_outcomes = tuple(outcomes)
         targets = _coverage_compatibility_targets(
             outcomes,
             self.context._reserved_invocation_dir,
@@ -3648,8 +3728,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lifecycle.complete()
                 return result
         except SimulationCampaignCancellationError as exc:
+            self.context._simulation_report_outcomes = tuple(outcomes)
             return self._campaign_cancelled_outcome(exc)
         except (OSError, ValueError, RuntimeError) as exc:
+            self.context._simulation_report_outcomes = tuple(outcomes)
             if result is not None and isinstance(exc, ProgressPublicationError):
                 failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
                 return normalize_completion_error(
@@ -4150,6 +4232,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
         self.context._simulation_campaign_outcomes = tuple(outcomes)
+        self.context._simulation_report_outcomes = tuple(outcomes)
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
         exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or max(

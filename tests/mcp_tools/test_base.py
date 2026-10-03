@@ -2420,3 +2420,68 @@ def test_early_outcome_defaults_project_only_common_endpoints(tmp_path, monkeypa
     assert result.exit_code == 2
     assert result.outcome.criterion_key == ""
     assert result.outcome.criterion_met is (False if kind == "mcp_tool" else None)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {"detail": "overwrite"},
+        {"sim": [{"test": object(), "cycle_count": 1}]},
+        {"sim": [{"test": {"x": 1, 2: "mixed"}, "cycle_count": 1}]},
+        {"sim": [{"test": "huge", "cycle_count": 10**5000}]},
+    ],
+)
+def test_optional_cycle_metadata_failure_preserves_public_pass(tmp_path, monkeypatch, payload):
+    tool = ConcreteMcpTool()
+    monkeypatch.setattr(tool, "persisted_cycle_counts", lambda: payload, raising=False)
+    result = tool.execute_cli(
+        ["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")]
+    )
+    report = json.loads((tmp_path / "reports/test_endpoint.json").read_text())
+    assert result.exit_code == 0
+    assert report["passed"] is True
+    assert report["criterion_met"] is True
+    assert report["cycle_counts_error"] == "unavailable"
+    assert "cycle_counts" not in report
+    assert report["detail"] == result.outcome.detail
+
+
+@pytest.mark.parametrize("console_failure", [False, True])
+def test_cycle_metadata_recomputed_after_atomic_publication_failure(
+    tmp_path, monkeypatch, console_failure
+):
+    from booley.flows import endpoint_reporting
+
+    tool = ConcreteMcpTool()
+    calls = []
+
+    def counts():
+        calls.append(True)
+        return {"sim": [{"test": "smoke", "cycle_count": 1234}]}
+
+    monkeypatch.setattr(tool, "persisted_cycle_counts", counts, raising=False)
+    original = endpoint_reporting.atomic_write_json
+    writes = []
+
+    def fail_first(path, report):
+        writes.append(path)
+        assert calls
+        if len(writes) == 1:
+            raise OSError("injected after metadata hook")
+        return original(path, report)
+
+    monkeypatch.setattr(endpoint_reporting, "atomic_write_json", fail_first)
+    if console_failure:
+        monkeypatch.setattr(
+            tool,
+            "_publish_console_report",
+            lambda _result: (_ for _ in ()).throw(OSError("console failed")),
+        )
+    result = tool.execute_cli(
+        ["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")]
+    )
+    report = json.loads((tmp_path / "reports/test_endpoint.json").read_text())
+    assert result.exit_code == 2
+    assert len(calls) == (3 if console_failure else 2)
+    assert report["cycle_counts"]["sim"][0]["cycle_count"] == 1234

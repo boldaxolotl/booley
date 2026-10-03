@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -322,7 +323,33 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         report["usage"] = _report_usage(result)
     if result.report_text:
         report["report_text"] = result.report_text
+    _add_persisted_cycle_counts(endpoint, report)
     return report
+
+
+def _add_persisted_cycle_counts(endpoint: EndpointState, report: dict[str, Any]) -> None:
+    callback = getattr(getattr(endpoint, "flow", endpoint), "persisted_cycle_counts", None)
+    if not callable(callback):
+        return
+    try:
+        payload = callback()
+        if not isinstance(payload, dict) or any(
+            not isinstance(selector, str) or not isinstance(rows, list)
+            for selector, rows in payload.items()
+        ):
+            raise TypeError("invalid persisted cycle count mapping")
+        if any(
+            not isinstance(row, dict) or set(row) != {"test", "cycle_count"}
+            for rows in payload.values()
+            for row in rows
+        ):
+            raise TypeError("invalid persisted cycle count row")
+        json.dumps(payload, sort_keys=True)
+        if payload:
+            report["cycle_counts"] = payload
+    except Exception:  # reporting metadata must not change verdict or acceptance
+        logger.warning("Simulation cycle count metadata unavailable", exc_info=True)
+        report["cycle_counts_error"] = "unavailable"
 
 
 def _report_usage(result: EndpointOutcome) -> dict[str, object]:
