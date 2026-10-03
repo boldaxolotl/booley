@@ -1089,6 +1089,7 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
         "functional",
         "assertions",
         "assertion_count",
+        "cycle_count",
         "detail",
     }
     assert details["observation_counts"]["execution"] == {"completed": 39, "timeout": 1}

@@ -2264,12 +2264,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def persisted_cycle_counts(self) -> dict[str, list[dict[str, object]]]:
         """Derive complete observational counts without affecting acceptance."""
+        # FlowSession stores the report-only snapshot untyped; only
+        # Simulation Campaign runs populate it, always with CampaignOutcome.
+        outcomes = cast("tuple[CampaignOutcome, ...]", self.context._simulation_report_outcomes)
         return {
             str(outcome.target["selector"]): [
                 {"test": item["test"], "cycle_count": item["cycle_count"]}
                 for item in outcome.observations
             ]
-            for outcome in self.context._simulation_report_outcomes
+            for outcome in outcomes
         }
 
     def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
