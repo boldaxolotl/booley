@@ -54,6 +54,9 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.name", "Real Dev")
     _git(root, "config", "user.email", "dev@example.com")
+    # Every commit otherwise spawns a detached `git maintenance run --auto` that
+    # briefly holds objects/maintenance.lock and races object-store snapshots.
+    _git(root, "config", "maintenance.auto", "false")
     (root / "file.txt").write_text("hello\n", encoding="utf-8")
     _git(root, "add", "file.txt")
     _git(root, "commit", "-q", "--no-verify", "-m", "feat(core): add the file")
@@ -63,6 +66,15 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
     return root
+
+
+def test_fixture_commits_spawn_no_background_maintenance(repo: Path, tmp_path: Path) -> None:
+    """Object-store snapshot tests need commits that leave no detached writer."""
+    trace = tmp_path / "commit.trace"
+    (repo / "file.txt").write_text("traced\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "fix(core): traced commit", "--no-verify", GIT_TRACE=str(trace))
+    assert trace.is_file()
+    assert "maintenance run" not in trace.read_text(encoding="utf-8")
 
 
 def _head(repo: Path) -> str:
