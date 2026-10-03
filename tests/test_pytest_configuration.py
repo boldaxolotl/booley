@@ -137,6 +137,7 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
         "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
         "tests/bwave/test_contract.py::test_empty_store_marker_survives_in_binary",
         "tests/bwave/test_contract.py::test_env_errors_stay_exit_env",
+        "tests/bwave/test_contract.py::test_native_open_ended_range_includes_tail_clock_events",
         "tests/bwave/test_sessions.py::test_query_uses_default_session",
         "tests/bwave/test_sessions.py::test_query_uses_named_alias",
         "tests/bwave/test_sessions.py::test_query_explicit_overrides_session",
