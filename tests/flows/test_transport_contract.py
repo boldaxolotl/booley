@@ -1115,10 +1115,10 @@ def _report_extension_type(endpoint_kind, key):
         def _interpret_output(self, output, structured):
             raise AssertionError("agent not invoked")
 
-        satisfies: ClassVar[list[str]] = ["drc_clean", "drc_rules"]
+        satisfies: ClassVar[list[str]] = ["drc_clean", "drc_rules", "cycle_count"]
 
         def _add_args(self, parser):
-            pass
+            parser.add_argument("--test")
 
         def _run(self):
             self.set_criterion(key, True)
@@ -1127,7 +1127,7 @@ def _report_extension_type(endpoint_kind, key):
     return DrcFlow
 
 
-@pytest.mark.parametrize("binding", ["name", "identity"])
+@pytest.mark.parametrize("binding", ["name", "identity", "named_identity"])
 @pytest.mark.parametrize("ticket", ["none", "single", "plural"])
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
 @pytest.mark.parametrize("catalog", [True, False])
@@ -1137,8 +1137,8 @@ def test_declared_custom_flow_prepared_headline(
 ):
     from booley.criteria.state import DevelopmentState
 
-    key = "drc_clean_first" if binding == "name" else "drc_clean_policy42"
-    other = "drc_rules_first" if binding == "name" else "drc_rules_policy73"
+    key = "drc_clean_policy42" if binding == "identity" else "drc_clean_first"
+    other = "drc_rules_policy73" if binding == "identity" else "drc_rules_first"
     events = []
     monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
     monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
@@ -1152,7 +1152,7 @@ def test_declared_custom_flow_prepared_headline(
             criteria,
             strict=False,
             criterion_params={name: {"target": "acme:lib:dut:1#first"} for name in criteria}
-            if binding == "identity"
+            if binding != "name"
             else None,
         )
         state.save()
@@ -1163,19 +1163,77 @@ def test_declared_custom_flow_prepared_headline(
 
     flow = _report_extension_type(endpoint_kind, key)()
     result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
-    expected = (
-        (key, True)
-        if target == "first"
-        and ticket != "plural"
-        and (binding == "name" or catalog or ticket == "none")
-        else ("", None)
-    )
+    expected = (key, True) if target == "first" and ticket != "plural" else ("", None)
     assert result.exit_code == 0
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
     report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
     assert (report["criterion_key"], report["criterion_met"]) == expected
     completion = next(event for event in events if event["type"] == "endpoint_end")
     assert (completion["criterion_key"], completion["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first"])
+@pytest.mark.parametrize("other_target", ["first", "second"])
+def test_custom_fallback_excludes_only_proven_other_target(
+    runtime, monkeypatch, endpoint_kind, target, other_target
+):
+    from booley.criteria.state import DevelopmentState
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria(
+        {"drc_clean_first": True, "drc_rules_policy73": True},
+        strict=False,
+        criterion_params={"drc_rules_policy73": {"target": f"acme:lib:dut:1#{other_target}"}},
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
+    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
+    expected = ("drc_clean_first", True) if other_target == "second" else ("", None)
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("family", ["drc_rules", "cycle_count"])
+@pytest.mark.parametrize("test", ["selected", "other"])
+def test_custom_identity_uncertainty_respects_selected_workload(
+    runtime, monkeypatch, endpoint_kind, family, test
+):
+    from booley.criteria.state import DevelopmentState
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    key = f"{family}_policy73"
+    state.init_criteria(
+        {"drc_clean_first": True, key: True},
+        strict=False,
+        criterion_params={
+            key: {
+                "target": "acme:lib:dut:1#first",
+                "test": "selected",
+                "test_selector": "selected",
+            }
+        },
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
+    result = flow.execute_cli(["--target", "first", "--test", test, "--work-dir", str(runtime)])
+    expected = ("drc_clean_first", True) if test == "other" else ("", None)
+    assert result.exit_code == 0
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == expected
 
 
 @pytest.mark.parametrize("ticket", ["none", "nonstrict", "strict"])
@@ -1328,6 +1386,9 @@ def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch
         display_tag = "review"
 
     monkeypatch.setattr(StableDisplayReviewer, "_run", run)
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
     reviewer = StableDisplayReviewer()
     result = reviewer.execute_cli(
         ["--scope", ".", "--category", "rtl", "--focus", "bugs", "--work-dir", str(runtime)]
@@ -1335,3 +1396,7 @@ def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch
     assert result.exit_code == 0, result.outcome
     assert reviewer._report_criteria.known is False
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
+    report = json.loads((reviewer.args.report_dir / "reviewer.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == ("", None)

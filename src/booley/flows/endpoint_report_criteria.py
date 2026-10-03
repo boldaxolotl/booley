@@ -11,6 +11,7 @@ from booley.criteria.state import CriterionChange
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.domain import TARGET_AWARE_FLOWS, criterion_matches_target
+from booley.targets.selection import split_selector
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -41,6 +42,7 @@ class ReportCriteria:
 
     targets: frozenset[str] = frozenset()
     planned: frozenset[str] = frozenset()
+    uncertain: frozenset[str] = frozenset()
     known: bool = True
     frozen: bool = False
     evaluated: dict[str, bool] = field(default_factory=dict)
@@ -53,7 +55,12 @@ class ReportCriteria:
         outcome.criterion_key = ""
         outcome.criterion_met = None
         keys = self.planned | self.evaluated.keys()
-        if not self.known or len(self.targets) > 1 or len(keys) != 1:
+        if (
+            not self.known
+            or self.uncertain - self.evaluated.keys()
+            or len(self.targets) > 1
+            or len(keys) != 1
+        ):
             return
         key = next(iter(keys))
         if key in self.evaluated:
@@ -263,17 +270,6 @@ def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[s
         if not _eligible_family(key, families):
             continue
         params = entry.params or {}
-        if params.get("_target_selector") != token and params.get("target") != token:
-            identity = params.get("target")
-            if (
-                key not in keys
-                and "_target_selector" not in params
-                and isinstance(identity, str)
-                and "#" in identity
-            ):
-                # Without a catalog or binding, an identity cannot be matched to this token.
-                endpoint._report_criteria.known = False
-            continue
         selected = detail["selected_tests"]
         if key.startswith("cycle_count_") and selected and params.get("test") not in selected:
             continue
@@ -281,6 +277,19 @@ def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[s
             None,
             "all",
         } and not endpoint.state._alias_matches_run(key, detail):
+            continue
+        if params.get("_target_selector") != token and params.get("target") != token:
+            identity = params.get("target")
+            if (
+                key not in keys
+                and "_target_selector" not in params
+                and isinstance(identity, str)
+                and "#" in identity
+                and split_selector(identity)[1] == split_selector(token)[1]
+            ):
+                # Name inequality rules a Target out; equality cannot resolve its core.
+                # Actual evaluation resolves only this key, not other potential keys.
+                endpoint._report_criteria.uncertain |= {key}
             continue
         keys.add(key)
     return keys
