@@ -2034,12 +2034,20 @@ def _test_reason(
     trace,
     failure_kind=None,
 ) -> str:
+    if (
+        termination != "completed"
+        and detail
+        and (failure_kind != "infrastructure" or simulator_returncode not in (None, 0))
+    ):
+        detail = f"{detail} (rc={simulator_returncode})"
+    if verdict == "timeout":
+        reason = detail or f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+        return (
+            f"{reason} (raise --timeout-ms or [flows.sim].timeout_ms "
+            "if the test legitimately needs longer)"
+        )
     if termination != "completed" and detail:
-        if failure_kind == "infrastructure" and simulator_returncode in (None, 0):
-            return detail
-        return f"{detail} (rc={simulator_returncode})"
-    if verdict == "timeout" and not detail:
-        return f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+        return detail
     if verdict == "crash" and not detail:
         return f"simulator process terminated by signal {-process.returncode}"
     if inconclusive and termination == "completed" and not detail:

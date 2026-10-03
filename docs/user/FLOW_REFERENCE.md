@@ -91,7 +91,13 @@ Every built-in Flow uses the same exit codes:
 |---:|---|---|
 | `0` | The Flow ran and the check passed. | Nothing. Advisory findings (such as lint warnings with `warnings_as_errors = false`) may still be reported. |
 | `1` | The Flow reached a design verdict and it failed. | Fix the RTL or testbench. |
-| `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, timeout. | Fix the setup; the result says nothing about the design. |
+| `1` | Simulation was `inconclusive` (for example, no pass/fail sentinel after a clean run). The Criterion is skipped. | Repair the testbench verdict or missing evidence, then rerun. |
+| `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, tool or build timeout. | Fix the setup; the result says nothing about the design. |
+
+A simulation run that exceeds its run budget gets a `timeout` verdict and exits
+`1`; it fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock, or
+raise `--timeout-ms` or `[flows.sim].timeout_ms` if the test legitimately needs
+longer. Build, Elaboration Check, and Pre-Sim Command timeouts instead exit `2`.
 
 The CLI prints a final verdict card: stdout on success, stderr on failure.
 
@@ -171,7 +177,10 @@ Each test gets one verdict:
 - **cocotb testbenches** use cocotb's result file; assertion output can still
   fail the test.
 - A test that exits cleanly without a valid verdict is **inconclusive**, never a
-  pass. So is a `--trace` run that produced no fresh waveform.
+  pass. So is a `--trace` run that produced no fresh waveform. An inconclusive
+  run exits `1` and skips the `sim_pass_*` Criterion.
+- A simulation run that exceeds its run budget gets a **timeout** verdict,
+  exits `1`, and fails `sim_pass_*`.
 - A test stopped by a Booley guard stays **aborted** even if the simulator
   exits `0`. An infrastructure abort is exit `2`. A `$readmemh` input file that
   is missing and not declared in the Target is a design failure
