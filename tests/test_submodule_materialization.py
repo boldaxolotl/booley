@@ -704,7 +704,10 @@ def test_external_standalone_baseline_skips_project_but_default_rejects_projecti
         materialize_project_submodules(source, destination)
 
 
-def test_linked_project_materializes_historical_inner_submodule(tmp_path: Path) -> None:
+@pytest.mark.parametrize("configured_composite", [False, True])
+def test_linked_project_materializes_historical_inner_submodule(
+    tmp_path: Path, configured_composite: bool
+) -> None:
     dependency = tmp_path / "dependency"
     _init_repo(dependency)
     old = _commit_file(dependency, "historical\n", "historical")
@@ -725,12 +728,18 @@ def test_linked_project_materializes_historical_inner_submodule(tmp_path: Path) 
     _commit_file(source, "outer\n", "outer")
     _add_worktree(owner, source / ".booley_project")
     materialize_submodules(owner, source / ".booley_project")
+    project_path = "custom" if configured_composite else ".booley_project"
+    if configured_composite:
+        (source / "custom").mkdir()
+        (source / "booley.toml").write_text('[project]\ndir = "custom"\n', encoding="utf-8")
     destination = tmp_path / "destination"
     _add_worktree(source, destination)
-    _add_worktree(owner, destination / ".booley_project", historical)
+    _add_worktree(owner, destination / project_path, historical)
 
-    materialize_project_submodules(source, destination, skip_standalone_project=True)
+    materialize_project_submodules(
+        source, destination, skip_standalone_project=not configured_composite
+    )
 
-    inner = destination / ".booley_project/vendor/ip"
+    inner = destination / project_path / "vendor/ip"
     assert _git(inner, "rev-parse", "HEAD").stdout.strip() == old
     assert (inner / "source.sv").read_text(encoding="utf-8") == "historical\n"

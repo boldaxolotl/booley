@@ -70,7 +70,7 @@ def _materialize_selection(
 def materialize_project_submodules(
     source_root: Path, destination_root: Path, *, skip_standalone_project: bool = False
 ) -> None:
-    """Populate composite repositories, optionally leaving standalone cores to baseline copying."""
+    """Populate composites; baseline policy skips standalone and uses the fixed paired layout."""
     source_root = source_root.resolve()
     destination_root = destination_root.resolve()
     try:
@@ -91,7 +91,7 @@ def materialize_project_submodules(
     try:
         project_relative = (
             Path(topology.paired.path_prefix)
-            if topology.paired
+            if topology.paired and skip_standalone_project
             else checkout_project_dir_relative_to(source_root)
         )
     except (FileNotFoundError, ValueError) as exc:
