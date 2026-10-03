@@ -307,7 +307,7 @@ def _stealth_core_linking_to_rtl(repo: Path, link_name: str = "rtl") -> Path:
     (core_dir / "top.core").write_text("CAPI=2:\nname: x:ip:top:1.0\n", encoding="utf-8")
     link = core_dir / link_name
     # cores/ip -> cores -> .booley_project -> repo root
-    link.symlink_to("../../../rtl", target_is_directory=True)
+    link.symlink_to(Path("..", "..", "..", "rtl"), target_is_directory=True)
     return link
 
 
