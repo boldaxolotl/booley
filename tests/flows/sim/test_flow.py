@@ -2017,6 +2017,10 @@ class TestTimeout:
         assert test["timed_out"] is True
         assert test["verdict"] == "timeout"
         assert "TIMEOUT: simulation exceeded" in test["error_tail"]
+        timeout_line = next(line for line in result.report_text.splitlines() if "TIMEOUT:" in line)
+        assert (
+            "raise --timeout-ms or [flows.sim].timeout_ms if the test legitimately needs longer"
+        ) in timeout_line
         assert test["phase_timings_s"]["build"] == 0.25
         assert test["phase_timings_s"]["run"] == 599.75
         assert test["resources"] == {

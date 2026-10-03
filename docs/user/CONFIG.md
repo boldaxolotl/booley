@@ -254,6 +254,12 @@ simulator execution, or the standalone module sweep in
 `elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
 budget.
 
+A simulation run that exceeds its run budget gets a `timeout` verdict, exits
+`1`, and fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock;
+raise `--timeout-ms` or `[flows.sim].timeout_ms` if the test legitimately needs
+longer. Build, Elaboration Check, and Pre-Sim Command timeouts are infrastructure
+errors and exit `2`.
+
 ```toml
 [flows.sim]
 build_timeout_ms = 3600000

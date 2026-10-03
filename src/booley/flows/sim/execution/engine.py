@@ -2039,7 +2039,11 @@ def _test_reason(
             return detail
         return f"{detail} (rc={simulator_returncode})"
     if verdict == "timeout" and not detail:
-        return f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+        return (
+            f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms "
+            "(raise --timeout-ms or [flows.sim].timeout_ms "
+            "if the test legitimately needs longer)"
+        )
     if verdict == "crash" and not detail:
         return f"simulator process terminated by signal {-process.returncode}"
     if inconclusive and termination == "completed" and not detail:
