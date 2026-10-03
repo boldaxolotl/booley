@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -182,13 +183,13 @@ def test_projects_reports_inventory_errors(
 class FakeDocker:
     """Stateful daemon boundary; every mutation is an exact non-force tag release."""
 
-    def __init__(self):
-        self.tags = {}
-        self.containers = {}
-        self.calls = []
-        self.fail_remove = None
+    def __init__(self) -> None:
+        self.tags: dict[str, str] = {}
+        self.containers: dict[str, str] = {}
+        self.calls: list[list[str]] = []
+        self.fail_remove: str | None = None
 
-    def __call__(self, args, **kwargs):
+    def __call__(self, args: Any, **kwargs: Any) -> Any:
         import subprocess
 
         self.calls.append(args)
@@ -213,7 +214,7 @@ class FakeDocker:
 
 
 @pytest.fixture
-def keeper_host(tmp_path, monkeypatch):
+def keeper_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
     from booley.runtime import interactive_docker
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -222,7 +223,9 @@ def keeper_host(tmp_path, monkeypatch):
     return docker
 
 
-def test_public_forget_releases_only_own_unused_keeper(tmp_path, keeper_host, capsys):
+def test_public_forget_releases_only_own_unused_keeper(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     project = tmp_path / "project"
@@ -251,7 +254,9 @@ def test_public_forget_releases_only_own_unused_keeper(tmp_path, keeper_host, ca
 @pytest.mark.parametrize(
     "flags", [["projects", "--json", "prune-keepers"], ["projects", "prune-keepers", "--json"]]
 )
-def test_public_prune_preview_then_digest_confirmation(tmp_path, keeper_host, capsys, flags):
+def test_public_prune_preview_then_digest_confirmation(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str], flags: Any
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     project = tmp_path / "project"
@@ -285,7 +290,9 @@ def _prune(capsys, confirm=None):
 
 
 @pytest.mark.parametrize("kind", ["foreign-running", "vscode-stopped", "created"])
-def test_forget_retains_image_used_by_any_container(tmp_path, keeper_host, capsys, kind):
+def test_forget_retains_image_used_by_any_container(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     project = _remember(tmp_path)
@@ -303,7 +310,9 @@ def test_forget_retains_image_used_by_any_container(tmp_path, keeper_host, capsy
     assert tag in keeper_host.tags and project_inventory.project_inventory() == ()
 
 
-def test_forget_removal_failure_preserves_inventory(tmp_path, keeper_host, capsys):
+def test_forget_removal_failure_preserves_inventory(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     project = _remember(tmp_path)
@@ -317,7 +326,9 @@ def test_forget_removal_failure_preserves_inventory(tmp_path, keeper_host, capsy
     assert project_inventory.project_inventory()[0].remembered
 
 
-def test_prune_stale_confirmation_and_shared_container_protection(tmp_path, keeper_host, capsys):
+def test_prune_stale_confirmation_and_shared_container_protection(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     orphan = keeper_image(tmp_path / "orphan")
@@ -329,7 +340,9 @@ def test_prune_stale_confirmation_and_shared_container_protection(tmp_path, keep
     assert status == 2 and result["released"] == [] and orphan in keeper_host.tags
 
 
-def test_prune_inventory_remember_invalidates_confirmation(tmp_path, keeper_host, capsys):
+def test_prune_inventory_remember_invalidates_confirmation(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     project = tmp_path / "project"
@@ -340,7 +353,9 @@ def test_prune_inventory_remember_invalidates_confirmation(tmp_path, keeper_host
     assert status == 2 and result["released"] == []
 
 
-def test_prune_digest_ignores_unrelated_observations(tmp_path, keeper_host, capsys):
+def test_prune_digest_ignores_unrelated_observations(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     keeper_host.tags[keeper_image(tmp_path / "orphan")] = "sha256:" + "a" * 64
@@ -351,7 +366,9 @@ def test_prune_digest_ignores_unrelated_observations(tmp_path, keeper_host, caps
     assert first["digest"] == second["digest"]
 
 
-def test_prune_partial_failure_accounts_for_prior_releases(tmp_path, keeper_host, capsys):
+def test_prune_partial_failure_accounts_for_prior_releases(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     tags = sorted([keeper_image(tmp_path / "one"), keeper_image(tmp_path / "two")])
@@ -368,8 +385,8 @@ def test_prune_partial_failure_accounts_for_prior_releases(tmp_path, keeper_host
 
 @pytest.mark.parametrize("stamp", ["runtime-issuance.json", "session-spec.json"])
 def test_prune_inventory_absence_authorizes_historical_stamps(
-    tmp_path, keeper_host, capsys, stamp
-):
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str], stamp: str
+) -> None:
     from booley.runtime.session_issuance import keeper_image
 
     project = tmp_path / "old"
@@ -382,7 +399,12 @@ def test_prune_inventory_absence_authorizes_historical_stamps(
     assert _prune(capsys, preview["digest"])[0] == 0 and tag not in keeper_host.tags
 
 
-def test_forget_grant_guard_performs_no_docker_work(tmp_path, keeper_host, monkeypatch, capsys):
+def test_forget_grant_guard_performs_no_docker_work(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from types import SimpleNamespace
 
     project = _remember(tmp_path)
@@ -398,7 +420,9 @@ def test_forget_grant_guard_performs_no_docker_work(tmp_path, keeper_host, monke
 
 
 @pytest.mark.parametrize("change", ["missing", "uninitialized", "replacement-symlink"])
-def test_forget_uses_exact_stored_identity(tmp_path, keeper_host, capsys, change):
+def test_forget_uses_exact_stored_identity(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str], change: str
+) -> None:
     import shutil
 
     project = _remember(tmp_path)
@@ -423,8 +447,11 @@ def test_forget_uses_exact_stored_identity(tmp_path, keeper_host, capsys, change
 
 
 def test_prune_protects_missing_uninitialized_and_grant_only_roots(
-    tmp_path, keeper_host, monkeypatch, capsys
-):
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     import shutil
     from types import SimpleNamespace
 
@@ -455,8 +482,12 @@ def test_prune_protects_missing_uninitialized_and_grant_only_roots(
 
 @pytest.mark.parametrize("operation", ["forget", "prune-keepers"])
 def test_lifecycle_contention_becomes_cli_error(
-    tmp_path, keeper_host, monkeypatch, capsys, operation
-):
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+) -> None:
     from contextlib import contextmanager
 
     from booley.projects import image_keepers
@@ -465,7 +496,7 @@ def test_lifecycle_contention_becomes_cli_error(
     project = _remember(tmp_path)
 
     @contextmanager
-    def busy(_operation):
+    def busy(_operation: Any) -> None:
         raise LifecycleLockError("lifecycle busy")
         yield
 
@@ -480,7 +511,13 @@ def test_lifecycle_contention_becomes_cli_error(
 
 
 @pytest.mark.parametrize("mutation", ["retag", "container", "grant"])
-def test_apply_rechecks_before_deletion(tmp_path, keeper_host, monkeypatch, capsys, mutation):
+def test_apply_rechecks_before_deletion(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mutation: str,
+) -> None:
     from types import SimpleNamespace
 
     tag = keeper_image(tmp_path / "orphan")
@@ -489,7 +526,7 @@ def test_apply_rechecks_before_deletion(tmp_path, keeper_host, monkeypatch, caps
     original = keeper_host.__call__
     count = 0
 
-    def mutate(args, **kwargs):
+    def mutate(args: Any, **kwargs: Any) -> None:
         nonlocal count
         result = original(args, **kwargs)
         if args[:2] == ["image", "inspect"]:
@@ -516,8 +553,11 @@ def test_apply_rechecks_before_deletion(tmp_path, keeper_host, monkeypatch, caps
 
 
 def test_forget_release_requires_reissuance_before_admission(
-    tmp_path, keeper_host, monkeypatch, capsys
-):
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from booley.runtime import devcontainer as dc
     from booley.runtime import session_issuance as issuance
     from tests.runtime.test_session_issuance import _install_trusted_validator
@@ -567,8 +607,11 @@ def test_forget_release_requires_reissuance_before_admission(
 
 
 def test_actual_vscode_down_then_forget_retains_stopped_container(
-    tmp_path, keeper_host, monkeypatch, capsys
-):
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     import subprocess
     from types import SimpleNamespace
 
@@ -588,7 +631,7 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
     monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *args: None)
     commands = []
 
-    def run(args, **kwargs):
+    def run(args: Any, **kwargs: Any) -> None:
         commands.append(args)
         assert args == ["docker", "stop", container]
         item.running = False
@@ -609,8 +652,12 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
 
 @pytest.mark.parametrize("failure", ["invalid-image", "invalid-container", "daemon"])
 def test_forget_incomplete_observation_preserves_inventory(
-    tmp_path, keeper_host, monkeypatch, capsys, failure
-):
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: Any,
+) -> None:
     import subprocess
 
     from booley.runtime import interactive_docker
@@ -631,3 +678,86 @@ def test_forget_incomplete_observation_preserves_inventory(
     )
     assert capsys.readouterr().err and project_inventory.project_inventory()[0].remembered
     assert tag in keeper_host.tags
+
+
+@pytest.mark.parametrize("operation", ["forget", "prune-keepers"])
+def test_keeper_release_refuses_pending_recovery(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+) -> None:
+    from booley.projects import image_keepers
+
+    project = _remember(tmp_path)
+    tag = keeper_image(project)
+    keeper_host.tags[tag] = "sha256:" + "a" * 64
+    monkeypatch.setattr(image_keepers, "shared_recovery_blocks_command", lambda **kwargs: True)
+    flags = (
+        ["projects", "forget", str(project)]
+        if operation == "forget"
+        else ["projects", "prune-keepers", "--confirm", "digest"]
+    )
+    assert project_inventory_cli.run(_parser().parse_args(flags)) == 2
+    assert "requires recovery" in capsys.readouterr().err
+    assert keeper_host.calls == [] and tag in keeper_host.tags
+    assert project_inventory.project_inventory()[0].remembered
+
+
+def test_human_keeper_outcomes_identify_image_and_retained_tags(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.projects import image_keepers
+
+    image = "sha256:" + "a" * 64
+    release = image_keepers.KeeperRelease("retained-in-use", "keeper", image)
+    assert (
+        project_inventory_cli._render_forgotten(Path("/project"), release, json_output=False) == 0
+    )
+    assert image in capsys.readouterr().out
+    result = image_keepers.PruneResult("digest", (), retained=["changed", "unresolved"])
+    assert project_inventory_cli._render_prune(result, json_output=False) == 0
+    output = capsys.readouterr().out
+    assert "Keeper tag retained or unresolved: changed" in output
+    assert "Keeper tag retained or unresolved: unresolved" in output
+
+
+@pytest.mark.parametrize("operation", ["forget", "prune-keepers"])
+@pytest.mark.parametrize("journal_kind", ["refresh", "invalidation", "malformed-refresh"])
+def test_real_pending_journal_preserves_keeper_and_inventory(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+    journal_kind: str,
+) -> None:
+    from booley.runtime import issuance_invalidation
+    from tests.harness.test_session_refresh_recovery import _write_restore_journal
+
+    project = _remember(tmp_path)
+    tag = keeper_image(project)
+    keeper_host.tags[tag] = "sha256:" + "a" * 64
+    if operation == "prune-keepers":
+        project_inventory.forget_project(project)
+        _, preview = _prune(capsys)
+    if journal_kind == "invalidation":
+        pending = issuance_invalidation.prepare(str(project), cleanup_resources=True)
+        journal = issuance_invalidation._path(pending.project_root)
+    else:
+        journal = _write_restore_journal(tmp_path / "config", project)
+        if journal_kind == "malformed-refresh":
+            journal.write_text("{invalid")
+    before_journal = journal.read_bytes()
+    before_inventory = project_inventory.state_path().read_bytes()
+    keeper_host.calls.clear()
+    flags = (
+        ["projects", "forget", str(project)]
+        if operation == "forget"
+        else ["projects", "prune-keepers", "--confirm", preview["digest"]]
+    )
+    assert project_inventory_cli.run(_parser().parse_args(flags)) == 2
+    assert capsys.readouterr().err
+    assert keeper_host.calls == [] and tag in keeper_host.tags
+    assert journal.read_bytes() == before_journal
+    assert project_inventory.state_path().read_bytes() == before_inventory

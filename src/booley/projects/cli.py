@@ -93,7 +93,8 @@ def _render_forgotten(
         )
     else:
         print(f"Forgot remembered Project path: {forgotten}")
-        print(f"Keeper {keeper.status}: {keeper.tag}")
+        image = f" ({keeper.image_id})" if keeper.image_id is not None else ""
+        print(f"Keeper {keeper.status}: {keeper.tag}{image}")
     return 0
 
 
@@ -107,6 +108,8 @@ def _render_prune(result: image_keepers.PruneResult, *, json_output: bool) -> in
         print("Confirm with: booley projects prune-keepers --confirm " + result.digest)
         for tag in result.released:
             print(f"Keeper tag released: {tag}")
+        for tag in result.retained:
+            print(f"Keeper tag retained or unresolved: {tag}")
         for error in result.errors:
             print(f"ERROR: {error}", file=sys.stderr)
     return 2 if result.errors else 0

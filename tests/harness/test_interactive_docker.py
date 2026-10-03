@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -514,10 +515,12 @@ class TestStateVolumes:
 
 
 @pytest.mark.parametrize("output", ["short", "sha256:bad", "", "sha256:" + "A" * 64])
-def test_keeper_cleanup_rejects_invalid_container_image(output, monkeypatch):
+def test_keeper_cleanup_rejects_invalid_container_image(
+    output: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import subprocess
 
-    def fake(args, **kwargs):
+    def fake(args: Any, **kwargs: Any) -> None:
         value = "c" * 64 if args[:2] == ["container", "ls"] else output
         return subprocess.CompletedProcess(args, 0, value, "")
 
@@ -527,7 +530,9 @@ def test_keeper_cleanup_rejects_invalid_container_image(output, monkeypatch):
 
 
 @pytest.mark.parametrize("operation", ["issued_image_tags_strict", "container_image_ids_strict"])
-def test_keeper_cleanup_daemon_failure_is_not_empty_inventory(operation, monkeypatch):
+def test_keeper_cleanup_daemon_failure_is_not_empty_inventory(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import subprocess
 
     monkeypatch.setattr(
@@ -543,8 +548,10 @@ def test_keeper_cleanup_daemon_failure_is_not_empty_inventory(operation, monkeyp
     "failure", [FileNotFoundError("docker"), subprocess.TimeoutExpired("docker", 30)]
 )
 @pytest.mark.parametrize("operation", ["issued_image_tags_strict", "container_image_ids_strict"])
-def test_keeper_cleanup_missing_docker_and_timeout_fail_closed(failure, operation, monkeypatch):
-    def fail(*args, **kwargs):
+def test_keeper_cleanup_missing_docker_and_timeout_fail_closed(
+    failure: Any, operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: Any, **kwargs: Any) -> None:
         raise failure
 
     monkeypatch.setattr(idk, "_run_docker", fail)
@@ -552,8 +559,10 @@ def test_keeper_cleanup_missing_docker_and_timeout_fail_closed(failure, operatio
         getattr(idk, operation)()
 
 
-def test_keeper_cleanup_disappearing_container_fails_closed(monkeypatch):
-    def fake(args, **kwargs):
+def test_keeper_cleanup_disappearing_container_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake(args: Any, **kwargs: Any) -> None:
         if args[:2] == ["container", "ls"]:
             return _cp(stdout="c" * 64)
         return _cp(1, stderr="No such container")

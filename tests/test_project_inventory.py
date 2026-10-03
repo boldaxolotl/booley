@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -240,7 +241,9 @@ def test_inventory_wraps_authority_store_errors(
         project_inventory.project_inventory()
 
 
-def test_before_forget_receives_stored_identity_and_failure_keeps_root(tmp_path, monkeypatch):
+def test_before_forget_receives_stored_identity_and_failure_keeps_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     (project / ".booley_project").mkdir(parents=True)
@@ -248,7 +251,7 @@ def test_before_forget_receives_stored_identity_and_failure_keeps_root(tmp_path,
     shutil.rmtree(project)
     observed = []
 
-    def fail(root):
+    def fail(root: Any) -> None:
         observed.append(str(root))
         raise RuntimeError("release failed")
 

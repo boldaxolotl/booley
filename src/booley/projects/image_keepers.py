@@ -7,18 +7,20 @@ import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from booley.projects import inventory
 from booley.runtime import interactive_docker as docker
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.session_issuance import keeper_image_for_identity
+from booley.runtime.session_refresh import shared_recovery_blocks_command
 
 
 @dataclass(frozen=True, slots=True)
 class KeeperRelease:
     """The outcome of releasing one exact remembered root's keeper."""
 
-    status: str
+    status: Literal["released", "absent", "retained-in-use"]
     tag: str
     image_id: str | None = None
 
@@ -30,7 +32,7 @@ class Candidate:
     tag: str
     image_id: str
     eligible: bool
-    reason: str
+    reason: Literal["inventoried", "in-use", "inventory-absent"]
 
 
 @dataclass(slots=True)
@@ -65,11 +67,19 @@ def _release_root(project: Path) -> KeeperRelease:
     return KeeperRelease("released", tag, image)
 
 
+def _require_recovered_host() -> None:
+    if shared_recovery_blocks_command(read_only=True):
+        raise RuntimeError(
+            "interrupted Sandbox host state requires recovery before keeper release"
+        )
+
+
 def forget_project(project: Path) -> tuple[Path, KeeperRelease]:
     """Validate Grants, release only this root's unused tag, then persist forgetting."""
     outcomes: list[KeeperRelease] = []
     try:
         with host_lifecycle_lock("projects forget"):
+            _require_recovered_host()
             forgotten = inventory.forget_project(
                 project, before_forget=lambda root: outcomes.append(_release_root(root))
             )
@@ -133,17 +143,16 @@ def prune_keepers(confirm: str | None = None) -> PruneResult:
         if confirm is None:
             roots = frozenset(entry.project_root for entry in inventory.project_inventory())
             return _preview(roots)
-        with (
-            host_lifecycle_lock("projects prune-keepers"),
-            inventory.locked_protected_roots() as roots,
-        ):
-            result = _preview(roots())
-            if confirm != result.digest:
-                result.errors.append(
-                    "keeper preview digest changed or confirmation is invalid; preview again"
-                )
+        with host_lifecycle_lock("projects prune-keepers"):
+            _require_recovered_host()
+            with inventory.locked_protected_roots() as roots:
+                result = _preview(roots())
+                if confirm != result.digest:
+                    result.errors.append(
+                        "keeper preview digest changed or confirmation is invalid; preview again"
+                    )
+                    return result
+                _apply(result, roots)
                 return result
-            _apply(result, roots)
-            return result
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc
