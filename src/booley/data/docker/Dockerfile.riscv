@@ -101,19 +101,18 @@ RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
 
 # ---------------------------------------------------------------------------
 # Spike (riscv-isa-sim) — the canonical RISC-V reference ISS, used as the
-# golden model for differential testing / co-simulation (picorv32 torture &
-# csmith flows, ibex's UVM riscv-dv DV flow). Bundles libfesvr. Installed into
-# /opt/riscv so it shares the toolchain's already-on-PATH bin dir.
+# golden model for differential testing (e.g. picorv32 torture & csmith flows).
+# Bundles libfesvr. Installed into /opt/riscv so it shares the toolchain's
+# already-on-PATH bin dir. This is official upstream Spike; Ibex's UVM
+# co-simulation needs lowRISC's ibex-cosim fork, which is not provided here.
 #
-# Spike has no maintained release series: v1.1.0 predates the <cstdint>
-# header-hygiene fixes and fails to compile on GCC 13 (Ubuntu 24.04's default)
-# with "uint64_t not declared". Use tested snapshots of official upstream
-# master, always pinned by full SHA. Before moving the pin, require upstream
-# Ubuntu 26.04 evidence plus this image build, make check, the PicoRV32 demo,
-# and Spike differential flows. See docs/research/spike-release-channel.md.
-# The explicit checks make a broken build fail the image loudly.
+# Spike has no maintained release series (v1.1.0, from 2021, no longer
+# compiles with modern GCC), so this pins a tested snapshot of official
+# upstream master by full SHA. ADR 0069 defines how the pin is selected,
+# refreshed, and accepted. The explicit checks make a broken build fail the
+# image loudly.
 # ---------------------------------------------------------------------------
-ARG SPIKE_REF=c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb
+ARG SPIKE_REF=609dbe0b9994154833039209fa37151e7c05e9d4
 RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && git init /tmp/spike \
     && cd /tmp/spike \

@@ -138,13 +138,13 @@ MCP tools are discovered from either the installed Booley package or the project
 ### Default Discovery and Explicit Opt-Out
 
 ```toml
-[mcp_tools.reviewer]
+[specialists.reviewer]
 enabled = false                 # remove one discovered Specialist MCP tool
 ```
 
-- Built-in Flows are scanned from `booley.flows`; Specialists and other MCP tools are scanned from `booley.specialists`.
+- Built-in Flows are scanned from `booley.flows`, Specialists from `booley.specialists`, and protocol utilities from `booley.mcp`.
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
-- `[flows.<name>].enabled = false` disables a Flow; `[mcp_tools.<name>].enabled = false` disables a Specialist or other non-Flow MCP tool.
+- `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
 - Visibility can still differ by runtime mode. Interactive Mode hides autonomous-only MCP tools such as `submit_run_report`; `tb_coder` is currently de-registered in all modes. Environment-level MCP filters also narrow nested or explicitly scoped servers, but they are not project registration.
 - `booley flow` is the human diagnostic entry point for Booley Flows; the MCP tool diagnostic surface covers Specialists and non-Flow endpoints.
 
@@ -155,25 +155,35 @@ image or uses a supported built-in EDA provisioning policy.
 
 ### Configuration Boundary
 
-The framework reads Flow settings from `[flows.<name>]` and non-Flow endpoint
-settings from `[mcp_tools.<name>]`. At this layer the shared effect is that
+The framework reads Flow settings from `[flows.<name>]` and Specialist
+settings from `[specialists.<name>]`. At this layer the shared effect is that
 `enabled = false` removes the capability from normal discovery.
 
-[CONFIG.md](../user/CONFIG.md#booley-flow-execution-enabled) owns the exact TOML
+[CONFIG.md](../user/CONFIG.md#flow-and-specialist-availability-enabled) owns the exact TOML
 schema, resolution order, defaults, and built-in per-Flow/endpoint settings. A
 custom Flow can read its section with `_load_flow_config(name, work_dir)` from
-`booley.flows.flow_config`. Discovery consumes `enabled` for direct endpoints
+`booley.flows.flow_config`. Discovery consumes `enabled` for Flows
 and Specialists; there is no generic `_load_tool_config()` API for additional
-custom `[mcp_tools.<name>]` values, so an implementation that defines such values
+custom `[specialists.<name>]` values, so an implementation that defines such values
 must load and validate them explicitly.
+
+The retired `[mcp_tools.*]` table is rejected with migration guidance. Rename
+Specialist sections to `[specialists.*]` and remove protocol utility settings.
+Direct MCP endpoints are available by default, subject to execution-mode and
+server-level filters.
+To opt out of a custom direct endpoint, prefix its implementation filename with
+`_` (for example `mcp_tools/_project_check.py`); discovery skips such files.
+Specialist settings require table entries and boolean `enabled` values. Doctor
+and discovery reject names that do not belong to discovered Specialists.
 
 ### Summary: Discovery Rules
 
 | MCP tool kind | Source | How enabled | Agent-visible? |
 |-----------|--------|-------------|:---:|
 | Built-in Flow | Installed `booley.flows` package | Enabled unless `[flows.<name>].enabled = false` | Yes, subject to mode-specific hiding |
-| Built-in Specialist or endpoint | Installed `booley.specialists` package | Enabled unless `[mcp_tools.<name>].enabled = false` | Yes, subject to mode-specific hiding |
-| Custom MCP tool | `.booley_project/mcp_tools/*.py` | Namespace depends on whether it is a Flow, Specialist, or direct endpoint | Yes, subject to mode-specific hiding |
+| Built-in Specialist | Installed `booley.specialists` package | Enabled unless `[specialists.<name>].enabled = false` | Yes, subject to mode-specific hiding |
+| Protocol utility | Installed `booley.mcp` package | Available by default; no Project enable switch | Yes, subject to mode-specific hiding |
+| Custom MCP tool | `.booley_project/mcp_tools/*.py` | Flows use `[flows]`, Specialists use `[specialists]`, direct endpoints have no Project enable switch | Yes, subject to mode-specific hiding |
 Use unique MCP tool names. Ticket Preflight warns when a custom name collides with a discovered built-in MCP tool, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
 
 ### Register a Custom Endpoint
@@ -287,28 +297,31 @@ normally remains a `BooleyFlow` so it inherits the common in-runtime lifecycle.
 McpToolResult(
     exit_code: int,           # 0 = met, 1 = unmet, 2 = unable to run
     criterion_key: str,       # which criterion was evaluated
-    criterion_met: bool,      # did it pass?
+    criterion_met: bool | None, # default False; Flow/Specialist absence projects to None
     report_text: str,         # human-readable output (tail of log)
 )
 ```
 
-Criterion-aware results normally set these four fields. An unable-to-run result
-may leave `criterion_key` empty and `criterion_met` at its default because no
-Criterion verdict was reached. `McpToolResult` also carries optional fields,
+Flow and Specialist results supply `exit_code` and `report_text`; their headline
+Criterion fields are derived centrally from effective `set_criterion()` evaluations.
+Exactly one mapped and evaluated Criterion yields its key and boolean verdict;
+zero/multiple mapped Criteria, no evaluation, or multiple selected Targets yield
+an empty key and `None`. `McpToolResult` also carries optional fields,
 most usefully `detail: dict` for structured evidence (written into
 `report.json`). Token/cost fields are populated automatically by `Specialist`;
 line-count fields (`lines_added`/`lines_removed`) are stamped by the base
 `McpTool` for any code-modifying endpoint.
 
-**`set_criterion()` vs. `McpToolResult`:** they are two different sinks.
-`set_criterion(key, met)` writes the verdict into the persistent ticket state
-(the file the harness gates completion on; direct standalone runs have no ticket state), while the
-returned `McpToolResult` is the report contract: what lands in `report.json` and
-what the Developer Agent reads back. Call `set_criterion` once per criterion
-you evaluated (a multi-criterion MCP tool calls it several times); `criterion_key`
-/ `criterion_met` on `McpToolResult` carry the headline verdict for the report.
-Keep them consistent. The state file, not the report, is what completion is
-judged on.
+**`set_criterion()` and reports:** call `set_criterion(key, met)` for each Criterion
+you evaluate. The effective changes determine the Flow/Specialist report even if
+later persistence fails; `exit_code` independently exposes that failure. Ticket
+completion is judged on persistent state. Standalone evaluations remain in memory.
+Flow/Specialist extensions that supplied result-only headlines must migrate to
+`set_criterion()`; explicit result fields no longer determine their final headline.
+Generic `mcp_tool` endpoints retain their existing result-field contract, including
+the default `False` and an explicitly supplied `None`. Acceptance/history hooks
+before projection retain raw fields; `_post_run` and `ExecutionResult.outcome`
+receive the centrally projected Flow/Specialist headline.
 
 ### Common Artifact Contract
 
@@ -472,8 +485,6 @@ class DrcCheckFlow(BooleyFlow):
         if result.timed_out or result.returncode not in {0, 1}:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                criterion_key=keys[0],
-                criterion_met=False,
                 report_text=(evidence or "DRC command could not run")[-2000:],
             )
 
@@ -482,8 +493,6 @@ class DrcCheckFlow(BooleyFlow):
             self.set_criterion(key, passed)
         return McpToolResult(
             exit_code=0 if passed else 1,
-            criterion_key=keys[0],
-            criterion_met=passed,
             report_text=evidence[-2000:],
         )
 
@@ -533,8 +542,6 @@ class ProtocolReviewerSpecialist(Specialist):
         self.set_criterion("protocol_compliant", passed)
         return McpToolResult(
             exit_code=0 if passed else 1,
-            criterion_key="protocol_compliant",
-            criterion_met=passed,
             report_text=output[-3000:],
         )
 
@@ -614,7 +621,7 @@ Category isolation is separate from write isolation. Some built-ins temporarily 
 
 #### Find Its Logs
 
-Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[mcp_tools.<name>]` section is not disabled, and restart the Sandbox so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
+Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is not disabled, and restart the Sandbox so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
 
 ---
 
@@ -685,8 +692,8 @@ category    = "rtl"
 2. Add its `description`, `workflow_region`, `per_target`, and `category` fields to `.booley_project/criteria.toml`.
 3. Add the base name to one custom MCP tool's literal `satisfies` list.
 4. If invocation arguments differ by Criterion, add literal `satisfies_args` prompt hints.
-5. For `per_target = true`, set the expanded `<criterion>_<target>` key from the MCP tool result.
-6. Keep the persistent `set_criterion()` verdict consistent with the headline `McpToolResult` verdict.
+5. For `per_target = true`, supply the expanded `<criterion>_<target>` key to `set_criterion()`.
+6. Flow/Specialist headline fields are derived centrally from `set_criterion()` evaluations; generic `mcp_tool` endpoints retain their result-field contract.
 7. Run `booley doctor`, then inspect the live catalog with `booley cheat --criteria`.
 
 ---

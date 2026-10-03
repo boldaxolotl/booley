@@ -35,7 +35,7 @@ Try:
   `booley init` and follow the demo steps it prints (Sandbox, then
   `bash .booley_project/hooks/post-setup.sh`). The demo ships preconfigured for sim, lint, and
   synth. Configure it with the edits below, not with the `booley-setup` skill.
-- Project-data edits: set `[mcp_tools.coverage_analyst] enabled = false` in `booley.toml` (the Icarus
+- Project-data edits: set `[specialists.coverage_analyst] enabled = false` in `booley.toml` (the Icarus
   Targets can't produce Verilator Coverage Campaigns). If Vivado is present, also set
   `[flows.fpga] enabled = true`, add `[eda.vivado]` with `provisioning = "host"`, and add
   `booley: {doctor: [fpga]}` to `fpga_core` in `cores/picorv32_impl.core`.

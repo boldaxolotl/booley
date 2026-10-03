@@ -1,0 +1,28 @@
+--- yosys.log ---
+    \DFF_X1 _DFF_P_ (.CK( C), .D( D), .Q( Q), .QN(~Q));
+    \DLL_X1 _DLATCH_N_ (.D( D), .GN( E), .Q( Q));
+    \DLH_X1 _DLATCH_P_ (.D( D), .G( E), .Q( Q));
+End of script.
+--- stat_latch_probe.txt ---
+
+14. Printing statistics.
+
+=== latch_probe ===
+
+        +----------Local Count, excluding submodules.
+        |        +-Local Area, excluding submodules.
+        |        |
+       45        - wires
+       59        - wire bits
+        4        - public wires
+       18        - public wire bits
+        4        - ports
+       18        - port bits
+       42   62.776 cells
+        8   36.176   DFF_X1
+        1     2.66   DLH_X1
+        9    4.788   INV_X1
+       24   19.152   NAND2_X1
+
+   Chip area for module '\latch_probe': 62.776000
+     of which used for sequential elements: 36.176000 (57.63%)

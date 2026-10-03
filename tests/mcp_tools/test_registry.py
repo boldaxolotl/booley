@@ -313,18 +313,18 @@ class TestScanDirectory:
             _write_endpoint_file(tmp_path, f"{mod_name}.py", VALID_MCP_TOOL_SRC)
         assert _scan_directory(tmp_path, {}, builtin=True) == []
 
-    def test_config_disables_endpoint(self, tmp_path):
-        _write_endpoint_file(tmp_path, "run_sim.py", VALID_MCP_TOOL_SRC)
-        config = {"run_sim": {"enabled": False}}
+    def test_config_disables_specialist(self, tmp_path):
+        _write_endpoint_file(tmp_path, "debug.py", SPECIALIST_SRC)
+        config = {"debug_agent": {"enabled": False}}
         results = _scan_directory(tmp_path, config, builtin=True)
         assert results == []
 
-    def test_config_enables_endpoint_explicitly(self, tmp_path):
-        _write_endpoint_file(tmp_path, "run_sim.py", VALID_MCP_TOOL_SRC)
-        config = {"run_sim": {"enabled": True}}
+    def test_config_enables_specialist_explicitly(self, tmp_path):
+        _write_endpoint_file(tmp_path, "debug.py", SPECIALIST_SRC)
+        config = {"debug_agent": {"enabled": True}}
         results = _scan_directory(tmp_path, config, builtin=True)
         assert len(results) == 1
-        assert results[0].name == "run_sim"
+        assert results[0].name == "debug_agent"
 
     def test_config_default_is_enabled(self, tmp_path):
         """Endpoints not mentioned in config are enabled by default."""
@@ -434,11 +434,11 @@ class TestDiscoverMcpTools:
     def test_endpoint_config_filtering(self, tmp_path):
         endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
-        _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
+        _write_endpoint_file(endpoint_dir, "debug.py", SPECIALIST_SRC)
         _write_endpoint_file(endpoint_dir, "lint.py", FLOW_SRC)
         results = discover_mcp_tools(
             booley_src=tmp_path,
-            mcp_tool_config={"run_sim": {"enabled": False}},
+            specialist_config={"debug_agent": {"enabled": False}},
         )
         assert len(results) == 1
         assert results[0].name == "lint_check"
@@ -447,7 +447,7 @@ class TestDiscoverMcpTools:
         endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
-        results = discover_mcp_tools(booley_src=tmp_path, mcp_tool_config=None)
+        results = discover_mcp_tools(booley_src=tmp_path, specialist_config=None)
         assert len(results) == 1
 
     def test_builtin_mcp_tools_use_package_path(self, tmp_path):
@@ -522,9 +522,9 @@ class TestSkipModules:
 
 class TestPerMcpToolAvailability:
     def test_only_explicitly_disabled_endpoint_is_filtered(self, tmp_path):
-        for endpoint_name in ("reviewer", "submit_run_report"):
-            src = VALID_MCP_TOOL_SRC.replace(
-                'name = "run_sim"',
+        for endpoint_name in ("reviewer", "mutation_tester"):
+            src = SPECIALIST_SRC.replace(
+                'name = "debug_agent"',
                 f'name = "{endpoint_name}"',
             )
             _write_endpoint_file(tmp_path, f"{endpoint_name}.py", src)
@@ -532,7 +532,7 @@ class TestPerMcpToolAvailability:
 
         results = _scan_directory(
             tmp_path,
-            {"submit_run_report": {"enabled": False}},
+            {"mutation_tester": {"enabled": False}},
             builtin=True,
         )
 

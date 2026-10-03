@@ -511,8 +511,7 @@ class StandaloneMixin:
             frontend, modules, shared, failures, unparsed, log_pointer
         )
         detail["mode"] = self.args.mode.value
-        if self.args.state_file is not None:
-            self.set_criterion(_STANDALONE_CRITERION, passed, detail=detail)
+        self.set_criterion(_STANDALONE_CRITERION, passed, detail=detail)
         # `passed` implies no unparsed modules (a gap-only sweep returned above).
         ungraded = f" ({len(unparsed)} ungraded)" if unparsed else ""
         display = (

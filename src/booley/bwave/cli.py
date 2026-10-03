@@ -472,6 +472,23 @@ def _translate_legacy_flags(extra: list[str], trace_path: str) -> list[str]:
     while "--log" in extra:
         extra.remove("--log")
 
+    modes = [
+        flag for flag in extra if flag in _LEGACY_MODE_FLAGS and flag not in {"--log", "--tree"}
+    ]
+    if "--distance" in modes:
+        modes = [flag for flag in modes if flag != "--stats"]
+    if len(modes) > 1:
+        _exit_usage("ERROR: multiple query modes are mutually exclusive")
+
+    # Distance owns --stats as its modifier.
+    if "--distance" in extra:
+        idx = extra.index("--distance")
+        if idx + 2 >= len(extra):
+            _exit_usage("ERROR: --distance requires PATTERN VALUE")
+        pat, val = extra[idx + 1 : idx + 3]
+        del extra[idx : idx + 3]
+        return ["distance", trace_path, pat, val, *extra]
+
     # Simple no-positional mode flags.
     for flag, sub in (("--list", "list"), ("--wave", "wave"), ("--stats", "stats")):
         if flag in extra:
@@ -503,17 +520,6 @@ def _translate_legacy_flags(extra: list[str], trace_path: str) -> list[str]:
             val = extra[idx + 2]
             del extra[idx : idx + 3]
             return [sub, trace_path, pat, val, *extra]
-
-    # --distance PAT VAL [--to PAT VAL] [--stats]
-    if "--distance" in extra:
-        idx = extra.index("--distance")
-        if idx + 2 >= len(extra):
-            sys.exit("ERROR: --distance requires PATTERN VALUE")
-        pat = extra[idx + 1]
-        val = extra[idx + 2]
-        del extra[idx : idx + 3]
-        # --stats becomes a flag on the distance subcommand, not a separate mode.
-        return ["distance", trace_path, pat, val, *extra]
 
     # --diff T1 T2
     if "--diff" in extra:
@@ -573,7 +579,8 @@ def _handle_grep(extract: list[str], trace_path: str, extra: list[str]) -> None:
     if idx + 1 >= len(extra):
         _exit_usage("ERROR: --grep requires a pattern argument")
     pattern = extra[idx + 1]
-    cmd_args = ["list", trace_path, "-s", pattern]
+    remaining = [*extra[:idx], *extra[idx + 2 :]]
+    cmd_args = ["list", trace_path, "-s", pattern, *remaining]
     _apply_limit_default(cmd_args)
     # Propagate the inner exit code like every other query path — --grep
     # used to swallow it, so `bwave @dut --grep '[oops'` exited 0 while the
@@ -586,23 +593,36 @@ def _handle_grep(extract: list[str], trace_path: str, extra: list[str]) -> None:
 # the scope header plus the top of the tree. A few hundred names fits the
 # window; the binary says how many were withheld and how to raise it.
 _LIST_LIMIT_DEFAULT = "400"
-_QUERY_LIMIT_DEFAULT = "5000"
+_QUERY_LIMIT_DEFAULT = "2000"
 
 
 def _apply_limit_default(cmd_args: list[str]) -> None:
-    """Inject a default --limit if not present; clamp to 10000 if too high."""
-    if "--limit" not in cmd_args:
+    """Normalize explicit limits without concealing native input errors."""
+    locations = [
+        i for i, arg in enumerate(cmd_args) if arg == "--limit" or arg.startswith("--limit=")
+    ]
+    if not locations:
         default = _LIST_LIMIT_DEFAULT if cmd_args[:1] == ["list"] else _QUERY_LIMIT_DEFAULT
         cmd_args.extend(["--limit", default])
         return
-    idx = cmd_args.index("--limit")
-    if idx + 1 < len(cmd_args):
-        try:
-            val = int(cmd_args[idx + 1])
-            if val > 10000:
-                cmd_args[idx + 1] = "10000"
-        except ValueError:
-            pass
+    if len(locations) != 1:
+        return
+    idx = locations[0]
+    equals_form = cmd_args[idx].startswith("--limit=")
+    if not equals_form and idx + 1 >= len(cmd_args):
+        return
+    raw = cmd_args[idx].partition("=")[2] if equals_form else cmd_args[idx + 1]
+    if re.fullmatch(r"\+?[0-9]+", raw) is None:
+        return
+    try:
+        value = int(raw)
+    except ValueError:
+        return
+    if value > 10000:
+        cmd_args[idx if equals_form else idx + 1] = "--limit=10000" if equals_form else "10000"
+        warning = "--limit capped at 10000"
+        print(warning, file=sys.stderr)
+        cmd_args.extend(["--wrapper-warning", warning])
 
 
 # ---------------------------------------------------------------------------
@@ -1774,7 +1794,7 @@ Subcommands (pick one):
 
 Common filters and options (consumer subcommands accept these):
   -s PATTERN[%RADIX] Signal filter, repeatable. %d / %b / %h (default %h).
-  -t START:END       Time *range* on list/signal/wave/find/sample/distance/
+  -t START:END       Time *range* on signal/wave/find/sample/distance/
                      stats. Tokens: bare int / Nc / Nt / Nns/us/ms/ps.
                      Bare int is cycle in sync mode, REJECTED in async.
                      Open-ended OK: '5c:' or ':100ns'.
@@ -1782,10 +1802,9 @@ Common filters and options (consumer subcommands accept these):
                      it to `--at N` for consistency.
   --at T             Single time *point* — **value subcommand only**
                      (not -t). Same time-token grammar as -t. Use
-                     '--at=-5' if you need a negative cycle (clap parses
-                     bare '-N' as a flag).
-  --tree             list-only: show signals as an indented hierarchy
-                     instead of a flat list.
+                     negative points precede the physical origin and
+                     exit with code 2.
+  --tree             list-only: show scopes only (text output).
   --rle              wave-only: run-length-encode the output. Contiguous
                      columns where every signal repeats collapse to
                      `<val>xN`. Marker columns are preserved.
@@ -1793,8 +1812,8 @@ Common filters and options (consumer subcommands accept these):
   --with-reset       Include reset phase (default: skip until deassert).
   --clock SIG        Clock for cycle grid (default: auto *clk*).
   --reset SIG        Reset for skip detection (default: auto *rst*).
-  --limit N          Output line cap (default 2000).
-  --format text|json Wrap JSON output in the canonical envelope.
+  --limit N          Record/column cap (query default 2000; list 400).
+  --format text|json JSON: list/value/find/stats; other queries exit 2.
 
 find / sample modifiers:
   --first            Stop after first match.

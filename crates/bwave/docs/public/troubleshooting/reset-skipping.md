@@ -80,8 +80,8 @@ matching.
 - `signal` / `wave` start "late": cycle 5, 7, 100
   instead of 0.
 - `value --at 0` errors or returns reset-phase
-  values; `value --at -1` rejected (cycles can't be
-  negative without `--with-reset`).
+  values; negative points precede the physical origin and
+  exit with code 2 even with `--with-reset`.
 - Distance / sample queries miss pairs that span the
   reset boundary.
 

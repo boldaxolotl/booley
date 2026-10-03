@@ -91,12 +91,46 @@ about ticket file-existence checks rather than identity. `[notifications]`
 is retired and ignored; delete the table and see
 [Troubleshooting](TROUBLESHOOTING.md#push-notifications-stopped-arriving) for manual host egress
 cleanup. Everything else is detailed below, starting with the shared `enabled`
-flow setting.
+setting for Booley Flows and Specialists.
 
-### Booley Flow execution: `enabled`
+### Flow and Specialist availability: `enabled`
 
 Every Booley Flow builds and executes its command inside the Sandbox.
-`enabled = false` removes a Flow from agent and autonomous discovery.
+Set `[flows.<name>].enabled = false` to remove a Flow from agent and autonomous
+discovery. Specialists use `[specialists.<name>].enabled`:
+
+```toml
+[flows.lint]
+enabled = false
+
+[specialists.coverage_analyst]
+enabled = false
+```
+
+`enabled` defaults to `true` when omitted. For a Specialist, `enabled = false`
+removes its MCP tool from Interactive Mode, makes it unavailable through
+`booley specialist`, and removes it from the Developer Agent's available
+Specialists in Ticket Mode. The same switch filters project-defined Specialists.
+`enabled` is the visibility key under `[specialists.<name>]`;
+Specialist model selection belongs in `[models.roles]` (see
+[Model selection](#model-selection-models)).
+
+Specialist sections must be tables, and `enabled` must be a TOML boolean
+(`true` or `false`, without quotes). Doctor and discovery reject unknown
+Specialist names, including Flow names or direct MCP endpoints placed under
+`[specialists]`. Malformed or unreadable configuration stops endpoint discovery
+and Ticket Preflight rather than enabling every capability by default.
+
+`[mcp_tools.*]` is retired and produces a migration error: rename Specialist
+sections to `[specialists.*]`. The older `[tools.*]` table must be split into
+`[flows.*]` for deterministic Flows and `[specialists.*]` for Specialists.
+Remove settings for protocol utility endpoints such as `submit_run_report`;
+they have no Project `enabled` switch and their visibility is controlled by
+execution mode and MCP server filters.
+Custom direct `McpTool` subclasses also have no Project enable switch. To
+disable their discovery, prefix the implementation filename with `_`, for
+example rename `mcp_tools/project_check.py` to `mcp_tools/_project_check.py`.
+Custom `BooleyFlow` and `Specialist` subclasses use their respective tables.
 
 The former `backend`, `venue`, and `host_setup_commands` keys are retired and
 now produce hard migration errors. Delete them: execution location and Sandbox
@@ -155,8 +189,19 @@ in the host-owned Project Inventory. `booley projects` joins those roots with
 their Grants and reports each root as `present`, `missing`, or `uninitialized`.
 Use `booley projects discover <root>...` to import existing initialized
 Projects; discovery scans only the roots named on the command line and does not
-follow directory symlinks. `booley projects forget <project>` removes an
+follow directory symlinks. Discovery stops descending at each initialized
+Project to avoid scanning its RTL, vendor, and build trees, so nested Projects
+are not imported by that scan. To import a nested Project, run
+`booley projects discover <nested path>` on it directly.
+`booley projects forget <project>` removes an
 obsolete remembered root only after its live Grants have been revoked.
+Forget then releases that root's issued-image keeper tag when no container uses
+its immutable image; an in-use keeper is retained while the root is forgotten.
+Docker inspection or removal failure preserves the inventory entry for retry.
+If a present root's keeper was released, run `booley init` before using it again.
+For keepers left by earlier forgotten Projects, preview with
+`booley projects prune-keepers`, then apply that exact preview with
+`booley projects prune-keepers --confirm <digest>`.
 
 EDA administration prints human-readable confirmations by default. Add
 `--json` to a public leaf operation when a script needs the stable structured
@@ -253,6 +298,12 @@ ordinary Simulation, native Coverage, and Elaboration Check builds.
 simulator execution, or the standalone module sweep in
 `elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
 budget.
+
+A simulation run that exceeds its run budget gets a `timeout` verdict, exits
+`1`, and fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock;
+raise `--timeout-ms` or `[flows.sim].timeout_ms` if the test legitimately needs
+longer. Build, Elaboration Check, and Pre-Sim Command timeouts are infrastructure
+errors and exit `2`.
 
 ```toml
 [flows.sim]
@@ -1970,8 +2021,9 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   rv32i / rv32im / rv32imc (ilp32) plus the rv64 ABIs;
 - **`srec_cat`** (srecord), which ibex's `.vmem` generation hard-depends on, and
   **`dtc`** (device-tree-compiler);
-- **Spike** (`riscv-isa-sim`), the reference ISS for differential testing /
-  co-simulation;
+- **Spike** (`riscv-isa-sim`), the official upstream reference ISS for
+  differential testing (not lowRISC's `ibex-cosim` fork that Ibex's UVM
+  co-simulation needs);
 - the ratified **RISC-V International spec set** baked in for offline use at
   `$BOOLEY_RISCV_DOCS` (`/opt/riscv-docs`): the unprivileged + privileged ISA
   manual, the external debug spec, and the ELF psABI; **`pdftotext`** is

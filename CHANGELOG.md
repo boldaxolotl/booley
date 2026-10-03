@@ -35,6 +35,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   `self.timeout_seconds()` for seconds-based provider calls. Class timeout
   defaults and minimums remain seconds. Saved commands are not rewritten.
 
+### EDA updates
+
+- Upgrade the digest-pinned OpenROAD binary and Corresponding Source to 26Q4,
+  including its OpenSTA revision and EDA builder image. A matched PicoRV32
+  comparison reports a 0.068% area increase and 0.183 ns less setup slack;
+  see [validation evidence](https://github.com/boldaxolotl/booley/blob/main/docs/internals/validation/1064-openroad-26q4.md).
+  ([#1064](https://github.com/boldaxolotl/booley/issues/1064))
+
 ### New features
 
 - Simulation now has a positive-integer `[flows.sim].build_timeout_ms` setting,
@@ -78,6 +86,15 @@ Packaged release history starts at 0.2.7. For older changes, see
   trace the wrong value backwards to the first divergent signal, check that the
   suspected trigger actually occurred, and confirm the mechanism before editing
   RTL. This applies in Interactive Mode and Ticket Mode alike.
+- Updated the egress proxy, FlexNet relay, and reaper sidecars to Python
+  3.14.8, which fixes ssl and asyncio hostname validation and ships libexpat
+  2.8.5.
+  ([#1067](https://github.com/boldaxolotl/Booley/issues/1067))
+- The RISC-V image moves Spike to upstream master `609dbe0b` (2026-10-02).
+  Its 47 new non-merge upstream commits are mostly fixes to the debug module,
+  triggers, and CSR behavior, plus a new `--wfi-as-nop` option. ADR 0069
+  records how Booley selects, refreshes, and accepts Spike snapshots.
+  ([#1066](https://github.com/boldaxolotl/Booley/issues/1066))
 
 ### Upgrade notes
 
@@ -155,6 +172,20 @@ Packaged release history starts at 0.2.7. For older changes, see
   upgrades never rewrite retained authority in place.
 
 ### Bug fixes
+
+- License relay startup now waits for the relay's full Docker health-check
+  window (about 70 seconds instead of 12), so a slow or busy host no longer
+  tears down a relay that would have become healthy. A relay that exits, or
+  that Docker marks unhealthy, now fails at once instead of waiting out the
+  budget. The error now gives the container state and the last lines of the
+  relay log.
+  ([#1067](https://github.com/boldaxolotl/Booley/issues/1067))
+
+- Synthesis reports now count Liberty-mapped latch cells in logical and
+  physical mode. Undeclared or excess mapped latches fail synthesis; declare
+  intentional latches with `[flows.synth].expected_latches`. Missing, stale,
+  or empty Yosys logs now block completion because they provide the cell
+  mapping evidence. ([#1079](https://github.com/boldaxolotl/Booley/issues/1079))
 
 - `booley doctor --deep` now prints a flushed `RUN` line before each long
   check (the agent-backed developer probe, every deep Flow smoke, every

@@ -654,3 +654,86 @@ class TestTimeoutKillsTheWholeTree:
         assert not self._alive(grandchild), (
             f"grandchild {grandchild} survived Ctrl-C — the orphan leak is back"
         )
+
+
+@pytest.mark.parametrize(
+    "name,family",
+    [
+        ("synth", "synthesis_ok"),
+        ("lint", "lint_clean"),
+        ("fpga", "fpga_impl_ok"),
+        ("sim", "sim_pass"),
+    ],
+)
+@pytest.mark.parametrize("met", [True, False])
+def test_final_report_uses_effective_evaluation(tmp_path, name, family, met):
+    import json
+
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = EchoFlow()
+    flow.name = name
+    flow.parse_args(
+        [
+            "--target",
+            "core",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    flow.read_state()
+    flow.set_criterion(f"{family}_core", met)
+    outcome = EndpointOutcome(
+        exit_code=0 if met else 1, criterion_key="stale", criterion_met=not met
+    )
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow)
+    path = flow.write_report(outcome)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow)
+    report = json.loads(path.read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == (f"{family}_core", met)
+    assert report["$schema"] == (
+        "booley.simulation-report/v3" if name == "sim" else "booley.flow-report/v1"
+    )
+
+
+@pytest.mark.parametrize(
+    "target,keys",
+    [
+        ("first,second", ["sim_pass_first"]),
+        ("first", ["sim_pass_first", "coverage_first"]),
+        ("first", []),
+    ],
+)
+def test_final_report_absent_verdict_is_null(tmp_path, target, keys):
+    import json
+
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = EchoFlow()
+    flow.parse_args(
+        [
+            "--target",
+            target,
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    flow.read_state()
+    for key in keys:
+        flow.set_criterion(key, True)
+    outcome = EndpointOutcome(exit_code=2, criterion_key="stale", criterion_met=True)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow)
+    report = json.loads(flow.write_report(outcome).read_text())
+    assert report["criterion_key"] == ""
+    assert report["criterion_met"] is None
+    assert report["exit_code"] == 2
