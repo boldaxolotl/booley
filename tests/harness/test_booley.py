@@ -3578,3 +3578,230 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     assert "Refreshed Sandbox" not in captured.out
     assert preparations == [tmp_path.resolve()]
     assert spec.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["eda", "installation", "list"],
+        ["eda", "grant", "add", "TARGET", "--kind", "vivado", "--installation", "registered"],
+    ],
+)
+def test_source_project_binding_independent_dispatch(tmp_path, monkeypatch, argv):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    (source / ".git").mkdir()
+    (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    project = tmp_path / "project"
+    (project / ".booley_project").mkdir(parents=True)
+    monkeypatch.chdir(source)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["booley", *[str(project) if item == "TARGET" else item for item in argv]]
+    )
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    from booley.eda.provisioning import authority
+    from booley.harness.eda_grants import COORDINATOR
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    calls = []
+
+    def add(target, kind, **kwargs):
+        calls.append(target)
+        return authority.ProjectGrant(str(target), kind, kwargs["installation"], None)
+
+    monkeypatch.setattr(COORDINATOR, "add", add)
+    assert tlr._dispatch_main() == 0
+    if "add" in argv:
+        assert calls == [project]
+    else:
+        assert authority.load_state().installations == {}
+
+
+def test_project_binding_registry_covers_parser():
+    import argparse
+
+    parser = tlr._build_parser()
+    commands = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    assert set(commands.choices) == set(tlr.COMMAND_PROJECT_BINDINGS)
+
+
+@pytest.mark.parametrize(
+    "argv", [["auth", "--status"], ["auth", "--status", "--clear"], ["cheat", "--list"]]
+)
+def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv):
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["booley", *argv])
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+
+    def discover():
+        raise AssertionError("independent command discovered a Project")
+
+    monkeypatch.setattr(tlr, "find_project_root", discover)
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda *_: 0)
+    assert tlr._dispatch_main() == 0
+
+
+@pytest.mark.parametrize(
+    "argv", [["run"], ["init"], ["auth", "--clear"], [], ["--doctor"], ["--board"]]
+)
+def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", *argv])
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    assert tlr._dispatch_main() == 2
+
+
+@pytest.mark.parametrize("source", [True, False])
+def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, source):
+    from booley.dev_support import flow_specialist_reference as reference
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (project / ".booley_project").mkdir()
+    if source:
+        (project / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    subdir = project / "nested"
+    subdir.mkdir()
+    monkeypatch.chdir(subdir)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project / ".booley_project"))
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    calls = []
+    criteria_calls = []
+    original_catalog = tlr._live_criterion_endpoint_catalog
+
+    def catalog(root):
+        criteria_calls.append(root)
+        return original_catalog(root)
+
+    monkeypatch.setattr(tlr, "_live_criterion_endpoint_catalog", catalog)
+
+    def render(**kwargs):
+        calls.append(kwargs["project_mcp_tools_dir"])
+        return ""
+
+    monkeypatch.setattr(reference, "render_flow_reference", render)
+    monkeypatch.setattr(reference, "render_specialists_reference", render)
+    monkeypatch.setattr(reference, "splice_generated", lambda text, *_args, **_kwargs: text)
+    assert tlr._dispatch_main() == 0
+    assert calls == ([] if source else [project / ".booley_project" / "mcp_tools"] * 2)
+    assert criteria_calls == ([] if source else [project])
+
+
+@pytest.mark.parametrize("command", ["doctor", "board", "session", "cleanup"])
+@pytest.mark.parametrize("selected_source", [True, False])
+def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, selected_source):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    project = tmp_path / "project"
+    project.mkdir()
+    selected, cwd = (source, project) if selected_source else (project, source)
+    monkeypatch.chdir(cwd)
+    suffix = {"doctor": [], "board": [], "session": ["down"], "cleanup": ["prepare"]}[command]
+    argv = ["booley", command, *suffix, "--project-root", str(selected)]
+    if command == "cleanup":
+        argv = ["booley", command, "--project-root", str(selected), *suffix]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    calls = []
+
+    def handler(_args, root):
+        calls.append(root)
+        return 0
+
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, command, handler)
+    assert tlr._dispatch_main() == (2 if selected_source else 0)
+    assert calls == ([] if selected_source else [project])
+
+
+def test_source_project_binding_optional_discovery_failure(monkeypatch):
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    def discover():
+        raise ProjectRootDiscoveryError("ambiguous stale Project")
+
+    monkeypatch.setattr(tlr, "find_project_root", discover)
+    assert tlr._optional_project_root(Namespace(list=False)) is None
+
+
+def test_source_project_binding_feedback_discovery_fallback(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    monkeypatch.chdir(tmp_path)
+
+    def discover():
+        raise ProjectRootDiscoveryError("stale Project")
+
+    monkeypatch.setattr(tlr, "find_project_root", discover)
+    assert tlr._command_project_root("feedback") == tmp_path
+
+
+@pytest.mark.parametrize("unreadable_project", [False, True])
+def test_project_binding_cheat_uninitialized_directory(
+    tmp_path, monkeypatch, capsys, unreadable_project
+):
+    from booley.dev_support import flow_specialist_reference as reference
+    from booley.runtime.project_dir import reset_cache
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    committed = tmp_path / "reference.md"
+    committed.write_text("Committed optional reference\n")
+    monkeypatch.setattr(tlr, "cheatsheet_path", lambda: committed)
+    calls = []
+    monkeypatch.setattr(reference, "render_flow_reference", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(tlr, "_live_criterion_endpoint_catalog", calls.append)
+    if unreadable_project:
+
+        def discover():
+            raise PermissionError("unreadable Project metadata")
+
+        monkeypatch.setattr(tlr, "find_project_root", discover)
+    reset_cache()
+    assert tlr._dispatch_main() == 0
+    assert "Committed optional reference" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_source_project_binding_cheat_stale_custom_sentinel(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    custom = source / ".booley_project" / "mcp_tools"
+    custom.mkdir(parents=True)
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    (source / ".git").mkdir()
+    (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    sentinel = tmp_path / "source-endpoint-imported"
+    (custom / "source_sentinel.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('imported')\n"
+        "class SourceSentinelFlow(Flow):\n"
+        "    name = 'source_sentinel'\n"
+        "    description = 'Source custom endpoint sentinel'\n"
+    )
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(source / ".booley_project"))
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    assert tlr._dispatch_main() == 0
+    assert "source_sentinel" not in capsys.readouterr().out
+    assert not sentinel.exists()

@@ -393,3 +393,38 @@ def test_symlinked_authority_ancestor_fails_closed(
 
     with pytest.raises(authority.AuthorityError, match=r"ancestor.*symlink"):
         authority.ensure_state_dir()
+
+
+@pytest.mark.parametrize("operation", ["identity", "add"])
+def test_source_project_binding_canonical_authority(tmp_path, private_state, operation):
+    project, _ = _registered(tmp_path)
+    (project / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    before = authority.load_state()
+    with pytest.raises(authority.AuthorityError, match="Source Checkout"):
+        if operation == "identity":
+            authority.grant_project_identity(project)
+        else:
+            authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    assert authority.load_state() == before
+
+
+def test_source_project_binding_symlink_retarget(tmp_path, private_state):
+    from booley.core.checkout_role import require_project_checkout
+
+    project, _ = _registered(tmp_path)
+    source = tmp_path / "booley-source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    (source / ".git").mkdir()
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(project, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    require_project_checkout(alias)
+    alias.unlink()
+    alias.symlink_to(source, target_is_directory=True)
+    before = authority.load_state()
+    with pytest.raises(authority.AuthorityError, match="Source Checkout"):
+        authority._add_grant(alias, "vivado", installation="vivado_2025_2")
+    assert authority.load_state() == before
