@@ -2018,3 +2018,476 @@ fn async_wave_columns_ignore_unselected_virtual_helper_transitions() {
 
 // Partial miss (one of two patterns matches) keeps exit 0 with a per-pattern
 // warning — covered above by `unmatched_pattern_is_reported`.
+
+fn issue_1100_store(body: &str, engine: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("source.vcd");
+    let fst = dir.path().join("source.fst");
+    let header = "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! scalar $end\n$var wire 4 # bus $end\n$var wire 1 $ clk $end\n$var wire 1 % rst_n $end\n$upscope $end\n$enddefinitions $end\n";
+    std::fs::write(&vcd, format!("{header}{body}")).unwrap();
+    let (_, err, code) = issue_1100_run(&[
+        "build",
+        "--engine",
+        engine,
+        vcd.to_str().unwrap(),
+        "-o",
+        fst.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+fn issue_1100_run(args: &[&str]) -> (String, String, i32) {
+    let mut child = Command::new(exe_path())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("bwave timeout: {args:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+fn issue_1100_query(
+    store: &str,
+    command: &str,
+    signal: &str,
+    trigger: &str,
+    extra: &[&str],
+) -> String {
+    let mut args = vec![command, store, signal, trigger];
+    args.extend_from_slice(extra);
+    let (out, err, code) = issue_1100_run(&args);
+    assert_eq!(code, 0, "{args:?}: {err}");
+    out.lines()
+        .filter(|line| !line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const ISSUE_1100_TIMELINE: &str = "#0\n0!\nb0000 #\n0$\n1%\n#5\n0!\nb0000 #\n#10\n1!\nb0001 #\n#15\n1!\nb0001 #\n#20\n0!\nb0011 #\n#30\n1!\nb0010 #\n#40\n0!\nb0000 #\n";
+
+#[test]
+fn issue_1100_scalar_change_count() {
+    let (_dir, store) = issue_1100_store(ISSUE_1100_TIMELINE, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "scalar",
+            "change",
+            &["--async", "--with-reset", "--count"]
+        ),
+        "4"
+    );
+}
+
+#[test]
+fn issue_1100_bus_change_distance() {
+    let (_dir, store) = issue_1100_store(ISSUE_1100_TIMELINE, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "bus",
+            "change",
+            &["--async", "--with-reset", "-t", "10t:30t"]
+        ),
+        "@ 10 -> @ 20  d=10\n@ 20 -> @ 30  d=10"
+    );
+}
+
+#[test]
+fn issue_1100_change_commands_agree_and_preserve_literals() {
+    for engine in ["parallel", "serial"] {
+        let (_dir, store) = issue_1100_store(ISSUE_1100_TIMELINE, engine);
+        for signal in ["scalar", "bus"] {
+            let values = if signal == "scalar" {
+                ["1", "0", "1"]
+            } else {
+                ["1", "3", "2"]
+            };
+            let expected = [10, 20, 30]
+                .iter()
+                .zip(values)
+                .map(|(tick, val)| format!("{tick} {signal} {val}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for keyword in ["change", "ChAnGe"] {
+                let flags = ["--async", "--with-reset", "-t", "10t:30t"];
+                assert_eq!(
+                    issue_1100_query(&store, "find", signal, keyword, &flags),
+                    expected
+                );
+                assert_eq!(
+                    issue_1100_query(
+                        &store,
+                        "sample",
+                        signal,
+                        keyword,
+                        &["--async", "--with-reset", "-t", "10t:30t", "-s", signal]
+                    ),
+                    expected
+                );
+                assert_eq!(
+                    issue_1100_query(
+                        &store,
+                        "find",
+                        signal,
+                        keyword,
+                        &["--async", "--count", "-t", "10t:30t"]
+                    ),
+                    "3"
+                );
+                assert_eq!(
+                    issue_1100_query(
+                        &store,
+                        "distance",
+                        signal,
+                        keyword,
+                        &["--async", "-t", "10t:30t", "--to", signal, keyword]
+                    ),
+                    "@ 10 -> @ 20  d=10\n@ 20 -> @ 30  d=10"
+                );
+            }
+        }
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "RISING", &["--async", "--count"]),
+            "2"
+        );
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "FaLlInG", &["--async", "--count"]),
+            "2"
+        );
+        for literal in ["'d3", "'h3", "'b0011"] {
+            assert_eq!(
+                issue_1100_query(&store, "find", "bus", literal, &["--async"]),
+                "20 bus 3"
+            );
+        }
+        for command in ["find", "sample"] {
+            let extra = if command == "sample" {
+                vec!["--async", "--count", "-s", "bus"]
+            } else {
+                vec!["--async", "--count"]
+            };
+            assert_eq!(
+                issue_1100_query(&store, command, "bus", "rising", &extra),
+                "0"
+            );
+        }
+        let (_, error, _) = issue_1100_run(&["distance", &store, "bus", "rising", "--async"]);
+        assert!(error.contains("only fires on 1-bit signals"));
+    }
+}
+
+#[test]
+fn issue_1100_raw_pulses_unknowns_virtuals_and_fallback() {
+    let pulse = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#7\n1!\nb0001 #\n#9\n0!\nb0000 #\n#10\n0$\n#15\n1$\n#17\n1!\nb0001 #\n#20\n0$\n#25\n1$\n#29\n0!\nb0000 #\n";
+    let (_dir, store) = issue_1100_store(pulse, "parallel");
+    for signal in ["scalar", "bus"] {
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "find",
+                signal,
+                "change",
+                &["--with-reset", "-t", "1:2"]
+            ),
+            format!("cycle 1 {signal} 1\ncycle 1 {signal} 0\ncycle 2 {signal} 1")
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "sample",
+                signal,
+                "change",
+                &["--with-reset", "-t", "1:2", "-s", signal]
+            ),
+            format!("1 {signal} 1\n1 {signal} 0\n2 {signal} 1")
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "distance",
+                signal,
+                "change",
+                &["--with-reset", "-t", "1:2"]
+            ),
+            "@ 1 -> @ 1  d=0\n@ 1 -> @ 2  d=0"
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "distance",
+                signal,
+                "change",
+                &["--async", "-t", "7t:17t"]
+            ),
+            "@ 7 -> @ 9  d=2\n@ 9 -> @ 17  d=8"
+        );
+    }
+    for command in ["find", "sample", "distance"] {
+        let mut args = vec!["--async", "--virtual", "v=scalar=='b1", "-t", "7t:17t"];
+        if command == "sample" {
+            args.extend(["-s", "v"]);
+        }
+        let out = issue_1100_query(&store, command, "v", "change", &args);
+        if command == "distance" {
+            assert_eq!(out, "@ 7 -> @ 9  d=2\n@ 9 -> @ 17  d=8");
+        } else {
+            assert_eq!(out, "7 v 1\n9 v 0\n17 v 1");
+        }
+    }
+    for (flag, expected) in [("--first", "7 v 1"), ("--last", "17 v 1"), ("--count", "3")] {
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "find",
+                "v",
+                "change",
+                &[
+                    "--async",
+                    "--virtual",
+                    "v=scalar=='b1",
+                    "-t",
+                    "7t:17t",
+                    flag
+                ]
+            ),
+            expected
+        );
+    }
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "v",
+            "change",
+            &["--virtual", "v=scalar=='b1", "-t", "1:2"]
+        ),
+        "cycle 1 v 1\ncycle 1 v 0\ncycle 2 v 1"
+    );
+    for clock in ["", "#5\n1$\n"] {
+        let timeline =
+            format!("#0\nx!\n0$\n0%\n{clock}#10\n0!\n#15\n1%\n#20\nx!\n#30\nz!\n#40\n1!\n");
+        let (_dir, store) = issue_1100_store(&timeline, "parallel");
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "change", &["-t", "10:30"]),
+            "20 scalar x\n30 scalar z"
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "sample",
+                "scalar",
+                "change",
+                &["-t", "10:30", "-s", "scalar"]
+            ),
+            "20 scalar x\n30 scalar z"
+        );
+        assert_eq!(
+            issue_1100_query(&store, "distance", "scalar", "change", &["-t", "10:30"]),
+            "@ 20 -> @ 30  d=10"
+        );
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "change", &["--async", "--count"]),
+            "4"
+        );
+    }
+}
+
+#[test]
+fn issue_1100_reset_cutoff_reassert_unknown_and_first_last_limit() {
+    for reset in ["1%", "x%", "z%"] {
+        let body = format!("#0\n0!\nb0000 #\n0$\n0%\n#5\n1$\n#7\n1!\nb0001 #\n#10\n0$\n{reset}\n1!\n#15\n1$\n#17\n0!\nb0000 #\n#20\n0$\n0%\n#25\n1$\n#27\n1!\nb0001 #\n");
+        let (_dir, store) = issue_1100_store(&body, "parallel");
+        for (flag, expected) in [
+            ("--first", "cycle 1 v 0"),
+            ("--last", "cycle 2 v 1"),
+            ("--count", "2"),
+        ] {
+            assert_eq!(
+                issue_1100_query(
+                    &store,
+                    "find",
+                    "v",
+                    "change",
+                    &["--virtual", "v=scalar=='b1", "-t", "1:2", flag]
+                ),
+                expected
+            );
+        }
+        for signal in ["scalar", "bus"] {
+            assert_eq!(
+                issue_1100_query(&store, "find", signal, "change", &[]),
+                format!("cycle 1 {signal} 0\ncycle 2 {signal} 1")
+            );
+            assert_eq!(
+                issue_1100_query(&store, "sample", signal, "change", &["-s", signal]),
+                format!("1 {signal} 0\n2 {signal} 1")
+            );
+            assert_eq!(
+                issue_1100_query(&store, "distance", signal, "change", &[]),
+                "@ 1 -> @ 2  d=1"
+            );
+            assert_eq!(
+                issue_1100_query(
+                    &store,
+                    "find",
+                    signal,
+                    "change",
+                    &["--with-reset", "--count"]
+                ),
+                "3"
+            );
+        }
+    }
+    let body = "#0\n0!\nb0000 #\n0$\n1%\n#10\nb0001 #\n#20\n1!\n#30\n0!\nb0011 #\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(&store, "find", "*", "change", &["--async", "--first"]),
+        "20 scalar 1"
+    );
+    assert_eq!(
+        issue_1100_query(&store, "find", "*", "change", &["--async", "--last"]),
+        "30 bus 3"
+    );
+    assert_eq!(
+        issue_1100_query(&store, "find", "*", "change", &["--async", "--limit", "1"]),
+        "20 scalar 1"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "*",
+            "change",
+            &["--async", "--limit", "1", "--count"]
+        ),
+        "4"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "sample",
+            "scalar",
+            "change",
+            &["--async", "-s", "scalar", "-s", "bus", "--limit", "1"]
+        ),
+        "20 scalar 1"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "sample",
+            "scalar",
+            "change",
+            &["--async", "-s", "scalar", "-s", "bus", "--limit", "1", "--count"]
+        ),
+        "2"
+    );
+}
+
+#[test]
+fn issue_1100_mixed_distance_preserves_other_mode_reset_origin() {
+    let body = "#0\n0!\nb0000 #\n0$\n0%\n#7\n1!\n#10\n1%\n#17\nb0001 #\n#20\n0!\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "scalar",
+            "rising",
+            &["--to", "bus", "change"]
+        ),
+        "@ 7 -> @ 17  d=10"
+    );
+    let body =
+        "#0\n0!\nb0000 #\n0$\n0%\n#7\nb0001 #\n#9\n1!\n#10\n1%\n#12\n0!\n#17\nb0011 #\n#20\n1!\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "bus",
+            "change",
+            &["--to", "scalar", "rising"]
+        ),
+        "@ 17 -> @ 20  d=3"
+    );
+    let body = "#0\n0!\nb0000 #\n0$\n0%\n#5\n1$\n#7\n1!\n#9\nb0001 #\n#10\n0$\n1%\n#12\n0!\n#15\n1$\n#17\n1!\n#19\nb0011 #\n#20\n0$\n#25\n1$\n#27\n0!\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "scalar",
+            "rising",
+            &["--to", "bus", "change"]
+        ),
+        "@ 1 -> @ 1  d=0"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "bus",
+            "change",
+            &["--to", "scalar", "falling"]
+        ),
+        "@ 1 -> @ 2  d=0"
+    );
+}
+
+#[test]
+fn issue_1100_late_first_write_observes_fst_start_frame() {
+    for engine in ["serial", "parallel"] {
+        let (_dir, store) =
+            issue_1100_store("#0\n0$\n1%\n#10\n1!\nb0001 #\n#20\n0!\nb0010 #\n", engine);
+        let (value, error, code) =
+            issue_1100_run(&["value", &store, "--async", "--at", "0t", "-s", "scalar"]);
+        assert_eq!(code, 0, "{error}");
+        assert!(
+            value
+                .lines()
+                .any(|line| line.split_whitespace().collect::<Vec<_>>() == ["scalar", "=", "x"]),
+            "{value}"
+        );
+        for signal in ["scalar", "bus"] {
+            assert_eq!(
+                issue_1100_query(&store, "find", signal, "change", &["--async", "--count"]),
+                "2"
+            );
+            assert_eq!(
+                issue_1100_query(
+                    &store,
+                    "sample",
+                    signal,
+                    "change",
+                    &["--async", "--count", "-s", signal]
+                ),
+                "2"
+            );
+            assert_eq!(
+                issue_1100_query(&store, "distance", signal, "change", &["--async"]),
+                "@ 10 -> @ 20  d=10"
+            );
+        }
+    }
+}

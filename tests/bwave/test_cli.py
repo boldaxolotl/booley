@@ -2075,3 +2075,22 @@ def test_gui_subprocess_smoke(tmp_path):
     assert r.stderr.strip() == ""
     assert argv_log.exists(), "stub `code` CLI was never invoked"
     assert str(trace.resolve()) in argv_log.read_text()
+
+
+@pytest.mark.parametrize("command", ["find", "sample", "distance"])
+@pytest.mark.parametrize(
+    "trigger", ["change", "ChAnGe", "RISING", "FaLlInG", "'h10", "'d16", "'b10000"]
+)
+def test_trigger_arguments_forward_unchanged(command, trigger):
+    from booley.bwave import cli as bwave
+
+    args = [command, "scalar", trigger]
+    if command == "sample":
+        args += ["-s", "bus"]
+    if command == "distance":
+        args += ["--to", "bus", trigger]
+    assert bwave._passthrough_subcommand(args, "trace.fst") == [
+        command,
+        "trace.fst",
+        *args[1:],
+    ]

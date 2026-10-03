@@ -2777,23 +2777,26 @@ fn issue_1098_predicate_samples_and_edges_are_actual_events() {
         row.split_whitespace().collect::<Vec<_>>(),
         vec!["virt", "0", "0", "1", "1"]
     );
-    let distance = store.query(
+    let (distance, diagnostic, code) = run_bwave(&[
         "distance",
-        &[
-            "virt",
-            "rising",
-            "--to",
-            "count",
-            "change",
-            "--virtual",
-            definition,
-        ],
+        store.1.to_str().unwrap(),
+        "virt",
+        "rising",
+        "--to",
+        "count",
+        "change",
+        "--virtual",
+        definition,
+    ]);
+    assert_eq!(code, 0, "{diagnostic}");
+    assert_eq!(
+        distance.trim(),
+        "",
+        "pre-reset virtual edge must be excluded"
     );
     assert!(
-        !distance
-            .lines()
-            .any(|line| line.trim_start().starts_with(|c: char| c.is_ascii_digit())),
-        "{distance}"
+        diagnostic.contains("pattern 'virt' matched but value 'rising' never occurred"),
+        "{diagnostic}"
     );
     let post = store.json(
         "find",
