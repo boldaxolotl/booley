@@ -149,3 +149,13 @@ pub struct JsonStatsEntry {
     /// timescale. `None` only when no timescale is recorded in the VCD.
     pub time_in_state_ns: Option<std::collections::BTreeMap<String, i64>>,
 }
+
+/// Combine diagnostics once without process-global state.
+pub fn merge_warnings(mut warnings: Vec<String>, inherited: &[String]) -> Vec<String> {
+    for warning in inherited {
+        if !warnings.contains(warning) {
+            warnings.push(warning.clone());
+        }
+    }
+    warnings
+}
