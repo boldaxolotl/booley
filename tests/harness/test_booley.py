@@ -3543,7 +3543,10 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     spec.write_text('{"image":"sha256:running"}\n')
     before = spec.read_bytes()
     monkeypatch.setattr(refresh_runtime, "shared_recovery_blocks_command", lambda **_kw: False)
-    monkeypatch.setattr(session_runtime, "conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(
+        session_runtime, "_run", lambda *_args, **_kwargs: pytest.fail("must not invoke Docker")
+    )
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
     monkeypatch.setattr(
         init_cmd,
         "inspect_refreshable_runtime_image",
