@@ -78,6 +78,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   trace the wrong value backwards to the first divergent signal, check that the
   suspected trigger actually occurred, and confirm the mechanism before editing
   RTL. This applies in Interactive Mode and Ticket Mode alike.
+- The RISC-V image moves Spike to upstream master `609dbe0b` (2026-10-02),
+  picking up 90 upstream fixes, mostly in the debug module, triggers, and CSR
+  behavior. ADR 0069 records how Booley selects, refreshes, and accepts Spike
+  snapshots. ([#1066](https://github.com/boldaxolotl/Booley/issues/1066))
 
 ### Upgrade notes
 

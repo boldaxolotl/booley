@@ -187,10 +187,13 @@ booley session enter -- python -m pip list        # the Python side
 
 The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
 and a tested official-master Spike snapshot at
-`c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb` (`1.1.1-dev`) on top of these.
+`609dbe0b9994154833039209fa37151e7c05e9d4` (`1.1.1-dev`) on top of these.
 Upstream has no maintained stable release suitable for Ubuntu 26.04, so Booley
-moves this exact official-master pin only after its image and RISC-V acceptance
-gates pass. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
+refreshes this exact official-master pin once per Booley release, after its
+image and RISC-V acceptance gates pass; see
+[ADR 0069](../adr/0069-follow-tested-spike-master-snapshots.md). This is
+upstream Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation
+needs. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 Future commercial EDA integrations require their own built-in provisioning,
 licensing, Doctor, security, and full-Flow evidence before they can join this

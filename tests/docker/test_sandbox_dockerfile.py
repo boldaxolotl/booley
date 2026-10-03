@@ -484,7 +484,7 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     spike_ref = re.search(r"^ARG SPIKE_REF=([0-9a-f]{40})$", riscv, re.MULTILINE)
 
     assert spike_ref is not None
-    assert spike_ref.group(1) == "c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb"
+    assert spike_ref.group(1) == "609dbe0b9994154833039209fa37151e7c05e9d4"
     assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
     assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 
