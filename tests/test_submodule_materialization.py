@@ -743,3 +743,36 @@ def test_linked_project_materializes_historical_inner_submodule(
     inner = destination / project_path / "vendor/ip"
     assert _git(inner, "rev-parse", "HEAD").stdout.strip() == old
     assert (inner / "source.sv").read_text(encoding="utf-8") == "historical\n"
+
+
+def test_standalone_baseline_excludes_project_inside_outer_submodule(tmp_path: Path) -> None:
+    project_owner = tmp_path / "project-owner"
+    _init_repo(project_owner)
+    project_sha = _commit_file(project_owner, "Project cores\n", "Project")
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    _commit_file(dependency, "outer dependency\n", "dependency")
+    _git(
+        dependency, "update-index", "--add", "--cacheinfo", f"160000,{project_sha},.booley_project"
+    )
+    _git(dependency, "commit", "-qm", "nested Project gitlink")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _commit_file(source, "outer\n", "outer")
+    _add_submodule(source, dependency, "vendor/ip")
+    _git(source / "vendor/ip", "clone", str(project_owner), ".booley_project")
+    (source / "booley.toml").write_text(
+        '[project]\ndir = "vendor/ip/.booley_project"\n', encoding="utf-8"
+    )
+    _git(source, "add", "-A")
+    _git(source, "commit", "-qm", "configured nested Project")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+
+    materialize_project_submodules(source, destination, skip_standalone_project=True)
+
+    assert (destination / "vendor/ip/source.sv").read_text(
+        encoding="utf-8"
+    ) == "outer dependency\n"
+    assert not (destination / "vendor/ip/.booley_project/.git").exists()
+    assert (source / "vendor/ip/.booley_project/.git").is_dir()

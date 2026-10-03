@@ -30,6 +30,10 @@ def _select_worktree_state(tmp_path: Path, monkeypatch):
     state.mkdir(exist_ok=True)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
     reset_cache()
+    try:
+        yield
+    finally:
+        reset_cache()
 
 
 def test_ticket_adapter_resolves_paired_project_basis_commit(
@@ -454,6 +458,7 @@ def test_standalone_project_baseline_copies_stealth_cores(
     reset_cache()
     root = tmp_path / "outer"
     root.mkdir()
+    (root / "booley.toml").write_text("[project]\n", encoding="utf-8")
     _init_repo(root)
     (root / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
     _add_private_project_submodule(root, tmp_path / "dependency")

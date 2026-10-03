@@ -44,6 +44,7 @@ def _materialize_selection(
     source_root: Path,
     destination_root: Path,
     selected: list[Path],
+    excluded_paths: frozenset[str] = frozenset(),
 ) -> None:
     """Populate one already-resolved top-level selection with rollback."""
     created: list[tuple[Path, bool]] = []
@@ -55,6 +56,7 @@ def _materialize_selection(
             Path(),
             created,
             selected,
+            excluded_paths,
         )
     except SubmoduleMaterializationError:
         _rollback(destination_root, created)
@@ -78,10 +80,11 @@ def materialize_project_submodules(
     except RepositoryCheckoutError as exc:
         raise SubmoduleMaterializationError(str(exc)) from exc
     if skip_standalone_project and topology.paired is None and topology.standalone is not None:
-        materialize_submodules(
+        _materialize_selection(
             source_root,
             destination_root,
-            excluded_top_level=_standalone_project_exclusion(source_root, topology.standalone),
+            _selected_top_level_paths(destination_root),
+            _standalone_project_exclusion(source_root, topology.standalone),
         )
         return
     project_source = topology.paired.worktree if topology.paired else topology.standalone
@@ -132,21 +135,38 @@ def _materialize_tree(
     prefix: Path,
     created: list[tuple[Path, bool]],
     selected: list[Path] | None = None,
+    excluded_paths: frozenset[str] = frozenset(),
 ) -> None:
     for relative in selected if selected is not None else submodule_paths(destination_repo):
         full_relative = prefix / relative
+        if full_relative.as_posix() in excluded_paths:
+            continue
         source = source_root / full_relative
         destination = destination_root / full_relative
         commit = _gitlink_commit(destination_repo, relative)
         _assert_link_free_path(destination, destination_root, "destination")
         _validate_source(source, source_root, full_relative)
         if _accept_existing(destination, commit):
-            _materialize_tree(source_root, destination, destination_root, full_relative, created)
+            _materialize_tree(
+                source_root,
+                destination,
+                destination_root,
+                full_relative,
+                created,
+                excluded_paths=excluded_paths,
+            )
             continue
         had_placeholder = _remove_empty_placeholder(destination, destination_root)
         created.append((destination, had_placeholder))
         _create_repository(source, destination, commit, full_relative)
-        _materialize_tree(source_root, destination, destination_root, full_relative, created)
+        _materialize_tree(
+            source_root,
+            destination,
+            destination_root,
+            full_relative,
+            created,
+            excluded_paths=excluded_paths,
+        )
 
 
 def _selected_top_level_paths(destination_root: Path) -> list[Path]:
