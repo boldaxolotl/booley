@@ -572,13 +572,13 @@ def test_ordinary_cli_manifest_and_card_paths(
 
     def factory(_options):
         output = capsys.readouterr()
-        path = Path(
-            next(
-                line.removeprefix("campaign manifest: ")
-                for line in output.err.splitlines()
-                if line.startswith("campaign manifest: ")
-            )
-        )
+        announcements = [
+            line.removeprefix("campaign manifest: ")
+            for line in output.err.splitlines()
+            if line.startswith("campaign manifest: ")
+        ]
+        assert len(announcements) == 1
+        path = Path(announcements[0])
         assert path.is_absolute() and path.is_file()
         seen.append(path)
         if grade == "interrupt":
