@@ -406,6 +406,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     cli = LintFlow().execute_cli(["--target", "lite"])
     assert cli.exit_code == 0
     cli_report = json.loads((runtime / "runtime/flow-reports/lint.json").read_text())
+    assert (cli_report["criterion_key"], cli_report["criterion_met"]) == ("lint_clean_lite", True)
 
     async def dispatch():
         jobs = server._JobManager(Mock())
@@ -934,7 +935,9 @@ def test_prepared_identity_partial_report_is_null(flow_type, family, met, runtim
     report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
     assert result.exit_code == 2
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)
-    assert self_scope(flow) == {"acme:lib:dut:1#first", "acme:lib:dut:1#second"}
+    identities = frozenset({"acme:lib:dut:1#first", "acme:lib:dut:1#second"})
+    assert self_scope(flow) == identities
+    assert flow.context._report_criteria.targets == identities
     assert flow.state.criteria[f"{family}_first"].met is met
 
 
@@ -1094,9 +1097,12 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)
 
 
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
 @pytest.mark.parametrize("catalog", [True, False])
 @pytest.mark.parametrize("target", ["first", "first,second"])
-def test_declared_custom_flow_prepared_headline(runtime, monkeypatch, catalog, target):
+def test_declared_custom_flow_prepared_headline(
+    runtime, monkeypatch, endpoint_kind, catalog, target
+):
     from typing import ClassVar
 
     from booley.flows.base import BooleyFlow
@@ -1105,8 +1111,19 @@ def test_declared_custom_flow_prepared_headline(runtime, monkeypatch, catalog, t
     if catalog:
         _report_targets(runtime)
 
-    class DrcFlow(BooleyFlow):
+    from booley.specialists.specialist import Specialist
+
+    base = BooleyFlow if endpoint_kind == "flow" else Specialist
+
+    class DrcFlow(base):
         name = "drc_check"
+
+        def _build_prompt(self):
+            return "unused"
+
+        def _interpret_output(self, output, structured):
+            raise AssertionError("agent not invoked")
+
         satisfies: ClassVar[list[str]] = ["drc_clean"]
 
         def _add_args(self, parser):
@@ -1218,3 +1235,37 @@ def test_prepared_lint_without_evaluation_has_null_completion(runtime, monkeypat
     result = flow.execute(flow.request_type(target="first", work_dir=runtime, **{mode: True}))
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
     assert (events[-1]["criterion_key"], events[-1]["criterion_met"]) == ("", None)
+
+
+def test_public_hooks_see_raw_then_projected_headline(runtime, monkeypatch):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    _report_targets(runtime, ("first",), flow="lint")
+    observed = []
+
+    def run(self):
+        self.set_criterion("lint_clean_first", True)
+        return EndpointOutcome(criterion_key="producer_raw", criterion_met=False)
+
+    from booley.flows.endpoint_state import EndpointState
+
+    original_record = EndpointState.record_acceptance
+    original_post = EndpointState._post_run
+
+    def record(self, prepared, outcome):
+        observed.append(("acceptance", outcome.criterion_key, outcome.criterion_met))
+        return original_record(self, prepared, outcome)
+
+    def post(self, outcome, duration):
+        observed.append(("post", outcome.criterion_key, outcome.criterion_met))
+        return original_post(self, outcome, duration)
+
+    monkeypatch.setattr(LintFlow, "_run", run)
+    monkeypatch.setattr(EndpointState, "record_acceptance", record)
+    monkeypatch.setattr(EndpointState, "_post_run", post)
+    result = LintFlow().execute(LintFlow.request_type(target="first", work_dir=runtime))
+    assert observed == [("acceptance", "producer_raw", False), ("post", "lint_clean_first", True)]
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (
+        "lint_clean_first",
+        True,
+    )

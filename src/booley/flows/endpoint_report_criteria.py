@@ -89,8 +89,11 @@ def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None 
         ledger.planned = frozenset(_planned_keys(endpoint, handles, simulation))
     except (FuseSocError, OSError, ValueError):
         # Reporting lookups must not replace the endpoint's own admission errors.
-        if endpoint.endpoint_kind == "flow" and endpoint.name not in TARGET_AWARE_FLOWS:
-            ledger.planned = frozenset(_planned_keys(endpoint, (), simulation))
+        if endpoint.name not in TARGET_AWARE_FLOWS:
+            try:
+                ledger.planned = frozenset(_planned_keys(endpoint, (), simulation))
+            except (FuseSocError, OSError, ValueError):
+                ledger.known = False
         else:
             ledger.known = not endpoint.satisfies
 
