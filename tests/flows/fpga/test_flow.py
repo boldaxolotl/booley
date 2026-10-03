@@ -1864,3 +1864,47 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
 def test_startup_cause_skips_success_summary_and_echoed_tcl(diagnostic):
     text = '0 Critical Warnings and 0 Errors encountered.\nputs "error"\n' + diagnostic
     assert FpgaImplFlow._first_startup_cause(text) == diagnostic
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_fpga_baseline_materializes_project_topologies(tmp_path, monkeypatch, topology):
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _baseline_implementation_unit,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+    flow = FpgaImplFlow()
+    flow.parse_args(["--work-dir", str(root), "--target", "fpga_core", "--baseline", revision])
+    handle = TargetCatalog.build(root).select("fpga_core", for_flow="fpga")
+    flow._target_handles = {handle.selector: handle}
+    flow._target_execution_refs = {}
+    flow._target_pairs = target_pair_plans_for_handles({}, "fpga_impl_ok_", (handle,), flow="fpga")
+    candidate_handles = flow._target_handles
+    roots = []
+
+    def recipe(target):
+        baseline = Path(flow.args.work_dir)
+        _assert_topology_baseline(baseline, root, target)
+        assert flow._target_handle(target).identity == handle.identity
+        roots.append(baseline)
+        return object()
+
+    def run(target):
+        recipe(target)
+        return FpgaMetrics(lut_count=7)
+
+    monkeypatch.setattr(flow, "_resolve_fpga_recipe", recipe)
+    monkeypatch.setattr(flow, "_fpga_work_unit", _baseline_implementation_unit)
+    monkeypatch.setattr(flow, "_run_single_target", run)
+    units, errors = flow._plan_fpga_baselines(revision)
+    assert errors == []
+    assert units[0].revision == revision
+    results, sha = flow._run_baseline_configs(flow._target_pairs)
+    assert sha
+    assert results["fpga_core"].lut_count == 7
+    assert flow.args.work_dir == root
+    assert flow._target_handles is candidate_handles
+    assert roots and all(not path.exists() for path in roots)
