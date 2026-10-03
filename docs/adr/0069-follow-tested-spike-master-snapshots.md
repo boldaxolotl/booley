@@ -2,24 +2,27 @@
 
 The RISC-V image builds Spike from official upstream `riscv-isa-sim` master, pinned by full commit SHA.
 Upstream's only releases are `v1.0.0` (2019) and `v1.1.0` (2021), and `v1.1.0` no longer compiles with
-the image's GCC. Master is the maintained line, and upstream CI builds and tests every master commit.
+the image's GCC. Master is the maintained line: upstream's `Continuous Integration` workflow builds and
+tests each pull-request commit before merge, and its `Debug Quick Test` workflow builds every master
+commit and runs the debug tests against it.
 
-A refresh selects the newest master commit whose upstream `Continuous Integration` and
-`Debug Quick Test` workflows both completed successfully, not whatever happens to be HEAD. The pin is
+A refresh selects the newest master commit whose `Debug Quick Test` push run succeeded, not whatever
+happens to be HEAD. The `Continuous Integration` run on a master push is not evidence: it only tests
+commits not yet on master, so it passes without building anything. The pin is
 refreshed once per Booley release, in the toolchain-refresh PR that precedes the release branch, and
 out of cycle only when a Spike defect affects a Booley user or a security fix requires it.
 
 A candidate pin is accepted only after both Spike checks pass:
 
 - the RISC-V substrate build on Booley's Ubuntu 26.04 base, including upstream `make check`; and
-- the session-runtime contract's Spike probe, which runs an independently checked RV32 program and
-  loads an extension library through `--extlib`.
+- the Spike probe in `.github/contracts/session-runtime.toml`, which runs an independently checked
+  RV32 program and loads an extension library through `--extlib`.
 
 Upstream CI runs on Ubuntu 24.04 and macOS only, so Booley's own image build is the Ubuntu 26.04
 evidence. The PicoRV32 demo does not run Spike; it guards the rest of the rebuilt RISC-V image and
 already runs against every release candidate, so it is not a separate refresh gate.
 
-The release toolchain audit compares the pin against the newest green master commit: equal is
+The release toolchain audit compares the pin against the newest such master commit: equal is
 **current**; a newer commit that passes acceptance is a **routine update**; a newer commit that fails
 acceptance is **held**, with a follow-up issue naming the failure.
 

@@ -485,6 +485,9 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
 
     assert spike_ref is not None
     assert spike_ref.group(1) == "609dbe0b9994154833039209fa37151e7c05e9d4"
+    # The user-facing tool list names the exact pin, so it must move with it.
+    supported_tools = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
+    assert f"`{spike_ref.group(1)}`" in supported_tools
     assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
     assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 

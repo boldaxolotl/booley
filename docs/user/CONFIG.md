@@ -1974,8 +1974,9 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   rv32i / rv32im / rv32imc (ilp32) plus the rv64 ABIs;
 - **`srec_cat`** (srecord), which ibex's `.vmem` generation hard-depends on, and
   **`dtc`** (device-tree-compiler);
-- **Spike** (`riscv-isa-sim`), the reference ISS for differential testing /
-  co-simulation;
+- **Spike** (`riscv-isa-sim`), the official upstream reference ISS for
+  differential testing (not lowRISC's `ibex-cosim` fork that Ibex's UVM
+  co-simulation needs);
 - the ratified **RISC-V International spec set** baked in for offline use at
   `$BOOLEY_RISCV_DOCS` (`/opt/riscv-docs`): the unprivileged + privileged ISA
   manual, the external debug spec, and the ELF psABI; **`pdftotext`** is
