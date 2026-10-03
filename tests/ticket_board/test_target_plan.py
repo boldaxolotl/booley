@@ -865,9 +865,9 @@ def test_lint_replacement_requires_drivable_candidate(repository, eda_tool, lega
         if legacy
         else f"flow: lint\n    flow_options: {{tool: {eda_tool}}}"
     )
-    path.write_text(
-        path.read_text().replace(old, "  lint_new:\n    " + declaration), encoding="utf-8"
-    )
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, "  lint_new:\n    " + declaration, 1), encoding="utf-8")
     if compatible:
         analysis = _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
         assert analysis.plan is not None
