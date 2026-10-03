@@ -110,7 +110,7 @@ def run(
     """Execute one authority operation with human output or explicit JSON."""
     try:
         value = _dispatch(args, grant_mutator=grant_mutator)
-    except (authority.AuthorityError, SourceCheckoutProjectError) as exc:
+    except (authority.AuthorityError, SourceCheckoutProjectError, PermissionError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     legacy_grant_list = args.eda_group == "grant" and args.eda_action == "list"
@@ -190,13 +190,14 @@ def _grant_action(
     # Missing revoke targets retain the authority's exact recorded-identity
     # recovery; their former checkout boundary can no longer be inspected.
     if action in {"add", "revoke"}:
-        role_target = (
-            args.project
+        role_targets = (
+            (args.project,)
             if action == "add"
-            else Path(os.path.normpath(str(args.project.absolute())))
+            else (Path(os.path.normpath(str(args.project.absolute()))), args.project)
         )
-        if action == "add" or role_target.exists():
-            require_project_checkout(role_target)
+        for target in role_targets:
+            if action == "add" or target.exists():
+                require_project_checkout(target)
     if action == "add":
         grant = grant_mutator.add(
             args.project,

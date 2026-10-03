@@ -328,3 +328,49 @@ def test_project_binding_revoke_recorded_identity_under_source(
     result = _run(_parse("grant", "revoke", str(target), "--kind", "vivado"), tmp_path)
     assert result == (0 if deleted_nested_project else 2)
     assert authority.load_state().grants == (() if deleted_nested_project else (grant,))
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_source_project_binding_revoke_symlink_parent(tmp_path, monkeypatch, relative):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    source = tmp_path / "source"
+    (source / ".booley_project").mkdir(parents=True)
+    (source / ".git").mkdir()
+    nested = source / "nested"
+    nested.mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    grant = authority._add_grant(source, "vivado", license_profile="registered")
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    other = tmp_path / "other"
+    other.mkdir()
+    alias = other / "alias"
+    try:
+        alias.symlink_to(nested, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    monkeypatch.chdir(other)
+    target = Path("alias") / ".." if relative else alias / ".."
+    assert _run(_parse("grant", "revoke", str(target), "--kind", "vivado"), other) == 2
+    assert authority.load_state().grants == (grant,)
+
+
+@pytest.mark.parametrize("action", ["add", "revoke"])
+def test_project_binding_permission_error_is_clean(tmp_path, monkeypatch, capsys, action):
+    calls = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+
+    def check(project):
+        raise PermissionError(f"Project checkout is unreadable: {project}")
+
+    monkeypatch.setattr(cli, "require_project_checkout", check)
+    assert _run(_parse("grant", action, str(tmp_path), "--kind", "vivado"), tmp_path) == 2
+    assert "Project checkout is unreadable" in capsys.readouterr().err
+    assert calls == []
