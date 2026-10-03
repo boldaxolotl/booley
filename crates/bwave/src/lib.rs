@@ -13,8 +13,13 @@ pub mod virtual_signal;
 
 use format::{Radix, TimeToken};
 
+#[derive(Clone)]
 pub struct ExtractConfig {
     pub patterns: Vec<String>,
+    /// Whether row selectors came from explicit user input.
+    pub explicit_selectors: bool,
+    /// Query diagnostics to merge into supported JSON envelopes.
+    pub warnings: Vec<String>,
     pub async_mode: bool,
     pub clock_pattern: Option<String>,
     pub reset_pattern: Option<String>,
@@ -67,6 +72,8 @@ impl Default for ExtractConfig {
     fn default() -> Self {
         Self {
             patterns: vec!["*".to_string()],
+            explicit_selectors: false,
+            warnings: Vec::new(),
             async_mode: false,
             clock_pattern: None,
             reset_pattern: None,

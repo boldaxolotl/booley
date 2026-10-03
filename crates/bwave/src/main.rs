@@ -16,7 +16,7 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use bwave::cache::{
     diff_from_cache, distance_from_cache, find_stuck_from_cache, find_value_from_cache,
@@ -131,12 +131,30 @@ struct GlobalOpts {
     with_reset: bool,
 
     /// Output format: "text" (default) or "json"
-    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    #[arg(long, default_value = "text", value_parser = ["text", "json"], hide_possible_values = true)]
     format: String,
 
-    /// Max output lines (default: 2000)
-    #[arg(long, default_value_t = 2000)]
+    /// Max output records/columns (default: 2000)
+    #[arg(long, default_value_t = 2000, value_parser = positive_limit)]
     limit: usize,
+
+    #[arg(long, hide = true, allow_hyphen_values = true)]
+    wrapper_warning: Vec<String>,
+}
+
+fn positive_limit(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or_else(|| "--limit must be a positive integer".to_string())
+}
+
+fn text_format_only(command: &str, g: &GlobalOpts) {
+    if g.format == "json" {
+        eprintln!("ERROR: JSON output is not implemented for {command}; use find/value/stats/list");
+        process::exit(2);
+    }
 }
 
 impl Default for GlobalOpts {
@@ -148,6 +166,7 @@ impl Default for GlobalOpts {
             with_reset: false,
             format: "text".to_string(),
             limit: 2000,
+            wrapper_warning: Vec::new(),
         }
     }
 }
@@ -306,8 +325,8 @@ struct ValueArgs {
     /// or `Nc`), simulation ticks (`Nt`), or physical time (`Nns`/`us`/`ms`/`ps`).
     /// In async mode a unit suffix is required — bare integers are rejected.
     ///
-    /// `allow_hyphen_values` lets users pass negative cycles (`--at -5` or
-    /// `--at=-5`) without clap interpreting the leading minus as a new flag.
+    /// Accept hyphen-prefixed time tokens for explicit range validation;
+    /// negative points precede the physical origin and exit with code 2.
     #[arg(long, value_name = "T", required = true, allow_hyphen_values = true)]
     at: String,
 
@@ -517,7 +536,12 @@ fn split_patterns_and_radixes(
         })
         .collect();
     let pats = pairs.iter().map(|(p, _)| p.clone()).collect();
-    let rads = pairs.into_iter().map(|(p, r)| (p, r)).collect();
+    let rads = pairs
+        .into_iter()
+        .zip(signals)
+        .filter(|(_, raw)| raw.contains('%'))
+        .map(|(pair, _)| pair)
+        .collect();
     (pats, rads)
 }
 
@@ -533,6 +557,42 @@ fn normalize_value(val: &str) -> String {
             process::exit(2);
         }
     }
+}
+
+fn normalize_stuck_value(value: &str) -> String {
+    if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("z") {
+        return value.to_lowercase();
+    }
+    if TriggerMode::classify(value) != TriggerMode::Literal {
+        eprintln!("ERROR: stuck requires a constant Verilog literal, not an edge keyword");
+        process::exit(2);
+    }
+    let literal = value.replace('_', "");
+    if let Some((_, tail)) = literal.split_once('\'') {
+        let valid = match tail.as_bytes().split_first() {
+            Some((b'h' | b'H', digits)) => {
+                !digits.is_empty()
+                    && digits
+                        .iter()
+                        .all(|b| b.is_ascii_hexdigit() || matches!(b, b'x' | b'X' | b'z' | b'Z'))
+            }
+            Some((b'b' | b'B', digits)) => {
+                !digits.is_empty()
+                    && digits
+                        .iter()
+                        .all(|b| matches!(b, b'0' | b'1' | b'x' | b'X' | b'z' | b'Z'))
+            }
+            Some((b'd' | b'D', digits)) => {
+                !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
+            }
+            _ => false,
+        };
+        if !valid {
+            eprintln!("ERROR: invalid constant Verilog literal: {value}");
+            process::exit(2);
+        }
+    }
+    normalize_value(&literal)
 }
 
 /// Parse repeatable `--marker NAME TIME` pairs before touching the store.
@@ -903,25 +963,47 @@ fn run_list(args: ListArgs) {
     let g = args.global;
     let json_format = g.format == "json";
     let (patterns, _radixes) = split_patterns_and_radixes(&args.signals);
+    if args.tree && json_format {
+        eprintln!("ERROR: JSON output is not implemented for list --tree; use text");
+        process::exit(2);
+    }
     require_bwave(&args.bwave, "bwave list");
-    let cache = match ColumnCache::load_from_file(Path::new(&args.bwave)) {
+    let mut cache = match ColumnCache::load_from_file(Path::new(&args.bwave)) {
         Some(c) => c,
         None => {
             eprintln!("ERROR: cannot load waveform store '{}'", args.bwave);
             process::exit(1);
         }
     };
-    list_signals_from_cache(&cache, &patterns, args.tree, json_format, g.limit);
+    if let Some(ref clock) = g.clock {
+        match cache.detect_clock_from_pattern(clock) {
+            Ok((period, rise, name)) => cache.override_clock(period, rise, &name),
+            Err(error) => {
+                eprintln!("ERROR: {error}");
+                process::exit(2);
+            }
+        }
+    }
+    list_signals_from_cache(
+        &cache,
+        &patterns,
+        args.tree,
+        json_format,
+        g.limit,
+        &g.wrapper_warning,
+    );
 }
 
 fn run_signal(args: SignalArgs) {
     let g = args.global;
+    text_format_only("signal", &g);
     require_bwave(&args.bwave, "bwave signal");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         async_mode: g.async_mode,
         clock_pattern: g.clock,
         reset_pattern: g.reset,
@@ -929,6 +1011,7 @@ fn run_signal(args: SignalArgs) {
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -936,6 +1019,7 @@ fn run_signal(args: SignalArgs) {
 
 fn run_wave(args: WaveArgs) {
     let g = args.global;
+    text_format_only("wave", &g);
     let marker_tokens = parse_markers(&args.marker.markers, g.async_mode).unwrap_or_else(|error| {
         eprintln!("ERROR: {error}");
         process::exit(2);
@@ -947,6 +1031,7 @@ fn run_wave(args: WaveArgs) {
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         wave_mode: true,
         wave_rle: args.rle,
         async_mode: g.async_mode,
@@ -958,6 +1043,7 @@ fn run_wave(args: WaveArgs) {
         marker_tokens,
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -971,6 +1057,7 @@ fn run_value(args: ValueArgs) {
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         at_str: Some(args.at),
         // Sync values are cycles; async values are resolved to raw ticks by
         // resolve_time_tokens() before snapshot_from_cache consumes them.
@@ -982,6 +1069,7 @@ fn run_value(args: ValueArgs) {
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -1068,6 +1156,7 @@ fn run_find(args: FindArgs) {
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -1075,6 +1164,7 @@ fn run_find(args: FindArgs) {
 
 fn run_sample(args: SampleArgs) {
     let g = args.global;
+    text_format_only("sample", &g);
     require_bwave(&args.bwave, "bwave sample");
     let modifiers = args.modifiers.resolve();
 
@@ -1084,6 +1174,7 @@ fn run_sample(args: SampleArgs) {
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         sample_at_pattern: Some(args.trigger),
         sample_at_value: Some(value),
         first_match: modifiers.first_match,
@@ -1099,6 +1190,7 @@ fn run_sample(args: SampleArgs) {
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -1106,6 +1198,7 @@ fn run_sample(args: SampleArgs) {
 
 fn run_diff(args: DiffArgs) {
     let g = args.global;
+    text_format_only("diff", &g);
     // Diff operates on the built store.
     require_bwave(&args.bwave, "bwave diff");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
@@ -1113,6 +1206,7 @@ fn run_diff(args: DiffArgs) {
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         diff_strs: Some((args.t1, args.t2)),
         async_mode: g.async_mode,
         clock_pattern: g.clock,
@@ -1120,6 +1214,7 @@ fn run_diff(args: DiffArgs) {
         with_reset: g.with_reset,
         max_lines: g.limit,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -1127,6 +1222,11 @@ fn run_diff(args: DiffArgs) {
 
 fn run_distance(args: DistanceArgs) {
     let g = args.global;
+    text_format_only("distance", &g);
+    if !args.signals.is_empty() {
+        eprintln!("ERROR: distance does not support -s; positional event selectors select events");
+        process::exit(2);
+    }
     // Distance operates on the built store.
     require_bwave(&args.bwave, "bwave distance");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
@@ -1142,6 +1242,7 @@ fn run_distance(args: DistanceArgs) {
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         distance_a,
         distance_b,
         stats_mode: args.stats,
@@ -1153,6 +1254,7 @@ fn run_distance(args: DistanceArgs) {
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -1166,6 +1268,7 @@ fn run_stats(args: StatsArgs) {
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         stats_mode: true,
         async_mode: g.async_mode,
         clock_pattern: g.clock,
@@ -1174,6 +1277,7 @@ fn run_stats(args: StatsArgs) {
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -1181,15 +1285,21 @@ fn run_stats(args: StatsArgs) {
 
 fn run_stuck(args: StuckArgs) {
     let g = args.global;
+    text_format_only("stuck", &g);
     require_bwave(&args.bwave, "bwave stuck");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
-    // `value` is an opaque filter — preserved verbatim like the old behavior
-    // (cache.rs interprets empty string as "any value").
-    let find_stuck = Some(args.value.unwrap_or_default());
+    // Normalize constant literals; an empty filter means any stuck value.
+    let find_stuck = Some(
+        args.value
+            .as_deref()
+            .map(normalize_stuck_value)
+            .unwrap_or_default(),
+    );
 
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
+        explicit_selectors: !args.signals.is_empty(),
         find_stuck,
         async_mode: g.async_mode,
         clock_pattern: g.clock,
@@ -1197,6 +1307,7 @@ fn run_stuck(args: StuckArgs) {
         with_reset: g.with_reset,
         max_lines: g.limit,
         json_format: g.format == "json",
+        warnings: g.wrapper_warning,
         ..Default::default()
     };
     query_bwave(&args.bwave, cfg);
@@ -1255,7 +1366,15 @@ fn run_skill() {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let mut command = Cli::command();
+    for name in ["signal", "wave", "sample", "diff", "distance", "stuck"] {
+        command = command.mut_subcommand(name, |sub| {
+            sub.mut_arg("format", |arg| {
+                arg.help("Output format: text (JSON requests exit 2)")
+            })
+        });
+    }
+    let cli = Cli::from_arg_matches(&command.get_matches()).unwrap_or_else(|error| error.exit());
     match cli.command {
         Command::Build(a) => run_build(a),
         Command::List(a) => run_list(a),

@@ -47,17 +47,13 @@ or width-prefixed `8'd255`) **or** an edge keyword:
 Text mode, one row per match:
 
 ```
-# find: tb.dut.error == 'h1
-   42  tb.dut.error  'h1
-  187  tb.dut.error  'h1
-  293  tb.dut.error  'h1
-# 3 matches
+1000 b 1
 ```
 
 With `--count`:
 
 ```
-3
+1
 ```
 
 JSON mode emits a `findData` envelope:
@@ -69,7 +65,7 @@ JSON mode emits a `findData` envelope:
   "data": {
     "scope_prefix": "tb.dut",
     "pattern": "error",
-    "value": "'h1",
+    "value": "1",
     "mode": "sync",
     "unit": "cycle",
     "count": 3,
@@ -89,8 +85,8 @@ JSON mode emits a `findData` envelope:
 
 Note `value` in `matches[]` is the **raw store value**
 (`"1"`, `"DEAD"`), not the Verilog literal the user typed.
-The literal-as-typed is preserved in the top-level
-`data.value` field.
+The top-level `data.value` is normalized hex or an edge
+keyword.
 
 ## Common errors
 
