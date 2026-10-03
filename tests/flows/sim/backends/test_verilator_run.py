@@ -854,27 +854,51 @@ def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode)
     assert not result.get("inconclusive", False)
 
 
-@pytest.mark.parametrize("prior", ["timeout", "trace_stall"])
+@pytest.mark.parametrize("prior", ["timeout", "trace_stall", "disk_and_timeout"])
 def test_final_disk_retains_abort_during_reap(tmp_path, monkeypatch, prior):
     from types import SimpleNamespace
 
     from booley.flows.sim.run_guard import DiskBudgetGuard
 
     state = {"hit": False}
-    trace = SimpleNamespace(stall_killed=False)
+    trace = SimpleNamespace(stall_killed=False, stall_message="trace pipeline stalled")
 
     def wait(**kwargs):
-        state["hit"] = prior == "timeout"
+        state["hit"] = prior in {"timeout", "disk_and_timeout"}
+        if prior == "disk_and_timeout":
+            guard.tripped = True
+            guard._evidence.set()
         trace.stall_killed = prior == "trace_stall"
         return 0
 
-    proc = SimpleNamespace(wait=wait, poll=lambda: 0)
+    proc = SimpleNamespace(wait=wait, poll=lambda: 0, returncode=0)
     guard = DiskBudgetGuard(tmp_path, 8, proc, baseline=(0, 0))
     monkeypatch.setattr(guard, "finish", lambda: pytest.fail("prior abort must skip final scan"))
     _, _, termination = vr._finish_stream(
         proc, trace, None, guard, state, vr.time.monotonic() + 30, lambda: "timeout", deque()
     )
-    assert termination.kind == ("timeout" if prior == "timeout" else "completed")
+    expected = {
+        "timeout": "timeout",
+        "trace_stall": "completed",
+        "disk_and_timeout": "disk_budget",
+    }
+    assert termination.kind == expected[prior]
+    if prior == "trace_stall":
+        monkeypatch.setattr(vr, "_finalize_trace", lambda *args, **kwargs: ("", None))
+        runtime = vr._TraceRuntime(trace, [], {}, vr.TraceMode.NATIVE_FST, None)
+        _, _, termination = vr._finalize_verilated_run(
+            deque(["PASS\n"]),
+            proc,
+            vr._RunPaths(tmp_path, tmp_path, tmp_path),
+            runtime,
+            None,
+            ["PASS"],
+            None,
+            termination,
+        )
+        assert termination.kind == "trace_stall"
+        assert termination.failure_kind == "infrastructure"
+        assert json.loads((tmp_path / "result.json").read_text())["passed"] is False
 
 
 @pytest.mark.parametrize("prior", ["fatal_init", "timeout"])
