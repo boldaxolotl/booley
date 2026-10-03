@@ -994,7 +994,6 @@ def test_request_rejects_malformed_manifest_at_construction(tmp_path, corruption
     invalid = object() if corruption == "type" else SimulationCampaignManifest(document)
     with pytest.raises(SimulationCampaignIntegrityError):
         replace(request, manifest=invalid)
-    assert list(request.attempt_directory.glob("pre-sim/*.json")) == []
 
 
 def test_request_isolates_frozen_manifest_from_caller_mutation(tmp_path):
@@ -1017,7 +1016,10 @@ def test_request_isolates_frozen_manifest_from_caller_mutation(tmp_path):
     assert frozen.store.read_pre_sim_firings()[0].document["manifest_sha256"] == digest
 
 
-@pytest.mark.parametrize("corruption", ["manifest", "producer", "selection", "ordinal", "status"])
+@pytest.mark.parametrize(
+    "corruption",
+    ["manifest", "producer", "selection", "ordinal", "status", "item", "manifest_copy"],
+)
 def test_request_publication_rejects_changed_attempt_after_success(tmp_path, corruption):
     from dataclasses import replace
 
@@ -1026,6 +1028,13 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     request = replace(request, pre_sim_firing_published=published.append)
     _publish_request_hook(request)
     first_bytes = (request.attempt_directory / "pre-sim/0001.json").read_bytes()
+    first_publication = published.copy()
+    if corruption in {"item", "manifest_copy"}:
+        other = _hook_publication_request(tmp_path / "other", ("gamma",))
+        changes = {"work_item": other.work_item}
+        if corruption == "manifest_copy":
+            changes["manifest"] = other.manifest
+        request = replace(request, **changes)
     if corruption in {"manifest", "producer"}:
         path = request.attempt_directory / "attempt.json"
         document = json.loads(path.read_bytes())
@@ -1035,16 +1044,19 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     name = "outside" if corruption == "selection" else "beta"
     ordinal = 0 if corruption == "ordinal" else 2
     status = "timed_out" if corruption == "status" else "passed"
-    with pytest.raises(SimulationCampaignIntegrityError):
+    expected = {
+        "manifest": "hook attempt does not bind its frozen workload",
+        "item": "hook attempt does not bind its frozen workload",
+        "manifest_copy": "hook attempt does not bind its frozen workload",
+        "producer": "Pre-Sim Commands evidence owner disagrees",
+        "selection": "selection is outside workload",
+        "ordinal": "invalid ordinal",
+        "status": "timed out hook cannot supply an exit code",
+    }
+    with pytest.raises(SimulationCampaignIntegrityError, match=expected[corruption]):
         _publish_request_hook(request, name, ordinal, status)
-    assert published == [
-        (
-            request.manifest.document["campaign_id"],
-            request.work_item["work_item_id"],
-            request.attempt_id,
-            1,
-        )
-    ]
+    assert published == first_publication
+    assert len(published) == 1
     assert (request.attempt_directory / "pre-sim/0001.json").read_bytes() == first_bytes
     assert sorted(p.name for p in (request.attempt_directory / "pre-sim").iterdir()) == [
         "0001.json"

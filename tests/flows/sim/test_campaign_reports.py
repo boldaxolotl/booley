@@ -536,7 +536,9 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     directory = firing.path.parent.parent
     copy = tmp_path / "copied-attempt"
     sidecar_bytes = firing.path.read_bytes()
-    snapshot = next(directory.rglob("simv"))
+    snapshots = list(directory.rglob("simv"))
+    assert len(snapshots) == 1, "successful campaign must retain one real executable snapshot"
+    snapshot = snapshots[0]
     snapshot_relative = snapshot.relative_to(directory)
     snapshot_bytes, snapshot_mode = snapshot.read_bytes(), snapshot.stat().st_mode
     directory.rename(copy)
