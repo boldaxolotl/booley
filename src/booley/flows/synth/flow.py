@@ -2855,7 +2855,7 @@ def _first_tool_diagnostic(text: str) -> str:
             line
             for line in lines
             if re.search(
-                r"(?i)(?:^|:\s|\]\s)(?:error|fatal)\b|\bunrecognized (?:option|argument)\b|\bunknown (?:command|option|argument)\b|\bunsupported (?:command|option)\b|\b(?:not found|no such file|permission denied)\b|^usage:",
+                r"(?i)(?:^|:\s|\]\s|\[)(?:error|fatal)\b|\bunrecognized (?:option|argument)\b|\bunknown (?:command|option|argument)\b|\bunsupported (?:command|option)\b|\b(?:not found|no such file|permission denied)\b|^usage:",
                 line,
             )
         ),

@@ -851,6 +851,9 @@ def _fake_generic_master_bin(tmp_path):
         ("yosys", "dut.v:2: ERROR: syntax error, unexpected TOK_END", True),
         ("yosys", "ERROR: syntax error at sv2v_converted.v:2", True),
         ("yosys", "dut.sv:2:3: error: expected expression", True),
+        ("yosys", "dut.sv:2:3: error: expected identifier", True),
+        ("yosys", "dut.sv:2:3: error: expected ';'", True),
+        ("yosys", "dut.sv:2:3: error: unexpected token", True),
         (
             "yosys",
             "ERROR: Module `\\missing' referenced in module `\\dut' in cell `\\u' is not part of the design.",

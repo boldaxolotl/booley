@@ -5176,16 +5176,23 @@ def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):
     assert report["infra_error"] in result.report_text
 
 
-def test_1095_first_diagnostic_survives_long_stage_tail(flow_and_state, tmp_path):
-    diagnostic = "sv2v: unrecognized option --bogus"
+@pytest.mark.parametrize("tool", ["sv2v", "openroad"])
+def test_1095_first_diagnostic_survives_long_stage_tail(flow_and_state, tmp_path, tool):
+    diagnostic = (
+        "sv2v: unrecognized option --bogus"
+        if tool == "sv2v"
+        else "[ERROR STA-9999] unknown timing failure"
+    )
+    marker = "sv2v" if tool == "sv2v" else "sta"
     flow, _ = flow_and_state
     plan = dataclasses.replace(
-        _stub_plan(tmp_path, "lite", mode="logical"), attempt_token=_LATCH_TOKEN
+        _stub_plan(tmp_path, "lite", mode="logical" if tool == "sv2v" else "physical"),
+        attempt_token=_LATCH_TOKEN,
     )
 
     def execute(*_args, **_kwargs):
         plan.build_dir.mkdir(parents=True, exist_ok=True)
-        path = plan.build_dir / "sv2v.log"
+        path = plan.build_dir / f"{tool}.log"
         path.write_text(
             "Errors: 0\nReading error_model.v\nunknown cells: 0\n"
             + diagnostic
@@ -5194,7 +5201,7 @@ def test_1095_first_diagnostic_survives_long_stage_tail(flow_and_state, tmp_path
         )
         os.utime(path, (100, 100))
         return SubprocessResult(
-            returncode=2, stdout="BOOLEY_STAGE: sv2v\nmake: *** Error 1", dispatched_unix=99
+            returncode=2, stdout=f"BOOLEY_STAGE: {marker}\nmake: *** Error 1", dispatched_unix=99
         )
 
     with (

@@ -492,7 +492,7 @@ _DESIGN_PATTERNS = {
         rf"(?i)unsupported (?:RTL construct|SystemVerilog feature)[^\n]*{_SOURCE_LOCATION}",
     ),
     "yosys": (
-        rf"(?i){_SOURCE_LOCATION}:?\s*(?:ERROR|error):\s*(?:syntax error|parse error|expected expression|use of undeclared identifier)\b[^\n]*",
+        rf"(?i){_SOURCE_LOCATION}:?\s*(?:ERROR|error):\s*(?:syntax error\b|parse error\b|expected (?:expression|identifier|statement|declaration|type|token)\b|expected ['\"`]|unexpected token\b|use of undeclared identifier\b)[^\n]*",
         rf"(?i)ERROR: syntax error at {_SOURCE_LOCATION}",
         r"ERROR: Module [^\n]+ referenced in module [^\n]+ in cell [^\n]+ is not part of the design\.",
         rf"(?i)unsupported (?:RTL construct|SystemVerilog feature)[^\n]*{_SOURCE_LOCATION}",
