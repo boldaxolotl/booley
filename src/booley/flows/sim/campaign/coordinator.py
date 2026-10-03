@@ -132,12 +132,14 @@ CampaignPreviewRequest = NewCampaignPreviewRequest | ResumeCampaignPreviewReques
 class NewCampaignRunRequest(NewCampaignPreviewRequest):
     invocation_directory: Path
     admission: AdmissionContext
+    pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ResumeCampaignRunRequest(ResumeCampaignPreviewRequest):
     invocation_directory: Path
     admission: AdmissionContext
+    pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
 
 
 CampaignRunRequest = NewCampaignRunRequest | ResumeCampaignRunRequest
@@ -196,6 +198,7 @@ class WorkExecutionRequest:
     target_handle: TargetHandle | None = None
     child_execution_id: str | None = None
     child_entry_sha256: str | None = None
+    pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
 
 
 class SerialWorkExecutor(Protocol):
@@ -291,6 +294,12 @@ class SimulationCampaign:
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
     @staticmethod
+    def reauthenticate_pre_sim_firings(firings: tuple[PreSimFiring, ...]) -> None:
+        """Retain reporting evidence only after fresh owner and sidecar validation."""
+        for firing in firings:
+            CampaignStore(firing.manifest_path.parent).reauthenticate_pre_sim_firing(firing)
+
+    @staticmethod
     def preflight(request: NewCampaignRunRequest) -> None:
         """Fail before any publication or build when a literal run_cwd is unusable."""
         _preflight_run_directory(request.plan.manifest, request.project_root)
@@ -298,9 +307,23 @@ class SimulationCampaign:
     def run(self, request: CampaignRunRequest) -> CampaignOutcome:
         if self._executor is None:
             raise RuntimeError("SimulationCampaign requires a serial work executor")
+        current_keys: set[tuple[str, str, str, int]] = set()
+        observer = request.pre_sim_firing_published
+
+        def record_firing(key: tuple[str, str, str, int]) -> None:
+            current_keys.add(key)
+            if observer is not None:
+                observer(key)
+
+        request = replace(request, pre_sim_firing_published=record_firing)
         store, manifest, authenticated_sha256 = self._open_campaign(request)
         with store.mutation_lock():
-            return self._run_locked(store, manifest, authenticated_sha256, request)
+            outcome = self._run_locked(store, manifest, authenticated_sha256, request)
+        return replace(
+            outcome,
+            producer_invocation_directory=request.invocation_directory.absolute(),
+            current_pre_sim_keys=frozenset(current_keys),
+        )
 
     def _open_campaign(
         self, request: CampaignRunRequest
@@ -336,7 +359,6 @@ class SimulationCampaign:
     ) -> CampaignOutcome:
         self._raise_if_cancelled(request)
         self._preflight_owner(store, manifest, authenticated_sha256, request)
-        before_keys = {firing.key for firing in store.collect_pre_sim_firings()}
         self._run_prerequisites(store, manifest, request, set())
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
@@ -359,14 +381,7 @@ class SimulationCampaign:
                 str(exc), replace(failure_context, coverage_reference=reference)
             ) from exc
         final = _scan_recovery(store, manifest, authenticated_sha256)
-        outcome = _outcome(store, manifest, summary, final, reference)
-        return replace(
-            outcome,
-            producer_invocation_directory=request.invocation_directory.absolute(),
-            current_pre_sim_keys=frozenset(
-                f.key for f in outcome.pre_sim_firings if f.key not in before_keys
-            ),
-        )
+        return _outcome(store, manifest, summary, final, reference)
 
     @staticmethod
     def _raise_if_cancelled(request: CampaignRunRequest) -> None:
@@ -736,6 +751,7 @@ class SimulationCampaign:
             binding.handle if binding is not None else None,
             child_execution_id,
             child_entry_sha256,
+            request.pre_sim_firing_published,
         )
 
     def _publish_scheduled_result(

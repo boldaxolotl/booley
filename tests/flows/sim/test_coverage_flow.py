@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -521,9 +522,11 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
     )
+    flow = SimulateFlow()
+    flow._current_published_pre_sim_keys = set()
+    request = replace(request, pre_sim_firing_published=flow._record_pre_sim_firing)
     _executor(tmp_path / "build", {}).prepare_attempt(request)
     _publish_real_hook_series(request, handle, commands, 40)
-    flow = SimulateFlow()
     flow.context._reserved_invocation_dir = invocation
     reads = _observe_pre_sim_projection(monkeypatch)
     result = flow._attach_published_pre_sim(
@@ -2916,8 +2919,8 @@ def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_pa
 
     monkeypatch.setattr(flow_module, "_coverage_failure_outcome", preserve_category)
 
-    def fail_after_publication(store, directory, ordinal, raw):
-        original(store, directory, ordinal, raw)
+    def fail_after_publication(store, directory, ordinal, raw, **kwargs):
+        original(store, directory, ordinal, raw, **kwargs)
         raise SimulationCampaignIntegrityError("hook publication integrity probe")
 
     monkeypatch.setattr(CampaignStore, "publish_pre_sim_evidence", fail_after_publication)

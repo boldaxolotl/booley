@@ -113,10 +113,22 @@ def publish_pre_sim_firing(
     if len(raw) > MANIFEST_MAX_BYTES:
         raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
     attempt = request.store.read_attempt(request.attempt_directory)
-    decoder.decode(raw, request.work_item, attempt)
+    firing = decoder.decode(raw, request.work_item, attempt)
+    key = (
+        cast(str, firing["campaign_id"]),
+        cast(str, firing["work_item_id"]),
+        cast(str, firing["attempt_id"]),
+        cast(int, firing["ordinal"]),
+    )
     if checkpoint is not None:
         checkpoint("before:pre_sim_evidence")
-    path = request.store.publish_pre_sim_evidence(request.attempt_directory, ordinal, raw)
+    observer = request.pre_sim_firing_published
+    path = request.store.publish_pre_sim_evidence(
+        request.attempt_directory,
+        ordinal,
+        raw,
+        on_published=(lambda: observer(key)) if observer is not None else None,
+    )
     if checkpoint is not None:
         checkpoint("after:pre_sim_evidence")
     scope = current_supervised_execution()

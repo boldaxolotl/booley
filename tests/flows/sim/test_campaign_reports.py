@@ -219,3 +219,242 @@ def test_external_resume_number_collision_reports_only_actual_new_firings(
     assert result.detail["pre_sim_current"] == int(interrupted)
     assert result.detail["pre_sim_historical"] == 1
     assert result.report_text.count("pre_run_commands") == int(interrupted)
+
+
+def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign.coordinator import CampaignPolicy
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from booley.flows.sim.campaign.planning import manifest_digest
+    from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
+    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _handle
+
+    manifest = CampaignStore(original.manifest_path.parent).load_manifest()
+    node = ValidatedManifestNode(original.manifest_path, manifest, manifest_digest(manifest))
+    validated = ValidatedResumeManifest(node, (), (_handle(tmp_path / "project"),))
+    invocation.mkdir(parents=True, exist_ok=True)
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(
+        target=["sim"],
+        result_verbosity="brief",
+        work_dir=tmp_path / "project",
+        report_dir=invocation.parent,
+        dry_run=False,
+    )
+    monkeypatch.setattr(flow, "_campaign_policy", CampaignPolicy)
+    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
+    # Destination admission/dependency publication is outside this typed execution test.
+    monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *args: None)
+    monkeypatch.setattr(
+        flow,
+        "_resume_campaign_plan",
+        lambda *args, **kwargs: create_simulation_campaign_plan(manifest),
+    )
+    monkeypatch.setattr(
+        flow, "_resume_campaign_executor", lambda *args: _executor(invocation / "build", counters)
+    )
+    return flow, PreparedSimulationEndpoint((), validated, ("sim",), {})
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_production_resume_override_preserves_external_current_identity(
+    tmp_path, monkeypatch, interrupted
+):
+    from tests.flows.sim.test_campaign_phase3_integrity import _admission
+
+    original, _prior, _counters, _invocation = _resume_hook_campaign(
+        tmp_path, monkeypatch, False, external=True
+    )
+    if interrupted:
+        (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    invocation = tmp_path / "third/reports/1"
+    flow, prepared = _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters)
+    result = flow.run_prepared_simulation(prepared, _admission())
+    assert counters["launch"] == int(interrupted)
+    assert result.detail["pre_sim_current"] == int(interrupted)
+    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
+    assert result.detail["pre_sim_historical"] == 1
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_production_resume_corruption_uses_campaign_integrity_outcome(
+    tmp_path, monkeypatch, dry_run
+):
+    from tests.flows.sim.test_campaign_phase3_integrity import _admission
+
+    original, _prior, _counters, _invocation = _resume_hook_campaign(
+        tmp_path, monkeypatch, False, external=True
+    )
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    flow, prepared = _production_resume_flow(
+        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
+    )
+    flow._args.dry_run = dry_run
+    (original.pre_sim_firings[0].path.parents[3] / "result.json").write_text("{}")
+    result = flow.run_prepared_simulation(prepared, _admission())
+    assert result.exit_code == 2
+    assert "Simulation Campaign integrity failure:" in result.report_text
+    assert "Pre-Sim Commands evidence integrity failure" not in result.report_text
+    assert counters["launch"] == 0
+
+
+def _serialize_resume_waiter(monkeypatch, flow, waiting, completed):
+    run = flow._run_validated_resume_campaign
+
+    def wait_for_owner(*args, **kwargs):
+        waiting.set()
+        assert completed.wait(10)
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(flow, "_run_validated_resume_campaign", wait_for_owner)
+
+
+def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from tests.flows.sim.test_campaign_phase3_integrity import _admission
+
+    original, _prior, _counters, _invocation = _resume_hook_campaign(
+        tmp_path, monkeypatch, False, external=True
+    )
+    (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
+    first_counts = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    second_counts = dict(first_counts)
+    owner, owner_prepared = _production_resume_flow(
+        tmp_path, monkeypatch, original, tmp_path / "owner/reports/1", first_counts
+    )
+    waiter, waiter_prepared = _production_resume_flow(
+        tmp_path, monkeypatch, original, tmp_path / "waiter/reports/1", second_counts
+    )
+    waiting, completed = Event(), Event()
+    # Model serialization before store admission; the store itself rejects busy owners.
+    _serialize_resume_waiter(monkeypatch, waiter, waiting, completed)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(waiter.run_prepared_simulation, waiter_prepared, _admission())
+        assert waiting.wait(10)
+        try:
+            owner_result = owner.run_prepared_simulation(owner_prepared, _admission())
+        finally:
+            completed.set()
+        waiter_result = future.result(timeout=10)
+    assert first_counts["launch"] == 1
+    assert second_counts["launch"] == 0
+    assert owner_result.detail["pre_sim_current"] == 1
+    assert waiter_result.detail["pre_sim_current"] == 0
+    assert waiter_result.detail["pre_sim_lines"] == []
+    assert waiter_result.detail["pre_sim_historical"] == 2
+
+
+def test_campaign_scan_error_retains_independently_authenticated_hook_lines():
+    from booley.flows.sim.flow import _pre_sim_integrity_failure
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    line = "pre_run_commands rc=0 duration=0.01s"
+    result = EndpointOutcome(
+        exit_code=0,
+        criterion_met=True,
+        report_text=line,
+        detail={"pre_sim_lines": [line], "pre_sim_current": 1},
+    )
+    result = _pre_sim_integrity_failure(
+        result, ValueError("unrelated result corruption"), retain_authenticated=True
+    )
+    assert result.exit_code == 2
+    assert result.criterion_met is False
+    assert result.detail["pre_sim_lines"] == [line]
+    assert result.report_text.count(line) == 1
+    assert "Simulation Campaign integrity failure" in result.report_text
+
+
+def test_production_postscan_corruption_preserves_authenticated_current_evidence(
+    tmp_path, monkeypatch
+):
+    from tests.flows.sim.test_campaign_phase3_integrity import _admission
+
+    original, _prior, _counters, _invocation = _resume_hook_campaign(
+        tmp_path, monkeypatch, False, external=True
+    )
+    result_path = original.pre_sim_firings[0].path.parents[3] / "result.json"
+    result_path.unlink()
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    flow, prepared = _production_resume_flow(
+        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
+    )
+    project = flow._campaign_endpoint_outcome
+
+    def corrupt_after_authenticated_projection(outcomes):
+        result = project(outcomes)
+        assert result.detail["pre_sim_current"] == 1
+        result_path.write_text("{}")
+        return result
+
+    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", corrupt_after_authenticated_projection)
+    result = flow.run_prepared_simulation(prepared, _admission())
+    assert counters["launch"] == 1
+    assert result.exit_code == 2
+    assert result.criterion_met is False
+    assert result.detail["pre_sim_current"] == 1
+    assert len(result.detail["pre_sim_lines"]) == 1
+    assert result.report_text.count("pre_run_commands") == 1
+    assert "Simulation Campaign integrity failure" in result.report_text
+
+
+def _observed_hook_request(tmp_path, observer):
+    from dataclasses import replace
+
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _handle, _request
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+
+    commands = ("echo observed-hook",)
+    plan, _disclosures = _pre_sim_plan("immutable", commands, lambda document: None)
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+    request = replace(request, pre_sim_firing_published=observer)
+    _executor(tmp_path / "build", {}).prepare_attempt(request)
+    evidence = run_pre_sim_commands(
+        _handle(tmp_path),
+        test_names=("alpha",),
+        build_root=tmp_path / "build",
+        eda_tool="icarus",
+        timeout_s=5,
+        commands=commands,
+        run_cwd=".",
+    )
+    return request, evidence
+
+
+@pytest.mark.parametrize("stop", ["before", "after", "observer"])
+def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path, stop):
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+
+    events = []
+
+    def observer(key):
+        events.append(key)
+        if stop == "observer":
+            raise RuntimeError("observer failure")
+
+    def checkpoint(name):
+        if name == f"{stop}:pre_sim_evidence":
+            raise RuntimeError("checkpoint failure")
+
+    request, evidence = _observed_hook_request(tmp_path, observer)
+    with pytest.raises(RuntimeError, match="failure"):
+        publish_pre_sim_firing(request, evidence, checkpoint=checkpoint)
+    sidecars = tuple((request.attempt_directory / "pre-sim").glob("*.json"))
+    assert len(events) == len(sidecars) == int(stop != "before")
+    if sidecars:
+        firings = request.store.read_pre_sim_firings()
+        assert [firing.key for firing in firings] == events
+        assert firings[0].document["stdout_tail"] == "observed-hook\n"

@@ -466,13 +466,22 @@ class CampaignStore:
         path = self.work_item_directory(work_item_id) / "result.json"
         return self._publish(path, result, encode_simulation_result)
 
-    def publish_pre_sim_evidence(self, directory: Path, ordinal: int, raw: bytes) -> Path:
+    def publish_pre_sim_evidence(
+        self,
+        directory: Path,
+        ordinal: int,
+        raw: bytes,
+        *,
+        on_published: Callable[[], None] | None = None,
+    ) -> Path:
         """Durably create a contained attempt sidecar without replacing an existing firing."""
         path = directory / "pre-sim" / f"{ordinal:04d}.json"
         _require_safe_parents(path, self.root)
         if len(raw) > MANIFEST_MAX_BYTES:
             raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
         _create_immutable(path, raw)
+        if on_published is not None:
+            on_published()
         return path
 
     def latest_attempt(self, work_item_id: str) -> SimulationAttempt | None:
@@ -595,6 +604,27 @@ class CampaignStore:
         firings: list[PreSimFiring] = []
         self._scan_manifest(manifest, _manifest_sha256(manifest), pre_sim_receiver=firings.extend)
         return tuple(firings)
+
+    def reauthenticate_pre_sim_firing(self, firing: PreSimFiring) -> None:
+        """Recheck prior reporting evidence without accepting a terminal result."""
+        manifest = self.load_manifest()
+        if _manifest_sha256(manifest) != firing.document["manifest_sha256"]:
+            raise SimulationCampaignIntegrityError("prior hook manifest changed")
+        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+        item = next((item for item in items if item["work_item_id"] == firing.key[1]), None)
+        if item is None or firing.manifest_path != self.manifest_path:
+            raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
+        directory = firing.path.parent.parent
+        if directory.parent != self._work_item_directory(item) / "attempts":
+            raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
+        current = self._read_attempt_pre_sim_firings(manifest, item, directory, None)
+        if not any(
+            candidate.key == firing.key
+            and candidate.path == firing.path
+            and candidate.reference == firing.reference
+            for candidate in current
+        ):
+            raise SimulationCampaignIntegrityError("prior hook reference changed")
 
     def read_pre_sim_firings(
         self, manifest: SimulationCampaignManifest | None = None

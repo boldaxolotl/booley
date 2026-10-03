@@ -581,22 +581,24 @@ def _append_missing_report_lines(result: EndpointOutcome, lines: list[str]) -> E
     return result
 
 
-def _pre_sim_integrity_failure(result: EndpointOutcome, error: Exception) -> EndpointOutcome:
+def _pre_sim_integrity_failure(
+    result: EndpointOutcome, error: Exception, *, retain_authenticated: bool = False
+) -> EndpointOutcome:
     result.exit_code = EXIT_ERROR
     result.criterion_met = False
-    references = [record.get("reference") for record in result.detail.get("pre_sim_runs", ())]
-    result.detail = {
-        key: value for key, value in result.detail.items() if not key.startswith("pre_sim_")
-    }
-    result.detail.update(
-        pre_sim_unauthenticated_references=references, pre_sim_integrity_error=str(error)
-    )
-    result.report_text = "\n".join(
-        line
-        for line in result.report_text.splitlines()
-        if not line.startswith("pre_run_commands ")
-    )
-    result.report_text += f"\nPre-Sim Commands evidence integrity failure: {error}"
+    if not retain_authenticated:
+        references = [record.get("reference") for record in result.detail.get("pre_sim_runs", ())]
+        result.detail = {
+            key: value for key, value in result.detail.items() if not key.startswith("pre_sim_")
+        }
+        result.detail["pre_sim_unauthenticated_references"] = references
+        result.report_text = "\n".join(
+            line
+            for line in result.report_text.splitlines()
+            if not line.startswith("pre_run_commands ")
+        )
+    result.detail["campaign_integrity_error"] = str(error)
+    result.report_text += f"\nSimulation Campaign integrity failure: {error}"
     return result
 
 
@@ -2284,7 +2286,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         admission: object | None,
     ) -> EndpointOutcome:
         """Run one immutable preflight with its explicitly borrowed admission."""
-        self._capture_pre_sim_before(prepared)
+        self._current_published_pre_sim_keys: set[tuple[str, str, str, int]] = set()
         if prepared.resume is not None:
             result = self._run_campaign_resume(prepared.resume, admission)
             return self._attach_published_pre_sim(result, prepared.resume.path)
@@ -2296,15 +2298,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         result.detail["mode"] = self._mode.value
         return self._attach_published_pre_sim(result)
 
-    def _capture_pre_sim_before(self, prepared: PreparedSimulationEndpoint) -> None:
-        """Capture authenticated history before any baseline or candidate can execute."""
-        from .campaign import collect_pre_sim_firings, read_invocation_pre_sim_firings
-
-        invocation = self.context._reserved_invocation_dir
-        firings = list(read_invocation_pre_sim_firings(invocation)) if invocation else []
-        if prepared.resume is not None:
-            firings.extend(collect_pre_sim_firings(prepared.resume.path))
-        self._pre_sim_before_keys = frozenset(firing.key for firing in firings)
+    def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
+        """Record only authenticated firings durably published by this execution."""
+        self._current_published_pre_sim_keys.add(key)
 
     def _attach_published_pre_sim(
         self, result: EndpointOutcome, origin_manifest: Path | None = None
@@ -2324,12 +2320,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             context = SimpleNamespace(
                 pre_sim_firings=firings,
                 producer_invocation_directory=invocation.absolute(),
-                current_pre_sim_keys=frozenset(f.key for f in firings)
-                - getattr(self, "_pre_sim_before_keys", frozenset()),
+                current_pre_sim_keys=frozenset(
+                    getattr(self, "_current_published_pre_sim_keys", ())
+                ),
             )
             hook_detail = _campaign_pre_sim_details([context], invocation)
         except (OSError, ValueError) as exc:
-            return _pre_sim_integrity_failure(result, exc)
+            return self._retain_pre_sim_after_scan_error(result, exc)
         if not firings:
             return result
         result.detail.update(hook_detail)
@@ -2342,6 +2339,23 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return _append_missing_report_lines(
             result, _campaign_pre_sim_report_lines([context], invocation)
         )
+
+    def _retain_pre_sim_after_scan_error(
+        self, result: EndpointOutcome, error: Exception
+    ) -> EndpointOutcome:
+        firings = tuple(
+            firing
+            for outcome in getattr(self.context, "_simulation_campaign_outcomes", ())
+            for firing in outcome.pre_sim_firings
+        )
+        retained = False
+        if firings:
+            try:
+                SimulationCampaign.reauthenticate_pre_sim_firings(firings)
+                retained = True
+            except (OSError, ValueError):
+                pass
+        return _pre_sim_integrity_failure(result, error, retain_authenticated=retained)
 
     def _prepare_campaign_targets(
         self,
@@ -3027,6 +3041,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 self._campaign_policy(),
                 invocation,
                 admission,
+                pre_sim_firing_published=self._record_pre_sim_firing,
             )
         )
 
@@ -3384,6 +3399,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 self._campaign_policy(),
                 invocation,
                 admission,
+                pre_sim_firing_published=self._record_pre_sim_firing,
             )
             for plan in prepared.targets
         ]
@@ -3934,6 +3950,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     self._campaign_policy(),
                     invocation,
                     admission,
+                    pre_sim_firing_published=self._record_pre_sim_firing,
                 )
             )
         return requests
@@ -4071,6 +4088,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self._campaign_policy(),
             invocation,
             admission,
+            pre_sim_firing_published=self._record_pre_sim_firing,
         )
         return request, self._baseline_prerequisites_by_test(target, plan)
 

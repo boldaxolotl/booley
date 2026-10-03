@@ -108,14 +108,12 @@ def _successful_pre_sim_campaign(
     transform=None,
     invocation_directory: Path | None = None,
     checkpoint=None,
+    observer=None,
 ):
     from booley.flows.sim.campaign.coordinator import (
-        CampaignPolicy,
-        NewCampaignRunRequest,
         SimulationCampaign,
     )
     from tests.flows.sim.test_campaign_phase3_integrity import (
-        _admission,
         _handle,
     )
 
@@ -136,12 +134,23 @@ def _successful_pre_sim_campaign(
     invocation.mkdir(parents=True, exist_ok=True)
     campaign = SimulationCampaign(
         _hook_executor(build, disclosures, mutate_snapshot, checkpoint)
-    ).run(
-        NewCampaignRunRequest(
-            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
-        )
-    )
+    ).run(_observed_campaign_request(plan, project, invocation, observer))
     return invocation, campaign
+
+
+def _observed_campaign_request(plan, project, invocation, observer):
+    from booley.flows.sim.campaign.coordinator import CampaignPolicy, NewCampaignRunRequest
+    from tests.flows.sim.test_campaign_phase3_integrity import _admission
+
+    return NewCampaignRunRequest(
+        plan,
+        project,
+        invocation.parent,
+        CampaignPolicy(),
+        invocation,
+        _admission(),
+        pre_sim_firing_published=observer,
+    )
 
 
 def _public_hook_endpoint(flow, invocation):
@@ -227,9 +236,16 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
 ) -> None:
     from booley.flows.sim.campaign import SimulationCampaignIntegrityError
 
-    with pytest.raises(SimulationCampaignIntegrityError):
-        _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable", mutate_snapshot=True)
     flow = SimulateFlow()
+    flow._current_published_pre_sim_keys = set()
+    with pytest.raises(SimulationCampaignIntegrityError):
+        _successful_pre_sim_campaign(
+            tmp_path,
+            monkeypatch,
+            "immutable",
+            mutate_snapshot=True,
+            observer=flow._record_pre_sim_firing,
+        )
     flow.context._reserved_invocation_dir = tmp_path / "reports/1"
     result = flow._attach_published_pre_sim(
         EndpointOutcome(exit_code=2, report_text="integrity error")
