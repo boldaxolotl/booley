@@ -79,21 +79,26 @@ class _DiagnosticProjection:
         self.explained: set[int] = set()
         self.derived: set[int] = set()
         self.fallback: set[int] = set()
+        self.pointer_indices: dict[str, set[int]] = {}
+        self.prefix_indices: dict[str, set[int]] = {}
+        for index, item in enumerate(findings):
+            self.pointer_indices.setdefault(item.pointer, set()).add(index)
+            parts = item.pointer.split("/")
+            for length in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:length])
+                self.prefix_indices.setdefault(prefix, set()).add(index)
 
     def indices(self, prefix: str) -> set[int]:
-        return {
-            index
-            for index, item in enumerate(self.findings)
-            if item.pointer == prefix or item.pointer.startswith(prefix + "/")
-        }
+        return set(self.prefix_indices.get(prefix, ()))
 
     def explain(self, indices: set[int], lines: Sequence[str]) -> None:
         self.explained.update(indices)
         self.roots.extend(line for line in lines if line not in self.roots)
 
     def finish(self) -> WorkloadDiagnostic:
+        accounted = self.explained | self.derived
         for index, item in enumerate(self.findings):
-            if index not in self.explained | self.derived:
+            if index not in accounted:
                 self.fallback.add(index)
                 self.roots.append(f"workload changed: {item.message}")
         assert not (
@@ -139,6 +144,15 @@ def _diagnostic_value(value: object) -> str:
     return canonical_json_bytes(value).decode("utf-8").rstrip("\n")
 
 
+def _diagnostic_display(value: object) -> str:
+    return json.dumps(
+        json.loads(_diagnostic_value(value)),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _entry_map(entries: Sequence[Mapping[str, object]], key: str):
     names = [entry[key] for entry in entries]
     if len(set(names)) != len(names):
@@ -182,7 +196,13 @@ def _project_parameters(projection, old, new) -> None:
         old_value = _diagnostic_value(old_map[name]["value"]) if name in old_map else "<absent>"
         new_value = _diagnostic_value(new_map[name]["value"]) if name in new_map else "<absent>"
         if name not in old_map or name not in new_map or old_value != new_value:
-            lines.append(f"parameter {_label(name)}: {old_value} → {new_value}")
+            old_display = (
+                _diagnostic_display(old_map[name]["value"]) if name in old_map else "<absent>"
+            )
+            new_display = (
+                _diagnostic_display(new_map[name]["value"]) if name in new_map else "<absent>"
+            )
+            lines.append(f"parameter {_label(name)}: {old_display} → {new_display}")
     if not lines and tuple(old_map) != tuple(new_map):
         lines.append("parameter order changed")
     projection.explain(indices, lines)
@@ -229,9 +249,7 @@ def _prepared_existing_cause(projection, before, after, sources) -> bool:
 def _prepared_leaf_indices(projection, disclosure_position, entry_position) -> set[int]:
     prefix = f"/planning_disclosures/{disclosure_position}/generated_files/{entry_position}"
     pointers = {f"{prefix}/bytes", f"{prefix}/sha256"}
-    return {
-        index for index, finding in enumerate(projection.findings) if finding.pointer in pointers
-    }
+    return set().union(*(projection.pointer_indices.get(pointer, ()) for pointer in pointers))
 
 
 def _collect_prepared_entries(projection, position, old, new, sources, groups) -> None:

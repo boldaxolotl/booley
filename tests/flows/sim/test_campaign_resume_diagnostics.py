@@ -101,6 +101,7 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
     (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// change\n")
     before = _snapshot(reports)
+    durable_before = _snapshot(manifest.parent)
     argv = [
         "--resume-from",
         str(manifest),
@@ -124,19 +125,24 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     ]
     assert "/planning_disclosures/" not in result.outcome.report_text or verbose
     assert result.outcome.detail["derived_fingerprint_count"] == 8
+    for line in result.outcome.detail["mismatch_summary"]:
+        assert line in result.outcome.report_text
+    assert "8 derived fingerprints differ" in result.outcome.report_text
     raw = result.outcome.detail["mismatches"]
     assert len(raw) == 16
     if verbose:
         assert all(line in result.outcome.report_text for line in raw)
     else:
         assert "sha256:" not in result.outcome.report_text
-        assert all(
-            line not in result.outcome.report_text
-            for line in raw
-            if line.startswith("/build_variants/")
-        )
+        assert all(line not in result.outcome.report_text for line in raw)
     if dry_run:
         assert _snapshot(reports) == before
+    else:
+        assert {
+            key: value
+            for key, value in _snapshot(manifest.parent).items()
+            if not key.startswith("dependency-receipts/")
+        } == durable_before
 
 
 @pytest.mark.parametrize(

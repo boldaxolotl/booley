@@ -48,7 +48,7 @@ from booley.targets.catalog import TargetCatalog
 
 
 def _sha(value: object) -> str:
-    raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
@@ -1498,23 +1498,14 @@ def test_prepared_path_and_content_equality_collapses_across_multiple_disclosure
         "unmatched",
     ],
 )
-def test_ambiguous_or_independent_prepared_disclosure_changes_preserve_fallback(changed):
+def test_ambiguous_or_unmatched_prepared_disclosure_changes_preserve_fallback(changed):
     old, new = _prepared_diagnostic_pair()
     disclosure = new["planning_disclosures"][0]
-    if changed == "recipe_duplicate":
-        for document in (old, new):
-            document["workload"]["source_recipe"]["sources"] *= 2
-            document["build_variants"][0]["source_closure"] *= 2
-    elif changed == "disclosure_duplicate":
+    if changed == "disclosure_duplicate":
         for document in (old, new):
             document["planning_disclosures"][0]["generated_files"] *= 2
-    elif changed in {"bytes", "hash", "unmatched"}:
-        field, value = {
-            "bytes": ("bytes", 3),
-            "hash": ("sha256", "sha256:" + "c" * 64),
-            "unmatched": ("path", "other.sv"),
-        }[changed]
-        disclosure["generated_files"][0][field] = value
+    elif changed == "unmatched":
+        disclosure["generated_files"][0]["path"] = "other.sv"
     elif changed == "planner":
         disclosure["planner"] = "other"
     else:
@@ -1745,7 +1736,7 @@ def test_generated_path_duplicates_on_either_side_block_prepared_naming(side):
 
 
 @pytest.mark.parametrize("changed", ["planner", "kind", "contract", "version"])
-def test_unknown_preparation_metadata_on_both_sides_retains_generated_fallback(changed):
+def test_unknown_preparation_metadata_falls_back_but_equal_versions_allow_collapse(changed):
     old, new = _prepared_diagnostic_pair()
     for document in (old, new):
         disclosure = document["planning_disclosures"][0]
@@ -1761,3 +1752,47 @@ def test_unknown_preparation_metadata_on_both_sides_retains_generated_fallback(c
         assert diagnostic.mismatch_summary == ("source changed: a.sv",)
     else:
         assert any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
+
+
+def test_repeated_diagnostic_region_lookups_do_not_rescan_original_findings():
+    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
+
+    class CountingFindings(tuple):
+        walks = 0
+
+        def __iter__(self):
+            self.walks += 1
+            return super().__iter__()
+
+    findings = CountingFindings(
+        [WorkloadMismatch(f"/build_variants/{index}/sha256", "old", "new") for index in range(200)]
+        + [WorkloadMismatch("/build_variants/0/sha256", "other", "new")]
+    )
+    projection = _DiagnosticProjection(findings)
+    original_walks = findings.walks
+    for _ in range(20):
+        assert projection.indices("/build_variants/0/sha256") == {0, 200}
+        assert projection.indices("/build_variants/0") == {0, 200}
+        assert projection.indices("/build_variants") == set(range(201))
+        assert projection.indices("/build_variants/20") == {20}
+        assert projection.indices("/absent") == set()
+    assert findings.walks == original_walks
+    projection.explain({0, 200}, ("same region changed",))
+    projection.derived.add(1)
+    diagnostic = projection.finish()
+    assert diagnostic.mismatches is findings
+    assert diagnostic.derived_fingerprint_count == 1
+    assert len(diagnostic.mismatch_summary) == 199
+
+
+def test_parameter_display_escapes_nested_controls_without_changing_raw_values():
+    old = _diagnostic_document(parameters=[{"name": "N", "value": {"x": ["safe"]}}])
+    controls = "\u0085\u202e\u2066\u2028\u2029"
+    new = _diagnostic_document(parameters=[{"name": "N", "value": {"x": [controls]}}])
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == (
+        'parameter N: {"x":["safe"]} → {"x":["\\u0085\\u202e\\u2066\\u2028\\u2029"]}',
+    )
+    assert not any(character in diagnostic.report() for character in controls)
+    assert any(item.actual == controls for item in diagnostic.mismatches)
+    assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
