@@ -148,15 +148,21 @@ class Specialist(McpTool):
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Refuse host or disabled execution before loading state or admission."""
-        from booley.mcp.endpoint_config import get_endpoint_config
+        from booley.mcp.endpoint_config import (
+            EndpointConfigError,
+            endpoint_is_enabled,
+            get_endpoint_config,
+        )
         from booley.runtime import runtime_context
 
         error = runtime_context.container_only_error(f"booley specialist {self.name}")
         if error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=error)
-        config, _ = get_endpoint_config(Path(self.args.work_dir))
-        entry = config.get(self.name)
-        if isinstance(entry, dict) and entry.get("enabled") is False:
+        try:
+            config, flows = get_endpoint_config(Path(self.args.work_dir))
+        except EndpointConfigError as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        if not endpoint_is_enabled(self.name, "specialist", config, flows):
             return McpToolResult(
                 exit_code=EXIT_ERROR, report_text=f"Specialist {self.name!r} is disabled."
             )

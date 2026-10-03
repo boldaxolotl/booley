@@ -637,8 +637,10 @@ What goes here:
 - **MCP tool availability — exactly what the plan decided.** Every installed
   built-in and every valid MCP tool under `.booley_project/mcp_tools/` is discovered
   automatically. Write `[flows.<name>].enabled = false` for an explicit Flow
-  opt-out; use `[mcp_tools.<name>].enabled = false` for a Specialist or other
-  non-Flow MCP endpoint. There is no source allowlist.
+  opt-out; use `[specialists.<name>].enabled = false` for a Specialist.
+  Rename retired `[mcp_tools.*]` Specialist sections to `[specialists.*]` and
+  remove protocol utility settings; utilities have no Project enable switch.
+  There is no source allowlist.
 - **First-run Flows start disabled** (`enabled = false`) for `sim`,
   `lint`, and `synth` unless the user explicitly asks
   to wire a flow now. Every Flow command runs in the Sandbox; the EDA

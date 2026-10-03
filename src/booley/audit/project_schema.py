@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from booley.audit.config_common import (
@@ -18,7 +18,7 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
     {
         "project",
         "flows",
-        "mcp_tools",
+        "specialists",
         "sandbox",
         "agent",
         "models",
@@ -34,20 +34,33 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
 )
 
 RETIRED_BOOLEY_TOML_TABLES = {
+    "mcp_tools": (
+        "retired — move Specialist settings to [specialists.*] and remove protocol "
+        "utility settings (utilities have no project enable switch); prefix a custom "
+        "direct endpoint's filename with '_' to disable its discovery"
+    ),
     "notifications": "push delivery was removed; settings are ignored — delete this table",
     "tools": (
-        "retired — move deterministic settings to [flows.*] and Specialist or "
-        "other non-Flow endpoint settings to [mcp_tools.*]"
+        "retired — move deterministic settings to [flows.*] and Specialist "
+        "settings to [specialists.*]"
     ),
     "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
 }
 
 
 def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Warn about top-level tables that no live Booley consumer recognizes."""
+    """Audit recognized tables, rejecting retired MCP visibility configuration."""
     findings: list[ConfigFinding] = []
     for key in data:
         if key in KNOWN_BOOLEY_TOML_TABLES:
+            continue
+        if key == "mcp_tools":
+            findings.append(
+                fail_finding(
+                    "booley.toml [mcp_tools] is retired",
+                    RETIRED_BOOLEY_TOML_TABLES[key],
+                )
+            )
             continue
         hint = RETIRED_BOOLEY_TOML_TABLES.get(key)
         if hint:
@@ -65,6 +78,37 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
                 subject=key,
             )
         )
+    return ConfigTableAudit(tuple(findings))
+
+
+def audit_specialist_table(
+    data: Mapping[str, Any], specialist_names: Collection[str] | None = None
+) -> ConfigTableAudit:
+    """Validate Specialist visibility settings before discovery can use them."""
+    specialists = as_dict(data.get("specialists", {}))
+    if specialists is None:
+        return failure("booley.toml [specialists] must be a table", "use [specialists.<name>]")
+    findings: list[ConfigFinding] = []
+    for name, raw_entry in specialists.items():
+        field = f"booley.toml [specialists.{name}]"
+        entry = as_dict(raw_entry)
+        if entry is None:
+            findings.append(
+                fail_finding(f"{field} must be a table", "use enabled = true or false")
+            )
+            continue
+        if specialist_names is not None and name not in specialist_names:
+            findings.append(
+                fail_finding(
+                    f"{field}: {name!r} is not a discovered Specialist",
+                    "check the Specialist name; Flows use [flows.<name>]; "
+                    "direct MCP endpoints have no Project enable switch",
+                )
+            )
+        try:
+            require_bool(entry, "enabled", default=True, field=f"{field}.enabled")
+        except BoundaryError as exc:
+            findings.append(fail_finding(str(exc), "use the TOML boolean true or false"))
     return ConfigTableAudit(tuple(findings))
 
 
