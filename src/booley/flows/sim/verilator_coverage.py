@@ -567,6 +567,10 @@ def _pre_sim_attributes(evidence: PreSimEvidence | None) -> Mapping[str, FrozenJ
                 "status": evidence.status,
                 "elapsed_s": evidence.elapsed_s,
                 "detail": evidence.detail,
+                "command_count": len(evidence.commands),
+                "returncode": evidence.returncode,
+                "stdout_tail": evidence.stdout_tail,
+                "stderr_tail": evidence.stderr_tail,
             }
         }
     )

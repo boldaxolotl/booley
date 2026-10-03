@@ -388,20 +388,30 @@ class _RuntimeCheckingExecution(NativeExecution):
         return super().run(request)
 
 
-def _coverage_campaign_plan(root: Path, *, runtime_input: bool = False):
+def _coverage_runtime_input(root: Path) -> None:
+    (root / "stimulus.bin").write_bytes(b"source runtime input")
+    core = root / "counter.core"
+    core.write_text(
+        core.read_text().replace(
+            "files: [rtl/counter.sv]",
+            "files: [rtl/counter.sv, {stimulus.bin: {file_type: user, "
+            "copyto: data/stimulus.bin}}]",
+        )
+    )
+
+
+def _coverage_campaign_plan(
+    root: Path, *, runtime_input: bool = False, pre_sim_commands: tuple[str, ...] = ()
+):
     context = project(root)
     if runtime_input:
-        (root / "stimulus.bin").write_bytes(b"source runtime input")
-        core = root / "counter.core"
-        core.write_text(
-            core.read_text().replace(
-                "files: [rtl/counter.sv]",
-                "files: [rtl/counter.sv, {stimulus.bin: {file_type: user, "
-                "copyto: data/stimulus.bin}}]",
-            )
-        )
+        _coverage_runtime_input(root)
     project_data = root / ".booley_project"
     project_data.mkdir()
+    (project_data / "booley.toml").write_text(
+        "[flows.sim]\npre_run_commands = " + json.dumps(pre_sim_commands) + "\n",
+        encoding="utf-8",
+    )
     (project_data / "tests.toml").write_text(
         '[sim_0]\ntests = ["reset", "wrap"]\n', encoding="utf-8"
     )
@@ -435,11 +445,30 @@ def _coverage_campaign_plan(root: Path, *, runtime_input: bool = False):
     return plan, target
 
 
-def _run_coverage_campaign(root: Path, native: NativeExecution, *, runtime_input: bool = False):
-    plan, target = _coverage_campaign_plan(root, runtime_input=runtime_input)
+def _run_coverage_campaign(
+    root: Path,
+    native: NativeExecution,
+    *,
+    runtime_input: bool = False,
+    pre_sim_commands: tuple[str, ...] = (),
+):
+    plan, target = _coverage_campaign_plan(
+        root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
+    )
+    assert tuple(plan.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]) == (
+        pre_sim_commands
+    )
+    assert tuple(plan.manifest.document["work_items"][0]["selection"]["names"]) == (
+        "reset",
+        "wrap",
+    )
+
+    def execution_factory(_plan, _options, commands, _access):
+        assert tuple(commands) == pre_sim_commands
+        return native
+
     executor = CoverageAggregateExecutor(
-        plans={target.handle.identity: target},
-        execution_factory=lambda _plan, _options, _commands, _access: native,
+        plans={target.handle.identity: target}, execution_factory=execution_factory
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -584,13 +613,16 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
                 "failed",
                 0.2,
                 "vector generator rejected input",
+                returncode=1,
             )
             return SimulationRunResult("elab_error", evidence.detail, evidence)
 
         def command(self, request):
             raise AssertionError("merge must not run after a Pre-Sim failure")
 
-    outcome, store = _run_coverage_campaign(tmp_path, PreSimFailure())
+    outcome, store = _run_coverage_campaign(
+        tmp_path, PreSimFailure(), pre_sim_commands=("prepare-vectors",)
+    )
 
     assert outcome.complete is True
     result = store.scan().items[0].result
@@ -600,6 +632,15 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
     assert observations[0]["detail"]["reason"] == (
         "Pre-Sim Commands failed (failed): vector generator rejected input"
     )
+
+    firings = store.read_pre_sim_firings()
+    assert [f.document["ordinal"] for f in firings] == [1, 2]
+    assert [f.document["test_names"] for f in firings] == [("reset",), ("wrap",)]
+    assert all(f.document["status"] == "failed" for f in firings)
+    assert all(f.document["command_count"] == 1 for f in firings)
+    assert all(f.document["returncode"] == 1 for f in firings)
+    assert all(f.document["producer_invocation_id"] == 1 for f in firings)
+    assert all(f.terminal and f.reference in result.document["evidence"] for f in firings)
 
 
 def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:
@@ -611,6 +652,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
                 "spawn_error",
                 0.2,
                 "missing-vector-generator: command not found",
+                returncode=None,
             )
             return SimulationRunResult(
                 "elab_error", evidence.detail, evidence, infrastructure_error=True
@@ -620,7 +662,9 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
             raise AssertionError("merge must not run after a Pre-Sim spawn error")
 
     with pytest.raises(_CoverageAggregateError, match="missing-vector-generator") as raised:
-        _run_coverage_campaign(tmp_path, PreSimSpawnError())
+        _run_coverage_campaign(
+            tmp_path, PreSimSpawnError(), pre_sim_commands=("missing-vector-generator",)
+        )
 
     assert raised.value.evaluation_status == "not_requested"
     nested = next(
@@ -634,6 +678,31 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert never_run["execution"] == "not_run"
     assert never_run["failure_kind"] == "infrastructure"
     assert "termination" not in never_run
+
+    # This injected external adapter has no observed process exit status.
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    (firing,) = store.read_pre_sim_firings()
+    assert firing.document["status"] == "spawn_error"
+    assert firing.document["returncode"] is None
+    assert firing.document["command_count"] == 1
+    assert firing.document["test_names"] == ("reset",)
+    assert firing.document["producer_invocation_id"] == 1
+    assert firing.terminal is False
+
+
+def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: Path) -> None:
+    class FabricatedHook(NativeExecution):
+        def run(self, request):
+            evidence = PreSimEvidence(
+                ("undeclared-hook",), (request.test.name,), "failed", 0.2, returncode=1
+            )
+            return SimulationRunResult("elab_error", "injected adapter evidence", evidence)
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="command count disagrees"):
+        _run_coverage_campaign(tmp_path, FabricatedHook())
+    campaign = tmp_path / "reports/1/targets/sim_0/campaign"
+    assert list(campaign.glob("work-items/*/attempts/*/attempt.json"))
+    assert not list(campaign.glob("work-items/*/attempts/*/pre-sim/*.json"))
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:

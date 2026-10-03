@@ -448,7 +448,11 @@ def _coverage_test_projection(run) -> dict[str, object]:
             entry[field] = value
     pre_sim = run.attributes.get("pre_sim")
     if isinstance(pre_sim, Mapping):
-        projected = dict(pre_sim)
+        projected = {
+            key: value
+            for key, value in pre_sim.items()
+            if key not in {"stdout_tail", "stderr_tail"}
+        }
         entry["pre_sim"] = projected
         if projected.get("status") != "passed":
             status = projected.get("status")
