@@ -31,7 +31,14 @@ from .codec import (
 )
 from .facts import AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
-from .planning import WorkloadMismatch, compare_manifests, manifest_digest
+from .planning import (
+    WorkloadDiagnostic,
+    WorkloadMismatch,
+    compare_manifests,
+    manifest_digest,
+    project_workload_mismatches,
+    verify_workload,
+)
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
 from .run_directory import (
@@ -178,6 +185,7 @@ class ResumeCampaignPreview:
     required_bundle_variants: tuple[str, ...]
     effective_policy: CampaignPolicy
     mismatches: tuple[WorkloadMismatch, ...]
+    diagnostic: WorkloadDiagnostic
 
 
 CampaignPreview = NewCampaignPreview | ResumeCampaignPreview
@@ -282,6 +290,9 @@ class SimulationCampaign:
             needed,
             request.policy,
             mismatches,
+            project_workload_mismatches(
+                request.validated.manifest, request.current_plan.manifest, mismatches
+            ),
         )
 
     def inspect_resume(self, validated: ValidatedResumeManifest) -> CampaignRecoveryStatus:
@@ -344,12 +355,7 @@ class SimulationCampaign:
             authenticated_manifest_sha256 = None
         else:
             store = CampaignStore(request.validated.path.parent)
-            mismatches = compare_manifests(
-                request.validated.manifest, request.current_plan.manifest
-            )
-            if mismatches:
-                detail = "; ".join(item.message for item in mismatches)
-                raise SimulationCampaignIntegrityError(f"campaign workload mismatch: {detail}")
+            verify_workload(request.validated.manifest, request.current_plan.manifest)
             manifest = request.validated.manifest
             authenticated_manifest_sha256 = request.validated.sha256
         return store, manifest, authenticated_manifest_sha256

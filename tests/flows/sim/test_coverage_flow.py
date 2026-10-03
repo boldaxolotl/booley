@@ -2863,6 +2863,52 @@ def test_public_coverage_campaign_headline_fresh_and_resume(
     _assert_coverage_headline_results((fresh, resumed), ticket, verdict, state_path)
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_public_publication_resumable_coverage_mismatch_diagnostics(
+    tmp_path, monkeypatch, dry_run
+):
+    reports, _request, runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    before = {
+        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
+        for path in manifest.parent.rglob("*")
+        if path.is_file()
+    }
+    report_before = {
+        path.relative_to(reports).as_posix(): path.read_bytes()
+        for path in reports.rglob("*")
+        if path.is_file()
+    }
+    (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// changed\n")
+
+    def forbidden_execution(*_args):
+        pytest.fail("mismatch refusal must precede coverage build and collection")
+
+    result = SimulateFlow(coverage_execution=forbidden_execution).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, dry_run=dry_run)
+    )
+    assert result.exit_code == 2
+    assert "source changed: rtl/counter.sv" in result.outcome.report_text
+    assert "5 derived fingerprints differ" in result.outcome.report_text
+    assert result.outcome.detail["derived_fingerprint_count"] == 5
+    assert result.outcome.detail["mismatches"]
+    assert [test.name for test in runs] == ["reset", "wrap"]
+    after = {
+        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
+        for path in manifest.parent.rglob("*")
+        if path.is_file()
+    }
+    assert {
+        key: value for key, value in after.items() if not key.startswith("dependency-receipts/")
+    } == before
+    if dry_run:
+        assert {
+            path.relative_to(reports).as_posix(): path.read_bytes()
+            for path in reports.rglob("*")
+            if path.is_file()
+        } == report_before
+
+
 def _coverage_hook_flow_fixture(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
