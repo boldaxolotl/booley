@@ -719,8 +719,15 @@ def test_partial_publication_discloses_only_committed_target(
     assert result.exit_code == 2
     assert output.err.count("campaign manifest: ") == 1
     assert result.outcome.report_text.count("  manifest: ") == 1
-    assert "targets/sim_0/campaign/manifest.json" in result.outcome.report_text
-    assert "targets/sim_1/campaign/manifest.json" not in result.outcome.report_text
+    manifest = Path(
+        next(
+            line.removeprefix("  manifest: ")
+            for line in result.outcome.report_text.splitlines()
+            if line.startswith("  manifest: ")
+        )
+    )
+    assert manifest.parts[-4:] == ("targets", "sim_0", "campaign", "manifest.json")
+    assert manifest.is_absolute() and manifest.is_file()
 
 
 def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) -> None:
