@@ -115,12 +115,22 @@ Specialists in Ticket Mode. The same switch filters project-defined Specialists.
 Specialist model selection belongs in `[models.roles]` (see
 [Model selection](#model-selection-models)).
 
+Specialist sections must be tables, and `enabled` must be a TOML boolean
+(`true` or `false`, without quotes). Doctor and discovery reject unknown
+Specialist names, including Flow names or direct MCP endpoints placed under
+`[specialists]`. Malformed or unreadable configuration stops endpoint discovery
+and Ticket Preflight rather than enabling every capability by default.
+
 `[mcp_tools.*]` is retired and produces a migration error: rename Specialist
 sections to `[specialists.*]`. The older `[tools.*]` table must be split into
 `[flows.*]` for deterministic Flows and `[specialists.*]` for Specialists.
 Remove settings for protocol utility endpoints such as `submit_run_report`;
 they have no Project `enabled` switch and their visibility is controlled by
 execution mode and MCP server filters.
+Custom direct `McpTool` subclasses also have no Project enable switch. To
+disable their discovery, prefix the implementation filename with `_`, for
+example rename `mcp_tools/project_check.py` to `mcp_tools/_project_check.py`.
+Custom `BooleyFlow` and `Specialist` subclasses use their respective tables.
 
 The former `backend`, `venue`, and `host_setup_commands` keys are retired and
 now produce hard migration errors. Delete them: execution location and Sandbox

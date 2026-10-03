@@ -2430,8 +2430,7 @@ def _paired_project_repository_required(cwd: Path, project_root: Path | None) ->
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict, dict]:
     """Load the ``[specialists]`` and ``[flows]`` config namespaces."""
-    from booley.config.settings import _load_booley_toml
-    from booley.mcp.endpoint_config import parse_endpoint_config
+    from booley.config.settings import resolve_booley_toml
+    from booley.mcp.endpoint_config import read_endpoint_config
 
-    data = _load_booley_toml(project_root)
-    return parse_endpoint_config(data)
+    return read_endpoint_config(resolve_booley_toml(project_root))

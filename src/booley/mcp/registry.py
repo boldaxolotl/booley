@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.criteria.endpoint_catalog import EndpointCriterionRelationship
+from booley.mcp.endpoint_config import endpoint_is_enabled, parse_specialist_config
 
 logger = logging.getLogger(__name__)
 
@@ -85,39 +86,29 @@ def discover_mcp_tools(
     specialist_config = specialist_config or {}
     flow_config = flow_config or {}
 
-    discovered: list[McpToolInfo] = []
-    discovered.extend(_scan_builtin_flows(booley_src / "flows", flow_config))
-    discovered.extend(
-        _scan_directory(
-            booley_src / "mcp",
-            specialist_config,
-            flow_config,
-            builtin=True,
-            package="mcp",
-        )
-    )
-    discovered.extend(
-        _scan_directory(
-            booley_src / "specialists",
-            specialist_config,
-            flow_config,
-            builtin=True,
-            package="specialists",
-        )
-    )
+    discovered = _scan_builtin_flows(booley_src / "flows", {})
+    for package in ("mcp", "specialists"):
+        discovered.extend(_scan_directory(booley_src / package, {}, builtin=True, package=package))
 
     if project_mcp_tools_dir and project_mcp_tools_dir.is_dir():
         discovered.extend(
             _scan_directory(
                 project_mcp_tools_dir,
-                specialist_config,
-                flow_config,
+                {},
+                {},
                 builtin=False,
                 package="",
             )
         )
 
-    return discovered
+    parse_specialist_config(
+        specialist_config, {info.name for info in discovered if info.kind == "specialist"}
+    )
+    return [
+        info
+        for info in discovered
+        if endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config)
+    ]
 
 
 def _scan_builtin_flows(
@@ -170,9 +161,7 @@ def _scan_directory(
         if info is None:
             continue
 
-        namespace = {"flow": flow_config, "specialist": specialist_config}.get(info.kind, {})
-        endpoint_entry = namespace.get(info.name)
-        if isinstance(endpoint_entry, dict) and endpoint_entry.get("enabled") is False:
+        if not endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config):
             logger.debug("MCP endpoint %s disabled via config", info.name)
             continue
 

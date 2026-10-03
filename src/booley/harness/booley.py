@@ -2867,11 +2867,12 @@ def _run_ticket_command(args: argparse.Namespace, project_root: Path) -> int:
 
 def main() -> int:
     """Run the CLI with one rendering boundary for lifecycle contention."""
+    from booley.mcp.endpoint_config import EndpointConfigError
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
     try:
         return _dispatch_main()
-    except (LifecycleLockError, ProjectRootDiscoveryError) as exc:
+    except (LifecycleLockError, ProjectRootDiscoveryError, EndpointConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

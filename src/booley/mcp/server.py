@@ -4037,6 +4037,8 @@ def _streamable_http_app(server: Server):
 def main() -> None:
     import argparse
 
+    from booley.mcp.endpoint_config import EndpointConfigError
+
     # Runtime-location guard (ADR 0028): the Booley MCP server serves the Session
     # Runtime's MCP-tool stack — it has no meaning host-side.
     location_error = runtime_context.container_only_error("booley-mcp")
@@ -4066,10 +4068,14 @@ def main() -> None:
         help=f"HTTP port (default: ${HTTP_PORT_ENV} or {DEFAULT_HTTP_PORT})",
     )
     args = parser.parse_args()
-    if args.transport == "http":
-        _run_http(args.port if args.port is not None else http_port())
-    else:
-        asyncio.run(_main())
+    try:
+        if args.transport == "http":
+            _run_http(args.port if args.port is not None else http_port())
+        else:
+            asyncio.run(_main())
+    except EndpointConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":

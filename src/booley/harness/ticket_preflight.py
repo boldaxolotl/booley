@@ -68,7 +68,12 @@ def run_ticket_preflight(project_root: Path) -> None:
         raise TicketPreflightError(failures)
 
     # 7. Custom MCP endpoints & criteria validation
-    _validate_custom_endpoints_and_criteria(project_root)
+    from booley.mcp.endpoint_config import EndpointConfigError
+
+    try:
+        _validate_custom_endpoints_and_criteria(project_root)
+    except EndpointConfigError as exc:
+        raise TicketPreflightError([str(exc)]) from exc
 
     # 8. Active agent backend health (warning only)
     _check_agent_backend()
@@ -389,9 +394,9 @@ def _validate_single_endpoint(
         )
         return
 
-    namespace = {"flow": flow_config, "specialist": specialist_config}.get(info.kind, {})
-    entry = namespace.get(info.name)
-    if isinstance(entry, dict) and entry.get("enabled") is False:
+    from booley.mcp.endpoint_config import endpoint_is_enabled
+
+    if not endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config):
         return
 
     # Check 4: Name collision with builtin
@@ -420,20 +425,10 @@ def _validate_single_endpoint(
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load the ``[specialists]`` and ``[flows]`` sections from booley.toml."""
-    from booley.mcp.endpoint_config import parse_endpoint_config
+    from booley.mcp.endpoint_config import read_endpoint_config
 
     toml_path = project_root / ".booley_project" / "booley.toml"
-    if not toml_path.exists():
-        return {}, {}
-    try:
-        import tomllib
-
-        with toml_path.open("rb") as f:
-            data = tomllib.load(f)
-    except Exception as e:  # noqa: BLE001 — malformed TOML degrades; validation continues
-        logger.warning("Failed to load booley.toml: %s", e)
-        return {}, {}
-    return parse_endpoint_config(data)
+    return read_endpoint_config(toml_path)
 
 
 def _extract_sandbox_attr(tree: ast.Module) -> str | None:

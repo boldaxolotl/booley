@@ -212,7 +212,7 @@ _CONTAINER_CLI = "doc" + "ker"
 # B-Wave is unconditionally required; enabled deterministic Flows are added below.
 _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
 # Specialist MCP tools worth a heads-up when expected-but-absent from
-# the MCP surface. An explicit ``[flows.<name>].enabled = false`` opts out.
+# the MCP surface. An explicit ``[specialists.<name>].enabled = false`` opts out.
 _ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
     {
         "mutation_tester",

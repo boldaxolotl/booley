@@ -171,6 +171,10 @@ The retired `[mcp_tools.*]` table is rejected with migration guidance. Rename
 Specialist sections to `[specialists.*]` and remove protocol utility settings.
 Direct MCP endpoints are available by default, subject to execution-mode and
 server-level filters.
+To opt out of a custom direct endpoint, prefix its implementation filename with
+`_` (for example `mcp_tools/_project_check.py`); discovery skips such files.
+Specialist settings require table entries and boolean `enabled` values. Doctor
+and discovery reject names that do not belong to discovered Specialists.
 
 ### Summary: Discovery Rules
 

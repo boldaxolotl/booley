@@ -629,7 +629,12 @@ def _validate_known_mandatory_criteria(
     project_root: str | Path | None,
 ) -> list[str]:
     """Reject mandatory criteria absent from the catalog or live tool registry."""
-    definitions, satisfying = _live_criterion_registry(project_root)
+    from booley.mcp.endpoint_config import EndpointConfigError
+
+    try:
+        definitions, satisfying = _live_criterion_registry(project_root)
+    except EndpointConfigError as exc:
+        return [str(exc)]
     mandatory = criteria.get("mandatory", {})
     if not isinstance(mandatory, dict):
         return []
@@ -694,18 +699,9 @@ def _criterion_family(key: str, definitions: set[str]) -> str | None:
 
 def _read_endpoint_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read endpoint enablement for live-registry ticket validation."""
-    import tomllib
+    from booley.mcp.endpoint_config import read_endpoint_config
 
-    from booley.mcp.endpoint_config import parse_endpoint_config
-
-    if not path.is_file():
-        return {}, {}
-    try:
-        with path.open("rb") as file:
-            data = tomllib.load(file)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}, {}
-    return parse_endpoint_config(data)
+    return read_endpoint_config(path)
 
 
 def _validate_criteria_params(criteria: dict[str, Any]) -> list[str]:
