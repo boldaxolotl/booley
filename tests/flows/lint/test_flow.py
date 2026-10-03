@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,6 +14,7 @@ from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.lint.flow import (
@@ -310,52 +313,22 @@ class TestLintResolution:
                 _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
             )
 
-    def test_real_fusesoc_lint_setup(self, tmp_path: Path, state_file: Path):
-        """End-to-end: a real `fusesoc run --setup` leaves a makeable lint dir.
-
-        Mirrors the registry e2e (test_fusesoc_registry) but exercises the lint
-        Target through the Flow's own seam, proving -Wall/--lint-only land in
-        the resolved .vc and the build dir is relocatable.
-        """
+    def test_real_fusesoc_lint_setup(self, tmp_path: Path, state_file: Path, monkeypatch):
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
-        import shutil
-        import sys
-
-        from booley.fusesoc import fusesoc_registry
-
         work_dir = tmp_path / "proj"
         (work_dir / "rtl").mkdir(parents=True)
-        (work_dir / "rtl" / "top.sv").write_text(
-            "module top; endmodule\n",
-            encoding="utf-8",
-        )
+        (work_dir / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
         (work_dir / "lint_demo.core").write_text(_LINT_CORE_TEXT, encoding="utf-8")
-
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(work_dir), "--target", "lite"])
         flow.read_state()
-
-        # Prefer the console script; otherwise invoke the importable module
-        # (eda-libs ships no console script — same fallback as the registry e2e).
-        if shutil.which("fusesoc"):
-            fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        else:
-            fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-
-        orig_resolve = fusesoc_registry._resolve_target
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: orig_resolve(
-                *a,
-                **{**k, "fusesoc_cmd": fusesoc_cmd},
-            ),
-        ):
-            prepared = flow._prepare_lint_command(
-                _target_handle("lite", project_root=work_dir, vlnv="::lint_demo:0")
-            )
-            cmd, _resolved = prepared.command, prepared.resolved
+        command = [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        _real_lint_setup(monkeypatch, command, tmp_path)
+        prepared = flow._prepare_lint_command(
+            _target_handle("lite", project_root=work_dir, vlnv="::lint_demo:0")
+        )
+        cmd, _resolved = prepared.command, prepared.resolved
 
         assert cmd[:2] == ["sh", "-c"]
         assert "command -v verilator" in cmd[2]
@@ -371,6 +344,7 @@ class TestLintResolution:
         self,
         tmp_path: Path,
         state_file: Path,
+        monkeypatch,
     ) -> None:
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
@@ -397,20 +371,9 @@ class TestLintResolution:
         flow.parse_args(["--work-dir", str(work_dir), "--target", "lint_legacy"])
         flow.read_state()
         handle = TargetCatalog.build(work_dir).select("lint_legacy", for_flow="lint")
-        fusesoc_cmd = (
-            list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-            if shutil.which("fusesoc")
-            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        )
-        real_resolve = fusesoc_registry._resolve_target
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *args, **kwargs: real_resolve(
-                *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
-            ),
-        ):
-            prepared = flow._prepare_lint_command(handle)
+        command = [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        _real_lint_setup(monkeypatch, command, tmp_path)
+        prepared = flow._prepare_lint_command(handle)
 
         assert prepared.resolved.eda_tool is None
         assert prepared.resolved.configured_eda_tool == "verilator"
@@ -2594,16 +2557,33 @@ def test_authored_verible_public_plan(tmp_path: Path, state_file: Path, capsys, 
     assert any(f"tool_{spelling}" in str(command["argv"]) for command in commands)
 
 
-def _real_verible_setup(monkeypatch, command: list[str]) -> None:
+def _real_lint_setup(monkeypatch, command: list[str], root: Path) -> None:
     real_resolve = fusesoc_registry.resolve_target_handle
+    config = root / "isolated-fusesoc.conf"
+    config.write_text("[main]\n", encoding="utf-8")
+    command = [*command, "--config", str(config)]
+    env = {**os.environ, "XDG_CONFIG_HOME": str(root / "isolated-config")}
 
     def bounded_runner(*args, **kwargs):
+        assert kwargs["env"] == env
+        assert args[0][args[0].index("--config") + 1] == str(config)
         return subprocess.run(*args, **kwargs, timeout=30, check=False)
 
     def resolve(*args, **kwargs):
-        return real_resolve(*args, **{**kwargs, "fusesoc_cmd": command, "runner": bounded_runner})
+        return real_resolve(
+            *args, **{**kwargs, "fusesoc_cmd": command, "runner": bounded_runner, "env": env}
+        )
 
     monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+
+
+def _assert_verible_rule_path(makefile: str, edam_path: Path) -> None:
+    edam = yaml.safe_load(edam_path.read_text(encoding="utf-8"))
+    rule_file = next(
+        file["name"] for file in edam["files"] if file["file_type"] == "veribleLintRules"
+    )
+    recipe = next(line for line in makefile.splitlines() if "verible-verilog-lint " in line)
+    assert f"--rules_config={rule_file}" in shlex.split(recipe.strip())
 
 
 @pytest.mark.parametrize("spelling", ["verible", "veriblelint"])
@@ -2611,7 +2591,7 @@ def test_authored_verible_public_run(
     tmp_path: Path, state_file: Path, monkeypatch, capsys, spelling
 ):
     _author_verible_alias_core(tmp_path, spelling)
-    _real_verible_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, spelling))
+    _real_lint_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, spelling), tmp_path)
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style"])
     flow.read_state()
@@ -2648,8 +2628,9 @@ def test_authored_verible_public_run(
         and "lint/waivers.txt" in makefile
         and "lint/extra.txt" in makefile
     )
-    assert re.search(r"--rules_config=\S*lint/rules\.cfg", makefile)
-    edam = next(tmp_path.rglob("*.eda.yml")).read_text(encoding="utf-8")
+    edam_path = next(tmp_path.rglob("*.eda.yml"))
+    _assert_verible_rule_path(makefile, edam_path)
+    edam = edam_path.read_text(encoding="utf-8")
     assert f"tool: {spelling}" in edam
     assert result.detail["total_warnings"] > 0
 

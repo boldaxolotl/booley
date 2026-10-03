@@ -180,7 +180,9 @@ class TargetCatalog:
                 )
             ):
                 if ref.lint_flow_eda_tool_missing:
-                    guidance += " Explicit lint requires flow_options.tool; default_tool does not supply it."
+                    guidance += " Explicit lint requires flow_options.tool."
+                    if ref.eda_tool is not None:
+                        guidance += " default_tool does not supply it."
                 guidance += (
                     " "
                     "Declare `flow: lint` with `flow_options.tool` set to verilator, "

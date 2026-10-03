@@ -876,19 +876,22 @@ def test_lint_replacement_requires_drivable_candidate(repository, eda_tool, lega
             _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
 
 
+def _replace_lint_selection(path: Path, name: str, selection: str) -> None:
+    """Change exactly one canonical declaration, asserting the edit is real."""
+    old = f"  {name}:\n    flow: lint\n    flow_options: {{tool: verilator}}"
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, f"  {name}:\n    flow: lint\n    {selection}", 1))
+
+
 def test_lint_replacement_rejects_undrivable_baseline(repository):
     path = repository / "toy.core"
-    path.write_text(path.read_text().replace("tool: verilator", "tool: slang"), encoding="utf-8")
+    _replace_lint_selection(path, "lint_old", "flow_options: {tool: slang}")
     _git(repository, "add", "toy.core")
     _git(repository, "commit", "-qm", "unsupported baseline")
     _add_candidate(repository)
-    path.write_text(
-        path.read_text().replace(
-            "  lint_old:\n    flow: lint\n    flow_options: {tool: verilator}",
-            "  lint_old:\n    flow: lint\n    flow_options: {tool: slang}",
-        ),
-        encoding="utf-8",
-    )
+    # _add_candidate rewrites the baseline too; restore its committed declaration.
+    _replace_lint_selection(path, "lint_old", "flow_options: {tool: slang}")
     with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
         _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
 
@@ -898,28 +901,11 @@ def test_lint_replacement_rejects_undrivable_baseline(repository):
 def test_mixed_lint_replacement_rejected(repository, eda_tool, role):
     path = repository / "toy.core"
     if role == "baseline":
-        path.write_text(
-            path.read_text().replace(
-                "flow: lint\n    flow_options: {tool: verilator}",
-                f"flow: lint\n    default_tool: {eda_tool}",
-            )
-        )
+        _replace_lint_selection(path, "lint_old", f"default_tool: {eda_tool}")
         _git(repository, "add", "toy.core")
         _git(repository, "commit", "-qm", "mixed lint baseline")
     _add_candidate(repository)
-    if role == "baseline":
-        path.write_text(
-            path.read_text().replace(
-                "  lint_old:\n    flow: lint\n    flow_options: {tool: verilator}",
-                f"  lint_old:\n    flow: lint\n    default_tool: {eda_tool}",
-            )
-        )
-    if role == "candidate":
-        path.write_text(
-            path.read_text().replace(
-                "  lint_new:\n    flow: lint\n    flow_options: {tool: verilator}",
-                f"  lint_new:\n    flow: lint\n    default_tool: {eda_tool}",
-            )
-        )
+    selected = "lint_old" if role == "baseline" else "lint_new"
+    _replace_lint_selection(path, selected, f"default_tool: {eda_tool}")
     with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
         _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))

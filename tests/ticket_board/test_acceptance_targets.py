@@ -17,6 +17,8 @@ from booley.ticket_board.ticket_baseline import (
     BasisParticipant,
 )
 
+_REAL_TARGET_CATALOG_BUILD = acceptance_targets.TargetCatalog.build.__func__
+
 
 @pytest.fixture(autouse=True)
 def _catalog_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -978,7 +980,9 @@ def test_resolve_commit_rejects_nonexact_identity(
 def test_mixed_lint_actual_acceptance_binding(tmp_path, monkeypatch, eda_tool, missing):
     from booley.targets.catalog import TargetCatalog
 
-    monkeypatch.undo()  # This regression intentionally bypasses the autouse fake catalog.
+    monkeypatch.setattr(
+        acceptance_targets.TargetCatalog, "build", classmethod(_REAL_TARGET_CATALOG_BUILD)
+    )
     (tmp_path / "top.sv").write_text("module top; endmodule\n")
     selection = f"default_tool: {eda_tool}" if missing else f"flow_options: {{tool: {eda_tool}}}"
     (tmp_path / "mixed.core").write_text(

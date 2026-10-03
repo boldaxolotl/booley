@@ -281,3 +281,16 @@ def test_lint_guidance_does_not_redeclare_other_intent(project, name, flow, eda_
         TargetCatalog.build(project).select(name, for_flow="lint")
     assert "booley targets --for lint" in str(exc.value)
     assert "Declare" not in str(exc.value)
+
+
+def test_lint_missing_selection_guidance_does_not_invent_default(project):
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import IncompatibleTargetError
+
+    (project / "missing.core").write_text(
+        "CAPI=2:\nname: acme:ip:missing:1.0\ntargets:\n  lint_missing:\n    flow: lint\n"
+    )
+    with pytest.raises(IncompatibleTargetError) as exc:
+        TargetCatalog.build(project).select("lint_missing", for_flow="lint")
+    assert "Explicit lint requires flow_options.tool." in str(exc.value)
+    assert "default_tool does not supply it" not in str(exc.value)
