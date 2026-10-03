@@ -1747,6 +1747,13 @@ def _enforce_structured_budget(payload: dict[str, Any]) -> None:
             payload["passed"] = passed
 
 
+def _simulation_transport_report(report: dict[str, Any]) -> dict[str, Any]:
+    if report.get("flow") == "sim" and isinstance(report.get("cycle_counts"), dict):
+        report = dict(report)
+        del report["cycle_counts"]
+    return report
+
+
 def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
     """Bounded ``structuredContent`` payload for a run report, or None.
 
@@ -1757,6 +1764,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
     try:
         if not isinstance(report, dict) or not report:
             return None
+        report = _simulation_transport_report(report)
         payload: dict[str, Any] = {"reports": [report]}
         if isinstance(report.get("passed"), bool):
             payload["passed"] = report["passed"]

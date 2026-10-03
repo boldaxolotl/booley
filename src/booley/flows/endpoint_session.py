@@ -79,6 +79,9 @@ def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
+    reset = getattr(endpoint, "reset_report_metadata", None)
+    if callable(reset):
+        reset()
     endpoint._report_criteria = ReportCriteria()
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
@@ -113,6 +116,11 @@ def prepare_execution(
             return simulation
     if endpoint.endpoint_kind in {"flow", "specialist"}:
         freeze(endpoint, simulation)
+    return _prepared_execution(endpoint, simulation)
+
+
+def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> PreparedExecution:
+    """Publish the start event after all preparation gates have succeeded."""
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()
     dry_run = bool(getattr(endpoint.args, "dry_run", False))

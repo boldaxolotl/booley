@@ -480,6 +480,13 @@ numbered report directory (qualified Target selectors are percent-encoded):
       hooks/                 hook evidence, when collected
 ```
 
+Cycle counts: the numbered `report.json` lists every test's count under
+`cycle_counts.<Target selector>[]` as `{test, cycle_count}` (`test: null` for
+an unnamed test, or `cycle_counts_error: unavailable` if counts couldn't be
+collected). Each Target's `simulation.json` has them as `tests[].cycles`; find
+it via `detail.campaigns.<selector>.artifacts.simulation`, whose `path_base`
+may point at the original run after a resume.
+
 The Target reference's `coverage_campaign.path` resolves from the origin Target
 directory, as declared by `coverage_campaign.path_base: origin_target`. The
 nested manifest binds the point store and contains rollups and verdicts; its
