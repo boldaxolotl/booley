@@ -1006,6 +1006,56 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
+def _healthy_doctor_backend(monkeypatch):
+    from booley.runtime import agent_config
+
+    monkeypatch.setattr(agent_config, "load_backend_config", lambda _root: None)
+    monkeypatch.setattr(
+        agent_config,
+        "get_backend_config",
+        lambda: SimpleNamespace(
+            active_backend=SimpleNamespace(name="Codex", health_check=lambda: "")
+        ),
+    )
+
+
+@pytest.mark.parametrize("deep", [False, True])
+def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _healthy_doctor_backend(monkeypatch)
+    probe_calls = []
+
+    def probe(project, _pass, _skip, _fail, *, completeness=None):
+        probe_calls.append(project.project_root)
+        _pass("developer backend live authorization check completed successfully")
+
+    monkeypatch.setattr(doctor, "_run_developer_probe", probe)
+    doctor.run_doctor_result(
+        argparse.Namespace(verbose=False, deep=deep), tmp_path, record_clean=False
+    )
+    output = capsys.readouterr().out
+    assert ("run `booley doctor --deep`" in output) is not deep
+    assert ("worker backend configured locally: Codex" in output) is not deep
+    assert ("Deep checks" in output) is deep
+    assert ("developer backend live authorization check completed successfully" in output) is deep
+    assert probe_calls == ([tmp_path] if deep else [])
+
+
+def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _healthy_doctor_backend(monkeypatch)
+    result = doctor.run_doctor_result(
+        argparse.Namespace(verbose=False, deep=True), tmp_path, record_clean=False
+    )
+    output = capsys.readouterr().out
+    assert "run `booley doctor --deep`" not in output
+    assert "worker backend configured locally: Codex" not in output
+    assert "developer memory probe: runs in-container" in output
+    assert result.deep_status.current is False
+
+
 def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     tmp_path,
     monkeypatch,
@@ -1035,6 +1085,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     assert "worker backend health check skipped by --skip-agent-checks" in output
     assert "developer authorization probe skipped by --skip-agent-checks" in output
     assert "no agent call ran" in output
+    assert "run `booley doctor --deep`" not in output
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
