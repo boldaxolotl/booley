@@ -17,7 +17,7 @@ from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
     resolve_coverage_campaign_reference,
 )
-from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
+from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
@@ -423,7 +423,7 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
         "[flows.sim]\n"
         "build_timeout_ms = 7000\n"
         "timeout_ms = 5000\n"
-        'pre_run_commands = ["python3 scripts/stage.py"]\n'
+        'pre_run_commands = ["echo frozen-hook"]\n'
         'pre_sim_build_access = "legacy-per-test"\n'
     )
     received = []
@@ -431,16 +431,23 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
     class PreSimPassingExecution(NativeExecution):
         def run(self, request):
             result = super().run(request)
-            evidence = PreSimEvidence(
-                ("python3 scripts/stage.py",),
-                (request.test.name,),
-                "passed",
-                0.25,
+            from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+
+            evidence = run_pre_sim_commands(
+                SimpleNamespace(project_root=tmp_path, selector="sim_0"),
+                test_names=(request.test.name,),
+                build_root=tmp_path / "build",
+                eda_tool="verilator",
+                timeout_s=5,
+                commands=received[-1][1],
             )
             return SimulationRunResult(result.verdict, result.output, evidence)
 
     def execution_factory(_handle, options, commands, access):
         received.append((options, commands, access))
+        (data / "booley.toml").write_text(
+            '[flows.sim]\npre_run_commands = ["echo live-hook; exit 7"]\n'
+        )
         return PreSimPassingExecution()
 
     result = SimulateFlow(coverage_execution=execution_factory).execute(
@@ -456,11 +463,74 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
     assert received == [
         (
             SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
-            ("python3 scripts/stage.py",),
+            ("echo frozen-hook",),
             "legacy-per-test",
         )
     ]
-    assert "sim_0: pre-sim=passed test=reset duration=0.250s" in result.outcome.report_text
+    assert "pre_run_commands (1 line(s)) for sim_0/reset: rc=0 in " in result.outcome.report_text
+    from booley.flows.sim.campaign import read_pre_sim_firings
+
+    firings = read_pre_sim_firings(tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json")
+    assert len(firings) == 1
+    assert firings[0].document["stdout_tail"] == "frozen-hook\n"
+
+
+def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_path):
+    import json
+
+    from booley.flows.sim.campaign import read_pre_sim_firings
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _handle, _request
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+
+    def transform(document):
+        document["workload"]["coverage"] = True
+        document["work_items"][0]["kind"] = "coverage_aggregate"
+
+    commands = ("echo hook-out; echo hook-err >&2",)
+    plan, _disclosures = _pre_sim_plan("immutable", commands, transform)
+    invocation = tmp_path / "reports/1"
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    store.publish_manifest(plan.manifest)
+    handle = _handle(tmp_path)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+    _executor(tmp_path / "build", {}).prepare_attempt(request)
+    for ordinal in range(1, 41):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("alpha",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+            commands=commands,
+            run_cwd=".",
+        )
+        assert evidence is not None
+        publish_pre_sim_firing(request, evidence, ordinal=ordinal)
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    result = flow._attach_published_pre_sim(
+        EndpointOutcome(exit_code=2, report_text="interrupted coverage")
+    )
+    assert result.detail["pre_sim_total"] == result.detail["pre_sim_current"] == 40
+    assert (
+        len(result.detail["pre_sim_lines"]) == result.report_text.count("pre_run_commands") == 40
+    )
+    assert len(result.detail["pre_sim_runs"]) <= 32
+    assert len(json.dumps(result.detail["pre_sim_runs"]).encode()) <= 16 * 1024
+    assert result.detail["pre_sim_preview_truncated"] is True
+    firings = read_pre_sim_firings(store.manifest_path)
+    assert len(firings) == 40
+    assert all(
+        firing.document["stdout_tail"] == "hook-out\n"
+        and firing.document["stderr_tail"] == "hook-err\n"
+        for firing in firings
+    )
 
 
 @pytest.mark.parametrize(

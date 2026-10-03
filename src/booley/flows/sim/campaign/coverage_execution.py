@@ -148,6 +148,7 @@ class _CapturingExecution:
         delegate: SimulationExecutionPort,
         ready: Callable[[float], _CapturedBuild],
         staged: Callable[[_CapturedBuild], tuple[RuntimeInputBinding, ...]],
+        request: WorkExecutionRequest,
     ):
         self._delegate = delegate
         self._ready = ready
@@ -156,6 +157,8 @@ class _CapturingExecution:
         self.bindings: tuple[RuntimeInputBinding, ...] = ()
         self.build_result: SimulationBuildResult | None = None
         self.build_elapsed = 0.0
+        self._hook_ordinal = 0
+        self._request = request
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         started = time.monotonic()
@@ -171,7 +174,15 @@ class _CapturingExecution:
         return result
 
     def run(self, request: SimulationRunRequest) -> SimulationRunResult:
-        return self._delegate.run(request)
+        result = self._delegate.run(request)
+        if result.pre_sim is not None and not callable(
+            getattr(self._delegate, "set_pre_sim_evidence_sink", None)
+        ):
+            from .pre_sim_evidence import publish_pre_sim_firing
+
+            self._hook_ordinal += 1
+            publish_pre_sim_firing(self._request, result.pre_sim, ordinal=self._hook_ordinal)
+        return result
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         return self._delegate.command(request)
@@ -219,6 +230,13 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         self._prepared[request.attempt_directory] = _run_directory
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
+        from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+        from booley.runtime.supervised_execution import current_supervised_execution
+
+        scope = current_supervised_execution()
+        commands = request.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]
+        if commands and scope is not None and scope.cancelled():
+            raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
         """Collect, merge and commit one nested Coverage Campaign atomically."""
         if request.work_item["kind"] != "coverage_aggregate":
             raise SimulationCampaignIntegrityError(
@@ -247,6 +265,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 lambda captured: self._stage_attempt(
                     request, captured, execution, run_directory, run_cwd, stack
                 ),
+                request,
             )
             outcome = self._collect(request, capturing)
         failure = self._publish_missing_build(
@@ -326,7 +345,20 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         source_recipe = cast(Mapping[str, object], workload["source_recipe"])
         commands = tuple(cast(tuple[str, ...], source_recipe["pre_sim_commands"]))
         access = cast(str, workload["pre_sim_build_access"])
-        return self._execution_factory(plan, options, commands, access)
+        execution = self._execution_factory(plan, options, commands, access)
+        sink_setter = getattr(execution, "set_pre_sim_evidence_sink", None)
+        if callable(sink_setter):
+            from .pre_sim_evidence import publish_pre_sim_firing
+
+            ordinal = 0
+
+            def publish(evidence):
+                nonlocal ordinal
+                ordinal += 1
+                publish_pre_sim_firing(request, evidence, ordinal=ordinal)
+
+            sink_setter(publish)
+        return execution
 
     def _capture_build(
         self,

@@ -160,7 +160,7 @@ from .campaign.flow_planning import (
     plan_ordinary_hdl_campaign,
 )
 from .campaign.model import simulation_status_from_observations
-from .campaign.planning import manifest_digest
+from .campaign.planning import canonical_sha256, manifest_digest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
 from .coverage_campaign_store import load_coverage_campaign
 from .coverage_reference import (
@@ -552,7 +552,8 @@ def _campaign_report_lines(
         if getattr(outcome, "coverage_reference", None) is not None:
             report_lines.extend(_waiver_block_hint_lines(campaign))
             report_lines.extend(source_gap_report_lines(campaign))
-            report_lines.extend(_coverage_pre_sim_lines(selector, campaign))
+            if not hasattr(outcome, "pre_sim_firings"):
+                report_lines.extend(_coverage_pre_sim_lines(selector, campaign))
         lines.append("\n".join(report_lines))
     return lines
 
@@ -567,12 +568,109 @@ def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[s
     return lines
 
 
-def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
-    elapsed = evidence.get("elapsed_s")
-    duration = float(elapsed) if isinstance(elapsed, int | float) else 0.0
-    return (
-        f"{selector}: pre-sim={evidence.get('status')} test={test_name} duration={duration:.3f}s"
+def _campaign_pre_sim_details(outcomes, invocation: Path | None) -> dict[str, object]:
+    from .execution.pre_sim_reporting import pre_sim_report_line
+
+    firings = {
+        firing.key: firing
+        for outcome in outcomes
+        for firing in getattr(outcome, "pre_sim_firings", ())
+    }
+    current_id = int(invocation.name) if invocation is not None else None
+    lines = []
+    preview = []
+    roles: dict[str, dict[str, object]] = {}
+    for firing in firings.values():
+        document = firing.document
+        current = document["producer_invocation_id"] == current_id
+        if current:
+            lines.append(pre_sim_report_line(document["target"]["selector"], document))
+        role = str(document["role"])
+        role_detail = roles.setdefault(role, {"total": 0, "current": 0, "manifests": []})
+        role_detail["total"] += 1
+        role_detail["current"] += int(current)
+        manifest_ref = _report_artifact_reference(
+            firing.manifest_path,
+            report_invocation=invocation,
+            external_origin_target=firing.manifest_path.parent.parent,
+            kind="simulation_campaign_manifest",
+            owner=str(document["campaign_id"]),
+            maximum=16 * 1024 * 1024,
+        )
+        if manifest_ref not in role_detail["manifests"]:
+            role_detail["manifests"].append(manifest_ref)
+        role_detail["external_origin_requires_context"] = role_detail.get(
+            "external_origin_requires_context", False
+        ) or (manifest_ref is not None and manifest_ref["path_base"] == "external_origin_target")
+        record = _pre_sim_preview_record(firing, invocation)
+        if len(preview) < 32 and len(json.dumps([*preview, record]).encode("utf-8")) <= 16384:
+            preview.append(record)
+    return {
+        "pre_sim_lines": lines,
+        "pre_sim_runs": preview,
+        "pre_sim_total": len(firings),
+        "pre_sim_current": len(lines),
+        "pre_sim_historical": len(firings) - len(lines),
+        "pre_sim_preview_truncated": len(preview) != len(firings),
+        "pre_sim_roles": roles,
+    }
+
+
+def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object]:
+    document = firing.document
+    record = {
+        key: value
+        for key, value in document.items()
+        if key not in {"stdout_tail", "stderr_tail", "detail", "target", "test_names"}
+    }
+    record.update(
+        target=dict(document["target"]),
+        test_count=len(document["test_names"]),
+        test_names=list(document["test_names"][:8]),
+        test_names_sha256=canonical_sha256(list(document["test_names"])),
+        terminal=firing.terminal,
+        reference=_report_artifact_reference(
+            firing.path,
+            report_invocation=invocation,
+            external_origin_target=firing.manifest_path.parent.parent,
+            kind="pre_sim_commands",
+            owner=str(document["attempt_id"]),
+            maximum=16 * 1024 * 1024,
+        ),
     )
+    return record
+
+
+def _campaign_pre_sim_report_lines(outcomes, invocation: Path | None) -> list[str]:
+    from .execution.pre_sim_reporting import pre_sim_report_line
+
+    if invocation is None:
+        return []
+    firings = {
+        firing.key: firing
+        for outcome in outcomes
+        for firing in getattr(outcome, "pre_sim_firings", ())
+        if firing.document["producer_invocation_id"] == int(invocation.name)
+    }
+    groups: dict[str, list[str]] = {}
+    for firing in firings.values():
+        document = firing.document
+        groups.setdefault(document["role"], []).append(
+            pre_sim_report_line(document["target"]["selector"], document)
+        )
+    if len(groups) <= 1:
+        return [line for lines in groups.values() for line in lines]
+    labels = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
+    return [line for role, lines in groups.items() for line in (labels[role] + ":", *lines)]
+
+
+def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
+    from .execution.pre_sim_reporting import pre_sim_report_line
+
+    normalized = dict(evidence)
+    normalized.setdefault("command_count", len(evidence.get("commands", ())))
+    normalized.setdefault("test_names", (str(test_name),))
+    return pre_sim_report_line(selector, normalized)
 
 
 def _manifest_no_waivers(manifest: SimulationCampaignManifest) -> bool:
@@ -2129,13 +2227,66 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Run one immutable preflight with its explicitly borrowed admission."""
         if prepared.resume is not None:
-            return self._run_campaign_resume(prepared.resume, admission)
+            result = self._run_campaign_resume(prepared.resume, admission)
+            return self._attach_published_pre_sim(result, prepared.resume.path)
         result = (
             self._run_coverage_campaigns(admission)
             if getattr(self.args, "coverage", False)
             else self._run_selected_mode(prepared=prepared, admission=admission)
         )
         result.detail["mode"] = self._mode.value
+        return self._attach_published_pre_sim(result)
+
+    def _attach_published_pre_sim(
+        self, result: EndpointOutcome, origin_manifest: Path | None = None
+    ) -> EndpointOutcome:
+        """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
+        from types import SimpleNamespace
+
+        from .campaign import collect_pre_sim_firings, read_invocation_pre_sim_firings
+
+        invocation = self.context._reserved_invocation_dir
+        if invocation is None:
+            return result
+        try:
+            firings = list(read_invocation_pre_sim_firings(invocation))
+            if origin_manifest is not None:
+                firings.extend(collect_pre_sim_firings(origin_manifest))
+            hook_detail = _campaign_pre_sim_details(
+                [SimpleNamespace(pre_sim_firings=firings)], invocation
+            )
+        except (OSError, ValueError) as exc:
+            result.exit_code = EXIT_ERROR
+            result.criterion_met = False
+            references = [
+                record.get("reference") for record in result.detail.get("pre_sim_runs", ())
+            ]
+            result.detail = {
+                key: value
+                for key, value in result.detail.items()
+                if not key.startswith("pre_sim_")
+            }
+            result.detail["pre_sim_unauthenticated_references"] = references
+            result.detail["pre_sim_integrity_error"] = str(exc)
+            result.report_text = "\n".join(
+                line
+                for line in result.report_text.splitlines()
+                if not line.startswith("pre_run_commands ")
+            )
+            result.report_text += f"\nPre-Sim Commands evidence integrity failure: {exc}"
+            return result
+        if not firings:
+            return result
+        result.detail.update(hook_detail)
+        present = Counter(result.report_text.splitlines())
+        added = []
+        for line in hook_detail["pre_sim_lines"]:
+            if present[line]:
+                present[line] -= 1
+            else:
+                added.append(line)
+        if added:
+            result.report_text += "\n" + "\n".join(added)
         return result
 
     def _prepare_campaign_targets(
@@ -3469,6 +3620,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _run_legacy_selected_mode(
         self, targets, test_names_map, total_start, resolution_s
     ) -> EndpointOutcome:
+        self._legacy_pre_sim_runs = []
         results: list[TargetResult] = []
         result: EndpointOutcome | None = None
         lifecycle = ProgressLifecycle(
@@ -3478,7 +3630,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             with lifecycle:
                 prepared = self._prepare_legacy_run(targets, test_names_map, results)
                 if isinstance(prepared, EndpointOutcome):
-                    return prepared
+                    return self._attach_legacy_pre_sim(prepared)
                 lines, passed = prepared
                 result = self._legacy_endpoint_outcome(
                     targets,
@@ -3489,7 +3641,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     resolution_s,
                 )
                 lifecycle.complete()
-                return result
+                return self._attach_legacy_pre_sim(result)
         except ProgressPublicationError as exc:
             if result is not None:
                 failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
@@ -3526,6 +3678,23 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return self._build_infrastructure_result(exc)
             self._record_legacy_target(targets, results, result)
         return lines, all(result.passed for result in results)
+
+    def _attach_legacy_pre_sim(self, result: EndpointOutcome) -> EndpointOutcome:
+        from .execution.pre_sim_reporting import pre_sim_report_line
+
+        runs = getattr(self, "_legacy_pre_sim_runs", [])
+        lines = [pre_sim_report_line(target, record) for target, record in runs]
+        result.detail.update(pre_sim_runs=[record for _, record in runs], pre_sim_lines=lines)
+        present = Counter(result.report_text.splitlines())
+        missing = []
+        for line in lines:
+            if present[line]:
+                present[line] -= 1
+            else:
+                missing.append(line)
+        if missing:
+            result.report_text += "\n" + "\n".join(missing)
+        return result
 
     def _record_legacy_target(self, targets, results, result) -> None:
         self._attach_workload_snapshots(result)
@@ -3583,6 +3752,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         }
         if any(result.elab_failed for result in results):
             detail["elab_failed"] = True
+        runs = getattr(self, "_legacy_pre_sim_runs", [])
+        detail["pre_sim_runs"] = [record for _, record in runs]
+        from .execution.pre_sim_reporting import pre_sim_report_line
+
+        detail["pre_sim_lines"] = [pre_sim_report_line(target, record) for target, record in runs]
         return detail
 
     def _attach_legacy_artifacts(self, detail, results) -> None:
@@ -4166,6 +4340,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             coverage_campaigns,
         )
         detail: dict[str, object] = {"campaigns": campaigns}
+        hook_detail = _campaign_pre_sim_details(outcomes, self.context._reserved_invocation_dir)
+        detail.update(hook_detail)
+        lines.extend(
+            _campaign_pre_sim_report_lines(outcomes, self.context._reserved_invocation_dir)
+        )
         detail.update(_campaign_build_infrastructure_detail(outcomes))
         if coverage_targets:
             detail.update(
@@ -5463,6 +5642,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             selection,
             planned_groups=planned_groups,
         )
+        from .execution.pre_sim_reporting import pre_sim_document
+
+        if not hasattr(self, "_legacy_pre_sim_runs"):
+            self._legacy_pre_sim_runs = []
+        self._legacy_pre_sim_runs.extend(
+            (outcome.target, pre_sim_document(item)) for item in outcome.pre_sim_runs
+        )
         result = self._project_execution_outcome(outcome)
         output_lines.append(f"[sim] {target} (Sandbox)")
         output_lines.extend(result.diagnostics)
@@ -5616,10 +5802,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     @staticmethod
     def _pre_sim_output_lines(outcome: SimulationTargetOutcome) -> list[str]:
         """Render execution-owned Pre-Sim Commands evidence."""
+        from .execution.pre_sim_reporting import pre_sim_document, pre_sim_report_line
+
         return [
-            f"  pre_run_commands ({len(item.commands)} line(s)) for "
-            f"{', '.join(item.test_names) or outcome.target}: {item.status} "
-            f"in {item.elapsed_s:.1f}s"
+            pre_sim_report_line(outcome.target, pre_sim_document(item))
             for item in outcome.pre_sim_runs
         ]
 

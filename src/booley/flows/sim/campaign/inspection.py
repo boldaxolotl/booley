@@ -11,6 +11,7 @@ from typing import cast
 from .codec import SimulationCampaignIntegrityError
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
+from .pre_sim_evidence import PreSimFiring
 from .store import CampaignRecovery, CampaignStore
 
 
@@ -49,6 +50,58 @@ class RetainedCampaignStatus:
     summary_completed_matches: bool
     retention_files: tuple[Path, ...]
     coverage_directories: tuple[Path, ...]
+
+
+def read_pre_sim_firings(manifest_path: Path) -> tuple[PreSimFiring, ...]:
+    """Read authenticated firing evidence without exposing a mutable store to Flow."""
+    store = _store_for_manifest(manifest_path)
+    store.scan()
+    return store.read_pre_sim_firings()
+
+
+def collect_pre_sim_firings(manifest_path: Path) -> tuple[PreSimFiring, ...]:
+    """Follow the bounded prerequisite DAG and deduplicate by full firing identity."""
+    pending = [(manifest_path, None, frozenset())]
+    visited: set[str] = set()
+    firings = {}
+    for _ in range(4096):
+        if not pending:
+            return tuple(firings.values())
+        path, expected, ancestors = pending.pop()
+        store = _store_for_manifest(path)
+        manifest = store.load_manifest()
+        if expected is not None and manifest_digest(manifest) != expected:
+            raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
+        campaign_id = str(manifest.document["campaign_id"])
+        if campaign_id in ancestors:
+            raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
+        if campaign_id in visited:
+            continue
+        visited.add(campaign_id)
+        for firing in store.read_pre_sim_firings():
+            firings[firing.key] = firing
+        for entry in manifest.document["prerequisites"]:
+            reference = entry["manifest"]
+            pending.append(
+                (
+                    store.root.parents[2] / reference["path"],
+                    reference["sha256"],
+                    ancestors | {campaign_id},
+                )
+            )
+    raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
+
+
+def read_invocation_pre_sim_firings(invocation: Path) -> tuple[PreSimFiring, ...]:
+    """Inspect Campaigns published in this invocation, including unfinished work."""
+    paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
+    if len(paths) > 4000:
+        raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
+    firings = {}
+    for path in paths:
+        for firing in collect_pre_sim_firings(path):
+            firings[firing.key] = firing
+    return tuple(firings.values())
 
 
 def authenticate_work_item(manifest_path: Path, work_item_id: str) -> CampaignWorkItemEvidence:
@@ -130,6 +183,7 @@ def _retention_inventory(
     store: CampaignStore, recovery: CampaignRecovery
 ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     retention_files = set(store.retention_files)
+    retention_files.update(firing.path.absolute() for firing in store.read_pre_sim_firings())
     attempts = {
         path.parent
         for path in retention_files
@@ -151,6 +205,7 @@ def _retention_inventory(
             "snapshot",
             "runtime-inputs",
             "evidence",
+            "pre-sim",
             "coverage-campaign",
         ):
             retention_files.update(

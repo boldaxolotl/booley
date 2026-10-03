@@ -1312,3 +1312,73 @@ def _assert_child_claim_integrity(invocation, slot_store, plan) -> None:
     child_entry.write_bytes(canonical_json_bytes(transplanted))
     with pytest.raises(SimulationCampaignIntegrityError, match="child entry digest disagrees"):
         store.scan()
+
+
+@pytest.mark.parametrize("scope_stop", [True, False])
+def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool
+) -> None:
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+    from booley.runtime.supervised_execution import current_supervised_execution
+
+    monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
+    manifest = _two_item_manifest()
+    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
+    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    child_finished = threading.Event()
+    child_ids = []
+
+    def execute(_attempt, child_id, _entry_digest):
+        if child_id is None:
+            assert child_finished.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            return
+        child_ids.append(child_id)
+        scope = current_supervised_execution()
+        assert scope is not None
+        _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[0]) == 2)
+        for token in slots.snapshot(CLASS_HEAVY)[0]:
+            if str(token.execution_id) == child_id:
+                token.path.unlink()
+        _wait_until(scope.cancelled)
+        child_finished.set()
+        if scope_stop:
+            raise HeavyCapacityError("scope stopped") from PreSimScopeStoppedError("hook stopped")
+        raise HeavyCapacityError("unrelated publication failure")
+
+    capacity = HeavyCapacity(
+        _managed(slots, outer),
+        terminal_proof=registry.is_terminal,
+        recover_child=lambda _execution_id: False,
+    )
+    scheduler = BoundedCampaignScheduler(
+        capacity,
+        registry,
+        allocate=lambda item: _scheduled_attempt(campaign_store, item),
+        execute=execute,
+    )
+    try:
+        with pytest.raises(HeavyCapacityError):
+            scheduler.run(manifest.document["work_items"])
+    finally:
+        child_finished.set()
+        slots.release(outer)
+    _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop)
+    assert slots.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop):
+    assert len(child_ids) == 1
+    terminal = read_json(
+        execution_paths(ExecutionId(child_ids[0]), project_dir=registry.project_data).record
+    )
+    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "campaign_error")
+    retired = json.loads(
+        (campaign_store.root / "child-executions/retired" / f"{child_ids[0]}.json").read_bytes()
+    )
+    assert retired["terminal_cause"] == terminal["terminal_cause"]

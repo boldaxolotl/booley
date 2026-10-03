@@ -442,7 +442,10 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         _options: object,
         run_cwd: Path | None,
         expose_build_root: bool,
+        *,
+        commands: tuple[str, ...],
     ) -> None:
+        assert commands == ()
         hooks.append((names, expose_build_root, run_cwd))
 
     monkeypatch.setattr(serial_execution, "_run_hook", record_hook)
@@ -472,6 +475,142 @@ def _legacy_disclosures():
         }
         for name in ("alpha", "beta")
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("attempt_id", "wrong-owner"),
+        ("ordinal", True),
+        ("elapsed_s", float("nan")),
+        ("returncode", True),
+        ("command_count", 3),
+        ("test_names", ["other"]),
+        ("stdout_tail", "x" * 8193),
+        ("status", "invented"),
+    ],
+)
+def test_interrupted_hook_evidence_fails_closed_on_semantic_corruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: object
+) -> None:
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    firing = outcome.pre_sim_firings[0]
+    document = json.loads(firing.path.read_bytes())
+    document[field] = value
+    firing.path.write_text(json.dumps(document))
+    (firing.path.parents[3] / "result.json").unlink()
+    with pytest.raises(SimulationCampaignIntegrityError):
+        CampaignStore(invocation / "targets/sim/campaign").scan()
+
+
+def test_terminal_hook_tampering_and_symlink_are_not_authoritative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    firing = outcome.pre_sim_firings[0]
+    firing.path.write_bytes(firing.path.read_bytes() + b" ")
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    with pytest.raises(SimulationCampaignIntegrityError):
+        store.scan()
+    firing.path.unlink()
+    firing.path.symlink_to(tmp_path / "outside.json")
+    with pytest.raises(SimulationCampaignIntegrityError):
+        store.scan()
+
+
+@pytest.mark.parametrize("coverage", [False, True])
+def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
+    from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+    from booley.runtime.supervised_execution import (
+        SupervisedExecutionScope,
+        supervised_execution_scope,
+    )
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+
+    def transform(document):
+        if coverage:
+            document["workload"]["coverage"] = True
+            document["work_items"][0]["kind"] = "coverage_aggregate"
+
+    plan, _disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), transform)
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(plan.manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
+    )
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    executor = _executor(tmp_path / "build", counters)
+    if coverage:
+        executor = CoverageAggregateExecutor(
+            plans={},
+            execution_factory=lambda *_args: pytest.fail("cancelled coverage must not compile"),
+        )
+    scope = SupervisedExecutionScope(None, tmp_path / ".booley_project", lambda: True)
+    with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
+        executor.execute(request)
+    assert counters == {"compile": 0, "durable_reuse": 0, "launch": 0}
+    assert list(request.attempt_directory.glob("pre-sim/*.json")) == []
+
+
+def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
+    from booley.flows.sim.campaign import read_pre_sim_firings
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.execution.contract import PreSimEvidence
+    from booley.flows.sim.flow import _campaign_pre_sim_details
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+
+    names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
+
+    def transform(document):
+        workload = document["workload"]
+        workload["coverage"] = True
+        item = document["work_items"][0]
+        item.update(
+            kind="coverage_aggregate",
+            selection={"kind": "named", "names": names},
+            arguments=list(names),
+        )
+        suite = document["required_suite"]
+        source = "\n".join(names).encode()
+        suite.update(
+            names=list(names),
+            source_bytes=len(source),
+            source_sha256="sha256:" + hashlib.sha256(source).hexdigest(),
+        )
+
+    plan, _disclosures = _pre_sim_plan("immutable", ("true",), transform)
+    invocation = tmp_path / "reports/1"
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+    _executor(tmp_path / "build", {}).prepare_attempt(request)
+    evidence = PreSimEvidence(
+        ("true",),
+        names,
+        "passed",
+        0.1,
+        returncode=0,
+        stdout_tail="s" * 8192,
+        stderr_tail="e" * 8192,
+    )
+    reference = publish_pre_sim_firing(request, evidence)
+    assert 1024 * 1024 < reference["bytes"] < 16 * 1024 * 1024
+    assert len(canonical_json_bytes(reference)) < 1024
+    firings = read_pre_sim_firings(store.manifest_path)
+    assert firings[0].document["test_names"] == names
+    detail = _campaign_pre_sim_details([SimpleNamespace(pre_sim_firings=firings)], invocation)
+    assert len(json.dumps(detail["pre_sim_runs"]).encode()) <= 16 * 1024
+    assert detail["pre_sim_runs"][0]["test_count"] == 4000
+    assert len(detail["pre_sim_runs"][0]["test_names"]) == 8
 
 
 def _packaged_source_disclosure(raw: bytes) -> dict[str, object]:
@@ -619,3 +758,52 @@ def test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch(
     store = CampaignStore(invocation / "targets/sim/campaign")
     assert len(store.scan().interrupted) == 1
     assert not tuple(store.root.glob("work-items/*/result.json"))
+
+
+def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign import serial_execution
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+    from booley.runtime.supervised_execution import (
+        SupervisedExecutionScope,
+        supervised_execution_scope,
+    )
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+
+    plan, disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), None)
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(plan.manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "simv").write_bytes(b"image")
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
+    )
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    executor = _executor(build, counters, disclosures=disclosures)
+    monkeypatch.setattr(
+        serial_execution.TargetCatalog,
+        "build",
+        lambda _root: SimpleNamespace(select=lambda *_a, **_k: _handle(project)),
+    )
+    monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
+    original_hook = serial_execution._run_hook
+    stopped = False
+
+    def stop_after_hook(*args, **kwargs):
+        nonlocal stopped
+        evidence = original_hook(*args, **kwargs)
+        stopped = True
+        return evidence
+
+    monkeypatch.setattr(serial_execution, "_run_hook", stop_after_hook)
+    scope = SupervisedExecutionScope(None, project / ".booley_project", lambda: stopped)
+    with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
+        executor.execute(request)
+    assert counters["launch"] == 0
+    firings = store.read_pre_sim_firings()
+    assert len(firings) == 1
+    assert firings[0].document["returncode"] == 0
+    assert firings[0].document["stdout_tail"] == "actual-hook\n"
+    assert not (request.attempt_directory.parent.parent / "result.json").exists()

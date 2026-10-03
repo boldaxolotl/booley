@@ -19,7 +19,7 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     publish_coverage_campaign_reference,
 )
-from booley.flows.sim.execution.contract import SimulationOptions
+from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -30,8 +30,10 @@ from .codec import (
     encode_simulation_campaign_manifest,
 )
 from .facts import AcceptanceFacts
+from .inspection import collect_pre_sim_firings
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import WorkloadMismatch, compare_manifests, manifest_digest
+from .pre_sim_evidence import PreSimFiring
 from .resume import ValidatedResumeManifest
 from .run_directory import (
     cleanup_interrupted_run_directory,
@@ -222,6 +224,7 @@ class CampaignOutcome:
     acceptance_ready: bool
     recovery: CampaignRecoveryStatus
     diagnostics: tuple[str, ...] = ()
+    pre_sim_firings: tuple[PreSimFiring, ...] = ()
 
 
 def _coverage_attempt_directory(
@@ -658,17 +661,20 @@ class SimulationCampaign:
         work_item = attempt.item
         work_item_id = cast(str, work_item["work_item_id"])
         assert self._executor is not None
-        result = self._executor.execute(
-            self._work_execution_request(
-                store,
-                manifest,
-                attempt,
-                invocation,
-                request,
-                child_execution_id,
-                child_entry_sha256,
+        try:
+            result = self._executor.execute(
+                self._work_execution_request(
+                    store,
+                    manifest,
+                    attempt,
+                    invocation,
+                    request,
+                    child_execution_id,
+                    child_entry_sha256,
+                )
             )
-        )
+        except PreSimScopeStoppedError as signal:
+            raise HeavyCapacityError(str(signal)) from signal
         scope = current_supervised_execution()
         if scope is not None and scope.cancelled():
             raise HeavyCapacityError(
@@ -887,6 +893,7 @@ def _outcome(
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
         _recovery_status(store.manifest_path, manifest_digest(manifest), recovery),
+        pre_sim_firings=collect_pre_sim_firings(store.manifest_path),
     )
 
 

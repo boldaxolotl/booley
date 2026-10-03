@@ -28,6 +28,7 @@ from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_reports import write_compatibility_projection
 from booley.flows.sim.execution.contract import (
+    PreSimEvidence,
     SimulationInfrastructureFailure,
     SimulationTargetOutcome,
     SimulationTestOutcome,
@@ -451,6 +452,14 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
     document["workload"]["pre_sim_build_access"] = (  # type: ignore[index]
         "legacy-per-test" if failure_path.startswith("legacy") else "immutable"
     )
+    if failure_path.startswith("legacy"):
+        from tests.flows.sim.test_campaign_manifest_codec import _manifest_work
+
+        workload = document["workload"]
+        workload["source_recipe"]["pre_sim_commands"] = ["false"]
+        document["build_variants"], document["work_items"] = _manifest_work(
+            document["target"], workload["source_recipe"], workload["build_recipe"], workload
+        )
     plan = create_simulation_campaign_plan(finalize_manifest(document))
     project = tmp_path / "project"
     project.mkdir()
@@ -472,8 +481,13 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
         status = "spawn_error" if infrastructure else "failed"
         monkeypatch.setattr(
             "booley.flows.sim.campaign.serial_execution._run_hook",
-            lambda *_args, **_kwargs: SimpleNamespace(
-                status=status, detail="hook failed", elapsed_s=0.1
+            lambda *_args, **_kwargs: PreSimEvidence(
+                _kwargs["commands"],
+                _args[2],
+                status,
+                0.1,
+                "hook failed",
+                127 if infrastructure else 7,
             ),
         )
     group = _FailedBuildGroup(engine_root, infrastructure)

@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import TypeVar, cast
 
 from booley.core.boundary import (
@@ -72,6 +73,7 @@ from .model import (
     SimulationResult,
     SimulatorBundle,
 )
+from .pre_sim_evidence import PreSimFiring, attempt_pre_sim_references, decode_pre_sim_firing
 
 _T = TypeVar("_T", bound=SimulationCampaignDocument)
 _SUMMARY_SCHEMA = "booley.simulation-campaign-summary/v1"
@@ -463,6 +465,15 @@ class CampaignStore:
         path = self.work_item_directory(work_item_id) / "result.json"
         return self._publish(path, result, encode_simulation_result)
 
+    def publish_pre_sim_evidence(self, directory: Path, ordinal: int, raw: bytes) -> Path:
+        """Durably create a contained attempt sidecar without replacing an existing firing."""
+        path = directory / "pre-sim" / f"{ordinal:04d}.json"
+        _require_safe_parents(path, self.root)
+        if len(raw) > MANIFEST_MAX_BYTES:
+            raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
+        _create_immutable(path, raw)
+        return path
+
     def latest_attempt(self, work_item_id: str) -> SimulationAttempt | None:
         """Load the final validated attempt for an interrupted work item."""
         attempts = self._attempt_directories(self.work_item_directory(work_item_id) / "attempts")
@@ -489,6 +500,24 @@ class CampaignStore:
             references.append(cast(Mapping[str, object], binding["authoritative_copy"]))
         for reference in references:
             self._authenticate_reference(attempt_directory, reference)
+        hook_refs = [ref for ref in references if ref["kind"] == "pre_sim_commands"]
+        actual_refs = attempt_pre_sim_references(self, attempt_directory)
+        if hook_refs != actual_refs:
+            raise SimulationCampaignIntegrityError("Pre-Sim Commands result references disagree")
+        if actual_refs:
+            manifest = self.load_manifest()
+            item = next(
+                item
+                for item in manifest.document["work_items"]
+                if item["work_item_id"] == document["work_item_id"]
+            )
+            for reference in actual_refs:
+                decode_pre_sim_firing(
+                    self._read(attempt_directory / reference["path"], limit=MANIFEST_MAX_BYTES),
+                    manifest,
+                    item,
+                    attempt,
+                )
         build_reference, build_result, bundle = self._verify_build_chain(
             attempt_directory, document, attempt
         )
@@ -499,6 +528,68 @@ class CampaignStore:
             build_result,
             bundle,
         )
+
+    def read_pre_sim_firings(self) -> tuple[PreSimFiring, ...]:
+        """Authenticate every retained attempt, including interrupted and older attempts."""
+        manifest = self.load_manifest()
+        firings: list[PreSimFiring] = []
+        for item in cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]):
+            work_root = self.work_item_directory(cast(str, item["work_item_id"]))
+            terminal = None
+            result_path = work_root / "result.json"
+            if result_path.exists() or result_path.is_symlink():
+                terminal = decode_simulation_result(
+                    self._read(result_path, limit=RECORD_MAX_BYTES)
+                )
+            for directory in self._attempt_directories(work_root / "attempts"):
+                firings.extend(
+                    self._read_attempt_pre_sim_firings(manifest, item, directory, terminal)
+                )
+        return tuple(firings)
+
+    def _read_attempt_pre_sim_firings(
+        self, manifest, item, directory, terminal
+    ) -> tuple[PreSimFiring, ...]:
+        firings = []
+        if not (directory / "attempt.json").exists():
+            return ()
+        attempt = decode_simulation_attempt(
+            self._read(directory / "attempt.json", limit=RECORD_MAX_BYTES)
+        )
+        references = attempt_pre_sim_references(self, directory)
+        if (
+            directory.name
+            != f"{attempt.document['attempt_ordinal']:04d}-{attempt.document['attempt_id']}"
+        ):
+            raise SimulationCampaignIntegrityError("hook attempt directory owner disagrees")
+        if len(references) > 4096:
+            raise SimulationCampaignIntegrityError("too many Pre-Sim Commands firings")
+        for ordinal, reference in enumerate(references, start=1):
+            path = directory / cast(str, reference["path"])
+            raw = self._read(path, limit=MANIFEST_MAX_BYTES)
+            document = decode_pre_sim_firing(raw, manifest, item, attempt)
+            if document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
+                raise SimulationCampaignIntegrityError("Pre-Sim Commands ordinal disagrees")
+            completed = (
+                terminal is not None
+                and terminal.document["attempt_id"] == attempt.document["attempt_id"]
+            )
+            if completed and reference not in terminal.document["evidence"]:
+                raise SimulationCampaignIntegrityError(
+                    "terminal hook lacks authenticated reference"
+                )
+            if completed:
+                _validate_result_attempt_binding(attempt, terminal)
+            firings.append(
+                PreSimFiring(
+                    self.manifest_path,
+                    path,
+                    MappingProxyType(reference),
+                    document,
+                    completed,
+                )
+            )
+        return tuple(firings)
 
     def _verify_build_chain(
         self,
@@ -652,6 +743,7 @@ class CampaignStore:
         manifest: SimulationCampaignManifest,
         manifest_sha256: str,
     ) -> CampaignRecovery:
+        self.read_pre_sim_firings()
         expected_workload = cast(Mapping[str, str], manifest.document["fingerprints"])[
             "workload_sha256"
         ]

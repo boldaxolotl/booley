@@ -17,6 +17,72 @@ def _origin(tmp_path):
     return origin, digest
 
 
+def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    from booley.flows.sim.campaign import collect_pre_sim_firings
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.flow import (
+        SimulateFlow,
+        _campaign_pre_sim_details,
+        _campaign_pre_sim_report_lines,
+    )
+    from tests.flows.sim.test_campaign_phase3_integrity import _Group
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    original = _Group.launch_snapshot
+
+    def with_cycles(group, *args):
+        outcome = original(group, *args)
+        return replace(
+            outcome,
+            tests=tuple(
+                replace(test, cycles=17, cycle_status="observed") for test in outcome.tests
+            ),
+        )
+
+    monkeypatch.setattr(_Group, "launch_snapshot", with_cycles)
+    baseline_root = tmp_path / "baseline"
+    baseline_root.mkdir()
+    candidate_root = tmp_path / "candidate"
+    candidate_root.mkdir()
+    invocation = tmp_path / "reports/1"
+
+    def baseline_role(document):
+        document["campaign_id"] = CAMPAIGN_ID
+        document["target"].update(role="cycle_count_baseline", revision="baseline")
+
+    _, baseline = _successful_pre_sim_campaign(
+        baseline_root,
+        monkeypatch,
+        "immutable",
+        transform=baseline_role,
+        invocation_directory=invocation,
+    )
+    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    prerequisites = SimulateFlow._campaign_prerequisite_documents(
+        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+    )
+    _, candidate = _successful_pre_sim_campaign(
+        candidate_root,
+        monkeypatch,
+        "immutable",
+        transform=lambda document: document.update(prerequisites=prerequisites),
+        invocation_directory=invocation,
+    )
+    assert candidate.aggregate_grade == "pass"
+    assert len(collect_pre_sim_firings(candidate.manifest_path)) == 2
+    detail = _campaign_pre_sim_details([candidate, baseline], invocation)
+    assert detail["pre_sim_total"] == detail["pre_sim_current"] == 2
+    assert set(detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
+    lines = _campaign_pre_sim_report_lines([candidate, baseline], invocation)
+    assert "Candidate:" in lines and "Cycle Count baseline:" in lines
+    assert len([line for line in lines if line.startswith("pre_run_commands")]) == 2
+
+
 def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
     from booley.flows.sim.campaign.dependency import (
         read_campaign_dependencies,

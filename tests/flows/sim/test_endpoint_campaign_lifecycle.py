@@ -16,6 +16,229 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
 
 
+def _refresh_hook_workload_identity(document):
+    from booley.flows.sim.campaign.planning import canonical_sha256
+
+    workload = document["workload"]
+    variant = document["build_variants"][0]
+    digest = canonical_sha256(
+        {
+            "kind": variant["kind"],
+            "source_closure": variant["source_closure"],
+            **{
+                key: workload[key]
+                for key in ("source_recipe", "build_recipe", "eda", "trace", "coverage")
+            },
+        }
+    )
+    variant["recipe_sha256"] = digest
+    variant["build_variant_id"] = "variant:" + digest.removeprefix("sha256:")
+    item = document["work_items"][0]
+    item["target"] = document["target"]
+    item["role"] = document["target"]["role"]
+    item["revision"] = document["target"]["revision"]
+    item["build_variant_id"] = variant["build_variant_id"]
+    digest = canonical_sha256(
+        {
+            key: value
+            for key, value in item.items()
+            if key not in {"work_item_id", "fingerprint_sha256"}
+        }
+    )
+    item["fingerprint_sha256"] = digest
+    item["work_item_id"] = "item:0000:" + digest.removeprefix("sha256:")[:16]
+
+
+def _pre_sim_plan(access, commands, transform):
+    import json
+
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from booley.flows.sim.campaign.planning import finalize_manifest
+    from tests.flows.sim.test_campaign_phase3_integrity import _legacy_disclosures, _manifest_for
+
+    document = json.loads(canonical_json_bytes(_manifest_for(("alpha",), access=access).document))
+    document.pop("fingerprints")
+    if transform is not None:
+        transform(document)
+    document["workload"]["source_recipe"]["pre_sim_commands"] = list(commands)
+    _refresh_hook_workload_identity(document)
+    disclosures = _legacy_disclosures() if access == "legacy-per-test" else {}
+    if disclosures:
+        document["planning_disclosures"] = [disclosures["alpha"]]
+    plan = create_simulation_campaign_plan(finalize_manifest(document))
+    return plan, disclosures
+
+
+def _successful_pre_sim_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    access: str,
+    *,
+    commands: tuple[str, ...] = ("echo hook-out", "echo hook-err >&2"),
+    mutate_snapshot: bool = False,
+    live_commands: tuple[str, ...] | None = None,
+    transform=None,
+    invocation_directory: Path | None = None,
+):
+    import json
+
+    from booley.flows.sim.campaign.coordinator import (
+        CampaignPolicy,
+        NewCampaignRunRequest,
+        SimulationCampaign,
+    )
+    from tests.flows.sim.test_campaign_phase3_integrity import (
+        _admission,
+        _executor,
+        _handle,
+    )
+
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / ".booley_project"
+    config.mkdir()
+    (config / "booley.toml").write_text(
+        "[flows.sim]\npre_run_commands = "
+        + json.dumps(commands if live_commands is None else live_commands)
+        + "\n"
+    )
+    plan, disclosures = _pre_sim_plan(access, commands, transform)
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "simv").write_bytes(b"image")
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: _handle(project)),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.simulation_target_environment",
+        lambda _handle: {},
+    )
+    invocation = invocation_directory or tmp_path / "reports/1"
+    invocation.mkdir(parents=True, exist_ok=True)
+    campaign = SimulationCampaign(
+        _executor(
+            build,
+            {"compile": 0, "durable_reuse": 0, "launch": 0},
+            disclosures=disclosures,
+            mutate_snapshot=mutate_snapshot,
+        )
+    ).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+    return invocation, campaign
+
+
+@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
+def test_successful_pre_sim_firing_reaches_public_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    access: str,
+) -> None:
+    import json
+    import re
+    import time
+
+    from booley.flows.endpoint_report_criteria import ReportCriteria
+    from booley.flows.endpoint_reporting import _publish_console_report, write_report
+
+    invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, access)
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([campaign])
+    endpoint = SimpleNamespace(
+        args=SimpleNamespace(report_dir=invocation.parent, slug=""),
+        flow=flow,
+        name="sim",
+        endpoint_kind="flow",
+        _report_criteria=ReportCriteria(frozen=True),
+        _reserved_invocation_dir=invocation,
+        _start_time=time.monotonic(),
+        _selected_target="sim",
+        _eda_tool="icarus",
+        _raw_argv=None,
+        _console_publication_requested=True,
+        _stdout_witness=None,
+    )
+    write_report(endpoint, result)
+    _publish_console_report(endpoint, result)
+    lines = re.findall(
+        r"pre_run_commands \(2 line\(s\)\) for sim/alpha: rc=0 in \d+\.\ds",
+        result.report_text,
+    )
+    assert len(lines) == 1
+    assert capsys.readouterr().out.count(lines[0]) == 1
+    report = json.loads((invocation.parent / "sim.json").read_bytes())
+    assert report["detail"]["pre_sim_lines"] == lines
+    assert (invocation / "report.json").read_bytes() == (
+        invocation.parent / "sim.json"
+    ).read_bytes()
+    sidecars = list(invocation.glob("targets/sim/campaign/work-items/*/attempts/*/pre-sim/*.json"))
+    assert len(sidecars) == 1
+    evidence = json.loads(sidecars[0].read_bytes())
+    assert evidence["returncode"] == 0
+    assert evidence["stdout_tail"] == "hook-out\n"
+    assert evidence["stderr_tail"] == "hook-err\n"
+
+
+@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
+def test_failed_hook_reports_real_exit_code_without_changing_adapter_grade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
+) -> None:
+    invocation, campaign = _successful_pre_sim_campaign(
+        tmp_path, monkeypatch, access, commands=("echo failed-out; echo failed-err >&2; exit 7",)
+    )
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([campaign])
+    assert result.exit_code == 1
+    assert len(result.detail["pre_sim_lines"]) == 1
+    assert "rc=7" in result.detail["pre_sim_lines"][0]
+    assert campaign.pre_sim_firings[0].document["stderr_tail"] == "failed-err\n"
+
+
+def test_downstream_integrity_failure_retains_authenticated_current_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.campaign import SimulationCampaignIntegrityError
+
+    with pytest.raises(SimulationCampaignIntegrityError):
+        _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable", mutate_snapshot=True)
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = tmp_path / "reports/1"
+    result = flow._attach_published_pre_sim(
+        EndpointOutcome(exit_code=2, report_text="integrity error")
+    )
+    assert len(result.detail["pre_sim_lines"]) == 1
+    assert "rc=0" in result.detail["pre_sim_lines"][0]
+    assert result.detail["pre_sim_runs"][0]["terminal"] is False
+
+
+def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
+    tmp_path, monkeypatch
+):
+    invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([campaign])
+    assert result.detail["pre_sim_current"] == 1
+    firing = campaign.pre_sim_firings[0]
+    firing.path.write_bytes(firing.path.read_bytes() + b" ")
+    result = flow._attach_published_pre_sim(result)
+    assert result.exit_code == 2 and result.criterion_met is False
+    assert "pre_run_commands" not in result.report_text
+    assert "pre_sim_lines" not in result.detail
+    assert "pre_sim_runs" not in result.detail
+    assert result.detail["pre_sim_unauthenticated_references"]
+
+
 class _Flow:
     def __init__(self, events: list[str]) -> None:
         self.events = events
@@ -385,3 +608,22 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
     )
     assert tool.state._file_path is None
     assert not (tmp_path / "state.json").exists()
+
+
+@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
+def test_campaign_executor_uses_frozen_hook_commands_despite_live_config_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
+) -> None:
+    _invocation, outcome = _successful_pre_sim_campaign(
+        tmp_path,
+        monkeypatch,
+        access,
+        commands=("echo frozen-hook",),
+        live_commands=("echo live-hook; exit 7",),
+    )
+    assert outcome.complete
+    assert len(outcome.pre_sim_firings) == 1
+    firing = outcome.pre_sim_firings[0].document
+    assert firing["returncode"] == 0
+    assert firing["stdout_tail"] == "frozen-hook\n"
+    assert firing["command_count"] == 1

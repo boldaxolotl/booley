@@ -39,6 +39,7 @@ from booley.flows.sim.campaign_durability import (
 )
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
+    PreSimScopeStoppedError,
     SimulationInfrastructureFailure,
     SimulationOptions,
     SimulationTargetOutcome,
@@ -55,6 +56,7 @@ from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     materialize_campaign_runtime_inputs,
 )
+from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 
 from ..build import build_output_tail
@@ -91,6 +93,7 @@ from .model import (
     grade_observations,
 )
 from .planning import manifest_digest
+from .pre_sim_evidence import attempt_pre_sim_references, publish_pre_sim_firing
 from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
 
 
@@ -169,6 +172,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             self._prepared_attempts[request.attempt_directory] = run_directory
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
+        scope = current_supervised_execution()
+        if _frozen_hook_commands(request) and scope is not None and scope.cancelled():
+            raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
         item = request.work_item
         if item["kind"] not in {"ordinary_hdl", "cocotb_batch"}:
             raise SimulationCampaignIntegrityError(
@@ -483,7 +489,17 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         options,
         started,
     ) -> SimulationResult | None:
-        pre_sim = _run_hook(handle, group.build_root, names, options, None, True)
+        pre_sim = _run_hook(
+            handle,
+            group.build_root,
+            names,
+            options,
+            None,
+            True,
+            commands=_frozen_hook_commands(request),
+        )
+        if pre_sim is not None:
+            publish_pre_sim_firing(request, pre_sim)
         if pre_sim is None or pre_sim.status == "passed":
             return None
         outcome = _hook_failure_outcome(handle.selector, names, pre_sim)
@@ -645,7 +661,17 @@ def _immutable_hook_failure(
         return None
     compile_surface = group.compile_surface
     surface = project_compile_surface(compile_surface)
-    pre_sim = _run_hook(handle, group.build_root, names, options, run_cwd, False)
+    pre_sim = _run_hook(
+        handle,
+        group.build_root,
+        names,
+        options,
+        run_cwd,
+        False,
+        commands=_frozen_hook_commands(request),
+    )
+    if pre_sim is not None:
+        publish_pre_sim_firing(request, pre_sim)
     if project_compile_surface(compile_surface) != surface:
         raise SimulationCampaignIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
@@ -714,6 +740,12 @@ def _attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt, RunDirec
     return decode_simulation_attempt(canonical_json_bytes(document)), run
 
 
+def _frozen_hook_commands(request: WorkExecutionRequest) -> tuple[str, ...]:
+    workload = cast(Mapping[str, object], request.manifest.document["workload"])
+    recipe = cast(Mapping[str, object], workload["source_recipe"])
+    return tuple(cast(tuple[str, ...], recipe["pre_sim_commands"]))
+
+
 def _run_hook(
     handle: object,
     build_root: Path,
@@ -721,6 +753,8 @@ def _run_hook(
     _options: SimulationOptions,
     run_cwd: Path | None,
     expose_build_root: bool,
+    *,
+    commands: tuple[str, ...] | None = None,
 ):
     return run_pre_sim_commands(
         handle,  # type: ignore[arg-type]
@@ -732,6 +766,7 @@ def _run_hook(
         run_cwd=str(run_cwd) if run_cwd is not None else None,
         working_directory=run_cwd,
         expose_build_root=expose_build_root,
+        commands=commands,
     )
 
 
@@ -1512,7 +1547,10 @@ def _result(
             }
             for item in (*outcome_diagnostics_safe(evidence, request), *diagnostics)
         ],
-        "evidence": evidence,
+        "evidence": [
+            *evidence,
+            *attempt_pre_sim_references(request.store, request.attempt_directory),
+        ],
     }
     return decode_simulation_result(canonical_json_bytes(document))
 
