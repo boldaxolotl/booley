@@ -155,7 +155,11 @@ in the host-owned Project Inventory. `booley projects` joins those roots with
 their Grants and reports each root as `present`, `missing`, or `uninitialized`.
 Use `booley projects discover <root>...` to import existing initialized
 Projects; discovery scans only the roots named on the command line and does not
-follow directory symlinks. `booley projects forget <project>` removes an
+follow directory symlinks. Discovery stops descending at each initialized
+Project to avoid scanning its RTL, vendor, and build trees, so nested Projects
+are not imported by that scan. To import a nested Project, run
+`booley projects discover <nested path>` on it directly.
+`booley projects forget <project>` removes an
 obsolete remembered root only after its live Grants have been revoked.
 
 EDA administration prints human-readable confirmations by default. Add
