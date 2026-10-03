@@ -186,7 +186,7 @@ class TestTargetsDetail:
 
 
 @pytest.mark.parametrize("json_output", [False, True])
-def test_lint_listing_excludes_unsupported_authored_tools(
+def test_lint_listing_excludes_unsupported_authored_eda_tools(
     project: Path, capsys, json_output: bool
 ):
     (project / "lint.core").write_text(
@@ -207,17 +207,18 @@ def test_lint_listing_excludes_unsupported_authored_tools(
     assert _run(project, "--json") == 0
     payload = json.loads(capsys.readouterr().out)
     targets = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
-    assert "lint" not in targets["lint_unsupported"]["drivable_by"]
+    for name in ("lint_unsupported", "lint_missing", "lint_legacy_alias"):
+        assert "lint" not in targets[name]["drivable_by"]
 
 
-@pytest.mark.parametrize("tool", ["slang", "veriblelint"])
-def test_lint_explicit_selection_explains_supported_tools(project, tool):
+@pytest.mark.parametrize("eda_tool", ["slang", "veriblelint"])
+def test_lint_explicit_selection_explains_supported_eda_tools(project, eda_tool):
     from booley.targets.catalog import TargetCatalog
     from booley.targets.domain import IncompatibleTargetError
 
     declaration = (
         "flow: lint\n    flow_options: {tool: slang}"
-        if tool == "slang"
+        if eda_tool == "slang"
         else "default_tool: veriblelint"
     )
     (project / "bad.core").write_text(
@@ -228,3 +229,55 @@ def test_lint_explicit_selection_explains_supported_tools(project, tool):
         IncompatibleTargetError, match=r"verilator, verible, or veriblelint.*explicit"
     ):
         TargetCatalog.build(project).select("lint_bad", for_flow="lint")
+
+
+@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
+def test_mixed_lint_public_listing_and_selection(project, capsys, eda_tool):
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import IncompatibleTargetError
+
+    (project / "mixed.core").write_text(
+        "CAPI=2:\nname: acme:ip:mixed:1.0\ntargets:\n  lint_mixed:\n"
+        f"    flow: lint\n    default_tool: {eda_tool}\n",
+        encoding="utf-8",
+    )
+    for flags in ([], ["--json"]):
+        assert _run(project, "--for", "lint", *flags) == 0
+        assert "lint_mixed" not in capsys.readouterr().out
+    assert _run(project, "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    entry = next(t for c in payload["cores"] for t in c["targets"] if t["name"] == "lint_mixed")
+    assert entry["eda_tool"] == eda_tool
+    assert "lint" not in entry["drivable_by"]
+    assert "lint_flow_eda_tool_missing" not in entry
+    with pytest.raises(IncompatibleTargetError) as exc:
+        TargetCatalog.build(project).select("lint_mixed", for_flow="lint")
+    assert "booley targets --for lint" in str(exc.value)
+    assert "default_tool does not supply it" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "name,flow,eda_tool",
+    [
+        ("fpga_top", "lint", "verilator"),
+        ("fpga_missing", "lint", "verible"),
+        ("sim_control", "sim", "verilator"),
+    ],
+)
+def test_lint_guidance_does_not_redeclare_other_intent(project, name, flow, eda_tool):
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import IncompatibleTargetError
+
+    selection = (
+        f"default_tool: {eda_tool}"
+        if name == "fpga_missing"
+        else f"flow_options: {{tool: {eda_tool}}}"
+    )
+    (project / "other.core").write_text(
+        "CAPI=2:\nname: acme:ip:other:1.0\ntargets:\n"
+        + f"  {name}:\n    flow: {flow}\n    {selection}\n"
+    )
+    with pytest.raises(IncompatibleTargetError) as exc:
+        TargetCatalog.build(project).select(name, for_flow="lint")
+    assert "booley targets --for lint" in str(exc.value)
+    assert "Declare" not in str(exc.value)

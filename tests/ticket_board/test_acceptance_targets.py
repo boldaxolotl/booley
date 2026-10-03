@@ -969,3 +969,27 @@ def test_resolve_commit_rejects_nonexact_identity(
     )
     with pytest.raises(ValueError, match="does not resolve exactly"):
         acceptance_targets.resolve_commit(tmp_path, "a" * 40)
+
+
+@pytest.mark.parametrize(
+    "eda_tool,missing",
+    [("verilator", True), ("verible", True), ("veriblelint", True), ("verilator", False)],
+)
+def test_mixed_lint_actual_acceptance_binding(tmp_path, monkeypatch, eda_tool, missing):
+    from booley.targets.catalog import TargetCatalog
+
+    monkeypatch.undo()  # This regression intentionally bypasses the autouse fake catalog.
+    (tmp_path / "top.sv").write_text("module top; endmodule\n")
+    selection = f"default_tool: {eda_tool}" if missing else f"flow_options: {{tool: {eda_tool}}}"
+    (tmp_path / "mixed.core").write_text(
+        "CAPI=2:\nname: acme:ip:mixed:1.0\nfilesets:\n  rtl:\n    files: [top.sv]\n    file_type: systemVerilogSource\ntargets:\n  lint_mixed:\n    flow: lint\n"
+        f"    {selection}\n    filesets: [rtl]\n    toplevel: top\n"
+    )
+    binding = acceptance_targets.CriterionTarget(
+        "lint", "lint_clean", "lint_mixed", "lint", False, family="lint_clean"
+    )
+    errors = acceptance_targets._validate_binding(binding, {}, TargetCatalog.build(tmp_path))
+    if missing:
+        assert any("cannot be driven" in error and eda_tool in error for error in errors)
+    else:
+        assert errors == []

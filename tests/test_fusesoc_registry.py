@@ -26,6 +26,7 @@ from booley.fusesoc.fusesoc_registry import (
     _missing_target_sources,
     _preflight_target_sources,
     _resolve_target,
+    _setup_command,
     _sim_target_has_untagged_tb,
     _target_referenced_files,
     _target_source_files,
@@ -2500,3 +2501,80 @@ targets:
         _write_core(tmp_path, text)
         doc = read_core(tmp_path / "design.core")
         assert core_target_uses_legacy_fusesoc_api(doc, "hybrid") is False
+
+
+@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
+@pytest.mark.parametrize("options", [None, {}, {"ruleset": "all"}, {"tool": ""}, {"tool": None}])
+def test_mixed_lint_enumeration_provenance(tmp_path, eda_tool, options):
+    import yaml
+
+    target = {"flow": "lint", "default_tool": eda_tool}
+    if options is not None:
+        target["flow_options"] = options
+    (tmp_path / "mixed.core").write_text(
+        "CAPI=2:\n"
+        + yaml.safe_dump({"name": "acme:ip:mixed:1.0", "targets": {"lint_mixed": target}})
+    )
+    ref = next(iter(enumerate_targets(tmp_path).values()))
+    assert ref.eda_tool == eda_tool
+    assert ref.lint_flow_eda_tool_missing
+    command = _setup_command("lint_mixed", project_root=tmp_path, build_root=tmp_path / "build")
+    assert f"tool_{eda_tool}" in command
+
+
+@pytest.mark.parametrize(
+    "flow,eda_tool",
+    [
+        (None, "verible"),
+        (None, "veriblelint"),
+        ("sim", "verilator"),
+        ("generic", "yosys"),
+        ("lint", "yosys"),
+        ("lint", "vivado"),
+        ("lint", "slang"),
+    ],
+)
+def test_mixed_lint_authored_selection_controls(tmp_path, flow, eda_tool):
+    import yaml
+
+    target = {"default_tool": eda_tool}
+    if flow is not None:
+        target["flow"] = flow
+    (tmp_path / "control.core").write_text(
+        "CAPI=2:\n"
+        + yaml.safe_dump({"name": "acme:ip:control:1.0", "targets": {"control": target}})
+    )
+    ref = next(iter(enumerate_targets(tmp_path).values()))
+    assert ref.eda_tool == eda_tool
+
+
+@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint", "slang"])
+def test_explicit_lint_option_precedence_control(tmp_path, eda_tool):
+    (tmp_path / "control.core").write_text(
+        "CAPI=2:\nname: acme:ip:control:1.0\ntargets:\n  lint_control:\n    flow: lint\n    default_tool: yosys\n"
+        + f"    flow_options: {{tool: {eda_tool}}}\n"
+    )
+    assert next(iter(enumerate_targets(tmp_path).values())).eda_tool == eda_tool
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_resolved_handle_copies_lint_provenance(tmp_path, monkeypatch, missing):
+    from booley.fusesoc import fusesoc_registry
+
+    selection = "default_tool: verible" if missing else "flow_options: {tool: verible}"
+    (tmp_path / "mixed.core").write_text(
+        "CAPI=2:\nname: acme:ip:mixed:1.0\ntargets:\n  lint_mixed:\n    flow: lint\n"
+        + f"    {selection}\n"
+    )
+    handle = TargetCatalog.build(tmp_path).select("lint_mixed")
+    copied = []
+    monkeypatch.setattr(
+        fusesoc_registry, "preflight_target_sources_for_ref", lambda root, ref: copied.append(ref)
+    )
+    monkeypatch.setattr(
+        fusesoc_registry, "_run_setup_command", lambda *args, **kwargs: kwargs["source_ref"]
+    )
+    resolved_ref = fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
+    assert copied[0].lint_flow_eda_tool_missing is missing
+    assert resolved_ref.lint_flow_eda_tool_missing is missing
+    assert resolved_ref.eda_tool == "verible"

@@ -3502,8 +3502,8 @@ def _runtime_probe_binaries(
             handle = catalog.select(target)
         except FuseSocError:
             continue
-        tool = handle.eda_tool or ""
-        family = LINT_EDA_TOOL_FAMILIES.get(tool, tool)
+        eda_tool = handle.eda_tool or ""
+        family = LINT_EDA_TOOL_FAMILIES.get(eda_tool, eda_tool)
         binary = _EDA_TOOL_BINARIES.get(family.lower())
         if binary and binary not in binaries:
             binaries.append(binary)

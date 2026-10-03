@@ -848,7 +848,7 @@ def test_plan_binding_policy_rejects_unbound_and_private_provider_targets(
 
 
 @pytest.mark.parametrize(
-    "tool,legacy,compatible",
+    "eda_tool,legacy,compatible",
     [
         ("verible", False, True),
         ("veriblelint", False, True),
@@ -856,12 +856,14 @@ def test_plan_binding_policy_rejects_unbound_and_private_provider_targets(
         ("veriblelint", True, False),
     ],
 )
-def test_lint_replacement_requires_drivable_candidate(repository, tool, legacy, compatible):
+def test_lint_replacement_requires_drivable_candidate(repository, eda_tool, legacy, compatible):
     _add_candidate(repository)
     path = repository / "toy.core"
     old = "  lint_new:\n    flow: lint\n    flow_options: {tool: verilator}"
     declaration = (
-        f"default_tool: {tool}" if legacy else f"flow: lint\n    flow_options: {{tool: {tool}}}"
+        f"default_tool: {eda_tool}"
+        if legacy
+        else f"flow: lint\n    flow_options: {{tool: {eda_tool}}}"
     )
     path.write_text(
         path.read_text().replace(old, "  lint_new:\n    " + declaration), encoding="utf-8"
@@ -887,5 +889,37 @@ def test_lint_replacement_rejects_undrivable_baseline(repository):
         ),
         encoding="utf-8",
     )
+    with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
+        _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
+
+
+@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
+@pytest.mark.parametrize("role", ["candidate", "baseline"])
+def test_mixed_lint_replacement_rejected(repository, eda_tool, role):
+    path = repository / "toy.core"
+    if role == "baseline":
+        path.write_text(
+            path.read_text().replace(
+                "flow: lint\n    flow_options: {tool: verilator}",
+                f"flow: lint\n    default_tool: {eda_tool}",
+            )
+        )
+        _git(repository, "add", "toy.core")
+        _git(repository, "commit", "-qm", "mixed lint baseline")
+    _add_candidate(repository)
+    if role == "baseline":
+        path.write_text(
+            path.read_text().replace(
+                "  lint_old:\n    flow: lint\n    flow_options: {tool: verilator}",
+                f"  lint_old:\n    flow: lint\n    default_tool: {eda_tool}",
+            )
+        )
+    if role == "candidate":
+        path.write_text(
+            path.read_text().replace(
+                "  lint_new:\n    flow: lint\n    flow_options: {tool: verilator}",
+                f"  lint_new:\n    flow: lint\n    default_tool: {eda_tool}",
+            )
+        )
     with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
         _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))

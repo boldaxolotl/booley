@@ -15,9 +15,11 @@ from booley.fusesoc.target_inspection import (
     # owner allowed to drive source inspection.
     _TargetSourceInspector,  # pyright: ignore[reportPrivateUsage]
 )
+from booley.targets import target_naming
 from booley.targets.domain import (
     # Intentional private construction key: only this catalog creates handles.
     _HANDLE_FACTORY_KEY,  # pyright: ignore[reportPrivateUsage]
+    LINT_EDA_TOOL_FAMILIES,
     TARGET_AWARE_FLOWS,
     DuplicateTargetError,
     ForeignTargetHandleError,
@@ -163,8 +165,24 @@ class TargetCatalog:
                     "Declare either `flow: sim` with `flow_options.tool`, or legacy "
                     "`default_tool`, using Verilator or Icarus."
                 )
-            elif for_flow == "lint":
-                guidance = (
+            elif (
+                for_flow == "lint"
+                and not target_naming.fpga_intent(ref.name, ref.eda_tool)
+                and (
+                    (
+                        ref.flow == "lint"
+                        and (
+                            ref.lint_flow_eda_tool_missing
+                            or ref.eda_tool not in LINT_EDA_TOOL_FAMILIES
+                        )
+                    )
+                    or (ref.flow is None and ref.eda_tool == "veriblelint")
+                )
+            ):
+                if ref.lint_flow_eda_tool_missing:
+                    guidance += " Explicit lint requires flow_options.tool; default_tool does not supply it."
+                guidance += (
+                    " "
                     "Declare `flow: lint` with `flow_options.tool` set to verilator, "
                     "verible, or veriblelint; veriblelint requires explicit `flow: lint`."
                 )
@@ -287,6 +305,7 @@ class TargetCatalog:
             core_file=core_file,
             flow=ref.flow,
             eda_tool=ref.eda_tool,
+            lint_flow_eda_tool_missing=ref.lint_flow_eda_tool_missing,
             drivable_by=tuple(flow for flow in TARGET_AWARE_FLOWS if flow_can_drive(flow, ref)),
             project_root=self.project_root,
             doctor_private=ref.doctor_selftest,

@@ -79,6 +79,8 @@ class TargetRef:
     cocotb_module: str | None = None
     doctor_flows: tuple[str, ...] = ()
     doctor_selftest: bool = False
+    # Authored explicit lint lacks its mandatory flow_options.tool selection.
+    lint_flow_eda_tool_missing: bool = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,7 @@ class TargetHandle:
     cocotb_module: str | None = None
     doctor_flows: tuple[str, ...] = ()
     declared_toplevel: str = ""
+    lint_flow_eda_tool_missing: bool = field(default=False, kw_only=True)
     snapshot_id: str = field(default="", repr=False, compare=False)
     _factory_key: InitVar[object] = None
 
@@ -224,9 +227,11 @@ def flow_can_drive(flow: str, target: TargetRef | TargetHandle) -> bool:
     if flow == "sim":
         return target.eda_tool in _SIM_EDA_TOOLS and (target.flow == "sim" or target.flow is None)
     if flow == "lint":
-        return (target.flow == "lint" and target.eda_tool in LINT_EDA_TOOL_FAMILIES) or (
-            target.flow is None and target.eda_tool in _LEGACY_LINT_EDA_TOOLS
-        )
+        return (
+            target.flow == "lint"
+            and not target.lint_flow_eda_tool_missing
+            and target.eda_tool in LINT_EDA_TOOL_FAMILIES
+        ) or (target.flow is None and target.eda_tool in _LEGACY_LINT_EDA_TOOLS)
     if flow == "synth":
         return target.eda_tool == "yosys"
     return False

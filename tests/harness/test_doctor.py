@@ -8126,7 +8126,7 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "tool,flow,compatible,verible",
+    "eda_tool,flow,compatible,verible",
     [
         ("verible", "lint", True, True),
         ("veriblelint", "lint", True, True),
@@ -8138,9 +8138,11 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
         ("veriblelint", "sim", False, False),
     ],
 )
-def test_authored_lint_doctor_backend_policy(tmp_path, tool, flow, compatible, verible):
+def test_authored_lint_doctor_eda_tool_policy(tmp_path, eda_tool, flow, compatible, verible):
     declaration = (
-        f"flow: {flow}\n    flow_options: {{tool: {tool}}}" if flow else f"default_tool: {tool}"
+        f"flow: {flow}\n    flow_options: {{tool: {eda_tool}}}"
+        if flow
+        else f"default_tool: {eda_tool}"
     )
     (tmp_path / "lint.core").write_text(
         "CAPI=2:\nname: acme:ip:lint:1.0\ntargets:\n  lint_style:\n    " + declaration + "\n",
@@ -8164,3 +8166,24 @@ def test_authored_lint_doctor_backend_policy(tmp_path, tool, flow, compatible, v
         )
     else:
         assert "incompatible Doctor Flow" in diagnostic[0]
+
+
+@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
+def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
+    (tmp_path / "mixed.core").write_text(
+        "CAPI=2:\nname: acme:ip:mixed:1.0\ntargets:\n  lint_mixed:\n"
+        f"    flow: lint\n    default_tool: {eda_tool}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        project_dir=tmp_path / ".booley_project",
+        booley_toml={},
+        configs_toml={},
+        first_target="lint_mixed",
+    )
+    handle = doctor.TargetCatalog.build(tmp_path).select("lint_mixed")
+    assert doctor._doctor_target_incompatibility("lint_mixed", "lint", handle) is not None
+    assert not doctor._project_declares_verible_lint(project)
+    expected = "verilator" if eda_tool == "verilator" else "verible-verilog-lint"
+    assert doctor._runtime_probe_binaries(project, ["lint_mixed"], flow_name="lint") == [expected]

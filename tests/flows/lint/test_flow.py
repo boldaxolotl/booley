@@ -2640,7 +2640,6 @@ def test_authored_verible_public_run(
         "--ruleset=all",
         "--rules=-module-filename,line-length",
         "--show_diagnostic_context",
-        "--rules_config=",
         "--waiver_files=",
     ):
         assert flag in makefile
@@ -2649,6 +2648,7 @@ def test_authored_verible_public_run(
         and "lint/waivers.txt" in makefile
         and "lint/extra.txt" in makefile
     )
+    assert re.search(r"--rules_config=\S*lint/rules\.cfg", makefile)
     edam = next(tmp_path.rglob("*.eda.yml")).read_text(encoding="utf-8")
     assert f"tool: {spelling}" in edam
     assert result.detail["total_warnings"] > 0
@@ -2668,3 +2668,36 @@ def test_alias_preparation_compares_parser_families(tmp_path, configured):
         else:
             prepared = flow._prepare_lint_command(handle)
             assert "verible-verilog-lint" in str(prepared.command)
+
+
+@pytest.mark.parametrize("spelling", ["verilator", "verible", "veriblelint"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_mixed_lint_rejects_before_preparation(
+    tmp_path, state_file, monkeypatch, capsys, spelling, dry_run
+):
+    from booley.targets.domain import IncompatibleTargetError
+
+    _author_verible_alias_core(tmp_path, spelling)
+    core = tmp_path / "style.core"
+    text = core.read_text().replace(
+        f"    flow_options:\n      tool: {spelling}\n",
+        f"    default_tool: {spelling}\n    flow_options:\n",
+    )
+    core.write_text(text)
+    handle = TargetCatalog.build(tmp_path).select("lint_style")
+    assert "lint" not in handle.drivable_by
+    inspect = MagicMock(side_effect=AssertionError("incompatible Target inspected"))
+    setup = MagicMock(side_effect=AssertionError("incompatible Target setup"))
+    execute = MagicMock(side_effect=AssertionError("incompatible Target executed"))
+    monkeypatch.setattr(TargetCatalog, "inspect", inspect)
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", setup)
+    flow = LintFlow()
+    argv = ["--work-dir", str(tmp_path), "--target", "lint_style"]
+    flow.parse_args([*argv, *(["--dry-run"] if dry_run else [])])
+    flow.read_state()
+    monkeypatch.setattr(flow, "_execute", execute)
+    with pytest.raises(IncompatibleTargetError, match="default_tool does not supply it"):
+        flow._run()
+    inspect.assert_not_called()
+    setup.assert_not_called()
+    execute.assert_not_called()

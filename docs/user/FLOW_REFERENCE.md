@@ -539,7 +539,7 @@ semantic checks, Verible for style and naming. To run both, declare two Targets
 and select both.
 
 ```bash
-booley flow lint --target lint_soc,style_soc --scope rtl/fifo.sv
+booley flow lint --target lint_soc,lint_style --scope rtl/fifo.sv
 ```
 
 A Verible style Target selects RTL plus its rules and optional waivers:
