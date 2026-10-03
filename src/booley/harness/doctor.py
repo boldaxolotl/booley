@@ -113,6 +113,7 @@ from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
+    contains,
     resolve_checkout_project_dir,
 )
 from booley.runtime.project_gitignore import missing_gitignore_patterns
@@ -6178,10 +6179,10 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """
     if project.project_dir.as_posix() not in {dc.PROJECT_DIR_TARGET, "/work/.booley_project"}:
         return str(report_dir)
-    try:
-        rel = report_dir.relative_to(project.project_dir)
-    except ValueError:
+    canonical = contains(report_dir, project_dir=project.project_dir)
+    if canonical is None:
         return str(report_dir)
+    rel = canonical.relative_to(project.project_dir.resolve())
     return f"{PROJECT_DIR_NAME}/{rel.as_posix()} (under the repo root)"
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
 from booley.core.project_dir import PROJECT_DIR_NAME, resolve_authoritative_project_dir
+from booley.runtime.project_dir import contains
 from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET, WORK_DIR
 
 
@@ -58,8 +59,10 @@ def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
     for value in configured:
         if value:
             data = Path(value).resolve()
-            if start.is_relative_to(data) and not any(
-                checkout != data and checkout.is_relative_to(data) for checkout in checkouts
+            if contains(start, project_dir=data) is not None and not any(
+                (canonical := contains(checkout, project_dir=data)) is not None
+                and canonical != data.resolve()
+                for checkout in checkouts
             ):
                 return data
     for checkout in checkouts:
@@ -67,8 +70,12 @@ def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
             data = _checkout_data(checkout).resolve()
         except SourceCheckoutProjectError:
             continue
-        if start.is_relative_to(data):
-            if any(p != data and p.is_relative_to(data) for p in checkouts):
+        if contains(start, project_dir=data) is not None:
+            if any(
+                (canonical := contains(p, project_dir=data)) is not None
+                and canonical != data.resolve()
+                for p in checkouts
+            ):
                 continue
             return data
     return None
@@ -98,7 +105,7 @@ def _owning_checkouts(candidates: list[Path], data: Path) -> set[Path]:
     return {
         p.resolve()
         for p in candidates
-        if not p.resolve().is_relative_to(data) and has_git_worktree_marker(p) and _owns(p, data)
+        if contains(p, project_dir=data) is None and has_git_worktree_marker(p) and _owns(p, data)
     }
 
 
