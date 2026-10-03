@@ -9,7 +9,7 @@ bwave sample <FST_FILE> <TRIGGER_PAT> <TRIGGER_VAL>
              [-t START:END]
              [--async] [--clock PAT] [--reset PAT] [--with-reset]
              [--virtual "name = expr"]
-             [--format text|json] [--limit N]
+             [--format text] [--limit N]
 ```
 
 ## Semantics
@@ -41,36 +41,26 @@ literals, width-prefixed literals, and edge keywords
 
 ## Output shape
 
-Text mode prints a snapshot block per trigger event:
+Text mode prints time/name/value rows per trigger event:
 
 ```
-# sample: tb.dut.valid == 'h1
-# cycle 42:
-   data        'h0000DEAD
-   addr        'h0010
-# cycle 187:
-   data        'h0000BEEF
-   addr        'h0014
-# cycle 293:
-   data        'h00C0FFEE
-   addr        'h0018
-# 3 trigger fires
+1000 c 1
 ```
 
 With `--count`:
 
 ```
-3
+1
 ```
 
-JSON mode is **not yet implemented** for `sample`. Text
-mode only.
+`--format json` exits with code 2: `JSON output is not implemented for sample; use find/value/stats/list`.
 
 ## Common errors
 
 - **No snapshots emitted but `find` shows the trigger
   fires**: the `-s` pattern matched nothing. Sample
-  blocks are skipped when there's nothing to capture.
+  exits with code 2 for unmatched watched selectors, except
+  `--count` needs no watched rows.
 - **`--first and --last are mutually exclusive`**: same
   rule as `find`.
 - **Captured data looks stale**: sync mode samples on

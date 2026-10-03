@@ -629,7 +629,12 @@ def _validate_known_mandatory_criteria(
     project_root: str | Path | None,
 ) -> list[str]:
     """Reject mandatory criteria absent from the catalog or live tool registry."""
-    definitions, satisfying = _live_criterion_registry(project_root)
+    from booley.mcp.endpoint_config import EndpointConfigError
+
+    try:
+        definitions, satisfying = _live_criterion_registry(project_root)
+    except EndpointConfigError as exc:
+        return [str(exc)]
     mandatory = criteria.get("mandatory", {})
     if not isinstance(mandatory, dict):
         return []
@@ -665,17 +670,17 @@ def _live_criterion_registry(
     base = load_base_criteria()
     project = []
     project_tools = None
-    mcp_config: dict[str, Any] = {}
+    specialist_config: dict[str, Any] = {}
     flow_config: dict[str, Any] = {}
     if project_root is not None:
         project_dir = Path(project_root) / ".booley_project"
         project = load_project_criteria(project_dir / "criteria.toml")
         project_tools = project_dir / "mcp_tools"
-        mcp_config, flow_config = _read_endpoint_config(project_dir / "booley.toml")
+        specialist_config, flow_config = _read_endpoint_config(project_dir / "booley.toml")
     merged, _errors = merge_criteria_defs(base, project)
     endpoints = discover_mcp_tools(
         project_mcp_tools_dir=project_tools,
-        mcp_tool_config=mcp_config,
+        specialist_config=specialist_config,
         flow_config=flow_config,
     )
     satisfying = {family for endpoint in endpoints for family in endpoint.satisfies}
@@ -694,21 +699,9 @@ def _criterion_family(key: str, definitions: set[str]) -> str | None:
 
 def _read_endpoint_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read endpoint enablement for live-registry ticket validation."""
-    import tomllib
+    from booley.mcp.endpoint_config import read_endpoint_config
 
-    if not path.is_file():
-        return {}, {}
-    try:
-        with path.open("rb") as file:
-            data = tomllib.load(file)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}, {}
-    mcp_tools = data.get("mcp_tools", {})
-    flows = data.get("flows", {})
-    return (
-        mcp_tools if isinstance(mcp_tools, dict) else {},
-        flows if isinstance(flows, dict) else {},
-    )
+    return read_endpoint_config(path)
 
 
 def _validate_criteria_params(criteria: dict[str, Any]) -> list[str]:

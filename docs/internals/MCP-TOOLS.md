@@ -138,13 +138,13 @@ MCP tools are discovered from either the installed Booley package or the project
 ### Default Discovery and Explicit Opt-Out
 
 ```toml
-[mcp_tools.reviewer]
+[specialists.reviewer]
 enabled = false                 # remove one discovered Specialist MCP tool
 ```
 
-- Built-in Flows are scanned from `booley.flows`; Specialists and other MCP tools are scanned from `booley.specialists`.
+- Built-in Flows are scanned from `booley.flows`, Specialists from `booley.specialists`, and protocol utilities from `booley.mcp`.
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
-- `[flows.<name>].enabled = false` disables a Flow; `[mcp_tools.<name>].enabled = false` disables a Specialist or other non-Flow MCP tool.
+- `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
 - Visibility can still differ by runtime mode. Interactive Mode hides autonomous-only MCP tools such as `submit_run_report`; `tb_coder` is currently de-registered in all modes. Environment-level MCP filters also narrow nested or explicitly scoped servers, but they are not project registration.
 - `booley flow` is the human diagnostic entry point for Booley Flows; the MCP tool diagnostic surface covers Specialists and non-Flow endpoints.
 
@@ -155,25 +155,35 @@ image or uses a supported built-in EDA provisioning policy.
 
 ### Configuration Boundary
 
-The framework reads Flow settings from `[flows.<name>]` and non-Flow endpoint
-settings from `[mcp_tools.<name>]`. At this layer the shared effect is that
+The framework reads Flow settings from `[flows.<name>]` and Specialist
+settings from `[specialists.<name>]`. At this layer the shared effect is that
 `enabled = false` removes the capability from normal discovery.
 
-[CONFIG.md](../user/CONFIG.md#booley-flow-execution-enabled) owns the exact TOML
+[CONFIG.md](../user/CONFIG.md#flow-and-specialist-availability-enabled) owns the exact TOML
 schema, resolution order, defaults, and built-in per-Flow/endpoint settings. A
 custom Flow can read its section with `_load_flow_config(name, work_dir)` from
-`booley.flows.flow_config`. Discovery consumes `enabled` for direct endpoints
+`booley.flows.flow_config`. Discovery consumes `enabled` for Flows
 and Specialists; there is no generic `_load_tool_config()` API for additional
-custom `[mcp_tools.<name>]` values, so an implementation that defines such values
+custom `[specialists.<name>]` values, so an implementation that defines such values
 must load and validate them explicitly.
+
+The retired `[mcp_tools.*]` table is rejected with migration guidance. Rename
+Specialist sections to `[specialists.*]` and remove protocol utility settings.
+Direct MCP endpoints are available by default, subject to execution-mode and
+server-level filters.
+To opt out of a custom direct endpoint, prefix its implementation filename with
+`_` (for example `mcp_tools/_project_check.py`); discovery skips such files.
+Specialist settings require table entries and boolean `enabled` values. Doctor
+and discovery reject names that do not belong to discovered Specialists.
 
 ### Summary: Discovery Rules
 
 | MCP tool kind | Source | How enabled | Agent-visible? |
 |-----------|--------|-------------|:---:|
 | Built-in Flow | Installed `booley.flows` package | Enabled unless `[flows.<name>].enabled = false` | Yes, subject to mode-specific hiding |
-| Built-in Specialist or endpoint | Installed `booley.specialists` package | Enabled unless `[mcp_tools.<name>].enabled = false` | Yes, subject to mode-specific hiding |
-| Custom MCP tool | `.booley_project/mcp_tools/*.py` | Namespace depends on whether it is a Flow, Specialist, or direct endpoint | Yes, subject to mode-specific hiding |
+| Built-in Specialist | Installed `booley.specialists` package | Enabled unless `[specialists.<name>].enabled = false` | Yes, subject to mode-specific hiding |
+| Protocol utility | Installed `booley.mcp` package | Available by default; no Project enable switch | Yes, subject to mode-specific hiding |
+| Custom MCP tool | `.booley_project/mcp_tools/*.py` | Flows use `[flows]`, Specialists use `[specialists]`, direct endpoints have no Project enable switch | Yes, subject to mode-specific hiding |
 Use unique MCP tool names. Ticket Preflight warns when a custom name collides with a discovered built-in MCP tool, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
 
 ### Register a Custom Endpoint
@@ -614,7 +624,7 @@ Category isolation is separate from write isolation. Some built-ins temporarily 
 
 #### Find Its Logs
 
-Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[mcp_tools.<name>]` section is not disabled, and restart the Sandbox so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
+Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is not disabled, and restart the Sandbox so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
 
 ---
 
