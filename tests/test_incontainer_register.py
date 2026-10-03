@@ -1056,7 +1056,7 @@ def test_invalid_codex_diagnostic_names_destination(tmp_path, existing):
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(existing)
-    with pytest.raises(ValueError, match=str(path)):
+    with pytest.raises(ValueError, match=re.escape(str(path))):
         reg.upsert_codex(path)
     assert path.read_text() == existing
 
@@ -1107,7 +1107,7 @@ def test_codex_invalid_table_shape_fails_before_registration_mutations(
     monkeypatch.setattr(reg, "deploy_skills", lambda *args: calls.append("skills"))
     monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: calls.append("host skills"))
     monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: calls.append("credential"))
-    with pytest.raises(ValueError, match=str(path)):
+    with pytest.raises(ValueError, match=re.escape(str(path))):
         reg.register("codex", home=tmp_path)
     assert calls == []
     assert path.read_text() == existing
@@ -1124,7 +1124,7 @@ def test_codex_unsupported_inline_servers_fail_with_named_repair_diagnostic(tmp_
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(existing)
-    with pytest.raises(ValueError, match=str(path)) as error:
+    with pytest.raises(ValueError, match=re.escape(str(path))) as error:
         reg.upsert_codex(path)
     assert "repair this file and retry" in str(error.value)
     assert path.read_text() == existing
@@ -1287,6 +1287,6 @@ def test_codex_permission_writer_validates_notice_before_publication(tmp_path, m
     source = "suppress_unstable_features_warning=false\nnotice={}\n"
     path.write_text(source)
     monkeypatch.setattr(reg, "_upsert_codex_full_access_notice", lambda source: source)
-    with pytest.raises(ValueError, match=str(path)):
+    with pytest.raises(ValueError, match=re.escape(str(path))):
         reg._apply_codex_permission_mode(tmp_path)
     assert path.read_text() == source
