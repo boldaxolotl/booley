@@ -4803,6 +4803,11 @@ def _run_latch_case(flow_and_state, tmp_path, case):
         _write_latch_artifacts(
             plan.build_dir, stat, case.get("openroad", ""), case.get("stale", False)
         )
+        for name, text in case.get("artifacts", {}).items():
+            path = plan.build_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            os.utime(path, (100, 100))
         if case.get("missing_netlist"):
             (plan.build_dir / "synth_dut.v").unlink()
         return SubprocessResult(dispatched_unix=99, **case.get("process", {"returncode": 0}))
@@ -4814,6 +4819,46 @@ def _run_latch_case(flow_and_state, tmp_path, case):
         result = flow._run()
     report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
     return result, report
+
+
+@pytest.mark.parametrize("expected", [0, 1])
+def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expected):
+    # Mapping rows and final stat captured from the one-latch physical probe
+    # using bundled Yosys 0.69+ (9f75ca1f9) and pinned Nangate45 Liberty.
+    captured = (Path(__file__).parent / "fixtures/mapped_latch_yosys_0_69.txt").read_text()
+    yosys, stat = captured.split("--- stat_latch_probe.txt ---\n")
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "mode": "physical",
+            "expected": expected,
+            "openroad": (
+                "STA_WORST_SLACK_NS: 0.000000\n"
+                "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\n"
+                "Design area 63 u^2 50% utilization.\n"
+            ),
+            "artifacts": {
+                "yosys.log": yosys,
+                "stat_dut.txt": stat,
+                "openroad_dut.v": "module dut; endmodule\n",
+                "reports/timing/overall.rpt": "timing report\n",
+                "reports/timing/overall.csv.rpt": "",
+            },
+        },
+    )
+    assert result.exit_code == (EXIT_SUCCESS if expected else EXIT_FAILURE)
+    conditions = report["implementation"]["conditions"]
+    assert conditions["latches"] == 1
+    assert conditions["expected_latches"] == expected
+    assert conditions["unexpected_latches"] == 1 - expected
+    assert conditions["has_critical"] is (not expected)
+    assert report["yosys_complete"] is True
+    assert report["structural_checks_complete"] is True
+    assert DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite") is bool(expected)
+    if expected:
+        assert report["timing_complete"] is True
+        assert report["ppa_complete"] is True
 
 
 @pytest.mark.parametrize("expected", [8, 9])
