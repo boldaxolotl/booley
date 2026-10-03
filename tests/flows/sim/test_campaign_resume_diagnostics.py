@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows.builtin_cli import parse_request
+from booley.flows.sim.campaign.planning import compare_manifests
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.test_coverage_invocation import project
@@ -93,6 +94,47 @@ def test_public_source_resume_names_cause_without_new_attempt(tmp_path, monkeypa
     } == before
 
 
+def _prime_prior_refusal(root, reports, manifest, executions):
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=root, report_dir=reports)
+    )
+    assert result.exit_code == 2
+    assert len(executions) == 1
+    assert len(list((manifest.parent / "dependency-receipts").glob("*.json"))) == 1
+
+
+def _capture_resume_comparison(monkeypatch):
+    pairs = []
+    original = SimulateFlow._resume_campaign_plan
+
+    def capture(flow, validated, *args, **kwargs):
+        plan = original(flow, validated, *args, **kwargs)
+        pairs.append((validated.manifest, plan.manifest))
+        return plan
+
+    monkeypatch.setattr(SimulateFlow, "_resume_campaign_plan", capture)
+    return pairs
+
+
+def _assert_durable_evidence_with_one_new_receipt(before, after):
+    existing = {
+        key: value for key, value in before.items() if key.startswith("dependency-receipts/")
+    }
+    observed = {
+        key: value for key, value in after.items() if key.startswith("dependency-receipts/")
+    }
+    assert existing.items() <= observed.items()
+    assert len(observed) == len(existing) + 1
+    assert {key: value for key, value in before.items() if key not in existing} == {
+        key: value for key, value in after.items() if key not in observed
+    }
+    added = observed.keys() - existing.keys()
+    receipt = json.loads(observed[added.pop()])
+    dependent = Path(receipt["dependent_invocation"])
+    assert dependent.is_dir()
+    assert int(dependent.name) == receipt["dependent_invocation_id"]
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("verbose", [False, True])
 def test_public_resume_cli_summary_detail_and_dry_run_immutability(
@@ -100,8 +142,10 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
 ):
     reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
     (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// change\n")
+    _prime_prior_refusal(tmp_path, reports, manifest, executions)
     before = _snapshot(reports)
     durable_before = _snapshot(manifest.parent)
+    compared = _capture_resume_comparison(monkeypatch)
     argv = [
         "--resume-from",
         str(manifest),
@@ -129,6 +173,8 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
         assert line in result.outcome.report_text
     assert "8 derived fingerprints differ" in result.outcome.report_text
     raw = result.outcome.detail["mismatches"]
+    assert len(compared) == 1
+    assert raw == [item.message for item in compare_manifests(*compared[0])]
     assert len(raw) == 16
     if verbose:
         assert all(line in result.outcome.report_text for line in raw)
@@ -138,11 +184,7 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     if dry_run:
         assert _snapshot(reports) == before
     else:
-        assert {
-            key: value
-            for key, value in _snapshot(manifest.parent).items()
-            if not key.startswith("dependency-receipts/")
-        } == durable_before
+        _assert_durable_evidence_with_one_new_receipt(durable_before, _snapshot(manifest.parent))
 
 
 @pytest.mark.parametrize(

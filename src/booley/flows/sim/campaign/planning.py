@@ -76,6 +76,7 @@ class _DiagnosticProjection:
     def __init__(self, findings: tuple[WorkloadMismatch, ...]) -> None:
         self.findings = findings
         self.roots: list[str] = []
+        self.root_lines: set[str] = set()
         self.explained: set[int] = set()
         self.derived: set[int] = set()
         self.fallback: set[int] = set()
@@ -93,14 +94,20 @@ class _DiagnosticProjection:
 
     def explain(self, indices: set[int], lines: Sequence[str]) -> None:
         self.explained.update(indices)
-        self.roots.extend(line for line in lines if line not in self.roots)
+        for line in lines:
+            self.add_root(line)
+
+    def add_root(self, line: str, *, preserve_duplicate: bool = False) -> None:
+        if preserve_duplicate or line not in self.root_lines:
+            self.roots.append(line)
+            self.root_lines.add(line)
 
     def finish(self) -> WorkloadDiagnostic:
         accounted = self.explained | self.derived
         for index, item in enumerate(self.findings):
             if index not in accounted:
                 self.fallback.add(index)
-                self.roots.append(f"workload changed: {item.message}")
+                self.add_root(f"workload changed: {item.message}", preserve_duplicate=True)
         assert not (
             self.explained & self.derived
             | self.explained & self.fallback
@@ -183,7 +190,7 @@ def _project_sources(projection, old, new) -> None:
         return
     old_map, new_map = _entry_map(old, "path"), _entry_map(new, "path")
     if old_map is None or new_map is None:
-        projection.roots.append("source paths ambiguous: duplicate source path")
+        projection.add_root("source paths ambiguous: duplicate source path")
         return
     projection.explain(indices, _named_changes(old_map, new_map, kind="source"))
 
@@ -240,7 +247,7 @@ def _prepared_existing_cause(projection, before, after, sources) -> bool:
         and new_sources is not None
         and path in old_sources
         and path in new_sources
-        and f"source changed: {_label(path)}" in projection.roots
+        and f"source changed: {_label(path)}" in projection.root_lines
         and _prepared_source_matches(before, old_sources[path])
         and _prepared_source_matches(after, new_sources[path])
     )
@@ -283,7 +290,7 @@ def _render_prepared_groups(projection, groups) -> None:
         rendered[key] = line
     line_counts = Counter(rendered.values())
     for key, line in rendered.items():
-        if line_counts[line] == 1 and line not in projection.roots:
+        if line_counts[line] == 1 and line not in projection.root_lines:
             projection.explain(groups[key][0], (line,))
 
 
@@ -388,8 +395,8 @@ def _project_variants(projection, left, right) -> None:
         elif (
             _entry_map(old["source_closure"], "path") is None
             or _entry_map(new["source_closure"], "path") is None
-        ) and "source paths ambiguous: duplicate source path" not in projection.roots:
-            projection.roots.append("source paths ambiguous: duplicate source path")
+        ) and "source paths ambiguous: duplicate source path" not in projection.root_lines:
+            projection.add_root("source paths ambiguous: duplicate source path")
 
 
 def _project_items(projection, left, right) -> None:

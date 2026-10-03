@@ -1759,6 +1759,11 @@ def test_repeated_diagnostic_region_lookups_do_not_rescan_original_findings():
 
     class CountingFindings(tuple):
         walks = 0
+        indexed_reads = 0
+
+        def __getitem__(self, index):
+            self.indexed_reads += 1
+            return super().__getitem__(index)
 
         def __iter__(self):
             self.walks += 1
@@ -1770,13 +1775,16 @@ def test_repeated_diagnostic_region_lookups_do_not_rescan_original_findings():
     )
     projection = _DiagnosticProjection(findings)
     original_walks = findings.walks
+    original_indexed_reads = findings.indexed_reads
     for _ in range(20):
         assert projection.indices("/build_variants/0/sha256") == {0, 200}
         assert projection.indices("/build_variants/0") == {0, 200}
         assert projection.indices("/build_variants") == set(range(201))
         assert projection.indices("/build_variants/20") == {20}
+        assert projection.indices("/build_variants/2") == {2}
         assert projection.indices("/absent") == set()
     assert findings.walks == original_walks
+    assert findings.indexed_reads == original_indexed_reads
     projection.explain({0, 200}, ("same region changed",))
     projection.derived.add(1)
     diagnostic = projection.finish()
@@ -1796,3 +1804,42 @@ def test_parameter_display_escapes_nested_controls_without_changing_raw_values()
     assert not any(character in diagnostic.report() for character in controls)
     assert any(item.actual == controls for item in diagnostic.mismatches)
     assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
+
+
+def test_diagnostic_prefix_lookup_preserves_root_and_escaped_component_boundaries():
+    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
+
+    pointers = ("", "/", "//child", "/scope/~1x", "/scope/~1x/child", "/scope/~1xy")
+    projection = _DiagnosticProjection(tuple(WorkloadMismatch(p, "old", "new") for p in pointers))
+    assert projection.indices("") == set(range(6))
+    assert projection.indices("/") == {1, 2}
+    assert projection.indices("/scope/~1x") == {3, 4}
+    assert projection.indices("/scope/~1") == set()
+    selected = projection.indices("/scope/~1x")
+    selected.clear()
+    assert projection.indices("/scope/~1x") == {3, 4}
+
+
+def test_projected_root_membership_does_not_scan_ordered_output():
+    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
+
+    class CountingRoots(list):
+        membership_checks = 0
+
+        def __contains__(self, line):
+            self.membership_checks += 1
+            return super().__contains__(line)
+
+    finding = WorkloadMismatch("/unknown", "old", "new")
+    projection = _DiagnosticProjection((finding, finding))
+    projection.roots = CountingRoots()
+    expected = [f"source changed: source_{index}.sv" for index in range(200)]
+    projection.explain(set(), expected)
+    projection.explain(set(), list(reversed(expected)))
+    assert projection.roots == expected
+    assert projection.roots.membership_checks == 0
+    diagnostic = projection.finish()
+    fallback = f"workload changed: {finding.message}"
+    assert diagnostic.mismatch_summary == (*expected, fallback, fallback)
+    assert projection.root_lines == set(diagnostic.mismatch_summary)
+    assert diagnostic.mismatches == (finding, finding)
