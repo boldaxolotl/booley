@@ -1261,6 +1261,7 @@ def _blocked_result(
     elapsed: float,
     *,
     infrastructure: bool = False,
+    evidence: list[dict[str, object]] | None = None,
 ) -> SimulationResult:
     observations = (
         _infrastructure_observations(request, outcome, build_failure=True)
@@ -1284,7 +1285,7 @@ def _blocked_result(
         snapshot=None,
         observations=observations,
         elapsed=elapsed,
-        evidence=[],
+        evidence=evidence or [],
     )
 
 

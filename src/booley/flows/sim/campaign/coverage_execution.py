@@ -475,7 +475,13 @@ def _publish_coverage_build_failure(
         checkpoint=checkpoint,
     )
     return _blocked_result(
-        request, directory, result, failed, elapsed, infrastructure=infrastructure
+        request,
+        directory,
+        result,
+        failed,
+        elapsed,
+        infrastructure=infrastructure,
+        evidence=_coverage_evidence(request, outcome),
     )
 
 

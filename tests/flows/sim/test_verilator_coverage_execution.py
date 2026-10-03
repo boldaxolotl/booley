@@ -992,6 +992,9 @@ def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
     request, invocation = _coverage_build_failure_request(tmp_path)
     # Isolate Simulation build/result durability from nested collector publication.
     monkeypatch.setattr(SimulationCampaign, "_publish_coverage_reference", lambda *_args: None)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coverage_execution._coverage_evidence", lambda *_args: []
+    )
 
     outcome = SimulationCampaign(_CoverageFailedBuildExecutor()).run(request)
 
