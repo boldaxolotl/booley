@@ -41,3 +41,58 @@ def test_failed_projection_replacement_preserves_previous_complete_document(
 
     assert path.read_bytes() == before
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_infrastructure_termination_is_reported_beyond_observation_preview() -> None:
+    from booley.flows.sim.flow import _campaign_observation_preview
+
+    observation = {
+        "test": "first",
+        "execution": "completed",
+        "failure_class": None,
+        "functional": "pass",
+        "assertions": "clean",
+        "assertion_count": 0,
+        "detail": {},
+    }
+    aborted = dict(
+        observation,
+        test="last",
+        execution="aborted",
+        failure_class="infrastructure",
+        functional="not_observed",
+        assertions="not_observed",
+        detail={"termination": "disk_budget", "reason": "disk guard"},
+    )
+    preview = _campaign_observation_preview([observation] * 32 + [aborted])
+    assert preview["observations_truncated"] is True
+    assert preview["termination_counts"] == {"disk_budget": 1}
+    assert preview["observations"][0]["failure_class"] is None
+
+
+def test_campaign_build_diagnostics_survive_preview_limit() -> None:
+    from booley.flows.sim.flow import _campaign_observation_preview
+
+    observation = {
+        "test": "ok",
+        "execution": "completed",
+        "failure_class": None,
+        "functional": "pass",
+        "assertions": "clean",
+        "assertion_count": 0,
+        "detail": {},
+    }
+    stage = {
+        "failure_kind": "infrastructure",
+        "timed_out": True,
+        "returncode": -9,
+        "reason": "build exceeded timeout",
+    }
+    failed = dict(
+        observation,
+        failure_class="infrastructure",
+        execution="aborted",
+        detail={"termination": "build_infrastructure", "build_stage": stage},
+    )
+    preview = _campaign_observation_preview([observation] * 32 + [failed])
+    assert preview["build_stage"] == [stage]

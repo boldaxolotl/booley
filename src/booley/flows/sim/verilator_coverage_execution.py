@@ -41,6 +41,7 @@ from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
     resolve_pre_sim_commands,
 )
+from booley.flows.sim.coverage_campaign import CoverageFinding
 from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
@@ -689,17 +690,31 @@ def _image_identity(root: Path, paths: tuple[Path, ...]) -> tuple[tuple[str, int
 def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> SimulationRunResult:
     process = attempt.process
     output = process.stdout + ("\n" + process.stderr if process.stderr else "")
-    if attempt.error is not None or attempt.result is None:
+    cleanup = attempt.error_kind == "cleanup" and attempt.result is not None
+    if (attempt.error is not None and not cleanup) or attempt.result is None:
         verdict: SimulationVerdict = "timeout" if process.timed_out else "inconclusive"
         return SimulationRunResult(verdict, f"{output}\n{attempt.error or ''}".strip())
     test = next(item for item in attempt.result.test_results if item.name == test_name)
+    detail = attempt.result.detail or output
+    if cleanup:
+        detail += f"\nartifact_persistence: {attempt.error or attempt.cleanup_error}"
     return SimulationRunResult(
         _adapter_verdict(attempt.result, test_name),
-        attempt.result.detail or output,
+        detail,
         infrastructure_error=test.failure_kind == "infrastructure",
         termination=test.termination,
         failure_kind=test.failure_kind,
         simulator_returncode=attempt.result.simulator_returncode,
+        diagnostics=(
+            CoverageFinding(
+                "warning",
+                "COV_ARTIFACT_PERSISTENCE_CLEANUP_FAILED",
+                "/tests/runs",
+                attempt.error or attempt.cleanup_error or "adapter partial cleanup failed",
+            ),
+        )
+        if cleanup
+        else (),
     )
 
 

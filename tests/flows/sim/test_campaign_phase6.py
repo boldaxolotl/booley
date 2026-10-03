@@ -22,7 +22,7 @@ try:
 except ImportError:  # pragma: no cover - Windows compatibility
     resource = None  # type: ignore[assignment]
 
-from booley.criteria.state import DevelopmentState
+from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.campaign import (
@@ -1447,3 +1447,44 @@ def test_pruning_rejects_terminal_schema_extras(tmp_path: Path) -> None:
 
     with pytest.raises(CampaignRetentionError, match="tree-terminal proof"):
         prune_invocation(reports, 1)
+
+
+@pytest.mark.parametrize("previous", [True, False, None])
+def test_infrastructure_abort_preserves_simulation_criterion(
+    tmp_path: Path, previous: bool | None
+) -> None:
+    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator
+
+    original, _invocation = _named_campaign_outcome(tmp_path)
+    document = json.loads(original.acceptance_facts.canonical_bytes())
+    document["observations"][0].update(
+        execution="aborted",
+        failure_class="infrastructure",
+        functional="not_observed",
+        assertions="not_observed",
+        cycle_count=None,
+        detail={"termination": "disk_budget", "reason": "disk guard"},
+    )
+    facts = AcceptanceFacts(document)
+    outcome = replace(
+        original,
+        observations=tuple(facts.document["observations"]),
+        acceptance_facts=facts,
+        aggregate_grade="error",
+    )
+    _path, state, key, _recorder = _named_campaign_state(tmp_path)
+    state.criteria[key].met = previous
+    state.criteria[key].detail = {"prior": "retained"}
+    state.criteria["cycle_count_sim_half"] = CriterionEntry(
+        met=previous,
+        detail={"prior": "cycle retained"},
+        params={
+            "target": "acme:lib:dut:1#sim",
+            "_target_selector": "sim",
+            "test": "half",
+            "max_cycles": 100,
+        },
+    )
+    before = state._to_dict()
+    assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
+    assert state._to_dict() == before

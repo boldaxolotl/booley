@@ -29,6 +29,11 @@ from booley.core.boundary import (
     require_list,
     require_str_value,
 )
+from booley.flows.sim.adapter_transport import (
+    AdapterTransportError,
+    AdapterTransportIdentity,
+    read_adapter_result,
+)
 from booley.flows.sim.build_session import CacheDecision
 from booley.flows.sim.campaign_durability import (
     durable_create,
@@ -651,8 +656,11 @@ class CampaignStore:
             "workload_sha256"
         ]
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+        target = cast(Mapping[str, str], manifest.document["target"])
+        target_identity = f"{target['vlnv']}#{target['name']}"
         recovered = tuple(
-            self._scan_item(item, manifest_sha256, expected_workload) for item in items
+            self._scan_item(item, manifest_sha256, expected_workload, target_identity)
+            for item in items
         )
         return CampaignRecovery(recovered)
 
@@ -661,6 +669,7 @@ class CampaignStore:
         work_item: Mapping[str, object],
         manifest_sha256: str,
         workload_sha256: str,
+        target_identity: str,
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
         # ``scan`` already decoded the complete manifest.  Re-loading and
@@ -696,7 +705,9 @@ class CampaignStore:
                 attempts,
                 decoded_attempts,
             )
-            _validate_result_selection(work_item, result, attempts[-1])
+            _validate_result_selection(
+                work_item, result, attempts[-1], target_identity=target_identity
+            )
             return WorkItemRecovery(work_item_id, "complete", len(attempts), result)
         state = "interrupted" if attempts else "pending"
         return WorkItemRecovery(work_item_id, state, len(attempts), None)
@@ -841,7 +852,11 @@ def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
 
 
 def _validate_result_selection(
-    work_item: Mapping[str, object], result: SimulationResult, attempt_directory: Path
+    work_item: Mapping[str, object],
+    result: SimulationResult,
+    attempt_directory: Path,
+    *,
+    target_identity: str | None = None,
 ) -> None:
     """Bind terminal observation order and transport evidence to the manifest."""
     selection = cast(Mapping[str, object], work_item["selection"])
@@ -872,20 +887,163 @@ def _validate_result_selection(
     expected_kind = "coverage_campaign_manifest" if kind == "coverage_aggregate" else None
     if kind == "cocotb_batch" and observed != (None,):
         expected_kind = "cocotb_results"
+    if (
+        kind == "cocotb_batch"
+        and observed == (None,)
+        and result.document["state"] == "aborted"
+        and observations[0]["failure_class"] == "infrastructure"
+    ):
+        infrastructure_tests = _authenticated_infrastructure_tests(
+            attempt_directory, result, target_identity
+        )
+        if not _missing_transport_is_infrastructure(result, infrastructure_tests):
+            raise SimulationCampaignIntegrityError(
+                "unfiltered infrastructure result lacks authenticated failure evidence"
+            )
     if expected_kind is not None:
+        infrastructure_tests = _authenticated_infrastructure_tests(
+            attempt_directory, result, target_identity
+        )
         matching = [item for item in evidence if item["kind"] == expected_kind]
+        if not matching and _missing_transport_is_infrastructure(result, infrastructure_tests):
+            return
         if len(matching) != 1 or matching[0]["owner"] != result.document["attempt_id"]:
             raise SimulationCampaignIntegrityError(
                 f"{kind} result lacks exact authenticated transport evidence"
             )
         if kind == "cocotb_batch":
-            _validate_cocotb_transport(attempt_directory, matching[0], observations)
+            _validate_cocotb_transport(
+                attempt_directory, matching[0], observations, infrastructure_tests
+            )
+
+
+def _missing_transport_is_infrastructure(
+    result: SimulationResult, infrastructure_tests: frozenset[object]
+) -> bool:
+    document = result.document
+    observations = cast(tuple[Mapping[str, object], ...], document["observations"])
+    build = cast(Mapping[str, object], document["build_result"])
+    return document["state"] == "aborted" and (
+        build["state"] == "infrastructure_error"
+        or all(
+            item["test"] in infrastructure_tests
+            and item["failure_class"] == "infrastructure"
+            and item["execution"] == "aborted"
+            for item in observations
+        )
+    )
+
+
+def _authenticated_infrastructure_tests(
+    directory: Path, result: SimulationResult, target_identity: str | None
+) -> frozenset[object]:
+    document = result.document
+    references = cast(tuple[Mapping[str, object], ...], document["evidence"])
+    observations = cast(tuple[Mapping[str, object], ...], document["observations"])
+    names = tuple(item["test"] for item in observations)
+    authenticated: set[object] = set()
+    for reference in references:
+        if reference["kind"] not in {
+            "simulation_adapter_result",
+            "simulation_infrastructure_failure",
+        }:
+            continue
+        payload, path = _read_infrastructure_reference(
+            directory, reference, document["attempt_id"]
+        )
+        if reference["kind"] == "simulation_infrastructure_failure":
+            if (
+                payload.get("$schema") != "booley.simulation-infrastructure-failure/v1"
+                or payload.get("attempt_id") != document["attempt_id"]
+                or payload.get("work_item_id") != document["work_item_id"]
+                or payload.get("selected_tests") != list(names)
+                or payload.get("source") != "process"
+                or not isinstance(payload.get("code"), str)
+                or not payload["code"]
+                or payload.get("termination") != payload["code"]
+            ):
+                raise SimulationCampaignIntegrityError("infrastructure process evidence disagrees")
+            authenticated.update(names)
+        else:
+            authenticated.update(
+                _adapter_infrastructure_tests(path, payload, observations, target_identity)
+            )
+    return frozenset(authenticated)
+
+
+def _read_infrastructure_reference(directory, reference, attempt_id):
+    path = directory / cast(str, reference["path"])
+    _require_safe_parents(path, directory)
+    raw = _read_regular(path, limit=RECORD_MAX_BYTES)
+    if (
+        reference["owner"] != attempt_id
+        or len(raw) != reference["bytes"]
+        or _raw_digest(raw) != reference["sha256"]
+    ):
+        raise SimulationCampaignIntegrityError("infrastructure evidence does not authenticate")
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SimulationCampaignIntegrityError("infrastructure evidence is invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise SimulationCampaignIntegrityError("infrastructure evidence is invalid")
+    return payload, path
+
+
+def _adapter_infrastructure_tests(path, payload, observations, target_identity) -> set[object]:
+    if target_identity is not None and payload.get("target_identity") != target_identity:
+        raise SimulationCampaignIntegrityError("infrastructure adapter Target disagrees")
+    names = tuple(item["test"] for item in observations)
+    try:
+        identity = AdapterTransportIdentity(
+            adapter=payload["adapter"],
+            attempt_token=payload["attempt_token"],
+            target_identity=payload["target_identity"],
+            selected_tests=tuple(payload["selected_tests"]),
+            result_path=path,
+        )
+        source = read_adapter_result(identity)
+    except (KeyError, TypeError, AdapterTransportError) as exc:
+        raise SimulationCampaignIntegrityError(
+            "infrastructure adapter evidence is invalid"
+        ) from exc
+    if names == (None,) and not source.tests and not source.test_results:
+        return _unfiltered_adapter_infrastructure_test(source, observations[0])
+    if source.tests != names:
+        raise SimulationCampaignIntegrityError("infrastructure adapter selection disagrees")
+    authenticated: set[object] = set()
+    for item, observed in zip(source.test_results, observations, strict=True):
+        if item.failure_kind != "infrastructure" or item.termination == "completed":
+            continue
+        detail = cast(Mapping[str, object], observed["detail"])
+        if (
+            observed["execution"] != "aborted"
+            or observed["failure_class"] != "infrastructure"
+            or detail.get("termination") != item.termination
+        ):
+            raise SimulationCampaignIntegrityError("infrastructure adapter termination disagrees")
+        authenticated.add(item.name)
+    return authenticated
+
+
+def _unfiltered_adapter_infrastructure_test(source, observed) -> set[object]:
+    detail = cast(Mapping[str, object], observed["detail"])
+    if (
+        source.failure_kind == "infrastructure"
+        and source.termination != "completed"
+        and observed["execution"] == "aborted"
+        and observed["failure_class"] == "infrastructure"
+        and detail.get("termination") == source.termination
+    ):
+        return {None}
+    raise SimulationCampaignIntegrityError("unfiltered adapter failure disagrees")
 
 
 def _validate_cocotb_transport(
     attempt_directory: Path,
     reference: Mapping[str, object],
     observations: tuple[Mapping[str, object], ...],
+    infrastructure_tests: frozenset[object] = frozenset(),
 ) -> None:
     path = attempt_directory / cast(str, reference["path"])
     raw = _read_regular(path, limit=RECORD_MAX_BYTES)
@@ -915,32 +1073,71 @@ def _validate_cocotb_transport(
         raise SimulationCampaignIntegrityError(
             "Cocotb transport observations disagree with Simulation Result"
         )
-    _validate_cocotb_source(document["source_observations"], observations)
+    _validate_cocotb_source(
+        document["source_observations"], observations, infrastructure_tests=infrastructure_tests
+    )
 
 
 def _validate_cocotb_source(
-    source: object, observations: tuple[Mapping[str, object], ...]
+    source: object,
+    observations: tuple[Mapping[str, object], ...],
+    *,
+    infrastructure_tests: frozenset[object] = frozenset(),
 ) -> None:
     if not isinstance(source, list) or len(source) != len(observations):
         raise SimulationCampaignIntegrityError("Cocotb source transport count disagrees")
     for transported, observed in zip(source, observations, strict=True):
         if not isinstance(transported, dict) or set(transported) != {"test", "verdict", "detail"}:
             raise SimulationCampaignIntegrityError("Cocotb source transport is invalid")
-        verdict_matches = _cocotb_source_verdict_matches(transported, observed)
-        detail = cast(Mapping[str, object], observed["detail"])["reason"]
-        if (
-            transported["test"] != observed["test"]
-            or not verdict_matches
-            or (transported["detail"] and transported["detail"] != detail)
-        ):
+        verdict_matches = _cocotb_source_verdict_matches(
+            transported, observed, infrastructure=observed["test"] in infrastructure_tests
+        )
+        detail_matches = _cocotb_source_detail_matches(
+            transported,
+            observed,
+            infrastructure=observed["test"] in infrastructure_tests,
+            limit=16 if len(observations) > 128 else 768,
+        )
+        if transported["test"] != observed["test"] or not verdict_matches or not detail_matches:
             raise SimulationCampaignIntegrityError("Cocotb source transport disagrees")
 
 
+def _cocotb_source_detail_matches(
+    transported: Mapping[str, object],
+    observed: Mapping[str, object],
+    *,
+    infrastructure: bool,
+    limit: int,
+) -> bool:
+    source = transported["detail"]
+    reason = cast(Mapping[str, object], observed["detail"])["reason"]
+    if not source or source == reason:
+        return True
+    if not (
+        infrastructure
+        and observed["execution"] == "aborted"
+        and observed["failure_class"] == "infrastructure"
+        and isinstance(source, str)
+    ):
+        return False
+    return source.encode("utf-8")[-limit:].decode("utf-8", errors="ignore") == reason
+
+
 def _cocotb_source_verdict_matches(
-    transported: Mapping[str, object], observed: Mapping[str, object]
+    transported: Mapping[str, object],
+    observed: Mapping[str, object],
+    *,
+    infrastructure: bool = False,
 ) -> bool:
     verdict = transported["verdict"]
     functional = observed["functional"]
+    if (
+        infrastructure
+        and observed["execution"] == "aborted"
+        and observed["failure_class"] == "infrastructure"
+        and functional == "not_observed"
+    ):
+        return verdict in {"fail", "timeout", "inconclusive"}
     if verdict == functional:
         return True
     if observed["execution"] == "timeout":

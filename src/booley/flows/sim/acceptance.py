@@ -155,7 +155,7 @@ def _simulation_changes(
                 contract.minimum_total,
             )
         relevant = _criterion_observations(contract, suite, observations, selected)
-        if relevant is None:
+        if relevant is None or any(_unobserved_infrastructure(item) for item in relevant):
             continue
         met = _simulation_criterion_met(outcome, contract, relevant)
         detail = _simulation_detail(outcome, contract, registered, relevant)
@@ -217,6 +217,13 @@ def _criterion_observations(
     if contract.selector == "all":
         return tuple(selected[name] for name in sorted(selected))
     return tuple(selected[name] for name in sorted(contract.required_tests))
+
+
+def _unobserved_infrastructure(observation: Mapping[str, object] | None) -> bool:
+    return observation is not None and (
+        observation.get("failure_class") == "infrastructure"
+        and observation.get("functional") == "not_observed"
+    )
 
 
 def _observation_passed(observation: Mapping[str, object]) -> bool:
@@ -541,7 +548,11 @@ def _cycle_changes(
             continue
         test = params.get("test")
         current = observations.get(test)
+        if _unobserved_infrastructure(current):
+            continue
         baseline, baseline_state = _bound_baseline(prerequisites, params, test)
+        if _unobserved_infrastructure(baseline):
+            continue
         current_cycles = _healthy_cycles(current)
         baseline_cycles = baseline["cycle_count"] if baseline is not None else None
         checks = _cycle_threshold_checks(params, current_cycles, baseline_cycles)

@@ -16,13 +16,11 @@ from unittest.mock import patch
 import pytest
 
 import booley.flows.sim.build as build_module
-import booley.flows.sim.campaign.coverage_execution as coverage_execution_module
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import classify_build_outcome
 from booley.flows.sim.build_parallelism import verilator_backend_arguments
 from booley.flows.sim.campaign.codec import (
     MAX_DETAIL_BYTES,
-    SimulationCampaignIntegrityError,
     canonical_json_bytes,
 )
 from booley.flows.sim.campaign.coordinator import (
@@ -255,25 +253,37 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
 
 
 @pytest.mark.parametrize("path", ["shared", "private"])
-def test_campaign_build_timeout_raises_typed_infrastructure_error(
+def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     outcome = _engine_timeout_outcome(tmp_path / "engine")
     runner = _run_shared_timeout if path == "shared" else _run_private_timeout
     executor, request, invocation = runner(tmp_path, monkeypatch, outcome)
 
-    with pytest.raises(build_module.SimulationBuildInfrastructureError) as caught:
-        SimulationCampaign(executor).run(request)
-
-    assert not isinstance(caught.value, SimulationCampaignIntegrityError)
-    assert str(caught.value).splitlines()[0] == TIMEOUT_REASON
+    campaign = SimulationCampaign(executor).run(request)
+    assert campaign.complete is True
+    assert campaign.aggregate_grade == "error"
+    assert campaign.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     result = _first_build_result(store)
     assert result["state"] == "infrastructure_error"
     observation = result["observation"]
     assert observation["message"] == TIMEOUT_REASON
     assert observation["detail"]["text"].splitlines()[0] == TIMEOUT_REASON
-    assert store.scan().interrupted
+    assert store.scan().interrupted == ()
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    endpoint = flow._campaign_endpoint_outcome([campaign])
+    assert endpoint.exit_code == EXIT_ERROR
+    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
+    assert endpoint.detail["target"] == "sim"
+    stage = endpoint.detail["build_stage"]
+    assert stage["timed_out"] is True
+    assert stage["failure_class"] == "infrastructure"
+    assert stage["ran"] is outcome.builds[-1].ran
+    assert {"elapsed_s", "terminal_record", "cache_decision"}.issubset(stage)
+    assert TIMEOUT_REASON in endpoint.report_text.splitlines()[0]
 
 
 def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path, capsys) -> None:
@@ -384,8 +394,9 @@ def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> No
         infrastructure_error=True,
         reason=TIMEOUT_REASON,
     )
-    with pytest.raises(coverage_execution_module._CoverageAggregateError):
-        _run_coverage_campaign(tmp_path, failing)
+    campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
+    assert campaign.complete is True
+    assert campaign.aggregate_grade == "error"
 
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
     observation = _first_build_result(store)["observation"]
@@ -398,13 +409,11 @@ def test_coverage_campaign_build_timeout_is_not_an_integrity_error(tmp_path: Pat
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
         False, f"{TIMEOUT_REASON}\ntail", infrastructure_error=True, reason=TIMEOUT_REASON
     )
-    with pytest.raises(coverage_execution_module._CoverageAggregateError) as caught:
-        _run_coverage_campaign(tmp_path, failing)
-
-    assert not isinstance(caught.value, SimulationCampaignIntegrityError)
-    assert TIMEOUT_REASON in str(caught.value).splitlines()[0]
+    campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
+    assert campaign.complete is True
+    assert campaign.aggregate_grade == "error"
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
-    assert store.scan().interrupted
+    assert store.scan().interrupted == ()
 
 
 def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) -> None:
@@ -412,8 +421,9 @@ def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) ->
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
         False, "coverage Verilator identity mismatch", infrastructure_error=True
     )
-    with pytest.raises(coverage_execution_module._CoverageAggregateError):
-        _run_coverage_campaign(tmp_path, failing)
+    campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
+    assert campaign.complete is True
+    assert campaign.aggregate_grade == "error"
 
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
     message = _first_build_result(store)["observation"]["message"]
@@ -488,8 +498,9 @@ def test_hostile_oom_build_output_publishes_and_decodes(
     )
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
 
-    with pytest.raises(build_module.SimulationBuildInfrastructureError):
-        SimulationCampaign(executor).run(request)
+    campaign = SimulationCampaign(executor).run(request)
+    assert campaign.complete is True
+    assert campaign.aggregate_grade == "error"
 
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     result = _first_build_result(store)
@@ -499,7 +510,7 @@ def test_hostile_oom_build_output_publishes_and_decodes(
     assert "\x1b" not in text
     assert "BOOLEY_BUILD_STAGE" not in text
     assert len(canonical_json_bytes({"text": text})) <= MAX_DETAIL_BYTES
-    assert store.scan().interrupted
+    assert store.scan().interrupted == ()
 
 
 def test_campaign_resume_failure_reports_build_timeout_first() -> None:
@@ -530,3 +541,102 @@ def test_build_owned_loader_startup_is_infrastructure(executable):
     )
     assert outcome.failure_kind == "infrastructure"
     assert "libx.so" in outcome.reason
+
+
+@pytest.mark.parametrize("sharing", [False, True])
+def test_large_batch_build_failure_publishes_bounded_terminal_result(
+    tmp_path, monkeypatch, sharing
+) -> None:
+    from dataclasses import replace
+
+    from tests.flows.sim.test_campaign_phase5_adversarial import _plan
+
+    names = tuple(f"test_{index}" for index in range(1000))
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names)
+    outcome = _engine_timeout_outcome(tmp_path / "engine")
+    assert outcome.infrastructure_failure is not None
+    outcome = replace(
+        outcome,
+        infrastructure_failure=replace(outcome.infrastructure_failure, detail="界" * 4000),
+        builds=(replace(outcome.builds[0], reason="compiler failed: " + "界" * 200),),
+    )
+    from booley.flows.sim.execution.contract import SimulationTestOutcome
+
+    if not sharing:
+        outcome = replace(
+            outcome,
+            tests=tuple(
+                SimulationTestOutcome(
+                    name, "elab_error", False, reason="x" * 500 + "tail sentinel"
+                )
+                for name in names
+            ),
+        )
+    root = tmp_path / "failed-build"
+    root.mkdir()
+
+    class Execution:
+        @contextmanager
+        def ordinary_group(self, _handle, _names):
+            yield _InfrastructureGroup(root, outcome)
+
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution._sharing_eligible", lambda _request: sharing
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,
+        execution_factory=lambda _options: Execution(),
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    campaign = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+    assert campaign.complete
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    result = store.scan().items[0].result
+    assert result is not None
+    assert result.document["grade"] == "error"
+    assert [item["test"] for item in result.document["observations"]] == list(names)
+    assert _first_build_result(store)["observation"]["detail"]["build_stage"]["timed_out"]
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    endpoint = flow._campaign_endpoint_outcome([campaign])
+    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
+    assert endpoint.detail["build_stage"]["timed_out"] is True
+    assert "compiler failed:" in campaign.observations[0]["detail"]["reason"]
+    if not sharing:
+        assert "tail sentinel" in campaign.observations[0]["detail"]["reason"]
+
+
+def test_escaped_build_metadata_stays_within_canonical_detail_budget(
+    tmp_path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    outcome = _engine_timeout_outcome(tmp_path / "engine")
+    assert outcome.infrastructure_failure is not None
+    outcome = replace(
+        outcome,
+        infrastructure_failure=replace(
+            outcome.infrastructure_failure, missing_executable="\\" * 128, detail="界" * 4000
+        ),
+        builds=(
+            replace(
+                outcome.builds[0],
+                reason="compiler failed: " + "\x01" * 200,
+                cache_decision="\x02" * 400,
+            ),
+        ),
+    )
+    executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
+    campaign = SimulationCampaign(executor).run(request)
+    assert campaign.complete
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    detail = _first_build_result(store)["observation"]["detail"]
+    assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
+    assert detail["build_stage"]["timed_out"] is True
+    assert store.scan().interrupted == ()

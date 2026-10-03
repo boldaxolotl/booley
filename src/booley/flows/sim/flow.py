@@ -545,6 +545,9 @@ def _campaign_report_lines(
             reason = detail.get("reason") if isinstance(detail, Mapping) else None
             if isinstance(reason, str) and reason and reason not in reasons:
                 reasons.append(reason)
+        build_detail = _campaign_build_infrastructure_detail([outcome])
+        if build_detail and reasons:
+            line += f": {reasons[0].splitlines()[0]}"
         report_lines = [line, *(f"  {reason}" for reason in reasons)]
         if getattr(outcome, "coverage_reference", None) is not None:
             report_lines.extend(_waiver_block_hint_lines(campaign))
@@ -777,6 +780,7 @@ def _campaign_observation_preview(
         {
             "test": item["test"],
             "execution": item["execution"],
+            "failure_class": item["failure_class"],
             "functional": item["functional"],
             "assertions": item["assertions"],
             "assertion_count": item["assertion_count"],
@@ -789,7 +793,62 @@ def _campaign_observation_preview(
         "observations": preview,
         "observation_total": total,
         "observations_truncated": total > limit,
+        "termination_counts": _campaign_termination_counts(observations),
+        "build_stage": _campaign_build_stages(observations),
     }
+
+
+def _campaign_build_infrastructure_detail(
+    outcomes: Sequence[CampaignOutcome],
+) -> dict[str, object]:
+    """Preserve the endpoint's first-build diagnostic compatibility interface."""
+    for outcome in outcomes:
+        for item in outcome.observations:
+            if item.get("failure_class") != "infrastructure":
+                continue
+            detail = item.get("detail")
+            stage = detail.get("build_stage") if isinstance(detail, Mapping) else None
+            if isinstance(stage, Mapping) and stage.get("failure_class") == "infrastructure":
+                return {
+                    "eda_tool_error": "build_infrastructure",
+                    "target": str(outcome.target["selector"]),
+                    "build_stage": _structured_json(stage),
+                }
+    return {}
+
+
+def _campaign_build_stages(observations: Sequence[Mapping[str, object]]) -> list[object]:
+    """Retain bounded, distinct build diagnostics from the complete observation set."""
+    stages: list[object] = []
+    for item in observations:
+        if item.get("failure_class") != "infrastructure":
+            continue
+        detail = item.get("detail")
+        stage = detail.get("build_stage") if isinstance(detail, Mapping) else None
+        if isinstance(stage, Mapping):
+            projected = _structured_json(stage)
+            if projected not in stages and len(stages) < 32:
+                stages.append(projected)
+    return stages
+
+
+def _campaign_termination_counts(
+    observations: Sequence[Mapping[str, object]],
+) -> dict[str, int]:
+    """Keep every infrastructure termination visible beyond the bounded preview."""
+    counts: dict[str, int] = {}
+    for item in observations:
+        if item.get("failure_class") != "infrastructure":
+            continue
+        detail = item.get("detail")
+        termination = detail.get("termination") if isinstance(detail, Mapping) else None
+        if isinstance(termination, str):
+            # Adapter failure codes are external input; aggregate unusual codes together.
+            key = termination if len(termination) <= 64 and len(counts) < 32 else "other"
+            if termination in counts:
+                key = termination
+            counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _structured_json(value: object) -> object:
@@ -4098,6 +4157,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             coverage_campaigns,
         )
         detail: dict[str, object] = {"campaigns": campaigns}
+        detail.update(_campaign_build_infrastructure_detail(outcomes))
         if coverage_targets:
             detail.update(
                 coverage=True,
