@@ -1097,6 +1097,36 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)
 
 
+def _report_extension_type(endpoint_kind, key):
+    from typing import ClassVar
+
+    from booley.flows.base import BooleyFlow
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.specialists.specialist import Specialist
+
+    base = BooleyFlow if endpoint_kind == "flow" else Specialist
+
+    class DrcFlow(base):
+        name = "drc_check"
+
+        def _build_prompt(self):
+            return "unused"
+
+        def _interpret_output(self, output, structured):
+            raise AssertionError("agent not invoked")
+
+        satisfies: ClassVar[list[str]] = ["drc_clean", "drc_rules"]
+
+        def _add_args(self, parser):
+            pass
+
+        def _run(self):
+            self.set_criterion(key, True)
+            return EndpointOutcome()
+
+    return DrcFlow
+
+
 @pytest.mark.parametrize("binding", ["name", "identity"])
 @pytest.mark.parametrize("ticket", ["none", "single", "plural"])
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
@@ -1105,11 +1135,7 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
 def test_declared_custom_flow_prepared_headline(
     runtime, monkeypatch, binding, ticket, endpoint_kind, catalog, target
 ):
-    from typing import ClassVar
-
     from booley.criteria.state import DevelopmentState
-    from booley.flows.base import BooleyFlow
-    from booley.runtime.endpoint_execution import EndpointOutcome
 
     key = "drc_clean_first" if binding == "name" else "drc_clean_policy42"
     other = "drc_rules_first" if binding == "name" else "drc_rules_policy73"
@@ -1135,29 +1161,7 @@ def test_declared_custom_flow_prepared_headline(
     if catalog:
         _report_targets(runtime)
 
-    from booley.specialists.specialist import Specialist
-
-    base = BooleyFlow if endpoint_kind == "flow" else Specialist
-
-    class DrcFlow(base):
-        name = "drc_check"
-
-        def _build_prompt(self):
-            return "unused"
-
-        def _interpret_output(self, output, structured):
-            raise AssertionError("agent not invoked")
-
-        satisfies: ClassVar[list[str]] = ["drc_clean", "drc_rules"]
-
-        def _add_args(self, parser):
-            pass
-
-        def _run(self):
-            self.set_criterion(key, True)
-            return EndpointOutcome()
-
-    flow = DrcFlow()
+    flow = _report_extension_type(endpoint_kind, key)()
     result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
     expected = (
         (key, True)

@@ -2673,6 +2673,61 @@ def test_no_waivers_resume_with_criterion_needs_diagnostic(tmp_path, monkeypatch
     assert state_path.read_bytes() == before
 
 
+def _coverage_headline_state(tmp_path, monkeypatch, ticket):
+    from booley.criteria.state import CriterionEntry
+
+    state_path = tmp_path / "state.json"
+    if ticket == "none":
+        return state_path
+    state = DevelopmentState.load(state_path)
+    if ticket in {"coverage", "coverage_only"}:
+        state.strict_criteria = True
+        state.criteria = {
+            "coverage_sim_0": CriterionEntry(
+                params={
+                    "target": "acme:demo:counter:1#sim_0",
+                    "_target_selector": "sim_0",
+                    "tests": "all",
+                    "metrics": {"line": {"min_pct": 100}},
+                }
+            ),
+            "sim_pass_sim_0": CriterionEntry(
+                params={"target": "acme:demo:counter:1#sim_0", "_target_selector": "sim_0"}
+            ),
+        }
+    if ticket == "coverage_only":
+        del state.criteria["sim_pass_sim_0"]
+    state.slug = "headline-ticket"
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    return state_path
+
+
+def _assert_coverage_headline_results(results, ticket, verdict, state_path):
+    expected = (
+        ("sim_pass_sim_0", verdict == "pass")
+        if ticket == "none"
+        else ("coverage_sim_0", False)
+        if ticket == "coverage_only"
+        else ("", None)
+    )
+    evaluation = "fail" if ticket in {"coverage", "coverage_only"} else "not_requested"
+    for result in results:
+        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == evaluation
+        assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+        assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
+    if ticket == "undeclared":
+        assert DevelopmentState.load(state_path).criteria == {}
+    if ticket in {"coverage", "coverage_only"}:
+        saved = DevelopmentState.load(state_path)
+        if ticket == "coverage":
+            assert saved.criteria["sim_pass_sim_0"].met is True
+        assert saved.criteria["coverage_sim_0"].met is False
+    elif ticket == "none":
+        assert not state_path.exists()
+
+
 @pytest.mark.parametrize(
     "ticket,verdict",
     [
@@ -2686,34 +2741,9 @@ def test_no_waivers_resume_with_criterion_needs_diagnostic(tmp_path, monkeypatch
 def test_public_coverage_campaign_headline_fresh_and_resume(
     tmp_path, monkeypatch, ticket, verdict
 ):
-    from booley.criteria.state import CriterionEntry
-
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     reports = _prepare_coverage_origin(tmp_path, monkeypatch)
-    if ticket != "none":
-        state_path = tmp_path / "state.json"
-        state = DevelopmentState.load(state_path)
-        if ticket in {"coverage", "coverage_only"}:
-            state.strict_criteria = True
-            state.criteria = {
-                "coverage_sim_0": CriterionEntry(
-                    params={
-                        "target": "acme:demo:counter:1#sim_0",
-                        "_target_selector": "sim_0",
-                        "tests": "all",
-                        "metrics": {"line": {"min_pct": 100}},
-                    }
-                ),
-                "sim_pass_sim_0": CriterionEntry(
-                    params={"target": "acme:demo:counter:1#sim_0", "_target_selector": "sim_0"}
-                ),
-            }
-        if ticket == "coverage_only":
-            del state.criteria["sim_pass_sim_0"]
-        state.slug = "headline-ticket"
-        state.save()
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    state_path = _coverage_headline_state(tmp_path, monkeypatch, ticket)
     runs = []
 
     class Counted(NativeExecution):
@@ -2742,24 +2772,4 @@ def test_public_coverage_campaign_headline_fresh_and_resume(
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     resumed = invoke(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
     assert tuple(runs) == completed
-    expected = (
-        ("sim_pass_sim_0", verdict == "pass")
-        if ticket == "none"
-        else ("coverage_sim_0", False)
-        if ticket == "coverage_only"
-        else ("", None)
-    )
-    evaluation = "fail" if ticket in {"coverage", "coverage_only"} else "not_requested"
-    for result in (fresh, resumed):
-        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == evaluation
-        assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
-        assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
-    if ticket == "undeclared":
-        assert DevelopmentState.load(state_path).criteria == {}
-    if ticket in {"coverage", "coverage_only"}:
-        saved = DevelopmentState.load(state_path)
-        if ticket == "coverage":
-            assert saved.criteria["sim_pass_sim_0"].met is True
-        assert saved.criteria["coverage_sim_0"].met is False
-    elif ticket == "none":
-        assert not (tmp_path / "state.json").exists()
+    _assert_coverage_headline_results((fresh, resumed), ticket, verdict, state_path)
