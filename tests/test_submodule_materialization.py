@@ -622,3 +622,159 @@ def test_inner_selection_failure_preserves_successful_outer_materialization(tmp_
     assert not (inner / "a/available" / ".git").exists()
     assert not (inner / "z/missing" / ".git").exists()
     assert _git(source, "status", "--porcelain").stdout == ""
+
+
+def test_standalone_baseline_policy_materializes_only_outer_submodules(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    old = _commit_file(dependency, "old\n", "old")
+    new = _commit_file(dependency, "current\n", "current")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _add_submodule(source, dependency, "vendor/ip")
+    _git(source / "vendor/ip", "checkout", "--detach", old)
+    _set_submodule_url(source, "vendor/ip")
+    _git(source, "add", "-A")
+    _git(source, "commit", "-qm", "old pin")
+    baseline = _git(source, "rev-parse", "HEAD").stdout.strip()
+    _git(source / "vendor/ip", "checkout", "--detach", new)
+    _git(source, "add", "vendor/ip")
+    _git(source, "commit", "-qm", "current pin")
+    project = source / ".booley_project"
+    _init_repo(project)
+    _commit_file(project, "Project\n", "Project")
+    # Deliberately unavailable gitlinks must never be inspected or fetched.
+    _git(project, "update-index", "--add", "--cacheinfo", f"160000,{old},missing")
+    _git(project, "commit", "-qm", "unavailable inner gitlink")
+    _git(source, "update-index", "--add", "--cacheinfo", f"160000,{old},.booley_project")
+    _git(source, "commit", "-qm", "Project gitlink")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination, baseline)
+    _git(destination, "update-index", "--add", "--cacheinfo", f"160000,{old},.booley_project")
+
+    materialize_project_submodules(source, destination, skip_standalone_project=True)
+
+    assert (destination / "vendor/ip/source.sv").read_text(encoding="utf-8") == "old\n"
+    assert _git(destination / "vendor/ip", "rev-parse", "HEAD").stdout.strip() == old
+    assert not (destination / ".booley_project").exists()
+
+
+def test_standalone_default_requires_installed_project_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _init_repo(source)
+    _commit_file(source, "outer\n", "outer")
+    project = source / ".booley_project"
+    _init_repo(project)
+    _commit_file(project, "Project\n", "Project")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    with pytest.raises(
+        SubmoduleMaterializationError, match="paired project checkout is unavailable"
+    ):
+        materialize_project_submodules(source, destination)
+
+
+def test_external_standalone_baseline_skips_project_but_default_rejects_projection(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _init_repo(source)
+    _commit_file(source, "outer\n", "outer")
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    _commit_file(dependency, "outer dependency\n", "dependency")
+    _add_submodule(source, dependency, "vendor/ip")
+    _set_submodule_url(source, "vendor/ip")
+    _git(source, "add", "-A")
+    _git(source, "commit", "-qm", "outer submodule")
+    project = tmp_path / "external"
+    _init_repo(project)
+    _commit_file(project, "Project\n", "Project")
+    (source / "booley.toml").write_text(
+        f'[project]\ndir = "{project.as_posix()}"\n', encoding="utf-8"
+    )
+    _git(source, "add", "booley.toml")
+    _git(source, "commit", "-qm", "external Project")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    materialize_project_submodules(source, destination, skip_standalone_project=True)
+    assert not (destination / ".booley_project").exists()
+    assert (destination / "vendor/ip/source.sv").read_text(
+        encoding="utf-8"
+    ) == "outer dependency\n"
+    with pytest.raises(SubmoduleMaterializationError, match="outside checkout"):
+        materialize_project_submodules(source, destination)
+
+
+@pytest.mark.parametrize("configured_composite", [False, True])
+def test_linked_project_materializes_historical_inner_submodule(
+    tmp_path: Path, configured_composite: bool
+) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    old = _commit_file(dependency, "historical\n", "historical")
+    new = _commit_file(dependency, "current\n", "current")
+    owner = tmp_path / "owner"
+    _init_repo(owner)
+    _add_submodule(owner, dependency, "vendor/ip")
+    _git(owner / "vendor/ip", "checkout", "--detach", old)
+    _set_submodule_url(owner, "vendor/ip")
+    _git(owner, "add", "-A")
+    _git(owner, "commit", "-qm", "historical inner pin")
+    historical = _git(owner, "rev-parse", "HEAD").stdout.strip()
+    _git(owner / "vendor/ip", "checkout", "--detach", new)
+    _git(owner, "add", "vendor/ip")
+    _git(owner, "commit", "-qm", "current inner pin")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _commit_file(source, "outer\n", "outer")
+    _add_worktree(owner, source / ".booley_project")
+    materialize_submodules(owner, source / ".booley_project")
+    project_path = "custom" if configured_composite else ".booley_project"
+    if configured_composite:
+        (source / "custom").mkdir()
+        (source / "booley.toml").write_text('[project]\ndir = "custom"\n', encoding="utf-8")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    _add_worktree(owner, destination / project_path, historical)
+
+    materialize_project_submodules(
+        source, destination, skip_standalone_project=not configured_composite
+    )
+
+    inner = destination / project_path / "vendor/ip"
+    assert _git(inner, "rev-parse", "HEAD").stdout.strip() == old
+    assert (inner / "source.sv").read_text(encoding="utf-8") == "historical\n"
+
+
+def test_standalone_baseline_excludes_project_inside_outer_submodule(tmp_path: Path) -> None:
+    project_owner = tmp_path / "project-owner"
+    _init_repo(project_owner)
+    project_sha = _commit_file(project_owner, "Project cores\n", "Project")
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    _commit_file(dependency, "outer dependency\n", "dependency")
+    _git(
+        dependency, "update-index", "--add", "--cacheinfo", f"160000,{project_sha},.booley_project"
+    )
+    _git(dependency, "commit", "-qm", "nested Project gitlink")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _commit_file(source, "outer\n", "outer")
+    _add_submodule(source, dependency, "vendor/ip")
+    _git(source / "vendor/ip", "clone", str(project_owner), ".booley_project")
+    (source / "booley.toml").write_text(
+        '[project]\ndir = "vendor/ip/.booley_project"\n', encoding="utf-8"
+    )
+    _git(source, "add", "-A")
+    _git(source, "commit", "-qm", "configured nested Project")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+
+    materialize_project_submodules(source, destination, skip_standalone_project=True)
+
+    assert (destination / "vendor/ip/source.sv").read_text(
+        encoding="utf-8"
+    ) == "outer dependency\n"
+    assert not (destination / "vendor/ip/.booley_project/.git").exists()
+    assert (source / "vendor/ip/.booley_project/.git").is_dir()

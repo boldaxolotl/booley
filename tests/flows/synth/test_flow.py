@@ -5288,3 +5288,52 @@ def test_1095_aggregate_error_reasons_match_exit(flow_and_state, kind):
     ) in result.report_text
     if kind == "mixed":
         assert "lite:" in result.report_text and "full:" in result.report_text
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_synth_baseline_materializes_project_topologies(tmp_path, monkeypatch, topology):
+    from booley.flows.implementation_comparison import target_pair_plans_for_handles
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _baseline_implementation_unit,
+        _git,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    _git(root, "reset", "--mixed", revision)
+    monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--work-dir", str(root), "--target", "synth_core", "--baseline", "HEAD"])
+    handle = TargetCatalog.build(root).select("synth_core", for_flow="synth")
+    flow._target_handles = {handle.selector: handle}
+    flow._target_execution_refs = {}
+    flow._target_pairs = target_pair_plans_for_handles(
+        {}, "synthesis_ok_", (handle,), flow="synth"
+    )
+    candidate_handles = flow._target_handles
+    roots = []
+
+    def recipe(target):
+        baseline = Path(flow.args.work_dir)
+        _assert_topology_baseline(baseline, root, target)
+        assert flow._target_handle(target).identity == handle.identity
+        roots.append(baseline)
+        return object()
+
+    def run(target):
+        recipe(target)
+        return SynthMetrics(cells=7), "historical synthesis"
+
+    monkeypatch.setattr(flow, "_resolve_synth_recipe", recipe)
+    monkeypatch.setattr(flow, "_synth_work_unit", _baseline_implementation_unit)
+    monkeypatch.setattr(flow, "_run_single_config", run)
+    units, errors = flow._plan_synth_baselines("HEAD")
+    assert errors == []
+    assert units[0].role == "baseline"
+    results, sha = flow._run_baseline_configs(flow._target_pairs)
+    assert sha
+    assert results["synth_core"].cells == 7
+    assert flow.args.work_dir == root
+    assert flow._target_handles is candidate_handles
+    assert roots and all(not path.exists() for path in roots)

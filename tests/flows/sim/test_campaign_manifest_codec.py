@@ -400,8 +400,13 @@ def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
     assert manifest.document["planning_disclosures"][0]["planner"] == "fusesoc_setup"  # type: ignore[index]
 
 
-def _linked_campaign_stores(tmp_path: Path):
+def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
     baseline = _baseline_manifest()
+    if topology_revisions is not None:
+        document = json.loads(encode_simulation_campaign_manifest(baseline))
+        document.pop("fingerprints")
+        _retarget_topology_manifest(document, topology_revisions[1])
+        baseline = finalize_manifest(document)
     invocation = tmp_path / "reports" / "000001"
     baseline_store = CampaignStore(invocation / "targets" / "base-revision" / "campaign")
     baseline_store.publish_manifest(baseline)
@@ -409,6 +414,8 @@ def _linked_campaign_stores(tmp_path: Path):
     baseline_json = json.loads(raw)
     candidate_document = _manifest()
     candidate_document.pop("fingerprints")
+    if topology_revisions is not None:
+        _retarget_topology_manifest(candidate_document, topology_revisions[0])
     candidate_document["prerequisites"] = [
         {
             "role": "cycle_count_baseline",
@@ -999,3 +1006,69 @@ def test_run_cwd_rejects_noncanonical_format_syntax(configured: str) -> None:
     }
     with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
+
+
+def _retarget_topology_manifest(document, revision):
+    target = document["target"]
+    target.update(vlnv="acme:lib:top:1", name="sim_core", selector="sim_core", revision=revision)
+    item = document["work_items"][0]
+    item.update(target=target, revision=revision)
+    identity = {
+        key: value
+        for key, value in item.items()
+        if key not in {"fingerprint_sha256", "work_item_id"}
+    }
+    fingerprint = _sha(identity)
+    item.update(fingerprint_sha256=fingerprint, work_item_id="item:0000:" + fingerprint[7:23])
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, topology):
+    from tests.flows.sim.test_cycle_observation import _criterion_flow
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    current = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout.strip()
+    _candidate, store, _baseline, baseline_store = _linked_campaign_stores(
+        tmp_path, topology_revisions=(current, revision)
+    )
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = root
+    flow._args.resume_from = store.manifest_path
+    roots = []
+
+    def validate(path, *, project_root, revision_root):
+        def inspect(target):
+            historical = revision_root(target)
+            if target["role"] != "candidate":
+                _assert_topology_baseline(historical, root, "sim_core")
+                assert revision_root(target) == historical
+                roots.append(historical)
+            return historical
+
+        return validate_resume_manifest(path, project_root=project_root, revision_root=inspect)
+
+    monkeypatch.setattr("booley.flows.sim.flow.validate_resume_manifest", validate)
+    try:
+        handles, validated, selected, tests = flow._prepare_campaign_targets()
+        assert handles == validated.target_handles
+        assert handles[0].project_root == root
+        assert handles[1].identity == "acme:lib:top:1#sim_core"
+        assert handles[1].project_root == roots[0]
+        assert validated.prerequisites[0].path == baseline_store.manifest_path
+        assert selected == ()
+        assert tests == {}
+        assert roots[0].exists()
+    finally:
+        flow.context.publication_resources.close()
+    assert not roots[0].exists()
