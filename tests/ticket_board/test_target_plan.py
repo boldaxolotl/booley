@@ -845,3 +845,69 @@ def test_plan_binding_policy_rejects_unbound_and_private_provider_targets(
         target_plan._validate_plan_bindings(
             {}, tmp_path, None, set(), frozenset({"provider"}), frozenset()
         )
+
+
+@pytest.mark.parametrize(
+    "eda_tool,legacy,compatible",
+    [
+        ("verible", False, True),
+        ("veriblelint", False, True),
+        ("slang", False, False),
+        ("veriblelint", True, False),
+    ],
+)
+def test_lint_replacement_requires_drivable_candidate(repository, eda_tool, legacy, compatible):
+    _add_candidate(repository)
+    path = repository / "toy.core"
+    old = "  lint_new:\n    flow: lint\n    flow_options: {tool: verilator}"
+    declaration = (
+        f"default_tool: {eda_tool}"
+        if legacy
+        else f"flow: lint\n    flow_options: {{tool: {eda_tool}}}"
+    )
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, "  lint_new:\n    " + declaration, 1), encoding="utf-8")
+    if compatible:
+        analysis = _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
+        assert analysis.plan is not None
+    else:
+        with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
+            _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
+
+
+def _replace_lint_selection(path: Path, name: str, selection: str) -> None:
+    """Change exactly one canonical declaration, asserting the edit is real."""
+    old = f"  {name}:\n    flow: lint\n    flow_options: {{tool: verilator}}"
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1
+    path.write_text(
+        text.replace(old, f"  {name}:\n    flow: lint\n    {selection}", 1), encoding="utf-8"
+    )
+
+
+def test_lint_replacement_rejects_undrivable_baseline(repository):
+    path = repository / "toy.core"
+    _replace_lint_selection(path, "lint_old", "flow_options: {tool: slang}")
+    _git(repository, "add", "toy.core")
+    _git(repository, "commit", "-qm", "unsupported baseline")
+    _add_candidate(repository)
+    # _add_candidate rewrites the baseline too; restore its committed declaration.
+    _replace_lint_selection(path, "lint_old", "flow_options: {tool: slang}")
+    with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
+        _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
+
+
+@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
+@pytest.mark.parametrize("role", ["candidate", "baseline"])
+def test_mixed_lint_replacement_rejected(repository, eda_tool, role):
+    path = repository / "toy.core"
+    if role == "baseline":
+        _replace_lint_selection(path, "lint_old", f"default_tool: {eda_tool}")
+        _git(repository, "add", "toy.core")
+        _git(repository, "commit", "-qm", "mixed lint baseline")
+    _add_candidate(repository)
+    selected = "lint_old" if role == "baseline" else "lint_new"
+    _replace_lint_selection(path, selected, f"default_tool: {eda_tool}")
+    with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
+        _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))

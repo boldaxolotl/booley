@@ -58,7 +58,7 @@ LABEL org.opencontainers.image.version=${BOOLEY_VERSION} \
       org.opencontainers.image.source=https://github.com/boldaxolotl/booley
 
 RUN test -x "$(command -v claude)" \
-    && python3 -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)' \
+    && python3 -c 'import booley, cocotb, edalize.tools.verible, edalize.tools.veriblelint, fusesoc; print(booley.__file__)' \
     && /usr/local/libexec/booley/bwave --version
 
 USER root

@@ -1555,6 +1555,37 @@ Renaming a Target also requires updating its `tests.toml` section, Doctor
 metadata references, explicit callers, and ticket criteria. For Python testbenches, see
 [Cocotb Targets](#cocotb-targets-python-testbenches).
 
+#### Verible lint Target
+
+Explicit lint Targets require `verilator`, `verible`, or `veriblelint` in
+`flow_options.tool`; unsupported or missing EDA tools are excluded from
+`booley targets --for lint`, and explicit Doctor lint selections report incompatibility.
+
+Use canonical `verible` for a style Target that selects RTL, its rules, and optional
+waivers:
+
+```yaml
+CAPI=2:
+name: acme:ip:top:1.0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+  lint_config:
+    files:
+      - lint/rules.cfg: {file_type: veribleLintRules}
+      - lint/waivers.txt: {file_type: veribleLintWaiver}
+targets:
+  lint_style:
+    flow: lint
+    flow_options: {tool: verible}
+    filesets: [rtl, lint_config]
+    toplevel: top
+```
+
+These are existing Project source files at paths relative to the `.core` file,
+selected through its filesets. Supply at most one rules file; waiver files are optional.
+
 ### Tests (`tests.toml`)
 
 `tests.toml` lists the tests to run per Target, plus an optional run-time

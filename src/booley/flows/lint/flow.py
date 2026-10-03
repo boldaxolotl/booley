@@ -52,7 +52,7 @@ from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import MissingTargetToplevelError, TargetHandle
+from booley.targets.domain import LINT_EDA_TOOL_FAMILIES, MissingTargetToplevelError, TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts
@@ -84,10 +84,8 @@ def _lint_eda_tool_family(eda_tool: str | None) -> str:
     execution configuration).
     """
     lowered = str(eda_tool or "").strip().lower()
-    if lowered == "verible":
-        return "verible"
-    if lowered == "verilator":
-        return "verilator"
+    if lowered in LINT_EDA_TOOL_FAMILIES:
+        return LINT_EDA_TOOL_FAMILIES[lowered]
     raise ValueError(f"unknown lint EDA tool {eda_tool!r}; expected Verilator or Verible")
 
 

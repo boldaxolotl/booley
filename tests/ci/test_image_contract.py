@@ -646,3 +646,18 @@ def test_package_inventory_probe_changes_contract_status(
     )
 
     assert (result.returncode == 0) is passes, result.stderr
+
+
+@pytest.mark.parametrize("filename", ["Dockerfile", "Dockerfile.substrate"])
+def test_images_install_same_verible_source_under_both_flow_module_names(filename):
+    docker = SCRIPT.parents[2] / "src/booley/data/docker"
+    text = (docker / filename).read_text(encoding="utf-8")
+    assert "COPY src/booley/data/edalize/verible.py /tmp/booley-build/verible.py" in text
+    assert 'shutil.copyfile(src, dst / "verible.py")' in text
+    assert 'shutil.copyfile(src, dst / "veriblelint.py")' in text
+
+
+@pytest.mark.parametrize("filename", ["Dockerfile", "Dockerfile.wheel"])
+def test_image_sanity_imports_both_verible_flow_modules(filename):
+    text = (SCRIPT.parents[2] / "src/booley/data/docker" / filename).read_text(encoding="utf-8")
+    assert "edalize.tools.verible, edalize.tools.veriblelint" in text
