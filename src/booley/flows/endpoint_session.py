@@ -116,6 +116,11 @@ def prepare_execution(
             return simulation
     if endpoint.endpoint_kind in {"flow", "specialist"}:
         freeze(endpoint, simulation)
+    return _prepared_execution(endpoint, simulation)
+
+
+def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> PreparedExecution:
+    """Publish the start event after all preparation gates have succeeded."""
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()
     dry_run = bool(getattr(endpoint.args, "dry_run", False))

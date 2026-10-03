@@ -681,6 +681,101 @@ def _public_cycle_campaign(tmp_path, monkeypatch):
         )
 
 
+def _cycle_ticket(tmp_path):
+    from booley.criteria.state import DevelopmentState
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+
+    path = tmp_path / "state.json"
+    state = DevelopmentState.load(path)
+    state.slug, state.ticket_type = "ticket", "implementation"
+    key = "sim_pass_sim_smoke"
+    params = {
+        "target": "acme:lib:dut:1#sim",
+        "_target_selector": "sim",
+        "test_selector": "smoke",
+        "required_tests": ["smoke"],
+        "minimum_total": 1,
+    }
+    state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
+    state.save()
+    recorder = TicketAcceptanceRecorder(
+        log_dir=tmp_path / "logs",
+        ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    )
+    return path, state, key, recorder
+
+
+def _public_cycle_flow(campaign, monkeypatch):
+    from contextlib import nullcontext
+
+    from booley.flows.flow_session import FlowSession
+
+    flow = SimulateFlow()
+    monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+    monkeypatch.setattr(FlowSession, "_criterion_binding_gate", lambda _self: None)
+    monkeypatch.setattr(flow, "prepare_target_endpoint", lambda: None)
+    monkeypatch.setattr(flow, "prepare_simulation_endpoint", object)
+    monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
+    monkeypatch.setattr(FlowSession, "admission", lambda *_args: nullcontext(None))
+    monkeypatch.setattr(
+        flow, "run_prepared_simulation", lambda *_args: flow._campaign_endpoint_outcome([campaign])
+    )
+    return flow
+
+
+@pytest.mark.parametrize("failure", [None, "metadata", "console"])
+def test_public_cycle_metadata_preserves_durable_accepted_criterion(
+    tmp_path, monkeypatch, failure
+):
+    import json
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.flow_session import FlowSession
+
+    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    path, _state, key, recorder = _cycle_ticket(tmp_path)
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    flow = _public_cycle_flow(campaign, monkeypatch)
+    calls = []
+
+    def counts():
+        assert DevelopmentState.load(path).criteria[key].met is True
+        assert list((tmp_path / "logs/acceptance/transactions").glob("*.json"))
+        calls.append(flow.context._simulation_report_outcomes)
+        if failure == "metadata":
+            raise RuntimeError("metadata after committed acceptance")
+        return SimulateFlow.persisted_cycle_counts(flow)
+
+    monkeypatch.setattr(flow, "persisted_cycle_counts", counts)
+    if failure == "console":
+        monkeypatch.setattr(
+            FlowSession,
+            "_publish_console_report",
+            lambda *_args: (_ for _ in ()).throw(OSError("console failed")),
+        )
+    reports = tmp_path / "reports"
+    result = flow.execute_cli(
+        ["--target", "sim", "--work-dir", str(tmp_path), "--report-dir", str(reports)],
+        adapter=recorder,
+    )
+    assert result.exit_code == (2 if failure == "console" else 0)
+    saved = DevelopmentState.load(path)
+    assert saved.criteria[key].met is True
+    assert len(saved.acceptance_transactions) == 1
+    assert flow.context._simulation_acceptance_outcomes[0].committed is True
+    assert all(snapshot[0] is campaign for snapshot in calls)
+    assert len(calls) == (2 if failure == "console" else 1)
+    report = json.loads((reports / "sim.json").read_text())
+    if failure == "metadata":
+        assert report["passed"] is True
+        assert report["cycle_counts_error"] == "unavailable"
+    else:
+        assert report["cycle_counts"] == {"sim": [{"test": "smoke", "cycle_count": 1234}]}
+    numbered = sorted(reports.glob("sim/*/report.json"))
+    assert len(numbered) == (2 if failure == "console" else 1)
+    assert json.loads(numbered[-1].read_text()) == report
+
+
 @pytest.mark.parametrize("fault", ["none", "metadata", "acceptance"])
 def test_public_simulation_publishes_cycle_counts_after_acceptance(tmp_path, monkeypatch, fault):
     import json
@@ -732,12 +827,9 @@ def test_public_simulation_publishes_cycle_counts_after_acceptance(tmp_path, mon
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeypatch, cancelled):
     from booley.flows.sim.campaign.coordinator import SimulationCampaignCancellationError
-    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
 
     flow = SimulateFlow()
-    campaign = _simulation_outcome(
-        tmp_path, [_observation("done") | {"cycle_count": 7}], required=("done",)
-    )
+    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
     monkeypatch.setattr(flow, "_write_campaign_progress", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(flow, "_plan_campaign_baselines", lambda *_args: ([], {}))
@@ -749,11 +841,6 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
         raise error("second target stopped")
 
     monkeypatch.setattr(flow, "_publish_and_run_campaign_requests", run)
-    from booley.criteria.state import DevelopmentState
-
-    flow._state = DevelopmentState()
-    before = dict(flow.context.state.criteria)
-    pending = flow.context._pending_criteria_set
     result = flow._run_ordinary_campaigns(
         [],
         {},
@@ -762,19 +849,16 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
     assert result.exit_code != 0
     assert flow.context._simulation_campaign_outcomes == ()
     assert flow.context._simulation_report_outcomes == (campaign,)
-    assert flow.context.state.criteria == before
-    assert flow.context._pending_criteria_set == pending
-    assert not list(tmp_path.rglob("simulation.json"))
     if cancelled:
         assert result.detail == {}
+    _assert_partial_acceptance_policy(flow, result, tmp_path)
 
 
 def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monkeypatch):
     from booley.flows.sim.campaign.coordinator import SimulationCampaignCancellationError
-    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
 
     flow = SimulateFlow()
-    outcome = _simulation_outcome(tmp_path, [_observation("done")], required=("done",))
+    outcome = _native_cycle_campaign(tmp_path, monkeypatch)
     responses = iter((outcome,))
 
     def run(_request):
@@ -785,20 +869,189 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
 
     monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", lambda *_args: None)
     progress = SimpleNamespace(checkpoint=lambda: None)
-    from booley.criteria.state import DevelopmentState
-
-    flow._state = DevelopmentState()
-    before = dict(flow.context.state.criteria)
-    pending = flow.context._pending_criteria_set
     result = flow._execute_coverage_campaign_requests(
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
     assert flow.context._simulation_report_outcomes == (outcome,)
     assert flow.context._simulation_campaign_outcomes == ()
-    assert flow.context.state.criteria == before
-    assert flow.context._pending_criteria_set == pending
-    assert not list(tmp_path.rglob("simulation.json"))
+    assert all(item["cycle_count"] is None for item in outcome.observations)
+    _assert_partial_acceptance_policy(flow, result, tmp_path)
+
+
+def _native_cycle_campaign(tmp_path, monkeypatch):
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
+
+    reports = _prepare_coverage_origin(tmp_path, monkeypatch)
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    result = flow.execute(
+        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    )
+    assert result.exit_code == 0
+    return flow.context._simulation_report_outcomes[0]
+
+
+def _assert_partial_acceptance_policy(flow, result, tmp_path):
+    import json
+
+    from booley.flows.endpoint_acceptance import record_acceptance
+    from booley.flows.endpoint_reporting import write_report
+    from booley.flows.sim.request import SimRequest
+
+    path, state, _key, recorder = _cycle_ticket(tmp_path)
+    flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "reports")
+    context = flow.context
+    context._state = state
+    context.configure_flow_execution(recorder)
+    context._pending_criteria_set = ("preexisting",)
+    before = path.read_bytes()
+    projections = {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")}
+    record_acceptance(context, PreparedExecution(None, None, False, False), result)
+    assert path.read_bytes() == before
+    assert context.state.criteria
+    assert context._pending_criteria_set == ()
+    assert not list((tmp_path / "logs").rglob("*.json"))
+    assert {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")} == projections
+    with context.publication_resources:
+        report_path = write_report(context, result)
+    report = json.loads(report_path.read_text())
+    assert report["cycle_counts"] == flow.persisted_cycle_counts()
+
+
+@pytest.mark.parametrize("unnamed", [False, True])
+def test_authenticated_nullable_counts_round_trip(tmp_path, monkeypatch, unnamed):
+    from dataclasses import replace
+
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim import test_campaign_phase3 as fixtures
+
+    if unnamed:
+        campaign = _unnamed_cycle_campaign(tmp_path, monkeypatch)
+    else:
+        original = fixtures._shared_outcome
+
+        def null_outcome(*args):
+            outcome = original(*args)
+            return replace(
+                outcome, tests=tuple(replace(test, cycles=None) for test in outcome.tests)
+            )
+
+        monkeypatch.setattr(fixtures, "_shared_outcome", null_outcome)
+        campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    flow = SimulateFlow()
+    flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "reports")
+    result = flow._campaign_endpoint_outcome([campaign])
+    _assert_nullable_cycle_report(flow, result, tmp_path, unnamed)
+
+
+def _unnamed_cycle_campaign(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign.coordinator import (
+        CampaignPolicy,
+        NewCampaignRunRequest,
+        SimulationCampaign,
+    )
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from tests.flows.sim import test_campaign_phase3 as fixtures
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run").mkdir()
+    handle = fixtures._handle(project)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    invocation = tmp_path / "reports/sim/1"
+    invocation.mkdir(parents=True)
+    plan = create_simulation_campaign_plan(fixtures._unfiltered_cocotb_manifest())
+    executor = fixtures._failed_shared_executor(
+        tmp_path / "engine-build", {"compile": 0, "launch": 0}
+    )
+    return SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, fixtures._admission()
+        )
+    )
+
+
+def _assert_nullable_cycle_report(flow, result, tmp_path, unnamed):
+    import json
+
+    from booley.flows.endpoint_reporting import write_report
+    from booley.flows.sim.request import SimRequest
+
+    flow._args = SimRequest(work_dir=tmp_path, report_dir=tmp_path / "reports")
+    with flow.context.publication_resources:
+        path = write_report(flow.context, result)
+    report = json.loads(path.read_text())
+    expected = [{"test": None if unnamed else "smoke", "cycle_count": None}]
+    assert report["cycle_counts"]["sim"] == expected
+    assert report == json.loads((tmp_path / "reports/sim.json").read_text())
+    preview = report["detail"]["campaigns"]["sim"]["observations"]
+    assert preview[0]["cycle_count"] is None
+    assert preview[0]["test"] == expected[0]["test"]
+
+
+@pytest.mark.parametrize("failure", ["run", "retention"])
+def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch, failure):
+    from booley.flows.sim.campaign.coordinator import SimulationCampaign
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
+
+    reports = _prepare_coverage_origin(tmp_path, monkeypatch)
+    core = tmp_path / "counter.core"
+    target = core.read_text().split("targets:\n", 1)[1]
+    core.write_text(
+        core.read_text() + target.replace("sim_0:", "sim_1:") + target.replace("sim_0:", "sim_2:")
+    )
+    (tmp_path / ".booley_project/tests.toml").write_text(
+        '[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n[sim_2]\ntests=["reset"]\n'
+    )
+    original_run = SimulationCampaign.run
+    original_retain = __import__("booley.flows.sim.flow", fromlist=["_retain_coverage_campaign"])
+    retain = original_retain._retain_coverage_campaign
+    returned = []
+
+    def run(campaign, request):
+        if failure == "run" and len(returned) == 1:
+            raise RuntimeError("second run failed before outcome")
+        outcome = original_run(campaign, request)
+        returned.append(outcome)
+        return outcome
+
+    def retain_or_fail(progress, outcome):
+        if failure == "retention" and len(returned) == 2:
+            raise OSError("completed second retention failed")
+        return retain(progress, outcome)
+
+    monkeypatch.setattr(SimulationCampaign, "run", run)
+    monkeypatch.setattr(original_retain, "_retain_coverage_campaign", retain_or_fail)
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    result = flow.execute(
+        SimRequest(
+            target="sim_0,sim_1,sim_2", work_dir=tmp_path, coverage=True, report_dir=reports
+        )
+    )
+    assert result.exit_code == 2
+    assert len(returned) == (1 if failure == "run" else 2)
+    _assert_coverage_failure_counts(flow, reports, returned)
+
+
+def _assert_coverage_failure_counts(flow, reports, returned):
+    import json
+
+    snapshot = flow.context._simulation_report_outcomes
+    assert len(snapshot) == len(returned)
+    assert all(actual is expected for actual, expected in zip(snapshot, returned, strict=True))
+    assert flow.context._simulation_campaign_outcomes == tuple(returned[:1])
+    report = json.loads((reports / "sim/1/report.json").read_text())
+    expected = {
+        f"sim_{index}": [{"test": "reset", "cycle_count": None}] for index in range(len(returned))
+    }
+    assert report["cycle_counts"] == expected
+    assert "sim_2" not in report["cycle_counts"]
+    assert report["detail"]["pending_targets"] == ["sim_1", "sim_2"]
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])

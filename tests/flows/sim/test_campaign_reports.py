@@ -132,6 +132,75 @@ def test_cycle_card_global_limits_and_utf8_names(monkeypatch, budget):
         assert "cycle counts omitted" in rendered
 
 
+@pytest.mark.parametrize("reason", ["x\n", "x\r\nz", "x\u2028z"])
+def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim import flow
+
+    resolved = []
+    monkeypatch.setattr(
+        flow,
+        "_resolved_coverage_campaigns",
+        lambda _outcomes: resolved.append(True) or {"sim": object()},
+    )
+    monkeypatch.setattr(flow, "_coverage_report_suffix", lambda _campaign: "coverage")
+    monkeypatch.setattr(flow, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"])
+    monkeypatch.setattr(flow, "source_gap_report_lines", lambda _campaign: [])
+    monkeypatch.setattr(flow, "_coverage_pre_sim_lines", lambda *_args: [])
+
+    outcome = SimpleNamespace(
+        target={"selector": "sim"},
+        aggregate_grade="fail",
+        coverage_reference=object(),
+        observations=[
+            {"test": "one", "cycle_count": 7, "detail": {"reason": reason}},
+            {"test": "two", "cycle_count": None, "detail": {"reason": "y"}},
+        ],
+    )
+    rendered = flow._campaign_report_lines([outcome])[0]
+    assert f"\n  {reason}\n  y\n  one: cycles=7\ncoverage hint" in rendered
+    assert resolved == [True]
+
+
+@pytest.mark.parametrize("failure", [None, "retention", "supersede"])
+def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch, failure):
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
+
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    execution = NativeExecution()
+    if failure:
+        symbol = (
+            "_checkpoint_coverage_campaign" if failure == "retention" else "supersede_progress"
+        )
+        monkeypatch.setattr(
+            "booley.flows.sim.flow." + symbol,
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
+        )
+    resumed = tmp_path / "resumed"
+    flow = SimulateFlow(coverage_execution=lambda *_args: execution)
+    result = flow.execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed))
+    report = json.loads((resumed / "sim/1/report.json").read_text())
+    assert result.exit_code == (2 if failure else 0)
+    assert execution.runs == []
+    assert report["cycle_counts"]["sim_0"] == [
+        {"test": "reset", "cycle_count": None},
+        {"test": "wrap", "cycle_count": None},
+    ]
+    assert report == json.loads((resumed / "sim.json").read_text())
+    progress = json.loads((resumed / "sim/1/progress.json").read_text())
+    assert "cycle_counts" not in json.dumps(progress)
+    if failure:
+        assert flow.context._simulation_campaign_outcomes == ()
+    else:
+        campaign = report["detail"]["campaigns"]["sim_0"]
+        assert all(item["cycle_count"] is None for item in campaign["observations"])
+        assert campaign["artifacts"]["simulation"]["path_base"] == "external_origin_target"
+
+
 def test_count_metadata_keeps_full_rows_outside_preview_and_recomputes():
     from types import SimpleNamespace
 

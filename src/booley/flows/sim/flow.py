@@ -515,26 +515,18 @@ def _campaign_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
 ) -> list[str]:
+    if coverage_campaigns is None and any(
+        getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
+    ):
+        coverage_campaigns = _resolved_coverage_campaigns(outcomes)
     blocks = _campaign_base_report_lines(outcomes, coverage_campaigns)
     stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
     base_bytes = len("\n".join(blocks).encode("utf-8")) + 2
     budget = min(stream // 4, max(0, stream - base_bytes))
     additions = _campaign_cycle_lines(outcomes, budget)
-    for index, outcome in enumerate(outcomes):
-        if not additions[index]:
-            continue
-        reasons = {
-            item["detail"].get("reason")
-            for item in outcome.observations
-            if isinstance(item.get("detail"), Mapping)
-            and isinstance(item["detail"].get("reason"), str)
-            and item["detail"].get("reason")
-        }
-        lines = blocks[index].splitlines()
-        reason_lines = sum(len(str(reason).splitlines()) for reason in reasons)
-        lines[1 + reason_lines : 1 + reason_lines] = additions[index]
-        blocks[index] = "\n".join(lines)
-    return blocks
+    if not any(additions):
+        return blocks
+    return _campaign_base_report_lines(outcomes, coverage_campaigns, additions)
 
 
 def _campaign_cycle_lines(outcomes: Sequence[CampaignOutcome], budget: int) -> list[list[str]]:
@@ -581,6 +573,7 @@ def _cycle_display_line(item: Mapping[str, object], budget: int) -> str | None:
 def _campaign_base_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+    cycle_lines: Sequence[Sequence[str]] | None = None,
 ) -> list[str]:
     resolved = coverage_campaigns
     if resolved is None and any(
@@ -588,7 +581,7 @@ def _campaign_base_report_lines(
     ):
         resolved = _resolved_coverage_campaigns(outcomes)
     lines: list[str] = []
-    for outcome in outcomes:
+    for index, outcome in enumerate(outcomes):
         acceptance = getattr(outcome, "acceptance_facts", None)
         facts = getattr(acceptance, "document", {})
         campaign_id = facts.get("campaign_id", "unavailable")
@@ -616,6 +609,8 @@ def _campaign_base_report_lines(
         if build_detail and reasons:
             line += f": {reasons[0].splitlines()[0]}"
         report_lines = [line, *(f"  {reason}" for reason in reasons)]
+        if cycle_lines is not None:
+            report_lines.extend(cycle_lines[index])
         if getattr(outcome, "coverage_reference", None) is not None:
             report_lines.extend(_waiver_block_hint_lines(campaign))
             report_lines.extend(source_gap_report_lines(campaign))
@@ -3094,6 +3089,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 outcome = self._run_validated_resume_campaign(
                     validated, invocation, admission, coverage_plan
                 )
+                self.context._simulation_report_outcomes = (outcome,)
                 _checkpoint_coverage_campaign(progress, outcome)
                 supersede_progress(
                     validated.path.parents[3] / "progress.json",
@@ -3547,7 +3543,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
-        self.context._simulation_report_outcomes = tuple(outcomes)
+        self.context._simulation_report_outcomes = (
+            (*outcomes, failed_outcome) if failed_outcome is not None else tuple(outcomes)
+        )
         targets = _coverage_compatibility_targets(
             outcomes,
             self.context._reserved_invocation_dir,
@@ -3937,7 +3935,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         test_names_map: dict[str, list[str]],
         admission: object | None,
     ) -> EndpointOutcome:
-        """Run every ordinary Target through manifest-first serial authority."""
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
         if not isinstance(admission, AdmissionContext):
@@ -3950,20 +3947,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             publication_checkpoint=self._campaign_publication_checkpoint,
         )
         outcomes: list[CampaignOutcome] = []
-        result: EndpointOutcome | None = None
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_campaign_progress(
                 targets, outcomes, phase=phase, complete=True
             )
         )
+        result: EndpointOutcome | None = None
         try:
             with lifecycle:
                 self._write_campaign_progress(targets, outcomes, phase="starting", complete=False)
                 baseline_requests, prerequisites = self._plan_campaign_baselines(
-                    invocation,
-                    admission,
-                    targets,
-                    test_names_map,
+                    invocation, admission, targets, test_names_map
                 )
                 candidate_requests = self._candidate_campaign_requests(
                     targets, test_names_map, prerequisites, invocation, admission
@@ -3984,27 +3978,37 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self.context._simulation_report_outcomes = tuple(outcomes)
             return self._campaign_cancelled_outcome(exc)
         except (OSError, ValueError, RuntimeError) as exc:
-            self.context._simulation_report_outcomes = tuple(outcomes)
-            if result is not None and isinstance(exc, ProgressPublicationError):
-                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
-                return normalize_completion_error(
-                    result,
-                    failure,
-                    "publish simulation progress",
-                    path=invocation / "progress.json",
-                )
-            detail: dict[str, object] = (
-                {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+            return self._ordinary_campaign_failure(exc, outcomes, result, invocation)
+
+    def _ordinary_campaign_failure(
+        self,
+        error: Exception,
+        outcomes: list[CampaignOutcome],
+        result: EndpointOutcome | None,
+        invocation: Path,
+    ) -> EndpointOutcome:
+        """Retain the existing ordinary error detail and completion semantics."""
+        self.context._simulation_report_outcomes = tuple(outcomes)
+        if result is not None and isinstance(error, ProgressPublicationError):
+            failure = error.__cause__ if isinstance(error.__cause__, Exception) else error
+            return normalize_completion_error(
+                result,
+                failure,
+                "publish simulation progress",
+                path=invocation / "progress.json",
             )
-            if isinstance(exc, ProgressPublicationError):
-                detail["progress_error"] = str(exc)
-            if isinstance(exc, SimulationBuildInfrastructureError):
-                detail.update(_build_infrastructure_detail(exc))
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                detail=detail,
-                report_text=f"Simulation Campaign execution failed: {exc}",
-            )
+        detail: dict[str, object] = (
+            {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+        )
+        if isinstance(error, ProgressPublicationError):
+            detail["progress_error"] = str(error)
+        if isinstance(error, SimulationBuildInfrastructureError):
+            detail.update(_build_infrastructure_detail(error))
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            detail=detail,
+            report_text=f"Simulation Campaign execution failed: {error}",
+        )
 
     @staticmethod
     def _campaign_cancelled_outcome(

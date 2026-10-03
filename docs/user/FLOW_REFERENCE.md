@@ -482,7 +482,9 @@ numbered report directory (qualified Target selectors are percent-encoded):
 
 The numbered `report.json` stores complete observational counts in top-level
 `cycle_counts.<Target selector>[]` rows `{test, cycle_count}`; unnamed tests keep
-`test: null`. The rich `detail.campaigns.<selector>.observations` preview is
+`test: null`. Metadata computation or serialization failure instead records
+`cycle_counts_error: unavailable`. The rich
+`detail.campaigns.<selector>.observations` preview is
 limited to 32 entries. Full Target `simulation.json` uses `tests[].cycles` and
 is linked by `detail.campaigns.<selector>.artifacts.simulation`, whose
 `path_base` can refer to the retained origin after resume. Native Coverage
