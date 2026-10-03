@@ -584,3 +584,61 @@ def test_handle_setup_does_not_resolve_selector_again(
     )
 
     assert command[-3:] == ["--target", "lint_a", "acme:ip:alpha:1.0"]
+
+
+@pytest.mark.parametrize("eda_tool", ["verible", "veriblelint"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_mixed_lint_unfiltered_conditional_inputs_control(
+    tmp_path, monkeypatch, eda_tool, missing
+):
+    for filename in ("top.sv", "rules.cfg", "waivers.txt"):
+        (tmp_path / filename).write_text("module top; endmodule\n" if filename == "top.sv" else "")
+    selection = (
+        f"default_tool: {eda_tool}"
+        if missing
+        else f"flow_options: {{tool: {eda_tool}, ruleset: all}}"
+    )
+    (tmp_path / "conditional.core").write_text(
+        "CAPI=2:\nname: acme:ip:conditional:1.0\nfilesets:\n  rtl:\n    files: [top.sv]\n    file_type: systemVerilogSource\n  config:\n    files:\n      - rules.cfg: {file_type: veribleLintRules}\n      - waivers.txt: {file_type: veribleLintWaiver}\ntargets:\n  lint_style:\n    flow: lint\n"
+        f"    {selection}\n    filesets: [rtl, 'tool_{eda_tool} ? (config)']\n    toplevel: top\n"
+    )
+    from booley.fusesoc import fusesoc_registry
+
+    original = fusesoc_registry.target_source_files_for_ref
+    copied = []
+
+    def capture(root, ref, **kwargs):
+        copied.append(ref)
+        return original(root, ref, **kwargs)
+
+    monkeypatch.setattr(fusesoc_registry, "target_source_files_for_ref", capture)
+    catalog = TargetCatalog.build(tmp_path)
+    handle = catalog.select("lint_style")
+    inspection = catalog.inspect(handle)
+    assert handle.eda_tool == eda_tool
+    assert handle.lint_flow_eda_tool_missing is missing
+    assert copied[-1].lint_flow_eda_tool_missing is missing
+    assert {item.path for item in inspection.inputs} == {"top.sv", "rules.cfg", "waivers.txt"}
+    assert inspection.eda_tool == eda_tool
+    if not missing:
+        assert inspection.flow_options["tool"] == eda_tool
+        assert inspection.flow_options["ruleset"] == "all"
+
+
+@pytest.mark.parametrize(
+    "name,flow,eda_tool,expected",
+    [
+        ("synth_vehicle", "lint", "yosys", "synth"),
+        ("implementation", "lint", "vivado", "fpga"),
+        ("fpga_top", "lint", "verible", "fpga"),
+        ("sim_control", "sim", "verilator", "sim"),
+    ],
+)
+def test_mixed_lint_other_flow_classification_control(tmp_path, name, flow, eda_tool, expected):
+    (tmp_path / "control.core").write_text(
+        "CAPI=2:\nname: acme:ip:control:1.0\ntargets:\n"
+        + f"  {name}:\n    flow: {flow}\n    default_tool: {eda_tool}\n"
+    )
+    handle = TargetCatalog.build(tmp_path).select(name, for_flow=expected)
+    assert handle.eda_tool == eda_tool
+    assert expected in handle.drivable_by

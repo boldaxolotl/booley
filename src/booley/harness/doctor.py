@@ -121,6 +121,7 @@ from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
+    LINT_EDA_TOOL_FAMILIES,
     CoreSources,
     FuseSocError,
     TargetHandle,
@@ -2061,7 +2062,8 @@ def _project_declares_verible_lint(project: ProjectAudit | None) -> bool:
     except Exception:  # noqa: BLE001 — unreadable .core files are their own doctor findings
         return False
     return any(
-        handle.flow == "lint" and "verible" in (handle.eda_tool or "").lower()
+        "lint" in handle.drivable_by
+        and LINT_EDA_TOOL_FAMILIES.get(handle.eda_tool or "") == "verible"
         for handle in handles
     )
 
@@ -3500,7 +3502,9 @@ def _runtime_probe_binaries(
             handle = catalog.select(target)
         except FuseSocError:
             continue
-        binary = _EDA_TOOL_BINARIES.get((handle.eda_tool or "").lower())
+        eda_tool = handle.eda_tool or ""
+        family = LINT_EDA_TOOL_FAMILIES.get(eda_tool, eda_tool)
+        binary = _EDA_TOOL_BINARIES.get(family.lower())
         if binary and binary not in binaries:
             binaries.append(binary)
     return binaries

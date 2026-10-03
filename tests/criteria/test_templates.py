@@ -806,3 +806,31 @@ class TestCriterionEligibility:
             {"sim_verilator": "verilator", "sim_icarus": "icarus"},
         )
         assert set(out) == {"coverage_sim_verilator"}
+
+
+@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
+def test_mixed_lint_criteria_preserves_declared_family(tmp_path, eda_tool):
+    from booley.targets.catalog import TargetCatalog
+
+    definitions = [
+        _per_config_def("sim_pass"),
+        _per_config_def("lint_clean"),
+        _per_config_def("synthesis_ok"),
+    ]
+    outcomes = []
+    for missing in (False, True):
+        selection = (
+            f"default_tool: {eda_tool}" if missing else f"flow_options: {{tool: {eda_tool}}}"
+        )
+        (tmp_path / "mixed.core").write_text(
+            "CAPI=2:\nname: acme:ip:mixed:1.0\ntargets:\n  lint_mixed:\n    flow: lint\n"
+            + f"    {selection}\n"
+        )
+        refs = TargetCatalog.build(tmp_path).list()
+        eda_map = {ref.name: ref.eda_tool for ref in refs}
+        outcomes.append(expand_criteria_defs(definitions, ["lint_mixed"], eda_map))
+    assert outcomes[0] == outcomes[1]
+    expected = (
+        {"sim_pass_lint_mixed", "lint_clean_lint_mixed"} if eda_tool == "verilator" else set()
+    )
+    assert set(outcomes[1]) == expected

@@ -13,6 +13,10 @@ tool error), and rules/waiver plumbing falling out of the command line.
 from __future__ import annotations
 
 import importlib.util
+import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -128,3 +132,62 @@ def test_verible_node_rejects_empty_fileset() -> None:
     """An empty lint would `make` to a trivial PASS — refuse at setup instead."""
     with pytest.raises(RuntimeError, match="at least one"):
         _setup([{"name": "lint/rules.cfg", "file_type": "veribleLintRules"}])
+
+
+def _configure_real_lint_child(tmp_path: Path, spelling: str) -> str:
+    import booley
+
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    source = Path(booley.__file__).parent / "data/edalize/verible.py"
+    for name in ("verible", "veriblelint"):
+        shutil.copyfile(source, nodes / f"{name}.py")
+    edam = _edam(
+        _FULL_FILESET,
+        {
+            "ruleset": "all",
+            "rules": ["-module-filename", "line-length"],
+            "verible_lint_args": ["--show_diagnostic_context"],
+        },
+    )
+    edam["tool_options"][spelling] = edam["tool_options"].pop("verible")
+    edam["flow_options"] = {"tool": spelling, **edam["tool_options"][spelling]}
+    script = (
+        "import json, sys, edalize.tools; "
+        "edalize.tools.__path__ = [sys.argv[1], *edalize.tools.__path__]; "
+        "from importlib import import_module; "
+        "spelling = sys.argv[2]; "
+        "node = getattr(import_module('edalize.tools.' + spelling), spelling.capitalize()); "
+        "assert node.__name__.lower() == spelling; "
+        "instance = node(); instance.setup(json.loads(sys.argv[3])); "
+        "assert instance.tool_options == json.loads(sys.argv[3])['tool_options'][spelling]; "
+        "from edalize.flows.lint import Lint; "
+        "assert 'rules' in Lint.get_tool_options({'tool': spelling}); "
+        "Lint(edam=json.loads(sys.argv[3]), work_root=sys.argv[4]).configure()"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(nodes), spelling, json.dumps(edam), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return (tmp_path / "Makefile").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("spelling", ["verible", "veriblelint"])
+def test_real_lint_configure_preserves_authored_option_namespace(tmp_path, spelling):
+    makefile = _configure_real_lint_child(tmp_path, spelling)
+    for flag in (
+        "--parse_fatal",
+        "--lint_fatal=false",
+        "--ruleset=all",
+        "--rules=-module-filename,line-length",
+        "--show_diagnostic_context",
+        "--rules_config=lint/rules.cfg",
+        "--waiver_files=lint/waivers.txt,lint/waivers_extra.txt",
+    ):
+        assert flag in makefile
+    assert "rtl/top.sv" in makefile and "rtl/legacy.v" in makefile
+    assert "rtl/defs.svh" not in makefile and "CFG" not in makefile

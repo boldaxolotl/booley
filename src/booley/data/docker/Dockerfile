@@ -31,7 +31,7 @@ USER root
 # Edalize's tools/verible.py is patched in. DELETE THIS LAYER once the upstream
 # Edalize PR (tools/verible.py) is merged and the pin above advances past it.
 COPY src/booley/data/edalize/verible.py /tmp/booley-build/verible.py
-RUN python -c 'import pathlib, shutil, edalize.tools; src = pathlib.Path("/tmp/booley-build/verible.py"); dst = pathlib.Path(list(edalize.tools.__path__)[0]) / "verible.py"; shutil.copyfile(src, dst); print(f"patched {dst}")' \
+RUN python -c 'import pathlib, shutil, edalize.tools; src = pathlib.Path("/tmp/booley-build/verible.py"); dst = pathlib.Path(list(edalize.tools.__path__)[0]); shutil.copyfile(src, dst / "verible.py"); shutil.copyfile(src, dst / "veriblelint.py"); print(f"patched {dst}")' \
     && rm -f /tmp/booley-build/verible.py
 
 # Candidate seam. The wheel arrives only after invariant Python/EDA layers and
@@ -93,7 +93,7 @@ RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \
 # plus invariant integrations remain available alongside the application.
 RUN test -x "$(command -v claude)" \
     && test "$(claude --version | awk '{print $1}')" = "2.1.285" \
-    && python -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)'
+    && python -c 'import booley, cocotb, edalize.tools.verible, edalize.tools.veriblelint, fusesoc; print(booley.__file__)'
 
 
 # Runtime provenance for booley_status. Candidate timestamps cannot invalidate
