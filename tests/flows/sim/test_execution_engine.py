@@ -2095,10 +2095,22 @@ def _assert_queryable_trace(outcome: SimulationTargetOutcome, cache_root: Path) 
     assert inspection.artifact.total_ticks == 1
 
 
+def _write_failing_trace_converter(root: Path) -> Path:
+    converter = root / ("bwave-failed.bat" if os.name == "nt" else "bwave-failed")
+    converter.write_text(
+        "@echo off\necho fixture conversion unavailable 1>&2\nexit /b 1\n"
+        if os.name == "nt"
+        else "#!/bin/sh\necho fixture conversion unavailable >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    converter.chmod(0o755)
+    return converter
+
+
 def _assert_execution_trace(
-    outcome: SimulationTargetOutcome, cache_root: Path, *, native_available: bool
+    outcome: SimulationTargetOutcome, cache_root: Path, *, queryable: bool
 ) -> None:
-    if native_available:
+    if queryable:
         assert all(
             Path(artifact.path).suffix == ".fst"
             for artifact in outcome.artifacts
@@ -2114,6 +2126,14 @@ def _assert_execution_trace(
             "$date\nnow\n$end\n$timescale 1ns $end\n"
             "$scope module tb $end\n$var wire 1 ! signal $end\n"
             "$upscope $end\n$enddefinitions $end\n#0\n0!\n#1\n1!\n"
+        )
+        assert "fixture conversion unavailable" in (
+            traces[0].parent / "trace.fst.stderr"
+        ).read_text(encoding="utf-8")
+        manifest = json.loads((traces[0].parent / "trace_status.json").read_text(encoding="utf-8"))
+        assert any(
+            attempt["kind"] == "vcd_postprocess" and attempt["status"] == "vcd_only"
+            for attempt in manifest["attempts"]
         )
 
 
@@ -2141,6 +2161,8 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     )
     (state / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
     _write_fake_trace_tools(tmp_path)
+    if not queryable:
+        monkeypatch.setenv("BOOLEY_BWAVE_BIN", str(_write_failing_trace_converter(tmp_path)))
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
     handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
     commands: list[list[str]] = []
@@ -2154,9 +2176,7 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     for _ in range(2):
         outcome = execution.run(handle, NamedTests(("smoke",)))
         assert outcome.passed
-        _assert_execution_trace(
-            outcome, tmp_path / "bwave-cache", native_available=native_bwave is not None
-        )
+        _assert_execution_trace(outcome, tmp_path / "bwave-cache", queryable=queryable)
         assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
         assert any("booley.flows.sim.backends.icarus" in command[-1] for command in commands)
         commands.clear()
