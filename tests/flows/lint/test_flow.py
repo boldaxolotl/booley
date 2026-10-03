@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -2593,7 +2592,41 @@ def _assert_verible_rule_path(makefile: str, edam_path: Path) -> None:
     )
     assert Path(rule_file).parts[-2:] == ("lint", "rules.cfg")
     recipe = next(line for line in makefile.splitlines() if "verible-verilog-lint " in line)
-    assert f"--rules_config={rule_file}" in shlex.split(recipe.strip())
+    rules_flags = [part for part in recipe.split() if part.startswith("--rules_config=")]
+    assert rules_flags == [f"--rules_config={rule_file}"]
+
+
+@pytest.mark.parametrize(
+    ("path_class", "rule_file"),
+    [
+        (PurePosixPath, "src/acme_ip_style_1.0/lint/rules.cfg"),
+        (PureWindowsPath, r"src\acme_ip_style_1.0\lint/rules.cfg"),
+    ],
+)
+@pytest.mark.parametrize("variant", ["valid", "prefix", "suffix", "missing", "duplicate"])
+def test_verible_rule_path_assertion_preserves_exact_native_token(
+    tmp_path, path_class, rule_file, variant
+):
+    edam_path = tmp_path / "style.eda.yml"
+    edam_path.write_text(
+        yaml.safe_dump({"files": [{"name": rule_file, "file_type": "veribleLintRules"}]}),
+        encoding="utf-8",
+    )
+    flag = f"--rules_config={rule_file}"
+    flags = {
+        "valid": flag,
+        "prefix": f"--rules_config=foreign/{rule_file}",
+        "suffix": f"{flag}.foreign",
+        "missing": "",
+        "duplicate": f"{flag} {flag}",
+    }
+    recipe = f"\t$(EDALIZE_LAUNCHER) verible-verilog-lint {flags[variant]} rtl/top.sv\n"
+    with patch.object(sys.modules[__name__], "Path", path_class):
+        if variant == "valid":
+            _assert_verible_rule_path(recipe, edam_path)
+        else:
+            with pytest.raises(AssertionError):
+                _assert_verible_rule_path(recipe, edam_path)
 
 
 @pytest.mark.parametrize("spelling", ["verible", "veriblelint"])
