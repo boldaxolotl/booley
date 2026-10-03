@@ -249,3 +249,40 @@ def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch)
     assert deliveries == []
     assert auto_doctor.load_report(tmp_path) is not None
     assert progress == ["starting (no automatic Doctor result)"]
+
+
+def test_containment_alias_core_exclusion(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    selected = tmp_path / "selected"
+    alias = root / "data-alias"
+    for directory in (selected, alias):
+        directory.mkdir(parents=True)
+    core = alias / "generated.core"
+    core.write_text("first")
+    original = Path.samefile
+    calls = []
+
+    def samefile(path, other):
+        if {path, Path(other)} == {selected, alias}:
+            calls.append(path)
+            return True
+        return original(path, other)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    before = auto_doctor._core_digest(root, selected)
+    core.write_text("second")
+    assert auto_doctor._core_digest(root, selected) == before
+    assert calls
+
+
+def test_containment_checkout_core_symlink_remains_fingerprinted(tmp_path):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    core = selected / "generated.core"
+    core.write_text("first")
+    (root / "duplicate.core").symlink_to(core)
+    before = auto_doctor._core_digest(root, selected)
+    core.write_text("second")
+    assert auto_doctor._core_digest(root, selected) != before

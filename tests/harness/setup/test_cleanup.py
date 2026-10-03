@@ -641,3 +641,45 @@ def test_cleanup_summary_includes_apply_outcomes(tmp_path: Path) -> None:
         cleanup_module.CleanupResult(plan.digest, removed=("x",), bytes_removed=1),
     )
     assert "removed: 1 byte(s) across 1 path(s)" in text
+
+
+@pytest.mark.parametrize("suffix", ["", "tmp"])
+def test_containment_alias_shared_boundary(tmp_path, monkeypatch, suffix):
+    root = _project(tmp_path)
+    selected = root / ".booley_project"
+    (selected / "tmp").mkdir()
+    alias = tmp_path / "alias"
+    (alias / "tmp").mkdir(parents=True)
+    original = Path.samefile
+
+    def samefile(path, other):
+        if {path, Path(other)} == {selected, alias}:
+            return True
+        return original(path, other)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    candidate = selected / "shortcut"
+    candidate.symlink_to(alias / suffix, target_is_directory=True)
+    message = "shared or cleanup-control" if suffix else "root is never"
+    with pytest.raises(CleanupError, match=message):
+        relative = cleanup_module._safe_relative(root, candidate)
+        cleanup_module._reject_shared_boundary(
+            root, root / relative, selected / "tmp/setup/run/manifest.json"
+        )
+
+
+def test_containment_cleanup_prospective_and_escape(tmp_path):
+    root = _project(tmp_path)
+    assert (
+        cleanup_module._safe_relative(root, ".booley_project/tmp/setup/run/new")
+        == ".booley_project/tmp/setup/run/new"
+    )
+    (root / ".booley_project" / "escape").symlink_to(tmp_path, target_is_directory=True)
+    for raw in (
+        ".booley_project/escape/outside",
+        ".booley_project/.git/file",
+        "../outside",
+        ".booley_project",
+    ):
+        with pytest.raises(CleanupError):
+            cleanup_module._safe_relative(root, raw)
