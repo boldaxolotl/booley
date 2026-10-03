@@ -3605,7 +3605,7 @@ def test_source_project_binding_independent_dispatch(tmp_path, monkeypatch, argv
     from booley.eda.provisioning import authority
     from booley.harness.eda_grants import COORDINATOR
 
-    monkeypatch.setattr(authority, "load_state", lambda: authority.AuthorityState({}, {}, []))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     calls = []
 
     def add(target, kind, **kwargs):
@@ -3616,6 +3616,8 @@ def test_source_project_binding_independent_dispatch(tmp_path, monkeypatch, argv
     assert tlr._dispatch_main() == 0
     if "add" in argv:
         assert calls == [project]
+    else:
+        assert authority.load_state().installations == {}
 
 
 def test_project_binding_registry_covers_parser():
@@ -3632,6 +3634,7 @@ def test_project_binding_registry_covers_parser():
     "argv", [["auth", "--status"], ["auth", "--status", "--clear"], ["cheat", "--list"]]
 )
 def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv):
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
@@ -3749,3 +3752,38 @@ def test_source_project_binding_feedback_discovery_fallback(tmp_path, monkeypatc
 
     monkeypatch.setattr(tlr, "find_project_root", discover)
     assert tlr._command_project_root("feedback") == tmp_path
+
+
+def test_project_binding_cheat_uninitialized_directory(tmp_path, monkeypatch):
+    from booley.runtime.project_dir import reset_cache
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    reset_cache()
+    assert tlr._dispatch_main() == 0
+
+
+def test_source_project_binding_cheat_stale_custom_sentinel(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    custom = source / ".booley_project" / "mcp_tools"
+    custom.mkdir(parents=True)
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    (source / ".git").mkdir()
+    (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    sentinel = tmp_path / "source-endpoint-imported"
+    (custom / "source_sentinel.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('imported')\n"
+        "class SourceSentinelFlow(Flow):\n"
+        "    name = 'source_sentinel'\n"
+        "    description = 'Source custom endpoint sentinel'\n"
+    )
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(source / ".booley_project"))
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    assert tlr._dispatch_main() == 0
+    assert "source_sentinel" not in capsys.readouterr().out
+    assert not sentinel.exists()

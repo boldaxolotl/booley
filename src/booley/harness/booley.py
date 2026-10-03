@@ -2149,7 +2149,7 @@ def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | N
     return None
 
 
-def _reject_source_project_command(command: str | None, project_root: Path) -> int | None:
+def _reject_source_project_command(command: str, project_root: Path) -> int | None:
     """Reject Project commands in Booley source while allowing dogfood feedback."""
     if COMMAND_PROJECT_BINDINGS[command] in {
         ProjectBinding.INDEPENDENT,
@@ -2792,7 +2792,7 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
         require_project_checkout(project_dir)
         require_project_checkout(project_dir / "mcp_tools")
         return root
-    except (ProjectRootDiscoveryError, SourceCheckoutProjectError):
+    except (ProjectRootDiscoveryError, SourceCheckoutProjectError, FileNotFoundError):
         return None
 
 

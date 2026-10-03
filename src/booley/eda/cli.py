@@ -186,7 +186,9 @@ def _grant_action(
         raise authority.AuthorityError(
             "Sandbox recovery is pending; run a host lifecycle command first"
         )
-    if action in {"add", "revoke"}:
+    # Missing revoke targets retain the authority's exact recorded-identity
+    # recovery; their former checkout boundary can no longer be inspected.
+    if action == "add" or (action == "revoke" and args.project.exists()):
         require_project_checkout(args.project)
     if action == "add":
         grant = grant_mutator.add(

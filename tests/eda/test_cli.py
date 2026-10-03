@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -259,6 +260,10 @@ def test_source_project_binding_refuses_explicit_target(tmp_path, monkeypatch, a
 @pytest.mark.parametrize("action", ["add", "revoke"])
 @pytest.mark.parametrize("selection", ["subdirectory", "relative", "symlink"])
 def test_source_project_binding_target_aliases(tmp_path, monkeypatch, action, selection):
+    calls = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
     source = tmp_path / "source"
     source.mkdir()
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
@@ -275,6 +280,7 @@ def test_source_project_binding_target_aliases(tmp_path, monkeypatch, action, se
         target = nested if selection == "subdirectory" else Path("source")
     options = ["--installation", "registered"] if action == "add" else []
     assert _run(_parse("grant", action, str(target), "--kind", "vivado", *options), tmp_path) == 2
+    assert calls == []
 
 
 def test_project_binding_missing_revoke_preserves_argument(tmp_path, monkeypatch):
@@ -288,3 +294,31 @@ def test_project_binding_missing_revoke_preserves_argument(tmp_path, monkeypatch
     monkeypatch.setattr(authority, "_revoke_grant", revoke)
     assert _run(_parse("grant", "revoke", str(missing), "--kind", "vivado"), tmp_path) == 0
     assert calls == [missing]
+
+
+@pytest.mark.parametrize("deleted_nested_project", [True, False])
+def test_project_binding_revoke_recorded_identity_under_source(
+    tmp_path, monkeypatch, deleted_nested_project
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / ".git").mkdir()
+    project = source / "nested" if deleted_nested_project else source
+    (project / ".booley_project").mkdir(parents=True)
+    if deleted_nested_project:
+        (project / ".git").mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    grant = authority._add_grant(project, "vivado", license_profile="registered")
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    if deleted_nested_project:
+        shutil.rmtree(project)
+    result = _run(_parse("grant", "revoke", str(project), "--kind", "vivado"), tmp_path)
+    assert result == (0 if deleted_nested_project else 2)
+    assert authority.load_state().grants == (() if deleted_nested_project else (grant,))
