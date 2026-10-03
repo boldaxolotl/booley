@@ -514,13 +514,19 @@ def _resolved_coverage_campaigns(
 def _campaign_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
-    trailing_lines: Sequence[str] = (),
+    trailing_lines: Sequence[str] | None = (),
+    *,
+    blocks: list[str] | None = None,
 ) -> list[str]:
+    """Compose counts; None trailing lines means unavailable optional byte budget."""
     if coverage_campaigns is None and any(
         getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
     ):
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
-    blocks = _campaign_base_report_lines(outcomes, coverage_campaigns)
+    if blocks is None:
+        blocks = _campaign_base_report_lines(outcomes, coverage_campaigns)
+    if trailing_lines is None:
+        return blocks
     stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
     base_bytes = len("\n".join((*blocks, *trailing_lines)).encode("utf-8")) + 2
     budget = min(stream // 4, max(0, stream - base_bytes))
@@ -787,6 +793,29 @@ def _campaign_pre_sim_report_lines(outcomes, invocation: Path | None) -> list[st
         return [line for lines in groups.values() for line in lines]
     labels = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
     return [line for role, lines in groups.items() for line in (labels[role] + ":", *lines)]
+
+
+def _campaign_published_hook_lines(
+    outcomes: Sequence[CampaignOutcome],
+    invocation: Path,
+    published_keys: frozenset[tuple[str, str, str, int]],
+) -> list[str] | None:
+    """Budget authenticated current hook facts; missing keys make the budget unavailable."""
+    from types import SimpleNamespace
+
+    firings = {
+        firing.key: firing
+        for outcome in outcomes
+        for firing in getattr(outcome, "pre_sim_firings", ())
+    }
+    if not published_keys.issubset(firings):
+        return None
+    context = SimpleNamespace(
+        pre_sim_firings=tuple(firings.values()),
+        producer_invocation_directory=invocation.absolute(),
+        current_pre_sim_keys=published_keys,
+    )
+    return _campaign_pre_sim_report_lines([context], invocation)
 
 
 def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
@@ -4501,21 +4530,32 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         threshold_missed = any(
             campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
         )
-        hook_lines = _campaign_pre_sim_report_lines(
-            outcomes, self.context._reserved_invocation_dir
-        )
-        lines = _campaign_report_lines(outcomes, coverage_campaigns, hook_lines)
-        campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
+        lines = _campaign_base_report_lines(outcomes, coverage_campaigns)
+        invocation = self.context._reserved_invocation_dir
+        campaigns = _campaign_structured_details(outcomes, invocation)
         coverage_targets = _coverage_compatibility_targets(
             outcomes,
-            self.context._reserved_invocation_dir,
+            invocation,
             coverage_campaigns,
         )
         detail: dict[str, object] = {"campaigns": campaigns}
-        hook_detail = _campaign_pre_sim_details(outcomes, self.context._reserved_invocation_dir)
-        detail.update(hook_detail)
-        lines.extend(hook_lines)
+        detail.update(_campaign_pre_sim_details(outcomes, invocation))
+        hook_lines = _campaign_pre_sim_report_lines(outcomes, invocation)
         detail.update(_campaign_build_infrastructure_detail(outcomes))
+        budget_lines = hook_lines
+        keys = getattr(self, "_current_published_pre_sim_keys", None)
+        if (
+            invocation is not None
+            and keys is not None
+            and any(
+                item.get("cycle_count") is not None
+                for outcome in outcomes
+                for item in outcome.observations
+            )
+        ):
+            budget_lines = _campaign_published_hook_lines(outcomes, invocation, frozenset(keys))
+        lines = _campaign_report_lines(outcomes, coverage_campaigns, budget_lines, blocks=lines)
+        lines.extend(hook_lines)
         if coverage_targets:
             detail.update(
                 coverage=True,
