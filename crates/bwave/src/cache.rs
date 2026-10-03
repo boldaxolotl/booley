@@ -641,14 +641,19 @@ fn compute_toggle_pct(value_hist: &HashMap<String, u64>, width: u32) -> f64 {
         return 0.0;
     }
     let n_nibbles = ((width + 3) / 4) as usize;
-    let padded: Vec<Vec<u8>> = value_hist
+    let padded: Vec<Vec<Option<u8>>> = value_hist
         .keys()
         .map(|v| {
-            let nibs: Vec<u8> = v
+            let nibs: Vec<Option<u8>> = v
                 .chars()
-                .map(|c| c.to_digit(16).unwrap_or(0) as u8)
+                .map(|c| c.to_digit(16).map(|digit| digit as u8))
                 .collect();
-            let mut p = vec![0u8; n_nibbles.saturating_sub(nibs.len())];
+            let padding = if nibs.first() == Some(&None) {
+                None
+            } else {
+                Some(0u8)
+            };
+            let mut p = vec![padding; n_nibbles.saturating_sub(nibs.len())];
             p.extend(nibs);
             p
         })
@@ -659,8 +664,8 @@ fn compute_toggle_pct(value_hist: &HashMap<String, u64>, width: u32) -> f64 {
         let bit_in_nib = bit_pos % 4;
         let (mut s0, mut s1) = (false, false);
         for val in &padded {
-            if nib_idx < val.len() {
-                if val[nib_idx] & (1 << bit_in_nib) != 0 {
+            if let Some(Some(nibble)) = val.get(nib_idx) {
+                if nibble & (1 << bit_in_nib) != 0 {
                     s1 = true;
                 } else {
                     s0 = true;
@@ -737,7 +742,12 @@ fn scan_stats(
     }
     record_occupied_run(&mut stats, &last_value, end.saturating_sub(last_tick));
     stats.toggle_pct = compute_toggle_pct(&stats.value_hist, width);
-    stats.value_pct = compute_value_pct(stats.value_hist.len(), width);
+    let known_values = stats
+        .value_hist
+        .keys()
+        .filter(|value| value.chars().all(|digit| digit.is_ascii_hexdigit()))
+        .count();
+    stats.value_pct = compute_value_pct(known_values, width);
     stats
 }
 
@@ -3552,6 +3562,42 @@ mod tests {
             assert_eq!(stats.time_in_state.get("0"), Some(&10));
             assert!(!stats.time_in_state.contains_key("x"));
         }
+    }
+
+    #[test]
+    fn issue_1098_unknown_occupancy_does_not_inflate_binary_coverage() {
+        for unknown in ["x", "z"] {
+            let events = vec![(10, "0".into()), (20, "1".into())];
+            let stats = super::scan_stats(&events, 0, 30, false, unknown, "late".into(), 1);
+            assert_eq!(stats.time_in_state.get(unknown), Some(&10));
+            assert_eq!(stats.value_hist.get(unknown), Some(&1));
+            assert_eq!(stats.value_pct, 100.0);
+            let only_one =
+                super::scan_stats(&[(10, "1".into())], 0, 20, false, unknown, "late".into(), 1);
+            assert_eq!(only_one.value_pct, 50.0);
+            assert_eq!(only_one.toggle_pct, 0.0);
+            let wide = super::scan_stats(
+                &[(10, "80".into())],
+                0,
+                20,
+                false,
+                unknown,
+                "wide".into(),
+                8,
+            );
+            assert_eq!(wide.toggle_pct, 0.0);
+        }
+        let mixed = super::scan_stats(
+            &[(0, "x0".into()), (10, "z1".into())],
+            0,
+            20,
+            false,
+            "x",
+            "mixed".into(),
+            8,
+        );
+        assert_eq!(mixed.value_pct, 0.0);
+        assert_eq!(mixed.toggle_pct, 12.5);
     }
 
     use super::*;

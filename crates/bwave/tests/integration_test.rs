@@ -2888,3 +2888,22 @@ fn issue_1098_snapshot_hint_and_empty_stats_envelope_use_selected_window() {
         assert_eq!(json["data"]["signals"], serde_json::json!([]));
     }
 }
+
+#[test]
+fn issue_1098_unknown_states_keep_occupancy_without_binary_coverage() {
+    for unknown in ["x", "z"] {
+        let events = format!("#0\n{unknown}!\n#10\n0!\n#20\n1!\n#30\n");
+        let store = Issue1098Store::new("$var wire 1 ! flag $end\n", &events);
+        let json = store.json("stats", &[]);
+        let signal = &json["data"]["signals"][0];
+        assert_eq!(signal["time_in_state_ticks"][format!("'h{unknown}")], 10);
+        assert_eq!(signal["value_hist"][format!("'h{unknown}")], 1);
+        assert_eq!(signal["value_pct"], 100.0);
+        assert_eq!(signal["toggle_pct"], 100.0);
+        let events = format!("#0\n{unknown}!\n#10\n1!\n#20\n");
+        let store = Issue1098Store::new("$var wire 1 ! flag $end\n", &events);
+        let json = store.json("stats", &[]);
+        assert_eq!(json["data"]["signals"][0]["toggle_pct"], 0.0);
+        assert_eq!(json["data"]["signals"][0]["value_pct"], 50.0);
+    }
+}
