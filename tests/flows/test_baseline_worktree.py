@@ -307,7 +307,7 @@ def _stealth_core_linking_to_rtl(repo: Path, link_name: str = "rtl") -> Path:
     (core_dir / "top.core").write_text("CAPI=2:\nname: x:ip:top:1.0\n", encoding="utf-8")
     link = core_dir / link_name
     # cores/ip -> cores -> .booley_project -> repo root
-    link.symlink_to("../../../rtl")
+    link.symlink_to("../../../rtl", target_is_directory=True)
     return link
 
 
@@ -578,7 +578,9 @@ def test_baseline_prefers_fixed_pair_over_configured_standalone(tmp_path, monkey
     external = tmp_path / "configured-project"
     external.mkdir()
     _init_repo(external)
-    (root / "booley.toml").write_text(f'[project]\ndir = "{external}"\n', encoding="utf-8")
+    (root / "booley.toml").write_text(
+        f'[project]\ndir = "{external.as_posix()}"\n', encoding="utf-8"
+    )
     with baseline_worktree(root, revision) as baseline:
         _assert_topology_baseline(baseline, root, "sim_core")
         assert (baseline / ".booley_project/.git").is_file()
@@ -586,11 +588,11 @@ def test_baseline_prefers_fixed_pair_over_configured_standalone(tmp_path, monkey
 
 
 def _link_project_checkout(tmp_path: Path, project: Path) -> None:
-    import shutil
+    from booley.runtime.filesystem_utils import safe_rmtree
 
     source = tmp_path / "paired-owner"
-    _git(project, "clone", "-q", str(project), str(source))
-    shutil.rmtree(project)
+    _git(project, "clone", "-q", "-c", "core.symlinks=true", str(project), str(source))
+    safe_rmtree(project, protect_git_root=False)
     _git(source, "worktree", "add", "-b", "paired", str(project), "HEAD")
     _git(project, "branch", "--set-upstream-to=project-owner")
 
@@ -621,7 +623,9 @@ def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch
     _init_repo(project)
     (project / "cores").mkdir()
     (project / "cores/top.core").write_text("CAPI=2:\nname: acme:lib:top:1\n", encoding="utf-8")
-    (root / "booley.toml").write_text(f'[project]\ndir = "{project}"\n', encoding="utf-8")
+    (root / "booley.toml").write_text(
+        f'[project]\ndir = "{project.as_posix()}"\n', encoding="utf-8"
+    )
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
     reset_cache()
     with baseline_worktree(root, "HEAD~1") as baseline:

@@ -690,7 +690,9 @@ def test_external_standalone_baseline_skips_project_but_default_rejects_projecti
     project = tmp_path / "external"
     _init_repo(project)
     _commit_file(project, "Project\n", "Project")
-    (source / "booley.toml").write_text(f'[project]\ndir = "{project}"\n', encoding="utf-8")
+    (source / "booley.toml").write_text(
+        f'[project]\ndir = "{project.as_posix()}"\n', encoding="utf-8"
+    )
     _git(source, "add", "booley.toml")
     _git(source, "commit", "-qm", "external Project")
     destination = tmp_path / "destination"

@@ -87,7 +87,9 @@ def test_project_topology_keeps_independent_configured_and_fixed_selections(
     configured_parent = tmp_path / "configured"
     configured_parent.mkdir()
     standalone = _repository(configured_parent)
-    (outer / "booley.toml").write_text(f'[project]\ndir = "{standalone}"\n', encoding="utf-8")
+    (outer / "booley.toml").write_text(
+        f'[project]\ndir = "{standalone.as_posix()}"\n', encoding="utf-8"
+    )
     _git(standalone, "worktree", "add", "--detach", str(outer / ".booley_project"))
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / "absent"))
     reset_cache()
