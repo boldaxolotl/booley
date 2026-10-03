@@ -35,16 +35,17 @@ it's an introspection command, not a value consumer.
 Text mode, one summary block per signal:
 
 ```
-# simulation: 100000 ns (10000 cycles, 100ns period)
-# clock: tb.dut.clk
+# Simulation: 5ns
+# 1 signals analyzed
 
-tb.dut.state                  width=3 transitions=42  toggle=0.42%
-   value_hist:    'h0:5000  'h1:3000  'h2:1500  'h3:500
-   time_in_state: 'h0:50000ns  'h1:30000ns  'h2:15000ns  'h3:5000ns
+b  4-bit;  2 transitions;  2 unique values;
 
-tb.dut.data_out               width=32 transitions=187 toggle=1.87%
-   value_hist:    'h00000000:8000  'h0000DEAD:1500  'h00C0FFEE:500
-   time_in_state: 'h00000000:80000ns  'h0000DEAD:15000ns ...
+Toggle coverage: 25%
+Value coverage: 12%
+
+1: 80% (4ns)
+0: 20% (1ns)
+
 ```
 
 JSON mode emits a `statsData` envelope. `value_hist`
@@ -97,10 +98,6 @@ See `reference/json-envelope` for the full schema.
 
 - **`total_cycles: null`**: no clock detected. Pass
   `--clock PATTERN` or accept the tick-only summary.
-- **`time_in_state` values don't sum to `total_ticks`**:
-  the signal had X / Z values that don't appear in the
-  histogram, or the time window (`-t`) was narrower than
-  the full simulation.
 - **Output truncated**: `--limit` hit. Narrow with
   `-s` or bump the limit.
 - **`--virtual` rejected**: `stats` doesn't accept
