@@ -542,12 +542,20 @@ def scan_synth_logs(work_dir: Path) -> str | None:
             text = log_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for line in text.splitlines():
-            if any(marker in line for marker in _SYNTH_ERROR_MARKERS):
-                return line.strip()[:500]
-            unknown = _UNKNOWN_AREA_RE.search(line)
-            if unknown and unknown.group(1) not in _BENIGN_UNKNOWN_AREA_CELLS:
-                return line.strip()[:500] + _unknown_area_hint(unknown.group(1))
+        failure = scan_synth_text(text)
+        if failure is not None:
+            return failure
+    return None
+
+
+def scan_synth_text(text: str) -> str | None:
+    """Scan already authenticated fresh frontend text for false-pass evidence."""
+    for line in text.splitlines():
+        if any(marker in line for marker in _SYNTH_ERROR_MARKERS):
+            return line.strip()[:500]
+        unknown = _UNKNOWN_AREA_RE.search(line)
+        if unknown and unknown.group(1) not in _BENIGN_UNKNOWN_AREA_CELLS:
+            return line.strip()[:500] + _unknown_area_hint(unknown.group(1))
     return None
 
 

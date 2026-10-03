@@ -841,3 +841,145 @@ def _fake_generic_master_bin(tmp_path):
         executable.write_text(script)
         executable.chmod(0o755)
     return fake_bin
+
+
+@pytest.mark.parametrize(
+    ("tool", "diagnostic", "design"),
+    [
+        ("sv2v", "dut.sv:2:3: Parse error: unexpected token 'killed'", True),
+        ("sv2v", "sv2v: unrecognized option --bogus", False),
+        ("yosys", "dut.v:2: ERROR: syntax error, unexpected TOK_END", True),
+        ("yosys", "ERROR: syntax error at sv2v_converted.v:2", True),
+        ("yosys", "dut.sv:2:3: error: expected expression", True),
+        (
+            "yosys",
+            "ERROR: Module `\\missing' referenced in module `\\dut' in cell `\\u' is not part of the design.",
+            True,
+        ),
+        ("yosys", "ERROR: unknown command read_slang", False),
+        ("yosys", "ABC: Error loading recipe", False),
+        ("yosys", "Unsupported command abc", False),
+        ("yosys", "Unsupported RTL construct at dut.sv:2", True),
+    ],
+)
+def test_1095_fresh_stage_design_evidence(tmp_path, tool, diagnostic, design):
+    plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
+    (plan.build_dir / f"{tool}.log").write_text(diagnostic)
+    outcome = syn_make.boundary_output(plan, 2, is_stale=_fresh, stdout=f"BOOLEY_STAGE: {tool}\n")
+    assert outcome.stage == tool
+    assert bool(outcome.design_diagnostic) is design
+    assert outcome.stage_log == diagnostic
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        None,
+        "floorplan",
+        "global_placement",
+        "place_pins",
+        "repair_design",
+        "detailed_placement",
+        "sta_report_pre_repair",
+        "repair_timing",
+        "sta_report",
+    ],
+)
+def test_1095_openroad_owner_and_internal_marker(tmp_path, marker):
+    plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+    log = (
+        (f"BOOLEY_STAGE: {marker}\n" if marker else "")
+        + "\n".join(f"progress {i}" for i in range(60))
+        + "\n[ERROR STA-9999] unknown timing failure\n"
+    )
+    (plan.build_dir / "yosys.log").write_text("dut.v:2: ERROR: syntax error\n")
+    (plan.build_dir / "openroad.log").write_text(log)
+    outcome = syn_make.boundary_output(
+        plan,
+        2,
+        is_stale=_fresh,
+        stdout="BOOLEY_STAGE: yosys\nBOOLEY_STAGE: sta\nBOOLEY_STAGE: repair_design\n",
+    )
+    assert outcome.stage == "openroad"
+    assert outcome.stage_marker == (marker or "sta")
+    assert outcome.stage_log == log
+    assert not outcome.design_diagnostic
+
+
+@pytest.mark.parametrize("stale", [True, False])
+def test_1095_unconfigured_sv2v_cannot_force_slang_failure(tmp_path, stale):
+    plan = syn_make.configure_synthesis(
+        _spec(tmp_path, mode="logical", frontend="slang"), _build_dir(tmp_path)
+    )
+    old = plan.build_dir / "sv2v.log"
+    old.write_text("ERROR: syntax error\n")
+    (plan.build_dir / "yosys.log").write_text("clean frontend\n")
+    outcome = syn_make.boundary_output(plan, 0, is_stale=lambda path: stale and path == old)
+    assert outcome.forced_failure is None
+
+
+@pytest.mark.parametrize("tool", ["sv2v", "yosys", "sta"])
+def test_1095_preflight_without_log_keeps_tool_owner(tmp_path, tool):
+    plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+    outcome = syn_make.boundary_output(
+        plan, 2, is_stale=_fresh, stdout=f"BOOLEY_STAGE: {tool}\nBOOLEY_STAGE: floorplan\n"
+    )
+    assert outcome.stage == ("openroad" if tool == "sta" else tool)
+    assert outcome.stage_log == ""
+    assert not outcome.design_diagnostic
+
+
+@pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
+@pytest.mark.parametrize("tool", ["sv2v", "yosys", "openroad"])
+def test_1095_generated_make_usage_failure(tmp_path, monkeypatch, tool):
+    liberty = tmp_path / "cells.lib"
+    liberty.write_text("library(cells) {}\n")
+    monkeypatch.setattr(
+        syn_make.openroad_timing,
+        "openroad_pdk_paths",
+        lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
+    )
+    mode = "physical" if tool == "openroad" else "logical"
+    spec = dataclasses.replace(_spec(tmp_path, mode=mode), liberty=liberty)
+    plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name, script in {
+        "sv2v": "echo 'module dut; endmodule' > sv2v_converted.v",
+        "yosys": "echo 'Number of cells: 2' > stat_dut.txt; echo 'Found and reported 0 problems.' > check_dut.txt; echo 'module dut; endmodule' > synth_dut.v",
+        "openroad": "exit 0",
+    }.items():
+        shim = fake_bin / name
+        shim.write_text(
+            "#!/bin/sh\n"
+            + (
+                f"echo '{name}: unrecognized option --bogus' >&2\nexit 1\n"
+                if name == tool
+                else script + "\n"
+            )
+        )
+        shim.chmod(0o755)
+    proc = subprocess.run(
+        ["make", "-C", str(plan.build_dir)],
+        env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert proc.returncode == 2
+    outcome = syn_make.boundary_output(plan, proc.returncode, is_stale=_fresh, stdout=proc.stdout)
+    assert outcome.stage == tool
+    assert f"{tool}: unrecognized option --bogus" in outcome.stage_log
+    assert not outcome.design_diagnostic
+
+
+def test_1095_false_pass_uses_offending_frontend_log(tmp_path):
+    plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
+    diagnostic = "dut.sv:2:3: Parse error: unexpected token"
+    (plan.build_dir / "yosys.log").write_text("clean yosys\n")
+    (plan.build_dir / "sv2v.log").write_text("ERROR: " + diagnostic)
+    outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh, stdout="BOOLEY_STAGE: yosys\n")
+    assert outcome.stage == "sv2v"
+    assert outcome.design_diagnostic == "ERROR: " + diagnostic
+    assert "clean yosys" not in outcome.stage_log

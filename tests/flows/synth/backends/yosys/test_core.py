@@ -1214,3 +1214,20 @@ def test_stat_backend_latest_complete_area_matches_flow(tmp_path):
     stat = tmp_path / "stat.txt"
     stat.write_text(text)
     assert syn_core.parse_area_from_stat(stat) == _parse_area(text)[0] == 20.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ERROR: unknown command\n",
+        "ABC: Error recipe\n",
+        "Area for cell type $_DFF_P_ is unknown!\n",
+        "Area for cell type $scopeinfo is unknown!\n",
+        "clean log\n",
+    ],
+)
+def test_1095_text_scan_preserves_path_adapter(tmp_path, text):
+    from booley.flows.synth.backends.yosys import core as syn_core
+
+    (tmp_path / "yosys.log").write_text(text)
+    assert syn_core.scan_synth_text(text) == syn_core.scan_synth_logs(tmp_path)
