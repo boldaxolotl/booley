@@ -1496,6 +1496,11 @@ class TestFullRun:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert result.criterion_met is True
+        assert (
+            f"  report: {(Path(flow.args.report_dir) / 'sim.json').resolve()}"
+            in result.report_text
+        )
+        assert "manifest:" not in result.report_text
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -2236,8 +2241,9 @@ class TestTruncationResilientReport:
                 result = flow._run()
 
         lines = result.report_text.splitlines()
-        # The RESULT verdict is the very last line of the report.
-        assert lines[-1].startswith("RESULT: FAIL")
+        # The final verdict and report destination remain in the protected tail.
+        assert lines[-2].startswith("RESULT: FAIL")
+        assert lines[-1] == f"  report: {(Path(flow.args.report_dir) / 'sim.json').resolve()}"
         # The headline block sits after ALL verbose per-test detail.
         marker = lines.index("--- summary ---")
         assert "--- end error output ---" not in lines[marker:]

@@ -1771,6 +1771,8 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     assert result.outcome.report_text == (
         "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
         f"(Simulation Campaign {campaign['campaign_id']})\n"
+        f"  manifest: {manifest.resolve()}\n"
+        f"  report: {(tmp_path / 'resumed/sim.json').resolve()}\n"
         "RTL source discovery incomplete; sources without coverage points unavailable."
     )
     resolved = resolve_report_artifact_reference(
@@ -2670,3 +2672,18 @@ def test_no_waivers_resume_with_criterion_needs_diagnostic(tmp_path, monkeypatch
 
     assert diagnostic.exit_code == 0, diagnostic.outcome
     assert state_path.read_bytes() == before
+
+
+def test_legacy_coverage_result_names_report_destination_without_outer_manifest(tmp_path):
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(work_dir=tmp_path, report_dir=tmp_path / "reports")
+    outcome = SimpleNamespace(
+        target="sim_0",
+        exit_code=0,
+        detail={"simulation": "pass", "collection": "complete", "evaluation": "not_requested"},
+        campaign_path=tmp_path / "missing-coverage.json",
+        simulation_path=tmp_path / "missing-simulation.json",
+    )
+    result = flow._coverage_result([outcome])
+    assert f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.report_text
+    assert "manifest:" not in result.report_text

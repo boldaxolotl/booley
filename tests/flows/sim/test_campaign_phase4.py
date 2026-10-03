@@ -1312,3 +1312,54 @@ def _assert_child_claim_integrity(invocation, slot_store, plan) -> None:
     child_entry.write_bytes(canonical_json_bytes(transplanted))
     with pytest.raises(SimulationCampaignIntegrityError, match="child entry digest disagrees"):
         store.scan()
+
+
+@pytest.mark.parametrize("mode", ["success", "failure", "mismatch"])
+def test_cli_resume_announces_validated_origin_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    from booley.flows.sim.flow import SimulateFlow
+    from tests.flows.sim.test_coverage_flow import _interrupt_coverage_publication
+    from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    destination = tmp_path / "destination reports"
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    executor = flow._resume_campaign_executor
+    witnessed: list[str] = []
+
+    def before_executor(plan):
+        witnessed.append(capsys.readouterr().err)
+        assert witnessed == [f"campaign manifest: {manifest.resolve()}\n"]
+        assert manifest.is_file()
+        if mode == "failure":
+            raise RuntimeError("resume executor unavailable")
+        return executor(plan)
+
+    monkeypatch.setattr(flow, "_resume_campaign_executor", before_executor)
+    if mode == "mismatch":
+        (tmp_path / "rtl/counter.sv").write_text("module counter; wire changed; endmodule\n")
+    capsys.readouterr()
+    result = flow.execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(destination),
+            "--resume-from",
+            str(manifest),
+        ]
+    )
+    output = capsys.readouterr()
+    assert result.exit_code == (0 if mode == "success" else 2)
+    if mode == "mismatch":
+        assert witnessed == []
+        assert "campaign manifest: " not in output.err
+        assert "  manifest: " not in result.outcome.report_text
+        assert "mismatch" in result.outcome.report_text
+    else:
+        assert len(witnessed) == 1
+        assert f"  manifest: {manifest.resolve()}" in result.outcome.report_text
+        assert f"  report: {(destination / 'sim.json').resolve()}" in result.outcome.report_text
+        assert result.outcome.report_text.count("  manifest:") == 1

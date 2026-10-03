@@ -458,6 +458,8 @@ def test_campaign_continues_and_applies_error_fail_pass_precedence(
         result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_ERROR
+    assert f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.report_text
+    assert "manifest:" not in result.report_text
     assert calls == targets
     assert flow.state.criteria["elab_pass_clean"].met is True
     assert flow.state.criteria["elab_pass_broken"].met is False
@@ -509,6 +511,8 @@ def test_missing_executable_is_typed_in_elab_only_result(
     assert result.detail["eda_tool_error"] == "missing_executable"
     assert result.detail["missing_executable"] == "verilator"
     assert "required executable 'verilator'" in result.report_text
+    assert f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.report_text
+    assert "manifest:" not in result.report_text
 
 
 def test_elab_only_terminalizes_after_later_target_crash(
@@ -779,3 +783,56 @@ def test_full_sim_records_only_authenticated_build_verdicts(
     flow._record_elab_criterion(TargetResult(target="sim_dut", tests=tests))
 
     assert flow.state.criteria["elab_pass_sim_dut"].met is expected
+
+
+@pytest.mark.parametrize("mode", ["elab-only", "elab-only-standalone"])
+def test_elab_cli_card_has_one_report_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    (tmp_path / "sim.core").write_text(
+        "CAPI=2:\nname: ::sim:0\ntargets:\n  sim_dut:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb_demo\n"
+    )
+    flow = SimulateFlow()
+    monkeypatch.setattr(
+        flow,
+        "_run_one_elab_only",
+        lambda target: ElabOnlyTargetResult(
+            target=target, outcome=BuildOutcome(True, "pass", None)
+        ),
+    )
+    monkeypatch.setattr(flow, "_standalone_requested", lambda: False)
+    result = flow.execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--target",
+            "sim_dut",
+            "--mode",
+            mode,
+        ]
+    )
+    output = capsys.readouterr()
+    assert result.exit_code == 0
+    assert output.out.count(f"  report: {(tmp_path / 'reports/sim.json').resolve()}") == 1
+    assert output.out.count("RESULT: PASS") == 1
+    assert "manifest:" not in output.out + output.err
+
+
+def test_early_elab_error_names_available_report_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    monkeypatch.setattr(
+        flow,
+        "_elab_only_preflight",
+        lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="build preflight failed"),
+    )
+    result = flow._run_elab_only()
+    assert (
+        result.report_text
+        == f"build preflight failed\n  report: {(tmp_path / 'reports/sim.json').resolve()}"
+    )
+    assert "manifest:" not in result.report_text
