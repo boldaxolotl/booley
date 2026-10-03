@@ -468,16 +468,18 @@ def _false_pass_failure(
     fresh_text: Callable[[str], str | None],
     returncode: int,
     parameter_failure: str | None,
-) -> str | None:
-    """Scan only fresh logs belonging to the configured frontend."""
-    if parameter_failure or returncode != 0:
-        return parameter_failure
+) -> tuple[str | None, str | None]:
+    """Select failure and owner together from fresh configured frontend logs."""
+    if parameter_failure:
+        return parameter_failure, "yosys"
+    if returncode != 0:
+        return None, None
     names = ("sv2v.log", "yosys.log") if plan.spec.frontend == "sv2v" else ("yosys.log",)
     for name in names:
         failure = syn_core.scan_synth_text(fresh_text(name) or "")
         if failure:
-            return failure
-    return None
+            return failure, name.removesuffix(".log")
+    return None, None
 
 
 # Parser spelling: zachjs/sv2v src/Language/SystemVerilog/Parser/Parse.y;
@@ -535,17 +537,60 @@ def _stage_evidence(
     return stage, text, marker
 
 
-def boundary_output(
+def _missing_output_marker(
     plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
     returncode: int,
-    *,
-    is_stale: Callable[[Path], bool],
-    stdout: str = "",
-) -> BoundaryOutcome:
-    """Rebuild synthesis output from freshness-gated make artifacts."""
-    build_dir = plan.build_dir
+    stat_text: str | None,
+    final_check: str | None,
+) -> str | None:
+    """Validate required outputs without changing the diagnostic owner."""
+    if returncode != 0 or not re.fullmatch(r"[0-9a-f]{32}", plan.attempt_token):
+        return None
     spec = plan.spec
-    fresh_text = _fresh_text_reader(build_dir, is_stale)
+    physical = runs_openroad(spec.timing.mode)
+    required_outputs = [
+        ("yosys", f"stat_{spec.design_name}.txt", stat_text),
+        ("yosys", f"check_{spec.design_name}.txt", final_check),
+        ("yosys", f"synth_{spec.design_name}.v", fresh_text(f"synth_{spec.design_name}.v")),
+    ]
+    if spec.frontend == "sv2v":
+        required_outputs.insert(
+            0,
+            ("sv2v", syn_core.SV2V_OUTPUT_NAME, fresh_text(syn_core.SV2V_OUTPUT_NAME)),
+        )
+    if physical:
+        required_outputs.extend(
+            [
+                (
+                    "openroad",
+                    "reports/timing/overall.rpt",
+                    fresh_text("reports/timing/overall.rpt"),
+                ),
+                (
+                    "openroad",
+                    "reports/timing/overall.csv.rpt",
+                    fresh_text("reports/timing/overall.csv.rpt"),
+                ),
+                (
+                    "openroad",
+                    f"openroad_{spec.design_name}.v",
+                    fresh_text(f"openroad_{spec.design_name}.v"),
+                ),
+            ]
+        )
+    for owner, subject, contents in required_outputs:
+        if contents is None or (subject != "reports/timing/overall.csv.rpt" and not contents):
+            return render_failure_marker(plan.attempt_token, "missing_output", owner, subject)
+    return None
+
+
+def _boundary_sections(
+    plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
+) -> tuple[list[str], str | None, str | None, dict[str, str]]:
+    """Collect authenticated tool artifacts for interpretation."""
+    spec = plan.spec
     parts, parameter_failure, stat_text = _collect_yosys_sections(plan, fresh_text)
     physical = runs_openroad(spec.timing.mode)
     if physical:
@@ -554,82 +599,59 @@ def boundary_output(
     final_check = diagnostic_sources.get("final_check")
     if final_check is not None:
         parts.append(f"--- check_{spec.design_name}.txt ---\n{final_check}")
-    diagnostics = parse_synth_diagnostics(diagnostic_sources)
-    forced_failure = _false_pass_failure(plan, fresh_text, returncode, parameter_failure)
+    return parts, parameter_failure, stat_text, diagnostic_sources
+
+
+def _yosys_complete(plan: SynthPlan, fresh_text: Callable[[str], str | None]) -> bool:
+    """Require the final stat, check, and mapped netlist artifacts together."""
+    return all(
+        bool(fresh_text(name))
+        for name in (
+            f"stat_{plan.spec.design_name}.txt",
+            f"check_{plan.spec.design_name}.txt",
+            f"synth_{plan.spec.design_name}.v",
+        )
+    )
+
+
+def boundary_output(
+    plan: SynthPlan,
+    returncode: int,
+    *,
+    is_stale: Callable[[Path], bool],
+    stdout: str = "",
+) -> BoundaryOutcome:
+    """Rebuild synthesis output from freshness-gated make artifacts."""
+    spec = plan.spec
+    fresh_text = _fresh_text_reader(plan.build_dir, is_stale)
+    parts, parameter_failure, stat_text, diagnostic_sources = _boundary_sections(plan, fresh_text)
+    forced_failure, failure_stage = _false_pass_failure(
+        plan, fresh_text, returncode, parameter_failure
+    )
     if forced_failure and forced_failure != parameter_failure:
         parts.append("ERROR: synthesis log reports an error despite exit 0:\n  " + forced_failure)
     if returncode != 0 or forced_failure:
-        provenance = _source_provenance_text(build_dir, list(spec.sources))
+        provenance = _source_provenance_text(plan.build_dir, list(spec.sources))
         if provenance:
             parts.append(provenance)
 
     stage, stage_log, stage_marker = _stage_evidence(plan, fresh_text, stdout)
     if returncode == 0 and forced_failure:
-        stage = (
-            "yosys"
-            if parameter_failure
-            else next(
-                (
-                    tool
-                    for tool in ("sv2v", "yosys")
-                    if (tool != "sv2v" or spec.frontend == "sv2v")
-                    and syn_core.scan_synth_text(fresh_text(f"{tool}.log") or "") == forced_failure
-                ),
-                stage,
-            )
-        )
+        stage = failure_stage
         stage_log = fresh_text(f"{stage}.log") or ""
         stage_marker = stage
-    if returncode == 0 and re.fullmatch(r"[0-9a-f]{32}", plan.attempt_token):
-        required_outputs = [
-            ("yosys", f"stat_{spec.design_name}.txt", stat_text),
-            ("yosys", f"check_{spec.design_name}.txt", final_check),
-            ("yosys", f"synth_{spec.design_name}.v", fresh_text(f"synth_{spec.design_name}.v")),
-        ]
-        if spec.frontend == "sv2v":
-            required_outputs.insert(
-                0,
-                ("sv2v", syn_core.SV2V_OUTPUT_NAME, fresh_text(syn_core.SV2V_OUTPUT_NAME)),
-            )
-        if physical:
-            required_outputs.extend(
-                [
-                    (
-                        "openroad",
-                        "reports/timing/overall.rpt",
-                        fresh_text("reports/timing/overall.rpt"),
-                    ),
-                    (
-                        "openroad",
-                        "reports/timing/overall.csv.rpt",
-                        fresh_text("reports/timing/overall.csv.rpt"),
-                    ),
-                    (
-                        "openroad",
-                        f"openroad_{spec.design_name}.v",
-                        fresh_text(f"openroad_{spec.design_name}.v"),
-                    ),
-                ]
-            )
-        for stage, subject, contents in required_outputs:
-            if contents is None or (subject != "reports/timing/overall.csv.rpt" and not contents):
-                parts.append(
-                    render_failure_marker(plan.attempt_token, "missing_output", stage, subject)
-                )
-                break
+    parts.append(
+        _missing_output_marker(
+            plan, fresh_text, returncode, stat_text, diagnostic_sources.get("final_check")
+        )
+        or ""
+    )
 
     return BoundaryOutcome(
         text="\n".join(p for p in parts if p),
-        diagnostics=diagnostics,
+        diagnostics=parse_synth_diagnostics(diagnostic_sources),
         forced_failure=forced_failure,
-        yosys_complete=all(
-            bool(fresh_text(name))
-            for name in (
-                f"stat_{spec.design_name}.txt",
-                f"check_{spec.design_name}.txt",
-                f"synth_{spec.design_name}.v",
-            )
-        ),
+        yosys_complete=_yosys_complete(plan, fresh_text),
         attempt_token=plan.attempt_token,
         stage=stage,
         stage_log=stage_log,
@@ -638,7 +660,7 @@ def boundary_output(
         or _design_diagnostic(stage, stage_log),
         openroad_diagnostic=(
             _generic_master_diagnostic(diagnostic_sources.get("openroad", ""))
-            if physical and stage == "openroad"
+            if runs_openroad(spec.timing.mode) and stage == "openroad"
             else None
         ),
     )

@@ -974,8 +974,22 @@ def test_1095_generated_make_usage_failure(tmp_path, monkeypatch, tool):
     assert not outcome.design_diagnostic
 
 
-def test_1095_false_pass_uses_offending_frontend_log(tmp_path):
-    plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+def test_1095_false_pass_uses_offending_frontend_log(tmp_path, mode):
+    plan = syn_make.configure_synthesis(_spec(tmp_path, mode=mode), _build_dir(tmp_path))
+    plan = dataclasses.replace(plan, attempt_token="a" * 32)
+    for name in (
+        "stat_dut.txt",
+        "check_dut.txt",
+        "synth_dut.v",
+        syn_core.SV2V_OUTPUT_NAME,
+        "reports/timing/overall.rpt",
+        "reports/timing/overall.csv.rpt",
+        "openroad_dut.v",
+    ):
+        path = plan.build_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fresh output\n")
     diagnostic = "dut.sv:2:3: Parse error: unexpected token"
     (plan.build_dir / "yosys.log").write_text("clean yosys\n")
     (plan.build_dir / "sv2v.log").write_text("ERROR: " + diagnostic)
