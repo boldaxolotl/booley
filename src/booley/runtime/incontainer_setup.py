@@ -317,6 +317,9 @@ def _codex_data(existing: str, *, path: Path | None = None) -> dict:
     """Validate interactive config before any registration mutation."""
     try:
         parsed = tomllib.loads(existing)
+        for table in ("features", "notice"):
+            if table in parsed and not isinstance(parsed[table], dict):
+                raise ValueError(f"{table} must be a table")
         if "suppress_unstable_features_warning" in parsed and not isinstance(
             parsed["suppress_unstable_features_warning"], bool
         ):
@@ -357,8 +360,8 @@ def _publish_codex_config(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _codex_entry_is_current(existing: str) -> bool:
-    parsed = _codex_data(existing)
+def _codex_entry_is_current(existing: str, *, path: Path | None = None) -> bool:
+    parsed = _codex_data(existing, path=path)
     servers = parsed.get("mcp_servers", {})
     entry = servers.get(MCP_SERVER_NAME) if isinstance(servers, dict) else None
     features = parsed.get("features", {})
@@ -557,7 +560,7 @@ def upsert_codex(path: Path) -> bool:
         updated = _strip_codex_table(updated)
         sep = "" if not updated or updated.endswith("\n") else "\n"
         updated += sep + codex_section()
-    if not _codex_entry_is_current(updated):
+    if not _codex_entry_is_current(updated, path=path):
         raise ValueError(f"Codex migration did not produce current settings: {path}")
     _publish_codex_config(path, updated)
     return True

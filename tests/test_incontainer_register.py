@@ -994,7 +994,8 @@ def test_codex_publication_failure_preserves_destination(tmp_path, monkeypatch, 
         else:
             reg._apply_codex_permission_mode(tmp_path)
     assert path.read_text(encoding="utf-8") == existing
-    assert path.stat().st_mode & 0o777 == 0o640
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o640
     assert list(path.parent.iterdir()) == [path]
 
 
@@ -1024,7 +1025,8 @@ def test_codex_atomic_publication_preserves_symlink_and_permissions(tmp_path, wr
         reg._apply_codex_permission_mode(tmp_path)
         assert tomllib.loads(target.read_text())["approval_policy"] == "never"
     assert path.is_symlink()
-    assert target.stat().st_mode & 0o777 == 0o640
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o640
     assert tomllib.loads(target.read_text())["model"] == "existing"
 
 
@@ -1040,3 +1042,37 @@ def test_codex_migration_preserves_unrelated_crlf_bytes(tmp_path, writer):
         reg._apply_codex_permission_mode(tmp_path)
     assert existing in path.read_bytes()
     tomllib.loads(path.read_bytes().decode("utf-8"))
+
+
+@pytest.mark.parametrize("existing", ["features=true\n", "notice=true\n", 'notice="x"\n'])
+def test_codex_invalid_table_shape_fails_before_registration_mutations(
+    tmp_path, monkeypatch, existing
+):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(existing)
+    calls = []
+    monkeypatch.setattr(reg, "deploy_skills", lambda *args: calls.append("skills"))
+    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: calls.append("host skills"))
+    monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: calls.append("credential"))
+    with pytest.raises(ValueError, match=str(path)):
+        reg.register("codex", home=tmp_path)
+    assert calls == []
+    assert path.read_text() == existing
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        'mcp_servers = {other = {url="http://other"}}\n',
+        'mcp_servers = {booley = {command="old"}, other = {url="http://other"}}\n',
+    ],
+)
+def test_codex_unsupported_inline_servers_fail_with_named_repair_diagnostic(tmp_path, existing):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(existing)
+    with pytest.raises(ValueError, match=str(path)) as error:
+        reg.upsert_codex(path)
+    assert "repair this file and retry" in str(error.value)
+    assert path.read_text() == existing

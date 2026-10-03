@@ -99,7 +99,6 @@ def test_generator_preserves_root_warning_preference(value):
     result = tomllib.loads(generate_codex_config(existing_config=existing))
     assert result["suppress_unstable_features_warning"] is value
     assert result["features"]["mcp_2026_07_28"] is True
-    assert existing.endswith("# choice\n")
 
 
 def test_generator_ignores_table_warning_preference():
