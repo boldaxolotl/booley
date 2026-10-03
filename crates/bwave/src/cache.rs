@@ -758,13 +758,12 @@ fn build_radix_map(
     }
     // Track explicit radix requests so collisions include an explicit Hex.
     let mut requested: HashMap<usize, Vec<Radix>> = HashMap::new();
-    let exact_patterns: Vec<String> = cfg
+    let exact_matchers: Vec<_> = cfg
         .patterns
         .iter()
         .filter(|p| !explicit_glob(p))
-        .cloned()
+        .flat_map(|p| compile_patterns(std::slice::from_ref(p)).unwrap_or_default())
         .collect();
-    let exact_matchers = compile_patterns(&exact_patterns).expect("row selectors were validated");
     let retained_exact: std::collections::HashSet<usize> = matched
         .iter()
         .copied()

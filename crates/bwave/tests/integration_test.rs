@@ -2914,3 +2914,65 @@ fn issue_1098_unknown_states_keep_occupancy_without_binary_coverage() {
         assert_eq!(json["data"]["signals"][0]["value_pct"], 50.0);
     }
 }
+
+#[test]
+fn issue_1108_public_find_rejects_invalid_row_selector_without_panic() {
+    const STORE_ENV: &str = "BWAVE_1108_LIBRARY_FIND_STORE";
+    const INVALID_ENV: &str = "BWAVE_1108_LIBRARY_FIND_INVALID";
+    if let Some(store) = std::env::var_os(STORE_ENV) {
+        let cache = bwave::cache::ColumnCache::load_from_file(&PathBuf::from(store)).unwrap();
+        let mut patterns = vec!["state".into()];
+        if std::env::var_os(INVALID_ENV).is_some() {
+            patterns.insert(0, "bad\\".into());
+        }
+        let cfg = bwave::ExtractConfig {
+            patterns,
+            signal_radixes: vec![("state".into(), bwave::format::Radix::Dec)],
+            find_pattern: Some("state".into()),
+            find_value: Some("0".into()),
+            async_mode: true,
+            first_match: true,
+            ..Default::default()
+        };
+        bwave::cache::find_value_from_cache(&cache, &cfg);
+        return;
+    }
+    let fst = build_bwave("small_clocked.vcd", "1108-library-find-invalid-selector");
+    let mut outcomes = Vec::new();
+    for invalid in [false, true] {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "issue_1108_public_find_rejects_invalid_row_selector_without_panic",
+            "--nocapture",
+        ]);
+        command.env(STORE_ENV, &fst);
+        command.env_remove(INVALID_ENV);
+        if invalid {
+            command.env(INVALID_ENV, "1");
+        }
+        outcomes.push((invalid, command.output().unwrap()));
+    }
+    std::fs::remove_file(fst).unwrap();
+    for (invalid, output) in outcomes {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(if invalid { 2 } else { 0 }),
+            "{stdout}\n{stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        if invalid {
+            assert!(stderr.contains("invalid glob pattern"), "{stderr}");
+        } else {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.split_whitespace().collect::<Vec<_>>()
+                        == ["0", "state[3:0]", "0"]),
+                "{stdout}"
+            );
+        }
+    }
+}
