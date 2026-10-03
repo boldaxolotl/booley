@@ -7,8 +7,17 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import Protocol
 
 from booley.projects import image_keepers, inventory
+
+
+class KeeperOperations(Protocol):
+    """Host-coordinated keeper operations supplied by the command composition layer."""
+
+    def forget_project(self, project: Path) -> tuple[Path, image_keepers.KeeperRelease]: ...
+
+    def prune_keepers(self, confirm: str | None = None) -> image_keepers.PruneResult: ...
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -44,18 +53,22 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     prune.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None = None) -> int:
     """Execute one Project Inventory operation."""
     try:
         action = getattr(args, "projects_action", None)
         if action == "discover":
             discovered = inventory.discover_projects(tuple(args.search_roots))
             return _render_discovered(discovered, json_output=getattr(args, "json", False))
+        if action in {"forget", "prune-keepers"} and keeper_operations is None:
+            raise inventory.ProjectInventoryError(
+                "Project keeper access requires host lifecycle coordination"
+            )
         if action == "forget":
-            forgotten, keeper = image_keepers.forget_project(args.project)
+            forgotten, keeper = keeper_operations.forget_project(args.project)
             return _render_forgotten(forgotten, keeper, json_output=getattr(args, "json", False))
         if action == "prune-keepers":
-            result = image_keepers.prune_keepers(args.confirm)
+            result = keeper_operations.prune_keepers(args.confirm)
             return _render_prune(result, json_output=getattr(args, "json", False))
         entries = inventory.project_inventory()
     except inventory.ProjectInventoryError as exc:
