@@ -2546,15 +2546,21 @@ def test_mixed_lint_authored_selection_controls(tmp_path, flow, eda_tool):
     )
     ref = next(iter(enumerate_targets(tmp_path).values()))
     assert ref.eda_tool == eda_tool
+    assert ref.lint_flow_eda_tool_missing is (flow == "lint")
 
 
 @pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint", "slang"])
 def test_explicit_lint_option_precedence_control(tmp_path, eda_tool):
+    from booley.targets.domain import flow_can_drive
+
     (tmp_path / "control.core").write_text(
         "CAPI=2:\nname: acme:ip:control:1.0\ntargets:\n  lint_control:\n    flow: lint\n    default_tool: yosys\n"
         + f"    flow_options: {{tool: {eda_tool}}}\n"
     )
-    assert next(iter(enumerate_targets(tmp_path).values())).eda_tool == eda_tool
+    ref = next(iter(enumerate_targets(tmp_path).values()))
+    assert ref.eda_tool == eda_tool
+    assert ref.lint_flow_eda_tool_missing is False
+    assert flow_can_drive("lint", ref) is (eda_tool != "slang")
 
 
 @pytest.mark.parametrize("missing", [False, True])
