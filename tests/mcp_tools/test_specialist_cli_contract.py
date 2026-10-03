@@ -43,6 +43,15 @@ def command(argv):
     return cli._normalize_args(parser, parser.parse_args(argv))
 
 
+def register_project_specialist(data):
+    directory = data / "mcp_tools"
+    directory.mkdir()
+    (directory / "project_review.py").write_text(
+        'class ProjectReview(Specialist):\n    name = "project_review"\n'
+        '    description = "Project review fixture"\n'
+    )
+
+
 @pytest.fixture
 def sandbox(monkeypatch):
     monkeypatch.setattr(
@@ -82,7 +91,7 @@ def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, mon
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     directory = tmp_path / ".booley_project"
     (directory / "mcp_tools").mkdir(parents=True)
-    (directory / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
+    (directory / "booley.toml").write_text("[specialists.reviewer]\nenabled = false\n")
     (directory / "mcp_tools/project_review.py").write_text(
         'from booley.specialists.specialist import Specialist\nclass ProjectReview(Specialist):\n    name = "project_review"\n    description = "Project fixture"\n'
     )
@@ -136,29 +145,77 @@ def test_host_refusal_precedes_state_reports_and_admission(tmp_path, monkeypatch
     assert not list(tmp_path.iterdir())
 
 
-def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox):
+def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox, capsys):
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    register_project_specialist(data)
+    (data / "booley.toml").write_text("[specialists.project_review]\nenabled = false\n")
+    endpoint = ProjectSpecialist()
+    endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
+    assert endpoint.main(["--work-dir", str(tmp_path)]) == 2
+    endpoint.read_state.assert_not_called()
+    output = capsys.readouterr()
+    assert "is disabled" in output.out + output.err
+
+
+def test_module_gate_reports_retirement_before_loading_state(tmp_path, sandbox, capsys):
     data = tmp_path / ".booley_project"
     data.mkdir()
     (data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = false\n")
     endpoint = ProjectSpecialist()
     endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
+
     assert endpoint.main(["--work-dir", str(tmp_path)]) == 2
     endpoint.read_state.assert_not_called()
+    output = capsys.readouterr()
+    assert "[specialists.*]" in output.out + output.err
+
+
+def test_reviewer_gate_rejects_misspelled_setting_before_loading_state(tmp_path, sandbox, capsys):
+    from booley.specialists.reviewer import ReviewerSpecialist
+
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "booley.toml").write_text("[specialists.reveiwer]\nenabled = false\n")
+    endpoint = ReviewerSpecialist()
+    endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
+
+    assert (
+        endpoint.main(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--scope",
+                ".",
+                "--category",
+                "rtl",
+                "--focus",
+                "correctness",
+            ]
+        )
+        == 2
+    )
+    endpoint.read_state.assert_not_called()
+    output = capsys.readouterr()
+    assert "reveiwer" in output.out + output.err
 
 
 @pytest.mark.parametrize("selection", ["override", "checkout_snapshot", "subdirectory"])
-def test_disabled_gate_uses_selected_project_config(tmp_path, monkeypatch, sandbox, selection):
+def test_disabled_gate_uses_selected_project_config(
+    tmp_path, monkeypatch, sandbox, selection, capsys
+):
     root = tmp_path / "checkout"
     root.mkdir()
     data = root / ("project_data" if selection == "override" else ".booley_project")
     data.mkdir()
-    (data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = false\n")
+    register_project_specialist(data)
+    (data / "booley.toml").write_text("[specialists.project_review]\nenabled = false\n")
     if selection == "override":
         (root / "booley.toml").write_text('[project]\ndir = "project_data"\n')
     elif selection == "checkout_snapshot":
         session_data = tmp_path / "session_data"
         session_data.mkdir()
-        (session_data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = true\n")
+        (session_data / "booley.toml").write_text("[specialists.project_review]\nenabled = true\n")
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(session_data))
     else:
         root = root / "rtl"
@@ -167,6 +224,8 @@ def test_disabled_gate_uses_selected_project_config(tmp_path, monkeypatch, sandb
     endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
     assert endpoint.main(["--work-dir", str(root)]) == 2
     endpoint.read_state.assert_not_called()
+    output = capsys.readouterr()
+    assert "is disabled" in output.out + output.err
 
 
 def test_listing_resolves_project_directory_override(tmp_path, monkeypatch, capsys):
@@ -174,7 +233,7 @@ def test_listing_resolves_project_directory_override(tmp_path, monkeypatch, caps
     (tmp_path / "booley.toml").write_text('[project]\ndir = "project_data"\n')
     data = tmp_path / "project_data"
     (data / "mcp_tools").mkdir(parents=True)
-    (data / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
+    (data / "booley.toml").write_text("[specialists.reviewer]\nenabled = false\n")
     (data / "mcp_tools/project_review.py").write_text(
         'from booley.specialists.specialist import Specialist\nclass ProjectReview(Specialist):\n    name = "project_review"\n    description = "Project fixture"\n'
     )

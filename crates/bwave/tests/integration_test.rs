@@ -638,15 +638,15 @@ fn test_at_time_async_ps() {
 }
 
 #[test]
-fn test_at_time_async_ps_beyond_range_holds_last_value() {
-    // FST snapshot semantics hold the final value beyond the recorded range.
+fn test_at_time_async_ps_beyond_range_is_input_error() {
+    // Public point queries reject times beyond the recorded trace.
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "999999999t", "--async"]);
-    assert_eq!(code, 0);
-    assert!(stdout.contains("# Snapshot at 999999999"));
-    assert!(stdout.contains("counter[7:0]"));
+    let (stdout, stderr, code) = run_query(&["value", &vcd, "--at", "999999999t", "--async"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("beyond simulation range"));
 }
 
 #[test]
@@ -1535,7 +1535,11 @@ fn test_distance_two_event_stats() {
     assert!(stdout.contains("count=5"), "count: {}", stdout);
     assert!(stdout.contains("min=3"), "min: {}", stdout);
     assert!(stdout.contains("max=5"), "max: {}", stdout);
-    assert!(stdout.contains("avg=3.8"), "avg: {}", stdout);
+    assert!(
+        stdout.contains("mean=3.8  median=4.0"),
+        "summary: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -2777,23 +2781,26 @@ fn issue_1098_predicate_samples_and_edges_are_actual_events() {
         row.split_whitespace().collect::<Vec<_>>(),
         vec!["virt", "0", "0", "1", "1"]
     );
-    let distance = store.query(
+    let (distance, diagnostic, code) = run_bwave(&[
         "distance",
-        &[
-            "virt",
-            "rising",
-            "--to",
-            "count",
-            "change",
-            "--virtual",
-            definition,
-        ],
+        store.1.to_str().unwrap(),
+        "virt",
+        "rising",
+        "--to",
+        "count",
+        "change",
+        "--virtual",
+        definition,
+    ]);
+    assert_eq!(code, 0, "{diagnostic}");
+    assert_eq!(
+        distance.trim(),
+        "",
+        "pre-reset virtual edge must be excluded"
     );
     assert!(
-        !distance
-            .lines()
-            .any(|line| line.trim_start().starts_with(|c: char| c.is_ascii_digit())),
-        "{distance}"
+        diagnostic.contains("pattern 'virt' matched but value 'rising' never occurred"),
+        "{diagnostic}"
     );
     let post = store.json(
         "find",
@@ -2905,5 +2912,67 @@ fn issue_1098_unknown_states_keep_occupancy_without_binary_coverage() {
         let json = store.json("stats", &[]);
         assert_eq!(json["data"]["signals"][0]["toggle_pct"], 0.0);
         assert_eq!(json["data"]["signals"][0]["value_pct"], 50.0);
+    }
+}
+
+#[test]
+fn issue_1108_public_find_rejects_invalid_row_selector_without_panic() {
+    const STORE_ENV: &str = "BWAVE_1108_LIBRARY_FIND_STORE";
+    const INVALID_ENV: &str = "BWAVE_1108_LIBRARY_FIND_INVALID";
+    if let Some(store) = std::env::var_os(STORE_ENV) {
+        let cache = bwave::cache::ColumnCache::load_from_file(&PathBuf::from(store)).unwrap();
+        let mut patterns = vec!["state".into()];
+        if std::env::var_os(INVALID_ENV).is_some() {
+            patterns.insert(0, "bad\\".into());
+        }
+        let cfg = bwave::ExtractConfig {
+            patterns,
+            signal_radixes: vec![("state".into(), bwave::format::Radix::Dec)],
+            find_pattern: Some("state".into()),
+            find_value: Some("0".into()),
+            async_mode: true,
+            first_match: true,
+            ..Default::default()
+        };
+        bwave::cache::find_value_from_cache(&cache, &cfg);
+        return;
+    }
+    let fst = build_bwave("small_clocked.vcd", "1108-library-find-invalid-selector");
+    let mut outcomes = Vec::new();
+    for invalid in [false, true] {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "issue_1108_public_find_rejects_invalid_row_selector_without_panic",
+            "--nocapture",
+        ]);
+        command.env(STORE_ENV, &fst);
+        command.env_remove(INVALID_ENV);
+        if invalid {
+            command.env(INVALID_ENV, "1");
+        }
+        outcomes.push((invalid, command.output().unwrap()));
+    }
+    std::fs::remove_file(fst).unwrap();
+    for (invalid, output) in outcomes {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(if invalid { 2 } else { 0 }),
+            "{stdout}\n{stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        if invalid {
+            assert!(stderr.contains("invalid glob pattern"), "{stderr}");
+        } else {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.split_whitespace().collect::<Vec<_>>()
+                        == ["0", "state[3:0]", "0"]),
+                "{stdout}"
+            );
+        }
     }
 }

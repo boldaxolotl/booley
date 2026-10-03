@@ -212,7 +212,7 @@ _CONTAINER_CLI = "doc" + "ker"
 # B-Wave is unconditionally required; enabled deterministic Flows are added below.
 _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
 # Specialist MCP tools worth a heads-up when expected-but-absent from
-# the MCP surface. An explicit ``[flows.<name>].enabled = false`` opts out.
+# the MCP surface. An explicit ``[specialists.<name>].enabled = false`` opts out.
 _ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
     {
         "mutation_tester",
@@ -3022,13 +3022,13 @@ def _required_mcp_tools(project: ProjectAudit) -> set[str]:
 
 def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
     """Advisory interactive MCP tools that have not been explicitly disabled."""
-    mcp_tools_cfg = project.booley_toml.get("mcp_tools", {})
-    if not isinstance(mcp_tools_cfg, dict):
-        mcp_tools_cfg = {}
+    specialists_cfg = project.booley_toml.get("specialists", {})
+    if not isinstance(specialists_cfg, dict):
+        specialists_cfg = {}
     return {
         name
         for name in _ADVISORY_INTERACTIVE_MCP_TOOLS
-        if config_section(mcp_tools_cfg, name).get("enabled") is not False
+        if config_section(specialists_cfg, name).get("enabled") is not False
     }
 
 

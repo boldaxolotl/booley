@@ -528,6 +528,12 @@ def _revoke_project_identity(project_root: Path, kind: str, state: AuthorityStat
 
 def _validate_new_grant_project(project: Path) -> None:
     """Require an exact Project marker without breaking no-grant lookups."""
+    from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
+
+    try:
+        require_project_checkout(project)
+    except SourceCheckoutProjectError as exc:
+        raise AuthorityError(str(exc)) from exc
     authority_root = state_dir().resolve()
     if _paths_overlap(project, authority_root):
         raise AuthorityError(f"Project root overlaps the private EDA authority: {project}")

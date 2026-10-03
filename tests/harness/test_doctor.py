@@ -5675,7 +5675,7 @@ class TestAdvisoryMcpTools:
         return doctor.ProjectAudit(
             project_root=tmp_path,
             project_dir=pd,
-            booley_toml={"flows": flows, "mcp_tools": mcp_tools},
+            booley_toml={"flows": flows, "specialists": mcp_tools},
             configs_toml={},
             first_target="",
         )

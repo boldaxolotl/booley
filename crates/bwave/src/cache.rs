@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::format::{format_value_with_radix, is_edge_keyword, values_match, Radix};
+use crate::format::{format_value_with_radix, values_match, Radix, TriggerMode};
 use crate::signal::{compile_patterns, match_signal};
 use crate::ExtractConfig;
 
@@ -284,9 +284,8 @@ impl ColumnCache {
     }
 
     /// Find cached signal indices matching glob patterns.
-    /// Deduplicates by alias group, keeping the LAST matching alias per
-    /// group — matches Extractor's `primary_name()` which returns
-    /// `sig_names[idx].last()`.
+    /// Preserves every exact alias selection. Globs keep the last matching
+    /// alias per group unless an exact selection already retains that group.
     ///
     /// Exits with code 2 on glob-syntax errors. Used to silently return an
     /// empty match list, which made `list -s "[oops"` look like "no signals
@@ -301,6 +300,15 @@ impl ColumnCache {
         patterns: &[String],
         extra_names: &[String],
     ) -> (Vec<usize>, Vec<usize>) {
+        self.select_signals_with_names(patterns, extra_names, true)
+    }
+
+    fn select_signals_with_names(
+        &self,
+        patterns: &[String],
+        extra_names: &[String],
+        report: bool,
+    ) -> (Vec<usize>, Vec<usize>) {
         let matchers = match compile_patterns(patterns) {
             Ok(m) => m,
             Err(e) => {
@@ -308,31 +316,31 @@ impl ColumnCache {
                 std::process::exit(2);
             }
         };
-        // Entries ordered by first occurrence; an alias group keeps the LAST
-        // matching alias (matches Extractor's primary_name()).
-        let mut group_pos: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
-        let mut results: Vec<usize> = Vec::new();
-        // Per-pattern hit flags: a `-s` filter that matches nothing used to
-        // disappear without a word whenever a sibling filter did match, so a
-        // nine-signal `wave` could quietly render two rows.
-        let mut pattern_hit: Vec<bool> = vec![false; matchers.len()];
-        for (i, s) in self.signals.iter().enumerate() {
-            let mut hit = false;
+        let mut pattern_hit = vec![false; matchers.len()];
+        let mut exact = std::collections::HashSet::new();
+        let mut globs: HashMap<u64, usize> = HashMap::new();
+        for (i, signal) in self.signals.iter().enumerate() {
             for (pi, matcher) in matchers.iter().enumerate() {
-                if match_signal(&s.name, std::slice::from_ref(matcher)) {
+                if match_signal(&signal.name, std::slice::from_ref(matcher)) {
                     pattern_hit[pi] = true;
-                    hit = true;
-                }
-            }
-            if hit {
-                if let Some(&p) = group_pos.get(&s.group_id) {
-                    results[p] = i; // overwrite with later alias
-                } else {
-                    group_pos.insert(s.group_id, results.len());
-                    results.push(i);
+                    if explicit_glob(&patterns[pi]) {
+                        globs.insert(signal.group_id, i);
+                    } else {
+                        exact.insert(i);
+                    }
                 }
             }
         }
+        let exact_groups: std::collections::HashSet<u64> =
+            exact.iter().map(|&i| self.signals[i].group_id).collect();
+        exact.extend(
+            globs
+                .into_iter()
+                .filter(|(group, _)| !exact_groups.contains(group))
+                .map(|(_, i)| i),
+        );
+        let mut results: Vec<usize> = exact.into_iter().collect();
+        results.sort_unstable();
         let mut extra_results = Vec::new();
         for (i, name) in extra_names.iter().enumerate() {
             let mut hit = false;
@@ -346,12 +354,183 @@ impl ColumnCache {
                 extra_results.push(i);
             }
         }
-        report_unmatched_patterns(
-            patterns,
-            &pattern_hit,
-            results.is_empty() && extra_results.is_empty(),
-        );
+        if report {
+            report_unmatched_patterns(
+                patterns,
+                &pattern_hit,
+                results.is_empty() && extra_results.is_empty(),
+            );
+        }
         (results, extra_results)
+    }
+}
+
+fn explicit_glob(pattern: &str) -> bool {
+    let scan = match (pattern.rfind('['), pattern.strip_suffix(']')) {
+        (Some(open), Some(_)) => {
+            let index = &pattern[open + 1..pattern.len() - 1];
+            if !index.is_empty()
+                && index.bytes().all(|b| b.is_ascii_digit() || b == b':')
+                && index.bytes().any(|b| b.is_ascii_digit())
+            {
+                &pattern[..open]
+            } else {
+                pattern
+            }
+        }
+        _ => pattern,
+    };
+    let mut escaped = false;
+    for ch in scan.chars() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if matches!(ch, '*' | '?' | '[' | '{') {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Default)]
+struct AliasBudget {
+    noted: usize,
+    withheld: usize,
+    event_withheld: bool,
+    seen: std::collections::HashSet<String>,
+}
+
+fn alias_warnings(
+    cache: &ColumnCache,
+    patterns: &[String],
+    event: bool,
+    budget: &mut AliasBudget,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let (rows, _) = cache.select_signals_with_names(patterns, &[], false);
+    for pattern in patterns.iter().filter(|p| explicit_glob(p)) {
+        let matchers = compile_patterns(std::slice::from_ref(pattern)).unwrap_or_else(|error| {
+            eprintln!("ERROR: {error}");
+            std::process::exit(2);
+        });
+        let mut representative = HashMap::new();
+        if event {
+            for (i, signal) in cache
+                .signals
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| match_signal(&s.name, &matchers))
+            {
+                representative.entry(signal.group_id).or_insert(i);
+            }
+        } else {
+            for &i in &rows {
+                representative.entry(cache.signals[i].group_id).or_insert(i);
+            }
+        }
+        for (i, signal) in cache
+            .signals
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| match_signal(&s.name, &matchers))
+        {
+            if (!event && rows.binary_search(&i).is_ok())
+                || representative.get(&signal.group_id) == Some(&i)
+            {
+                continue;
+            }
+            if let Some(&shown) = representative.get(&signal.group_id) {
+                if budget.seen.insert(signal.name.clone()) {
+                    if budget.noted < 32 {
+                        budget.noted += 1;
+                        warnings.push(if event {
+                            format!(
+                                "# {} is an alias of {} (event selected once)",
+                                signal.name, cache.signals[shown].name
+                            )
+                        } else {
+                            format!(
+                                "# {} is an alias of {} (shown once)",
+                                signal.name, cache.signals[shown].name
+                            )
+                        });
+                    } else {
+                        budget.withheld += 1;
+                        budget.event_withheld |= event;
+                    }
+                }
+            }
+        }
+    }
+    warnings
+}
+
+fn query_config(cache: &ColumnCache, original: &ExtractConfig) -> ExtractConfig {
+    let mut cfg = original.clone();
+    let mut budget = AliasBudget::default();
+    let mut warnings = if cfg.explicit_selectors {
+        alias_warnings(cache, &cfg.patterns, false, &mut budget)
+    } else {
+        Vec::new()
+    };
+    let event_patterns: Vec<String> = cfg
+        .find_pattern
+        .iter()
+        .chain(cfg.sample_at_pattern.iter())
+        .cloned()
+        .chain(cfg.distance_a.iter().map(|(p, _)| p.clone()))
+        .chain(cfg.distance_b.iter().map(|(p, _)| p.clone()))
+        .collect();
+    warnings.extend(alias_warnings(cache, &event_patterns, true, &mut budget));
+    if budget.withheld > 0 {
+        warnings.push(if budget.event_withheld {
+            format!(
+                "additional {} alias names selected once; narrow selectors for details",
+                budget.withheld
+            )
+        } else {
+            format!(
+                "additional {} alias names shown once; narrow selectors for details",
+                budget.withheld
+            )
+        });
+    }
+    if !cfg.json_format {
+        for warning in &warnings {
+            eprintln!("{warning}");
+        }
+    }
+    cfg.warnings = crate::output::merge_warnings(cfg.warnings, &warnings);
+    cfg
+}
+
+fn emit_query_json<T: serde::Serialize>(
+    cfg: &ExtractConfig,
+    command: &str,
+    data: T,
+    warnings: Vec<String>,
+) {
+    crate::output::emit_json(
+        command,
+        data,
+        crate::output::merge_warnings(warnings, &cfg.warnings),
+    );
+}
+
+fn limit_warning(limit: usize) -> String {
+    format!("# WARNING: limit ({limit}) reached, output truncated")
+}
+
+fn record_limit(cfg: &ExtractConfig, count: usize) -> Vec<String> {
+    if count > cfg.max_lines {
+        let warning = limit_warning(cfg.max_lines);
+        if !cfg.json_format {
+            eprintln!("{warning}");
+        }
+        vec![warning]
+    } else {
+        Vec::new()
     }
 }
 
@@ -577,17 +756,37 @@ fn build_radix_map(
     if cfg.signal_radixes.is_empty() {
         return map;
     }
-    // Track each request (idx, radix) so we can detect collisions even when
-    // one of the radixes is the default Hex (which build_radix_map drops).
+    // Track explicit radix requests so collisions include an explicit Hex.
     let mut requested: HashMap<usize, Vec<Radix>> = HashMap::new();
+    let exact_matchers: Vec<_> = cfg
+        .patterns
+        .iter()
+        .filter(|p| !explicit_glob(p))
+        .flat_map(|p| compile_patterns(std::slice::from_ref(p)).unwrap_or_default())
+        .collect();
+    let retained_exact: std::collections::HashSet<usize> = matched
+        .iter()
+        .copied()
+        .filter(|&idx| match_signal(&cache.signals[idx].name, &exact_matchers))
+        .collect();
     for (pat, radix) in &cfg.signal_radixes {
         if let Ok(matchers) = compile_patterns(&[pat.clone()]) {
+            let selected_groups: std::collections::HashSet<u64> = cache
+                .signals
+                .iter()
+                .filter(|s| match_signal(&s.name, &matchers))
+                .map(|s| s.group_id)
+                .collect();
             for &idx in matched {
-                if match_signal(&cache.signals[idx].name, &matchers) {
+                let signal = &cache.signals[idx];
+                let matches = match_signal(&signal.name, &matchers);
+                if (matches && !explicit_glob(pat))
+                    || (explicit_glob(pat)
+                        && !retained_exact.contains(&idx)
+                        && selected_groups.contains(&signal.group_id))
+                {
                     requested.entry(idx).or_default().push(*radix);
-                    if *radix != Radix::Hex {
-                        map.insert(idx, *radix);
-                    }
+                    map.insert(idx, *radix);
                 }
             }
         }
@@ -758,15 +957,43 @@ fn record_occupied_run(stats: &mut CacheStatsEntry, value: &str, elapsed: u64) {
     }
 }
 
+fn stats_window(cache: &ColumnCache, cfg: &ExtractConfig, reset_start: u64) -> (u64, u64) {
+    let resolve = |time: i64| {
+        if time <= 0 {
+            return reset_start;
+        }
+        let time = time as u64;
+        if !cfg.async_mode && cache.clock_period_ticks > 0 {
+            cycle_base(cache, reset_start)
+                .saturating_add((time - 1).saturating_mul(cache.clock_period_ticks))
+        } else {
+            time
+        }
+    };
+    let start = resolve(cfg.time_min)
+        .max(reset_start)
+        .min(cache.sim_end_tick);
+    let end = cfg
+        .time_max
+        .map(resolve)
+        .unwrap_or(cache.sim_end_tick)
+        .min(cache.sim_end_tick)
+        .max(start);
+    (start, end)
+}
+
 /// Run stats query from cache.
 pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let matched = cache.match_signals(&cfg.patterns);
     let virtuals = build_virtuals(cache, cfg);
 
     let sync_mode = !cfg.async_mode;
     let reset_deassert_tick = query_reset_deassert_tick(cache, cfg);
-    let effective_start = reset_deassert_tick.unwrap_or(0);
-    let total_ticks = cache.sim_end_tick.saturating_sub(effective_start);
+    let reset_start = reset_deassert_tick.unwrap_or(0);
+    let (effective_start, window_end) = stats_window(cache, cfg, reset_start);
+    let total_ticks = window_end.saturating_sub(effective_start);
     let total_ns = (total_ticks as f64 * cache.ticks_to_ns) as i64;
 
     if matched.is_empty() && virtuals.is_empty() {
@@ -783,7 +1010,8 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             } else {
                 None
             };
-            crate::output::emit_json(
+            emit_query_json(
+                cfg,
                 "stats",
                 crate::output::StatsData::<crate::output::JsonStatsEntry> {
                     simulation_ns: total_ns,
@@ -850,12 +1078,13 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let sig = &cache.signals[sig_idx];
         let is_clock_sig = clock_group_id == Some(sig.group_id);
 
-        let strict_boundary =
-            is_clock_sig && cache.clock_before_reset_at_deassert && reset_deassert_tick.is_some();
+        let strict_boundary = is_clock_sig
+            && cache.clock_before_reset_at_deassert
+            && reset_deassert_tick == Some(effective_start);
         entries.push(scan_stats(
             &transitions,
             effective_start,
-            cache.sim_end_tick,
+            window_end,
             strict_boundary,
             "x",
             sig.name.clone(),
@@ -867,7 +1096,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         entries.push(scan_stats(
             &ve.transitions,
             effective_start,
-            cache.sim_end_tick,
+            window_end,
             false,
             "0",
             ve.name.clone(),
@@ -877,6 +1106,9 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     // Sort by transitions descending
     entries.sort_by(|a, b| b.transitions.cmp(&a.transitions).then(a.name.cmp(&b.name)));
+
+    let limit_warnings = record_limit(cfg, entries.len());
+    entries.truncate(cfg.max_lines);
 
     // JSON output mode — wrap in envelope and return early.
     // v0.2 bugfix: keys are now Verilog literals (matching the text-mode
@@ -947,7 +1179,8 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             })
             .collect();
 
-        crate::output::emit_json(
+        emit_query_json(
+            cfg,
             "stats",
             crate::output::StatsData {
                 simulation_ns: total_ns,
@@ -956,7 +1189,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 clock_period_ns,
                 signals: json_entries,
             },
-            Vec::new(),
+            limit_warnings,
         );
         return;
     }
@@ -1040,6 +1273,8 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
 /// Run find-stuck query from cache (signals with 0 transitions).
 pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let matched = cache.match_signals(&cfg.patterns);
     if matched.is_empty() {
         // A stuck-scan over zero signals would report "nothing stuck" — a
@@ -1110,7 +1345,7 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 } else if vf == "x" {
                     v.to_lowercase().contains('x')
                 } else {
-                    v == filter
+                    values_match(v, filter)
                 }
             });
         }
@@ -1138,7 +1373,8 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         return;
     }
     stuck.sort_by(|a, b| a.0.cmp(&b.0));
-    for (name, width_str, stuck_val, sig_idx) in &stuck {
+    record_limit(cfg, stuck.len());
+    for (name, width_str, stuck_val, sig_idx) in stuck.iter().take(cfg.max_lines) {
         let dval = fmt_val(
             stuck_val,
             *sig_idx,
@@ -1156,6 +1392,8 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
 /// Run find-value query from cache.
 pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let find_pattern = match cfg.find_pattern.as_ref() {
         Some(p) => p,
         None => return,
@@ -1169,7 +1407,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("ERROR: {}", e);
-            return;
+            std::process::exit(2);
         }
     };
     let target_indices: Vec<usize> = {
@@ -1195,7 +1433,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         if cfg.json_format {
             // Emit an empty envelope so consumers get valid JSON to parse.
             let mode = if cfg.async_mode { "async" } else { "sync" };
-            crate::output::emit_json(
+            emit_query_json(
+                cfg,
                 "find",
                 crate::output::FindData {
                     scope_prefix: String::new(),
@@ -1222,7 +1461,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
 
     let radix_map = build_radix_map(cache, &target_indices, cfg);
-    let edge_mode = is_edge_keyword(find_value_str).map(String::from);
+    let mode = TriggerMode::classify(find_value_str);
     let sync_mode = !cfg.async_mode;
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
@@ -1258,7 +1497,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut truncated = false;
     let cb = cycle_base(cache, effective_start);
 
-    let use_cycle_walk = sync_mode && edge_mode.is_none() && cache.clock_period_ticks > 0 && cb > 0;
+    let use_cycle_walk =
+        sync_mode && mode == TriggerMode::Literal && cache.clock_period_ticks > 0 && cb > 0;
 
     // Closure that records one match. In JSON mode it pushes to `json_matches`
     // (or `last_json` for --last); in text mode it streams writeln. `raw_val`
@@ -1270,46 +1510,43 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // the caller — it has additional flush/return logic.)
     macro_rules! record_match {
         ($time:expr, $dname:expr, $raw_val:expr, $dval:expr) => {{
-            find_count += 1;
-            let time_u64: u64 = $time;
-            let name_str: String = $dname.to_string();
-            let raw_str: String = $raw_val;
-            if cfg.last_match {
-                if json_format {
-                    last_json = Some(crate::output::FindMatch {
-                        time: time_u64,
-                        name: name_str.clone(),
-                        value: raw_str.clone(),
-                    });
+            if !cfg.count_only && !cfg.last_match && line_count >= cfg.max_lines {
+                truncated = true;
+                if !json_format {
+                    eprintln!("{}", limit_warning(cfg.max_lines));
                 }
-                let line = if sync_mode && cache.clock_period_ticks > 0 {
-                    format!("cycle {} {} {}", time_u64, &name_str, $dval)
-                } else {
-                    format!("{} {} {}", time_u64, &name_str, $dval)
-                };
-                last_result = Some(line);
-            } else if !cfg.count_only {
-                if json_format {
-                    json_matches.push(crate::output::FindMatch {
-                        time: time_u64,
-                        name: name_str.clone(),
-                        value: raw_str.clone(),
-                    });
-                } else if sync_mode && cache.clock_period_ticks > 0 {
-                    let _ = writeln!(out, "cycle {} {} {}", time_u64, &name_str, $dval);
-                } else {
-                    let _ = writeln!(out, "{} {} {}", time_u64, &name_str, $dval);
-                }
-                line_count += 1;
-                if line_count >= cfg.max_lines {
-                    truncated = true;
-                    if !json_format {
-                        let _ = writeln!(
-                            err,
-                            "# WARNING: limit ({}) reached, output truncated",
-                            cfg.max_lines
-                        );
+            } else {
+                find_count += 1;
+                let time_u64: u64 = $time;
+                let name_str: String = $dname.to_string();
+                let raw_str: String = $raw_val;
+                if cfg.last_match {
+                    if json_format {
+                        last_json = Some(crate::output::FindMatch {
+                            time: time_u64,
+                            name: name_str.clone(),
+                            value: raw_str.clone(),
+                        });
                     }
+                    let line = if sync_mode && cache.clock_period_ticks > 0 {
+                        format!("cycle {} {} {}", time_u64, &name_str, $dval)
+                    } else {
+                        format!("{} {} {}", time_u64, &name_str, $dval)
+                    };
+                    last_result = Some(line);
+                } else if !cfg.count_only {
+                    if json_format {
+                        json_matches.push(crate::output::FindMatch {
+                            time: time_u64,
+                            name: name_str.clone(),
+                            value: raw_str.clone(),
+                        });
+                    } else if sync_mode && cache.clock_period_ticks > 0 {
+                        let _ = writeln!(out, "cycle {} {} {}", time_u64, &name_str, $dval);
+                    } else {
+                        let _ = writeln!(out, "{} {} {}", time_u64, &name_str, $dval);
+                    }
+                    line_count += 1;
                 }
             }
         }};
@@ -1356,18 +1593,18 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         } else {
             // Edge mode or async: walk transitions only
-            let mut prev_val = "x".to_string();
+            let mut prev_val: Option<&str> = None;
             for (tick, val) in &transitions {
                 if *tick < effective_start {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
 
-                if sync_mode {
-                    if cache.clock_period_ticks > 0 && cb > 0 {
+                if sync_mode && !(mode == TriggerMode::Change && cache.clock_period_ticks == 0) {
+                    if cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change) {
                         let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                         if (cycle as i64) < cfg.time_min {
-                            prev_val = val.clone();
+                            prev_val = Some(val.as_str());
                             continue;
                         }
                         if let Some(max) = cfg.time_max {
@@ -1378,7 +1615,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     }
                 } else {
                     if (*tick as i64) < cfg.time_min {
-                        prev_val = val.clone();
+                        prev_val = Some(val.as_str());
                         continue;
                     }
                     if let Some(max) = cfg.time_max {
@@ -1388,14 +1625,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     }
                 }
 
-                let matched = if let Some(ref edge) = edge_mode {
-                    let m = check_edge(&prev_val, val, edge);
-                    prev_val = val.clone();
-                    m
-                } else {
-                    prev_val = val.clone();
-                    values_match(val, find_value_str)
-                };
+                let matched = mode.matches(prev_val, val, sig.width, find_value_str);
+                prev_val = Some(val.as_str());
 
                 if matched {
                     let dval = fmt_val(val, sig_idx, sig.width, &radix_map);
@@ -1419,29 +1650,32 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // Search virtual signals whose names match find_pattern.
     // (Virtuals already use raw cache values — no fmt_val applied.)
     'vouter: for ve in &virtual_matches {
+        if truncated {
+            break;
+        }
         let dname = &ve.name;
 
-        if edge_mode.is_some() {
-            let mut prev_val = "x".to_string();
+        if mode != TriggerMode::Literal {
+            let mut prev_val: Option<&str> = None;
             for (tick, val) in &ve.transitions {
                 if *tick < effective_start {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
-                let m = if let Some(ref edge) = edge_mode {
-                    let m = check_edge(&prev_val, val, edge);
-                    prev_val = val.clone();
-                    m
-                } else {
-                    prev_val = val.clone();
-                    values_match(val, find_value_str)
-                };
+                let m = mode.matches(prev_val, val, 1, find_value_str);
+                prev_val = Some(val.as_str());
                 if m {
                     let time = if sync_mode && cache.clock_period_ticks > 0 {
                         tick_to_cycle(*tick, cb, cache.clock_period_ticks)
                     } else {
                         *tick
                     };
+                    if mode == TriggerMode::Change
+                        && ((time as i64) < cfg.time_min
+                            || cfg.time_max.is_some_and(|max| (time as i64) > max))
+                    {
+                        continue;
+                    }
                     record_match!(time, dname.as_str(), val.clone(), val);
                     if truncated {
                         break 'vouter;
@@ -1550,7 +1784,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         }
 
-        crate::output::emit_json(
+        emit_query_json(
+            cfg,
             "find",
             crate::output::FindData {
                 scope_prefix,
@@ -1565,7 +1800,11 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 last_only: cfg.last_match,
                 count_only: cfg.count_only,
             },
-            Vec::new(),
+            if truncated {
+                vec![limit_warning(cfg.max_lines)]
+            } else {
+                Vec::new()
+            },
         );
         return;
     }
@@ -1589,6 +1828,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
 /// Run sample-at query from cache.
 pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let sa_pattern = match cfg.sample_at_pattern.as_ref() {
         Some(p) => p,
         None => return,
@@ -1597,8 +1838,10 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let virtuals = build_virtuals(cache, cfg);
     let virtual_names: Vec<String> = virtuals.iter().map(|entry| entry.name.clone()).collect();
-    let (trigger_indices, trigger_virtual_indices) =
+    let (mut trigger_indices, trigger_virtual_indices) =
         cache.match_signals_with_names(std::slice::from_ref(sa_pattern), &virtual_names);
+    let mut trigger_groups = std::collections::HashSet::new();
+    trigger_indices.retain(|&i| trigger_groups.insert(cache.signals[i].group_id));
     let (watched_indices, watched_virtual_indices) =
         cache.match_signals_with_names(&cfg.patterns, &virtual_names);
 
@@ -1612,11 +1855,12 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         std::process::exit(2);
     }
 
-    // Determine trigger mode from VALUE keyword
-    let edge_kw = is_edge_keyword(sa_value).map(String::from);
-    let change_mode = edge_kw.as_deref() == Some("change");
-    let edge_mode = if change_mode { None } else { edge_kw };
-    let level_mode = edge_mode.is_none() && !change_mode;
+    if !cfg.count_only && watched_indices.is_empty() && watched_virtual_indices.is_empty() {
+        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+    }
+
+    let mode = TriggerMode::classify(sa_value);
+    let level_mode = mode == TriggerMode::Literal;
 
     let sync_mode = !cfg.async_mode;
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
@@ -1627,14 +1871,14 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
     let cb = cycle_base(cache, effective_start);
-    let mut trigger_data: Vec<Vec<(u64, String)>> = trigger_indices
+    let mut trigger_data: Vec<(Vec<(u64, String)>, u32)> = trigger_indices
         .iter()
-        .map(|&idx| cache.read_transitions(idx))
+        .map(|&idx| (cache.read_transitions(idx), cache.signals[idx].width))
         .collect();
     trigger_data.extend(
         trigger_virtual_indices
             .iter()
-            .map(|&idx| virtuals[idx].transitions.clone()),
+            .map(|&idx| (virtuals[idx].transitions.clone(), 1)),
     );
 
     // Read trigger signal transitions and identify trigger ticks.
@@ -1646,7 +1890,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let total_cycles = (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
         for cycle in 1..=total_cycles {
             let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-            for trig_trans in &trigger_data {
+            for (trig_trans, _) in &trigger_data {
                 if values_match(&value_at_tick(trig_trans, tick), sa_value) {
                     trigger_ticks.push(tick);
                     break;
@@ -1672,7 +1916,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         }
         for tick in &change_ticks {
-            for trig_trans in &trigger_data {
+            for (trig_trans, _) in &trigger_data {
                 if values_match(&value_at_tick(trig_trans, *tick), sa_value) {
                     trigger_ticks.push(*tick);
                     break;
@@ -1680,38 +1924,14 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         }
     } else {
-        for transitions in &trigger_data {
-            let mut prev_val = "x".to_string();
+        for (transitions, width) in &trigger_data {
+            let mut previous = None;
             for (tick, val) in transitions {
-                if *tick < effective_start {
-                    prev_val = val.clone();
-                    continue;
-                }
-                let triggered = if let Some(ref edge) = edge_mode {
-                    check_edge(&prev_val, val, edge)
-                } else if change_mode {
-                    prev_val != *val
-                } else if level_mode {
-                    values_match(val, sa_value)
-                } else {
-                    false
-                };
-                prev_val = val.clone();
-                if triggered {
+                let triggered = mode.matches(previous, val, *width, sa_value);
+                previous = Some(val.as_str());
+                if *tick >= effective_start && triggered {
                     trigger_ticks.push(*tick);
                 }
-            }
-        }
-        // Extractor quirk: sample_at_triggered is not cleared on reset rebase.
-        // If any trigger signal changed during reset (from initial "x"), the
-        // flag carries over to the first post-reset cycle. Simulate this by
-        // injecting effective_start as a trigger if there were pre-reset events.
-        if change_mode && effective_start > 0 {
-            let has_pre_reset = trigger_data
-                .iter()
-                .any(|transitions| transitions.iter().any(|(t, _)| *t < effective_start));
-            if has_pre_reset && (trigger_ticks.is_empty() || trigger_ticks[0] > cb) {
-                trigger_ticks.insert(0, cb);
             }
         }
     }
@@ -1776,7 +1996,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut sample_count: usize = 0;
     let mut line_count: usize = 0;
 
-    for &trigger_tick in &trigger_ticks {
+    'samples: for &trigger_tick in &trigger_ticks {
         sample_count += 1;
         if cfg.count_only {
             continue;
@@ -1801,19 +2021,16 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             (entry.name.clone(), val)
         });
         for (name, value) in stored_rows.chain(virtual_rows) {
-            let _ = writeln!(out, "{} {} {}", time_label, name, value);
-            line_count += 1;
             if line_count >= cfg.max_lines {
                 let _ = writeln!(
                     err,
                     "# WARNING: limit ({}) reached, output truncated",
                     cfg.max_lines
                 );
-                break;
+                break 'samples;
             }
-        }
-        if line_count >= cfg.max_lines {
-            break;
+            let _ = writeln!(out, "{} {} {}", time_label, name, value);
+            line_count += 1;
         }
     }
 
@@ -1829,6 +2046,8 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 // -- Snapshot query (--at-cycle / --at-time) from cache ------------------
 
 pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let at_time = match cfg.at_time {
         Some(t) => t,
         None => return,
@@ -1843,7 +2062,8 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if matched.is_empty() && matched_virtuals.is_empty() {
         if cfg.json_format {
             let mode = if cfg.async_mode { "async" } else { "sync" };
-            crate::output::emit_json(
+            emit_query_json(
+                cfg,
                 "value",
                 crate::output::ValueData {
                     scope_prefix: String::new(),
@@ -1907,41 +2127,50 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     };
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
+    let _ = err.flush();
+    let unsigned_time = u64::try_from(at_time).unwrap_or_else(|_| {
+        eprintln!("ERROR: value time {at_time} is outside simulation range");
+        std::process::exit(2);
+    });
     let target_tick = if sync_mode {
-        let cb = cycle_base(cache, effective_start);
-        if at_time == 0 {
-            // cycle 0 = snapshot at effective_start (before first post-reset edge)
+        if unsigned_time == 0 {
             effective_start
         } else {
-            let total_cycles =
-                (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
-            if at_time as u64 > total_cycles {
-                let _ = writeln!(err,
-                    "ERROR: --at-time {} (cycle) is beyond simulation range (sim length: {} cycles)",
-                    at_time, total_cycles);
-                let sim_start_ns = (effective_start as f64 * cache.ticks_to_ns) as i64;
-                let sim_end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
-                let _ = writeln!(err,
-                    "HINT: did you mean --at-time {} with --async? In sync mode, --at-time expects a cycle number (0..{}). Simulation time range: {}ns..{}ns",
-                    at_time, total_cycles, sim_start_ns, sim_end_ns);
-                let _ = err.flush();
-                return;
-            }
-            cb + (at_time as u64 - 1) * cache.clock_period_ticks
+            cycle_base(cache, effective_start)
+                .checked_add(
+                    (unsigned_time - 1)
+                        .checked_mul(cache.clock_period_ticks)
+                        .unwrap_or_else(|| {
+                            eprintln!("ERROR: value time {at_time} is beyond simulation range");
+                            std::process::exit(2);
+                        }),
+                )
+                .unwrap_or_else(|| {
+                    eprintln!("ERROR: value time {at_time} is beyond simulation range");
+                    std::process::exit(2);
+                })
         }
     } else if cfg.async_mode || cfg.at_time_is_cycle {
-        // Typed async tokens have already been resolved to raw ticks. A sync
-        // cycle token also lands here when no clock exists, preserving the
-        // historical no-clock fallback.
-        at_time as u64
+        unsigned_time
+    } else if cache.ticks_to_ns > 0.0 {
+        (at_time as f64 / cache.ticks_to_ns) as u64
     } else {
-        // Legacy unresolved --at-time mode: convert ns to ticks.
-        if cache.ticks_to_ns > 0.0 {
-            (at_time as f64 / cache.ticks_to_ns) as u64
-        } else {
-            at_time as u64
-        }
+        unsigned_time
     };
+    if target_tick > cache.sim_end_tick {
+        eprintln!("ERROR: value time {at_time} is beyond simulation range");
+        if sync_mode {
+            let total_cycles = cache
+                .sim_end_tick
+                .saturating_sub(cycle_base(cache, effective_start))
+                / cache.clock_period_ticks
+                + 1;
+            let start_ns = (effective_start as f64 * cache.ticks_to_ns) as i64;
+            let end_ns = (cache.sim_end_tick as f64 * cache.ticks_to_ns) as i64;
+            eprintln!("HINT: did you mean --at-time {at_time} with --async? In sync mode, --at-time expects a cycle number (0..{total_cycles}). Simulation time range: {start_ns}ns..{end_ns}ns");
+        }
+        std::process::exit(2);
+    }
 
     let time_label = if sync_mode {
         if at_time == 0 {
@@ -1961,6 +2190,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         .collect();
     let virtual_values = evaluate_virtuals_at_tick(cache, &resolved_virtuals, target_tick);
 
+    json_warnings.extend(record_limit(cfg, matched.len() + matched_virtuals.len()));
     if cfg.json_format {
         let scope_prefix = if prefix.is_empty() {
             String::new()
@@ -1999,7 +2229,9 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 value: entry.value.clone(),
             }
         }));
-        crate::output::emit_json(
+        signals.truncate(cfg.max_lines);
+        emit_query_json(
+            cfg,
             "value",
             crate::output::ValueData {
                 scope_prefix,
@@ -2017,7 +2249,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let _ = writeln!(out, "# Snapshot at {}", time_label);
 
-    for (idx, &sig_idx) in matched.iter().enumerate() {
+    for (idx, &sig_idx) in matched.iter().take(cfg.max_lines).enumerate() {
         let sig = &cache.signals[sig_idx];
         let dname = if !prefix.is_empty() && sig.name.starts_with(&prefix) {
             &sig.name[prefix.len()..]
@@ -2027,7 +2259,10 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let dval = fmt_val(&values[idx], sig_idx, sig.width, &radix_map);
         let _ = writeln!(out, "{:<40} = {}", dname, dval);
     }
-    for &idx in &matched_virtuals {
+    for &idx in matched_virtuals
+        .iter()
+        .take(cfg.max_lines.saturating_sub(matched.len()))
+    {
         let entry = &virtual_values[idx];
         let _ = writeln!(out, "{:<40} = {}", entry.name, entry.value);
     }
@@ -2039,7 +2274,8 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
 /// Convert a user-facing time value to a simulation tick.
 /// In sync mode (is_cycle=true, clock present): time is a cycle number.
-/// In async mode or no-clock fallback: time is ns (converted via ticks_to_ns).
+/// In async mode or no-clock fallback, native resolved points are raw ticks;
+/// direct library points without string-token provenance retain nanoseconds.
 /// Returns None if the time is out of simulation range.
 fn resolve_time_to_tick(
     cache: &ColumnCache,
@@ -2047,30 +2283,30 @@ fn resolve_time_to_tick(
     time: i64,
     effective_start: u64,
 ) -> Option<u64> {
+    let time = u64::try_from(time).ok()?;
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
-    if sync_mode {
-        let cb = cycle_base(cache, effective_start);
+    let tick = if sync_mode {
         if time == 0 {
-            Some(effective_start)
+            effective_start
         } else {
-            let total_cycles =
-                (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
-            if time as u64 > total_cycles {
-                None
-            } else {
-                Some(cb + (time as u64 - 1) * cache.clock_period_ticks)
-            }
+            cycle_base(cache, effective_start)
+                .checked_add((time - 1).checked_mul(cache.clock_period_ticks)?)?
         }
+    } else if cfg.diff_strs.is_some() {
+        time
     } else if cache.ticks_to_ns > 0.0 {
-        Some((time as f64 / cache.ticks_to_ns) as u64)
+        (time as f64 / cache.ticks_to_ns) as u64
     } else {
-        Some(time as u64)
-    }
+        time
+    };
+    (tick <= cache.sim_end_tick).then_some(tick)
 }
 
 // -- Diff snapshot from cache ------------------------------------------------
 
 pub fn diff_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let (t1, t2) = match cfg.diff_points {
         Some(p) => p,
         None => return,
@@ -2094,14 +2330,14 @@ pub fn diff_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         Some(t) => t,
         None => {
             eprintln!("ERROR: --diff: time {} is beyond simulation range", t1);
-            return;
+            std::process::exit(2);
         }
     };
     let tick2 = match resolve_time_to_tick(cache, cfg, t2, effective_start) {
         Some(t) => t,
         None => {
             eprintln!("ERROR: --diff: time {} is beyond simulation range", t2);
-            return;
+            std::process::exit(2);
         }
     };
 
@@ -2138,6 +2374,10 @@ pub fn diff_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     for (idx, &sig_idx) in matched.iter().enumerate() {
         let (ref v1, ref v2) = values[idx];
         if v1 != v2 {
+            if diff_count >= cfg.max_lines {
+                eprintln!("{}", limit_warning(cfg.max_lines));
+                break;
+            }
             let sig = &cache.signals[sig_idx];
             let dname = if !prefix.is_empty() && sig.name.starts_with(&prefix) {
                 &sig.name[prefix.len()..]
@@ -2190,7 +2430,10 @@ fn collect_event_ticks(
 ) -> EventCollect {
     let matchers = match compile_patterns(&[pattern.to_string()]) {
         Ok(m) => m,
-        Err(_) => return EventCollect::NoPatternMatch,
+        Err(error) => {
+            eprintln!("ERROR: {error}");
+            std::process::exit(2);
+        }
     };
     let target_indices: Vec<usize> = {
         let mut seen = std::collections::HashSet::new();
@@ -2211,30 +2454,30 @@ fn collect_event_ticks(
         return EventCollect::NoPatternMatch;
     }
 
-    let edge_mode = is_edge_keyword(value_str).map(String::from);
-    // Edge keywords are only meaningful for 1-bit signals — `check_edge`
-    // compares prev/cur against "0"/"1". Track whether every matched
-    // signal is wider so the error message can call this out.
-    let edge_on_multibit_only = edge_mode.is_some()
+    let mode = TriggerMode::classify(value_str);
+    // Directional keywords require 1-bit signals; Change also accepts buses.
+    // Track all-multibit matches for the existing directional diagnostic.
+    let edge_on_multibit_only = mode.directional()
         && virtual_matches.is_empty()
         && target_indices.iter().all(|&i| cache.signals[i].width > 1);
     let mut ticks = Vec::new();
 
     for &sig_idx in &target_indices {
         let transitions = cache.read_transitions(sig_idx);
-        let mut prev_val = "x".to_string();
+        let mut prev_val: Option<&str> = None;
 
         for (tick, val) in &transitions {
             if *tick < effective_start {
-                prev_val = val.clone();
+                prev_val = Some(val.as_str());
                 continue;
             }
 
             // Time range filtering
-            if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
+            if sync_mode && cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change)
+            {
                 let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                 if (cycle as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2244,7 +2487,7 @@ fn collect_event_ticks(
                 }
             } else if !sync_mode {
                 if (*tick as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2254,14 +2497,8 @@ fn collect_event_ticks(
                 }
             }
 
-            let matched = if let Some(ref edge) = edge_mode {
-                let m = check_edge(&prev_val, val, edge);
-                prev_val = val.clone();
-                m
-            } else {
-                prev_val = val.clone();
-                values_match(val, value_str)
-            };
+            let matched = mode.matches(prev_val, val, cache.signals[sig_idx].width, value_str);
+            prev_val = Some(val.as_str());
 
             if matched {
                 ticks.push(*tick);
@@ -2269,19 +2506,20 @@ fn collect_event_ticks(
         }
     }
     for ve in virtual_matches {
-        let mut prev_val = "x".to_string();
+        let mut prev_val: Option<&str> = None;
 
         for (tick, val) in &ve.transitions {
             if *tick < effective_start {
-                prev_val = val.clone();
+                prev_val = Some(val.as_str());
                 continue;
             }
 
             // Time range filtering
-            if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
+            if sync_mode && cache.clock_period_ticks > 0 && (cb > 0 || mode == TriggerMode::Change)
+            {
                 let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                 if (cycle as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2291,7 +2529,7 @@ fn collect_event_ticks(
                 }
             } else if !sync_mode {
                 if (*tick as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2301,14 +2539,8 @@ fn collect_event_ticks(
                 }
             }
 
-            let matched = if let Some(ref edge) = edge_mode {
-                let m = check_edge(&prev_val, val, edge);
-                prev_val = val.clone();
-                m
-            } else {
-                prev_val = val.clone();
-                values_match(val, value_str)
-            };
+            let matched = mode.matches(prev_val, val, 1, value_str);
+            prev_val = Some(val.as_str());
 
             if matched {
                 ticks.push(*tick);
@@ -2326,7 +2558,27 @@ fn collect_event_ticks(
     }
 }
 
+fn distance_summary(deltas: &[u64]) -> String {
+    let mut sorted = deltas.to_vec();
+    sorted.sort_unstable();
+    let count = sorted.len();
+    let mean = sorted.iter().map(|&v| u128::from(v)).sum::<u128>() as f64 / count as f64;
+    let middle = count / 2;
+    let median = if count % 2 == 0 {
+        (u128::from(sorted[middle - 1]) + u128::from(sorted[middle])) as f64 / 2.0
+    } else {
+        sorted[middle] as f64
+    };
+    format!(
+        "count={count}  min={}  max={}  mean={mean:.1}  median={median:.1}",
+        sorted[0],
+        sorted[count - 1]
+    )
+}
+
 pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let (ref pat_a, ref val_a) = match cfg.distance_a {
         Some(ref a) => a,
         None => return,
@@ -2334,12 +2586,25 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
 
-    let reset_deassert_tick = if !cfg.with_reset && sync_mode {
+    let change_query = TriggerMode::classify(val_a) == TriggerMode::Change
+        || cfg
+            .distance_b
+            .as_ref()
+            .is_some_and(|(_, value)| TriggerMode::classify(value) == TriggerMode::Change);
+    let reset_deassert_tick = if !cfg.with_reset && (sync_mode || (change_query && !cfg.async_mode))
+    {
         find_reset_deassert_tick(cache, cfg)
     } else {
         None
     };
     let effective_start = reset_deassert_tick.unwrap_or(0);
+    let event_start = |value: &str| {
+        if sync_mode || TriggerMode::classify(value) == TriggerMode::Change {
+            effective_start
+        } else {
+            0
+        }
+    };
     let cb = cycle_base(cache, effective_start);
     let virtuals = build_virtuals(cache, cfg);
 
@@ -2349,7 +2614,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         cache,
         pat_a,
         val_a,
-        effective_start,
+        event_start(val_a),
         sync_mode,
         cfg,
         cb,
@@ -2383,7 +2648,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut err = BufWriter::new(stderr.lock());
 
     let tick_to_display = |tick: u64| -> String {
-        if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
+        if sync_mode && cache.clock_period_ticks > 0 && (cb > 0 || change_query) {
             format!("{}", tick_to_cycle(tick, cb, cache.clock_period_ticks))
         } else {
             format!("{}", tick)
@@ -2398,7 +2663,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             cache,
             pat_b,
             val_b,
-            effective_start,
+            event_start(val_b),
             sync_mode,
             cfg,
             cb,
@@ -2447,7 +2712,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             };
             deltas.push(delta_display);
 
-            if !cfg.stats_mode {
+            if !cfg.stats_mode && deltas.len() <= cfg.max_lines {
                 let _ = writeln!(
                     out,
                     "@ {} -> @ {}  d={}",
@@ -2461,16 +2726,9 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         if deltas.is_empty() {
             let _ = writeln!(out, "# no pairs found");
         } else if cfg.stats_mode {
-            let count = deltas.len();
-            let min = *deltas.iter().min().unwrap();
-            let max = *deltas.iter().max().unwrap();
-            let avg = deltas.iter().sum::<u64>() as f64 / count as f64;
-            let _ = writeln!(
-                out,
-                "count={}  min={}  max={}  avg={:.1}",
-                count, min, max, avg
-            );
+            let _ = writeln!(out, "{}", distance_summary(&deltas));
         } else {
+            record_limit(cfg, deltas.len());
             let _ = writeln!(err, "# {} pairs, unit: {}", deltas.len(), unit);
         }
     } else {
@@ -2494,7 +2752,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 };
                 deltas.push(delta_display);
 
-                if !cfg.stats_mode {
+                if !cfg.stats_mode && deltas.len() <= cfg.max_lines {
                     let _ = writeln!(
                         out,
                         "@ {} -> @ {}  d={}",
@@ -2506,16 +2764,9 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
 
             if cfg.stats_mode {
-                let count = deltas.len();
-                let min = *deltas.iter().min().unwrap();
-                let max = *deltas.iter().max().unwrap();
-                let avg = deltas.iter().sum::<u64>() as f64 / count as f64;
-                let _ = writeln!(
-                    out,
-                    "count={}  min={}  max={}  avg={:.1}",
-                    count, min, max, avg
-                );
+                let _ = writeln!(out, "{}", distance_summary(&deltas));
             } else {
+                record_limit(cfg, deltas.len());
                 let _ = writeln!(err, "# {} pairs, unit: {}", deltas.len(), unit);
             }
         }
@@ -2528,6 +2779,8 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 // -- Cycle trace (default mode) from cache --------------------------------
 
 pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     let matched = cache.match_signals(&cfg.patterns);
     if matched.is_empty() {
         // Unlike wave/stats/find, `signal` renders no virtual rows, so a
@@ -2640,9 +2893,6 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                         &sig.name
                     };
                     let dval = fmt_val(&val, sig_idx, sig.width, &radix_map);
-                    let _ = writeln!(out, "{} {} {}", cycle, dname, dval);
-                    prev_vals[si] = Some(val);
-                    line_count += 1;
                     if line_count >= cfg.max_lines {
                         let _ = writeln!(
                             err,
@@ -2653,6 +2903,9 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                         let _ = err.flush();
                         return;
                     }
+                    let _ = writeln!(out, "{} {} {}", cycle, dname, dval);
+                    prev_vals[si] = Some(val);
+                    line_count += 1;
                 }
             }
         }
@@ -2668,7 +2921,8 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 "# no transitions in cycles {}:{} — showing held values at cycle {}",
                 start_cycle, end_cycle, start_cycle
             );
-            for (si, &sig_idx) in matched.iter().enumerate() {
+            record_limit(cfg, matched.len());
+            for (si, &sig_idx) in matched.iter().take(cfg.max_lines).enumerate() {
                 let sig = &cache.signals[sig_idx];
                 let dname = if !prefix.is_empty() && sig.name.starts_with(&prefix) {
                     &sig.name[prefix.len()..]
@@ -2702,7 +2956,8 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
         events.sort_by_key(|&(t, si)| (t, si));
 
-        for (tick, si) in &events {
+        record_limit(cfg, events.len());
+        for (tick, si) in events.iter().take(cfg.max_lines) {
             let sig_idx = matched[*si];
             let sig = &cache.signals[sig_idx];
             let dname = if !prefix.is_empty() && sig.name.starts_with(&prefix) {
@@ -2714,14 +2969,6 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             let dval = fmt_val(&val, sig_idx, sig.width, &radix_map);
             let _ = writeln!(out, "{} {} {}", tick, dname, dval);
             line_count += 1;
-            if line_count >= cfg.max_lines {
-                let _ = writeln!(
-                    err,
-                    "# WARNING: limit ({}) reached, output truncated",
-                    cfg.max_lines
-                );
-                break;
-            }
         }
 
         // Same held-value fallback as sync mode: no transition inside the
@@ -2733,7 +2980,8 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 "# no transitions in range — showing held values at time {}",
                 at_tick
             );
-            for (si, &sig_idx) in matched.iter().enumerate() {
+            record_limit(cfg, matched.len());
+            for (si, &sig_idx) in matched.iter().take(cfg.max_lines).enumerate() {
                 let sig = &cache.signals[sig_idx];
                 let dname = if !prefix.is_empty() && sig.name.starts_with(&prefix) {
                     &sig.name[prefix.len()..]
@@ -2763,6 +3011,7 @@ pub fn list_signals_from_cache(
     tree_only: bool,
     json_format: bool,
     limit: usize,
+    inherited_warnings: &[String],
 ) {
     let matchers = match crate::signal::compile_patterns(patterns) {
         Ok(m) => m,
@@ -2830,12 +3079,16 @@ pub fn list_signals_from_cache(
         // goes to stderr like the text path does — stderr is free in JSON
         // mode, and a consumer that only scans stderr for ERROR: must not
         // see an empty store as a clean run.
-        let warnings = if cache.signals.is_empty() {
+        let mut warnings = if cache.signals.is_empty() {
             eprintln!("ERROR: {}", no_signals_in_store_message());
             vec![no_signals_in_store_message().to_string()]
         } else {
             Vec::new()
         };
+        if stripped.len() > limit {
+            warnings.push(limit_warning(limit));
+        }
+        let warnings = crate::output::merge_warnings(warnings, inherited_warnings);
         crate::output::emit_json(
             "list",
             crate::output::ListData {
@@ -2900,15 +3153,7 @@ pub fn list_signals_from_cache(
 
 // -- Helper functions -----------------------------------------------------
 
-fn check_edge(prev: &str, cur: &str, edge_type: &str) -> bool {
-    match edge_type {
-        "rising" => prev == "0" && cur == "1",
-        "falling" => prev == "1" && cur == "0",
-        _ => false,
-    }
-}
-
-fn tick_to_cycle(tick: u64, cycle_base_tick: u64, clock_period: u64) -> u64 {
+pub(crate) fn tick_to_cycle(tick: u64, cycle_base_tick: u64, clock_period: u64) -> u64 {
     if clock_period == 0 || tick < cycle_base_tick {
         return 0;
     }
@@ -3225,6 +3470,8 @@ fn render_wave_grid(
 // -- Wave (horizontal waveform) from cache -----------------------------------
 
 pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
+    let resolved_cfg = query_config(cache, cfg);
+    let cfg = &resolved_cfg;
     if !cfg.wave_mode {
         return;
     }
@@ -3862,5 +4109,145 @@ $enddefinitions $end
             msg.to_lowercase().contains("has no signals"),
             "marker NO_SIGNALS_IN_STORE_MARKER lost from: {msg}"
         );
+    }
+    #[test]
+    fn issue_1100_zero_cycle_base_query_agreement() {
+        const CHILD: &str = "BOOLEY_ISSUE_1100_ZERO_BASE_CHILD";
+        if let Ok(query) = std::env::var(CHILD) {
+            println!();
+            let mut cache = build_cache("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! sig $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#7\n1!\n#9\n0!\n#17\n1!\n#19\n0!\n#27\n1!\n#29\n0!\n");
+            cache.override_clock(10, 0, "test_clock");
+            let name = if query.ends_with(":virtual") {
+                "v"
+            } else {
+                "sig"
+            };
+            let mut cfg = ExtractConfig {
+                patterns: vec![name.into()],
+                with_reset: true,
+                time_min: 2,
+                time_max: Some(2),
+                virtual_defs: vec!["v=tb.sig=='b1".into()],
+                ..Default::default()
+            };
+            if query.starts_with("find:") {
+                cfg.find_pattern = Some(name.into());
+                cfg.find_value = Some("change".into());
+                find_value_from_cache(&cache, &cfg);
+            } else if query.starts_with("sample:") {
+                cfg.sample_at_pattern = Some(name.into());
+                cfg.sample_at_value = Some("change".into());
+                sample_at_from_cache(&cache, &cfg);
+            } else {
+                cfg.distance_a = Some((name.into(), "change".into()));
+                if query.ends_with(":mixed-forward") {
+                    cfg.distance_a = Some(("sig".into(), "rising".into()));
+                    cfg.distance_b = Some(("v".into(), "change".into()));
+                } else if query.ends_with(":mixed-reverse") {
+                    cfg.distance_a = Some(("v".into(), "change".into()));
+                    cfg.distance_b = Some(("sig".into(), "falling".into()));
+                } else if query.ends_with(":directional-only") {
+                    cfg.distance_a = Some(("sig".into(), "rising".into()));
+                }
+                distance_from_cache(&cache, &cfg);
+            }
+            return;
+        }
+        for kind in [
+            "physical",
+            "virtual",
+            "mixed-forward",
+            "mixed-reverse",
+            "directional-only",
+        ] {
+            for command in ["find", "sample", "distance"] {
+                if kind != "physical" && kind != "virtual" && command != "distance" {
+                    continue;
+                }
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "cache::tests::issue_1100_zero_cycle_base_query_agreement",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD, format!("{command}:{kind}"))
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while child.try_wait().unwrap().is_none() {
+                    if std::time::Instant::now() >= deadline {
+                        child.kill().unwrap();
+                        panic!("zero-base query timeout");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let text = String::from_utf8(output.stdout).unwrap();
+                let rows = text
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("cycle ")
+                            || line
+                                .split_whitespace()
+                                .next()
+                                .is_some_and(|token| token.parse::<u64>().is_ok())
+                            || line.starts_with("@ ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let name = if kind == "virtual" { "v" } else { "sig" };
+                let expected = match command {
+                    "find" => format!("cycle 2 {name} 1\ncycle 2 {name} 0"),
+                    "sample" => format!("2 {name} 1\n2 {name} 0"),
+                    _ if kind == "mixed-forward" => "@ 1 -> @ 2  d=1\n@ 2 -> @ 2  d=0".into(),
+                    _ if kind == "mixed-reverse" => "@ 2 -> @ 2  d=0\n@ 2 -> @ 3  d=1".into(),
+                    _ if kind == "directional-only" => "@ 7 -> @ 17  d=1\n@ 17 -> @ 27  d=1".into(),
+                    _ => "@ 2 -> @ 2  d=0".into(),
+                };
+                assert_eq!(rows, expected, "{command} {kind}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn issue_1108_direct_diff_unit_provenance() {
+        let mut cache = build_cache(BASIC_VCD);
+        cache.ticks_to_ns = 0.001;
+        cache.sim_end_tick = 100_000;
+        let mut cfg = ExtractConfig {
+            async_mode: true,
+            ..Default::default()
+        };
+        assert_eq!(resolve_time_to_tick(&cache, &cfg, 35, 0), Some(35_000));
+        cfg.diff_strs = Some(("35t".to_string(), "95t".to_string()));
+        assert_eq!(resolve_time_to_tick(&cache, &cfg, 35, 0), Some(35));
+        for provenance in [None, Some(("0t".to_string(), "1t".to_string()))] {
+            cfg.diff_strs = provenance;
+            assert_eq!(resolve_time_to_tick(&cache, &cfg, -1, 0), None);
+            assert_eq!(resolve_time_to_tick(&cache, &cfg, 100_001, 0), None);
+        }
+    }
+
+    #[test]
+    fn issue_1108_distance_summary_even_and_overflow() {
+        assert_eq!(
+            distance_summary(&[1, 3, 6, 15]),
+            "count=4  min=1  max=15  mean=6.2  median=4.5"
+        );
+        assert_eq!(
+            distance_summary(&[7]),
+            "count=1  min=7  max=7  mean=7.0  median=7.0"
+        );
+        let summary = distance_summary(&[u64::MAX, u64::MAX]);
+        assert!(summary.contains("count=2"));
+        assert!(summary.contains("mean=18446744073709551616.0  median=18446744073709551616.0"));
     }
 }

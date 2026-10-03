@@ -58,8 +58,11 @@ Available on every query/introspect subcommand:
 - `--reset PATTERN`: override the auto-detected reset.
 - `--with-reset`: include the reset phase in output
   (default skips it).
-- `--format text|json`: output format. Default `text`.
-- `--limit N`: max output lines. Default 2000.
+- `--format text|json`: JSON for `list`, `value`, `find`,
+  `stats`; `signal`, `wave`, `sample`, `diff`, `distance`,
+  `stuck` are text-only and reject JSON with exit code 2.
+- `--limit N`: max records (rows, signal blocks, or pairs);
+  `wave` counts columns. Headers do not count. Default 2000.
 
 ## Query-specific options
 

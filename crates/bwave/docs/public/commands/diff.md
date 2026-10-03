@@ -5,7 +5,7 @@
 ```bash
 bwave diff <FST_FILE> <T1> <T2> [-s PATTERN[%RADIX] ...]
            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-           [--format text|json] [--limit N]
+           [--format text] [--limit N]
 ```
 
 ## Semantics
@@ -37,16 +37,11 @@ Text mode: one row per changed signal, two value
 columns:
 
 ```
-# diff: cycle 100 vs cycle 200
-NAME                  @100         @200
-tb.dut.state         'h0          'h3
-tb.dut.data_out      'h00000000   'h0000DEAD
-tb.dut.valid         'h0          'h1
-# 3 signals changed (out of 87 matched)
+# diff time 0 vs 5000
+b                                        @0=0            @5000=2
 ```
 
-JSON mode is **not yet implemented** for `diff`. Text
-mode only.
+`--format json` exits with code 2: `JSON output is not implemented for diff; use find/value/stats/list`.
 
 ## Common errors
 

@@ -23,11 +23,11 @@ stderr.
 - `<FST_FILE>` is required.
 - `-s PATTERN` is optional and repeatable. Omitted means
   `*` (everything).
-- `--tree` lists scopes only (modules), no leaf signals.
-  Useful for a high-level structural view.
-- Standard global options apply but `--time`, `--clock`,
-  `--reset`, `--with-reset` are no-ops here (there are no
-  values to time-bound).
+- `--tree` lists scopes only (modules), no leaf signals,
+  in text mode; `--tree --format json` exits with code 2.
+- `--clock` overrides the reported clock metadata.
+  `--async`, `--reset`, `--with-reset` are no-ops here
+  (there are no sampled values).
 - `--limit N` bounds the printed leaf-signal count (the
   Booley wrapper defaults it to 400 so a listing fits the
   MCP output window). Truncation is announced on stderr;

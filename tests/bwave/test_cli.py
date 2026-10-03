@@ -2075,3 +2075,189 @@ def test_gui_subprocess_smoke(tmp_path):
     assert r.stderr.strip() == ""
     assert argv_log.exists(), "stub `code` CLI was never invoked"
     assert str(trace.resolve()) in argv_log.read_text()
+
+
+@pytest.mark.parametrize("command", ["find", "sample", "distance"])
+@pytest.mark.parametrize(
+    "trigger", ["change", "ChAnGe", "RISING", "FaLlInG", "'h10", "'d16", "'b10000"]
+)
+def test_trigger_arguments_forward_unchanged(command, trigger):
+    from booley.bwave import cli as bwave
+
+    args = [command, "scalar", trigger]
+    if command == "sample":
+        args += ["-s", "bus"]
+    if command == "distance":
+        args += ["--to", "bus", trigger]
+    assert bwave._passthrough_subcommand(args, "trace.fst") == [
+        command,
+        "trace.fst",
+        *args[1:],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected_limit", "capped"),
+    [
+        (["value", "--at", "0"], "2000", False),
+        (["list"], "400", False),
+        (["value", "--at", "0", "--limit=10000"], "10000", False),
+        (["value", "--at", "0", "--limit", "10001"], "10000", True),
+        (["value", "--at", "0", "--limit=2000000"], "10000", True),
+    ],
+)
+def test_issue_1108_query_limit_dispatch(monkeypatch, capsys, extra, expected_limit, capped):
+    from booley.bwave import cli as bwave
+
+    captured = []
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/tmp/trace.fst")
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave"])
+    monkeypatch.setattr(bwave, "_run", lambda args: captured.extend(args) or 0)
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra))
+    assert exc.value.code == 0
+    limits = [captured[i + 1] for i, arg in enumerate(captured[:-1]) if arg == "--limit"]
+    limits += [arg.partition("=")[2] for arg in captured if arg.startswith("--limit=")]
+    assert limits == [expected_limit]
+    assert ("--limit capped at 10000" in capsys.readouterr().err) == capped
+
+
+@pytest.mark.parametrize(
+    ("extra", "subcommand", "remaining"),
+    [
+        (["--distance", "a", "change", "--stats"], "distance", "--stats"),
+        (["--stats"], "stats", None),
+        (["--grep", "*", "--format", "json", "--limit=10001"], "list", "--format"),
+        (["--grep", "*", "--async", "--unsupported"], "list", "--unsupported"),
+    ],
+)
+def test_issue_1108_legacy_and_grep_dispatch(monkeypatch, extra, subcommand, remaining):
+    from booley.bwave import cli as bwave
+
+    captured = []
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/tmp/trace.fst")
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave"])
+    monkeypatch.setattr(bwave, "_run", lambda args: captured.extend(args) or 0)
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra))
+    assert exc.value.code == 0
+    assert captured[1] == subcommand
+    if remaining:
+        assert remaining in captured
+
+
+@pytest.mark.native_bwave
+@pytest.mark.parametrize("limit", [["--limit", "10001"], ["--limit=2000000"]])
+def test_issue_1108_real_json_cap_preserves_native_warnings(monkeypatch, tmp_path, capfd, limit):
+    from booley.bwave import cli as bwave
+
+    binary = BOOLEY_ROOT / "crates/bwave/target/debug/bwave"
+    assert binary.is_file(), "build the native bwave binary before this integration test"
+    vcd = tmp_path / "input.vcd"
+    fst = tmp_path / "input.fst"
+    vcd.write_text(
+        "$timescale 1ps $end\n$scope module tb $end\n"
+        "$var wire 1 ! a $end\n$var wire 1 ! alias $end\n"
+        "$upscope $end\n$enddefinitions $end\n#0\n0!\n#1000\n1!\n#2000\n"
+    )
+    subprocess.run(
+        [str(binary), "build", str(vcd), "-o", str(fst)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: str(fst))
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: [str(binary)])
+    extra = ["value", "--at", "1000t", "--async", "-s", "tb.*", "--format", "json", *limit]
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra))
+    assert exc.value.code == 0
+    output = capfd.readouterr()
+    envelope = json.loads(output.out)
+    assert envelope["warnings"].count("--limit capped at 10000") == 1
+    assert any("shown once" in warning for warning in envelope["warnings"])
+    assert output.err.count("--limit capped at 10000") == 1
+
+
+@pytest.mark.native_bwave
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["value", "--at", "0", "--limit", "0"],
+        ["value", "--at", "0", "--limit=bad"],
+        ["value", "--at", "0", "--limit=1_000_000"],
+        ["value", "--at", "0", "--limit= 10001"],
+        ["value", "--at", "0", "--limit", "2", "--limit=3"],
+        ["value", "--at", "0", "--limit", "-1"],
+        ["--distance", "a", "change", "-s", "a"],
+        ["--grep", "*", "--unsupported"],
+    ],
+)
+def test_issue_1108_wrapper_preserves_native_input_errors(monkeypatch, extra):
+    from booley.bwave import cli as bwave
+
+    binary = BOOLEY_ROOT / "crates/bwave/target/debug/bwave"
+    assert binary.is_file()
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/nonexistent/trace.fst")
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: [str(binary)])
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra))
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["value", "--at", "0", "--limit", "2", "--limit=3"],
+        ["value", "--at", "0", "--limit"],
+        ["value", "--at", "0", "--limit=bad"],
+    ],
+)
+def test_issue_1108_invalid_limits_reach_native_dispatch(monkeypatch, capsys, extra):
+    from booley.bwave import cli as bwave
+
+    captured = []
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/tmp/trace.fst")
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave"])
+    monkeypatch.setattr(bwave, "_run", lambda args: captured.extend(args) or 2)
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra.copy()))
+    assert exc.value.code == 2
+    assert captured == ["bwave", "value", "/tmp/trace.fst", *extra[1:]]
+    assert "--wrapper-warning" not in captured
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    ("extra", "diagnostic"),
+    [
+        (["--wave", "--stats"], "multiple query modes are mutually exclusive"),
+        (["--distance", "a"], "--distance requires PATTERN VALUE"),
+    ],
+)
+def test_issue_1108_invalid_legacy_modes_fail_before_dispatch(
+    monkeypatch, capsys, extra, diagnostic
+):
+    from booley.bwave import cli as bwave
+
+    captured = []
+    monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/tmp/trace.fst")
+    monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
+    monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave"])
+    monkeypatch.setattr(bwave, "_run", lambda args: captured.extend(args) or 0)
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=extra))
+    assert exc.value.code == 2
+    assert diagnostic in capsys.readouterr().err
+    assert captured == []

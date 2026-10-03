@@ -72,8 +72,8 @@ def audit_flow_tables(
     if data.get("tools") is not None:
         return failure(
             "booley.toml [tools] is retired",
-            "move deterministic settings to [flows.*], move Specialist or other "
-            "non-Flow endpoint settings to [mcp_tools.*], and use enabled = false "
+            "move deterministic settings to [flows.*], move Specialist "
+            "settings to [specialists.*], and use enabled = false "
             "for opt-outs",
         )
     flows = as_dict(data.get("flows", {}))
