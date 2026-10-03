@@ -120,3 +120,92 @@ def _plan(handle, inspection, preview, required, *, catalog_backed=None):
         execution_id="",
         trace=False,
     ).manifest.document
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_campaign_baseline_planning_materializes_project_topologies(
+    tmp_path, monkeypatch, topology
+):
+    from booley.targets.catalog import TargetCatalog
+    from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = root
+    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
+    flow._target_handles = {"sim_core": handle}
+    _pin_baseline(flow, revision)
+    roots = []
+    request = SimpleNamespace(revision=revision)
+    prerequisite = {"revision": revision, "target_identity": handle.identity}
+
+    def plan(target, identity, ref, requirements, tests, worktree, invocation, admission):
+        _assert_topology_baseline(worktree, root, target)
+        assert identity == handle.identity
+        assert ref == revision
+        assert requirements == (("sim_core", "sim_core", "coremark"),)
+        assert tests == {"sim_core": ["coremark"]}
+        assert invocation == tmp_path / "invocation"
+        assert admission is None
+        assert flow.args.work_dir == worktree
+        roots.append(worktree)
+        return request, {"coremark": prerequisite}
+
+    monkeypatch.setattr(flow, "_planned_baseline_request", plan)
+    try:
+        requests, prerequisites = flow._plan_campaign_baselines(
+            tmp_path / "invocation", None, ["sim_core"], {"sim_core": ["coremark"]}
+        )
+        assert requests == [request]
+        assert prerequisites == {"sim_core": [prerequisite]}
+        assert flow.args.work_dir == root
+        assert roots and roots[0].exists()
+    finally:
+        flow.context.publication_resources.close()
+    assert not roots[0].exists()
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_campaign_baseline_preview_materializes_project_topologies(
+    tmp_path, monkeypatch, topology
+):
+    from booley.targets.catalog import TargetCatalog
+    from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = root
+    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
+    flow._target_handles = {"sim_core": handle}
+    _pin_baseline(flow, revision)
+    roots = []
+    campaign = object()
+    prerequisite = {"revision": revision, "target_identity": handle.identity}
+    preview = {"target": handle.identity}
+
+    def inspect(owner, target, ref, requirements, tests, worktree):
+        assert owner is campaign
+        _assert_topology_baseline(worktree, root, target)
+        assert ref == revision
+        assert requirements == (("sim_core", "sim_core", "coremark"),)
+        assert tests == {"sim_core": ["coremark"]}
+        assert flow.args.work_dir == worktree
+        roots.append(worktree)
+        return preview, {"coremark": prerequisite}
+
+    monkeypatch.setattr(flow, "_preview_one_campaign_baseline", inspect)
+    prerequisites, previews = flow._preview_campaign_baselines(
+        campaign, ["sim_core"], {"sim_core": ["coremark"]}
+    )
+    assert previews == [preview]
+    assert prerequisites == {"sim_core": [prerequisite]}
+    assert flow.args.work_dir == root
+    assert roots and not roots[0].exists()

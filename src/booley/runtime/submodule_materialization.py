@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
 from booley.runtime.filesystem_utils import safe_rmtree
+from booley.runtime.project_dir import checkout_project_dir_relative_to
+from booley.runtime.project_repositories import RepositoryCheckoutError, project_topology
 
 _TIMEOUT_S = 300
 _GIT_CONFIG = ("-c", "protocol.allow=never", "-c", "submodule.recurse=false")
@@ -65,31 +67,33 @@ def _materialize_selection(
         raise
 
 
-def materialize_project_submodules(source_root: Path, destination_root: Path) -> None:
-    """Populate every repository in a composite Project checkout offline."""
-    from booley.runtime.project_dir import checkout_project_dir_relative_to
-    from booley.runtime.project_repositories import (
-        RepositoryCheckoutError,
-        paired_project_repository,
-        resolve_inner_project_repo,
-    )
-
+def materialize_project_submodules(
+    source_root: Path, destination_root: Path, *, skip_standalone_project: bool = False
+) -> None:
+    """Populate composite repositories, optionally leaving standalone cores to baseline copying."""
     source_root = source_root.resolve()
     destination_root = destination_root.resolve()
     try:
-        paired_source = paired_project_repository(source_root)
+        topology = project_topology(source_root)
     except RepositoryCheckoutError as exc:
         raise SubmoduleMaterializationError(str(exc)) from exc
-    project_source = (
-        paired_source.worktree
-        if paired_source is not None
-        else resolve_inner_project_repo(source_root)
-    )
+    if skip_standalone_project and topology.paired is None and topology.standalone is not None:
+        materialize_submodules(
+            source_root,
+            destination_root,
+            excluded_top_level=_standalone_project_exclusion(source_root, topology.standalone),
+        )
+        return
+    project_source = topology.paired.worktree if topology.paired else topology.standalone
     if project_source is None:
         materialize_submodules(source_root, destination_root)
         return
     try:
-        project_relative = checkout_project_dir_relative_to(source_root)
+        project_relative = (
+            Path(topology.paired.path_prefix)
+            if topology.paired
+            else checkout_project_dir_relative_to(source_root)
+        )
     except (FileNotFoundError, ValueError) as exc:
         raise SubmoduleMaterializationError(f"paired project path is unavailable: {exc}") from exc
     project_destination = destination_root / project_relative
@@ -107,6 +111,18 @@ def materialize_project_submodules(source_root: Path, destination_root: Path) ->
         project_destination.resolve(),
         submodule_paths(project_destination.resolve()),
     )
+
+
+def _standalone_project_exclusion(source_root: Path, project: Path) -> frozenset[str]:
+    """Exclude only a safe, nonempty checkout-local standalone Project path."""
+    try:
+        relative = project.relative_to(source_root)
+    except ValueError:
+        return frozenset()
+    if not relative.parts:
+        return frozenset()
+    _validate_relative_path(relative)
+    return frozenset({relative.as_posix()})
 
 
 def _materialize_tree(

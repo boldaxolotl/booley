@@ -1467,3 +1467,54 @@ def test_disabled_retained_gate_preserves_deferred_state(tmp_path, monkeypatch, 
     current = DevelopmentState.load(path)
     assert current.criteria["implementation_done"].to_dict() == original
     assert ("_report_submitted" in current.criteria) is optional
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_relative_recipe_intake_materializes_project_topologies(tmp_path, monkeypatch, topology):
+    from booley.evidence.fields import BASELINE_REF_PARAM, RECIPE_SNAPSHOT_PARAM
+    from booley.fusesoc import fusesoc_registry
+    from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+    from booley.harness.setup.intake import _freeze_fpga_recipe_fingerprints
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    ctx = TicketContext(
+        slug="relative-topology",
+        ticket_path=root / "ticket.md",
+        ticket_type="feature",
+        branch="main",
+        summary="relative recipe",
+        project_root=root,
+        worktree_path=root,
+        base_sha=revision,
+    )
+    roots = []
+
+    def resolve(handle, *, build_root):
+        baseline = handle.project_root
+        _assert_topology_baseline(baseline, root, "fpga_core")
+        roots.append(baseline)
+        assert handle.identity == "acme:lib:top:1#fpga_core"
+        return ResolvedTarget(
+            name=handle.name,
+            vlnv=handle.vlnv,
+            toplevel="top",
+            eda_tool="vivado",
+            files=(ResolvedFile(name=str(baseline / "rtl/top.v"), file_type="verilogSource"),),
+            parameters={},
+            build_root=build_root,
+            edam_path=build_root / "top.eda.yml",
+            flow_options={"tool": "vivado", "part": "xc7a35tcpg236-1"},
+        )
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+    key = "fpga_impl_ok_fpga_core"
+    params = {key: {"target": "fpga_core", "lut_count_increase_at_most": 10}}
+    _freeze_fpga_recipe_fingerprints(ctx, {key: True}, params)
+    assert params[key][BASELINE_REF_PARAM] == revision
+    assert params[key][RECIPE_SNAPSHOT_PARAM]["target"] == "fpga_core"
+    assert roots and all(not path.exists() for path in roots)
+    assert "current" in (root / "rtl/top.v").read_text(encoding="utf-8")

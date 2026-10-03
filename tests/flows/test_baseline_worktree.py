@@ -75,7 +75,7 @@ def test_ticket_adapter_rejects_unsafe_runtime_ticket_slug_before_loading(
 
 
 def _git(repo: Path, *a: str) -> None:
-    subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True, timeout=30)
 
 
 def _commit_all(repo: Path, message: str) -> None:
@@ -443,3 +443,173 @@ def test_git_short_sha_falls_back_on_bad_ref(tmp_path: Path) -> None:
     assert sha and all(c in "0123456789abcdef" for c in sha)
     # An unresolvable ref degrades to a truncated echo rather than raising.
     assert git_short_sha("no-such-ref", tmp_path) == "no-such-"
+
+
+def test_standalone_project_baseline_copies_stealth_cores(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl/top.v").write_text("old\n", encoding="utf-8")
+    _commit_all(tmp_path, "old RTL")
+    (tmp_path / "rtl/top.v").write_text("current\n", encoding="utf-8")
+    _commit_all(tmp_path, "current RTL")
+    link = _stealth_core_linking_to_rtl(tmp_path)
+    project = tmp_path / ".booley_project"
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.invalid")
+    _commit_all(project, "stealth cores")
+
+    with baseline_worktree(tmp_path, "HEAD~1") as baseline:
+        copied = baseline / ".booley_project/cores/ip"
+        assert (copied / "top.core").is_file()
+        assert (copied / "rtl/top.v").read_text(encoding="utf-8") == "old\n"
+        assert not (baseline / ".booley_project/.git").exists()
+        assert (link / "top.v").read_text(encoding="utf-8") == "current\n"
+    assert not baseline.exists()
+
+
+def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tuple[Path, str]:
+    """Real historical RTL and authored Targets shared by baseline caller regressions."""
+    from booley.core.project_dir import reset_cache
+
+    outer = tmp_path / "topology-source"
+    outer.mkdir()
+    _init_repo(outer)
+    (outer / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+    (outer / "rtl").mkdir()
+    (outer / "rtl/top.v").write_text("module top; // historical\nendmodule\n", encoding="utf-8")
+    _commit_all(outer, "historical RTL")
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=outer,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout.strip()
+    (outer / "rtl/top.v").write_text("module top; // current\nendmodule\n", encoding="utf-8")
+    _commit_all(outer, "current RTL")
+    _stealth_core_linking_to_rtl(outer)
+    project = outer / ".booley_project"
+    (project / "cores/ip/top.core").write_text(
+        "CAPI=2:\nname: acme:lib:top:1\nfilesets:\n"
+        "  rtl:\n    files: [rtl/top.v]\n    file_type: verilogSource\n"
+        "targets:\n"
+        "  sim_core:\n    default_tool: icarus\n    filesets: [rtl]\n    toplevel: top\n"
+        "  synth_core:\n    default_tool: yosys\n    filesets: [rtl]\n    toplevel: top\n"
+        "  fpga_core:\n    default_tool: vivado\n    filesets: [rtl]\n    toplevel: top\n",
+        encoding="utf-8",
+    )
+    (project / "booley.toml").write_text(
+        "[flows.sim]\nrun_cwd = '.'\n[flows.synth]\nenabled = true\n"
+        "[flows.fpga]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.invalid")
+    _commit_all(project, "Project Targets")
+    if topology == "linked":
+        _link_project_checkout(tmp_path, project)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    reset_cache()
+    return outer, revision
+
+
+def _assert_topology_baseline(root: Path, candidate: Path, selector: str) -> None:
+    from booley.runtime.shared_infra import _load_rtl_config
+    from booley.targets.catalog import TargetCatalog
+
+    assert root != candidate
+    assert "historical" in (root / "rtl/top.v").read_text(encoding="utf-8")
+    assert "current" in (candidate / "rtl/top.v").read_text(encoding="utf-8")
+    assert (root / ".booley_project/cores/ip/top.core").is_file()
+    assert "historical" in (root / ".booley_project/cores/ip/rtl/top.v").read_text(
+        encoding="utf-8"
+    )
+    assert _load_rtl_config(root)["flows"]["sim"]["run_cwd"] == "."
+    assert TargetCatalog.build(root).select(selector).identity == f"acme:lib:top:1#{selector}"
+
+
+@pytest.mark.parametrize("failure", ["body", "planning"])
+def test_standalone_project_baseline_failure_cleans_worktree(tmp_path, monkeypatch, failure):
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, "standalone")
+    if failure == "planning":
+        (root / "missing.v").write_text("generated\n", encoding="utf-8")
+        (root / ".booley_project/cores/ip/missing").symlink_to("../../../missing.v")
+        with (
+            pytest.raises(BaselineWorktreeError, match="no source for stealth-core"),
+            baseline_worktree(root, revision),
+        ):
+            pytest.fail("planning must fail before yielding")
+    else:
+        with (
+            pytest.raises(RuntimeError, match="body failed"),
+            baseline_worktree(root, revision) as baseline,
+        ):
+            _assert_topology_baseline(baseline, root, "sim_core")
+            raise RuntimeError("body failed")
+        assert not baseline.exists()
+    assert not list((root / ".booley_project").glob(".baseline-wt-*"))
+
+
+def test_baseline_prefers_fixed_pair_over_configured_standalone(tmp_path, monkeypatch):
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, "linked")
+    external = tmp_path / "configured-project"
+    external.mkdir()
+    _init_repo(external)
+    (root / "booley.toml").write_text(f'[project]\ndir = "{external}"\n', encoding="utf-8")
+    with baseline_worktree(root, revision) as baseline:
+        _assert_topology_baseline(baseline, root, "sim_core")
+        assert (baseline / ".booley_project/.git").is_file()
+    assert not baseline.exists()
+
+
+def _link_project_checkout(tmp_path: Path, project: Path) -> None:
+    import shutil
+
+    source = tmp_path / "paired-owner"
+    _git(project, "clone", "-q", str(project), str(source))
+    shutil.rmtree(project)
+    _git(source, "worktree", "add", "-b", "paired", str(project), "HEAD")
+    _git(project, "branch", "--set-upstream-to=master")
+
+
+def _baseline_implementation_unit(target, _recipe, *, role, revision):
+    from booley.flows.plan import WorkUnitPlan
+
+    return WorkUnitPlan(
+        unit_id="historical-implementation",
+        role=role,
+        revision=revision,
+        selector=target,
+        target_identity=f"acme:lib:top:1#{target}",
+        test_or_module_scope=("top",),
+        eda_tool="vivado" if target.startswith("fpga") else "yosys",
+        timeout_ms=1000,
+    )
+
+
+def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch):
+    from booley.core.project_dir import reset_cache
+
+    root = tmp_path / "outer"
+    root.mkdir()
+    _init_repo(root)
+    project = tmp_path / "external"
+    project.mkdir()
+    _init_repo(project)
+    (project / "cores").mkdir()
+    (project / "cores/top.core").write_text("CAPI=2:\nname: acme:lib:top:1\n", encoding="utf-8")
+    (root / "booley.toml").write_text(f'[project]\ndir = "{project}"\n', encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    reset_cache()
+    with baseline_worktree(root, "HEAD~1") as baseline:
+        assert (baseline / "f.txt").read_text(encoding="utf-8") == "v1\n"
+        assert (baseline / ".booley_project/cores/top.core").read_bytes() == (
+            project / "cores/top.core"
+        ).read_bytes()
+        assert not (baseline / ".booley_project/.git").exists()
+        assert (project / ".git").is_dir()
+    assert not baseline.exists()
