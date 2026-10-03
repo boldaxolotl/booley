@@ -142,6 +142,45 @@ COMMAND_LOCATIONS = {
 }
 
 
+class ProjectBinding(Enum):
+    """How a command selects Project context before discovery."""
+
+    REQUIRED = "required"
+    INDEPENDENT = "independent"
+    OPTIONAL = "optional"
+    AUTH = "auth-status-conditional"
+    FEEDBACK = "source-feedback"
+
+
+COMMAND_PROJECT_BINDINGS = {
+    "run": ProjectBinding.REQUIRED,
+    "chat": ProjectBinding.REQUIRED,
+    "board": ProjectBinding.REQUIRED,
+    "cheat": ProjectBinding.OPTIONAL,
+    "doctor": ProjectBinding.REQUIRED,
+    "bootstrap": ProjectBinding.INDEPENDENT,
+    "init": ProjectBinding.REQUIRED,
+    "eda": ProjectBinding.INDEPENDENT,
+    "auth": ProjectBinding.AUTH,
+    "session": ProjectBinding.REQUIRED,
+    "projects": ProjectBinding.INDEPENDENT,
+    "upgrade": ProjectBinding.REQUIRED,
+    "targets": ProjectBinding.REQUIRED,
+    "flow": ProjectBinding.REQUIRED,
+    "specialist": ProjectBinding.REQUIRED,
+    "feedback": ProjectBinding.FEEDBACK,
+    "cleanup": ProjectBinding.REQUIRED,
+    "shell": ProjectBinding.REQUIRED,
+}
+
+
+def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
+    binding = COMMAND_PROJECT_BINDINGS[command]
+    if binding is ProjectBinding.AUTH:
+        return ProjectBinding.INDEPENDENT if args.status else ProjectBinding.REQUIRED
+    return binding
+
+
 class _RetiredEdaToolOptionAction(argparse.Action):
     """Reject retired scaffold flags with their canonical EDA-tool spelling."""
 
@@ -1119,8 +1158,9 @@ def _live_criterion_endpoint_catalog(project_root: Path):
         criterion_endpoint_relationships,
         discover_mcp_tools,
     )
+    from booley.runtime.project_dir import resolve_checkout_project_dir
 
-    project_dir = project_root / ".booley_project"
+    project_dir = resolve_checkout_project_dir(project_root)
     return CriterionEndpointCatalog.load(
         project_dir / "criteria.toml",
         criterion_endpoint_relationships(
@@ -1129,7 +1169,7 @@ def _live_criterion_endpoint_catalog(project_root: Path):
     )
 
 
-def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
+def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     if getattr(args, "list", False):
         for slug in cheatsheet.section_slugs():
             aliases = cheatsheet.section_flags(slug)[1:]
@@ -1152,13 +1192,15 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
             render_specialists_reference,
             splice_generated,
         )
-        from booley.mcp.server import get_project_mcp_tools_dir
+        from booley.runtime.project_dir import resolve_checkout_project_dir
 
         # No Execution column: keep the terminal table within a terminal width
         # — a 4th column overflowed and truncated the Sets column (QA_REPORT
         # A3). Its reader is an agent, which doesn't pick execution backends
         # anyway; the docs blocks carry the matrix.
-        project_mcp_tools_dir = get_project_mcp_tools_dir()
+        if project_root is None:
+            raise ValueError("No selected Project for live reference")
+        project_mcp_tools_dir = resolve_checkout_project_dir(project_root) / "mcp_tools"
         body = render_flow_reference(
             project_mcp_tools_dir=project_mcp_tools_dir,
             execution_column=False,
@@ -1186,8 +1228,11 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
         from booley.criteria.reference import (
             splice_generated as splice_criteria,
         )
+        from booley.runtime.project_dir import resolve_checkout_project_dir
 
-        project_criteria = project_root / ".booley_project" / "criteria.toml"
+        if project_root is None:
+            raise ValueError("No selected Project for live Criteria")
+        project_criteria = resolve_checkout_project_dir(project_root) / "criteria.toml"
         text = splice_criteria(
             text,
             render_criteria_reference(
@@ -2104,9 +2149,13 @@ def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | N
     return None
 
 
-def _reject_source_project_command(command: str | None, project_root: Path) -> int | None:
+def _reject_source_project_command(command: str, project_root: Path) -> int | None:
     """Reject Project commands in Booley source while allowing dogfood feedback."""
-    if command in {None, "feedback"}:
+    if COMMAND_PROJECT_BINDINGS[command] in {
+        ProjectBinding.INDEPENDENT,
+        ProjectBinding.OPTIONAL,
+        ProjectBinding.FEEDBACK,
+    }:
         return None
     from booley.runtime.checkout_role import SourceCheckoutProjectError, require_project_checkout
 
@@ -2724,6 +2773,34 @@ def _command_project_root(command: str) -> Path:
         raise
 
 
+def _optional_project_root(args: argparse.Namespace) -> Path | None:
+    from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    if getattr(args, "list", False):
+        return None
+    try:
+        root = (
+            Path(args.project_root).resolve()
+            if getattr(args, "project_root", None)
+            else find_project_root()
+        )
+        root = require_project_checkout(root)
+        from booley.runtime.project_dir import resolve_checkout_project_dir
+
+        project_dir = resolve_checkout_project_dir(root)
+        require_project_checkout(project_dir)
+        require_project_checkout(project_dir / "mcp_tools")
+        return root
+    except (
+        ProjectRootDiscoveryError,
+        SourceCheckoutProjectError,
+        FileNotFoundError,
+        PermissionError,
+    ):
+        return None
+
+
 def _dispatch_main() -> int:
     """Parse CLI, handle early exits, set up runtime, and run the ticket loop."""
     args = _parse_cli()
@@ -2735,19 +2812,25 @@ def _dispatch_main() -> int:
     if authority_error := _host_install_authority_error(command):
         print(authority_error, file=sys.stderr)
         return 2
+    binding = _command_project_binding(command, args)
     if command == "bootstrap":
         return run_bootstrap(args)
     if command == "projects":
         return project_inventory_cli.run(args)
 
-    project_root = (
-        Path(args.project_root).resolve()
-        if hasattr(args, "project_root") and args.project_root
-        else _command_project_root(command)
-    )
-    source_rejection = _reject_source_project_command(command, project_root)
-    if source_rejection is not None:
-        return source_rejection
+    if binding is ProjectBinding.INDEPENDENT:
+        project_root = Path.cwd()
+    elif binding is ProjectBinding.OPTIONAL:
+        project_root = _optional_project_root(args)
+    else:
+        project_root = (
+            Path(args.project_root).resolve()
+            if getattr(args, "project_root", None)
+            else _command_project_root(command)
+        )
+        source_rejection = _reject_source_project_command(command, project_root)
+        if source_rejection is not None:
+            return source_rejection
 
     # Runtime-location guard: one chokepoint after argparse, before anything
     # touches the filesystem or clears the screen.
