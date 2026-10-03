@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -241,3 +242,189 @@ def test_pending_recovery_does_not_bypass_coordinated_grant_mutation(
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("action", ["add", "revoke"])
+def test_source_project_binding_refuses_explicit_target(tmp_path, monkeypatch, action):
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    calls = []
+    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+    options = ["--installation", "registered"] if action == "add" else []
+    assert (
+        _run(_parse("grant", action, str(tmp_path), "--kind", "vivado", *options), tmp_path) == 2
+    )
+    assert calls == []
+
+
+@pytest.mark.parametrize("action", ["add", "revoke"])
+@pytest.mark.parametrize("selection", ["subdirectory", "relative", "symlink"])
+def test_source_project_binding_target_aliases(tmp_path, monkeypatch, action, selection):
+    calls = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    nested = source / "nested"
+    nested.mkdir()
+    monkeypatch.chdir(tmp_path)
+    if selection == "symlink":
+        target = tmp_path / "alias"
+        try:
+            target.symlink_to(source, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+    else:
+        target = nested if selection == "subdirectory" else Path("source")
+    options = ["--installation", "registered"] if action == "add" else []
+    assert _run(_parse("grant", action, str(target), "--kind", "vivado", *options), tmp_path) == 2
+    assert calls == []
+
+
+def test_project_binding_missing_revoke_preserves_argument(tmp_path, monkeypatch):
+    missing = tmp_path / "missing"
+    calls = []
+
+    def revoke(project, kind):
+        calls.append(project)
+        return authority.ProjectGrant(str(project), kind, None, None)
+
+    monkeypatch.setattr(authority, "_revoke_grant", revoke)
+    assert _run(_parse("grant", "revoke", str(missing), "--kind", "vivado"), tmp_path) == 0
+    assert calls == [missing]
+
+
+@pytest.mark.parametrize("deleted_nested_project", [True, False])
+@pytest.mark.parametrize("target_form", ["literal", "missing_parent", "file_parent"])
+def test_project_binding_revoke_recorded_identity_under_source(
+    tmp_path, monkeypatch, deleted_nested_project, target_form
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / ".git").mkdir()
+    project = source / "nested" if deleted_nested_project else source
+    (project / ".booley_project").mkdir(parents=True)
+    if deleted_nested_project:
+        (project / ".git").mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    grant = authority._add_grant(project, "vivado", license_profile="registered")
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    if deleted_nested_project:
+        shutil.rmtree(project)
+    target = project
+    if target_form == "missing_parent":
+        target = project / "missing" / ".."
+    elif target_form == "file_parent":
+        target = project / "pyproject.toml" / ".."
+    result = _run(_parse("grant", "revoke", str(target), "--kind", "vivado"), tmp_path)
+    assert result == (0 if deleted_nested_project else 2)
+    assert authority.load_state().grants == (() if deleted_nested_project else (grant,))
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_source_project_binding_revoke_symlink_parent(tmp_path, monkeypatch, relative):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    source = tmp_path / "source"
+    (source / ".booley_project").mkdir(parents=True)
+    (source / ".git").mkdir()
+    nested = source / "nested"
+    nested.mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    grant = authority._add_grant(source, "vivado", license_profile="registered")
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    other = tmp_path / "other"
+    other.mkdir()
+    alias = other / "alias"
+    try:
+        alias.symlink_to(nested, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    monkeypatch.chdir(other)
+    target = Path("alias") / ".." if relative else alias / ".."
+    assert _run(_parse("grant", "revoke", str(target), "--kind", "vivado"), other) == 2
+    assert authority.load_state().grants == (grant,)
+
+
+@pytest.mark.parametrize("action", ["add", "revoke"])
+def test_project_binding_permission_error_is_clean(tmp_path, monkeypatch, capsys, action):
+    calls = []
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+
+    def check(project):
+        raise PermissionError(f"Project checkout is unreadable: {project}")
+
+    monkeypatch.setattr(cli, "require_project_checkout", check)
+    assert _run(_parse("grant", action, str(tmp_path), "--kind", "vivado"), tmp_path) == 2
+    assert "Project checkout is unreadable" in capsys.readouterr().err
+    assert calls == []
+
+
+def test_project_binding_inaccessible_revoke_keeps_source_grant(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    source = tmp_path / "source"
+    (source / ".booley_project").mkdir(parents=True)
+    (source / ".git").mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    grant = authority._add_grant(source, "vivado", license_profile="registered")
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    stat = Path.stat
+    exists = Path.exists
+
+    def inaccessible(path, **kwargs):
+        if path == source:
+            raise PermissionError("Project parent is unreadable")
+        return stat(path, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", inaccessible)
+    monkeypatch.setattr(Path, "exists", lambda path: False if path == source else exists(path))
+    assert _run(_parse("grant", "revoke", str(source), "--kind", "vivado"), tmp_path) == 2
+    assert "unreadable" in capsys.readouterr().err
+    assert authority.load_state().grants == (grant,)
+
+
+def test_project_binding_cleanup_permission_error_propagates(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    project = tmp_path / "project"
+    (project / ".booley_project").mkdir(parents=True)
+    (project / ".git").mkdir()
+    authority.register_license(
+        "registered",
+        server_ipv4="192.0.2.1",
+        server_hostid="license-host",
+        lmgrd_port=27000,
+        vendor_port=27001,
+    )
+    authority._add_grant(project, "vivado", license_profile="registered")
+    revoke = authority._revoke_grant
+
+    def cleanup_failure(target, kind):
+        revoke(target, kind)
+        raise PermissionError("cleanup failed after revocation")
+
+    monkeypatch.setattr(authority, "_revoke_grant", cleanup_failure)
+    with pytest.raises(PermissionError, match="cleanup failed after revocation"):
+        _run(_parse("grant", "revoke", str(project), "--kind", "vivado"), tmp_path)
+    assert authority.load_state().grants == ()
