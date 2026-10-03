@@ -38,8 +38,17 @@ PRIVATE_NETWORK_LABEL = "booley.role=license-private-network"
 OUTBOUND_NETWORK_LABEL = "booley.role=license-outbound-network"
 DOCKER_TIMEOUT = 30
 BUILD_TIMEOUT = 600
-DEFAULT_HEALTH_ATTEMPTS = 60
+# Dockerfile.flexnet-relay's HEALTHCHECK may take up to 2 s start period plus
+# 15 retries x (2 s interval + 2 s timeout) = 62 s before Docker itself reports
+# "unhealthy". The host backstop (~70 s) must not give up before Docker does on
+# a slow host; exited or unhealthy relays still fail on the next poll.
+DEFAULT_HEALTH_ATTEMPTS = 350
 DEFAULT_HEALTH_POLL_INTERVAL = 0.2
+HEALTH_LOG_TAIL_LINES = 5
+HEALTH_LOG_MAX_CHARS = 500
+_HEALTH_STATE_FORMAT = (
+    "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"
+)
 GATEWAY_MODE_OPTION = "com.docker.network.bridge.gateway_mode_ipv4"
 GATEWAY_MODE_ISOLATED = "isolated"
 
@@ -572,16 +581,44 @@ def _checked(run: Runner, args: list[str], action: str) -> None:
 
 
 def _wait_healthy(run: Runner, container: str, attempts: int, interval: float) -> None:
-    command = ["container", "inspect", container, "--format", "{{.State.Health.Status}}"]
-    last = "unknown"
+    """Poll until Docker reports the relay healthy; stop early once it never will."""
+    command = ["container", "inspect", container, "--format", _HEALTH_STATE_FORMAT]
+    state, health = "unknown", "unknown"
     for attempt in range(attempts):
         result = run(command, DOCKER_TIMEOUT)
-        last = result.stdout.strip().lower() if result.returncode == 0 else "inspect-error"
-        if last == "healthy":
+        if result.returncode == 0:
+            state, _, health = result.stdout.strip().lower().partition(" ")
+        else:
+            state, health = "inspect-error", "unknown"
+        if state == "running" and health == "healthy":
             return
+        # A stopped relay or Docker's own "unhealthy" verdict cannot recover.
+        if state not in {"running", "inspect-error"} or health == "unhealthy":
+            break
         if attempt + 1 < attempts and interval:
             time.sleep(interval)
-    raise RelayDockerError(f"license relay did not become healthy (last status: {last})")
+    raise RelayDockerError(
+        f"license relay did not become healthy (container: {state}, health: {health})"
+        f"{_relay_log_tail(run, container)}"
+    )
+
+
+def _relay_log_tail(run: Runner, container: str) -> str:
+    """Return a bounded relay-log excerpt for a startup failure, or nothing."""
+    try:
+        result = run(
+            ["container", "logs", "--tail", str(HEALTH_LOG_TAIL_LINES), container],
+            DOCKER_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    # The relay logs to stderr; keep both streams so nothing diagnostic is lost.
+    excerpt = " | ".join(
+        line.strip() for line in (result.stdout + result.stderr).splitlines() if line.strip()
+    )
+    if result.returncode != 0 or not excerpt:
+        return ""
+    return f"; relay log: {excerpt[-HEALTH_LOG_MAX_CHARS:]}"
 
 
 def _validate_container_contract(

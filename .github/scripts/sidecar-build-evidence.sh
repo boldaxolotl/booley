@@ -4,8 +4,8 @@
 set -euo pipefail
 
 readonly EVIDENCE_DIR="${RUNNER_TEMP}/docker-build-evidence"
-readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56"
-readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"
+readonly BOOKWORM_CANDIDATE="python:3.14.8-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88"
+readonly ALPINE_CANDIDATE="python:3.14.8-alpine3.24@sha256:8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"
 readonly DOCKER_CLI="docker:29.8.2-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"
 readonly DOCKER_DIND="docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
 
@@ -92,9 +92,9 @@ build_image reaper-candidate src/booley/data/docker/Dockerfile.reaper \
   booley-reaper:py314 src/booley/docker
 
 : > "${EVIDENCE_DIR}/image-sizes.tsv"
-capture_image egress-proxy-candidate booley-egress-proxy:py314 "Python 3.14.7"
-capture_image flexnet-relay-candidate booley-flexnet-relay:py314 "Python 3.14.7"
-capture_image reaper-candidate booley-reaper:py314 "Python 3.14.7"
+capture_image egress-proxy-candidate booley-egress-proxy:py314 "Python 3.14.8"
+capture_image flexnet-relay-candidate booley-flexnet-relay:py314 "Python 3.14.8"
+capture_image reaper-candidate booley-reaper:py314 "Python 3.14.8"
 
 : > "${EVIDENCE_DIR}/source-repodigests.tsv"
 capture_source python-bookworm-candidate "${BOOKWORM_CANDIDATE}"

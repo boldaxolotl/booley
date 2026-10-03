@@ -619,14 +619,22 @@ def test_indirect_lifecycle_timeout_reaches_main(argv, command, tmp_path, monkey
     assert "Traceback" not in captured.out + captured.err
 
 
-def test_projects_dispatch_precedes_active_project_discovery(monkeypatch):
+def test_projects_dispatch_precedes_active_project_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from booley.projects import cli as project_inventory_cli
 
     args = tlr._build_parser().parse_args(["projects", "--json"])
     monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
-    monkeypatch.setattr(project_inventory_cli, "run", lambda _args: 19)
+    from booley.runtime import image_keepers as runtime_image_keepers
+
+    def run(_args: Namespace, *, keeper_operations: project_inventory_cli.KeeperOperations) -> int:
+        assert keeper_operations is runtime_image_keepers
+        return 19
+
+    monkeypatch.setattr(project_inventory_cli, "run", run)
     monkeypatch.setattr(
         tlr,
         "find_project_root",
