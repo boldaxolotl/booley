@@ -155,7 +155,16 @@ def test_state_backed_simulation_preflight_rejection_reaches_stderr(
         lambda: EndpointOutcome(exit_code=2, report_text="Simulation preflight rejected"),
     )
 
-    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
+    execution = flow.execute_cli(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
 
     captured = capsys.readouterr()
     assert execution.exit_code == 2
@@ -287,3 +296,22 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
     finally:
         flow.context.publication_resources.close()
     assert not baseline.exists()
+
+
+def test_prepare_resets_report_only_metadata_before_early_gate(monkeypatch):
+    from booley.flows.endpoint_session import prepare_execution
+
+    flow = SimulateFlow()
+    context = flow.context
+    previous = (object(),)
+    context._simulation_report_outcomes = previous
+    context._simulation_campaign_outcomes = previous
+    rejected = EndpointOutcome(exit_code=2)
+
+    def gate():
+        assert context._simulation_report_outcomes == ()
+        assert context._simulation_campaign_outcomes is previous
+        return rejected
+
+    monkeypatch.setattr(context, "_apply_pre_state_gate", gate)
+    assert prepare_execution(context) is rejected

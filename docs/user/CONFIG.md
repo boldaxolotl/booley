@@ -363,14 +363,26 @@ Cycle counts use the same literal-prefix model. By default Booley recognizes
 keep its own prefix instead. The prefix must be followed by a
 test name and a decimal integer as the line's final field, such as
 `CoreMark completed in: coremark 12345`. Booley selects the record matching the
-test it invoked, then puts the count in the MCP tool's per-test output and the
-JSON report's `tests[].cycles`. Configuring `cycle_sentinels` replaces the
+test it invoked. When count metadata is available, the numbered `report.json`
+persists every captured authenticated observation in top-level `cycle_counts.<Target selector>[]` rows with `test`
+(nullable for unnamed tests) and `cycle_count`. Metadata computation or
+serialization failure instead records `cycle_counts_error: unavailable`. Its rich
+`detail.campaigns.<selector>.observations` preview retains the first 32 counts.
+The full Target `simulation.json` retains `tests[].cycles`, linked by
+`detail.campaigns.<selector>.artifacts.simulation`; resolve the reference using
+its declared `path_base`, including retained origin runs after resume. The
+CLI/MCP verdict card shows `cycles=N` for at most 32 tests globally, subject to
+the smaller stdout/stderr budget, and reports omitted counts when space permits.
+Native Coverage
+currently supplies null counts. Configuring `cycle_sentinels` replaces the
 built-in cycle prefix; it does not affect the pass/fail verdict. For backward
 compatibility, a count-only record remains readable when it is the only cycle
 record in the log. That legacy form and all named records remain observational
-unless the Ticket declares a `cycle_count` Criterion. Gated evidence requires
-exactly one named record for the invoked test; missing, duplicate, malformed,
-or wrong-test records fail closed.
+unless the Ticket declares a `cycle_count` Criterion. The legacy path requires
+exactly one named record for gated evidence; the current Simulation Campaign path accepts
+a healthy integer count, including a count-only record, without retaining
+the named/legacy distinction. Missing or invalid ASCII count records yield
+null counts.
 
 Cocotb Targets are the exception: they score from cocotb's `results.xml`, so
 pass/fail sentinel knobs don't apply. Named cycle records are still collected

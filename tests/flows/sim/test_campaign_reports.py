@@ -98,6 +98,218 @@ def test_campaign_build_diagnostics_survive_preview_limit() -> None:
     assert preview["build_stage"] == [stage]
 
 
+@pytest.mark.parametrize("budget", [80, 300, 4000, 12000])
+def test_cycle_card_global_limits_and_utf8_names(monkeypatch, budget):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.flow import _campaign_report_lines
+
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget * 2))
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
+    outcomes = [
+        SimpleNamespace(
+            target={"selector": str(index)},
+            aggregate_grade="fail",
+            observations=[
+                {"test": "é" * 256, "cycle_count": value, "detail": {}} for value in range(100)
+            ],
+        )
+        for index in range(2)
+    ]
+    base = [
+        SimpleNamespace(target=item.target, aggregate_grade=item.aggregate_grade, observations=[])
+        for item in outcomes
+    ]
+    plain = "\n".join(_campaign_report_lines(base))
+    rendered = "\n".join(_campaign_report_lines(outcomes))
+    added = len(rendered.encode()) - len(plain.encode())
+    assert added <= min(budget // 4, max(0, budget - len(plain.encode()) - 2))
+    assert rendered.count("cycles=") <= 32
+    assert rendered.splitlines()[0] == plain.splitlines()[0]
+    if "cycles=" in rendered:
+        assert "…: cycles=" in rendered
+    if added:
+        assert "cycle counts omitted" in rendered
+
+
+@pytest.mark.parametrize("reason", ["x\n", "x\r\nz", "x\u2028z"])
+def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim import flow
+
+    resolved = []
+    monkeypatch.setattr(
+        flow,
+        "_resolved_coverage_campaigns",
+        lambda _outcomes: resolved.append(True) or {"sim": object()},
+    )
+    monkeypatch.setattr(flow, "_coverage_report_suffix", lambda _campaign: "coverage")
+    monkeypatch.setattr(flow, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"])
+    monkeypatch.setattr(flow, "source_gap_report_lines", lambda _campaign: [])
+    monkeypatch.setattr(flow, "_coverage_pre_sim_lines", lambda *_args: [])
+
+    outcome = SimpleNamespace(
+        target={"selector": "sim"},
+        aggregate_grade="fail",
+        coverage_reference=object(),
+        observations=[
+            {"test": "one", "cycle_count": 7, "detail": {"reason": reason}},
+            {"test": "two", "cycle_count": None, "detail": {"reason": "y"}},
+        ],
+    )
+    rendered = flow._campaign_report_lines([outcome])[0]
+    assert f"\n  {reason}\n  y\n  one: cycles=7\ncoverage hint" in rendered
+    assert resolved == [True]
+
+
+def test_endpoint_cycle_budget_includes_pre_sim_hook_lines(monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim import flow
+
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "200")
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "200")
+    hooks = ["pre-sim " + "h" * 130]
+    calls = []
+    monkeypatch.setattr(
+        flow, "_campaign_pre_sim_report_lines", lambda *_args: calls.append(True) or hooks
+    )
+    for symbol in (
+        "_resolved_coverage_campaigns",
+        "_campaign_structured_details",
+        "_campaign_pre_sim_details",
+        "_campaign_build_infrastructure_detail",
+    ):
+        monkeypatch.setattr(flow, symbol, lambda *_args: {})
+    monkeypatch.setattr(flow, "_coverage_compatibility_targets", lambda *_args: [])
+    owner = SimpleNamespace(
+        context=SimpleNamespace(_reserved_invocation_dir=None),
+        _campaign_completed_display_label=lambda _outcomes: None,
+    )
+    outcome = SimpleNamespace(
+        target={"selector": "sim"},
+        aggregate_grade="pass",
+        coverage_reference=None,
+        observations=[{"test": "test" * 30, "cycle_count": None, "detail": {}}],
+    )
+    baseline = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
+    assert baseline.endswith(hooks[0]) and len(baseline.encode()) < 200
+    outcome.observations = [{"test": "test" * 30, "cycle_count": 7, "detail": {}}]
+    rendered = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
+    assert rendered.endswith(hooks[0]) and len(rendered.encode()) <= 200
+    assert rendered == baseline
+    assert calls == [True, True]
+
+
+@pytest.mark.parametrize("failure", [None, "retention", "supersede"])
+def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch, failure):
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
+
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    execution = NativeExecution()
+    if failure:
+        symbol = (
+            "_checkpoint_coverage_campaign" if failure == "retention" else "supersede_progress"
+        )
+        monkeypatch.setattr(
+            "booley.flows.sim.flow." + symbol,
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
+        )
+    resumed = tmp_path / "resumed"
+    flow = SimulateFlow(coverage_execution=lambda *_args: execution)
+    result = flow.execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed))
+    report = json.loads((resumed / "sim/1/report.json").read_text())
+    assert result.exit_code == (2 if failure else 0)
+    assert execution.runs == []
+    assert report["cycle_counts"]["sim_0"] == [
+        {"test": "reset", "cycle_count": None},
+        {"test": "wrap", "cycle_count": None},
+    ]
+    assert report == json.loads((resumed / "sim.json").read_text())
+    progress = json.loads((resumed / "sim/1/progress.json").read_text())
+    assert "cycle_counts" not in json.dumps(progress)
+    if failure:
+        assert flow.context._simulation_campaign_outcomes == ()
+    else:
+        campaign = report["detail"]["campaigns"]["sim_0"]
+        assert all(item["cycle_count"] is None for item in campaign["observations"])
+        assert campaign["artifacts"]["simulation"]["path_base"] == "external_origin_target"
+
+
+def test_count_metadata_keeps_full_rows_outside_preview_and_recomputes():
+    from types import SimpleNamespace
+
+    from booley.flows.sim.flow import SimulateFlow, _campaign_observation_preview
+
+    observations = [
+        {
+            "test": None if index == 0 else str(index),
+            "cycle_count": index,
+            "execution": "completed",
+            "failure_class": None,
+            "functional": "pass",
+            "assertions": "clean",
+            "assertion_count": 0,
+            "detail": {},
+        }
+        for index in range(40)
+    ]
+    flow = SimulateFlow()
+    flow.context._simulation_report_outcomes = (
+        SimpleNamespace(target={"selector": "sim"}, observations=observations),
+    )
+    assert len(flow.persisted_cycle_counts()["sim"]) == 40
+    assert flow.persisted_cycle_counts()["sim"][0]["test"] is None
+    preview = _campaign_observation_preview(observations)
+    assert len(preview["observations"]) == 32
+    assert preview["observations"][31]["cycle_count"] == 31
+    assert "cycle_counts" not in preview
+    flow.context._simulation_report_outcomes = ()
+    assert flow.persisted_cycle_counts() == {}
+
+
+def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, capsys):
+    import time
+    from types import SimpleNamespace
+
+    from booley.flows.endpoint_reporting import write_report
+    from booley.flows.sim.campaign_retention import _read_object
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.mcp.server import _read_report_json, _structured_from_report
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = SimulateFlow()
+    name = '\\"é' * 100
+    observations = [{"test": name + str(index), "cycle_count": index} for index in range(2000)]
+    flow.context._simulation_report_outcomes = tuple(
+        SimpleNamespace(target={"selector": selector}, observations=observations)
+        for selector in ("one", "two")
+    )
+    context = flow.context
+    flow._args = SimpleNamespace(report_dir=tmp_path, slug="")
+    context._start_time = time.monotonic()
+    start = time.monotonic()
+    with context.publication_resources:
+        path = write_report(context, EndpointOutcome())
+    raw = path.read_bytes()
+    report = _read_report_json(path)
+    assert _read_object(path) == report
+    assert report == json.loads((tmp_path / "sim.json").read_bytes())
+    assert sum(len(rows) for rows in report["cycle_counts"].values()) == 4000
+    assert len(json.dumps(_structured_from_report(report)).encode()) < 65536
+    assert "cycle_counts" not in report["detail"]
+    print(
+        f"4000 count rows: {len(raw)} persisted bytes; writer/readers {time.monotonic() - start:.4f}s"
+    )
+    observation = capsys.readouterr().out
+    with capsys.disabled():
+        print(observation.strip())
+
+
 def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False):
     from booley.flows.sim.campaign.coordinator import (
         CampaignPolicy,
