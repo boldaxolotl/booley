@@ -22,9 +22,11 @@ Upstream CI runs on Ubuntu 24.04 and macOS only, so Booley's own image build is 
 evidence. The PicoRV32 demo does not run Spike; it guards the rest of the rebuilt RISC-V image and
 already runs against every release candidate, so it is not a separate refresh gate.
 
-The release toolchain audit compares the pin against the newest such master commit: equal is
-**current**; a newer commit that passes acceptance is a **routine update**; a newer commit that fails
-acceptance is **held**, with a follow-up issue naming the failure.
+The release toolchain audit compares the pin against the newest such master commit as of the audit
+date, and that commit stays the baseline for the rest of the release so upstream activity during
+preparation does not restart the refresh. Equal is **current**; a newer commit that passes acceptance
+is a **routine update**; a newer commit that fails acceptance is **held**, with a follow-up issue
+naming the failure.
 
 ---
 status: accepted
@@ -49,6 +51,11 @@ status: accepted
   run speculatively.
 
 ## Consequences
+
+The acceptance checks prove that the snapshot builds on Booley's base, passes upstream's unit tests,
+executes RV32 code, and loads extensions. They do not check architectural behavior such as CSRs,
+privilege, traps, or debug; Booley relies on upstream's pull-request and `Debug Quick Test` CI for that
+and does not promise more.
 
 The pin can lag master by up to one Booley release cycle; users who need a newer Spike fix ahead of a
 release can request an out-of-cycle refresh. Each refresh is a normal reviewed change to

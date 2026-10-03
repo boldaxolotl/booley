@@ -79,9 +79,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   suspected trigger actually occurred, and confirm the mechanism before editing
   RTL. This applies in Interactive Mode and Ticket Mode alike.
 - The RISC-V image moves Spike to upstream master `609dbe0b` (2026-10-02).
-  Its 47 new upstream commits are mostly fixes to the debug module, triggers,
-  and CSR behavior, plus a new `--wfi-as-nop` option. ADR 0069 records how Booley selects, refreshes, and accepts Spike
-  snapshots. ([#1066](https://github.com/boldaxolotl/Booley/issues/1066))
+  Its 47 new non-merge upstream commits are mostly fixes to the debug module,
+  triggers, and CSR behavior, plus a new `--wfi-as-nop` option. ADR 0069
+  records how Booley selects, refreshes, and accepts Spike snapshots.
+  ([#1066](https://github.com/boldaxolotl/Booley/issues/1066))
 
 ### Upgrade notes
 
