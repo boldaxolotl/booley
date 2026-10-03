@@ -35,6 +35,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   `self.timeout_seconds()` for seconds-based provider calls. Class timeout
   defaults and minimums remain seconds. Saved commands are not rewritten.
 
+### EDA updates
+
+- Upgrade the digest-pinned OpenROAD binary and Corresponding Source to 26Q4,
+  including its OpenSTA revision and EDA builder image. A matched PicoRV32
+  comparison reports a 0.068% area increase and 0.183 ns less setup slack;
+  see [validation evidence](https://github.com/boldaxolotl/booley/blob/main/docs/internals/validation/1064-openroad-26q4.md).
+  ([#1064](https://github.com/boldaxolotl/booley/issues/1064))
+
 ### New features
 
 - Simulation now has a positive-integer `[flows.sim].build_timeout_ms` setting,
