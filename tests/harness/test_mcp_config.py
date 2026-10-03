@@ -2,11 +2,177 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import tomllib
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from booley.runtime.mcp_config import generate_codex_config
+
+
+@pytest.mark.parametrize("failure", ["missing", "stale", "broken", "wrong-result"])
+def test_codex_parser_installation_failure_is_not_scratch_repair(monkeypatch, caplog, failure):
+    from booley.runtime import mcp_config
+
+    def loads(source):
+        if failure == "broken":
+            raise RuntimeError("broken parser")
+        if failure == "wrong-result":
+            return {}
+        raise ValueError("TOML1.0-only parser rejected capability probe")
+
+    parser = None if failure == "missing" else SimpleNamespace(loads=loads)
+    mcp_config._codex_toml_parser.cache_clear()
+    monkeypatch.setitem(sys.modules, "tomli", parser)
+    try:
+        assert "suppress_unstable_features_warning = true" in generate_codex_config()
+        assert "suppress_unstable_features_warning = true" in generate_codex_config(
+            existing_config=""
+        )
+        for source in (" ", "broken=[", "suppress_unstable_features_warning=false\n"):
+            with pytest.raises(
+                RuntimeError, match=r"installation.*tomli>=2\.4\.0.*TOML1\.1"
+            ) as error:
+                generate_codex_config(existing_config=source)
+            assert error.value.__cause__ is not None
+        assert "malformed" not in caplog.text
+    finally:
+        mcp_config._codex_toml_parser.cache_clear()
+
+
+def test_codex_parser_success_is_cached_but_failures_are_retryable(monkeypatch):
+    import tomli
+
+    from booley.runtime import mcp_config
+
+    mcp_config._codex_toml_parser.cache_clear()
+    monkeypatch.setitem(sys.modules, "tomli", None)
+    try:
+        with pytest.raises(RuntimeError):
+            mcp_config._codex_toml_parser()
+        monkeypatch.setitem(sys.modules, "tomli", tomli)
+        assert mcp_config._codex_toml_parser() is tomli
+        monkeypatch.setitem(sys.modules, "tomli", None)
+        assert mcp_config._codex_toml_parser() is tomli
+    finally:
+        mcp_config._codex_toml_parser.cache_clear()
+
+
+def test_blocked_tomli_does_not_break_booley_import_graph_or_claude_route():
+    script = """
+import importlib.abc
+import inspect
+import sys
+class BlockTomli(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "tomli" or fullname.startswith("tomli."):
+            importer = next(frame.frame.f_globals.get("__name__", "")
+                            for frame in inspect.stack()[1:]
+                            if not frame.frame.f_globals.get("__name__", "").startswith("importlib"))
+            if importer.startswith("booley."):
+                raise AssertionError("Booley eagerly imported tomli: " + importer)
+            raise ImportError("blocked third-party optional tomli import")
+sys.meta_path.insert(0, BlockTomli())
+from booley.runtime import mcp_config, incontainer_setup
+from booley.harness import incontainer_register
+import booley.mcp.server
+assert isinstance(mcp_config.http_port(), int)
+for name in ("upsert_claude", "deploy_skills", "deploy_host_skills"):
+    setattr(incontainer_setup, name, lambda *args: 0)
+incontainer_setup.apply_stored_credential = lambda *args: "none"
+incontainer_setup._apply_claude_permission_mode = lambda *args: "current"
+assert incontainer_setup.register("claude").startswith("claude:current")
+assert "tomli" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("kind", ["developer", "nested", "text-only"])
+@pytest.mark.parametrize("failure", ["missing", "stale", "broken-import"])
+def test_private_writer_installation_failure_preserves_destination(
+    tmp_path, monkeypatch, caplog, kind, failure
+):
+    import builtins
+
+    from booley.runtime import _codex_backend as cb
+    from booley.runtime import mcp_config
+    from booley.runtime.agent_backend import AgentCallParams
+    from booley.runtime.text_only_agent import prepare_codex_text_only
+
+    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+    monkeypatch.setattr(
+        cb,
+        "Path",
+        lambda value: (
+            tmp_path / Path(value).name if str(value).startswith("/tmp/codex-") else Path(value)
+        ),
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
+    if kind == "text-only":
+        original = tmp_path / "original"
+        original.mkdir()
+        (original / "models_cache.json").write_text('{"models":[{"slug":"chosen"}]}')
+        params = AgentCallParams(
+            prompt="Explain",
+            model="chosen",
+            cwd=tmp_path,
+            text_only=True,
+            nested_mcp_tools=["lint"],
+        )
+
+        def create():
+            _, env = prepare_codex_text_only(
+                ["codex", "exec", "-"], params, {"CODEX_HOME": str(original)}
+            )
+            return Path(env["CODEX_HOME"])
+    else:
+        writer = (
+            cb._ensure_developer_codex_home
+            if kind == "developer"
+            else cb._ensure_nested_codex_home
+        )
+
+        def create():
+            return Path(writer("test", ["lint"])) / ".codex"
+
+    config = create() / "config.toml"
+    source = b"suppress_unstable_features_warning=false\nfeatures={\n mcp_2026_07_28=true,\n}\n"
+    config.write_bytes(source)
+    cb._NESTED_HOMES.clear()
+    mcp_config._codex_toml_parser.cache_clear()
+    real_import = builtins.__import__
+
+    def import_parser(name, *args, **kwargs):
+        if name == "tomli" and failure == "broken-import":
+            raise ImportError("partial parser installation")
+        return real_import(name, *args, **kwargs)
+
+    def stale_loads(source):
+        raise ValueError("TOML1.0-only capability failure")
+
+    monkeypatch.setattr(builtins, "__import__", import_parser)
+    monkeypatch.setitem(
+        sys.modules, "tomli", None if failure == "missing" else SimpleNamespace(loads=stale_loads)
+    )
+    try:
+        with pytest.raises(RuntimeError, match=r"installation.*tomli>=2\.4\.0"):
+            create()
+        assert config.read_bytes() == source
+        assert "malformed" not in caplog.text
+    finally:
+        mcp_config._codex_toml_parser.cache_clear()
 
 
 class TestGenerateCodexConfig:
@@ -118,3 +284,46 @@ def test_generator_heals_interrupted_scratch_config(caplog):
     result = generate_codex_config(existing_config='suppress_unstable_features_warning="')
     assert tomllib.loads(result)["suppress_unstable_features_warning"] is True
     assert "preference" in caplog.text and "malformed" in caplog.text
+
+
+@pytest.mark.parametrize("preference", [None, True, False])
+@pytest.mark.parametrize("quoted", [False, True])
+def test_toml11_generator_preserves_valid_preference(preference, quoted, caplog):
+    key = (
+        '"suppress_unstable_features_warning"' if quoted else "suppress_unstable_features_warning"
+    )
+    choice = "" if preference is None else f"{key}={str(preference).lower()}\n"
+    source = choice + "features = {\n mcp_2026_07_28=true,\n}\n"
+    result = tomllib.loads(generate_codex_config(existing_config=source))
+    assert result["suppress_unstable_features_warning"] is (
+        True if preference is None else preference
+    )
+    assert "malformed" not in caplog.text
+    assert result["features"]["mcp_2026_07_28"] is True
+
+
+def test_toml11_generator_nested_decoy_is_not_root(caplog):
+    source = "other = {\n suppress_unstable_features_warning=false,\n}\n"
+    result = tomllib.loads(generate_codex_config(existing_config=source))
+    assert result["suppress_unstable_features_warning"] is True
+    assert "malformed" not in caplog.text
+
+
+@pytest.mark.parametrize("value", ['"bad"', "1", "[]", "{}"])
+def test_toml11_generator_rejects_explicit_nonbool(value):
+    source = f"suppress_unstable_features_warning={value}\nother={{\n x=true,\n}}\n"
+    with pytest.raises(ValueError, match="boolean"):
+        generate_codex_config(existing_config=source)
+
+
+@pytest.mark.parametrize(
+    "source", ["features={\n x=true,", "x={\n a=1,\n a=2,\n}", "features={\n x=???\n}"]
+)
+def test_toml11_generator_only_malformed_scratch_heals(source, caplog):
+    assert (
+        tomllib.loads(generate_codex_config(existing_config=source))[
+            "suppress_unstable_features_warning"
+        ]
+        is True
+    )
+    assert "malformed" in caplog.text

@@ -38,12 +38,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 from pathlib import Path
 from typing import Literal, NamedTuple
 
 from booley.runtime import auth_token
-from booley.runtime.mcp_config import HTTP_ENDPOINT_PATH, http_port
+from booley.runtime.mcp_config import HTTP_ENDPOINT_PATH, _codex_toml_parser, http_port
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -315,8 +314,9 @@ def codex_section() -> str:
 
 def _codex_data(existing: str, *, path: Path | None = None) -> dict:
     """Validate interactive config before any registration mutation."""
+    parser = _codex_toml_parser()
     try:
-        parsed = tomllib.loads(existing)
+        parsed = parser.loads(existing)
         for table in ("features", "notice"):
             if table in parsed and not isinstance(parsed[table], dict):
                 raise ValueError(f"{table} must be a table")
@@ -379,15 +379,16 @@ def _toml_statements(existing: str) -> list[str]:
     Input is validated first. A partial multiline value cannot parse on its own,
     so headers/comments inside it never become independent editable statements.
     """
-    tomllib.loads(existing)
+    parser = _codex_toml_parser()
+    parser.loads(existing)
     statements: list[str] = []
     pending = ""
     lines = existing.split("\n")
     for index, line in enumerate(lines):
         pending += line + ("\n" if index < len(lines) - 1 else "")
         try:
-            tomllib.loads(pending)
-        except tomllib.TOMLDecodeError:
+            parser.loads(pending)
+        except parser.TOMLDecodeError:
             continue
         statements.append(pending)
         pending = ""
@@ -398,12 +399,13 @@ def _toml_statements(existing: str) -> list[str]:
 
 def _toml_assignment(statement: str) -> tuple[str, str]:
     """Find the syntactic key boundary, including equals signs in quoted keys."""
+    parser = _codex_toml_parser()
     for index, character in enumerate(statement):
         if character != "=":
             continue
         try:
-            key = tomllib.loads(statement[:index] + "=0")
-        except tomllib.TOMLDecodeError:
+            key = parser.loads(statement[:index] + "=0")
+        except parser.TOMLDecodeError:
             continue
         if key:
             return statement[:index], statement[index + 1 :]
@@ -412,10 +414,11 @@ def _toml_assignment(statement: str) -> tuple[str, str]:
 
 def _toml_path(statement: str) -> tuple[str, ...]:
     """Decode syntactic keys without descending into inline-table values."""
-    data = tomllib.loads(statement)
+    parser = _codex_toml_parser()
+    data = parser.loads(statement)
     if data and not statement.lstrip().startswith("["):
         spelling, _value = _toml_assignment(statement)
-        data = tomllib.loads(spelling + "=0")
+        data = parser.loads(spelling + "=0")
     path: list[str] = []
     while isinstance(data, dict) and len(data) == 1:
         key, data = next(iter(data.items()))
@@ -431,14 +434,15 @@ class _TomlEntry(NamedTuple):
 
 def _replace_toml_assignment(statement: str, value: str) -> str:
     """Replace only an assignment's value, retaining its spelling and comment."""
+    parser = _codex_toml_parser()
     spelling, old = _toml_assignment(statement)
     for index in range(1, len(old) + 1):
         tail = old[index:]
         if tail.strip() and not tail.lstrip().startswith("#"):
             continue
         try:
-            tomllib.loads("value=" + old[:index])
-        except tomllib.TOMLDecodeError:
+            parser.loads("value=" + old[:index])
+        except parser.TOMLDecodeError:
             continue
         leading = old[: len(old) - len(old.lstrip())]
         return spelling + "=" + leading + value + tail
@@ -447,14 +451,15 @@ def _replace_toml_assignment(statement: str, value: str) -> str:
 
 def _inline_table_members(body: str) -> list[str]:
     """Find member boundaries with the parser, not commas inside nested values."""
+    parser = _codex_toml_parser()
     members = []
     start = 0
     for index, character in enumerate(body):
         if character != ",":
             continue
         try:
-            tomllib.loads("value={" + body[start:index] + "}")
-        except tomllib.TOMLDecodeError:
+            parser.loads("value={" + body[start:index] + "\n}")
+        except parser.TOMLDecodeError:
             continue
         members.append(body[start:index])
         start = index + 1
@@ -464,14 +469,15 @@ def _inline_table_members(body: str) -> list[str]:
 
 def _upsert_inline_table_setting(statement: str, key: str, value: str) -> str:
     """Edit one member of an inline table while preserving all other bytes."""
+    parser = _codex_toml_parser()
     spelling, raw = _toml_assignment(statement)
     opening = raw.index("{")
     for closing in range(opening + 1, len(raw)):
         if raw[closing] != "}":
             continue
         try:
-            tomllib.loads("value=" + raw[: closing + 1])
-        except tomllib.TOMLDecodeError:
+            parser.loads("value=" + raw[: closing + 1])
+        except parser.TOMLDecodeError:
             continue
         break
     else:
@@ -483,9 +489,10 @@ def _upsert_inline_table_setting(statement: str, key: str, value: str) -> str:
             members[index] = _replace_toml_assignment(member, value)
             break
     else:
-        members.append(f" {key} = {value}")
-        if not body.strip():
-            members = members[1:]
+        has_members = bool(parser.loads("value={" + body + "\n}")["value"])
+        separator = "," if has_members else ""
+        updated = f" {key} = {value}" + separator + body
+        return spelling + "=" + raw[: opening + 1] + updated + raw[closing:]
     return spelling + "=" + raw[: opening + 1] + ",".join(members) + raw[closing:]
 
 
@@ -513,6 +520,7 @@ def _upsert_existing_codex_table_setting(
     existing: str, *, table: str, key: str, value: str
 ) -> str | None:
     """Update a scalar assignment or insert into its actual table boundary."""
+    parser = _codex_toml_parser()
     entries = _toml_entries(existing)
     target = (table, key)
     for index, (statement, path, header) in enumerate(entries):
@@ -520,7 +528,7 @@ def _upsert_existing_codex_table_setting(
             entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
             return "".join(item[0] for item in entries)
     for index, (statement, path, header) in enumerate(entries):
-        if path == (table,) and not header and tomllib.loads(statement):
+        if path == (table,) and not header and parser.loads(statement):
             updated = _upsert_inline_table_setting(statement, key, value)
             entries[index] = _TomlEntry(updated, path, header)
             return "".join(item.text for item in entries)
@@ -535,7 +543,8 @@ def _upsert_existing_codex_table_setting(
 
 def _upsert_codex_modern_mcp_feature(existing: str) -> str:
     """Keep deliberate MCP enablement, including root dotted feature syntax."""
-    parsed = tomllib.loads(existing)
+    parser = _codex_toml_parser()
+    parsed = parser.loads(existing)
     if parsed.get("features", {}).get("mcp_2026_07_28") is True:
         return existing
     updated = _upsert_existing_codex_table_setting(

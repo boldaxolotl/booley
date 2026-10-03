@@ -101,7 +101,10 @@ async def test_claude_text_only_model_receives_no_tools_mcp_or_project_settings(
 
 
 @pytest.mark.parametrize("preference", [None, True, False])
-def test_text_only_regeneration_preserves_destination_preference(tmp_path, preference):
+@pytest.mark.parametrize("toml11", [False, True])
+def test_text_only_regeneration_preserves_destination_preference(
+    tmp_path, preference, toml11, caplog
+):
     original = tmp_path / "original"
     original.mkdir()
     (original / "models_cache.json").write_text('{"models":[{"slug":"chosen"}]}')
@@ -113,10 +116,16 @@ def test_text_only_regeneration_preserves_destination_preference(tmp_path, prefe
     _, env = prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(original)})
     config = Path(env["CODEX_HOME"]) / "config.toml"
     assert tomllib.loads(config.read_text())["suppress_unstable_features_warning"] is True
-    if preference is not None:
-        config.write_text(f"suppress_unstable_features_warning={str(preference).lower()}\n")
+    if preference is not None or toml11:
+        choice = (
+            ""
+            if preference is None
+            else f"suppress_unstable_features_warning={str(preference).lower()}\n"
+        )
+        config.write_text(choice + ("features={\n mcp_2026_07_28=true,\n}\n" if toml11 else ""))
     prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(original)})
     parsed = tomllib.loads(config.read_text())
+    assert "malformed" not in caplog.text
     assert parsed["suppress_unstable_features_warning"] is (
         True if preference is None else preference
     )

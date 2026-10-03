@@ -413,8 +413,9 @@ def test_developer_prompt_snapshot_is_run_indexed(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("kind", ["developer", "nested"])
 @pytest.mark.parametrize("preference", [None, True, False])
+@pytest.mark.parametrize("toml11", [False, True])
 def test_private_codex_writers_preserve_destination_choice(
-    tmp_path, monkeypatch, kind, preference
+    tmp_path, monkeypatch, kind, preference, toml11, caplog
 ):
     from booley.runtime import _codex_backend as cb
 
@@ -433,8 +434,13 @@ def test_private_codex_writers_preserve_destination_choice(
     home = real_path(create("test", ["lint"]))
     config = home / ".codex/config.toml"
     assert tomllib.loads(config.read_text())["suppress_unstable_features_warning"] is True
-    if preference is not None:
-        config.write_text(f"suppress_unstable_features_warning={str(preference).lower()}\n")
+    if preference is not None or toml11:
+        choice = (
+            ""
+            if preference is None
+            else f"suppress_unstable_features_warning={str(preference).lower()}\n"
+        )
+        config.write_text(choice + ("features={\n mcp_2026_07_28=true,\n}\n" if toml11 else ""))
     before = config.read_bytes()
     if kind == "nested":
         assert real_path(create("test", ["lint"])) == home
@@ -442,6 +448,7 @@ def test_private_codex_writers_preserve_destination_choice(
         cb._NESTED_HOMES.clear()
     assert real_path(create("test", ["lint"])) == home
     parsed = tomllib.loads(config.read_text())
+    assert "malformed" not in caplog.text
     assert parsed["suppress_unstable_features_warning"] is (
         True if preference is None else preference
     )
