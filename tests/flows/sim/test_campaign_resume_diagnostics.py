@@ -1,5 +1,6 @@
 """Public durable resume refusal diagnostics and immutable attempt evidence."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def _interrupted_campaign(root, monkeypatch):
+def _interrupted_campaign(root, monkeypatch, *, parameter_datatype="int", parameter_default="1"):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: "a" * 40)
@@ -28,7 +29,11 @@ def _interrupted_campaign(root, monkeypatch):
         core.read_text()
         .replace(
             "targets:\n",
-            "parameters:\n  WIDTH: {datatype: int, paramtype: vlogparam, default: 1}\ntargets:\n",
+            "parameters:\n  WIDTH: {datatype: "
+            + parameter_datatype
+            + ", paramtype: vlogparam, default: "
+            + parameter_default
+            + "}\ntargets:\n",
         )
         .replace("    filesets: [rtl]", "    parameters: [WIDTH]\n    filesets: [rtl]")
     )
@@ -55,6 +60,10 @@ def _interrupted_campaign(root, monkeypatch):
         pytest.fail(str(result.outcome))
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     assert list(manifest.parent.rglob("attempt.json"))
+    assert (
+        json.loads(manifest.read_text())["planning_disclosures"][0]["generated_files"][0]["path"]
+        == "src/acme_demo_counter_1/rtl/counter.sv"
+    )
     return reports, manifest, executions
 
 
@@ -68,6 +77,12 @@ def test_public_source_resume_names_cause_without_new_attempt(tmp_path, monkeypa
     assert result.exit_code == 2
     assert len(executions) == 1
     assert "source changed: rtl/counter.sv" in result.outcome.report_text
+    assert result.outcome.detail["mismatch_summary"] == [
+        "source changed: rtl/counter.sv",
+        "prepared source changed: src/acme_demo_counter_1/rtl/counter.sv",
+    ]
+    assert len(result.outcome.detail["mismatches"]) == 16
+    assert "sha256:" not in result.outcome.report_text
     assert "8 derived fingerprints differ" in result.outcome.report_text
     assert result.outcome.detail["derived_fingerprint_count"] == 8
     assert "/workload/source_recipe/sources/" not in result.outcome.report_text
@@ -103,15 +118,18 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     assert result.exit_code == 2
     assert len(executions) == 1
     assert "source changed: rtl/counter.sv" in result.outcome.detail["mismatch_summary"]
-    assert any(
-        "/planning_disclosures/" in line for line in result.outcome.detail["mismatch_summary"]
-    )
+    assert result.outcome.detail["mismatch_summary"] == [
+        "source changed: rtl/counter.sv",
+        "prepared source changed: src/acme_demo_counter_1/rtl/counter.sv",
+    ]
+    assert "/planning_disclosures/" not in result.outcome.report_text or verbose
     assert result.outcome.detail["derived_fingerprint_count"] == 8
     raw = result.outcome.detail["mismatches"]
-    assert raw
+    assert len(raw) == 16
     if verbose:
         assert all(line in result.outcome.report_text for line in raw)
     else:
+        assert "sha256:" not in result.outcome.report_text
         assert all(
             line not in result.outcome.report_text
             for line in raw
@@ -159,7 +177,7 @@ def test_public_resume_parameters_suite_content_and_opaque_options(
 
 
 @pytest.mark.parametrize("removed", ["source", "suite"])
-def test_missing_selected_input_preserves_precomparison_planning_error(
+def test_missing_input_distinguishes_source_planning_error_from_suite_comparison(
     tmp_path, monkeypatch, removed
 ):
     reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
@@ -172,6 +190,10 @@ def test_missing_selected_input_preserves_precomparison_planning_error(
     )
     assert result.exit_code == 2
     if removed == "source":
+        assert result.outcome.report_text == (
+            "Simulation Campaign resume preview failed: Project compile input is not a file: "
+            f"{tmp_path / 'rtl/counter.sv'}"
+        )
         assert "mismatch_summary" not in result.outcome.detail
         assert "campaign workload mismatch" not in result.outcome.report_text
     else:
@@ -179,3 +201,32 @@ def test_missing_selected_input_preserves_precomparison_planning_error(
             "suite changed: .booley_project/tests.toml"
         ]
     assert len(executions) == 1
+
+
+def test_public_resume_bool_to_int_names_parameter_and_explains_command_digest(
+    tmp_path, monkeypatch
+):
+    reports, manifest, executions = _interrupted_campaign(
+        tmp_path, monkeypatch, parameter_datatype="bool", parameter_default="false"
+    )
+    core = tmp_path / "counter.core"
+    core.write_text(core.read_text().replace("default: false", "default: 0"))
+    before = _snapshot(manifest.parent)
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+    assert result.exit_code == 2
+    assert result.outcome.detail["mismatch_summary"] == [
+        'parameter WIDTH: {"datatype":"bool","default":false,"paramtype":"vlogparam"} → {"datatype":"bool","default":0,"paramtype":"vlogparam"}'
+    ]
+    assert "build command model changed" not in result.outcome.report_text
+    raw = result.outcome.detail["mismatches"]
+    assert any(line.startswith("/workload/build_recipe/command_model_sha256:") for line in raw)
+    assert not any(line.startswith("/workload/source_recipe/parameters/") for line in raw)
+    assert result.outcome.detail["derived_fingerprint_count"] == 9
+    assert len(executions) == 1
+    assert {
+        key: value
+        for key, value in _snapshot(manifest.parent).items()
+        if not key.startswith("dependency-receipts/")
+    } == before

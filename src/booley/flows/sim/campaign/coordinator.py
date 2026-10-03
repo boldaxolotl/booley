@@ -6,7 +6,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
@@ -19,7 +19,7 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     publish_coverage_campaign_reference,
 )
-from booley.flows.sim.execution.contract import SimulationOptions
+from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -39,6 +39,7 @@ from .planning import (
     project_workload_mismatches,
     verify_workload,
 )
+from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
 from .run_directory import (
     cleanup_interrupted_run_directory,
@@ -138,12 +139,14 @@ CampaignPreviewRequest = NewCampaignPreviewRequest | ResumeCampaignPreviewReques
 class NewCampaignRunRequest(NewCampaignPreviewRequest):
     invocation_directory: Path
     admission: AdmissionContext
+    pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ResumeCampaignRunRequest(ResumeCampaignPreviewRequest):
     invocation_directory: Path
     admission: AdmissionContext
+    pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
 
 
 CampaignRunRequest = NewCampaignRunRequest | ResumeCampaignRunRequest
@@ -203,6 +206,11 @@ class WorkExecutionRequest:
     target_handle: TargetHandle | None = None
     child_execution_id: str | None = None
     child_entry_sha256: str | None = None
+    pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
+    pre_sim_decoder: PreSimFiringDecoder = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pre_sim_decoder", PreSimFiringDecoder(self.manifest))
 
 
 class SerialWorkExecutor(Protocol):
@@ -230,6 +238,9 @@ class CampaignOutcome:
     acceptance_ready: bool
     recovery: CampaignRecoveryStatus
     diagnostics: tuple[str, ...] = ()
+    pre_sim_firings: tuple[PreSimFiring, ...] = ()
+    current_pre_sim_keys: frozenset[tuple[str, str, str, int]] = frozenset()
+    producer_invocation_directory: Path | None = None
 
 
 def _coverage_attempt_directory(
@@ -298,6 +309,12 @@ class SimulationCampaign:
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
     @staticmethod
+    def reauthenticate_pre_sim_firings(firings: tuple[PreSimFiring, ...]) -> None:
+        """Retain reporting evidence only after fresh owner and sidecar validation."""
+        for firing in firings:
+            CampaignStore(firing.manifest_path.parent).reauthenticate_pre_sim_firing(firing)
+
+    @staticmethod
     def preflight(request: NewCampaignRunRequest) -> None:
         """Fail before any publication or build when a literal run_cwd is unusable."""
         _preflight_run_directory(request.plan.manifest, request.project_root)
@@ -305,9 +322,23 @@ class SimulationCampaign:
     def run(self, request: CampaignRunRequest) -> CampaignOutcome:
         if self._executor is None:
             raise RuntimeError("SimulationCampaign requires a serial work executor")
+        current_keys: set[tuple[str, str, str, int]] = set()
+        observer = request.pre_sim_firing_published
+
+        def record_firing(key: tuple[str, str, str, int]) -> None:
+            current_keys.add(key)
+            if observer is not None:
+                observer(key)
+
+        request = replace(request, pre_sim_firing_published=record_firing)
         store, manifest, authenticated_sha256 = self._open_campaign(request)
         with store.mutation_lock():
-            return self._run_locked(store, manifest, authenticated_sha256, request)
+            outcome = self._run_locked(store, manifest, authenticated_sha256, request)
+        return replace(
+            outcome,
+            producer_invocation_directory=request.invocation_directory.absolute(),
+            current_pre_sim_keys=frozenset(current_keys),
+        )
 
     def _open_campaign(
         self, request: CampaignRunRequest
@@ -664,17 +695,20 @@ class SimulationCampaign:
         work_item = attempt.item
         work_item_id = cast(str, work_item["work_item_id"])
         assert self._executor is not None
-        result = self._executor.execute(
-            self._work_execution_request(
-                store,
-                manifest,
-                attempt,
-                invocation,
-                request,
-                child_execution_id,
-                child_entry_sha256,
+        try:
+            result = self._executor.execute(
+                self._work_execution_request(
+                    store,
+                    manifest,
+                    attempt,
+                    invocation,
+                    request,
+                    child_execution_id,
+                    child_entry_sha256,
+                )
             )
-        )
+        except PreSimScopeStoppedError as signal:
+            raise HeavyCapacityError(str(signal)) from signal
         scope = current_supervised_execution()
         if scope is not None and scope.cancelled():
             raise HeavyCapacityError(
@@ -727,6 +761,7 @@ class SimulationCampaign:
             binding.handle if binding is not None else None,
             child_execution_id,
             child_entry_sha256,
+            request.pre_sim_firing_published,
         )
 
     def _publish_scheduled_result(
@@ -893,6 +928,7 @@ def _outcome(
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
         _recovery_status(store.manifest_path, manifest_digest(manifest), recovery),
+        pre_sim_firings=store.collect_pre_sim_firings(),
     )
 
 

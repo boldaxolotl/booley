@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +114,8 @@ def project_workload_mismatches(
     projection = _DiagnosticProjection(
         compare_manifests(expected, current) if findings is None else findings
     )
+    if not projection.findings:
+        return projection.finish()
     left, right = expected.document, current.document
     old_workload, new_workload = left["workload"], right["workload"]
     old_recipe, new_recipe = old_workload["source_recipe"], new_workload["source_recipe"]
@@ -120,6 +123,7 @@ def project_workload_mismatches(
     _project_parameters(projection, old_recipe["parameters"], new_recipe["parameters"])
     _project_runtime(projection, old_workload["runtime_inputs"], new_workload["runtime_inputs"])
     _project_suite(projection, left["required_suite"], right["required_suite"])
+    _project_prepared_sources(projection, left, right)
     _project_variants(projection, left, right)
     _project_items(projection, left, right)
     _project_command_model(projection, left, right)
@@ -172,22 +176,118 @@ def _project_sources(projection, old, new) -> None:
 
 def _project_parameters(projection, old, new) -> None:
     indices = projection.indices("/workload/source_recipe/parameters")
-    if not indices:
-        return
     old_map, new_map = _entry_map(old, "name"), _entry_map(new, "name")
     lines = []
     for name in sorted(set(old_map) | set(new_map)):
         old_value = _diagnostic_value(old_map[name]["value"]) if name in old_map else "<absent>"
         new_value = _diagnostic_value(new_map[name]["value"]) if name in new_map else "<absent>"
-        if (
-            name not in old_map
-            or name not in new_map
-            or old_map[name]["value"] != new_map[name]["value"]
-        ):
+        if name not in old_map or name not in new_map or old_value != new_value:
             lines.append(f"parameter {_label(name)}: {old_value} → {new_value}")
     if not lines and tuple(old_map) != tuple(new_map):
         lines.append("parameter order changed")
     projection.explain(indices, lines)
+
+
+def _known_preparation_pair(old, new) -> bool:
+    old_provenance, new_provenance = old["tool_provenance"], new["tool_provenance"]
+    old_entries, new_entries = old["generated_files"], new["generated_files"]
+    return (
+        old["planner"] == new["planner"] == "fusesoc_setup"
+        and old_provenance["kind"] == new_provenance["kind"] == "fusesoc"
+        and old_provenance["contract_version"] == new_provenance["contract_version"] == "1"
+        and old_provenance["version"] == new_provenance["version"]
+        and _diagnostic_value(
+            {key: value for key, value in old.items() if key != "generated_files"}
+        )
+        == _diagnostic_value(
+            {key: value for key, value in new.items() if key != "generated_files"}
+        )
+        and _entry_map(old_entries, "path") is not None
+        and _entry_map(new_entries, "path") is not None
+        and [entry["path"] for entry in old_entries] == [entry["path"] for entry in new_entries]
+    )
+
+
+def _prepared_source_matches(entry, source) -> bool:
+    return all(entry[field] == source[field] for field in ("path", "bytes", "sha256"))
+
+
+def _prepared_existing_cause(projection, before, after, sources) -> bool:
+    old_sources, new_sources = sources
+    path = before["path"]
+    return (
+        old_sources is not None
+        and new_sources is not None
+        and path in old_sources
+        and path in new_sources
+        and f"source changed: {_label(path)}" in projection.roots
+        and _prepared_source_matches(before, old_sources[path])
+        and _prepared_source_matches(after, new_sources[path])
+    )
+
+
+def _prepared_leaf_indices(projection, disclosure_position, entry_position) -> set[int]:
+    prefix = f"/planning_disclosures/{disclosure_position}/generated_files/{entry_position}"
+    pointers = {f"{prefix}/bytes", f"{prefix}/sha256"}
+    return {
+        index for index, finding in enumerate(projection.findings) if finding.pointer in pointers
+    }
+
+
+def _collect_prepared_entries(projection, position, old, new, sources, groups) -> None:
+    for entry_position, (before, after) in enumerate(zip(old, new, strict=True)):
+        if before["kind"] != "generated_input" or after["kind"] != "generated_input":
+            continue
+        if {key: value for key, value in before.items() if key not in {"bytes", "sha256"}} != {
+            key: value for key, value in after.items() if key not in {"bytes", "sha256"}
+        }:
+            continue
+        indices = _prepared_leaf_indices(projection, position, entry_position)
+        if not indices:
+            continue
+        if _prepared_existing_cause(projection, before, after, sources):
+            projection.explain(indices, ())
+            continue
+        key = (before["path"], before["bytes"], before["sha256"], after["bytes"], after["sha256"])
+        grouped_indices, positions = groups.setdefault(key, (set(), set()))
+        grouped_indices.update(indices)
+        positions.add(position)
+
+
+def _render_prepared_groups(projection, groups) -> None:
+    path_counts = Counter(key[0] for key in groups)
+    rendered = {}
+    for key, (_indices, positions) in groups.items():
+        line = f"prepared source changed: {_label(key[0])}"
+        if path_counts[key[0]] > 1:
+            noun = "planning disclosure" if len(positions) == 1 else "planning disclosures"
+            line += f" ({noun} {', '.join(str(position) for position in sorted(positions))})"
+        rendered[key] = line
+    line_counts = Counter(rendered.values())
+    for key, line in rendered.items():
+        if line_counts[line] == 1 and line not in projection.roots:
+            projection.explain(groups[key][0], (line,))
+
+
+def _project_prepared_sources(projection, left, right) -> None:
+    sources = (
+        _entry_map(left["workload"]["source_recipe"]["sources"], "path"),
+        _entry_map(right["workload"]["source_recipe"]["sources"], "path"),
+    )
+    groups = {}
+    for position, (old, new) in enumerate(
+        zip(left["planning_disclosures"], right["planning_disclosures"], strict=False)
+    ):
+        if _known_preparation_pair(old, new):
+            _collect_prepared_entries(
+                projection,
+                position,
+                old["generated_files"],
+                new["generated_files"],
+                sources,
+                groups,
+            )
+    _render_prepared_groups(projection, groups)
 
 
 def _project_runtime(projection, old, new) -> None:
@@ -303,7 +403,8 @@ def _project_command_model(projection, left, right) -> None:
         return
     old, new = left["workload"], right["workload"]
     concrete = any(
-        old["source_recipe"][field] != new["source_recipe"][field]
+        _diagnostic_value(old["source_recipe"][field])
+        != _diagnostic_value(new["source_recipe"][field])
         for field in ("parameters", "defines")
     )
     concrete |= any(

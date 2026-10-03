@@ -205,10 +205,14 @@ def test_coverage_cli_renders_one_concise_line_per_pre_sim_firing(tmp_path: Path
         detail,
     )
 
-    rendered = SimulateFlow()._coverage_result([outcome]).report_text
+    result = SimulateFlow()._coverage_result([outcome])
+    rendered = result.report_text
+    assert result.detail["pre_sim_lines"] == [
+        line for line in rendered.splitlines() if line.startswith("pre_run_commands (")
+    ]
 
-    assert "sim_0: pre-sim=failed test=reset duration=0.125s" in rendered
-    assert "sim_0: pre-sim=passed test=wrap duration=0.250s" in rendered
+    assert "pre_run_commands (0 line(s)) for sim_0/reset: rc=unavailable in 0.1s" in rendered
+    assert "pre_run_commands (0 line(s)) for sim_0/wrap: rc=unavailable in 0.2s" in rendered
 
 
 @pytest.mark.parametrize(

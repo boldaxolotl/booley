@@ -1401,7 +1401,7 @@ def test_independent_work_item_arguments_remain_visible():
     assert diagnostic.derived_fingerprint_count == 2
 
 
-def test_diagnostic_projection_reads_only_validated_values(monkeypatch):
+def test_diagnostic_projection_needs_no_path_read_bytes_or_text(monkeypatch):
     from booley.flows.sim.campaign.planning import project_workload_mismatches
 
     old = _diagnostic_document(sources=[_diagnostic_source("relative/a.sv")])
@@ -1422,3 +1422,342 @@ def test_absolute_source_paths_remain_rejected_before_projection():
         _finalize_diagnostic_document(
             _diagnostic_document(sources=[_diagnostic_source("/absolute/a.sv")])
         )
+
+
+@pytest.mark.parametrize(
+    ("old_value", "new_value", "line"),
+    [
+        (False, 0, "parameter N: false → 0"),
+        (True, 1, "parameter N: true → 1"),
+        (1, 1.0, "parameter N: 1 → 1.0"),
+        ([1], [True], "parameter N: [1] → [true]"),
+        ({"x": 0}, {"x": False}, 'parameter N: {"x":0} → {"x":false}'),
+    ],
+)
+def test_typed_json_parameter_causes_preserve_static_digest_raw_comparison(
+    old_value, new_value, line
+):
+    old = _diagnostic_document(parameters=[{"name": "N", "value": old_value}])
+    new = _diagnostic_document(parameters=[{"name": "N", "value": new_value}])
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == (line,)
+    assert diagnostic.derived_fingerprint_count == 5
+    assert not any(
+        item.pointer.startswith("/workload/source_recipe/parameters")
+        for item in diagnostic.mismatches
+    )
+
+
+def _prepared_disclosure(sources):
+    return {
+        "planner": "fusesoc_setup",
+        "scratch_inputs": [],
+        "generated_files": [{**source, "kind": "generated_input"} for source in sources],
+        "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
+        "cleanup": {"removed": True},
+    }
+
+
+def _prepared_diagnostic_pair():
+    old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
+    new = _diagnostic_document(sources=[_diagnostic_source("a.sv", size=2, digest="b")])
+    for document in (old, new):
+        document["planning_disclosures"] = [
+            _prepared_disclosure(document["workload"]["source_recipe"]["sources"])
+        ]
+    return old, new
+
+
+def test_prepared_path_and_content_equality_collapses_across_multiple_disclosures():
+    old, new = _prepared_diagnostic_pair()
+    for document in (old, new):
+        document["planning_disclosures"] *= 2
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ("source changed: a.sv",)
+    assert diagnostic.derived_fingerprint_count == 5
+    assert (
+        len(
+            [
+                item
+                for item in diagnostic.mismatches
+                if item.pointer.startswith("/planning_disclosures/")
+            ]
+        )
+        == 4
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "disclosure_duplicate",
+        "planner",
+        "kind",
+        "contract",
+        "version",
+        "unmatched",
+    ],
+)
+def test_ambiguous_or_independent_prepared_disclosure_changes_preserve_fallback(changed):
+    old, new = _prepared_diagnostic_pair()
+    disclosure = new["planning_disclosures"][0]
+    if changed == "recipe_duplicate":
+        for document in (old, new):
+            document["workload"]["source_recipe"]["sources"] *= 2
+            document["build_variants"][0]["source_closure"] *= 2
+    elif changed == "disclosure_duplicate":
+        for document in (old, new):
+            document["planning_disclosures"][0]["generated_files"] *= 2
+    elif changed in {"bytes", "hash", "unmatched"}:
+        field, value = {
+            "bytes": ("bytes", 3),
+            "hash": ("sha256", "sha256:" + "c" * 64),
+            "unmatched": ("path", "other.sv"),
+        }[changed]
+        disclosure["generated_files"][0][field] = value
+    elif changed == "planner":
+        disclosure["planner"] = "other"
+    else:
+        field = {"kind": "kind", "contract": "contract_version", "version": "version"}[changed]
+        disclosure["tool_provenance"][field] = "other"
+    diagnostic = _project_diagnostics(old, new)
+    assert any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
+    assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
+
+
+def test_unremoved_planning_scratch_is_rejected_before_diagnostic_projection():
+    _old, new = _prepared_diagnostic_pair()
+    new["planning_disclosures"][0]["cleanup"]["removed"] = False
+    with pytest.raises(SimulationCampaignIntegrityError, match="planning scratch must be removed"):
+        _finalize_diagnostic_document(new)
+
+
+@pytest.mark.parametrize("change", ["add", "remove", "reorder"])
+def test_disclosure_source_list_shifts_preserve_whole_entry_and_positional_fallback(change):
+    paths = {
+        "add": (("a.sv",), ("head.sv", "a.sv")),
+        "remove": (("a.sv", "b.sv"), ("b.sv",)),
+        "reorder": (("a.sv", "b.sv"), ("b.sv", "a.sv")),
+    }[change]
+    old, new = [
+        _diagnostic_document(sources=[_diagnostic_source(path) for path in side]) for side in paths
+    ]
+    for document in (old, new):
+        document["planning_disclosures"] = [
+            _prepared_disclosure(document["workload"]["source_recipe"]["sources"])
+        ]
+    diagnostic = _project_diagnostics(old, new)
+    assert any(
+        "/planning_disclosures/0/generated_files/" in line for line in diagnostic.mismatch_summary
+    )
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+def test_standalone_prepared_source_edit_is_not_misattributed_to_unchanged_recipe():
+    old, _new = _prepared_diagnostic_pair()
+    new = json.loads(json.dumps(old))
+    new["planning_disclosures"][0]["generated_files"][0]["bytes"] = 2
+    diagnostic = _project_diagnostics(old, new)
+    assert len(diagnostic.mismatch_summary) == 1
+    assert diagnostic.mismatch_summary == ("prepared source changed: a.sv",)
+    assert "/planning_disclosures/0/generated_files/0/bytes" in diagnostic.mismatches[0].message
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+def test_explicit_zero_findings_produces_no_typed_parameter_roots():
+    from booley.flows.sim.campaign.planning import project_workload_mismatches
+
+    old = _finalize_diagnostic_document(
+        _diagnostic_document(parameters=[{"name": "N", "value": False}])
+    )
+    new = _finalize_diagnostic_document(
+        _diagnostic_document(parameters=[{"name": "N", "value": 0}])
+    )
+    diagnostic = project_workload_mismatches(old, new, ())
+    assert diagnostic.mismatch_summary == ()
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+def _own_prepared_pair(changes):
+    old, new = _diagnostic_document(), _diagnostic_document()
+    for document, endpoint in ((old, 1), (new, 2)):
+        document["planning_disclosures"] = [
+            _prepared_disclosure([_diagnostic_source(path, size=values[endpoint - 1])])
+            for path, *values in changes
+        ]
+    return old, new
+
+
+@pytest.mark.parametrize(
+    "changes,lines",
+    [
+        (
+            [("staged/a.sv", 1, 2), ("staged/a.sv", 1, 2)],
+            ("prepared source changed: staged/a.sv",),
+        ),
+        (
+            [("a.sv", 1, 2), ("a.sv", 1, 3)],
+            (
+                "prepared source changed: a.sv (planning disclosure 0)",
+                "prepared source changed: a.sv (planning disclosure 1)",
+            ),
+        ),
+        (
+            [("a.sv", 1, 2), ("a.sv", 3, 2)],
+            (
+                "prepared source changed: a.sv (planning disclosure 0)",
+                "prepared source changed: a.sv (planning disclosure 1)",
+            ),
+        ),
+        (
+            [("a.sv", 1, 2), ("a.sv", 1, 3), ("a.sv", 1, 2)],
+            (
+                "prepared source changed: a.sv (planning disclosures 0, 2)",
+                "prepared source changed: a.sv (planning disclosure 1)",
+            ),
+        ),
+    ],
+)
+def test_own_prepared_changes_group_only_identical_observed_facts(changes, lines):
+    diagnostic = _project_diagnostics(*_own_prepared_pair(changes))
+    assert diagnostic.mismatch_summary == lines
+    assert len(diagnostic.mismatches) == len(changes)
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+def test_prepared_render_collision_retains_all_colliding_original_leaves():
+    changes = [("x.sv", 1, 2), ("x.sv", 1, 3), ("x.sv (planning disclosure 1)", 1, 2)]
+    diagnostic = _project_diagnostics(*_own_prepared_pair(changes))
+    assert (
+        diagnostic.mismatch_summary[0] == "prepared source changed: x.sv (planning disclosure 0)"
+    )
+    assert set(diagnostic.mismatch_summary[1:]) == {
+        "workload changed: " + item.message for item in diagnostic.mismatches[1:]
+    }
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+@pytest.mark.parametrize("changed", ["recipe_duplicate", "bytes", "hash", "staged"])
+def test_unmatched_prepared_facts_are_named_without_recipe_correspondence(changed):
+    old, new = _prepared_diagnostic_pair()
+    if changed == "recipe_duplicate":
+        for document in (old, new):
+            document["workload"]["source_recipe"]["sources"] *= 2
+            document["build_variants"][0]["source_closure"] *= 2
+    elif changed == "staged":
+        for document in (old, new):
+            document["planning_disclosures"][0]["generated_files"][0]["path"] = "staged/a.sv"
+    else:
+        field, value = ("bytes", 3) if changed == "bytes" else ("sha256", "sha256:" + "c" * 64)
+        new["planning_disclosures"][0]["generated_files"][0][field] = value
+    diagnostic = _project_diagnostics(old, new)
+    expected_path = "staged/a.sv" if changed == "staged" else "a.sv"
+    assert f"prepared source changed: {expected_path}" in diagnostic.mismatch_summary
+    assert not any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+@pytest.mark.parametrize("own_count", [1, 2])
+def test_equality_collapsed_occurrences_do_not_affect_own_key_suffixes(own_count):
+    old, new = _prepared_diagnostic_pair()
+    for document, endpoint in ((old, 0), (new, 1)):
+        document["planning_disclosures"] += [
+            _prepared_disclosure(
+                [_diagnostic_source("a.sv", size=(3 + index, 5 + index)[endpoint])]
+            )
+            for index in range(own_count)
+        ]
+    diagnostic = _project_diagnostics(old, new)
+    prepared = [line for line in diagnostic.mismatch_summary if line.startswith("prepared source")]
+    assert prepared == (
+        ["prepared source changed: a.sv"]
+        if own_count == 1
+        else [
+            "prepared source changed: a.sv (planning disclosure 1)",
+            "prepared source changed: a.sv (planning disclosure 2)",
+        ]
+    )
+    assert diagnostic.mismatch_summary[0] == "source changed: a.sv"
+
+
+@pytest.mark.parametrize("changed", ["scratch", "path_layout", "entry_kind"])
+def test_prepared_pair_and_entry_guards_retain_otherwise_collapsible_leaves(changed):
+    old, new = _prepared_diagnostic_pair()
+    if changed == "scratch":
+        new["planning_disclosures"][0]["scratch_inputs"] = [_diagnostic_source("scratch.sv")]
+    elif changed == "entry_kind":
+        new["planning_disclosures"][0]["generated_files"][0]["kind"] = "rtl"
+    else:
+        new["planning_disclosures"][0]["generated_files"].append(
+            {**_diagnostic_source("head.sv"), "kind": "generated_input"}
+        )
+    diagnostic = _project_diagnostics(old, new)
+    original = [
+        item.message
+        for item in diagnostic.mismatches
+        if item.pointer.startswith("/planning_disclosures/")
+    ]
+    assert {"workload changed: " + item for item in original} <= set(diagnostic.mismatch_summary)
+    assert not any(
+        line.startswith("prepared source changed:") for line in diagnostic.mismatch_summary
+    )
+
+
+@pytest.mark.parametrize("side", [0, 1])
+@pytest.mark.parametrize("field,value", [("bytes", 7), ("sha256", "sha256:" + "c" * 64)])
+def test_either_side_unequal_prepared_content_has_its_own_named_cause(side, field, value):
+    old, new = _prepared_diagnostic_pair()
+    (old, new)[side]["planning_disclosures"][0]["generated_files"][0][field] = value
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ("source changed: a.sv", "prepared source changed: a.sv")
+    assert diagnostic.derived_fingerprint_count == 5
+
+
+def test_distinct_prepared_hash_only_changes_preserve_each_observed_cause():
+    old, new = _own_prepared_pair([("staged.sv", 1, 1), ("staged.sv", 1, 1)])
+    for position, digest in enumerate(("b", "c")):
+        new["planning_disclosures"][position]["generated_files"][0]["sha256"] = (
+            "sha256:" + digest * 64
+        )
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == (
+        "prepared source changed: staged.sv (planning disclosure 0)",
+        "prepared source changed: staged.sv (planning disclosure 1)",
+    )
+    assert [item.pointer for item in diagnostic.mismatches] == [
+        "/planning_disclosures/0/generated_files/0/sha256",
+        "/planning_disclosures/1/generated_files/0/sha256",
+    ]
+    assert diagnostic.derived_fingerprint_count == 0
+
+
+@pytest.mark.parametrize("side", [0, 1])
+def test_generated_path_duplicates_on_either_side_block_prepared_naming(side):
+    old, new = _prepared_diagnostic_pair()
+    (old, new)[side]["planning_disclosures"][0]["generated_files"] *= 2
+    diagnostic = _project_diagnostics(old, new)
+    original = [
+        item.message
+        for item in diagnostic.mismatches
+        if item.pointer.startswith("/planning_disclosures/")
+    ]
+    assert {"workload changed: " + item for item in original} <= set(diagnostic.mismatch_summary)
+
+
+@pytest.mark.parametrize("changed", ["planner", "kind", "contract", "version"])
+def test_unknown_preparation_metadata_on_both_sides_retains_generated_fallback(changed):
+    old, new = _prepared_diagnostic_pair()
+    for document in (old, new):
+        disclosure = document["planning_disclosures"][0]
+        if changed == "planner":
+            disclosure["planner"] = "unknown"
+        else:
+            field = {"kind": "kind", "contract": "contract_version", "version": "version"}[changed]
+            disclosure["tool_provenance"][field] = (
+                "unavailable" if changed == "version" else "unknown"
+            )
+    diagnostic = _project_diagnostics(old, new)
+    if changed == "version":
+        assert diagnostic.mismatch_summary == ("source changed: a.sv",)
+    else:
+        assert any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)

@@ -8,6 +8,7 @@ import pytest
 from booley.flows import artifact_durability as campaign_durability
 from booley.flows.sim.build_session import SimulationBuildSlotError
 from booley.flows.sim.execution import pre_sim
+from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 from booley.runtime import execution_recovery, supervised_execution
 from booley.runtime.execution_records import ExecutionId
@@ -48,8 +49,14 @@ def test_supervised_pre_sim_process_propagates_identity_and_unregisters(monkeypa
 def test_supervised_pre_sim_process_honors_cancellation(monkeypatch) -> None:
     scope = SimpleNamespace(cancelled=lambda: True, execution_id=None, processes=_Processes())
     monkeypatch.setattr(pre_sim, "current_supervised_execution", lambda: scope)
-    result = pre_sim._run_pre_sim_process(["tool"], cwd=Path(), env={}, timeout=1)
-    assert result.returncode == 125
+    monkeypatch.setattr(
+        pre_sim.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("cancelled scope spawned"),
+    )
+    with pytest.raises(PreSimScopeStoppedError, match="stopped before Pre-Sim Commands"):
+        pre_sim._run_pre_sim_process(["tool"], cwd=Path(), env={}, timeout=1)
+    assert scope.processes.registered == scope.processes.unregistered == []
 
 
 def test_supervised_pre_sim_process_kills_after_communication_failure(monkeypatch) -> None:
