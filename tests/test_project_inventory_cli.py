@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -496,7 +498,7 @@ def test_lifecycle_contention_becomes_cli_error(
     project = _remember(tmp_path)
 
     @contextmanager
-    def busy(_operation: Any) -> None:
+    def busy(_operation: Any) -> Iterator[None]:
         raise LifecycleLockError("lifecycle busy")
         yield
 
@@ -526,7 +528,7 @@ def test_apply_rechecks_before_deletion(
     original = keeper_host.__call__
     count = 0
 
-    def mutate(args: Any, **kwargs: Any) -> None:
+    def mutate(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         nonlocal count
         result = original(args, **kwargs)
         if args[:2] == ["image", "inspect"]:
@@ -559,6 +561,7 @@ def test_forget_release_requires_reissuance_before_admission(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from booley.runtime import devcontainer as dc
+    from booley.runtime import interactive_docker
     from booley.runtime import session_issuance as issuance
     from tests.runtime.test_session_issuance import _install_trusted_validator
 
@@ -586,9 +589,6 @@ def test_forget_release_requires_reissuance_before_admission(
     issuance.pin_image(spec)
     issuance.seal(project, spec)
     path = dc.write_devcontainer(project, spec)
-    # The production issuance tag operation is separately covered by existing tests.
-    from booley.runtime import interactive_docker
-
     monkeypatch.setattr(
         interactive_docker,
         "tag_image",
@@ -631,7 +631,7 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
     monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *args: None)
     commands = []
 
-    def run(args: Any, **kwargs: Any) -> None:
+    def run(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         commands.append(args)
         assert args == ["docker", "stop", container]
         item.running = False

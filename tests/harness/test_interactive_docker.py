@@ -520,7 +520,7 @@ def test_keeper_cleanup_rejects_invalid_container_image(
 ) -> None:
     import subprocess
 
-    def fake(args: Any, **kwargs: Any) -> None:
+    def fake(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         value = "c" * 64 if args[:2] == ["container", "ls"] else output
         return subprocess.CompletedProcess(args, 0, value, "")
 
@@ -562,7 +562,7 @@ def test_keeper_cleanup_missing_docker_and_timeout_fail_closed(
 def test_keeper_cleanup_disappearing_container_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake(args: Any, **kwargs: Any) -> None:
+    def fake(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         if args[:2] == ["container", "ls"]:
             return _cp(stdout="c" * 64)
         return _cp(1, stderr="No such container")
