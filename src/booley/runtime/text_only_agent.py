@@ -71,8 +71,10 @@ def prepare_codex_text_only(
             "BOOLEY_NESTED_AGENT": "1",
             "BOOLEY_NESTED_MCP_TOOLS": ",".join(params.nested_mcp_tools),
         }
-        (private / "config.toml").write_text(
-            generate_codex_config(extra_env=nested_env), encoding="utf-8"
+        config_path = private / "config.toml"
+        existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+        config_path.write_text(
+            generate_codex_config(extra_env=nested_env, existing_config=existing), encoding="utf-8"
         )
     env = {**environment, "CODEX_HOME": str(private)}
     settings = [

@@ -148,6 +148,8 @@ class _CapturingExecution:
         delegate: SimulationExecutionPort,
         ready: Callable[[float], _CapturedBuild],
         staged: Callable[[_CapturedBuild], tuple[RuntimeInputBinding, ...]],
+        request: WorkExecutionRequest,
+        checkpoint: Callable[[str], None],
     ):
         self._delegate = delegate
         self._ready = ready
@@ -156,6 +158,9 @@ class _CapturingExecution:
         self.bindings: tuple[RuntimeInputBinding, ...] = ()
         self.build_result: SimulationBuildResult | None = None
         self.build_elapsed = 0.0
+        self._hook_ordinal = 0
+        self._request = request
+        self._checkpoint = checkpoint
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         started = time.monotonic()
@@ -171,7 +176,13 @@ class _CapturingExecution:
         return result
 
     def run(self, request: SimulationRunRequest) -> SimulationRunResult:
-        return self._delegate.run(request)
+        result = self._delegate.run(request)
+        if result.pre_sim is not None and not callable(
+            getattr(self._delegate, "set_pre_sim_evidence_sink", None)
+        ):
+            self._hook_ordinal += 1
+            _publish_hook(self._request, result.pre_sim, self._hook_ordinal, self._checkpoint)
+        return result
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         return self._delegate.command(request)
@@ -190,6 +201,29 @@ def _raise_if_coverage_aborted(
         str(message or "native coverage collection failed"),
         outcome.detail,
     )
+
+
+class _HookPublicationError(Exception):
+    """Carry integrity failure through compatibility collectors without recategorizing it."""
+
+
+def _raise_if_pre_sim_scope_stopped(request: WorkExecutionRequest) -> None:
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+    from booley.runtime.supervised_execution import current_supervised_execution
+
+    scope = current_supervised_execution()
+    commands = request.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]
+    if commands and scope is not None and scope.cancelled():
+        raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
+
+
+def _publish_hook(request, evidence, ordinal, checkpoint) -> None:
+    from .pre_sim_evidence import publish_pre_sim_firing
+
+    try:
+        publish_pre_sim_firing(request, evidence, ordinal=ordinal, checkpoint=checkpoint)
+    except SimulationCampaignIntegrityError as exc:
+        raise _HookPublicationError(str(exc)) from exc
 
 
 class CoverageAggregateExecutor(SerialWorkExecutor):
@@ -220,6 +254,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
         """Collect, merge and commit one nested Coverage Campaign atomically."""
+        _raise_if_pre_sim_scope_stopped(request)
         if request.work_item["kind"] != "coverage_aggregate":
             raise SimulationCampaignIntegrityError(
                 "coverage aggregate executor received another work-item kind"
@@ -247,6 +282,8 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 lambda captured: self._stage_attempt(
                     request, captured, execution, run_directory, run_cwd, stack
                 ),
+                request,
+                self._publication_checkpoint,
             )
             outcome = self._collect(request, capturing)
         failure = self._publish_missing_build(
@@ -301,13 +338,17 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             acceptance=None,
             started_at=_now(),
         )
-        return run_coverage_target(
-            nested_plan,
-            execution,
-            _NoProgress(),
-            embedded_root=request.attempt_directory / "coverage-campaign",
-            publication_checkpoint=self._publication_checkpoint,
-        )
+        try:
+            return run_coverage_target(
+                nested_plan,
+                execution,
+                _NoProgress(),
+                embedded_root=request.attempt_directory / "coverage-campaign",
+                publication_checkpoint=self._publication_checkpoint,
+            )
+        except _HookPublicationError as exc:
+            assert isinstance(exc.__cause__, SimulationCampaignIntegrityError)
+            raise exc.__cause__ from None
 
     def _execution(self, request: WorkExecutionRequest) -> SimulationExecutionPort:
         target = cast(Mapping[str, str], request.manifest.document["target"])
@@ -326,7 +367,18 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         source_recipe = cast(Mapping[str, object], workload["source_recipe"])
         commands = tuple(cast(tuple[str, ...], source_recipe["pre_sim_commands"]))
         access = cast(str, workload["pre_sim_build_access"])
-        return self._execution_factory(plan, options, commands, access)
+        execution = self._execution_factory(plan, options, commands, access)
+        sink_setter = getattr(execution, "set_pre_sim_evidence_sink", None)
+        if callable(sink_setter):
+            ordinal = 0
+
+            def publish(evidence):
+                nonlocal ordinal
+                ordinal += 1
+                _publish_hook(request, evidence, ordinal, self._publication_checkpoint)
+
+            sink_setter(publish)
+        return execution
 
     def _capture_build(
         self,

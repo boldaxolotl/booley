@@ -23,7 +23,15 @@ from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
-from .contract import PreSimEvidence
+from .contract import PreSimEvidence, PreSimScopeStoppedError
+
+TAIL_MAX_BYTES = 8192
+
+
+def bounded_pre_sim_text(value: str | bytes | None) -> str:
+    """Retain a valid UTF-8 tail within the evidence stream budget."""
+    raw = value if isinstance(value, bytes) else (value or "").encode("utf-8")
+    return raw[-TAIL_MAX_BYTES:].decode("utf-8", errors="ignore")
 
 
 def run_pre_sim_commands(
@@ -130,7 +138,9 @@ def _invoke_pre_sim(
             test_names,
             "timed_out",
             time.monotonic() - started,
-            str(exc),
+            bounded_pre_sim_text(str(exc)),
+            stdout_tail=bounded_pre_sim_text(exc.stdout),
+            stderr_tail=bounded_pre_sim_text(exc.stderr),
         )
     except OSError as exc:
         return PreSimEvidence(
@@ -138,8 +148,17 @@ def _invoke_pre_sim(
             test_names,
             "failed",
             time.monotonic() - started,
-            str(exc),
+            bounded_pre_sim_text(str(exc)),
         )
+    return _completed_pre_sim_evidence(commands, test_names, result, time.monotonic() - started)
+
+
+def _completed_pre_sim_evidence(
+    commands: tuple[str, ...],
+    test_names: tuple[str, ...],
+    result: subprocess.CompletedProcess[str],
+    elapsed: float,
+) -> PreSimEvidence:
     detail = result.stderr.strip() or result.stdout.strip()
     status = (
         "passed"
@@ -148,7 +167,16 @@ def _invoke_pre_sim(
         if find_missing_executable(detail)
         else "failed"
     )
-    return PreSimEvidence(commands, test_names, status, time.monotonic() - started, detail)
+    return PreSimEvidence(
+        commands,
+        test_names,
+        status,
+        elapsed,
+        bounded_pre_sim_text(detail),
+        result.returncode,
+        bounded_pre_sim_text(result.stdout),
+        bounded_pre_sim_text(result.stderr),
+    )
 
 
 def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
@@ -160,12 +188,14 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
             **child_kwargs,
         )
     if scope.cancelled():
-        return subprocess.CompletedProcess(command, 125, "", "campaign cancelled")
+        raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
     supervised_env = dict(env)
     if scope.execution_id is not None:
         supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
@@ -176,12 +206,20 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         **popen_new_group_kwargs(),
         **child_kwargs,
     )
     scope.processes.register(process)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        kill_process_tree(process)
+        stdout, stderr = process.communicate()
+        exc.output = stdout or exc.output
+        exc.stderr = stderr or exc.stderr
+        raise
     except BaseException:
         kill_process_tree(process)
         process.communicate()

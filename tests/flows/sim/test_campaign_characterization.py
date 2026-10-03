@@ -229,6 +229,10 @@ def _assert_projection_shapes(report, outcome) -> None:
         "verdict",
         "workload_fingerprint",
     }
+    _assert_endpoint_detail_shape(outcome)
+
+
+def _assert_endpoint_detail_shape(outcome) -> None:
     assert set(outcome.detail) == {
         "artifacts",
         "cycle_counts",
@@ -237,9 +241,13 @@ def _assert_projection_shapes(report, outcome) -> None:
         "mode",
         "phase_timings_s",
         "resolution_s",
+        "pre_sim_runs",
+        "pre_sim_lines",
         "targets",
         "targets_passed",
     }
+    assert outcome.detail["pre_sim_runs"] == []
+    assert outcome.detail["pre_sim_lines"] == []
 
 
 def _assert_projection_values(report, outcome) -> None:
