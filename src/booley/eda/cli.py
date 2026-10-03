@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -188,8 +189,14 @@ def _grant_action(
         )
     # Missing revoke targets retain the authority's exact recorded-identity
     # recovery; their former checkout boundary can no longer be inspected.
-    if action == "add" or (action == "revoke" and args.project.exists()):
-        require_project_checkout(args.project)
+    if action in {"add", "revoke"}:
+        role_target = (
+            args.project
+            if action == "add"
+            else Path(os.path.normpath(str(args.project.absolute())))
+        )
+        if action == "add" or role_target.exists():
+            require_project_checkout(role_target)
     if action == "add":
         grant = grant_mutator.add(
             args.project,

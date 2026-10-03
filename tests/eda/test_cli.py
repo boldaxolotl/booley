@@ -297,8 +297,9 @@ def test_project_binding_missing_revoke_preserves_argument(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("deleted_nested_project", [True, False])
+@pytest.mark.parametrize("target_form", ["literal", "missing_parent", "file_parent"])
 def test_project_binding_revoke_recorded_identity_under_source(
-    tmp_path, monkeypatch, deleted_nested_project
+    tmp_path, monkeypatch, deleted_nested_project, target_form
 ):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     source = tmp_path / "source"
@@ -319,6 +320,11 @@ def test_project_binding_revoke_recorded_identity_under_source(
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     if deleted_nested_project:
         shutil.rmtree(project)
-    result = _run(_parse("grant", "revoke", str(project), "--kind", "vivado"), tmp_path)
+    target = project
+    if target_form == "missing_parent":
+        target = project / "missing" / ".."
+    elif target_form == "file_parent":
+        target = project / "pyproject.toml" / ".."
+    result = _run(_parse("grant", "revoke", str(target), "--kind", "vivado"), tmp_path)
     assert result == (0 if deleted_nested_project else 2)
     assert authority.load_state().grants == (() if deleted_nested_project else (grant,))

@@ -3754,15 +3754,33 @@ def test_source_project_binding_feedback_discovery_fallback(tmp_path, monkeypatc
     assert tlr._command_project_root("feedback") == tmp_path
 
 
-def test_project_binding_cheat_uninitialized_directory(tmp_path, monkeypatch):
+@pytest.mark.parametrize("unreadable_project", [False, True])
+def test_project_binding_cheat_uninitialized_directory(
+    tmp_path, monkeypatch, capsys, unreadable_project
+):
+    from booley.dev_support import flow_specialist_reference as reference
     from booley.runtime.project_dir import reset_cache
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    committed = tmp_path / "reference.md"
+    committed.write_text("Committed optional reference\n")
+    monkeypatch.setattr(tlr, "cheatsheet_path", lambda: committed)
+    calls = []
+    monkeypatch.setattr(reference, "render_flow_reference", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(tlr, "_live_criterion_endpoint_catalog", calls.append)
+    if unreadable_project:
+
+        def discover():
+            raise PermissionError("unreadable Project metadata")
+
+        monkeypatch.setattr(tlr, "find_project_root", discover)
     reset_cache()
     assert tlr._dispatch_main() == 0
+    assert "Committed optional reference" in capsys.readouterr().out
+    assert calls == []
 
 
 def test_source_project_binding_cheat_stale_custom_sentinel(tmp_path, monkeypatch, capsys):

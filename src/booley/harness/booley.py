@@ -2792,7 +2792,12 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
         require_project_checkout(project_dir)
         require_project_checkout(project_dir / "mcp_tools")
         return root
-    except (ProjectRootDiscoveryError, SourceCheckoutProjectError, FileNotFoundError):
+    except (
+        ProjectRootDiscoveryError,
+        SourceCheckoutProjectError,
+        FileNotFoundError,
+        PermissionError,
+    ):
         return None
 
 
