@@ -744,7 +744,7 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert f"sim_1: PASS (Simulation Campaign {campaign_id})" not in result.outcome.report_text
 
 
-def test_shared_execution_failure_aborts_later_targets_without_losing_completed_reports(
+def test_shared_execution_failure_terminalizes_without_losing_completed_reports(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -772,7 +772,7 @@ def test_shared_execution_failure_aborts_later_targets_without_losing_completed_
     )
     assert result.exit_code == 2
     assert result.outcome.detail["targets"]["sim_0"]["collection"] == "complete"
-    assert result.outcome.detail["targets"]["sim_1"]["abort_remaining"] is True
+    assert result.outcome.detail["targets"]["sim_1"]["abort_remaining"] is False
     outer = result.outcome.detail["targets"]["sim_1"]["evaluation"]
     target_root = tmp_path / "reports/sim/1/targets/sim_1"
     nested_path = next(
@@ -780,12 +780,12 @@ def test_shared_execution_failure_aborts_later_targets_without_losing_completed_
     )
     nested = load_coverage_campaign(nested_path).campaign
     assert outer == nested.evaluation["status"] == "not_requested"
-    assert set(result.outcome.detail["campaigns"]) == {"sim_0"}
-    assert result.outcome.detail["pending_targets"] == ["sim_1", "sim_2"]
-    assert (tmp_path / "reports/sim/1/targets/sim_2/campaign/manifest.json").is_file()
-    assert not list(
-        (tmp_path / "reports/sim/1/targets/sim_2/campaign").glob("work-items/*/result.json")
-    )
+    assert set(result.outcome.detail["campaigns"]) == {"sim_0", "sim_1", "sim_2"}
+    assert result.outcome.detail["campaigns"]["sim_1"]["grade"] == "error"
+    assert result.outcome.detail["campaigns"]["sim_2"]["grade"] == "pass"
+    assert result.outcome.detail["pending_targets"] == []
+    assert "completion_error" not in result.outcome.detail
+    assert list((target_root / "campaign").glob("work-items/*/result.json"))
 
 
 def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, monkeypatch):
@@ -813,10 +813,12 @@ def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, m
         target_root.glob("campaign/work-items/*/attempts/*/coverage-campaign/coverage.json")
     )
     nested = load_coverage_campaign(nested_path).campaign
-    assert detail["passed"] is None
-    assert detail["simulation"] == "not_run"
-    assert detail["collection"] == "infrastructure_error"
+    assert detail["passed"] is False
+    assert detail["simulation"] == "aborted"
+    assert detail["collection"] == "collector_error"
     assert detail["evaluation"] == nested.evaluation["status"] == "blocked"
+    assert "completion_error" not in result.outcome.detail
+    assert result.outcome.detail["pending_targets"] == []
 
 
 @pytest.mark.parametrize(
@@ -1209,7 +1211,7 @@ def test_invalid_coverage_tables_return_preflight_error(tmp_path, monkeypatch, c
     assert set(tmp_path.rglob("*")) == before
 
 
-def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_results(
+def test_shared_build_prerequisite_failure_publishes_durable_terminal_results(
     tmp_path, monkeypatch
 ):
     from booley.flows.sim.verilator_coverage import SimulationBuildResult
@@ -1240,22 +1242,19 @@ def test_shared_build_prerequisite_failure_aborts_with_durable_inconclusive_resu
     )
     assert result.exit_code == 2
     assert "Verilator 5.050 is not the pinned coverage collector" in result.outcome.report_text
-    assert len(built) == 1
-    assert result.outcome.detail["pending_targets"] == ["sim_0", "sim_1"]
+    assert len(built) == 2
+    assert result.outcome.detail["pending_targets"] == []
     target = result.outcome.detail["targets"]["sim_0"]
-    assert target["passed"] is None
-    assert target["simulation"] == "not_run"
-    assert "Verilator 5.050 is not the pinned coverage collector" in target["error"]
-    report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
-    assert (
-        "Verilator 5.050 is not the pinned coverage collector"
-        in (report["detail"]["targets"]["sim_0"]["error"])
-    )
-    assert "coverage_campaign" not in target
+    assert target["passed"] is False
+    assert target["simulation"] == "aborted"
+    assert result.outcome.detail["campaigns"]["sim_0"]["grade"] == "error"
+    assert "completion_error" not in result.outcome.detail
+    assert "coverage_campaign" in target
     progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
     assert progress["phase"] == "aborted"
-    assert progress["completed_targets"] == []
-    assert progress["pending_targets"] == ["sim_0", "sim_1"]
+    assert progress["complete"] is True
+    assert progress["completed_targets"] == ["sim_0", "sim_1"]
+    assert progress["pending_targets"] == []
 
 
 def _prepare_coverage_origin(tmp_path, monkeypatch, *, skipped=()):

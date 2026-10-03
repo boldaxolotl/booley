@@ -54,6 +54,7 @@ from booley.flows.sim.execution import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.execution.engine import PreparedOrdinaryGroup, _preview_work
+from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
 from booley.fusesoc import fusesoc_registry, selftest_overlay
@@ -970,7 +971,10 @@ def test_guard_abort_reason_uses_simulator_not_adapter_returncode(
 
     assert outcome.verdict == "error"
     assert outcome.tests[0].simulator_returncode == simulator_returncode
-    assert outcome.tests[0].reason.endswith(f"(rc={simulator_returncode})")
+    if simulator_returncode == 0:
+        assert outcome.tests[0].reason == "run directory exceeded its disk budget"
+    else:
+        assert outcome.tests[0].reason.endswith(f"(rc={simulator_returncode})")
 
 
 def test_adapter_exit_one_with_design_result_is_failure_not_infrastructure(
@@ -1054,21 +1058,18 @@ def test_unchanged_timeout_partial_result_is_stale(tmp_path: Path) -> None:
     prepared = _prepared(handle, cocotb=True)
     _write_partial_timeout_transport(handle, prepared)
 
-    outcome = _run_execution(
-        handle,
-        prepared,
-        lambda _command, timeout: SubprocessResult(
-            returncode=-9,
-            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
-            timed_out=True,
-        ),
-        ("done", "active", "later"),
-        cocotb=True,
-    )
-
-    assert outcome.verdict == "error"
-    failure = outcome.infrastructure_failure
-    assert failure is not None and "stale" in failure.detail
+    with pytest.raises(ArtifactValidationError, match="stale"):
+        _run_execution(
+            handle,
+            prepared,
+            lambda _command, timeout: SubprocessResult(
+                returncode=-9,
+                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+                timed_out=True,
+            ),
+            ("done", "active", "later"),
+            cocotb=True,
+        )
 
 
 def test_run_log_open_failure_is_typed_infrastructure(tmp_path: Path) -> None:
@@ -2913,20 +2914,17 @@ def test_unchanged_adapter_result_is_stale(tmp_path: Path) -> None:
         ),
     )
 
-    outcome = _run_execution(
-        handle,
-        prepared,
-        lambda _command, timeout: SubprocessResult(
-            returncode=0,
-            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
-        ),
-        ("smoke",),
-        cocotb=False,
-    )
-
-    assert outcome.verdict == "error"
-    failure = outcome.infrastructure_failure
-    assert failure is not None and "stale" in failure.detail
+    with pytest.raises(ArtifactValidationError, match="stale"):
+        _run_execution(
+            handle,
+            prepared,
+            lambda _command, timeout: SubprocessResult(
+                returncode=0,
+                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            ),
+            ("smoke",),
+            cocotb=False,
+        )
 
 
 def test_stdout_cannot_forge_trace_without_authenticated_evidence(tmp_path: Path) -> None:
