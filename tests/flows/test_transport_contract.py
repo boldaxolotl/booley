@@ -1244,14 +1244,18 @@ def test_custom_identity_uncertainty_respects_selected_workload(
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
 @pytest.mark.parametrize("binding", ["stored_selector", "legacy"])
+@pytest.mark.parametrize("direction", ["bare_to_qualified", "qualified_to_bare"])
+@pytest.mark.parametrize("name", ["first", "second"])
 def test_custom_alternate_selector_keeps_unevaluated_potential(
-    runtime, monkeypatch, endpoint_kind, binding
+    runtime, monkeypatch, endpoint_kind, binding, direction, name
 ):
     from booley.criteria.state import DevelopmentState
 
-    params = {"target": "first"}
+    target = "dut#first" if direction == "bare_to_qualified" else "first"
+    selector = name if direction == "bare_to_qualified" else f"dut#{name}"
+    params = {"target": selector}
     if binding == "stored_selector":
-        params = {"target": "acme:lib:dut:1#first", "_target_selector": "first"}
+        params = {"target": f"acme:lib:dut:1#{name}", "_target_selector": selector}
     path = runtime / "state.json"
     state = DevelopmentState.load(path)
     state.init_criteria(
@@ -1262,11 +1266,12 @@ def test_custom_alternate_selector_keeps_unevaluated_potential(
     state.save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
-    result = flow.execute_cli(["--target", "dut#first", "--work-dir", str(runtime)])
+    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
+    expected = ("", None) if name == "first" else ("drc_clean_first", True)
     assert result.exit_code == 0
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
     report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert (report["criterion_key"], report["criterion_met"]) == expected
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
