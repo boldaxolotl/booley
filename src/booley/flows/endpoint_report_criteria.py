@@ -257,12 +257,22 @@ def _binding_keys(endpoint, identity: str | None, selector: str, families: set[s
 
 def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[str]) -> set[str]:
     keys = _named_keys(endpoint, token.rsplit("#", 1)[-1], families, conventional)
+    keys.update(_binding_keys(endpoint, None, token, families))
     detail = _selection_detail(endpoint)
     for key, entry in endpoint.state.criteria.items():
         if not _eligible_family(key, families):
             continue
         params = entry.params or {}
         if params.get("_target_selector") != token and params.get("target") != token:
+            identity = params.get("target")
+            if (
+                key not in keys
+                and "_target_selector" not in params
+                and isinstance(identity, str)
+                and "#" in identity
+            ):
+                # Without a catalog or binding, an identity cannot be matched to this token.
+                endpoint._report_criteria.known = False
             continue
         selected = detail["selected_tests"]
         if key.startswith("cycle_count_") and selected and params.get("test") not in selected:
@@ -273,7 +283,6 @@ def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[s
         } and not endpoint.state._alias_matches_run(key, detail):
             continue
         keys.add(key)
-    keys.update(_binding_keys(endpoint, None, token, families))
     return keys
 
 

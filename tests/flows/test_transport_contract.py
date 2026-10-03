@@ -1097,16 +1097,40 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)
 
 
+@pytest.mark.parametrize("binding", ["name", "identity"])
+@pytest.mark.parametrize("ticket", ["none", "single", "plural"])
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
 @pytest.mark.parametrize("catalog", [True, False])
 @pytest.mark.parametrize("target", ["first", "first,second"])
 def test_declared_custom_flow_prepared_headline(
-    runtime, monkeypatch, endpoint_kind, catalog, target
+    runtime, monkeypatch, binding, ticket, endpoint_kind, catalog, target
 ):
     from typing import ClassVar
 
+    from booley.criteria.state import DevelopmentState
     from booley.flows.base import BooleyFlow
     from booley.runtime.endpoint_execution import EndpointOutcome
+
+    key = "drc_clean_first" if binding == "name" else "drc_clean_policy42"
+    other = "drc_rules_first" if binding == "name" else "drc_rules_policy73"
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    if ticket != "none":
+        path = runtime / "state.json"
+        state = DevelopmentState.load(path)
+        criteria = {key: True}
+        if ticket == "plural":
+            criteria[other] = True
+        state.init_criteria(
+            criteria,
+            strict=False,
+            criterion_params={name: {"target": "acme:lib:dut:1#first"} for name in criteria}
+            if binding == "identity"
+            else None,
+        )
+        state.save()
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
 
     if catalog:
         _report_targets(runtime)
@@ -1124,20 +1148,30 @@ def test_declared_custom_flow_prepared_headline(
         def _interpret_output(self, output, structured):
             raise AssertionError("agent not invoked")
 
-        satisfies: ClassVar[list[str]] = ["drc_clean"]
+        satisfies: ClassVar[list[str]] = ["drc_clean", "drc_rules"]
 
         def _add_args(self, parser):
             pass
 
         def _run(self):
-            self.set_criterion("drc_clean_first", True)
+            self.set_criterion(key, True)
             return EndpointOutcome()
 
     flow = DrcFlow()
     result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
-    expected = ("drc_clean_first", True) if target == "first" else ("", None)
+    expected = (
+        (key, True)
+        if target == "first"
+        and ticket != "plural"
+        and (binding == "name" or catalog or ticket == "none")
+        else ("", None)
+    )
     assert result.exit_code == 0
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == expected
 
 
 @pytest.mark.parametrize("ticket", ["none", "nonstrict", "strict"])
@@ -1269,3 +1303,31 @@ def test_public_hooks_see_raw_then_projected_headline(runtime, monkeypatch):
         "lint_clean_first",
         True,
     )
+
+
+def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.specialists.reviewer import ReviewerSpecialist
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria({"review_rtl_bugs_done": True, "review_rtl_bugs_clean": True})
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+
+    def run(self):
+        self.set_criterion("review_rtl_bugs_done", True)
+        return EndpointOutcome()
+
+    class StableDisplayReviewer(ReviewerSpecialist):
+        display_tag = "review"
+
+    monkeypatch.setattr(StableDisplayReviewer, "_run", run)
+    reviewer = StableDisplayReviewer()
+    result = reviewer.execute_cli(
+        ["--scope", ".", "--category", "rtl", "--focus", "bugs", "--work-dir", str(runtime)]
+    )
+    assert result.exit_code == 0, result.outcome
+    assert reviewer._report_criteria.known is False
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)

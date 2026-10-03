@@ -2688,6 +2688,7 @@ def test_public_coverage_campaign_headline_fresh_and_resume(
 ):
     from booley.criteria.state import CriterionEntry
 
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     reports = _prepare_coverage_origin(tmp_path, monkeypatch)
     if ticket != "none":
         state_path = tmp_path / "state.json"
@@ -2748,15 +2749,17 @@ def test_public_coverage_campaign_headline_fresh_and_resume(
         if ticket == "coverage_only"
         else ("", None)
     )
+    evaluation = "fail" if ticket in {"coverage", "coverage_only"} else "not_requested"
     for result in (fresh, resumed):
+        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == evaluation
         assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
         assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
+    if ticket == "undeclared":
+        assert DevelopmentState.load(state_path).criteria == {}
     if ticket in {"coverage", "coverage_only"}:
-        assert fresh.outcome.detail["targets"]["sim_0"]["evaluation"] == "fail"
         saved = DevelopmentState.load(state_path)
         if ticket == "coverage":
             assert saved.criteria["sim_pass_sim_0"].met is True
         assert saved.criteria["coverage_sim_0"].met is False
     elif ticket == "none":
-        assert fresh.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
         assert not (tmp_path / "state.json").exists()
