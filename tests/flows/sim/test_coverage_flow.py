@@ -312,7 +312,7 @@ def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
 
 def _assert_campaign_report_schema(tmp_path: Path, campaign: dict[str, object]) -> None:
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
-    assert report["$schema"] == "booley.simulation-report/v2"
+    assert report["$schema"] == "booley.simulation-report/v3"
     assert report["detail"]["campaigns"]["sim_0"]["artifacts"] == campaign["artifacts"]
 
 
@@ -1035,7 +1035,8 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
     )
 
     assert result.exit_code == 0
-    assert result.outcome.criterion_met is False
+    assert result.outcome.criterion_key == ""
+    assert result.outcome.criterion_met is None
     progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
     assert progress["detail"]["sim_custom"]["exit_code"] == 0
     campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]

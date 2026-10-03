@@ -653,3 +653,242 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
     assert report_root / "lint/1" not in diagnostic.parents
     output = capsys.readouterr()
     assert "Traceback" not in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    "flow_type,family",
+    [
+        (LintFlow, "lint_clean"),
+        (AsicSynthesizeFlow, "synthesis_ok"),
+        (FpgaImplFlow, "fpga_impl_ok"),
+        (SimulateFlow, "sim_pass"),
+    ],
+)
+@pytest.mark.parametrize("target", ["first", "first,second"])
+@pytest.mark.parametrize("met", [True, False])
+def test_partial_evaluation_final_report_and_completion(
+    flow_type, family, target, met, runtime, monkeypatch
+):
+    from booley.flows import endpoint_reporting
+
+    events = []
+    monkeypatch.setattr(endpoint_reporting, "_write_display_event", events.append)
+    flow = flow_type()
+
+    def run():
+        flow.set_criterion(f"{family}_first", met)
+        raise RuntimeError("second workload infrastructure failed")
+
+    monkeypatch.setattr(flow, "_run", run)
+    result = flow.execute(flow.request_type(target=target, work_dir=runtime))
+    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
+    expected = (f"{family}_first", met) if target == "first" else ("", None)
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    assert report["passed"] is False
+    assert report["exit_code"] == 2
+    end = events[-1]
+    assert (end["criterion_key"], end["criterion_met"]) == expected
+    assert flow.state.criteria[f"{family}_first"].met is met
+
+
+def test_reused_endpoint_resets_evaluation_before_early_gate(runtime, monkeypatch):
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = LintFlow()
+
+    def run():
+        flow.set_criterion("lint_clean_first", True)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(flow, "_run", run)
+    request = flow.request_type(target="first", work_dir=runtime)
+    assert flow.execute(request).outcome.criterion_met is True
+    monkeypatch.setattr(flow, "_pre_state_gate", lambda: EndpointOutcome(exit_code=2))
+    result = flow.execute(request)
+    assert result.outcome.criterion_key == ""
+    assert result.outcome.criterion_met is None
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_candidate_mapping_excludes_baseline_prerequisite(runtime, monkeypatch, resume):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.targets.catalog import TargetCatalog
+
+    (runtime / "design.core").write_text(
+        "CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  candidate:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb\n  baseline:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb\n"
+    )
+    candidate, baseline = TargetCatalog.build(runtime).select_many(
+        "candidate,baseline", for_flow="sim"
+    )
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria({"sim_pass_candidate": True}, strict=True)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    manifest = SimpleNamespace(
+        document={
+            "target": {"vlnv": "acme:lib:dut:1", "name": "candidate", "selector": "candidate"},
+            "required_suite": {"names": ["smoke"]},
+            "work_items": [{"test": "smoke"}],
+        }
+    )
+    validated = SimpleNamespace(
+        candidate=SimpleNamespace(manifest=manifest),
+        target_handles=(candidate, baseline),
+        binding_for=lambda _manifest: SimpleNamespace(handle=candidate),
+    )
+    prepared = PreparedSimulationEndpoint(
+        (candidate, baseline),
+        validated if resume else None,
+        () if resume else ("candidate",),
+        {"candidate": ["smoke"]},
+    )
+    flow = SimulateFlow()
+    monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: prepared)
+    monkeypatch.setattr(FlowSession, "admission", lambda *_args: nullcontext())
+
+    def run(*_args):
+        flow.set_criterion("sim_pass_candidate", True)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(flow, "run_prepared_simulation", run)
+    result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
+    report = json.loads((runtime / "flow-reports/sim.json").read_text())
+    assert result.exit_code == 0
+    assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_candidate", True)
+
+
+@pytest.mark.parametrize(
+    "flow_type,family", [(AsicSynthesizeFlow, "synthesis_ok"), (FpgaImplFlow, "fpga_impl_ok")]
+)
+def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
+    flow_type, family, runtime, monkeypatch
+):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {f"{family}_first": True, f"{family}_second": True},
+        flow_key_aliases={f"{family}_demo": [f"{family}_first", f"{family}_second"]},
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    flow = flow_type()
+
+    def run():
+        flow.set_criterion(f"{family}_first", False)
+        return EndpointOutcome(exit_code=2)
+
+    monkeypatch.setattr(flow, "_run", run)
+    result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
+    assert result.exit_code == 2
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+
+
+def test_override_freezes_parameter_bound_candidate_criteria(runtime, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {"sim_pass_candidate": True, "cycle_count_policy": True},
+        criterion_params={
+            "cycle_count_policy": {
+                "target": "acme:lib:dut:1#candidate",
+                "_target_selector": "candidate",
+                "test": "smoke",
+                "cycle_count_max": 100,
+            }
+        },
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    flow = SimulateFlow()
+
+    def run():
+        flow.set_criterion("sim_pass_candidate", True)
+        return EndpointOutcome(exit_code=2)
+
+    monkeypatch.setattr(flow, "_run", run)
+    result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
+    report = json.loads((runtime / "flow-reports/sim.json").read_text())
+    assert result.exit_code == 2
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert flow.state.criteria["sim_pass_candidate"].met is True
+
+
+@pytest.mark.parametrize(
+    "flow_type,family,eda",
+    [(AsicSynthesizeFlow, "synthesis_ok", "yosys"), (FpgaImplFlow, "fpga_impl_ok", "vivado")],
+)
+def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_binding(
+    flow_type, family, eda, runtime, monkeypatch
+):
+    from booley.criteria.state import DevelopmentState
+    from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    (runtime / "design.core").write_text(
+        f"CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  demo:\n    default_tool: {eda}\n    toplevel: dut\n"
+    )
+    key = f"{family}_demo"
+    other = f"{family}_other"
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {key: True, other: True},
+        criterion_params={
+            key: {"target": "acme:lib:dut:1#demo", "_target_selector": "demo"},
+            other: {"target": "acme:lib:dut:1#other", "_target_selector": "other"},
+        },
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    flow = flow_type()
+    bindings = (
+        AcceptanceTargetBinding(
+            flow.name,
+            f"criteria.mandatory.{key}",
+            "acme:lib:dut:1#base",
+            "acme:lib:dut:1#demo",
+            "base",
+            "demo",
+        ),
+        AcceptanceTargetBinding(
+            flow.name,
+            f"criteria.mandatory.{other}",
+            "acme:lib:dut:1#demo",
+            "acme:lib:dut:1#other",
+            "demo",
+            "other",
+        ),
+    )
+
+    class BoundExecution(StandaloneFlowExecution):
+        def validate_and_resolve(self, _request):
+            return ResolvedFlowAcceptance(bindings)
+
+    def run(self):
+        self.set_criterion(key, True)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(flow_type, "_run", run)
+    result = flow.execute(
+        flow.request_type(target="demo", work_dir=runtime), adapter=BoundExecution()
+    )
+    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
+    assert result.exit_code == 0
+    assert (report["criterion_key"], report["criterion_met"]) == (key, True)

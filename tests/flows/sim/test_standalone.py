@@ -517,3 +517,28 @@ class TestStandaloneFrontend:
             flow._record_eda_tool(target, tool)
 
         assert flow._parse_gap_is_credible(frontend, primary_ok) is credible
+
+
+@pytest.mark.parametrize("met", [True, False])
+def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
+    import json
+
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
+    _stub_sources(monkeypatch, ["rtl/alu.sv"])
+    flow = _make_flow(tmp_path)
+    flow.args.state_file = None
+    flow.args.target = ""
+    flow.read_state()
+    flow._record_eda_tool("sim_dut", "icarus")
+    process = SubprocessResult(
+        returncode=0 if met else 1, stderr="syntax error" if not met else ""
+    )
+    _stub_probes(monkeypatch, flow, {"alu": process})
+    with flow.context.publication_resources:
+        outcome = flow._run_standalone_check(["sim_dut"])
+    result = EndpointOutcome(exit_code=0 if outcome.passed else 1, detail=outcome.detail)
+    report = json.loads(flow.context.write_report(result).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("elaborate_standalone", met)
+    assert flow.state._file_path is None

@@ -26,6 +26,7 @@ from booley.flows import (
     endpoint_session,
     execution,
 )
+from booley.flows.endpoint_report_criteria import ReportCriteria
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
@@ -102,6 +103,7 @@ class EndpointState(ABC):
         return None
 
     def __init__(self) -> None:
+        self._report_criteria = ReportCriteria()
         self._args: Any = None
         self._state: DevelopmentState | None = None
         self._start_time: float = 0.0
@@ -173,6 +175,10 @@ class EndpointState(ABC):
         return endpoint_acceptance.set_criterion(
             self, key, met, detail=detail, source_target=source_target
         )
+
+    def record_report_criteria(self, changes: list[CriterionChange]) -> None:
+        """Capture effective evaluated values before durable recording."""
+        self._report_criteria.record(changes)
 
     def _record_acceptance_changes(self, changes: list[CriterionChange]) -> None:
         return endpoint_acceptance._record_acceptance_changes(self, changes)

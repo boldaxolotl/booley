@@ -3939,3 +3939,61 @@ def test_incomplete_or_changed_legacy_done_receipt_does_not_replay(
     result = endpoint._run()
     assert mock_agent.call_count == 1
     assert "did NOT re-run" not in result.report_text
+
+
+@pytest.mark.parametrize("evaluated", [True, False])
+def test_final_reviewer_report_distinguishes_replay_from_error_evaluation(tmp_path, evaluated):
+    from booley.mcp.base import McpToolResult
+
+    reviewer = ReviewerSpecialist()
+    reviewer.parse_args(
+        [
+            "--scope",
+            ".",
+            "--category",
+            "rtl",
+            "--focus",
+            "bugs",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    reviewer.read_state()
+    key = reviewer._criterion_key()
+    if evaluated:
+        reviewer.set_criterion(key, False)
+    result = McpToolResult(exit_code=2, criterion_key=key, criterion_met=False)
+    report = json.loads(reviewer.write_report(result).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == (
+        (key, False) if evaluated else ("", None)
+    )
+    assert report["$schema"] == "booley.specialist-report/v1"
+    assert report["passed"] is False
+
+
+def test_ambiguous_reviewer_mapping_cannot_be_narrowed_by_one_evaluation(tmp_path):
+    from booley.mcp.base import McpToolResult
+
+    reviewer = ReviewerSpecialist()
+    reviewer.parse_args(
+        [
+            "--scope",
+            ".",
+            "--category",
+            "rtl",
+            "--focus",
+            "bugs",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    reviewer.read_state()
+    base = reviewer._criterion_base_key()
+    reviewer.state.init_criteria({f"{base}_done": True, f"{base}_clean": True})
+    reviewer.set_criterion(f"{base}_done", True)
+    report = json.loads(reviewer.write_report(McpToolResult()).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)

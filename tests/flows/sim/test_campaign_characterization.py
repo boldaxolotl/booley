@@ -721,3 +721,27 @@ def test_campaign_scan_rejects_adapter_guard_for_foreign_target(tmp_path) -> Non
     result_path.write_bytes(canonical_json_bytes(document))
     with pytest.raises(SimulationCampaignIntegrityError, match="Target disagrees"):
         store.scan()
+
+
+@pytest.mark.parametrize("met", [True, False])
+def test_standalone_legacy_simulation_final_report_is_run_local(
+    tmp_path, _legacy_build_transport, met
+):
+    flow = _make_flow(tmp_path, config="lite")
+    flow.args.state_file = None
+    flow.read_state()
+    process = SubprocessResult(
+        returncode=0, stdout=f"[SIM_RESULT] {'PASSED' if met else 'FAILED'}\n"
+    )
+    with (
+        patch("booley.flows.sim.flow._get_test_names", return_value={}),
+        patch.object(SimulateFlow, "_flow_enabled", return_value=True),
+        patch.object(flow, "_execute", return_value=process),
+        flow.context.publication_resources,
+    ):
+        outcome = flow._run()
+        path = flow.context.write_report(outcome)
+    report = json.loads(path.read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_lite", met)
+    assert "elab_pass_lite" not in flow.state.criteria
+    assert flow.state._file_path is None

@@ -1179,3 +1179,32 @@ def _damage_inventory_document(document, damage):
         document["raw_evidence"] = [{}, {}, {}]
     elif damage == "compiler":
         document["compiler"]["tag"] = "v5.050"
+
+
+def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
+    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.mcp_tools.test_base import ConcreteMcpTool
+
+    plan, state, state_path = gated_ticket_plan(tmp_path)
+    del state.criteria["sim_pass_sim_0"]
+    state.save()
+    before = state_path.read_bytes()
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
+    tool._state = state
+
+    class FailedRecorder:
+        def record_changes(self, *_args, **_kwargs):
+            raise OSError("coverage ledger unavailable")
+
+    plan = replace(
+        plan, acceptance=CoverageAcceptance(state, FailedRecorder(), tool.record_report_criteria)
+    )
+    outcome = run_coverage_target(plan, NativeExecution(), Progress())
+    assert outcome.exit_code == 2
+    report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("coverage_sim_0", True)
+    assert report["passed"] is False
+    assert state_path.read_bytes() == before

@@ -2176,3 +2176,149 @@ class TestNoReportDirWarning:
         err = capsys.readouterr().err
         assert err.count("no --report-dir") == 1
         assert not [r for r in caplog.records if "report-dir" in r.getMessage()]
+
+
+@pytest.mark.parametrize("kind", ["flow", "specialist", "mcp_tool"])
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [],
+        [("actual", False)],
+        [("actual", True), ("actual", False)],
+        [("one", True), ("two", False)],
+    ],
+)
+def test_final_headline_contract_preserves_generic_endpoint(tmp_path, kind, calls):
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = kind
+    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    for key, met in calls:
+        tool.set_criterion(key, met)
+    result = McpToolResult(criterion_key="legacy", criterion_met=True)
+    report = json.loads(tool.write_report(result).read_text())
+    expected = (
+        ("legacy", True)
+        if kind == "mcp_tool"
+        else (("actual", False) if calls and calls[-1][0] == "actual" else ("", None))
+    )
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+    if kind == "mcp_tool":
+        assert "$schema" not in report
+    else:
+        assert report["$schema"] == f"booley.{kind}-report/v1"
+
+
+def test_generic_submission_none_key_is_preserved(tmp_path):
+    tool = ConcreteMcpTool()
+    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
+    result = McpToolResult(criterion_key=None, criterion_met=None)
+    report = json.loads(tool.write_report(result).read_text())
+    assert report["criterion_key"] is None
+    assert report["criterion_met"] is None
+
+
+@pytest.mark.parametrize("aliases", [["sim_pass_atomic"], ["sim_pass_atomic", "sim_pass_other"]])
+def test_effective_aliases_and_thresholds_drive_final_report(tmp_path, aliases):
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    tool.state.init_criteria(
+        dict.fromkeys(aliases, True), flow_key_aliases={"sim_pass_default": aliases}
+    )
+    tool.set_criterion("sim_pass_default", True, detail={"pending": ["unresolved defect"]})
+    result = McpToolResult(criterion_key="sim_pass_default", criterion_met=True)
+    report = json.loads(tool.write_report(result).read_text())
+    expected = (aliases[0], False) if len(aliases) == 1 else ("", None)
+    assert (report["criterion_key"], report["criterion_met"]) == expected
+
+
+def test_recording_failure_retains_effective_report_verdict(tmp_path, monkeypatch):
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    tool.state._file_path = tmp_path / "state.json"
+    tool.state.init_criteria({"actual": True}, strict=True)
+
+    def fail(changes):
+        raise OSError("ledger append failed")
+
+    monkeypatch.setattr(tool, "_record_acceptance_changes", fail)
+    with pytest.raises(OSError):
+        tool.set_criterion("actual", False)
+    result = McpToolResult(exit_code=2)
+    report = json.loads(tool.write_report(result).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("actual", False)
+    assert report["passed"] is False
+
+
+def test_effective_metric_threshold_overrides_raw_true_in_final_report(tmp_path):
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    tool.state.init_criteria(
+        {"synthesis_ok_demo": True}, criterion_params={"synthesis_ok_demo": {"area_max": 100}}
+    )
+    tool.set_criterion("synthesis_ok_demo", True, detail={"area_um2": 200})
+    report = json.loads(tool.write_report(McpToolResult(criterion_met=True)).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("synthesis_ok_demo", False)
+
+
+def test_strict_rejected_evaluation_has_null_final_report(tmp_path):
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    tool.state.strict_criteria = True
+    tool.set_criterion("undeclared", False)
+    report = json.loads(
+        tool.write_report(
+            McpToolResult(criterion_key="undeclared", criterion_met=False)
+        ).read_text()
+    )
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+
+
+def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, monkeypatch):
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    tool.set_criterion("actual", False)
+
+    def refresh(result):
+        result.criterion_key = "stale"
+        result.criterion_met = True
+        result.detail["artifact"] = "retained"
+
+    monkeypatch.setattr(tool, "refresh_campaign_report_detail", refresh, raising=False)
+    report = json.loads(tool.write_report(McpToolResult()).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("actual", False)
+    assert report["detail"]["artifact"] == "retained"
+
+
+def test_preexisting_met_state_is_not_a_current_report_evaluation(tmp_path):
+    tool = ConcreteMcpTool()
+    tool.endpoint_kind = "specialist"
+    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
+    tool.read_state()
+    tool.state.init_criteria({"prior": True})
+    tool.state.criteria["prior"].met = True
+    report = json.loads(
+        tool.write_report(McpToolResult(criterion_key="prior", criterion_met=True)).read_text()
+    )
+    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert tool.state.criteria["prior"].met is True
+
+
+def test_generic_sim_named_endpoint_keeps_legacy_schema(tmp_path):
+    tool = ConcreteMcpTool()
+    tool.name = "sim"
+    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
+    result = McpToolResult(criterion_key="legacy", criterion_met=False)
+    report = json.loads(tool.write_report(result).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == ("legacy", False)
+    assert report["$schema"] == "booley.simulation-report/v2"

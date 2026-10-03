@@ -1174,12 +1174,13 @@ class TestCriterionGating:
             tests=[TestResult(name="lite_smoke", passed=True)],
         )
 
-    def test_no_state_file_skips_criterion(self, tmp_path: Path):
+    def test_no_state_file_records_workload_criterion(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         flow.args.state_file = None  # standalone / Interactive Mode
         flow.set_criterion = MagicMock()
         flow._record_sim_criterion(self._passed_target())
-        flow.set_criterion.assert_not_called()
+        flow.set_criterion.assert_called_once()
+        assert flow.set_criterion.call_args.args == ("sim_pass_lite", True)
 
     def test_state_file_records_criterion(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
@@ -3072,3 +3073,27 @@ class TestErrorExcerptSelection:
         lines: list[str] = []
         _append_test_output_line(tr, lines)
         assert "--- error output (last 1 lines) ---" in "\n".join(lines)
+
+
+@pytest.mark.parametrize("met", [True, False, None])
+def test_standalone_elab_only_final_headline(tmp_path, met):
+    from booley.flows.sim.build import BuildOutcome
+    from booley.flows.sim.flow import ElabOnlyTargetResult
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = _make_flow(tmp_path, config="lite", extra_args=["--mode", "elab-only"])
+    flow.args.state_file = None
+    flow.read_state()
+    build = BuildOutcome(
+        True,
+        None if met is None else ("pass" if met else "fail"),
+        "infrastructure" if met is None else (None if met else "design"),
+    )
+    flow._record_elab_only_criterion(ElabOnlyTargetResult("lite", outcome=build))
+    result = EndpointOutcome(exit_code=2 if met is None else (0 if met else 1))
+    with flow.context.publication_resources:
+        report = json.loads(flow.context.write_report(result).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == (
+        ("", None) if met is None else ("elab_pass_lite", met)
+    )
+    assert flow.state._file_path is None

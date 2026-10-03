@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from booley.config.project_config import load_test_configuration_field
 from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
 from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON, validate_coverage_metrics
-from booley.criteria.state import DevelopmentState
+from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.criteria.templates import find_retired_criteria
 from booley.flows.execution_persistence import AcceptanceRecorder, NoAcceptanceRecorder
 from booley.runtime.project_dir import resolve_checkout_project_dir
@@ -51,10 +52,11 @@ def coverage_acceptance(
     recorder: AcceptanceRecorder,
     *,
     diagnostic: bool,
+    observer: Callable[[list[CriterionChange]], None] | None = None,
 ) -> CoverageAcceptance | None:
     if diagnostic or state._file_path is None or isinstance(recorder, NoAcceptanceRecorder):
         return None
-    return CoverageAcceptance(state, recorder)
+    return CoverageAcceptance(state, recorder, observer)
 
 
 def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, CoverageCriterion]:
