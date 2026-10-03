@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tomllib
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +85,26 @@ def _codex_server_env(
     return merged_env
 
 
+def _warning_preference(existing_config: str | None) -> bool:
+    """Recover only the destination's root preference; interrupted scratch heals."""
+    try:
+        parsed = tomllib.loads(existing_config or "")
+    except tomllib.TOMLDecodeError:
+        logger.warning(
+            "Cannot recover warning preference from malformed scratch Codex config; regenerating"
+        )
+        return True
+    value = parsed.get("suppress_unstable_features_warning", True)
+    if not isinstance(value, bool):
+        raise ValueError("suppress_unstable_features_warning must be a boolean")
+    return value
+
+
 def generate_codex_config(
     enabled_mcp_tools: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
+    *,
+    existing_config: str | None = None,
 ) -> str:
     """Generate config.toml content for the Codex MCP server.
 
@@ -101,7 +119,9 @@ def generate_codex_config(
     Returns:
         TOML-formatted string.
     """
+    preference = _warning_preference(existing_config)
     lines = [
+        f"suppress_unstable_features_warning = {str(preference).lower()}",
         'web_search = "disabled"',
         "",
         "[features]",

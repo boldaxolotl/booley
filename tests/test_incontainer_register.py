@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 from unittest.mock import patch
+
+import pytest
 
 from booley.harness import incontainer_register as entry
 from booley.runtime import incontainer_setup as reg
@@ -844,3 +847,87 @@ class TestRegister:
         monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
         entry.main()
         assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("preference", [None, True, False])
+def test_codex_migrates_old_current_entry_once(tmp_path, preference):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    choice = (
+        ""
+        if preference is None
+        else f'"suppress_unstable_features_warning"={str(preference).lower()} # keep\n'
+    )
+    existing = choice + "features.mcp_2026_07_28=true\n" + reg.codex_section()
+    path.write_text(existing)
+    assert reg.upsert_codex(path) is (preference is None)
+    body = path.read_text()
+    assert tomllib.loads(body)["suppress_unstable_features_warning"] is (
+        True if preference is None else preference
+    )
+    assert body.endswith(existing)
+    assert reg.upsert_codex(path) is False
+    assert path.read_text() == body
+
+
+@pytest.mark.parametrize("existing", ['bad = "', 'suppress_unstable_features_warning="bad"'])
+def test_codex_invalid_interactive_config_never_writes(tmp_path, existing):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(existing)
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            reg.upsert_codex(path)
+        assert path.read_text() == existing
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        "items = [\n[1, 2],\n[3]\n]\n# retain array\n",
+        'description = """\n[features]\nmcp_2026_07_28 = false\n"""\n',
+        "features.other=true\nfeatures.mcp_2026_07_28=false\n",
+        '["features"] # flags\n"mcp_2026_07_28"=false # deliberate override\n',
+        '["mcp_servers"."booley"] # stale\ncommand="old"\n["other"] # retain header\nx=1',
+        'model="existing"',
+    ],
+)
+def test_codex_full_registration_preserves_toml_forms(tmp_path, monkeypatch, existing):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(existing)
+    monkeypatch.setattr(reg, "deploy_skills", lambda *args: 0)
+    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: 0)
+    monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: "none")
+    assert "codex:written" in reg.register("codex", home=tmp_path)
+    body = path.read_text()
+    parsed = tomllib.loads(body)
+    assert parsed["suppress_unstable_features_warning"] is True
+    assert parsed["features"]["mcp_2026_07_28"] is True
+    assert parsed["approval_policy"] == "never"
+    assert parsed["notice"]["hide_full_access_warning"] is True
+    original = tomllib.loads(existing)
+    for key in ("items", "description", "other", "model"):
+        if key in original:
+            assert parsed[key] == original[key]
+    if "# retain" in existing:
+        assert "# retain" in body
+    assert "codex:current" in reg.register("codex", home=tmp_path)
+    assert path.read_text() == body
+
+
+@pytest.mark.parametrize("preference", [True, False])
+def test_full_codex_registration_preserves_explicit_choice(tmp_path, monkeypatch, preference):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    choice = f'"suppress_unstable_features_warning" = {str(preference).lower()} # retain choice\n'
+    path.write_text(choice + "[features] # flags\nsuppress_unstable_features_warning=false\n")
+    monkeypatch.setattr(reg, "deploy_skills", lambda *args: 0)
+    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: 0)
+    monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: "none")
+    assert "codex:written" in reg.register("codex", home=tmp_path)
+    body = path.read_text()
+    assert choice in body
+    assert tomllib.loads(body)["suppress_unstable_features_warning"] is preference
+    assert "codex:current" in reg.register("codex", home=tmp_path)
+    assert path.read_text() == body

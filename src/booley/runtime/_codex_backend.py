@@ -550,7 +550,11 @@ def _ensure_nested_codex_home(
     booley_env["BOOLEY_NESTED_AGENT"] = "1"
     booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
 
-    (codex_dir / "config.toml").write_text(generate_codex_config(extra_env=booley_env))
+    config_path = codex_dir / "config.toml"
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    config_path.write_text(
+        generate_codex_config(extra_env=booley_env, existing_config=existing), encoding="utf-8"
+    )
 
     original_auth = Path(os.environ.get("HOME", "/home/agent")) / ".codex" / "auth.json"
     if original_auth.exists():
@@ -600,10 +604,13 @@ def _ensure_developer_codex_home(
     codex_dir = home / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
 
-    (codex_dir / "config.toml").write_text(
+    config_path = codex_dir / "config.toml"
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    config_path.write_text(
         generate_codex_config(
             enabled_mcp_tools=enabled_mcp_tools,
             extra_env=booley_env,
+            existing_config=existing,
         )
     )
 

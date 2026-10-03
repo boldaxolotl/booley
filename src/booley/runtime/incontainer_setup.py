@@ -312,123 +312,143 @@ def codex_section() -> str:
     )
 
 
+def _codex_data(existing: str) -> dict:
+    """Validate interactive config before any registration mutation."""
+    parsed = tomllib.loads(existing)
+    if "suppress_unstable_features_warning" in parsed and not isinstance(
+        parsed["suppress_unstable_features_warning"], bool
+    ):
+        raise ValueError("suppress_unstable_features_warning must be a boolean")
+    return parsed
+
+
 def _codex_entry_is_current(existing: str) -> bool:
-    """Whether *existing* already carries exactly the desired booley entry."""
-    try:
-        parsed = tomllib.loads(existing)
-    except tomllib.TOMLDecodeError:
-        return False
-    entry = parsed.get("mcp_servers", {}).get(MCP_SERVER_NAME)
+    parsed = _codex_data(existing)
+    servers = parsed.get("mcp_servers", {})
+    entry = servers.get(MCP_SERVER_NAME) if isinstance(servers, dict) else None
     features = parsed.get("features", {})
-    return entry == {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC} and (
-        isinstance(features, dict) and features.get("mcp_2026_07_28") is True
+    return (
+        "suppress_unstable_features_warning" in parsed
+        and entry == {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
+        and isinstance(features, dict)
+        and features.get("mcp_2026_07_28") is True
     )
+
+
+def _toml_statements(existing: str) -> list[str]:
+    """Use the TOML parser to find complete statements, including multiline values.
+
+    Input is validated first. A partial multiline value cannot parse on its own,
+    so headers/comments inside it never become independent editable statements.
+    """
+    tomllib.loads(existing)
+    statements: list[str] = []
+    pending = ""
+    for line in existing.splitlines(keepends=True):
+        pending += line
+        try:
+            tomllib.loads(pending)
+        except tomllib.TOMLDecodeError:
+            continue
+        statements.append(pending)
+        pending = ""
+    assert not pending
+    return statements
+
+
+def _toml_path(statement: str) -> tuple[str, ...]:
+    """Decode quoted and dotted keys without interpreting spelling ourselves."""
+    data = tomllib.loads(statement)
+    path: list[str] = []
+    while isinstance(data, dict) and len(data) == 1:
+        key, data = next(iter(data.items()))
+        path.append(key)
+    return tuple(path)
+
+
+def _toml_entries(existing: str) -> list[tuple[str, tuple[str, ...], bool]]:
+    entries = []
+    table: tuple[str, ...] = ()
+    for statement in _toml_statements(existing):
+        header = statement.lstrip().startswith("[")
+        path = _toml_path(statement)
+        if header:
+            table = path
+        entries.append((statement, path if header else table + path, header))
+    return entries
 
 
 def _strip_codex_table(existing: str) -> str:
-    """Drop the ``[mcp_servers.booley]`` table (and subtables) from *existing*.
-
-    Line-based on purpose: rewriting only Booley's own table keeps every user
-    comment and unrelated section byte-identical, which a parse→re-dump of the
-    whole file would not.
-    """
-    header = f"[mcp_servers.{MCP_SERVER_NAME}]"
-    subheader_prefix = f"[mcp_servers.{MCP_SERVER_NAME}."
-    out: list[str] = []
-    skipping = False
-    for line in existing.splitlines(keepends=True):
-        stripped = line.strip()
-        if stripped.startswith("["):
-            skipping = stripped == header or stripped.startswith(subheader_prefix)
-        if not skipping:
-            out.append(line)
-    return "".join(out)
+    """Remove owned statements, preserving unrelated statements verbatim."""
+    owned = ("mcp_servers", MCP_SERVER_NAME)
+    return "".join(
+        statement for statement, path, _header in _toml_entries(existing) if path[:2] != owned
+    )
 
 
 def _upsert_existing_codex_table_setting(
-    existing: str,
-    *,
-    table: str,
-    key: str,
-    value: str,
+    existing: str, *, table: str, key: str, value: str
 ) -> str | None:
-    """Set one scalar in an existing table, or return None when absent."""
-    lines = existing.splitlines(keepends=True)
-    header_index = next(
-        (index for index, line in enumerate(lines) if line.strip() == f"[{table}]"),
-        None,
-    )
-    if header_index is None:
-        return None
-    section_end = next(
-        (
-            index
-            for index in range(header_index + 1, len(lines))
-            if lines[index].strip().startswith("[")
-        ),
-        len(lines),
-    )
-    replacement = f"{key} = {value}\n"
-    for index in range(header_index + 1, section_end):
-        if lines[index].partition("=")[0].strip() == key:
-            lines[index] = replacement
-            return "".join(lines)
-    lines.insert(header_index + 1, replacement)
-    return "".join(lines)
+    """Update a scalar assignment or insert into its actual table boundary."""
+    entries = _toml_entries(existing)
+    target = (table, key)
+    for index, (statement, path, header) in enumerate(entries):
+        if path == target and not header:
+            spelling = statement.partition("=")[0].strip()
+            entries[index] = (f"{spelling} = {value}\n", path, header)
+            return "".join(item[0] for item in entries)
+    for index, (_statement, path, header) in enumerate(entries):
+        if path == (table,) and header:
+            if not _statement.endswith("\n"):
+                entries[index] = (_statement + "\n", path, header)
+            entries.insert(index + 1, (f"{key} = {value}\n", target, False))
+            return "".join(item[0] for item in entries)
+    return None
 
 
 def _upsert_codex_modern_mcp_feature(existing: str) -> str:
-    """Enable MCP 2026-07-28 while preserving the user's other feature flags."""
+    """Keep deliberate MCP enablement, including root dotted feature syntax."""
+    parsed = tomllib.loads(existing)
+    if parsed.get("features", {}).get("mcp_2026_07_28") is True:
+        return existing
     updated = _upsert_existing_codex_table_setting(
-        existing,
-        table="features",
-        key="mcp_2026_07_28",
-        value="true",
+        existing, table="features", key="mcp_2026_07_28", value="true"
     )
-    if updated is not None:
-        return updated
-    sep = "" if not existing or existing.endswith("\n\n") else "\n"
-    return existing + sep + "[features]\nmcp_2026_07_28 = true\n"
+    return updated if updated is not None else "features.mcp_2026_07_28 = true\n" + existing
 
 
 def upsert_codex(path: Path) -> bool:
-    """Ensure the Booley MCP table matches the desired form. Returns True if changed.
-
-    An up-to-date entry is left untouched; a stale one (e.g. the pre-ADR-0023
-    stdio ``command``/``args`` form, which Codex would otherwise keep spawning
-    as a doomed per-session child) is replaced in place. User comments and
-    other sections are preserved.
-    """
+    """Migrate owned MCP settings and default warning preference without redumping."""
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    if f"[mcp_servers.{MCP_SERVER_NAME}]" in existing:
-        if _codex_entry_is_current(existing):
-            return False
-        existing = _strip_codex_table(existing)
-    existing = _upsert_codex_modern_mcp_feature(existing)
-    sep = (
-        ""
-        if not existing or existing.endswith("\n\n")
-        else ("\n" if existing.endswith("\n") else "\n\n")
-    )
+    parsed = _codex_data(existing)
+    if _codex_entry_is_current(existing):
+        return False
+    updated = existing
+    if "suppress_unstable_features_warning" not in parsed:
+        updated = "suppress_unstable_features_warning = true\n" + updated
+    updated = _upsert_codex_modern_mcp_feature(updated)
+    servers = parsed.get("mcp_servers", {})
+    desired = {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
+    if not isinstance(servers, dict) or servers.get(MCP_SERVER_NAME) != desired:
+        updated = _strip_codex_table(updated)
+        sep = "" if not updated or updated.endswith("\n") else "\n"
+        updated += sep + codex_section()
+    _codex_data(updated)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(existing + sep + codex_section(), encoding="utf-8")
+    path.write_text(updated, encoding="utf-8")
     return True
 
 
 def _upsert_codex_root_setting(existing: str, key: str, value: str) -> str:
-    """Set one root scalar without disturbing comments or unrelated tables."""
-    lines = existing.splitlines(keepends=True)
-    root_end = next(
-        (index for index, line in enumerate(lines) if line.strip().startswith("[")),
-        len(lines),
-    )
-    replacement = f"{key} = {value}\n"
-    for index in range(root_end):
-        if lines[index].partition("=")[0].strip() == key:
-            lines[index] = replacement
-            return "".join(lines)
-    lines.insert(root_end, replacement)
-    return "".join(lines)
+    """Replace a root assignment or prepend safely before every TOML table."""
+    target = tuple(key.split("."))
+    entries = _toml_entries(existing)
+    for index, (statement, path, header) in enumerate(entries):
+        if path == target and not header:
+            spelling = statement.partition("=")[0].strip()
+            entries[index] = (f"{spelling} = {value}\n", path, header)
+            return "".join(item[0] for item in entries)
+    return f"{key} = {value}\n" + existing
 
 
 def _upsert_codex_full_access_notice(existing: str) -> str:
@@ -450,10 +470,7 @@ def _apply_codex_permission_mode(home: Path | None = None) -> str:
     """Pin Codex to its container-trusted, provider-web-disabled mode."""
     path = codex_config_path(home)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    try:
-        data = tomllib.loads(existing)
-    except tomllib.TOMLDecodeError:
-        data = {}
+    data = _codex_data(existing)
     notice = data.get("notice", {})
     if (
         data.get("approval_policy") == "never"
@@ -469,6 +486,7 @@ def _apply_codex_permission_mode(home: Path | None = None) -> str:
     updated = _upsert_codex_root_setting(updated, "web_search", '"disabled"')
     updated = _upsert_codex_full_access_notice(updated)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _codex_data(updated)
     path.write_text(updated, encoding="utf-8")
     return "written"
 

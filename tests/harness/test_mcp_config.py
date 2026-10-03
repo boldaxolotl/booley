@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tomllib
 
+import pytest
+
 from booley.runtime.mcp_config import generate_codex_config
 
 
@@ -16,6 +18,7 @@ class TestGenerateCodexConfig:
         assert 'args = ["-m", "booley.mcp.server"]' in config
         assert "enabled_mcp_tools" not in config
         assert parsed["features"]["mcp_2026_07_28"] is True
+        assert parsed["suppress_unstable_features_warning"] is True
         assert parsed["mcp_servers"]["booley"]["env"]["CODEX_MCP_PROTOCOL_VERSION"] == "2026-07-28"
 
     def test_baseline_env_always_present(self):
@@ -88,3 +91,31 @@ class TestGenerateCodexConfig:
         config = generate_codex_config()
         assert "PROXY" not in config
         assert "proxy" not in config
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_generator_preserves_root_warning_preference(value):
+    existing = f'"suppress_unstable_features_warning" = {str(value).lower()} # choice\n'
+    result = tomllib.loads(generate_codex_config(existing_config=existing))
+    assert result["suppress_unstable_features_warning"] is value
+    assert result["features"]["mcp_2026_07_28"] is True
+    assert existing.endswith("# choice\n")
+
+
+def test_generator_ignores_table_warning_preference():
+    result = generate_codex_config(
+        existing_config="[features]\nsuppress_unstable_features_warning=false\n"
+    )
+    assert tomllib.loads(result)["suppress_unstable_features_warning"] is True
+
+
+@pytest.mark.parametrize("value", ['"bad"', "1", "[]", "{}"])
+def test_generator_rejects_invalid_explicit_preference(value):
+    with pytest.raises(ValueError, match=r"suppress_unstable_features_warning.*boolean"):
+        generate_codex_config(existing_config=f"suppress_unstable_features_warning={value}")
+
+
+def test_generator_heals_interrupted_scratch_config(caplog):
+    result = generate_codex_config(existing_config='suppress_unstable_features_warning="')
+    assert tomllib.loads(result)["suppress_unstable_features_warning"] is True
+    assert "preference" in caplog.text and "malformed" in caplog.text
