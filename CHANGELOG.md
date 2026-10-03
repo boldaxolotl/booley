@@ -156,6 +156,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Synthesis reports now count Liberty-mapped latch cells in logical and
+  physical mode. Undeclared or excess mapped latches fail synthesis; declare
+  intentional latches with `[flows.synth].expected_latches`. Missing, stale,
+  or empty Yosys logs now block completion because they provide the cell
+  mapping evidence. ([#1079](https://github.com/boldaxolotl/Booley/issues/1079))
+
 - `booley doctor --deep` now prints a flushed `RUN` line before each long
   check (the agent-backed developer probe, every deep Flow smoke, every
   self-test case, and `.core` resolution) with its timeout, so redirected
