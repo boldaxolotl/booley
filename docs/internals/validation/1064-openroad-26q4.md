@@ -153,3 +153,33 @@ stdout, generated scripts, and `reports/`.
   36 µm², with no OpenROAD warnings.
 - PicoRV32 rerun using the final runtime image: **passed**, reproducing
   23,647 µm² and setup/hold WNS 8.295560/0.084824 ns.
+
+## Adversarial review follow-up
+
+The independent review found that the shared runtime contract still required
+the old source archive. The contract and its test now require the 26Q4 archive.
+A synchronization regression test checks the archive against the Dockerfile's
+source revision for both standard and RISC-V flavors; it fails with the original
+stale contract. Contract/Docker unit tests: **79 passed, 5 optional image tests
+skipped**.
+
+Running the standard-image contract against the built runtime **base** confirms
+all EDA required paths, including the new source archive. The command exits 1
+only for application commands and B-Wave hard links installed by the subsequent
+candidate-image layer. Full candidate-image contract validation remains a CI
+check; this base-only run is not a passing full standard-image contract.
+
+Local size measurements on Docker 29.8.1 with the containerd overlayfs image
+store, using `.github/scripts/image_size_report.py`:
+
+| Base image | Docker `.Size` (bytes) | Unpacked history (bytes) | Visible filesystem (bytes) |
+|---|---:|---:|---:|
+| Existing 26Q3 | 5,037,865,904 | 3,357,888,512 | 2,959,712,256 |
+| New 26Q4 | 5,198,655,376 | 3,444,736,000 | 3,046,342,656 |
+| Standard-image ceiling | 3,500,000,000 | 3,500,000,000 | 3,100,000,000 |
+
+The new base passes the unpacked-history and visible-filesystem ceilings.
+The Docker `.Size` gate fails on both bases on this host, so this check is **not
+fully passing**. Candidate application layers and registry compressed size
+were not measured here. The existing size failure and the limited remaining
+headroom need CI validation; the ceilings have not been relaxed.

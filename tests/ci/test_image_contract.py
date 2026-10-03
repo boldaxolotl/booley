@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -58,7 +59,7 @@ def test_repository_contract_preserves_slimmed_image_payload() -> None:
 
     assert "/OpenROAD" in standard["absent_paths"]
     assert (
-        "/usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz"
+        "/usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz"
         in standard["required_paths"]
     )
     assert (
@@ -90,6 +91,17 @@ def test_repository_contract_preserves_slimmed_image_payload() -> None:
     assert "SPIKE_EXTLIB_MARKER" in spike_probe["command"]
     assert "--extlib=" in spike_probe["command"]
     assert "li t1, 61" in spike_probe["command"]
+
+
+def test_openroad_source_archive_contract_matches_runtime_base() -> None:
+    root = CONTRACT.parents[2]
+    dockerfile = (root / "src/booley/data/docker/Dockerfile.base").read_text()
+    revisions = set(re.findall(r"^ARG OPENROAD_SOURCE_REF=([0-9a-f]{40})$", dockerfile, re.M))
+    assert len(revisions) == 1
+    revision = revisions.pop()
+    archive = f"/usr/local/share/doc/openroad/OpenROAD-{revision}.tar.gz"
+    for flavor in ("standard", "riscv"):
+        assert archive in image_contract.load_contract(CONTRACT, flavor)["required_paths"]
 
 
 def test_contract_rejects_single_path_hard_link_group(tmp_path: Path) -> None:
