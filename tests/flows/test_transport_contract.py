@@ -1468,3 +1468,14 @@ def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)
     completion = next(event for event in events if event["type"] == "endpoint_end")
     assert (completion["criterion_key"], completion["criterion_met"]) == ("", None)
+
+
+def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():
+    schema = flow_schema(SimulateFlow())
+    assert schema["properties"]["verbose"] == {
+        "type": "boolean",
+        "default": False,
+        "description": "Include full Simulation Campaign resume mismatch pointers and values",
+    }
+    assert "verbose" not in schema.get("required", [])
+    assert "verbose" not in flow_schema(LintFlow())["properties"]
