@@ -2816,7 +2816,9 @@ def _dispatch_main() -> int:
     if command == "bootstrap":
         return run_bootstrap(args)
     if command == "projects":
-        return project_inventory_cli.run(args)
+        from booley.runtime import image_keepers as runtime_image_keepers
+
+        return project_inventory_cli.run(args, keeper_operations=runtime_image_keepers)
 
     if binding is ProjectBinding.INDEPENDENT:
         project_root = Path.cwd()

@@ -683,8 +683,8 @@ def _check_issued_image_keepers(
     if others:
         report.note(
             f"{len(others)} issued image keeper(s) from other projects persist; "
-            "after confirming those projects are gone, remove one with: "
-            "docker image rm <keeper-tag>"
+            "preview with booley projects prune-keepers, then release confirmed "
+            "orphans with booley projects prune-keepers --confirm <digest>"
         )
         for tag in others:
             report.detail(f"    {tag}")
