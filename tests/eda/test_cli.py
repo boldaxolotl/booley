@@ -241,3 +241,50 @@ def test_pending_recovery_does_not_bypass_coordinated_grant_mutation(
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("action", ["add", "revoke"])
+def test_source_project_binding_refuses_explicit_target(tmp_path, monkeypatch, action):
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    calls = []
+    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+    options = ["--installation", "registered"] if action == "add" else []
+    assert (
+        _run(_parse("grant", action, str(tmp_path), "--kind", "vivado", *options), tmp_path) == 2
+    )
+    assert calls == []
+
+
+@pytest.mark.parametrize("action", ["add", "revoke"])
+@pytest.mark.parametrize("selection", ["subdirectory", "relative", "symlink"])
+def test_source_project_binding_target_aliases(tmp_path, monkeypatch, action, selection):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    nested = source / "nested"
+    nested.mkdir()
+    monkeypatch.chdir(tmp_path)
+    if selection == "symlink":
+        target = tmp_path / "alias"
+        try:
+            target.symlink_to(source, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+    else:
+        target = nested if selection == "subdirectory" else Path("source")
+    options = ["--installation", "registered"] if action == "add" else []
+    assert _run(_parse("grant", action, str(target), "--kind", "vivado", *options), tmp_path) == 2
+
+
+def test_project_binding_missing_revoke_preserves_argument(tmp_path, monkeypatch):
+    missing = tmp_path / "missing"
+    calls = []
+
+    def revoke(project, kind):
+        calls.append(project)
+        return authority.ProjectGrant(str(project), kind, None, None)
+
+    monkeypatch.setattr(authority, "_revoke_grant", revoke)
+    assert _run(_parse("grant", "revoke", str(missing), "--kind", "vivado"), tmp_path) == 0
+    assert calls == [missing]

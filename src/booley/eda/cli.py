@@ -9,6 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol, cast
 
+from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
+
 from .provisioning import authority
 
 _Record = dict[str, object]
@@ -107,7 +109,7 @@ def run(
     """Execute one authority operation with human output or explicit JSON."""
     try:
         value = _dispatch(args, grant_mutator=grant_mutator)
-    except authority.AuthorityError as exc:
+    except (authority.AuthorityError, SourceCheckoutProjectError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     legacy_grant_list = args.eda_group == "grant" and args.eda_action == "list"
@@ -184,6 +186,8 @@ def _grant_action(
         raise authority.AuthorityError(
             "Sandbox recovery is pending; run a host lifecycle command first"
         )
+    if action in {"add", "revoke"}:
+        require_project_checkout(args.project)
     if action == "add":
         grant = grant_mutator.add(
             args.project,
