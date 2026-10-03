@@ -1026,3 +1026,17 @@ def test_codex_atomic_publication_preserves_symlink_and_permissions(tmp_path, wr
     assert path.is_symlink()
     assert target.stat().st_mode & 0o777 == 0o640
     assert tomllib.loads(target.read_text())["model"] == "existing"
+
+
+@pytest.mark.parametrize("writer", ["mcp", "permission"])
+def test_codex_migration_preserves_unrelated_crlf_bytes(tmp_path, writer):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    existing = b'# retain CRLF\r\nmodel="existing"\r\n'
+    path.write_bytes(existing)
+    if writer == "mcp":
+        reg.upsert_codex(path)
+    else:
+        reg._apply_codex_permission_mode(tmp_path)
+    assert existing in path.read_bytes()
+    tomllib.loads(path.read_bytes().decode("utf-8"))

@@ -330,6 +330,14 @@ def _codex_data(existing: str, *, path: Path | None = None) -> dict:
     return parsed
 
 
+def _read_codex_config(path: Path) -> str:
+    """Read user TOML without normalizing unrelated line-ending bytes."""
+    if not path.exists():
+        return ""
+    with path.open(encoding="utf-8", newline="") as stream:
+        return stream.read()
+
+
 def _publish_codex_config(path: Path, content: str) -> None:
     """Publish validated TOML atomically, preserving existing permission bits."""
     _codex_data(content, path=path)
@@ -339,7 +347,7 @@ def _publish_codex_config(path: Path, content: str) -> None:
     descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
@@ -535,7 +543,7 @@ def _upsert_codex_modern_mcp_feature(existing: str) -> str:
 
 def upsert_codex(path: Path) -> bool:
     """Migrate owned MCP settings and default warning preference without redumping."""
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = _read_codex_config(path)
     parsed = _codex_data(existing, path=path)
     if _codex_entry_is_current(existing):
         return False
@@ -584,7 +592,7 @@ def _upsert_codex_full_access_notice(existing: str) -> str:
 def _apply_codex_permission_mode(home: Path | None = None) -> str:
     """Pin Codex to its container-trusted, provider-web-disabled mode."""
     path = codex_config_path(home)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = _read_codex_config(path)
     data = _codex_data(existing, path=path)
     notice = data.get("notice", {})
     if (
