@@ -2021,7 +2021,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
         project_tools = None
     endpoints = discover_mcp_tools(
         project_mcp_tools_dir=project_tools,
-        mcp_tool_config=config,
+        specialist_config=config,
         flow_config=flows,
     )
     info = _select_endpoint(args, endpoints, "specialist")

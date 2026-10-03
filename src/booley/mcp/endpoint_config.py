@@ -1,6 +1,7 @@
 """Shared endpoint visibility configuration without MCP server imports."""
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +10,25 @@ from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_pro
 logger = logging.getLogger(__name__)
 
 
+def parse_endpoint_config(data: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Select capability configuration and reject retired visibility tables."""
+    for retired in ("tools", "mcp_tools"):
+        if retired in data:
+            raise ValueError(
+                f"booley.toml [{retired}] is retired; move deterministic settings "
+                "to [flows.*] and Specialist settings to [specialists.*]; "
+                "remove protocol utility settings (utilities have no project enable switch)"
+            )
+    specialists = data.get("specialists", {})
+    flows = data.get("flows", {})
+    return (
+        specialists if isinstance(specialists, dict) else {},
+        flows if isinstance(flows, dict) else {},
+    )
+
+
 def get_endpoint_config(project_root: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Load ``[mcp_tools]`` and ``[flows]`` from booley.toml."""
+    """Load ``[specialists]`` and ``[flows]`` from booley.toml."""
     try:
         import tomllib
 
@@ -23,18 +41,7 @@ def get_endpoint_config(project_root: Path | None = None) -> tuple[dict[str, Any
         if toml_path.exists():
             with toml_path.open("rb") as f:
                 cfg = tomllib.load(f)
-            legacy = cfg.get("tools")
-            if legacy is not None:
-                raise ValueError(
-                    "booley.toml [tools] is retired; move deterministic settings "
-                    "to [flows.*] and Specialist settings to [mcp_tools.*]"
-                )
-            mcp_tools = cfg.get("mcp_tools", {})
-            flows = cfg.get("flows", {})
-            return (
-                mcp_tools if isinstance(mcp_tools, dict) else {},
-                flows if isinstance(flows, dict) else {},
-            )
+            return parse_endpoint_config(cfg)
     except ValueError:
         raise
     except Exception:  # unreadable config falls back to empty config

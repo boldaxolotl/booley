@@ -64,7 +64,7 @@ def discover_mcp_tools(
     *,
     booley_src: Path | None = None,
     project_mcp_tools_dir: Path | None = None,
-    mcp_tool_config: dict[str, Any] | None = None,
+    specialist_config: dict[str, Any] | None = None,
     flow_config: dict[str, Any] | None = None,
 ) -> list[McpToolInfo]:
     """Discover and filter available MCP endpoints.
@@ -73,7 +73,7 @@ def discover_mcp_tools(
         booley_src: Path to the installed ``booley`` package directory.
             Defaults to the parent of this file's package.
         project_mcp_tools_dir: Project custom MCP tool directory.
-        mcp_tool_config: ``booley.toml [mcp_tools]`` Specialist/endpoint config.
+        specialist_config: ``booley.toml [specialists]`` Specialist config.
         flow_config: ``booley.toml [flows]`` deterministic Flow config.
 
     Returns:
@@ -82,7 +82,7 @@ def discover_mcp_tools(
     if booley_src is None:
         booley_src = Path(__file__).resolve().parent.parent
 
-    mcp_tool_config = mcp_tool_config or {}
+    specialist_config = specialist_config or {}
     flow_config = flow_config or {}
 
     discovered: list[McpToolInfo] = []
@@ -90,7 +90,7 @@ def discover_mcp_tools(
     discovered.extend(
         _scan_directory(
             booley_src / "mcp",
-            mcp_tool_config,
+            specialist_config,
             flow_config,
             builtin=True,
             package="mcp",
@@ -99,7 +99,7 @@ def discover_mcp_tools(
     discovered.extend(
         _scan_directory(
             booley_src / "specialists",
-            mcp_tool_config,
+            specialist_config,
             flow_config,
             builtin=True,
             package="specialists",
@@ -110,7 +110,7 @@ def discover_mcp_tools(
         discovered.extend(
             _scan_directory(
                 project_mcp_tools_dir,
-                mcp_tool_config,
+                specialist_config,
                 flow_config,
                 builtin=False,
                 package="",
@@ -149,7 +149,7 @@ def _scan_builtin_flows(
 
 def _scan_directory(
     endpoint_dir: Path,
-    mcp_tool_config: dict[str, Any],
+    specialist_config: dict[str, Any],
     flow_config: dict[str, Any] | None = None,
     *,
     builtin: bool,
@@ -170,7 +170,7 @@ def _scan_directory(
         if info is None:
             continue
 
-        namespace = flow_config if info.kind == "flow" else mcp_tool_config
+        namespace = {"flow": flow_config, "specialist": specialist_config}.get(info.kind, {})
         endpoint_entry = namespace.get(info.name)
         if isinstance(endpoint_entry, dict) and endpoint_entry.get("enabled") is False:
             logger.debug("MCP endpoint %s disabled via config", info.name)

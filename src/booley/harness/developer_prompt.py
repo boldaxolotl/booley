@@ -35,7 +35,7 @@ class DeveloperPromptContext:
     criteria: dict[str, Any] | None = None
     criterion_endpoint_catalog: CriterionEndpointCatalog | None = None
     mcp_tools: list[McpToolInfo] | None = None
-    mcp_tool_config: dict[str, Any] | None = None
+    specialist_config: dict[str, Any] | None = None
     flow_config: dict[str, Any] | None = None
     booley_src: Path | None = None
     project_mcp_tools_dir: Path | None = None
@@ -786,7 +786,7 @@ def build_developer_prompt(
         mcp_tools = discover_mcp_tools(
             booley_src=ctx.booley_src,
             project_mcp_tools_dir=ctx.project_mcp_tools_dir,
-            mcp_tool_config=ctx.mcp_tool_config,
+            specialist_config=ctx.specialist_config,
             flow_config=ctx.flow_config,
         )
 

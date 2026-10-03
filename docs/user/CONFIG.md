@@ -93,30 +93,34 @@ is retired and ignored; delete the table and see
 cleanup. Everything else is detailed below, starting with the shared `enabled`
 setting for Booley Flows and Specialists.
 
-### Booley Flow execution: `enabled`
+### Flow and Specialist availability: `enabled`
 
 Every Booley Flow builds and executes its command inside the Sandbox.
 Set `[flows.<name>].enabled = false` to remove a Flow from agent and autonomous
-discovery. Specialists and other non-Flow MCP endpoints use
-`[mcp_tools.<name>].enabled` instead:
+discovery. Specialists use `[specialists.<name>].enabled`:
 
 ```toml
 [flows.lint]
 enabled = false
 
-[mcp_tools.coverage_analyst]
+[specialists.coverage_analyst]
 enabled = false
 ```
 
 `enabled` defaults to `true` when omitted. For a Specialist, `enabled = false`
 removes its MCP tool from Interactive Mode, makes it unavailable through
 `booley specialist`, and removes it from the Developer Agent's available
-Specialists in Ticket Mode. The same switch filters project-defined non-Flow
-MCP endpoints. `enabled` is the shared visibility key under `[mcp_tools.<name>]`;
+Specialists in Ticket Mode. The same switch filters project-defined Specialists.
+`enabled` is the visibility key under `[specialists.<name>]`;
 Specialist model selection belongs in `[models.roles]` (see
-[Model selection](#model-selection-models)). The retired `[tools.*]` table must
-be split into `[flows.*]` for deterministic Flows and `[mcp_tools.*]` for
-Specialists and other non-Flow endpoints.
+[Model selection](#model-selection-models)).
+
+`[mcp_tools.*]` is retired and produces a migration error: rename Specialist
+sections to `[specialists.*]`. The older `[tools.*]` table must be split into
+`[flows.*]` for deterministic Flows and `[specialists.*]` for Specialists.
+Remove settings for protocol utility endpoints such as `submit_run_report`;
+they have no Project `enabled` switch and their visibility is controlled by
+execution mode and MCP server filters.
 
 The former `backend`, `venue`, and `host_setup_commands` keys are retired and
 now produce hard migration errors. Delete them: execution location and Sandbox

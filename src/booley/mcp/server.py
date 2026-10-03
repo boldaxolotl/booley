@@ -458,10 +458,10 @@ def _discover_booley_mcp_tools() -> tuple[list[dict[str, Any]], list[str]]:
     from booley.mcp.registry import discover_mcp_tools
 
     project_mcp_tools_dir = get_project_mcp_tools_dir()
-    mcp_tool_config, flow_config = _get_endpoint_config()
+    specialist_config, flow_config = _get_endpoint_config()
     filtered_endpoints = discover_mcp_tools(
         project_mcp_tools_dir=project_mcp_tools_dir,
-        mcp_tool_config=mcp_tool_config,
+        specialist_config=specialist_config,
         flow_config=flow_config,
     )
     allowed_names = {t.name for t in filtered_endpoints}

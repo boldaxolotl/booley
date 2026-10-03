@@ -459,7 +459,7 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
             "logs_dir": tmp_path,
             "slug": "s",
             "mcp_tools": mcp_tools,
-            "mcp_tool_config": {
+            "specialist_config": {
                 "builtin": [mcp_tool.name for mcp_tool in mcp_tools],
                 "custom": [],
             },

@@ -18,7 +18,7 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
     {
         "project",
         "flows",
-        "mcp_tools",
+        "specialists",
         "sandbox",
         "agent",
         "models",
@@ -34,20 +34,32 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
 )
 
 RETIRED_BOOLEY_TOML_TABLES = {
+    "mcp_tools": (
+        "retired — move Specialist settings to [specialists.*] and remove protocol "
+        "utility settings (utilities have no project enable switch)"
+    ),
     "notifications": "push delivery was removed; settings are ignored — delete this table",
     "tools": (
-        "retired — move deterministic settings to [flows.*] and Specialist or "
-        "other non-Flow endpoint settings to [mcp_tools.*]"
+        "retired — move deterministic settings to [flows.*] and Specialist "
+        "settings to [specialists.*]"
     ),
     "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
 }
 
 
 def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Warn about top-level tables that no live Booley consumer recognizes."""
+    """Audit recognized tables, rejecting retired MCP visibility configuration."""
     findings: list[ConfigFinding] = []
     for key in data:
         if key in KNOWN_BOOLEY_TOML_TABLES:
+            continue
+        if key == "mcp_tools":
+            findings.append(
+                fail_finding(
+                    "booley.toml [mcp_tools] is retired",
+                    RETIRED_BOOLEY_TOML_TABLES[key],
+                )
+            )
             continue
         hint = RETIRED_BOOLEY_TOML_TABLES.get(key)
         if hint:

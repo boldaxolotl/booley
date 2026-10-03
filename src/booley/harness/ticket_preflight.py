@@ -281,7 +281,7 @@ def _validate_custom_endpoints_and_criteria(project_root: Path) -> None:
     all_criteria_names = _validate_criteria_structure(project_root)
 
     # --- Load endpoint config and check structural endpoint errors ---
-    mcp_tool_config, flow_config = _load_endpoint_config(project_root)
+    specialist_config, flow_config = _load_endpoint_config(project_root)
     custom_mcp_tools_dir = project_root / ".booley_project" / "mcp_tools"
     # --- Per-endpoint validation (warn + skip on error) ---
     if not custom_mcp_tools_dir.is_dir():
@@ -293,7 +293,7 @@ def _validate_custom_endpoints_and_criteria(project_root: Path) -> None:
         if py_file.stem.startswith("_"):
             continue
         _validate_single_endpoint(
-            py_file, mcp_tool_config, flow_config, builtin_names, all_criteria_names
+            py_file, specialist_config, flow_config, builtin_names, all_criteria_names
         )
 
     logger.debug("Custom MCP endpoint validation complete")
@@ -361,7 +361,7 @@ def _warn_retired_sandbox_attr(
 
 def _validate_single_endpoint(
     py_file: Path,
-    mcp_tool_config: dict[str, Any],
+    specialist_config: dict[str, Any],
     flow_config: dict[str, Any],
     builtin_names: set[str],
     all_criteria_names: set[str],
@@ -389,7 +389,7 @@ def _validate_single_endpoint(
         )
         return
 
-    namespace = flow_config if info.kind == "flow" else mcp_tool_config
+    namespace = {"flow": flow_config, "specialist": specialist_config}.get(info.kind, {})
     entry = namespace.get(info.name)
     if isinstance(entry, dict) and entry.get("enabled") is False:
         return
@@ -419,7 +419,9 @@ def _validate_single_endpoint(
 
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Load the ``[mcp_tools]`` and ``[flows]`` sections from booley.toml."""
+    """Load the ``[specialists]`` and ``[flows]`` sections from booley.toml."""
+    from booley.mcp.endpoint_config import parse_endpoint_config
+
     toml_path = project_root / ".booley_project" / "booley.toml"
     if not toml_path.exists():
         return {}, {}
@@ -428,15 +430,10 @@ def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str,
 
         with toml_path.open("rb") as f:
             data = tomllib.load(f)
-        mcp_tools = data.get("mcp_tools", {})
-        flows = data.get("flows", {})
-        return (
-            mcp_tools if isinstance(mcp_tools, dict) else {},
-            flows if isinstance(flows, dict) else {},
-        )
     except Exception as e:  # noqa: BLE001 — malformed TOML degrades; validation continues
         logger.warning("Failed to load booley.toml: %s", e)
         return {}, {}
+    return parse_endpoint_config(data)
 
 
 def _extract_sandbox_attr(tree: ast.Module) -> str | None:

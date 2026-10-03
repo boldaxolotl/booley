@@ -82,7 +82,7 @@ def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, mon
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     directory = tmp_path / ".booley_project"
     (directory / "mcp_tools").mkdir(parents=True)
-    (directory / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
+    (directory / "booley.toml").write_text("[specialists.reviewer]\nenabled = false\n")
     (directory / "mcp_tools/project_review.py").write_text(
         'from booley.specialists.specialist import Specialist\nclass ProjectReview(Specialist):\n    name = "project_review"\n    description = "Project fixture"\n'
     )
@@ -139,7 +139,7 @@ def test_host_refusal_precedes_state_reports_and_admission(tmp_path, monkeypatch
 def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox):
     data = tmp_path / ".booley_project"
     data.mkdir()
-    (data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = false\n")
+    (data / "booley.toml").write_text("[specialists.project_review]\nenabled = false\n")
     endpoint = ProjectSpecialist()
     endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
     assert endpoint.main(["--work-dir", str(tmp_path)]) == 2
@@ -152,13 +152,13 @@ def test_disabled_gate_uses_selected_project_config(tmp_path, monkeypatch, sandb
     root.mkdir()
     data = root / ("project_data" if selection == "override" else ".booley_project")
     data.mkdir()
-    (data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = false\n")
+    (data / "booley.toml").write_text("[specialists.project_review]\nenabled = false\n")
     if selection == "override":
         (root / "booley.toml").write_text('[project]\ndir = "project_data"\n')
     elif selection == "checkout_snapshot":
         session_data = tmp_path / "session_data"
         session_data.mkdir()
-        (session_data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = true\n")
+        (session_data / "booley.toml").write_text("[specialists.project_review]\nenabled = true\n")
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(session_data))
     else:
         root = root / "rtl"
@@ -174,7 +174,7 @@ def test_listing_resolves_project_directory_override(tmp_path, monkeypatch, caps
     (tmp_path / "booley.toml").write_text('[project]\ndir = "project_data"\n')
     data = tmp_path / "project_data"
     (data / "mcp_tools").mkdir(parents=True)
-    (data / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
+    (data / "booley.toml").write_text("[specialists.reviewer]\nenabled = false\n")
     (data / "mcp_tools/project_review.py").write_text(
         'from booley.specialists.specialist import Specialist\nclass ProjectReview(Specialist):\n    name = "project_review"\n    description = "Project fixture"\n'
     )
