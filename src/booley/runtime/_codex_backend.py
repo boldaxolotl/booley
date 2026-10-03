@@ -492,34 +492,40 @@ def _ticket_home_scope() -> str:
     return f"{safe or 'ticket'}-{digest}"
 
 
+def _populate_private_codex_home(
+    codex_dir: Path, booley_env: dict[str, str], enabled_mcp_tools: list[str] | None = None
+) -> None:
+    """Regenerate one destination config and copy the existing native credential."""
+    from .mcp_config import generate_codex_config
+
+    config_path = codex_dir / "config.toml"
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    config_path.write_text(
+        generate_codex_config(
+            enabled_mcp_tools=enabled_mcp_tools, extra_env=booley_env, existing_config=existing
+        ),
+        encoding="utf-8",
+    )
+    original_auth = Path(os.environ.get("HOME", "/home/agent")) / ".codex" / "auth.json"
+    if original_auth.exists():
+        shutil.copy2(original_auth, codex_dir / "auth.json")
+
+
 def _ensure_nested_codex_home(
     parent_label: str,
     allowed_mcp_tools: list[str] | None,
     extra_env: dict[str, str] | None = None,
 ) -> str:
-    """Create a per-parent HOME dir for a nested Codex agent.
+    """Create a cached private home exposing only the nested agent's MCP allowlist.
 
-    Nested agents inherit ~/.codex/config.toml from the developer, which
-    exposes all Booley MCP tools — including the very Specialist that spawned
-    the agent. Letting them through caused infinite recursion (reviewer →
-    codex → MCP reviewer → codex → …).
-
-    Specialists such as TB Coder need narrowly selected Flow capabilities.
-    Each spawning specialist declares
-    ``nested_mcp_tools`` (an allowlist of safe, non-recursive MCP tool
-    names); we generate a per-parent config.toml with that list baked into
-    ``BOOLEY_NESTED_MCP_TOOLS`` in [env]. The MCP server reads that env on
-    startup and filters discovery to exactly those names. Empty list → no
-    MCP at all (current behavior for most specialists).
-
-    Cache key: the allowlist and explicit scoped environment. Two callers
-    with identical inputs share the same nested home (cheap; the config is
-    identical). A `None` allowlist is treated the same as empty.
+    Developer homes expose Specialists; allowing a Specialist to inherit that
+    configuration can recursively spawn itself. Each caller declares its safe
+    Flow allowlist. Empty/None lists expose no MCP tools. The cache identity is
+    the ticket scope, allowlist and explicitly scoped environment; a cache hit
+    leaves the existing config untouched.
     """
     import hashlib
     import os
-
-    from .mcp_config import generate_codex_config
 
     allowlist = list(allowed_mcp_tools or [])
     # Deterministic cache key from the allowlist content. Empty -> "_none".
@@ -550,17 +556,7 @@ def _ensure_nested_codex_home(
     booley_env["BOOLEY_NESTED_AGENT"] = "1"
     booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
 
-    config_path = codex_dir / "config.toml"
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
-    config_path.write_text(
-        generate_codex_config(extra_env=booley_env, existing_config=existing), encoding="utf-8"
-    )
-
-    original_auth = Path(os.environ.get("HOME", "/home/agent")) / ".codex" / "auth.json"
-    if original_auth.exists():
-        import shutil as _shutil
-
-        _shutil.copy2(original_auth, codex_dir / "auth.json")
+    _populate_private_codex_home(codex_dir, booley_env)
 
     _NESTED_HOMES[cache_key] = str(nested)
     return _NESTED_HOMES[cache_key]
@@ -590,8 +586,6 @@ def _ensure_developer_codex_home(
     """
     import os
 
-    from .mcp_config import generate_codex_config
-
     booley_env = {k: v for k, v in os.environ.items() if k.startswith("BOOLEY_")}
     # Belt-and-braces: never leak nested markers into the developer server.
     booley_env.pop("BOOLEY_NESTED_AGENT", None)
@@ -604,19 +598,7 @@ def _ensure_developer_codex_home(
     codex_dir = home / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = codex_dir / "config.toml"
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
-    config_path.write_text(
-        generate_codex_config(
-            enabled_mcp_tools=enabled_mcp_tools,
-            extra_env=booley_env,
-            existing_config=existing,
-        )
-    )
-
-    original_auth = Path(os.environ.get("HOME", "/home/agent")) / ".codex" / "auth.json"
-    if original_auth.exists():
-        shutil.copy2(original_auth, codex_dir / "auth.json")
+    _populate_private_codex_home(codex_dir, booley_env, enabled_mcp_tools)
 
     return str(home)
 

@@ -931,3 +931,98 @@ def test_full_codex_registration_preserves_explicit_choice(tmp_path, monkeypatch
     assert tomllib.loads(body)["suppress_unstable_features_warning"] is preference
     assert "codex:current" in reg.register("codex", home=tmp_path)
     assert path.read_text() == body
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        "features = {mcp_2026_07_28 = false} # preserve header\n",
+        "features = {other = true, mcp_2026_07_28 = false}\n",
+        'features = {other = {text = "a,b=}", values = [1, 2]}}\n',
+        "notice = {hide_full_access_warning = false} # preserve header\n",
+        "notice = {other = true, hide_full_access_warning = false}\n",
+        'notice = {other = {text = "a,b=}", values = [1, 2]}}\n',
+        '# preserve\u2028approval_policy="on-request"\nmodel="existing"\n',
+        '# preserve\u2029sandbox_mode="restricted"\n',
+        '# preserve\u0085web_search="enabled"\n',
+    ],
+)
+def test_full_codex_registration_preserves_inline_tables_and_unicode_comments(
+    tmp_path, monkeypatch, existing
+):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(existing, encoding="utf-8")
+    monkeypatch.setattr(reg, "deploy_skills", lambda *args: 0)
+    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: 0)
+    monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: "none")
+    assert "codex:written" in reg.register("codex", home=tmp_path)
+    body = path.read_text(encoding="utf-8")
+    parsed = tomllib.loads(body)
+    assert parsed["features"]["mcp_2026_07_28"] is True
+    assert parsed["notice"]["hide_full_access_warning"] is True
+    for table in ("features", "notice"):
+        original = tomllib.loads(existing).get(table, {})
+        if "other" in original:
+            assert parsed[table]["other"] == original["other"]
+            assert "other = " in body
+    if existing.startswith("# preserve"):
+        assert existing in body
+    if "# preserve header" in existing:
+        assert "# preserve header" in body
+    assert "codex:current" in reg.register("codex", home=tmp_path)
+    assert path.read_text(encoding="utf-8") == body
+
+
+@pytest.mark.parametrize("writer", ["mcp", "permission"])
+def test_codex_publication_failure_preserves_destination(tmp_path, monkeypatch, writer):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    existing = 'model="existing"\n'
+    path.write_text(existing, encoding="utf-8")
+    path.chmod(0o640)
+
+    def fail_replace(source, destination):
+        if destination == path:
+            raise OSError("interrupted publication")
+        raise AssertionError("unexpected destination")
+
+    monkeypatch.setattr(type(path), "replace", fail_replace)
+    with pytest.raises(OSError, match="interrupted publication"):
+        if writer == "mcp":
+            reg.upsert_codex(path)
+        else:
+            reg._apply_codex_permission_mode(tmp_path)
+    assert path.read_text(encoding="utf-8") == existing
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("existing", ['broken="', 'suppress_unstable_features_warning="bad"'])
+def test_invalid_codex_diagnostic_names_destination(tmp_path, existing):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(existing)
+    with pytest.raises(ValueError, match=str(path)):
+        reg.upsert_codex(path)
+    assert path.read_text() == existing
+
+
+@pytest.mark.parametrize("writer", ["mcp", "permission"])
+def test_codex_atomic_publication_preserves_symlink_and_permissions(tmp_path, writer):
+    require_symlinks(tmp_path)
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    target = tmp_path / "shared-config.toml"
+    target.write_text('model="existing"\n', encoding="utf-8")
+    target.chmod(0o640)
+    path.symlink_to(target)
+    if writer == "mcp":
+        reg.upsert_codex(path)
+        assert tomllib.loads(target.read_text())["suppress_unstable_features_warning"] is True
+    else:
+        reg._apply_codex_permission_mode(tmp_path)
+        assert tomllib.loads(target.read_text())["approval_policy"] == "never"
+    assert path.is_symlink()
+    assert target.stat().st_mode & 0o777 == 0o640
+    assert tomllib.loads(target.read_text())["model"] == "existing"

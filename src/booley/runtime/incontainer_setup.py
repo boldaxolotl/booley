@@ -36,10 +36,11 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from booley.runtime import auth_token
 from booley.runtime.mcp_config import HTTP_ENDPOINT_PATH, http_port
@@ -312,14 +313,40 @@ def codex_section() -> str:
     )
 
 
-def _codex_data(existing: str) -> dict:
+def _codex_data(existing: str, *, path: Path | None = None) -> dict:
     """Validate interactive config before any registration mutation."""
-    parsed = tomllib.loads(existing)
-    if "suppress_unstable_features_warning" in parsed and not isinstance(
-        parsed["suppress_unstable_features_warning"], bool
-    ):
-        raise ValueError("suppress_unstable_features_warning must be a boolean")
+    try:
+        parsed = tomllib.loads(existing)
+        if "suppress_unstable_features_warning" in parsed and not isinstance(
+            parsed["suppress_unstable_features_warning"], bool
+        ):
+            raise ValueError("suppress_unstable_features_warning must be a boolean")
+    except ValueError as exc:
+        if path is None:
+            raise
+        raise ValueError(
+            f"Invalid Codex config {path}: {exc}; repair this file and retry"
+        ) from exc
     return parsed
+
+
+def _publish_codex_config(path: Path, content: str) -> None:
+    """Publish validated TOML atomically, preserving existing permission bits."""
+    _codex_data(content, path=path)
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(mode)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _codex_entry_is_current(existing: str) -> bool:
@@ -344,21 +371,40 @@ def _toml_statements(existing: str) -> list[str]:
     tomllib.loads(existing)
     statements: list[str] = []
     pending = ""
-    for line in existing.splitlines(keepends=True):
-        pending += line
+    lines = existing.split("\n")
+    for index, line in enumerate(lines):
+        pending += line + ("\n" if index < len(lines) - 1 else "")
         try:
             tomllib.loads(pending)
         except tomllib.TOMLDecodeError:
             continue
         statements.append(pending)
         pending = ""
-    assert not pending
+    if pending:
+        raise ValueError("Incomplete validated TOML statement")
     return statements
 
 
+def _toml_assignment(statement: str) -> tuple[str, str]:
+    """Find the syntactic key boundary, including equals signs in quoted keys."""
+    for index, character in enumerate(statement):
+        if character != "=":
+            continue
+        try:
+            key = tomllib.loads(statement[:index] + "=0")
+        except tomllib.TOMLDecodeError:
+            continue
+        if key:
+            return statement[:index], statement[index + 1 :]
+    raise ValueError("Expected a validated TOML assignment")
+
+
 def _toml_path(statement: str) -> tuple[str, ...]:
-    """Decode quoted and dotted keys without interpreting spelling ourselves."""
+    """Decode syntactic keys without descending into inline-table values."""
     data = tomllib.loads(statement)
+    if data and not statement.lstrip().startswith("["):
+        spelling, _value = _toml_assignment(statement)
+        data = tomllib.loads(spelling + "=0")
     path: list[str] = []
     while isinstance(data, dict) and len(data) == 1:
         key, data = next(iter(data.items()))
@@ -366,7 +412,73 @@ def _toml_path(statement: str) -> tuple[str, ...]:
     return tuple(path)
 
 
-def _toml_entries(existing: str) -> list[tuple[str, tuple[str, ...], bool]]:
+class _TomlEntry(NamedTuple):
+    text: str
+    path: tuple[str, ...]
+    header: bool
+
+
+def _replace_toml_assignment(statement: str, value: str) -> str:
+    """Replace only an assignment's value, retaining its spelling and comment."""
+    spelling, old = _toml_assignment(statement)
+    for index in range(1, len(old) + 1):
+        tail = old[index:]
+        if tail.strip() and not tail.lstrip().startswith("#"):
+            continue
+        try:
+            tomllib.loads("value=" + old[:index])
+        except tomllib.TOMLDecodeError:
+            continue
+        leading = old[: len(old) - len(old.lstrip())]
+        return spelling + "=" + leading + value + tail
+    raise ValueError("Expected a complete validated TOML value")
+
+
+def _inline_table_members(body: str) -> list[str]:
+    """Find member boundaries with the parser, not commas inside nested values."""
+    members = []
+    start = 0
+    for index, character in enumerate(body):
+        if character != ",":
+            continue
+        try:
+            tomllib.loads("value={" + body[start:index] + "}")
+        except tomllib.TOMLDecodeError:
+            continue
+        members.append(body[start:index])
+        start = index + 1
+    members.append(body[start:])
+    return members
+
+
+def _upsert_inline_table_setting(statement: str, key: str, value: str) -> str:
+    """Edit one member of an inline table while preserving all other bytes."""
+    spelling, raw = _toml_assignment(statement)
+    opening = raw.index("{")
+    for closing in range(opening + 1, len(raw)):
+        if raw[closing] != "}":
+            continue
+        try:
+            tomllib.loads("value=" + raw[: closing + 1])
+        except tomllib.TOMLDecodeError:
+            continue
+        break
+    else:
+        raise ValueError("Expected a complete validated inline table")
+    body = raw[opening + 1 : closing]
+    members = _inline_table_members(body)
+    for index, member in enumerate(members):
+        if member.strip() and _toml_path(member) == (key,):
+            members[index] = _replace_toml_assignment(member, value)
+            break
+    else:
+        members.append(f" {key} = {value}")
+        if not body.strip():
+            members = members[1:]
+    return spelling + "=" + raw[: opening + 1] + ",".join(members) + raw[closing:]
+
+
+def _toml_entries(existing: str) -> list[_TomlEntry]:
     entries = []
     table: tuple[str, ...] = ()
     for statement in _toml_statements(existing):
@@ -374,7 +486,7 @@ def _toml_entries(existing: str) -> list[tuple[str, tuple[str, ...], bool]]:
         path = _toml_path(statement)
         if header:
             table = path
-        entries.append((statement, path if header else table + path, header))
+        entries.append(_TomlEntry(statement, path if header else table + path, header))
     return entries
 
 
@@ -394,14 +506,18 @@ def _upsert_existing_codex_table_setting(
     target = (table, key)
     for index, (statement, path, header) in enumerate(entries):
         if path == target and not header:
-            spelling = statement.partition("=")[0].strip()
-            entries[index] = (f"{spelling} = {value}\n", path, header)
+            entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
             return "".join(item[0] for item in entries)
+    for index, (statement, path, header) in enumerate(entries):
+        if path == (table,) and not header and tomllib.loads(statement):
+            updated = _upsert_inline_table_setting(statement, key, value)
+            entries[index] = _TomlEntry(updated, path, header)
+            return "".join(item.text for item in entries)
     for index, (_statement, path, header) in enumerate(entries):
         if path == (table,) and header:
             if not _statement.endswith("\n"):
-                entries[index] = (_statement + "\n", path, header)
-            entries.insert(index + 1, (f"{key} = {value}\n", target, False))
+                entries[index] = _TomlEntry(_statement + "\n", path, header)
+            entries.insert(index + 1, _TomlEntry(f"{key} = {value}\n", target, False))
             return "".join(item[0] for item in entries)
     return None
 
@@ -420,7 +536,7 @@ def _upsert_codex_modern_mcp_feature(existing: str) -> str:
 def upsert_codex(path: Path) -> bool:
     """Migrate owned MCP settings and default warning preference without redumping."""
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    parsed = _codex_data(existing)
+    parsed = _codex_data(existing, path=path)
     if _codex_entry_is_current(existing):
         return False
     updated = existing
@@ -433,9 +549,9 @@ def upsert_codex(path: Path) -> bool:
         updated = _strip_codex_table(updated)
         sep = "" if not updated or updated.endswith("\n") else "\n"
         updated += sep + codex_section()
-    _codex_data(updated)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(updated, encoding="utf-8")
+    if not _codex_entry_is_current(updated):
+        raise ValueError(f"Codex migration did not produce current settings: {path}")
+    _publish_codex_config(path, updated)
     return True
 
 
@@ -445,8 +561,7 @@ def _upsert_codex_root_setting(existing: str, key: str, value: str) -> str:
     entries = _toml_entries(existing)
     for index, (statement, path, header) in enumerate(entries):
         if path == target and not header:
-            spelling = statement.partition("=")[0].strip()
-            entries[index] = (f"{spelling} = {value}\n", path, header)
+            entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
             return "".join(item[0] for item in entries)
     return f"{key} = {value}\n" + existing
 
@@ -470,7 +585,7 @@ def _apply_codex_permission_mode(home: Path | None = None) -> str:
     """Pin Codex to its container-trusted, provider-web-disabled mode."""
     path = codex_config_path(home)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    data = _codex_data(existing)
+    data = _codex_data(existing, path=path)
     notice = data.get("notice", {})
     if (
         data.get("approval_policy") == "never"
@@ -485,9 +600,7 @@ def _apply_codex_permission_mode(home: Path | None = None) -> str:
     updated = _upsert_codex_root_setting(updated, "sandbox_mode", '"danger-full-access"')
     updated = _upsert_codex_root_setting(updated, "web_search", '"disabled"')
     updated = _upsert_codex_full_access_notice(updated)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _codex_data(updated)
-    path.write_text(updated, encoding="utf-8")
+    _publish_codex_config(path, updated)
     return "written"
 
 
