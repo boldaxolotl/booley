@@ -11,9 +11,9 @@ store it builds is a plain FST file, so it also opens in GTKWave and VaporView.
 
 **Never** `cat` / `Read` a `.fst` or `.vcd` — they can be hundreds of MB. Keep
 globs narrow (`-s "tb.dut.*"`) and ranges bounded (`-t 0:100`); prefer
-`--format json` and parse it. Output caps at `--limit` lines (default 2000);
-when an envelope says `truncated: true`, narrow the query rather than raising
-the limit.
+`--format json` and parse it. Output caps at `--limit` records/columns (default 2000);
+inspect `warnings` as well as `truncated: true` for truncation, since value
+and stats have no `truncated` field. Narrow the query rather than raising the limit.
 
 More depth, in order: `bwave <cmd> --help` (authoritative flags) →
 `bwave docs topics` / `docs show <topic>` / `docs search <q>` (narrative

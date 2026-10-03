@@ -638,15 +638,15 @@ fn test_at_time_async_ps() {
 }
 
 #[test]
-fn test_at_time_async_ps_beyond_range_holds_last_value() {
-    // FST snapshot semantics hold the final value beyond the recorded range.
+fn test_at_time_async_ps_beyond_range_is_input_error() {
+    // Public point queries reject times beyond the recorded trace.
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "999999999t", "--async"]);
-    assert_eq!(code, 0);
-    assert!(stdout.contains("# Snapshot at 999999999"));
-    assert!(stdout.contains("counter[7:0]"));
+    let (stdout, stderr, code) = run_query(&["value", &vcd, "--at", "999999999t", "--async"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("beyond simulation range"));
 }
 
 #[test]
@@ -1535,7 +1535,11 @@ fn test_distance_two_event_stats() {
     assert!(stdout.contains("count=5"), "count: {}", stdout);
     assert!(stdout.contains("min=3"), "min: {}", stdout);
     assert!(stdout.contains("max=5"), "max: {}", stdout);
-    assert!(stdout.contains("avg=3.8"), "avg: {}", stdout);
+    assert!(
+        stdout.contains("mean=3.8  median=4.0"),
+        "summary: {}",
+        stdout
+    );
 }
 
 #[test]
