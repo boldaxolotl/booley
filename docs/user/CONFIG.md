@@ -155,7 +155,11 @@ in the host-owned Project Inventory. `booley projects` joins those roots with
 their Grants and reports each root as `present`, `missing`, or `uninitialized`.
 Use `booley projects discover <root>...` to import existing initialized
 Projects; discovery scans only the roots named on the command line and does not
-follow directory symlinks. `booley projects forget <project>` removes an
+follow directory symlinks. Discovery stops descending at each initialized
+Project to avoid scanning its RTL, vendor, and build trees, so nested Projects
+are not imported by that scan. To import a nested Project, run
+`booley projects discover <nested path>` on it directly.
+`booley projects forget <project>` removes an
 obsolete remembered root only after its live Grants have been revoked.
 Forget then releases that root's issued-image keeper tag when no container uses
 its immutable image; an in-use keeper is retained while the root is forgotten.
@@ -260,6 +264,12 @@ ordinary Simulation, native Coverage, and Elaboration Check builds.
 simulator execution, or the standalone module sweep in
 `elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
 budget.
+
+A simulation run that exceeds its run budget gets a `timeout` verdict, exits
+`1`, and fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock;
+raise `--timeout-ms` or `[flows.sim].timeout_ms` if the test legitimately needs
+longer. Build, Elaboration Check, and Pre-Sim Command timeouts are infrastructure
+errors and exit `2`.
 
 ```toml
 [flows.sim]
