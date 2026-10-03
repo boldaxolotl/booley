@@ -640,6 +640,7 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
     assert all(f.document["command_count"] == 1 for f in firings)
     assert all(f.document["returncode"] == 1 for f in firings)
     assert all(f.document["producer_invocation_id"] == 1 for f in firings)
+    assert all(f.terminal and f.reference in result.document["evidence"] for f in firings)
 
 
 def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:
@@ -686,6 +687,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert firing.document["command_count"] == 1
     assert firing.document["test_names"] == ("reset",)
     assert firing.document["producer_invocation_id"] == 1
+    assert firing.terminal is False
 
 
 def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: Path) -> None:
@@ -698,6 +700,9 @@ def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: P
 
     with pytest.raises(SimulationCampaignIntegrityError, match="command count disagrees"):
         _run_coverage_campaign(tmp_path, FabricatedHook())
+    campaign = tmp_path / "reports/1/targets/sim_0/campaign"
+    assert list(campaign.glob("work-items/*/attempts/*/attempt.json"))
+    assert not list(campaign.glob("work-items/*/attempts/*/pre-sim/*.json"))
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:
