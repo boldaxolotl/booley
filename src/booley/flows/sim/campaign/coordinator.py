@@ -248,7 +248,9 @@ class SimulationCampaign:
         executor: SerialWorkExecutor | None = None,
         *,
         publication_checkpoint: Callable[[str], None] | None = None,
+        manifest_published: Callable[[Path], None] | None = None,
     ) -> None:
+        self._manifest_published = manifest_published
         self._executor = executor
         self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._publication_gate = threading.Lock()
@@ -411,6 +413,8 @@ class SimulationCampaign:
                 raise SimulationCampaignIntegrityError(
                     "campaign path already contains another manifest"
                 )
+            if self._manifest_published is not None:
+                self._manifest_published(store.manifest_path)
             return store.manifest_path
         self._publish_manifest(store, request.plan.manifest)
         return store.manifest_path
@@ -420,6 +424,8 @@ class SimulationCampaign:
     ) -> None:
         self._publication_checkpoint("before:manifest_commit")
         store.publish_manifest(manifest)
+        if self._manifest_published is not None:
+            self._manifest_published(store.manifest_path)
         self._publication_checkpoint("after:manifest_commit")
 
     def _preflight_owner(
