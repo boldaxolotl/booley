@@ -689,13 +689,17 @@ def _image_identity(root: Path, paths: tuple[Path, ...]) -> tuple[tuple[str, int
 def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> SimulationRunResult:
     process = attempt.process
     output = process.stdout + ("\n" + process.stderr if process.stderr else "")
-    if attempt.error is not None or attempt.result is None:
+    cleanup = attempt.error_kind == "cleanup" and attempt.result is not None
+    if (attempt.error is not None and not cleanup) or attempt.result is None:
         verdict: SimulationVerdict = "timeout" if process.timed_out else "inconclusive"
         return SimulationRunResult(verdict, f"{output}\n{attempt.error or ''}".strip())
     test = next(item for item in attempt.result.test_results if item.name == test_name)
+    detail = attempt.result.detail or output
+    if cleanup:
+        detail += f"\nartifact_persistence: {attempt.error or attempt.cleanup_error}"
     return SimulationRunResult(
         _adapter_verdict(attempt.result, test_name),
-        attempt.result.detail or output,
+        detail,
         infrastructure_error=test.failure_kind == "infrastructure",
         termination=test.termination,
         failure_kind=test.failure_kind,

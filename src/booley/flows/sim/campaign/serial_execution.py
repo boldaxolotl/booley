@@ -59,6 +59,7 @@ from booley.targets.catalog import TargetCatalog
 
 from ..build import build_output_tail
 from .codec import (
+    MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -808,7 +809,7 @@ def _fresh_shared_failure(
         directory,
         result,
         FailureClass.INFRASTRUCTURE if outcome.infrastructure_failure else FailureClass.DESIGN,
-        _bounded_reason(detail),
+        _bounded_reason(detail) if outcome.infrastructure_failure else detail[-1536:],
     )
 
 
@@ -1233,7 +1234,9 @@ def _failed_build_result(
         )
         | {"build_attempt_id": build_attempt_id},
         "state": state,
-        "phase": "elaboration",
+        "phase": "pre_sim"
+        if failure is not None and failure.kind == "pre_sim_spawn"
+        else "elaboration",
         "finished_at": _now(),
         "elapsed_seconds": elapsed,
         "bundle": None,
@@ -1241,7 +1244,9 @@ def _failed_build_result(
             "class": "infrastructure" if infrastructure else "design",
             "code": failure.kind if failure is not None else "elaboration",
             "message": (failure.message if failure is not None else "Simulation build failed"),
-            "detail": _build_failure_detail(outcome, detail),
+            "detail": _build_failure_detail(outcome, detail)
+            if infrastructure
+            else {"text": detail[:1536]},
         },
         "evidence": [],
     }
@@ -1266,11 +1271,15 @@ def _blocked_result(
     if selection["kind"] == "unfiltered":
         observations = observations[:1]
         observations[0]["test"] = None
+    pre_sim_failure = build_result.document["phase"] == "pre_sim"
+    if infrastructure and pre_sim_failure:
+        for observation in observations:
+            observation["execution"] = "blocked_by_build"
     return _result(
         request,
         build_directory,
         build_result,
-        state="aborted" if infrastructure else "blocked_by_build",
+        state="aborted" if infrastructure and not pre_sim_failure else "blocked_by_build",
         bundle_id=None,
         snapshot=None,
         observations=observations,
@@ -1294,7 +1303,7 @@ def _blocked_shared_result(
         target = cast(Mapping[str, object], request.manifest.document["target"])
         identities = (cast(str, target["selector"]),)
     observations = []
-    for identity in identities:
+    for index, identity in enumerate(identities):
         test = SimulationTestOutcome(
             name=identity or "",
             verdict="elab_error",
@@ -1312,7 +1321,7 @@ def _blocked_shared_result(
             observation["functional"] = observation["assertions"] = "not_observed"
             observation["detail"] = _compact_build_detail(
                 cast(Mapping[str, object], failure.result.document["observation"])["detail"],
-                len(identities),
+                1 if index == 0 else len(identities),
             )
         observation["failure_class"] = failure.failure_class.value
         observations.append(observation)
@@ -1419,7 +1428,9 @@ def _snapshot_result(
         elapsed=time.monotonic() - started,
         evidence=evidence,
         runtime_inputs=_runtime_documents(request, bindings),
-        diagnostics=outcome.diagnostics,
+        diagnostics=tuple(
+            item for item in outcome.diagnostics if item.startswith("artifact_persistence:")
+        ),
     )
 
 
@@ -1587,7 +1598,7 @@ def _build_failure_detail(outcome: SimulationTargetOutcome, reason: str) -> dict
     if failure is not None:
         detail.update(
             code=_bounded_reason(failure.kind, 128),
-            phase="elaboration",
+            phase="pre_sim" if failure.kind == "pre_sim_spawn" else "elaboration",
             missing_executable=_bounded_reason(failure.missing_executable, 128),
         )
     if outcome.builds and not outcome.builds[-1].passed:
@@ -1605,6 +1616,25 @@ def _build_failure_detail(outcome: SimulationTargetOutcome, reason: str) -> dict
             "oom_kill_delta": build.oom_kill_delta,
             "reason": _bounded_reason(build.reason, 128),
         }
+    return _bounded_build_detail(detail)
+
+
+def _bounded_build_detail(detail: dict[str, object]) -> dict[str, object]:
+    for limit in (512, 256, 128, 64, 32, 16):
+        if len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES:
+            return detail
+        for key, value in detail.items():
+            if isinstance(value, str):
+                detail[key] = value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+            elif isinstance(value, dict):
+                for nested, item in value.items():
+                    if isinstance(item, str):
+                        value[nested] = item.encode("utf-8")[:limit].decode(
+                            "utf-8", errors="ignore"
+                        )
+    assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES, (
+        "build metadata exceeds detail budget"
+    )
     return detail
 
 
@@ -1614,44 +1644,48 @@ def _compact_build_detail(detail: Mapping[str, object], count: int) -> dict[str,
     return {
         "reason": _bounded_reason(str(detail["reason"]), 16),
         "code": detail.get("code", "build"),
-        "phase": "elaboration",
+        "phase": detail.get("phase", "elaboration"),
     }
+
+
+def _observed_infrastructure_tests(
+    outcome: SimulationTargetOutcome, *, build_failure: bool
+) -> list[dict[str, object]]:
+    observations = [
+        _observation(test, reason_limit=16 if len(outcome.tests) > 128 else 768)
+        for test in outcome.tests
+    ]
+    if build_failure or (
+        outcome.builds
+        and not outcome.builds[-1].passed
+        and outcome.infrastructure_failure is not None
+    ):
+        for index, observation in enumerate(observations):
+            observation.update(
+                execution="aborted",
+                failure_class="infrastructure",
+                functional="not_observed",
+                assertions="not_observed",
+                cycle_count=None,
+            )
+            observation["detail"] = _compact_build_detail(
+                _build_failure_detail(outcome, str(observation["detail"]["reason"])),
+                1 if index == 0 else len(observations),
+            )
+    return observations
 
 
 def _infrastructure_observations(
     request, outcome: SimulationTargetOutcome, *, build_failure: bool = False
 ) -> list[dict[str, object]]:
     if outcome.tests:
-        observations = [
-            _observation(test, reason_limit=16 if len(outcome.tests) > 128 else 768)
-            for test in outcome.tests
-        ]
-        if build_failure or (
-            outcome.builds
-            and not outcome.builds[-1].passed
-            and outcome.infrastructure_failure is not None
-        ):
-            for observation in observations:
-                observation.update(
-                    execution="aborted",
-                    failure_class="infrastructure",
-                    functional="not_observed",
-                    assertions="not_observed",
-                    cycle_count=None,
-                )
-                observation["detail"] = _compact_build_detail(
-                    _build_failure_detail(outcome, str(observation["detail"]["reason"])),
-                    len(observations),
-                )
-        return observations
+        return _observed_infrastructure_tests(outcome, build_failure=build_failure)
     selection = cast(Mapping[str, object], request.work_item["selection"])
     identities = (None,) if selection["kind"] == "unfiltered" else selection["names"]
     failure = outcome.infrastructure_failure
     assert failure is not None
     if build_failure:
-        detail = _compact_build_detail(
-            _build_failure_detail(outcome, failure.detail or failure.message), len(identities)
-        )
+        detail = _build_failure_detail(outcome, failure.detail or failure.message)
     else:
         detail = {
             "reason": _bounded_reason(failure.detail or failure.message),
@@ -1672,10 +1706,12 @@ def _infrastructure_observations(
             "functional": "not_observed",
             "assertions": "not_observed",
             "assertion_count": 0,
-            "detail": detail,
+            "detail": _compact_build_detail(detail, len(identities))
+            if build_failure and index > 0
+            else detail,
             "cycle_count": None,
         }
-        for name in identities
+        for index, name in enumerate(identities)
     ]
 
 

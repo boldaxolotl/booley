@@ -1575,7 +1575,9 @@ def _adapter_failure_outcome(
             pre_sim,
             adapter_error,
             started,
-            "artifact_persistence" if executed.error_kind == "cleanup" else "adapter_protocol",
+            "artifact_persistence"
+            if executed.error_kind == "cleanup" and executed.result is None
+            else "adapter_protocol",
         )
     return None
 
@@ -2007,7 +2009,12 @@ def _test_termination_evidence(item, adapter):
     termination = item.termination if item else adapter.termination if adapter else "completed"
     failure_kind = (
         item.failure_kind
-        if item is not None and (item.failure_kind or item.verdict == "pass")
+        if item is not None
+        and (
+            item.failure_kind
+            or item.verdict == "pass"
+            or (adapter is not None and adapter.failure_kind == "infrastructure")
+        )
         else adapter.failure_kind
         if adapter
         else ""

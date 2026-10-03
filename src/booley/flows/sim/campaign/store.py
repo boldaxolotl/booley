@@ -656,8 +656,11 @@ class CampaignStore:
             "workload_sha256"
         ]
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+        target = cast(Mapping[str, str], manifest.document["target"])
+        target_identity = f"{target['vlnv']}#{target['name']}"
         recovered = tuple(
-            self._scan_item(item, manifest_sha256, expected_workload) for item in items
+            self._scan_item(item, manifest_sha256, expected_workload, target_identity)
+            for item in items
         )
         return CampaignRecovery(recovered)
 
@@ -666,6 +669,7 @@ class CampaignStore:
         work_item: Mapping[str, object],
         manifest_sha256: str,
         workload_sha256: str,
+        target_identity: str,
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
         # ``scan`` already decoded the complete manifest.  Re-loading and
@@ -701,7 +705,9 @@ class CampaignStore:
                 attempts,
                 decoded_attempts,
             )
-            _validate_result_selection(work_item, result, attempts[-1])
+            _validate_result_selection(
+                work_item, result, attempts[-1], target_identity=target_identity
+            )
             return WorkItemRecovery(work_item_id, "complete", len(attempts), result)
         state = "interrupted" if attempts else "pending"
         return WorkItemRecovery(work_item_id, state, len(attempts), None)
@@ -846,7 +852,11 @@ def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
 
 
 def _validate_result_selection(
-    work_item: Mapping[str, object], result: SimulationResult, attempt_directory: Path
+    work_item: Mapping[str, object],
+    result: SimulationResult,
+    attempt_directory: Path,
+    *,
+    target_identity: str | None = None,
 ) -> None:
     """Bind terminal observation order and transport evidence to the manifest."""
     selection = cast(Mapping[str, object], work_item["selection"])
@@ -883,13 +893,17 @@ def _validate_result_selection(
         and result.document["state"] == "aborted"
         and observations[0]["failure_class"] == "infrastructure"
     ):
-        infrastructure_tests = _authenticated_infrastructure_tests(attempt_directory, result)
+        infrastructure_tests = _authenticated_infrastructure_tests(
+            attempt_directory, result, target_identity
+        )
         if not _missing_transport_is_infrastructure(result, infrastructure_tests):
             raise SimulationCampaignIntegrityError(
                 "unfiltered infrastructure result lacks authenticated failure evidence"
             )
     if expected_kind is not None:
-        infrastructure_tests = _authenticated_infrastructure_tests(attempt_directory, result)
+        infrastructure_tests = _authenticated_infrastructure_tests(
+            attempt_directory, result, target_identity
+        )
         matching = [item for item in evidence if item["kind"] == expected_kind]
         if not matching and _missing_transport_is_infrastructure(result, infrastructure_tests):
             return
@@ -921,7 +935,7 @@ def _missing_transport_is_infrastructure(
 
 
 def _authenticated_infrastructure_tests(
-    directory: Path, result: SimulationResult
+    directory: Path, result: SimulationResult, target_identity: str | None
 ) -> frozenset[object]:
     document = result.document
     references = cast(tuple[Mapping[str, object], ...], document["evidence"])
@@ -951,7 +965,9 @@ def _authenticated_infrastructure_tests(
                 raise SimulationCampaignIntegrityError("infrastructure process evidence disagrees")
             authenticated.update(names)
         else:
-            authenticated.update(_adapter_infrastructure_tests(path, payload, observations))
+            authenticated.update(
+                _adapter_infrastructure_tests(path, payload, observations, target_identity)
+            )
     return frozenset(authenticated)
 
 
@@ -974,7 +990,9 @@ def _read_infrastructure_reference(directory, reference, attempt_id):
     return payload, path
 
 
-def _adapter_infrastructure_tests(path, payload, observations) -> set[object]:
+def _adapter_infrastructure_tests(path, payload, observations, target_identity) -> set[object]:
+    if target_identity is not None and payload.get("target_identity") != target_identity:
+        raise SimulationCampaignIntegrityError("infrastructure adapter Target disagrees")
     names = tuple(item["test"] for item in observations)
     try:
         identity = AdapterTransportIdentity(
@@ -989,6 +1007,8 @@ def _adapter_infrastructure_tests(path, payload, observations) -> set[object]:
         raise SimulationCampaignIntegrityError(
             "infrastructure adapter evidence is invalid"
         ) from exc
+    if names == (None,) and not source.tests and not source.test_results:
+        return _unfiltered_adapter_infrastructure_test(source, observations[0])
     if source.tests != names:
         raise SimulationCampaignIntegrityError("infrastructure adapter selection disagrees")
     authenticated: set[object] = set()
@@ -1004,6 +1024,19 @@ def _adapter_infrastructure_tests(path, payload, observations) -> set[object]:
             raise SimulationCampaignIntegrityError("infrastructure adapter termination disagrees")
         authenticated.add(item.name)
     return authenticated
+
+
+def _unfiltered_adapter_infrastructure_test(source, observed) -> set[object]:
+    detail = cast(Mapping[str, object], observed["detail"])
+    if (
+        source.failure_kind == "infrastructure"
+        and source.termination != "completed"
+        and observed["execution"] == "aborted"
+        and observed["failure_class"] == "infrastructure"
+        and detail.get("termination") == source.termination
+    ):
+        return {None}
+    raise SimulationCampaignIntegrityError("unfiltered adapter failure disagrees")
 
 
 def _validate_cocotb_transport(

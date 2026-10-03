@@ -1014,3 +1014,39 @@ def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
     resumed = SimulationCampaign(_CoverageFailedBuildExecutor()).run(request)
     assert resumed.complete
     assert store.scan().items[0].attempt_count == 1
+
+
+@pytest.mark.parametrize("verdict", ["pass", "fail", "guard"])
+def test_coverage_cleanup_failure_retains_authenticated_result(verdict) -> None:
+    from booley.flows.sim.execution.attempt import AdapterAttemptOutcome
+    from booley.flows.sim.verilator_coverage_execution import _simulation_run_result
+
+    guarded = verdict == "guard"
+    result = AdapterResult(
+        verdict == "pass",
+        False,
+        0,
+        ("smoke",),
+        detail="primary diagnostic",
+        termination="disk_budget" if guarded else "completed",
+        failure_kind="infrastructure" if guarded else "",
+        test_results=(
+            AdapterTestResult(
+                "smoke",
+                "fail" if guarded else verdict,
+                termination="disk_budget" if guarded else "completed",
+                failure_kind="infrastructure" if guarded else "",
+            ),
+        ),
+    )
+    outcome = _simulation_run_result(
+        AdapterAttemptOutcome(
+            SubprocessResult(returncode=0), result, "partial cleanup denied", "cleanup"
+        ),
+        "smoke",
+    )
+    assert outcome.verdict == ("fail" if guarded else verdict)
+    assert outcome.termination == result.termination
+    assert outcome.infrastructure_error is guarded
+    assert "primary diagnostic" in outcome.output
+    assert "artifact_persistence: partial cleanup denied" in outcome.output

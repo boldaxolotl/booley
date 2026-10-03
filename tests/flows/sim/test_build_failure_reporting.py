@@ -589,3 +589,40 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     assert result.document["grade"] == "error"
     assert [item["test"] for item in result.document["observations"]] == list(names)
     assert _first_build_result(store)["observation"]["detail"]["build_stage"]["timed_out"]
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    endpoint = flow._campaign_endpoint_outcome([campaign])
+    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
+    assert endpoint.detail["build_stage"]["timed_out"] is True
+    assert "compiler failed:" in campaign.observations[0]["detail"]["reason"]
+
+
+def test_escaped_build_metadata_stays_within_canonical_detail_budget(
+    tmp_path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    outcome = _engine_timeout_outcome(tmp_path / "engine")
+    assert outcome.infrastructure_failure is not None
+    outcome = replace(
+        outcome,
+        infrastructure_failure=replace(
+            outcome.infrastructure_failure, missing_executable="\\" * 128, detail="界" * 4000
+        ),
+        builds=(
+            replace(
+                outcome.builds[0],
+                reason="compiler failed: " + "\x01" * 200,
+                cache_decision="\x02" * 400,
+            ),
+        ),
+    )
+    executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
+    campaign = SimulationCampaign(executor).run(request)
+    assert campaign.complete
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    detail = _first_build_result(store)["observation"]["detail"]
+    assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
+    assert detail["build_stage"]["timed_out"] is True
+    assert store.scan().interrupted == ()
