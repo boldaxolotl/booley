@@ -1130,6 +1130,22 @@ def test_codex_unsupported_inline_servers_fail_with_named_repair_diagnostic(tmp_
     assert path.read_text() == existing
 
 
+def _assert_inline_owned_body(body, table, original):
+    import tomli
+
+    key = "mcp_2026_07_28" if table == "features" else "hide_full_access_warning"
+    old = tomli.loads("value=" + original)["value"]
+    expected = re.sub(rf'^(\s*"?{key}"?\s*=\s*)false\b', r"\1true", original, flags=re.MULTILINE)
+    if key in old:
+        assert f"{table}={expected}" in body
+    else:
+        separator = "," if old else ""
+        pattern = (
+            rf"(?m)^{table}=\{{\s*{key}\s*=\s*true" + re.escape(separator + original[1:-1]) + r"\}"
+        )
+        assert re.search(pattern, body), body
+
+
 @pytest.mark.parametrize("preference", [None, True, False])
 @pytest.mark.parametrize("ending", ["\n", "\r\n"])
 @pytest.mark.parametrize(
@@ -1161,6 +1177,7 @@ def test_codex_unsupported_inline_servers_fail_with_named_repair_diagnostic(tmp_
             "{\n hide_full_access_warning=false, # after, keep this\n}",
         ),
         ("{\n # x, mcp_2026_07_28=false\n}", "{\n # x, hide_full_access_warning=false\n}"),
+        ("{\n other=true, # trailing, x\n}", "{\n other=true, # trailing, x\n}"),
     ],
 )
 def test_toml11_full_registration_preserves_choices_and_body_bytes(
@@ -1198,11 +1215,7 @@ def test_toml11_full_registration_preserves_choices_and_body_bytes(
         old = tomli.loads("value=" + original)["value"]
         if "other" in old:
             assert parsed[table]["other"] == old["other"]
-        key = "mcp_2026_07_28" if table == "features" else "hide_full_access_warning"
-        expected = re.sub(
-            rf'^(\s*"?{key}"?\s*=\s*)false\b', r"\1true", original, flags=re.MULTILINE
-        )
-        assert expected[1:-1] in body
+        _assert_inline_owned_body(body, table, original)
     for fragment in ("# before", "# after", "# trailing", "# comment-only"):
         if fragment in source:
             assert fragment in body
@@ -1262,10 +1275,10 @@ def test_toml11_notice_comment_comma_completes_full_registration(tmp_path, monke
     assert calls == ["skills", "host", "credential"]
     body = path.read_text()
     assert tomli.loads(body)["notice"]["hide_full_access_warning"] is True
-    expected = notice.replace(
-        "\n hide_full_access_warning=false", "\n hide_full_access_warning=true"
-    )
-    assert expected[1:-1] in body
+    _assert_inline_owned_body(body, "notice", notice)
+    before = path.read_bytes()
+    assert reg.register("codex", home=tmp_path).startswith("codex:current")
+    assert path.read_bytes() == before
 
 
 def test_codex_permission_writer_validates_notice_before_publication(tmp_path, monkeypatch):
