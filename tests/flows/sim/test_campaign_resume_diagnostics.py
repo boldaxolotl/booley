@@ -14,7 +14,7 @@ from tests.flows.sim.test_coverage_invocation import project
 
 def _snapshot(root: Path) -> dict[str, bytes]:
     return {
-        str(path.relative_to(root)): path.read_bytes()
+        path.relative_to(root).as_posix(): path.read_bytes()
         for path in root.rglob("*")
         if path.is_file()
     }

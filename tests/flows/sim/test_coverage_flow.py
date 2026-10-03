@@ -2870,12 +2870,12 @@ def test_public_publication_resumable_coverage_mismatch_diagnostics(
     reports, _request, runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
     before = {
-        str(path.relative_to(manifest.parent)): path.read_bytes()
+        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
         for path in manifest.parent.rglob("*")
         if path.is_file()
     }
     report_before = {
-        str(path.relative_to(reports)): path.read_bytes()
+        path.relative_to(reports).as_posix(): path.read_bytes()
         for path in reports.rglob("*")
         if path.is_file()
     }
@@ -2894,7 +2894,7 @@ def test_public_publication_resumable_coverage_mismatch_diagnostics(
     assert result.outcome.detail["mismatches"]
     assert [test.name for test in runs] == ["reset", "wrap"]
     after = {
-        str(path.relative_to(manifest.parent)): path.read_bytes()
+        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
         for path in manifest.parent.rglob("*")
         if path.is_file()
     }
@@ -2903,7 +2903,7 @@ def test_public_publication_resumable_coverage_mismatch_diagnostics(
     } == before
     if dry_run:
         assert {
-            str(path.relative_to(reports)): path.read_bytes()
+            path.relative_to(reports).as_posix(): path.read_bytes()
             for path in reports.rglob("*")
             if path.is_file()
         } == report_before
