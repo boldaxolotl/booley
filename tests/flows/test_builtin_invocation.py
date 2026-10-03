@@ -669,3 +669,13 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
         "dry_contract",
         "dry_contract/flow_plan.json",
     ]
+
+
+def test_sim_verbose_cli_and_mcp_construct_identical_output_request(tmp_path):
+    from booley.flows.builtin_cli import parse_request
+    from booley.flows.sim.request import SimRequest
+
+    manifest = tmp_path / "manifest.json"
+    cli = parse_request(SimulateFlow(), ["--resume-from", str(manifest), "--verbose", "--dry-run"])
+    typed = SimRequest(resume_from=manifest, verbose=True, dry_run=True)
+    assert cli == typed

@@ -160,7 +160,7 @@ from .campaign.flow_planning import (
     plan_ordinary_hdl_campaign,
 )
 from .campaign.model import simulation_status_from_observations
-from .campaign.planning import manifest_digest
+from .campaign.planning import SimulationCampaignWorkloadMismatchError, manifest_digest
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
 from .coverage_campaign_store import load_coverage_campaign
 from .coverage_reference import (
@@ -2623,7 +2623,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         assert isinstance(preview, ResumeCampaignPreview)
         status = _campaign_recovery_detail(preview.recovery)
-        status["mismatches"] = [item.message for item in preview.mismatches]
+        status.update(preview.diagnostic.detail)
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
         lines = [
             f"manifest: {validated.path}",
@@ -2632,6 +2632,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             f"pending: {len(preview.recovery.pending)}",
             f"mismatches: {len(preview.mismatches)}",
         ]
+        if preview.mismatches:
+            lines.append(preview.diagnostic.report(verbose=self.args.verbose))
         return EndpointOutcome(
             exit_code=EXIT_ERROR if preview.mismatches else EXIT_SUCCESS,
             detail=status,
@@ -2724,6 +2726,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         error: Exception,
     ) -> EndpointOutcome:
         detail = _fresh_campaign_recovery_detail(validated, observed)
+        message = str(error)
+        if isinstance(error, SimulationCampaignWorkloadMismatchError):
+            detail.update(error.diagnostic.detail)
+            message = error.diagnostic.report(verbose=self.args.verbose)
         if isinstance(error, ProgressPublicationError):
             detail["progress_error"] = str(error)
         if isinstance(error, SimulationBuildInfrastructureError):
@@ -2749,7 +2755,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             detail["targets"] = {selector: target}
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
-            report_text=f"Simulation Campaign resume failed: {error}",
+            report_text=f"Simulation Campaign resume failed: {message}",
             detail=detail,
         )
 
