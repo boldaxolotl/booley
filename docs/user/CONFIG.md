@@ -1557,7 +1557,8 @@ Explicit lint Targets require `verilator`, `verible`, or `veriblelint` in
 `flow_options.tool`; unsupported or missing EDA tools are excluded from
 `booley targets --for lint`, and explicit Doctor lint selections report incompatibility.
 
-Use canonical `verible` for a style Target:
+Use canonical `verible` for a style Target that selects RTL, its rules, and optional
+waivers:
 
 ```yaml
 CAPI=2:

@@ -542,26 +542,8 @@ and select both.
 booley flow lint --target lint_soc,lint_style --scope rtl/fifo.sv
 ```
 
-A Verible style Target selects RTL plus its rules and optional waivers:
-
-```yaml
-filesets:
-  rtl:
-    files: [rtl/top.sv]
-    file_type: systemVerilogSource
-  lint_config:
-    files:
-      - lint/rules.cfg: {file_type: veribleLintRules}
-      - lint/waivers.txt: {file_type: veribleLintWaiver}
-targets:
-  lint_style:
-    flow: lint
-    flow_options: {tool: verible}
-    filesets: [rtl, lint_config]
-    toplevel: top
-```
-
-See [Verible lint Target](CONFIG.md#verible-lint-target) for the complete core context.
+See [Verible lint Target](CONFIG.md#verible-lint-target) for the Target recipe
+and EDA-tool compatibility policy.
 
 - `--scope <file,...>` limits reported findings to the listed files.
 - `[flows.lint].warnings_as_errors` decides whether warnings fail the exit code.
