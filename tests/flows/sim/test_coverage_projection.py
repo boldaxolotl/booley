@@ -9,6 +9,33 @@ from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 
 
+def test_coverage_per_test_projection_strips_stream_tails_and_preserves_metadata():
+    from types import SimpleNamespace
+
+    from booley.flows.sim.coverage_transaction import _coverage_test_projection
+
+    evidence = {
+        "status": "passed",
+        "returncode": 0,
+        "command_count": 2,
+        "elapsed_s": 0.2,
+        "test_names": ("smoke",),
+        "stdout_tail": "private stdout",
+        "stderr_tail": "private stderr",
+    }
+    run = SimpleNamespace(
+        test="smoke",
+        simulation_verdict="pass",
+        collection="complete",
+        attributes={"pre_sim": evidence},
+    )
+    projection = _coverage_test_projection(run)
+    assert "stdout_tail" not in projection["pre_sim"]
+    assert "stderr_tail" not in projection["pre_sim"]
+    assert projection["pre_sim"]["returncode"] == 0
+    assert projection["pre_sim"]["command_count"] == 2
+
+
 def _evaluation(**changes: object) -> dict[str, object]:
     value: dict[str, object] = {
         "status": "fail",
