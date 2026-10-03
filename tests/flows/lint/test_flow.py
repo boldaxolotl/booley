@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import ClassVar
@@ -2535,3 +2536,135 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     assert exit_code == EXIT_ERROR
     assert "RESULT: ERROR" in text
     assert "libx.so" in result.error
+
+
+def _author_verible_alias_core(root: Path, spelling: str) -> None:
+    (root / "rtl").mkdir()
+    (root / "lint").mkdir()
+    (root / "rtl/top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    for filename in ("rules.cfg", "waivers.txt", "extra.txt"):
+        (root / "lint" / filename).write_text("", encoding="utf-8")
+    (root / "style.core").write_text(
+        "CAPI=2:\nname: acme:ip:style:1.0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/top.sv]\n    file_type: systemVerilogSource\n"
+        "  config:\n    files:\n"
+        "      - lint/rules.cfg: {file_type: veribleLintRules}\n"
+        "      - lint/waivers.txt: {file_type: veribleLintWaiver}\n"
+        "      - lint/extra.txt: {file_type: veribleLintWaiver}\n"
+        "targets:\n  lint_style:\n    flow: lint\n    flow_options:\n"
+        f"      tool: {spelling}\n"
+        "      ruleset: all\n      rules: [-module-filename, line-length]\n"
+        "      verible_lint_args: [--show_diagnostic_context]\n"
+        "    filesets: [rtl, config]\n    toplevel: top\n",
+        encoding="utf-8",
+    )
+
+
+def _isolated_verible_fusesoc(root: Path, spelling: str) -> list[str]:
+    import booley
+
+    nodes = root / "nodes"
+    nodes.mkdir()
+    source = Path(booley.__file__).parent / "data/edalize/verible.py"
+    for name in ("verible", "veriblelint"):
+        shutil.copyfile(source, nodes / f"{name}.py")
+    script = (
+        "import edalize.tools; "
+        f"edalize.tools.__path__ = [{str(nodes)!r}, *edalize.tools.__path__]; "
+        "from edalize.flows.lint import Lint; "
+        f"options = Lint.get_tool_options({{'tool': {spelling!r}}}); "
+        "assert 'rules' in options and 'ruleset' in options; "
+        "from fusesoc.main import main; main()"
+    )
+    return [sys.executable, "-c", script]
+
+
+@pytest.mark.parametrize("spelling", ["verible", "veriblelint"])
+def test_authored_verible_public_plan(tmp_path: Path, state_file: Path, capsys, spelling: str):
+    _author_verible_alias_core(tmp_path, spelling)
+    flow = LintFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style", "--dry-run"])
+    flow.read_state()
+    result = flow._run()
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["aggregate_errors"] == []
+    assert result.exit_code == EXIT_SUCCESS
+    commands = plan["work_units"][0]["commands"]
+    assert any("verible-verilog-lint" in str(command["argv"]) for command in commands)
+    assert any(f"tool_{spelling}" in str(command["argv"]) for command in commands)
+
+
+def _real_verible_setup(monkeypatch, command: list[str]) -> None:
+    real_resolve = fusesoc_registry.resolve_target_handle
+
+    def bounded_runner(*args, **kwargs):
+        return subprocess.run(*args, **kwargs, timeout=30, check=False)
+
+    def resolve(*args, **kwargs):
+        return real_resolve(*args, **{**kwargs, "fusesoc_cmd": command, "runner": bounded_runner})
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+
+
+@pytest.mark.parametrize("spelling", ["verible", "veriblelint"])
+def test_authored_verible_public_run(
+    tmp_path: Path, state_file: Path, monkeypatch, capsys, spelling
+):
+    _author_verible_alias_core(tmp_path, spelling)
+    _real_verible_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, spelling))
+    flow = LintFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style"])
+    flow.read_state()
+    execute = MagicMock(
+        return_value=MagicMock(
+            returncode=0,
+            stdout=SAMPLE_VERIBLE_OUTPUT,
+            stderr="",
+            timed_out=False,
+            duration_s=0.1,
+        )
+    )
+    monkeypatch.setattr(flow, "_execute", execute)
+    result = flow._run()
+    output = capsys.readouterr().out
+    assert execute.call_count == 1, output
+    assert "verible-verilog-lint" in str(execute.call_args)
+    assert "interface-name-style" in output
+    assert result.exit_code == EXIT_FAILURE
+    assert "RESULT: WARN" in output
+    assert result.detail["eda_tools"] == {"lint_style": spelling}
+    makefile = next(tmp_path.rglob("Makefile")).read_text(encoding="utf-8")
+    for flag in (
+        "--parse_fatal",
+        "--lint_fatal=false",
+        "--ruleset=all",
+        "--rules=-module-filename,line-length",
+        "--show_diagnostic_context",
+        "--rules_config=",
+        "--waiver_files=",
+    ):
+        assert flag in makefile
+    assert (
+        "rtl/top.sv" in makefile
+        and "lint/waivers.txt" in makefile
+        and "lint/extra.txt" in makefile
+    )
+    edam = next(tmp_path.rglob("*.eda.yml")).read_text(encoding="utf-8")
+    assert f"tool: {spelling}" in edam
+    assert result.detail["total_warnings"] > 0
+
+
+@pytest.mark.parametrize("configured", ["verible", "veriblelint", "verilator"])
+def test_alias_preparation_compares_parser_families(tmp_path, configured):
+    flow = LintFlow()
+    flow.parse_args(["--target", "lint_style", "--work-dir", str(tmp_path)])
+    handle = _target_handle("lint_style", project_root=tmp_path, eda_tool="veriblelint")
+    with patch.object(
+        fusesoc_registry, "resolve_target_handle", return_value=_stub_resolved(configured)
+    ):
+        if configured == "verilator":
+            with pytest.raises(ValueError, match=r"declared 'verible'.*configured 'verilator'"):
+                flow._prepare_lint_command(handle)
+        else:
+            prepared = flow._prepare_lint_command(handle)
+            assert "verible-verilog-lint" in str(prepared.command)

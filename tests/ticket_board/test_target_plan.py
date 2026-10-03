@@ -845,3 +845,47 @@ def test_plan_binding_policy_rejects_unbound_and_private_provider_targets(
         target_plan._validate_plan_bindings(
             {}, tmp_path, None, set(), frozenset({"provider"}), frozenset()
         )
+
+
+@pytest.mark.parametrize(
+    "tool,legacy,compatible",
+    [
+        ("verible", False, True),
+        ("veriblelint", False, True),
+        ("slang", False, False),
+        ("veriblelint", True, False),
+    ],
+)
+def test_lint_replacement_requires_drivable_candidate(repository, tool, legacy, compatible):
+    _add_candidate(repository)
+    path = repository / "toy.core"
+    old = "  lint_new:\n    flow: lint\n    flow_options: {tool: verilator}"
+    declaration = (
+        f"default_tool: {tool}" if legacy else f"flow: lint\n    flow_options: {{tool: {tool}}}"
+    )
+    path.write_text(
+        path.read_text().replace(old, "  lint_new:\n    " + declaration), encoding="utf-8"
+    )
+    if compatible:
+        analysis = _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
+        assert analysis.plan is not None
+    else:
+        with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
+            _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))
+
+
+def test_lint_replacement_rejects_undrivable_baseline(repository):
+    path = repository / "toy.core"
+    path.write_text(path.read_text().replace("tool: verilator", "tool: slang"), encoding="utf-8")
+    _git(repository, "add", "toy.core")
+    _git(repository, "commit", "-qm", "unsupported baseline")
+    _add_candidate(repository)
+    path.write_text(
+        path.read_text().replace(
+            "  lint_old:\n    flow: lint\n    flow_options: {tool: verilator}",
+            "  lint_old:\n    flow: lint\n    flow_options: {tool: slang}",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(TargetPlanValidationError, match="same Booley Flow"):
+        _analyze(_replacement_fields(), repository, ((repository, ("toy.core",)),))

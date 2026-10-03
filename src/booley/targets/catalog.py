@@ -163,6 +163,11 @@ class TargetCatalog:
                     "Declare either `flow: sim` with `flow_options.tool`, or legacy "
                     "`default_tool`, using Verilator or Icarus."
                 )
+            elif for_flow == "lint":
+                guidance = (
+                    "Declare `flow: lint` with `flow_options.tool` set to verilator, "
+                    "verible, or veriblelint; veriblelint requires explicit `flow: lint`."
+                )
             raise IncompatibleTargetError(
                 f"Target {token!r} cannot be driven by the {for_flow!r} Flow "
                 f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "

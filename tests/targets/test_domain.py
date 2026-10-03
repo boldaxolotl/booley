@@ -85,3 +85,32 @@ class TestFlowCanDrive:
     def test_retired_elab_name_is_rejected(self):
         with pytest.raises(ValueError, match=r"elab.*not a target-aware"):
             flow_can_drive("elab", self._ref("sim", "verilator"))
+
+
+@pytest.mark.parametrize(
+    "flow,tool,expected",
+    [
+        ("lint", "verilator", True),
+        ("lint", "verible", True),
+        ("lint", "veriblelint", True),
+        (None, "verilator", True),
+        (None, "verible", True),
+        (None, "veriblelint", False),
+        ("lint", None, False),
+        ("lint", "", False),
+        ("lint", "slang", False),
+        ("lint", "Verible", False),
+        ("sim", "veriblelint", False),
+        ("generic", "verible", False),
+    ],
+)
+def test_lint_drivability_validates_authored_backend(flow, tool, expected):
+    target = TargetRef("lint_style", "acme:ip:top:1.0", Path("top.core"), tool, flow)
+    assert flow_can_drive("lint", target) is expected
+
+
+@pytest.mark.parametrize("tool", ["verilator", "verible", "veriblelint"])
+def test_fpga_intent_precedes_explicit_lint(tool):
+    target = TargetRef("fpga_top", "acme:ip:top:1.0", Path("top.core"), tool, "lint")
+    assert not flow_can_drive("lint", target)
+    assert flow_can_drive("fpga", target)

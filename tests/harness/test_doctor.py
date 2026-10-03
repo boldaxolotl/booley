@@ -8123,3 +8123,44 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
         doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
         == ".booley_project/real (under the repo root)"
     )
+
+
+@pytest.mark.parametrize(
+    "tool,flow,compatible,verible",
+    [
+        ("verible", "lint", True, True),
+        ("veriblelint", "lint", True, True),
+        ("verilator", "lint", True, False),
+        ("not-verible", "lint", False, False),
+        ("slang", "lint", False, False),
+        ("veriblelint", None, False, False),
+        ("verible", None, True, True),
+        ("veriblelint", "sim", False, False),
+    ],
+)
+def test_authored_lint_doctor_backend_policy(tmp_path, tool, flow, compatible, verible):
+    declaration = (
+        f"flow: {flow}\n    flow_options: {{tool: {tool}}}" if flow else f"default_tool: {tool}"
+    )
+    (tmp_path / "lint.core").write_text(
+        "CAPI=2:\nname: acme:ip:lint:1.0\ntargets:\n  lint_style:\n    " + declaration + "\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        project_dir=tmp_path / ".booley_project",
+        booley_toml={},
+        configs_toml={},
+        first_target="lint_style",
+    )
+    handle = doctor.TargetCatalog.build(tmp_path).select("lint_style")
+    diagnostic = doctor._doctor_target_incompatibility("lint_style", "lint", handle)
+    assert (diagnostic is None) is compatible
+    assert doctor._project_declares_verible_lint(project) is verible
+    if compatible:
+        expected = ["verible-verilog-lint"] if verible else ["verilator"]
+        assert (
+            doctor._runtime_probe_binaries(project, ["lint_style"], flow_name="lint") == expected
+        )
+    else:
+        assert "incompatible Doctor Flow" in diagnostic[0]

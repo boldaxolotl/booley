@@ -183,3 +183,48 @@ class TestTargetsDetail:
     def test_help_advertises_targets(self):
         parser = tlr._build_parser()
         assert "targets" in parser.format_help()
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_lint_listing_excludes_unsupported_authored_tools(
+    project: Path, capsys, json_output: bool
+):
+    (project / "lint.core").write_text(
+        "CAPI=2:\nname: acme:ip:lint:1.0\ntargets:\n"
+        "  lint_canonical:\n    flow: lint\n    flow_options: {tool: verible}\n"
+        "  lint_alias:\n    flow: lint\n    flow_options: {tool: veriblelint}\n"
+        "  lint_unsupported:\n    flow: lint\n    flow_options: {tool: slang}\n"
+        "  lint_missing:\n    flow: lint\n"
+        "  lint_legacy_alias:\n    default_tool: veriblelint\n",
+        encoding="utf-8",
+    )
+    flags = ["--json"] if json_output else []
+    assert _run(project, "--for", "lint", *flags) == 0
+    output = capsys.readouterr().out
+    assert "lint_canonical" in output and "lint_alias" in output
+    assert "lint_unsupported" not in output and "lint_missing" not in output
+    assert "lint_legacy_alias" not in output
+    assert _run(project, "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    targets = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
+    assert "lint" not in targets["lint_unsupported"]["drivable_by"]
+
+
+@pytest.mark.parametrize("tool", ["slang", "veriblelint"])
+def test_lint_explicit_selection_explains_supported_tools(project, tool):
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import IncompatibleTargetError
+
+    declaration = (
+        "flow: lint\n    flow_options: {tool: slang}"
+        if tool == "slang"
+        else "default_tool: veriblelint"
+    )
+    (project / "bad.core").write_text(
+        "CAPI=2:\nname: acme:ip:bad:1.0\ntargets:\n  lint_bad:\n    " + declaration + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        IncompatibleTargetError, match=r"verilator, verible, or veriblelint.*explicit"
+    ):
+        TargetCatalog.build(project).select("lint_bad", for_flow="lint")

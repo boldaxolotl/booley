@@ -15,7 +15,12 @@ TARGET_IDENTITY_PARAM = "target"
 TARGET_SELECTOR_PARAM = "_target_selector"
 
 _SIM_EDA_TOOLS = frozenset({"verilator", "icarus", "iverilog"})
-_LINT_EDA_TOOLS = frozenset({"verilator", "verible"})
+# Authored spellings remain case-sensitive; parser normalization is separate.
+LINT_EDA_TOOL_FAMILIES: Mapping[str, str] = MappingProxyType(
+    {"verilator": "verilator", "verible": "verible", "veriblelint": "verible"}
+)
+# Flowless Targets use the legacy Edalize API, not the alias flow node.
+_LEGACY_LINT_EDA_TOOLS = frozenset({"verilator", "verible"})
 
 
 class FuseSocError(Exception):
@@ -219,8 +224,8 @@ def flow_can_drive(flow: str, target: TargetRef | TargetHandle) -> bool:
     if flow == "sim":
         return target.eda_tool in _SIM_EDA_TOOLS and (target.flow == "sim" or target.flow is None)
     if flow == "lint":
-        return target.flow == "lint" or (
-            target.flow is None and target.eda_tool in _LINT_EDA_TOOLS
+        return (target.flow == "lint" and target.eda_tool in LINT_EDA_TOOL_FAMILIES) or (
+            target.flow is None and target.eda_tool in _LEGACY_LINT_EDA_TOOLS
         )
     if flow == "synth":
         return target.eda_tool == "yosys"
@@ -228,6 +233,7 @@ def flow_can_drive(flow: str, target: TargetRef | TargetHandle) -> bool:
 
 
 __all__ = [
+    "LINT_EDA_TOOL_FAMILIES",
     "TARGET_AWARE_FLOWS",
     "TARGET_IDENTITY_PARAM",
     "TARGET_SELECTOR_PARAM",
