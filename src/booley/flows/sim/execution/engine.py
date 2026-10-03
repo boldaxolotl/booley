@@ -29,6 +29,7 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTransportIdentity,
+    partial_result_identity,
 )
 from booley.flows.sim.backends.shared import BOOLEY_DUMP_VCD_NAME
 from booley.flows.sim.build import (
@@ -489,7 +490,7 @@ class PreparedOrdinaryGroup:
             return early
         adapter = None if build.design_failed else executed.result
         try:
-            return self._execution._completed_group(
+            outcome = self._execution._completed_group(
                 self._handle,
                 attempt,
                 process,
@@ -501,6 +502,7 @@ class PreparedOrdinaryGroup:
                 time.monotonic(),
                 self._started,
             )
+            return _with_cleanup_diagnostic(outcome, executed)
         except SimulationArtifactPersistenceError as exc:
             return _artifact_failure(self._handle, attempt, build, None, str(exc), self._started)
 
@@ -895,7 +897,7 @@ class SimulationExecution:
             return early_failure
         adapter = None if build.design_failed else executed.result
         try:
-            return self._completed_group(
+            outcome = self._completed_group(
                 handle,
                 attempt,
                 process,
@@ -907,6 +909,7 @@ class SimulationExecution:
                 processing_started,
                 started,
             )
+            return _with_cleanup_diagnostic(outcome, executed)
         except SimulationArtifactPersistenceError as exc:
             return _artifact_failure(handle, attempt, build, pre_sim, str(exc), started)
 
@@ -1123,6 +1126,8 @@ class SimulationExecution:
         compatibility = _compatibility_artifacts(attempt, compatibility_policy)
         if adapter is not None:
             terminal = attempt.identity.result_path
+            if not terminal.exists():
+                terminal = partial_result_identity(attempt.identity).result_path
             compatibility = (
                 *compatibility,
                 SimulationArtifactEvidence(
@@ -1231,14 +1236,13 @@ class SimulationExecution:
 
 
 def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) -> str | None:
-    if build.design_failed:
-        return None
     if attempt.error_kind == "authentication":
         raise ArtifactValidationError(attempt.error or "adapter authentication failed")
-    if attempt.error is not None:
-        if attempt.error_kind == "cleanup" and attempt.result is not None:
-            original = attempt.result
-            return f"{original.termination}: {original.detail}; {attempt.error}"
+    if build.design_failed:
+        return None
+    if attempt.error is not None and not (
+        attempt.error_kind == "cleanup" and attempt.result is not None
+    ):
         return attempt.error
     result = attempt.result
     if result is None:
@@ -1543,6 +1547,15 @@ def _infrastructure_failure(
     return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 
+def _with_cleanup_diagnostic(
+    outcome: SimulationTargetOutcome, executed: AdapterAttemptOutcome
+) -> SimulationTargetOutcome:
+    if executed.error_kind != "cleanup":
+        return outcome
+    diagnostic = f"artifact_persistence: {executed.error or executed.cleanup_error}"
+    return replace(outcome, diagnostics=(*outcome.diagnostics, diagnostic))
+
+
 def _adapter_failure_outcome(
     handle: TargetHandle,
     attempt: _Attempt,
@@ -1551,9 +1564,9 @@ def _adapter_failure_outcome(
     pre_sim: PreSimEvidence | None,
     started: float,
 ) -> SimulationTargetOutcome | None:
+    adapter_error = _adapter_attempt_error(executed, build)
     if build.failure_kind == "infrastructure":
         return _infrastructure_failure(handle, attempt, build, pre_sim, started)
-    adapter_error = _adapter_attempt_error(executed, build)
     if adapter_error is not None:
         return _transport_failure(
             handle,

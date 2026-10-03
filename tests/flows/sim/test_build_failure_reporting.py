@@ -541,3 +541,51 @@ def test_build_owned_loader_startup_is_infrastructure(executable):
     )
     assert outcome.failure_kind == "infrastructure"
     assert "libx.so" in outcome.reason
+
+
+@pytest.mark.parametrize("sharing", [False, True])
+def test_large_batch_build_failure_publishes_bounded_terminal_result(
+    tmp_path, monkeypatch, sharing
+) -> None:
+    from dataclasses import replace
+
+    from tests.flows.sim.test_campaign_phase5_adversarial import _plan
+
+    names = tuple(f"test_{index}" for index in range(1000))
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names)
+    outcome = _engine_timeout_outcome(tmp_path / "engine")
+    assert outcome.infrastructure_failure is not None
+    outcome = replace(
+        outcome,
+        infrastructure_failure=replace(outcome.infrastructure_failure, detail="界" * 4000),
+        builds=(replace(outcome.builds[0], reason="compiler failed: " + "界" * 200),),
+    )
+    root = tmp_path / "failed-build"
+    root.mkdir()
+
+    class Execution:
+        @contextmanager
+        def ordinary_group(self, _handle, _names):
+            yield _InfrastructureGroup(root, outcome)
+
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution._sharing_eligible", lambda _request: sharing
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,
+        execution_factory=lambda _options: Execution(),
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    campaign = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+    assert campaign.complete
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    result = store.scan().items[0].result
+    assert result is not None
+    assert result.document["grade"] == "error"
+    assert [item["test"] for item in result.document["observations"]] == list(names)
+    assert _first_build_result(store)["observation"]["detail"]["build_stage"]["timed_out"]

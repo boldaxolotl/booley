@@ -158,3 +158,47 @@ def test_adapter_pass_cannot_override_nonzero_process_exit(tmp_path: Path) -> No
 
     with pytest.raises(ArtifactValidationError, match="contradicts"):
         _run(tmp_path, process, _passing_result())
+
+
+@pytest.mark.parametrize("build_rc", [1, 137])
+def test_build_failure_cannot_hide_adapter_authentication_error(tmp_path, build_rc) -> None:
+    from dataclasses import replace
+
+    writer = write_adapter_result
+
+    def foreign_writer(identity, result):
+        writer(replace(identity, target_identity="foreign#sim"), result)
+
+    process = SubprocessResult(
+        returncode=build_rc,
+        stdout=f"BOOLEY_BUILD_STAGE token={_TOKEN} rc={build_rc}\n",
+    )
+    with (
+        patch(__name__ + ".write_adapter_result", side_effect=foreign_writer),
+        pytest.raises(ArtifactValidationError, match="Target"),
+    ):
+        _run(tmp_path, process, _passing_result())
+
+
+@pytest.mark.parametrize("passed", [True, False])
+def test_cleanup_failure_keeps_authenticated_design_verdict(tmp_path, passed) -> None:
+    result = AdapterResult(
+        passed,
+        False,
+        0,
+        ("smoke",),
+        test_results=(AdapterTestResult("smoke", "pass" if passed else "fail"),),
+    )
+    unlink = Path.unlink
+
+    def denied_partial(path, *args, **kwargs):
+        if path.name.endswith(".partial"):
+            raise OSError("partial cleanup denied")
+        return unlink(path, *args, **kwargs)
+
+    process = SubprocessResult(returncode=0, stdout=f"BOOLEY_BUILD_STAGE token={_TOKEN} rc=0\n")
+    with patch.object(Path, "unlink", denied_partial):
+        outcome = _run(tmp_path, process, result)
+    assert outcome.tests[0].verdict == ("pass" if passed else "fail")
+    assert outcome.infrastructure_failure is None
+    assert any("artifact_persistence:" in item for item in outcome.diagnostics)

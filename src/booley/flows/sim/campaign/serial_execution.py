@@ -1258,7 +1258,7 @@ def _blocked_result(
     infrastructure: bool = False,
 ) -> SimulationResult:
     observations = (
-        _infrastructure_observations(request, outcome)
+        _infrastructure_observations(request, outcome, build_failure=True)
         if infrastructure
         else [_observation(test, execution="blocked_by_build") for test in outcome.tests]
     )
@@ -1266,18 +1266,6 @@ def _blocked_result(
     if selection["kind"] == "unfiltered":
         observations = observations[:1]
         observations[0]["test"] = None
-    if infrastructure:
-        for observation in observations:
-            observation.update(
-                execution="aborted",
-                failure_class="infrastructure",
-                functional="not_observed",
-                assertions="not_observed",
-                cycle_count=None,
-            )
-            observation["detail"] = _build_failure_detail(
-                outcome, str(observation["detail"]["reason"])
-            )
     return _result(
         request,
         build_directory,
@@ -1322,8 +1310,9 @@ def _blocked_shared_result(
         )
         if failure.failure_class == FailureClass.INFRASTRUCTURE:
             observation["functional"] = observation["assertions"] = "not_observed"
-            observation["detail"] = dict(
-                cast(Mapping[str, object], failure.result.document["observation"])["detail"]
+            observation["detail"] = _compact_build_detail(
+                cast(Mapping[str, object], failure.result.document["observation"])["detail"],
+                len(identities),
             )
         observation["failure_class"] = failure.failure_class.value
         observations.append(observation)
@@ -1430,6 +1419,7 @@ def _snapshot_result(
         elapsed=time.monotonic() - started,
         evidence=evidence,
         runtime_inputs=_runtime_documents(request, bindings),
+        diagnostics=outcome.diagnostics,
     )
 
 
@@ -1469,6 +1459,7 @@ def _result(
     elapsed: float,
     evidence: list[dict[str, object]],
     runtime_inputs: list[dict[str, object]] | None = None,
+    diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
     grades = [
         grade_observations(
@@ -1499,8 +1490,15 @@ def _result(
         "observations": observations,
         "grade": grade,
         "diagnostics": [
-            {"severity": "warning", "code": "execution", "pointer": "", "message": item}
-            for item in outcome_diagnostics_safe(evidence, request)
+            {
+                "severity": "warning",
+                "code": "artifact_persistence"
+                if item.startswith("artifact_persistence:")
+                else "execution",
+                "pointer": "",
+                "message": _bounded_reason(item),
+            }
+            for item in (*outcome_diagnostics_safe(evidence, request), *diagnostics)
         ],
         "evidence": evidence,
     }
@@ -1581,7 +1579,7 @@ def _bounded_reason(text: str, limit: int = 768) -> str:
 def _build_failure_detail(outcome: SimulationTargetOutcome, reason: str) -> dict[str, object]:
     failure = outcome.infrastructure_failure
     header = outcome.builds[-1].reason if outcome.builds else reason.splitlines()[0]
-    text = _bounded_reason(header, 256)
+    text = header.encode("utf-8")[:256].decode("utf-8", errors="ignore")
     tail = _bounded_reason(build_output_tail(reason), 384)
     if tail and tail != text:
         text += "\n--- output tail ---\n" + tail
@@ -1610,15 +1608,25 @@ def _build_failure_detail(outcome: SimulationTargetOutcome, reason: str) -> dict
     return detail
 
 
+def _compact_build_detail(detail: Mapping[str, object], count: int) -> dict[str, object]:
+    if count <= 128:
+        return dict(detail)
+    return {
+        "reason": _bounded_reason(str(detail["reason"]), 16),
+        "code": detail.get("code", "build"),
+        "phase": "elaboration",
+    }
+
+
 def _infrastructure_observations(
-    request, outcome: SimulationTargetOutcome
+    request, outcome: SimulationTargetOutcome, *, build_failure: bool = False
 ) -> list[dict[str, object]]:
     if outcome.tests:
         observations = [
             _observation(test, reason_limit=16 if len(outcome.tests) > 128 else 768)
             for test in outcome.tests
         ]
-        if (
+        if build_failure or (
             outcome.builds
             and not outcome.builds[-1].passed
             and outcome.infrastructure_failure is not None
@@ -1631,18 +1639,26 @@ def _infrastructure_observations(
                     assertions="not_observed",
                     cycle_count=None,
                 )
-                observation["detail"] = _build_failure_detail(
-                    outcome, str(observation["detail"]["reason"])
+                observation["detail"] = _compact_build_detail(
+                    _build_failure_detail(outcome, str(observation["detail"]["reason"])),
+                    len(observations),
                 )
         return observations
     selection = cast(Mapping[str, object], request.work_item["selection"])
     identities = (None,) if selection["kind"] == "unfiltered" else selection["names"]
     failure = outcome.infrastructure_failure
     assert failure is not None
-    detail = _build_failure_detail(outcome, failure.detail or failure.message)
-    if not outcome.builds or outcome.builds[-1].passed:
-        detail.update(termination=failure.kind, code=failure.kind)
-    if len(identities) > 128:
+    if build_failure:
+        detail = _compact_build_detail(
+            _build_failure_detail(outcome, failure.detail or failure.message), len(identities)
+        )
+    else:
+        detail = {
+            "reason": _bounded_reason(failure.detail or failure.message),
+            "termination": failure.kind,
+            "code": failure.kind,
+        }
+    if len(identities) > 128 and not build_failure:
         detail = {
             "reason": _bounded_reason(failure.message, 16),
             "code": failure.kind,

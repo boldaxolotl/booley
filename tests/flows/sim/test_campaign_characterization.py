@@ -643,3 +643,22 @@ def test_infrastructure_without_tests_retains_selected_identities(
     assert result.document["grade"] == "error"
     assert [item["test"] for item in result.document["observations"]] == list(names)
     assert all(item["functional"] == "not_observed" for item in result.document["observations"])
+
+
+def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypatch) -> None:
+    unlink = Path.unlink
+
+    def denied_partial(path, *args, **kwargs):
+        if path.name.endswith(".partial"):
+            raise OSError("partial cleanup denied")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", denied_partial)
+    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", True)
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    result = store.scan().items[0].result
+    assert result is not None
+    assert any(
+        item["code"] == "artifact_persistence" and "cleanup denied" in item["message"]
+        for item in result.document["diagnostics"]
+    )
