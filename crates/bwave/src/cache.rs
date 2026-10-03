@@ -756,8 +756,7 @@ fn build_radix_map(
     if cfg.signal_radixes.is_empty() {
         return map;
     }
-    // Track each request (idx, radix) so we can detect collisions even when
-    // one of the radixes is the default Hex (which build_radix_map drops).
+    // Track explicit radix requests so collisions include an explicit Hex.
     let mut requested: HashMap<usize, Vec<Radix>> = HashMap::new();
     let exact_patterns: Vec<String> = cfg
         .patterns

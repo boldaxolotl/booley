@@ -1288,8 +1288,7 @@ fn run_stuck(args: StuckArgs) {
     text_format_only("stuck", &g);
     require_bwave(&args.bwave, "bwave stuck");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
-    // `value` is an opaque filter — preserved verbatim like the old behavior
-    // (cache.rs interprets empty string as "any value").
+    // Normalize constant literals; an empty filter means any stuck value.
     let find_stuck = Some(
         args.value
             .as_deref()
