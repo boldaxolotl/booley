@@ -598,7 +598,9 @@ def _pre_sim_integrity_failure(
             if not line.startswith("pre_run_commands ")
         )
     result.detail["campaign_integrity_error"] = str(error)
-    result.report_text += f"\nSimulation Campaign integrity failure: {error}"
+    line = f"Simulation Campaign integrity failure: {error}"
+    if line not in result.report_text.splitlines():
+        result.report_text += f"\n{line}"
     return result
 
 
@@ -2306,8 +2308,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
-        from types import SimpleNamespace
-
         from .campaign import collect_pre_sim_firings, read_invocation_pre_sim_firings
 
         invocation = self.context._reserved_invocation_dir
@@ -2317,19 +2317,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             firings = list(read_invocation_pre_sim_firings(invocation))
             if origin_manifest is not None:
                 firings.extend(collect_pre_sim_firings(origin_manifest))
-            context = SimpleNamespace(
-                pre_sim_firings=firings,
-                producer_invocation_directory=invocation.absolute(),
-                current_pre_sim_keys=frozenset(
-                    getattr(self, "_current_published_pre_sim_keys", ())
-                ),
-            )
-            hook_detail = _campaign_pre_sim_details([context], invocation)
         except (OSError, ValueError) as exc:
             return self._retain_pre_sim_after_scan_error(result, exc)
+        return self._project_published_pre_sim(result, tuple(firings), invocation)
+
+    def _project_published_pre_sim(self, result, firings, invocation) -> EndpointOutcome:
+        from types import SimpleNamespace
+
         if not firings:
             return result
-        result.detail.update(hook_detail)
+        context = SimpleNamespace(
+            pre_sim_firings=firings,
+            producer_invocation_directory=invocation.absolute(),
+            current_pre_sim_keys=frozenset(getattr(self, "_current_published_pre_sim_keys", ())),
+        )
+        result.detail.update(_campaign_pre_sim_details([context], invocation))
         result.report_text = "\n".join(
             line
             for line in result.report_text.splitlines()
@@ -2352,9 +2354,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if firings:
             try:
                 SimulationCampaign.reauthenticate_pre_sim_firings(firings)
+                result = self._project_published_pre_sim(
+                    result,
+                    tuple(replace(firing, terminal=False) for firing in firings),
+                    self.context._reserved_invocation_dir,
+                )
                 retained = True
             except (OSError, ValueError):
                 pass
+        self.context._simulation_campaign_outcomes = ()
+        self.context._pending_criteria_set = ()
+        self.context._report_criteria.evaluated.clear()
+        self.context._report_criteria.known = False
         return _pre_sim_integrity_failure(result, error, retain_authenticated=retained)
 
     def _prepare_campaign_targets(

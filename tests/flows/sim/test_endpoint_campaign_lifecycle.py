@@ -834,3 +834,68 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
     assert len(firings) == 1
     assert firings[0].document["test_names"] == ("alpha", "beta")
     assert firings[0].document["stdout_tail"] == "hook-out\n"
+
+
+def _public_ticket_hook_adapter(tmp_path, project):
+    from booley.criteria.state import DevelopmentState
+    from booley.evidence.acceptance import ResolvedFlowAcceptance
+    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+
+    log_dir = tmp_path / "logs/ticket"
+    state_path = log_dir / ".runtime/booley_state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug = "ticket"
+    state.init_criteria({"sim_pass_sim_a": True}, strict=True)
+    state.work_dir = str(project)
+    state.save()
+
+    class PreparedTicketRecorder(TicketAcceptanceRecorder):
+        def validate_and_resolve(self, request):
+            # Ticket admission is a fixture; recording uses the actual ledger owner.
+            request.state_file = state_path
+            request.slug = "ticket"
+            return ResolvedFlowAcceptance(ticket_backed=True)
+
+    recorder = PreparedTicketRecorder(
+        log_dir=log_dir,
+        ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    )
+    return recorder, state_path, log_dir
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_public_ticket_integrity_downgrade_never_commits_or_publishes_true(
+    tmp_path, monkeypatch, corrupt
+):
+    import json
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim.request import SimRequest
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    adapter, state_path, log_dir = _public_ticket_hook_adapter(tmp_path, project)
+    project_outcome = flow._campaign_endpoint_outcome
+
+    def corrupt_after_projection(outcomes):
+        result = project_outcome(outcomes)
+        if corrupt:
+            path = outcomes[0].pre_sim_firings[0].path.parents[3] / "result.json"
+            path.write_text("{}")
+        return result
+
+    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", corrupt_after_projection)
+    result = flow.execute(
+        SimRequest(target="sim_a", work_dir=project, report_dir=tmp_path / "reports"),
+        adapter=adapter,
+    )
+    report = json.loads((tmp_path / "reports/sim.json").read_bytes())
+    state = DevelopmentState.load(state_path)
+    assert result.exit_code == (2 if corrupt else 0), result.outcome.report_text
+    assert report["criterion_met"] is (None if corrupt else True)
+    assert state.criteria["sim_pass_sim_a"].met is (not corrupt)
+    assert bool(state.acceptance_transactions) is (not corrupt)
+    assert bool(list((log_dir / "acceptance/transactions").glob("*.json"))) is (not corrupt)
+    if corrupt:
+        assert "Simulation Campaign integrity failure" in report["report_text"]
+        assert report["detail"]["pre_sim_current"] == 2
+        assert len(report["detail"]["pre_sim_lines"]) == 2

@@ -615,6 +615,7 @@ class CampaignStore:
         if item is None or firing.manifest_path != self.manifest_path:
             raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
         directory = firing.path.parent.parent
+        _require_safe_parents(directory, self.root)
         if directory.parent != self._work_item_directory(item) / "attempts":
             raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
         current = self._read_attempt_pre_sim_firings(manifest, item, directory, None)

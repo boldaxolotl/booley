@@ -458,3 +458,86 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
         firings = request.store.read_pre_sim_firings()
         assert [firing.key for firing in firings] == events
         assert firings[0].document["stdout_tail"] == "observed-hook\n"
+
+
+def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.test_campaign_dependency import _add_observed_cycles
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    _add_observed_cycles(monkeypatch)
+    invocation = tmp_path / "reports/1"
+    baseline_root, candidate_root = tmp_path / "baseline", tmp_path / "candidate"
+    baseline_root.mkdir()
+    candidate_root.mkdir()
+    flow.context._reserved_invocation_dir = invocation
+    flow._current_published_pre_sim_keys = set()
+
+    def baseline_role(document):
+        document["campaign_id"] = "01234567-89ab-4def-8123-456789abcdef"
+        document["target"].update(role="cycle_count_baseline", revision="baseline")
+
+    _, baseline = _successful_pre_sim_campaign(
+        baseline_root,
+        monkeypatch,
+        "immutable",
+        transform=baseline_role,
+        invocation_directory=invocation,
+        observer=flow._record_pre_sim_firing,
+    )
+    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    prerequisites = flow._campaign_prerequisite_documents(
+        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+    )
+    _, candidate = _successful_pre_sim_campaign(
+        candidate_root,
+        monkeypatch,
+        "immutable",
+        transform=lambda document: document.update(prerequisites=prerequisites),
+        invocation_directory=invocation,
+        observer=flow._record_pre_sim_firing,
+    )
+    return candidate
+
+
+def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.flow import SimulateFlow
+
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    result = flow._campaign_endpoint_outcome([candidate])
+    assert result.detail["pre_sim_current"] == 1
+    firing = next(f for f in candidate.pre_sim_firings if f.document["role"] == "candidate")
+    (firing.path.parents[3] / "result.json").write_text("{}")
+    result = flow._attach_published_pre_sim(result)
+    assert result.exit_code == 2
+    assert result.detail["pre_sim_current"] == 2
+    assert result.detail["pre_sim_historical"] == 0
+    assert set(result.detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
+    assert len(result.detail["pre_sim_lines"]) == 2
+    assert "Candidate:" in result.report_text and "Cycle Count baseline:" in result.report_text
+    assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
+
+
+def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
+    tmp_path, monkeypatch
+):
+    import shutil
+
+    from booley.flows.sim.campaign import SimulationCampaign, SimulationCampaignIntegrityError
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    _invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    firing = campaign.pre_sim_firings[0]
+    directory = firing.path.parent.parent
+    copy = tmp_path / "copied-attempt"
+    shutil.copytree(directory, copy)
+    shutil.rmtree(directory)
+    directory.symlink_to(copy, target_is_directory=True)
+    assert firing.path.read_bytes() == (copy / "pre-sim/0001.json").read_bytes()
+    with pytest.raises(SimulationCampaignIntegrityError):
+        SimulationCampaign.reauthenticate_pre_sim_firings((firing,))
