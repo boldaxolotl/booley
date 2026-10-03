@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
+import re
 import sys
 import tomllib
 from types import SimpleNamespace
@@ -19,7 +21,7 @@ from tests.conftest import require_symlinks
 @pytest.mark.parametrize(
     "existing", [None, "suppress_unstable_features_warning=false\n", "broken=["]
 )
-@pytest.mark.parametrize("failure", ["missing", "stale", "broken"])
+@pytest.mark.parametrize("failure", ["missing", "stale", "broken", "broken-import"])
 def test_codex_registration_installation_failure_precedes_all_writes(
     tmp_path, monkeypatch, existing, failure
 ):
@@ -27,7 +29,7 @@ def test_codex_registration_installation_failure_precedes_all_writes(
 
     def loads(source):
         if failure == "broken":
-            raise ValueError("broken probe")
+            raise RuntimeError("broken probe")
         raise ValueError("TOML1.0-only parser rejected capability probe")
 
     parser = None if failure == "missing" else SimpleNamespace(loads=loads)
@@ -41,9 +43,18 @@ def test_codex_registration_installation_failure_precedes_all_writes(
         "deploy_host_skills",
         "apply_stored_credential",
         "_publish_codex_config",
+        "_apply_codex_permission_mode",
     ):
         monkeypatch.setattr(reg, name, lambda *args: calls.append(args))
     mcp_config._codex_toml_parser.cache_clear()
+    real_import = builtins.__import__
+
+    def import_parser(name, *args, **kwargs):
+        if name == "tomli" and failure == "broken-import":
+            raise ImportError("partial parser installation")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_parser)
     monkeypatch.setitem(sys.modules, "tomli", parser)
     try:
         with pytest.raises(RuntimeError, match=r"installation.*tomli>=2\.4\.0") as error:
@@ -1140,6 +1151,16 @@ def test_codex_unsupported_inline_servers_fail_with_named_repair_diagnostic(tmp_
             '{\n "mcp_2026_07_28"=false # no comma\n}',
             '{\n "hide_full_access_warning"=false # no comma\n}',
         ),
+        ("{\n # before, keep this\n other=true,\n}", "{\n # before, keep this\n other=true,\n}"),
+        (
+            "{\n # before, keep this\n mcp_2026_07_28=false,\n}",
+            "{\n # before, keep this\n hide_full_access_warning=false,\n}",
+        ),
+        (
+            "{\n mcp_2026_07_28=false, # after, keep this\n}",
+            "{\n hide_full_access_warning=false, # after, keep this\n}",
+        ),
+        ("{\n # x, mcp_2026_07_28=false\n}", "{\n # x, hide_full_access_warning=false\n}"),
     ],
 )
 def test_toml11_full_registration_preserves_choices_and_body_bytes(
@@ -1177,8 +1198,11 @@ def test_toml11_full_registration_preserves_choices_and_body_bytes(
         old = tomli.loads("value=" + original)["value"]
         if "other" in old:
             assert parsed[table]["other"] == old["other"]
-        if "false" not in original:
-            assert original[1:-1] in body
+        key = "mcp_2026_07_28" if table == "features" else "hide_full_access_warning"
+        expected = re.sub(
+            rf'^(\s*"?{key}"?\s*=\s*)false\b', r"\1true", original, flags=re.MULTILINE
+        )
+        assert expected[1:-1] in body
     for fragment in ("# before", "# after", "# trailing", "# comment-only"):
         if fragment in source:
             assert fragment in body
@@ -1204,3 +1228,52 @@ def test_toml11_already_current_is_byte_identical(tmp_path, monkeypatch, ending)
     assert reg.upsert_codex(path) is False
     assert "codex:current" in reg.register("codex", home=tmp_path)
     assert path.read_bytes() == source.encode()
+
+
+@pytest.mark.parametrize(
+    "notice",
+    [
+        "{\n # before, keep this\n other=true,\n}",
+        "{\n # before, keep this\n hide_full_access_warning=false,\n}",
+        "{\n # x, hide_full_access_warning=false\n}",
+    ],
+)
+def test_toml11_notice_comment_comma_completes_full_registration(tmp_path, monkeypatch, notice):
+    import tomli
+
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "suppress_unstable_features_warning=false\nfeatures={\n mcp_2026_07_28=true,\n}\nnotice="
+        + notice
+    )
+    calls = []
+    monkeypatch.setattr(reg, "deploy_skills", lambda *args: calls.append("skills") or 0)
+    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: calls.append("host") or 0)
+    monkeypatch.setattr(
+        reg, "apply_stored_credential", lambda *args: calls.append("credential") or "none"
+    )
+    try:
+        result = reg.register("codex", home=tmp_path)
+    except ValueError:
+        assert calls == [], "valid comment caused partial registration: " + str(calls)
+        raise
+    assert result.startswith("codex:written")
+    assert calls == ["skills", "host", "credential"]
+    body = path.read_text()
+    assert tomli.loads(body)["notice"]["hide_full_access_warning"] is True
+    expected = notice.replace(
+        "\n hide_full_access_warning=false", "\n hide_full_access_warning=true"
+    )
+    assert expected[1:-1] in body
+
+
+def test_codex_permission_writer_validates_notice_before_publication(tmp_path, monkeypatch):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    source = "suppress_unstable_features_warning=false\nnotice={}\n"
+    path.write_text(source)
+    monkeypatch.setattr(reg, "_upsert_codex_full_access_notice", lambda source: source)
+    with pytest.raises(ValueError, match=str(path)):
+        reg._apply_codex_permission_mode(tmp_path)
+    assert path.read_text() == source

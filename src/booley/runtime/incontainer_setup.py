@@ -458,7 +458,7 @@ def _inline_table_members(body: str) -> list[str]:
         if character != ",":
             continue
         try:
-            parser.loads("value={" + body[start:index] + "\n}")
+            parser.loads("value={" + body[start:index] + "}")
         except parser.TOMLDecodeError:
             continue
         members.append(body[start:index])
@@ -620,6 +620,13 @@ def _apply_codex_permission_mode(home: Path | None = None) -> str:
     updated = _upsert_codex_root_setting(updated, "sandbox_mode", '"danger-full-access"')
     updated = _upsert_codex_root_setting(updated, "web_search", '"disabled"')
     updated = _upsert_codex_full_access_notice(updated)
+    if (
+        _codex_data(updated, path=path).get("notice", {}).get("hide_full_access_warning")
+        is not True
+    ):
+        raise ValueError(
+            f"Cannot apply Codex full-access notice to {path}; repair this file and retry"
+        )
     _publish_codex_config(path, updated)
     return "written"
 

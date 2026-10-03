@@ -99,6 +99,54 @@ assert "tomli" not in sys.modules
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_stale_parser_own_decode_error_is_rejected_in_fresh_process(tmp_path):
+    script = """
+import sys
+from types import ModuleType
+from pathlib import Path
+from unittest.mock import patch
+from booley.runtime import mcp_config, incontainer_setup
+class StaleDecodeError(ValueError):
+    pass
+calls = []
+def loads(source):
+    assert source == "probe = {\\n enabled=true,\\n}\\n"
+    calls.append(source)
+    raise StaleDecodeError("TOML1.0-only installed parser")
+parser = ModuleType("tomli")
+parser.loads = loads
+parser.TOMLDecodeError = StaleDecodeError
+sys.modules["tomli"] = parser
+assert "warning = true" in mcp_config.generate_codex_config()
+assert "warning = true" in mcp_config.generate_codex_config(existing_config="")
+assert calls == []
+source = "suppress_unstable_features_warning=false\\nfeatures={\\n x=true,\\n}\\n"
+path = Path(sys.argv[1]) / "config.toml"
+path.write_text(source)
+with patch.object(mcp_config.logger, "warning") as warning:
+    for action in (lambda: mcp_config.generate_codex_config(existing_config=source),
+                   lambda: incontainer_setup.upsert_codex(path)):
+        try:
+            action()
+        except RuntimeError as error:
+            assert "tomli>=2.4.0" in str(error) and "repair this file" not in str(error)
+            assert isinstance(error.__cause__, StaleDecodeError)
+        else:
+            raise AssertionError("stale parser accepted")
+    warning.assert_not_called()
+assert len(calls) == 2 and path.read_text() == source
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def _private_codex_destination(tmp_path, monkeypatch, kind):
     from booley.runtime import _codex_backend as cb
     from booley.runtime.agent_backend import AgentCallParams
