@@ -821,18 +821,20 @@ def test_elab_cli_card_has_one_report_pointer(
     assert "manifest:" not in output.out + output.err
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
 def test_early_elab_error_names_available_report_destination(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
 ) -> None:
     flow = _flow_with_state(tmp_path, ["sim_dut"])
+    flow.args.dry_run = dry_run
     monkeypatch.setattr(
         flow,
         "_elab_only_preflight",
         lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="build preflight failed"),
     )
     result = flow._run_elab_only()
-    assert (
-        result.report_text
-        == f"build preflight failed\n  report: {(tmp_path / 'reports/sim.json').resolve()}"
-    )
+    expected = "build preflight failed"
+    if not dry_run:
+        expected += f"\n  report: {(tmp_path / 'reports/sim.json').resolve()}"
+    assert result.report_text == expected
     assert "manifest:" not in result.report_text

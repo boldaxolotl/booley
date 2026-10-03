@@ -646,6 +646,13 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
     published: list[Path] = []
     campaign = SimulationCampaign(manifest_published=flow._manifest_publisher(published))
     paths = [campaign.publish_new(request) for request in requests]
+    # Repeated publication notifications retain one recovery path per invocation.
+    for request in requests:
+        campaign.publish_new(request)
+    # A new successful publication at the same destination needs no repeated pointer.
+    paths[0].unlink()
+    campaign.publish_new(requests[0])
+    assert paths[0].is_file()
     assert len(set(paths)) == 2
     assert paths[0].parents[1].name == "sim%40baseline-abc123"
     assert capsys.readouterr().err == "".join(

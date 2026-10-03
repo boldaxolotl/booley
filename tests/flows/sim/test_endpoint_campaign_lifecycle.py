@@ -557,7 +557,7 @@ class _CardExecution(_AdapterAbortExecution):
         return result
 
 
-@pytest.mark.parametrize("grade", ["pass", "fail"])
+@pytest.mark.parametrize("grade", ["pass", "fail", "interrupt"])
 def test_ordinary_cli_manifest_and_card_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], grade: str
 ) -> None:
@@ -581,23 +581,30 @@ def test_ordinary_cli_manifest_and_card_paths(
         )
         assert path.is_absolute() and path.is_file()
         seen.append(path)
+        if grade == "interrupt":
+            raise KeyboardInterrupt()
         return execution
 
     monkeypatch.setattr(
         "booley.flows.sim.flow.OrdinaryHdlSerialExecutor",
         lambda **kwargs: OrdinaryHdlSerialExecutor(**kwargs, execution_factory=factory),
     )
-    result = flow.execute_cli(
-        _campaign_cli_args(
-            work_dir=str(tmp_path),
-            report_dir=str(tmp_path / "reports"),
-            target="sim",
-            test=(
-                "count",
-                "reset",
-            ),
-        )
+    argv = _campaign_cli_args(
+        work_dir=str(tmp_path),
+        report_dir=str(tmp_path / "reports"),
+        target="sim",
+        test=(
+            "count",
+            "reset",
+        ),
     )
+    if grade == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            flow.execute_cli(argv)
+        assert len(seen) == 1 and seen[0].is_file()
+        assert "campaign manifest: " not in capsys.readouterr().err
+        return
+    result = flow.execute_cli(argv)
     assert seen
     assert result.exit_code == (0 if grade == "pass" else 1)
     assert f"  manifest: {seen[0]}" in result.outcome.report_text
@@ -714,3 +721,13 @@ def test_partial_publication_discloses_only_committed_target(
     assert result.outcome.report_text.count("  manifest: ") == 1
     assert "targets/sim_0/campaign/manifest.json" in result.outcome.report_text
     assert "targets/sim_1/campaign/manifest.json" not in result.outcome.report_text
+
+
+def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) -> None:
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(report_dir=tmp_path / "reports")
+    path = tmp_path / "manifest.json"
+    result = flow._with_campaign_paths(EndpointOutcome(), [path, path])
+    assert result.report_text == (
+        f"  manifest: {path.resolve()}\n  report: {(tmp_path / 'reports/sim.json').resolve()}"
+    )

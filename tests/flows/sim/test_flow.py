@@ -1490,7 +1490,7 @@ class TestFullRun:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_single_config_pass(self, _mock_backend, _mock_tests, tmp_path: Path):
+    def test_single_config_pass(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
         flow = _make_flow(tmp_path, config="lite")
         with flow.context.publication_resources:
             result = flow._run()
@@ -1501,6 +1501,7 @@ class TestFullRun:
             in result.report_text
         )
         assert "manifest:" not in result.report_text
+        assert capsys.readouterr().out.count(result.report_text) == 1
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -2242,8 +2243,8 @@ class TestTruncationResilientReport:
 
         lines = result.report_text.splitlines()
         # The final verdict and report destination remain in the protected tail.
-        assert lines[-2].startswith("RESULT: FAIL")
-        assert lines[-1] == f"  report: {(Path(flow.args.report_dir) / 'sim.json').resolve()}"
+        assert lines[-1].startswith("RESULT: FAIL")
+        assert lines[-3] == f"  report: {(Path(flow.args.report_dir) / 'sim.json').resolve()}"
         # The headline block sits after ALL verbose per-test detail.
         marker = lines.index("--- summary ---")
         assert "--- end error output ---" not in lines[marker:]

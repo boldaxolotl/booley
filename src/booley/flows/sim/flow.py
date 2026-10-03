@@ -516,7 +516,7 @@ def _campaign_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
     *,
-    report_path: Path,
+    report_path: Path | None,
 ) -> list[str]:
     if (resolved := coverage_campaigns) is None and any(
         getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
@@ -553,7 +553,7 @@ def _campaign_report_lines(
         report_lines = [
             line,
             f"  manifest: {outcome.manifest_path.resolve()}",
-            f"  report: {report_path.resolve()}",
+            *([f"  report: {report_path.resolve()}"] if report_path is not None else []),
             *(f"  {reason}" for reason in reasons),
         ]
         if getattr(outcome, "coverage_reference", None) is not None:
@@ -3564,9 +3564,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _legacy_endpoint_outcome(
         self, targets, results, lines, passed, elapsed, resolution_s
     ) -> EndpointOutcome:
-        report_text = self._with_campaign_paths(
-            EndpointOutcome(report_text=self._format_summary(results, lines, passed))
-        ).report_text
+        report_text = self._format_summary(results, lines, passed)
         eda_tools = [result.eda_tool for result in results if result.eda_tool]
         if eda_tools:
             self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
@@ -3629,6 +3627,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Retain committed paths even when console publication is unavailable."""
 
         def publish(path: Path) -> None:
+            path = path.resolve()
+            if path in published:
+                return
             published.append(path)
             if getattr(self.context, "_console_publication_requested", False):
                 with suppress(OSError, ValueError):
@@ -3637,19 +3638,24 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return publish
 
     def _report_destination(self) -> Path | None:
-        root = getattr(self.args, "report_dir", None)
+        args = getattr(self.context, "_args", None)
+        if args is None or getattr(args, "dry_run", False):
+            return None
+        root = getattr(args, "report_dir", None)
         return (Path(root) / "sim.json").resolve() if root is not None else None
 
     def _with_campaign_paths(
         self, result: EndpointOutcome, published: Sequence[Path] = ()
     ) -> EndpointOutcome:
-        lines = [result.report_text]
+        lines = [result.report_text] if result.report_text else []
+        existing = set(result.report_text.splitlines())
         for path in published:
             line = f"  manifest: {path.resolve()}"
-            if line not in result.report_text.splitlines():
+            if line not in existing:
                 lines.append(line)
+                existing.add(line)
         report = self._report_destination()
-        if report is not None and f"  report: {report}" not in result.report_text.splitlines():
+        if report is not None and f"  report: {report}" not in existing:
             lines.append(f"  report: {report}")
         result.report_text = "\n".join(lines)
         return result
@@ -4220,7 +4226,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
         )
         report_path = self._report_destination()
-        assert report_path is not None, "prepared Flow requires a report root"
         lines = _campaign_report_lines(outcomes, coverage_campaigns, report_path=report_path)
         campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
         coverage_targets = _coverage_compatibility_targets(
@@ -5482,6 +5487,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         target's verdict or cycle counts out of the surviving window.
         """
         lines = [*output_lines, *self._headline_lines(all_results)]
+        report_path = self._report_destination()
+        if report_path is not None:
+            lines.append(f"  report: {report_path}")
         any_inconclusive = any(r.inconclusive for r in all_results)
         targets_passed = sum(1 for r in all_results if r.passed)
         if any_inconclusive:
