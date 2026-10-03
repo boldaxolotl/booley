@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::format::{format_value_with_radix, is_edge_keyword, values_match, Radix};
+use crate::format::{format_value_with_radix, values_match, Radix, TriggerMode};
 use crate::signal::{compile_patterns, match_signal};
 use crate::ExtractConfig;
 
@@ -1222,7 +1222,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
 
     let radix_map = build_radix_map(cache, &target_indices, cfg);
-    let edge_mode = is_edge_keyword(find_value_str).map(String::from);
+    let mode = TriggerMode::classify(find_value_str);
     let sync_mode = !cfg.async_mode;
 
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
@@ -1258,7 +1258,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut truncated = false;
     let cb = cycle_base(cache, effective_start);
 
-    let use_cycle_walk = sync_mode && edge_mode.is_none() && cache.clock_period_ticks > 0 && cb > 0;
+    let use_cycle_walk =
+        sync_mode && mode == TriggerMode::Literal && cache.clock_period_ticks > 0 && cb > 0;
 
     // Closure that records one match. In JSON mode it pushes to `json_matches`
     // (or `last_json` for --last); in text mode it streams writeln. `raw_val`
@@ -1356,18 +1357,18 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         } else {
             // Edge mode or async: walk transitions only
-            let mut prev_val = "x".to_string();
+            let mut prev_val: Option<&str> = None;
             for (tick, val) in &transitions {
                 if *tick < effective_start {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
 
-                if sync_mode {
+                if sync_mode && !(mode == TriggerMode::Change && cache.clock_period_ticks == 0) {
                     if cache.clock_period_ticks > 0 && cb > 0 {
                         let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                         if (cycle as i64) < cfg.time_min {
-                            prev_val = val.clone();
+                            prev_val = Some(val.as_str());
                             continue;
                         }
                         if let Some(max) = cfg.time_max {
@@ -1378,7 +1379,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     }
                 } else {
                     if (*tick as i64) < cfg.time_min {
-                        prev_val = val.clone();
+                        prev_val = Some(val.as_str());
                         continue;
                     }
                     if let Some(max) = cfg.time_max {
@@ -1388,14 +1389,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     }
                 }
 
-                let matched = if let Some(ref edge) = edge_mode {
-                    let m = check_edge(&prev_val, val, edge);
-                    prev_val = val.clone();
-                    m
-                } else {
-                    prev_val = val.clone();
-                    values_match(val, find_value_str)
-                };
+                let matched = mode.matches(prev_val, val, sig.width, find_value_str);
+                prev_val = Some(val.as_str());
 
                 if matched {
                     let dval = fmt_val(val, sig_idx, sig.width, &radix_map);
@@ -1421,21 +1416,15 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     'vouter: for ve in &virtual_matches {
         let dname = &ve.name;
 
-        if edge_mode.is_some() {
-            let mut prev_val = "x".to_string();
+        if mode != TriggerMode::Literal {
+            let mut prev_val: Option<&str> = None;
             for (tick, val) in &ve.transitions {
                 if *tick < effective_start {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
-                let m = if let Some(ref edge) = edge_mode {
-                    let m = check_edge(&prev_val, val, edge);
-                    prev_val = val.clone();
-                    m
-                } else {
-                    prev_val = val.clone();
-                    values_match(val, find_value_str)
-                };
+                let m = mode.matches(prev_val, val, 1, find_value_str);
+                prev_val = Some(val.as_str());
                 if m {
                     let time = if sync_mode && cache.clock_period_ticks > 0 {
                         tick_to_cycle(*tick, cb, cache.clock_period_ticks)
@@ -1612,11 +1601,8 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         std::process::exit(2);
     }
 
-    // Determine trigger mode from VALUE keyword
-    let edge_kw = is_edge_keyword(sa_value).map(String::from);
-    let change_mode = edge_kw.as_deref() == Some("change");
-    let edge_mode = if change_mode { None } else { edge_kw };
-    let level_mode = edge_mode.is_none() && !change_mode;
+    let mode = TriggerMode::classify(sa_value);
+    let level_mode = mode == TriggerMode::Literal;
 
     let sync_mode = !cfg.async_mode;
     let reset_deassert_tick = if !cfg.with_reset && sync_mode {
@@ -1627,14 +1613,14 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
     let cb = cycle_base(cache, effective_start);
-    let mut trigger_data: Vec<Vec<(u64, String)>> = trigger_indices
+    let mut trigger_data: Vec<(Vec<(u64, String)>, u32)> = trigger_indices
         .iter()
-        .map(|&idx| cache.read_transitions(idx))
+        .map(|&idx| (cache.read_transitions(idx), cache.signals[idx].width))
         .collect();
     trigger_data.extend(
         trigger_virtual_indices
             .iter()
-            .map(|&idx| virtuals[idx].transitions.clone()),
+            .map(|&idx| (virtuals[idx].transitions.clone(), 1)),
     );
 
     // Read trigger signal transitions and identify trigger ticks.
@@ -1646,7 +1632,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         let total_cycles = (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
         for cycle in 1..=total_cycles {
             let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-            for trig_trans in &trigger_data {
+            for (trig_trans, _) in &trigger_data {
                 if values_match(&value_at_tick(trig_trans, tick), sa_value) {
                     trigger_ticks.push(tick);
                     break;
@@ -1672,7 +1658,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         }
         for tick in &change_ticks {
-            for trig_trans in &trigger_data {
+            for (trig_trans, _) in &trigger_data {
                 if values_match(&value_at_tick(trig_trans, *tick), sa_value) {
                     trigger_ticks.push(*tick);
                     break;
@@ -1680,38 +1666,14 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         }
     } else {
-        for transitions in &trigger_data {
-            let mut prev_val = "x".to_string();
+        for (transitions, width) in &trigger_data {
+            let mut previous = None;
             for (tick, val) in transitions {
-                if *tick < effective_start {
-                    prev_val = val.clone();
-                    continue;
-                }
-                let triggered = if let Some(ref edge) = edge_mode {
-                    check_edge(&prev_val, val, edge)
-                } else if change_mode {
-                    prev_val != *val
-                } else if level_mode {
-                    values_match(val, sa_value)
-                } else {
-                    false
-                };
-                prev_val = val.clone();
-                if triggered {
+                let triggered = mode.matches(previous, val, *width, sa_value);
+                previous = Some(val.as_str());
+                if *tick >= effective_start && triggered {
                     trigger_ticks.push(*tick);
                 }
-            }
-        }
-        // Extractor quirk: sample_at_triggered is not cleared on reset rebase.
-        // If any trigger signal changed during reset (from initial "x"), the
-        // flag carries over to the first post-reset cycle. Simulate this by
-        // injecting effective_start as a trigger if there were pre-reset events.
-        if change_mode && effective_start > 0 {
-            let has_pre_reset = trigger_data
-                .iter()
-                .any(|transitions| transitions.iter().any(|(t, _)| *t < effective_start));
-            if has_pre_reset && (trigger_ticks.is_empty() || trigger_ticks[0] > cb) {
-                trigger_ticks.insert(0, cb);
             }
         }
     }
@@ -2211,22 +2173,21 @@ fn collect_event_ticks(
         return EventCollect::NoPatternMatch;
     }
 
-    let edge_mode = is_edge_keyword(value_str).map(String::from);
-    // Edge keywords are only meaningful for 1-bit signals — `check_edge`
-    // compares prev/cur against "0"/"1". Track whether every matched
-    // signal is wider so the error message can call this out.
-    let edge_on_multibit_only = edge_mode.is_some()
+    let mode = TriggerMode::classify(value_str);
+    // Directional keywords require 1-bit signals; Change also accepts buses.
+    // Track all-multibit matches for the existing directional diagnostic.
+    let edge_on_multibit_only = mode.directional()
         && virtual_matches.is_empty()
         && target_indices.iter().all(|&i| cache.signals[i].width > 1);
     let mut ticks = Vec::new();
 
     for &sig_idx in &target_indices {
         let transitions = cache.read_transitions(sig_idx);
-        let mut prev_val = "x".to_string();
+        let mut prev_val: Option<&str> = None;
 
         for (tick, val) in &transitions {
             if *tick < effective_start {
-                prev_val = val.clone();
+                prev_val = Some(val.as_str());
                 continue;
             }
 
@@ -2234,7 +2195,7 @@ fn collect_event_ticks(
             if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
                 let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                 if (cycle as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2244,7 +2205,7 @@ fn collect_event_ticks(
                 }
             } else if !sync_mode {
                 if (*tick as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2254,14 +2215,8 @@ fn collect_event_ticks(
                 }
             }
 
-            let matched = if let Some(ref edge) = edge_mode {
-                let m = check_edge(&prev_val, val, edge);
-                prev_val = val.clone();
-                m
-            } else {
-                prev_val = val.clone();
-                values_match(val, value_str)
-            };
+            let matched = mode.matches(prev_val, val, cache.signals[sig_idx].width, value_str);
+            prev_val = Some(val.as_str());
 
             if matched {
                 ticks.push(*tick);
@@ -2269,11 +2224,11 @@ fn collect_event_ticks(
         }
     }
     for ve in virtual_matches {
-        let mut prev_val = "x".to_string();
+        let mut prev_val: Option<&str> = None;
 
         for (tick, val) in &ve.transitions {
             if *tick < effective_start {
-                prev_val = val.clone();
+                prev_val = Some(val.as_str());
                 continue;
             }
 
@@ -2281,7 +2236,7 @@ fn collect_event_ticks(
             if sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
                 let cycle = tick_to_cycle(*tick, cb, cache.clock_period_ticks);
                 if (cycle as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2291,7 +2246,7 @@ fn collect_event_ticks(
                 }
             } else if !sync_mode {
                 if (*tick as i64) < cfg.time_min {
-                    prev_val = val.clone();
+                    prev_val = Some(val.as_str());
                     continue;
                 }
                 if let Some(max) = cfg.time_max {
@@ -2301,14 +2256,8 @@ fn collect_event_ticks(
                 }
             }
 
-            let matched = if let Some(ref edge) = edge_mode {
-                let m = check_edge(&prev_val, val, edge);
-                prev_val = val.clone();
-                m
-            } else {
-                prev_val = val.clone();
-                values_match(val, value_str)
-            };
+            let matched = mode.matches(prev_val, val, 1, value_str);
+            prev_val = Some(val.as_str());
 
             if matched {
                 ticks.push(*tick);
@@ -2334,7 +2283,13 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
 
-    let reset_deassert_tick = if !cfg.with_reset && sync_mode {
+    let change_query = TriggerMode::classify(val_a) == TriggerMode::Change
+        || cfg
+            .distance_b
+            .as_ref()
+            .is_some_and(|(_, value)| TriggerMode::classify(value) == TriggerMode::Change);
+    let reset_deassert_tick = if !cfg.with_reset && (sync_mode || (change_query && !cfg.async_mode))
+    {
         find_reset_deassert_tick(cache, cfg)
     } else {
         None
@@ -2900,15 +2855,7 @@ pub fn list_signals_from_cache(
 
 // -- Helper functions -----------------------------------------------------
 
-fn check_edge(prev: &str, cur: &str, edge_type: &str) -> bool {
-    match edge_type {
-        "rising" => prev == "0" && cur == "1",
-        "falling" => prev == "1" && cur == "0",
-        _ => false,
-    }
-}
-
-fn tick_to_cycle(tick: u64, cycle_base_tick: u64, clock_period: u64) -> u64 {
+pub(crate) fn tick_to_cycle(tick: u64, cycle_base_tick: u64, clock_period: u64) -> u64 {
     if clock_period == 0 || tick < cycle_base_tick {
         return 0;
     }

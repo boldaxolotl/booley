@@ -2,13 +2,13 @@
 //! Implements VcdHandler trait for streaming VCD event processing.
 
 use std::collections::HashMap;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::ControlFlow;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json;
 
-use crate::format::{format_value, is_edge_keyword, values_match};
+use crate::format::{format_value, values_match, TriggerMode};
 use crate::index::IndexBuilder;
 use crate::parser::{VcdHandler, VcdHeader};
 use crate::signal::{common_scope_prefix, compile_patterns, match_signal, SignalMeta};
@@ -74,9 +74,10 @@ pub struct Extractor {
 
     // Find mode state
     find_target_indices: Vec<usize>, // sig indices that match find pattern
-    find_val_cached: String,         // cached find_value for hot-path (avoids per-cycle clone)
-    find_edge_mode: Option<String>,  // "rising"/"falling" or None
-    prev_find_vals: Vec<String>,     // indexed by sig_idx (only find targets used)
+    find_target_names: FxHashMap<usize, String>,
+    find_val_cached: String, // cached find_value for hot-path (avoids per-cycle clone)
+    find_mode: TriggerMode,  // "rising"/"falling" or None
+    prev_find_vals: Vec<String>, // indexed by sig_idx (only find targets used)
     find_count: usize,
     find_last_result: Option<String>, // buffer for --last mode
 
@@ -86,11 +87,7 @@ pub struct Extractor {
     sample_at_current_vals: Vec<String>, // indexed by position in sample_at_indices
     sample_at_prev_vals: Vec<String>, // indexed by position in sample_at_indices
     sample_at_idx_to_pos: FxHashMap<usize, usize>, // sig_idx -> position in sample_at_indices
-    sample_at_edge_mode: Option<String>,
-    sample_at_level_mode: bool,
-    // 'change' mode = trigger on any transition (edge direction agnostic).
-    // Distinct from sample_at_edge_mode which stores "rising"/"falling".
-    sample_at_change_mode: bool,
+    sample_mode: TriggerMode,
     sample_at_triggered: bool,
     sample_at_count: usize,
     sample_at_watched_changed: bool,
@@ -110,9 +107,154 @@ pub struct Extractor {
 
     // Cache building
 
+    // Change observes completed timestamps independently of the older sampled modes.
+    change_previous: Vec<Option<String>>,
+    change_dirty: FxHashSet<usize>,
+    change_origin: Option<u64>,
+    change_spool: Option<ChangeSpool>,
+    change_error: Option<String>,
+    change_last_sample: Option<ChangeRecord>,
+    #[cfg(test)]
+    change_events: Vec<(u64, usize, Vec<String>)>,
+
     // Buffered output
     stdout: BufWriter<io::Stdout>,
     stderr: BufWriter<io::Stderr>,
+}
+
+// Owned scratch storage is private to legacy Change queries. Record bytes and
+// index capacity share one explicit cap; count-only records have no payload.
+struct ChangeSpool {
+    file: tempfile::NamedTempFile,
+    index: Vec<(usize, u64)>,
+    used: usize,
+    cap: usize,
+    #[cfg(test)]
+    fail_write: bool,
+    #[cfg(test)]
+    fail_read: bool,
+}
+
+#[derive(Debug)]
+struct ChangeRecord {
+    tick: u64,
+    signal: usize,
+    values: Vec<String>,
+}
+
+impl ChangeSpool {
+    fn new(cap: usize) -> Result<Self, String> {
+        Ok(Self {
+            file: tempfile::NamedTempFile::new().map_err(|e| format!("Change spool: {e}"))?,
+            index: Vec::new(),
+            used: 0,
+            cap,
+            #[cfg(test)]
+            fail_write: false,
+            #[cfg(test)]
+            fail_read: false,
+        })
+    }
+
+    fn append(&mut self, tick: u64, signal: usize, values: &[&str]) -> Result<(), String> {
+        let error = || "Change spool exceeds 64 MiB query limit".to_string();
+        let mut bytes = 24usize;
+        for value in values {
+            bytes = bytes
+                .checked_add(std::mem::size_of::<String>())
+                .and_then(|n| n.checked_add(value.len()))
+                .ok_or_else(error)?;
+        }
+        let index_bytes = std::mem::size_of::<(usize, u64)>();
+        let total = self
+            .used
+            .checked_add(bytes)
+            .and_then(|n| n.checked_add(index_bytes))
+            .ok_or_else(error)?;
+        if total > self.cap {
+            return Err(error());
+        }
+        // Exact reservation keeps index storage within the accounted cap.
+        self.index
+            .try_reserve_exact(1)
+            .map_err(|e| format!("Change spool index: {e}"))?;
+        #[cfg(test)]
+        if self.fail_write {
+            return Err("Change spool injected writer failure".into());
+        }
+        let file = self.file.as_file_mut();
+        let offset = file
+            .seek(SeekFrom::End(0))
+            .map_err(|e| format!("Change spool seek: {e}"))?;
+        let write = |file: &mut std::fs::File| -> io::Result<()> {
+            file.write_all(&tick.to_le_bytes())?;
+            file.write_all(&(signal as u64).to_le_bytes())?;
+            file.write_all(&(values.len() as u64).to_le_bytes())?;
+            for value in values {
+                file.write_all(&(value.len() as u64).to_le_bytes())?;
+                file.write_all(value.as_bytes())?;
+            }
+            Ok(())
+        };
+        write(file).map_err(|e| format!("Change spool write: {e}"))?;
+        self.index.push((signal, offset));
+        self.used = total;
+        Ok(())
+    }
+
+    fn read(&mut self, offset: u64) -> Result<ChangeRecord, String> {
+        #[cfg(test)]
+        if self.fail_read {
+            return Err("Change spool injected reader failure".into());
+        }
+        let cap = self.cap;
+        let file = self.file.as_file_mut();
+        let read = |file: &mut std::fs::File| -> io::Result<ChangeRecord> {
+            file.seek(SeekFrom::Start(offset))?;
+            let number = |file: &mut std::fs::File| -> io::Result<u64> {
+                let mut bytes = [0; 8];
+                file.read_exact(&mut bytes)?;
+                Ok(u64::from_le_bytes(bytes))
+            };
+            let tick = number(file)?;
+            let signal = usize::try_from(number(file)?).map_err(io::Error::other)?;
+            let count = usize::try_from(number(file)?).map_err(io::Error::other)?;
+            if count > cap / std::mem::size_of::<String>() {
+                return Err(io::Error::other("oversized Change spool record"));
+            }
+            let mut values = Vec::new();
+            values.try_reserve_exact(count).map_err(io::Error::other)?;
+            let mut allocated = count * std::mem::size_of::<String>();
+            for _ in 0..count {
+                let size = usize::try_from(number(file)?).map_err(io::Error::other)?;
+                allocated = allocated
+                    .checked_add(size)
+                    .ok_or_else(|| io::Error::other("oversized Change spool record"))?;
+                if allocated > cap {
+                    return Err(io::Error::other("oversized Change spool record"));
+                }
+                let mut bytes = vec![0; size];
+                file.read_exact(&mut bytes)?;
+                values.push(String::from_utf8(bytes).map_err(io::Error::other)?);
+            }
+            Ok(ChangeRecord {
+                tick,
+                signal,
+                values,
+            })
+        };
+        read(file).map_err(|e| format!("Change spool read: {e}"))
+    }
+
+    fn clear(&mut self) -> Result<(), String> {
+        self.file
+            .as_file_mut()
+            .set_len(0)
+            .map_err(|e| format!("Change spool truncate: {e}"))?;
+        self.index = Vec::new();
+        self.used = 0;
+        Ok(())
+    }
 }
 
 struct StatsEntry {
@@ -175,8 +317,9 @@ impl Extractor {
             reset_active_low: true,
             reset_active: true,
             find_target_indices: Vec::new(),
+            find_target_names: FxHashMap::default(),
             find_val_cached: String::new(),
-            find_edge_mode: None,
+            find_mode: TriggerMode::Literal,
             prev_find_vals: Vec::new(),
             find_count: 0,
             find_last_result: None,
@@ -185,9 +328,7 @@ impl Extractor {
             sample_at_current_vals: Vec::new(),
             sample_at_prev_vals: Vec::new(),
             sample_at_idx_to_pos: FxHashMap::default(),
-            sample_at_edge_mode: None,
-            sample_at_level_mode: false,
-            sample_at_change_mode: false,
+            sample_mode: TriggerMode::Literal,
             sample_at_triggered: false,
             sample_at_count: 0,
             sample_at_watched_changed: false,
@@ -198,10 +339,251 @@ impl Extractor {
             at_time_ticks: None,
             index_builder: None,
             last_timestamp_offset: 0,
+            change_previous: Vec::new(),
+            change_dirty: FxHashSet::default(),
+            change_origin: None,
+            change_spool: None,
+            change_error: None,
+            change_last_sample: None,
+            #[cfg(test)]
+            change_events: Vec::new(),
             stdout: BufWriter::new(io::stdout()),
             stderr: BufWriter::new(io::stderr()),
             cfg,
         }
+    }
+
+    fn change_query(&self) -> bool {
+        (self.cfg.find_pattern.is_some() && self.find_mode == TriggerMode::Change)
+            || (self.cfg.sample_at_pattern.is_some() && self.sample_mode == TriggerMode::Change)
+    }
+
+    fn change_metadata_ready(&self) -> bool {
+        self.change_origin.is_some()
+            && (self.cfg.async_mode || self.clock_period_ticks.is_some_and(|period| period > 0))
+    }
+
+    fn change_label(&self, tick: u64) -> u64 {
+        if !self.cfg.async_mode {
+            if let Some(period) = self.clock_period_ticks.filter(|&p| p > 0) {
+                let first = self.first_rise_tick.unwrap_or(0);
+                let origin = self.change_origin.unwrap_or(0);
+                let elapsed = origin.saturating_sub(first);
+                let base = first + elapsed.div_ceil(period) * period;
+                return crate::cache::tick_to_cycle(tick, base, period);
+            }
+        }
+        tick
+    }
+
+    fn change_in_range(&self, tick: u64) -> bool {
+        let label = self.change_label(tick) as i64;
+        tick >= self.change_origin.unwrap_or(0)
+            && label >= self.cfg.time_min
+            && self.cfg.time_max.is_none_or(|max| label <= max)
+    }
+
+    fn check_change_snapshot_size(&self) -> Result<(), String> {
+        if self.cfg.count_only {
+            return Ok(());
+        }
+        let spool = self.change_spool.as_ref().unwrap();
+        let cap = if self.change_metadata_ready() {
+            spool.cap
+        } else {
+            spool
+                .cap
+                .saturating_sub(spool.used)
+                .saturating_sub(std::mem::size_of::<(usize, u64)>())
+        };
+        let mut size = 24usize;
+        for (_, idx) in &self.name_to_sig_idx {
+            size = size
+                .checked_add(std::mem::size_of::<String>())
+                .and_then(|n| n.checked_add(self.current_vals[*idx].len()))
+                .ok_or_else(|| "Change snapshot size overflow".to_string())?;
+            if size > cap {
+                return Err("Change snapshot exceeds 64 MiB query limit".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn complete_change_timestamp(&mut self, time: u64) -> Result<(), String> {
+        let mut triggered = false;
+        for idx in self.change_dirty.drain() {
+            let value = &self.current_vals[idx];
+            let matched = TriggerMode::Change.matches(
+                self.change_previous[idx].as_deref(),
+                value,
+                self.sig_widths[idx],
+                "",
+            );
+            self.change_previous[idx] = Some(value.clone());
+            if !matched {
+                continue;
+            }
+            triggered = true;
+            if self.cfg.find_pattern.is_some() {
+                let values = [value.as_str()];
+                self.change_spool.as_mut().unwrap().append(
+                    time,
+                    idx,
+                    if self.cfg.count_only { &[] } else { &values },
+                )?;
+            }
+        }
+        if self.cfg.find_pattern.is_some() {
+            return Ok(());
+        }
+        if self.change_metadata_ready() {
+            self.replay_change(false)?;
+            if self.done {
+                return Ok(());
+            }
+        }
+        if !triggered {
+            return Ok(());
+        }
+        self.check_change_snapshot_size()?;
+        if self.change_metadata_ready() {
+            if self.change_in_range(time) {
+                let record = ChangeRecord {
+                    tick: time,
+                    signal: NO_SIGNAL,
+                    values: if self.cfg.count_only {
+                        Vec::new()
+                    } else {
+                        self.name_to_sig_idx
+                            .iter()
+                            .map(|(_, idx)| self.current_vals[*idx].clone())
+                            .collect()
+                    },
+                };
+                self.accept_change_sample(record)?;
+            }
+        } else {
+            let values: Vec<&str> = if self.cfg.count_only {
+                Vec::new()
+            } else {
+                self.name_to_sig_idx
+                    .iter()
+                    .map(|(_, idx)| self.current_vals[*idx].as_str())
+                    .collect()
+            };
+            self.change_spool
+                .as_mut()
+                .unwrap()
+                .append(time, NO_SIGNAL, &values)?;
+        }
+        Ok(())
+    }
+
+    fn replay_change(&mut self, eof: bool) -> Result<(), String> {
+        if !eof && !self.change_metadata_ready() {
+            return Ok(());
+        }
+        if eof && self.change_origin.is_none() {
+            self.change_origin = Some(0);
+        }
+        let mut spool = self.change_spool.take().unwrap();
+        let result = (|| {
+            if self.cfg.find_pattern.is_some() {
+                if !eof {
+                    return Ok(());
+                }
+                // Group the bounded index in place: cache signal order, then
+                // chronological file offsets. No additional index allocation.
+                spool.index.sort_unstable_by_key(|(signal, offset)| {
+                    (
+                        self.find_target_indices
+                            .iter()
+                            .position(|idx| idx == signal)
+                            .unwrap(),
+                        *offset,
+                    )
+                });
+                for entry in 0..spool.index.len() {
+                    let record = spool.read(spool.index[entry].1)?;
+                    if !self.change_in_range(record.tick) {
+                        continue;
+                    }
+                    self.emit_change_record(record)?;
+                    if self.cfg.first_match || (self.done && !self.cfg.last_match) {
+                        return Ok(());
+                    }
+                }
+            } else {
+                for entry in 0..spool.index.len() {
+                    let record = spool.read(spool.index[entry].1)?;
+                    if self.change_in_range(record.tick) {
+                        self.accept_change_sample(record)?;
+                        if self.done {
+                            break;
+                        }
+                    }
+                }
+                spool.clear()?;
+            }
+            Ok(())
+        })();
+        self.change_spool = Some(spool);
+        result
+    }
+
+    fn accept_change_sample(&mut self, record: ChangeRecord) -> Result<(), String> {
+        if self.cfg.last_match {
+            self.change_last_sample = Some(record);
+            return Ok(());
+        }
+        self.emit_change_record(record)?;
+        if self.cfg.first_match {
+            self.done = true;
+        }
+        Ok(())
+    }
+
+    fn emit_change_record(&mut self, record: ChangeRecord) -> Result<(), String> {
+        let label = self.change_label(record.tick);
+        #[cfg(test)]
+        self.change_events
+            .push((label, record.signal, record.values.clone()));
+        if self.cfg.find_pattern.is_some() {
+            self.find_count += 1;
+            if !self.cfg.count_only {
+                let name = self.strip_prefix(&self.find_target_names[&record.signal]);
+                let prefix = if !self.cfg.async_mode
+                    && self.clock_period_ticks.is_some_and(|period| period > 0)
+                {
+                    "cycle "
+                } else {
+                    ""
+                };
+                let line = format!("{prefix}{label} {name} {}", record.values[0]);
+                if self.cfg.last_match {
+                    self.find_last_result = Some(line);
+                } else {
+                    writeln!(self.stdout, "{line}").map_err(|e| format!("Change output: {e}"))?;
+                    self.check_max_lines();
+                }
+            }
+        } else {
+            self.sample_at_count += 1;
+            if !self.cfg.count_only {
+                for (pos, value) in record.values.iter().enumerate() {
+                    writeln!(
+                        self.stdout,
+                        "{label} {} {value}",
+                        self.name_to_sig_idx[pos].0
+                    )
+                    .map_err(|e| format!("Change output: {e}"))?;
+                    if self.check_max_lines() {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Initialize from parsed VCD header. Must be called before streaming.
@@ -272,7 +654,7 @@ impl Extractor {
         // Find mode: identify target signals
         if let Some(ref find_pat) = self.cfg.find_pattern {
             if let Some(ref find_val) = self.cfg.find_value {
-                self.find_edge_mode = is_edge_keyword(find_val).map(String::from);
+                self.find_mode = TriggerMode::classify(find_val);
                 self.find_val_cached = find_val.clone();
             }
             let find_matchers = compile_patterns(&[find_pat.clone()])?;
@@ -281,6 +663,7 @@ impl Extractor {
                     if let Some(&idx) = self.id_str_to_idx.get(&sig.id) {
                         if !self.find_target_indices.contains(&idx) {
                             self.find_target_indices.push(idx);
+                            self.find_target_names.insert(idx, sig.name.clone());
                         }
                     }
                 }
@@ -295,15 +678,7 @@ impl Extractor {
         if let Some(ref sa_pat) = self.cfg.sample_at_pattern {
             // Infer trigger mode from VALUE keyword
             if let Some(ref sa_val) = self.cfg.sample_at_value {
-                let edge_kw = is_edge_keyword(sa_val).map(String::from);
-                self.sample_at_change_mode = edge_kw.as_deref() == Some("change");
-                self.sample_at_edge_mode = if self.sample_at_change_mode {
-                    None
-                } else {
-                    edge_kw
-                };
-                self.sample_at_level_mode =
-                    self.sample_at_edge_mode.is_none() && !self.sample_at_change_mode;
+                self.sample_mode = TriggerMode::classify(sa_val);
             }
             let sa_matchers = compile_patterns(&[sa_pat.clone()])?;
             for sig in all_signals {
@@ -350,13 +725,21 @@ impl Extractor {
         if self.sync_mode {
             self.detect_clock(all_signals)?;
         }
-        if !self.sync_mode {
+        if !self.sync_mode && !self.change_query() {
             self.skip_reset = false;
         }
 
         // Reset detection
         if self.skip_reset {
             self.detect_reset(all_signals)?;
+        }
+
+        if self.change_query() {
+            self.change_previous = vec![None; self.sig_count];
+            self.change_spool = Some(ChangeSpool::new(64 * 1024 * 1024)?);
+            if !self.skip_reset || self.reset_idx == NO_SIGNAL {
+                self.change_origin = Some(0);
+            }
         }
 
         // Stats initialization
@@ -602,14 +985,6 @@ impl Extractor {
     fn display_name(&self, idx: usize) -> &str {
         let name = self.primary_name(idx);
         self.strip_prefix(name)
-    }
-
-    fn check_edge(prev: &str, cur: &str, edge_type: &str) -> bool {
-        match edge_type {
-            "rising" => prev == "0" && cur == "1",
-            "falling" => prev == "1" && cur == "0",
-            _ => false,
-        }
     }
 
     fn check_max_lines(&mut self) -> bool {
@@ -991,9 +1366,26 @@ impl Extractor {
     }
 
     /// Finalization after parsing completes. Call this after parse_streaming.
-    pub fn finalize(&mut self) {
+    pub fn finalize(&mut self) -> Result<(), String> {
+        if self.change_query() {
+            if let Some(error) = self.change_error.take() {
+                self.change_spool = None;
+                return Err(error);
+            }
+            let replay = self.replay_change(true);
+            self.change_spool = None;
+            replay?;
+            if let Some(record) = self.change_last_sample.take() {
+                self.emit_change_record(record)?;
+            }
+            self.change_spool = None;
+        }
         // Warn if reset never deasserted
-        if self.skip_reset && self.reset_idx != NO_SIGNAL && self.reset_active {
+        if !self.change_query()
+            && self.skip_reset
+            && self.reset_idx != NO_SIGNAL
+            && self.reset_active
+        {
             let name = self.reset_name.as_deref().unwrap_or("unknown");
             let _ = writeln!(
                 self.stderr,
@@ -1082,8 +1474,18 @@ impl Extractor {
             self.print_find_stuck();
         }
 
-        let _ = self.stdout.flush();
-        let _ = self.stderr.flush();
+        if self.change_query() {
+            self.stdout
+                .flush()
+                .map_err(|e| format!("Change output flush: {e}"))?;
+            self.stderr
+                .flush()
+                .map_err(|e| format!("Change diagnostics flush: {e}"))?;
+        } else {
+            let _ = self.stdout.flush();
+            let _ = self.stderr.flush();
+        }
+        Ok(())
     }
 
     /// Get the set of all VCD ID strings that need tracking.
@@ -1100,15 +1502,12 @@ impl Extractor {
         // Sample-at trigger tracking
         if let Some(&pos) = self.sample_at_idx_to_pos.get(&idx) {
             let prev = &self.sample_at_current_vals[pos];
-            if let Some(ref edge) = self.sample_at_edge_mode {
-                if Self::check_edge(prev, formatted, edge) {
-                    self.sample_at_triggered = true;
-                }
-            } else if self.sample_at_change_mode {
-                // Any-transition mode: fire on every real change
-                if prev.as_str() != formatted {
-                    self.sample_at_triggered = true;
-                }
+            if self.sample_mode.directional()
+                && self
+                    .sample_mode
+                    .matches(Some(prev), formatted, self.sig_widths[idx], "")
+            {
+                self.sample_at_triggered = true;
             }
             self.sample_at_current_vals[pos].clear();
             self.sample_at_current_vals[pos].push_str(formatted);
@@ -1135,6 +1534,25 @@ impl Extractor {
         };
         self.current_vals[idx].clear();
         self.current_vals[idx].push_str(formatted);
+
+        if self.change_query() {
+            if idx == self.reset_idx && self.change_origin.is_none() {
+                let asserted = if self.reset_active_low {
+                    formatted == "0"
+                } else {
+                    formatted == "1"
+                };
+                if !asserted {
+                    self.change_origin = Some(self.sim_end_tick);
+                }
+            }
+            if self.find_target_indices.contains(&idx)
+                || self.sample_at_idx_to_pos.contains_key(&idx)
+            {
+                self.change_dirty.insert(idx);
+            }
+            return;
+        }
 
         // Skip during reset
         if self.skip_reset && self.reset_active {
@@ -1182,15 +1600,13 @@ impl Extractor {
                         return;
                     }
                 }
-                let matched = if let Some(ref edge) = self.find_edge_mode {
-                    let prev = &self.prev_find_vals[idx];
-                    let m = Self::check_edge(prev, formatted, edge);
-                    self.prev_find_vals[idx] = formatted.to_string();
-                    m
-                } else {
-                    let fv = self.cfg.find_value.as_deref().unwrap_or("");
-                    values_match(formatted, fv)
-                };
+                let matched = self.find_mode.matches(
+                    Some(&self.prev_find_vals[idx]),
+                    formatted,
+                    self.sig_widths[idx],
+                    &self.find_val_cached,
+                );
+                self.prev_find_vals[idx] = formatted.to_string();
                 if matched {
                     self.find_count += 1;
                     if !self.cfg.count_only {
@@ -1257,6 +1673,18 @@ impl VcdHandler for Extractor {
             return ControlFlow::Break(());
         }
 
+        if self.change_query() {
+            if let Err(error) = self.complete_change_timestamp(time) {
+                self.change_error = Some(error);
+                self.done = true;
+            }
+            return if self.done {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            };
+        }
+
         // --- Async sample-at ---
         if !self.sync_mode && self.cfg.sample_at_pattern.is_some() {
             let t = time as i64;
@@ -1269,12 +1697,12 @@ impl VcdHandler for Extractor {
             let in_range = t >= self.time_min_ticks;
             if in_range {
                 let mut triggered = false;
-                if self.sample_at_edge_mode.is_some() || self.sample_at_change_mode {
+                if self.sample_mode != TriggerMode::Literal {
                     // Edge modes (rising/falling/change): trigger flag is set in
                     // on_value_change; just consume it.
                     triggered = self.sample_at_triggered;
                     self.sample_at_triggered = false;
-                } else if self.sample_at_level_mode {
+                } else if self.sample_mode == TriggerMode::Literal {
                     // Level mode: literal comparison against TRIGGER_VAL (sa_val).
                     // Do NOT use values_match on edge keywords like "rising" --
                     // that was the previous silent-no-op bug.
@@ -1362,11 +1790,11 @@ impl VcdHandler for Extractor {
         // Sample-at (sync)
         if self.cfg.sample_at_pattern.is_some() {
             let mut triggered = false;
-            if self.sample_at_edge_mode.is_some() || self.sample_at_change_mode {
+            if self.sample_mode != TriggerMode::Literal {
                 // Edge/change mode: trigger flag was set in on_value_change.
                 triggered = self.sample_at_triggered;
                 self.sample_at_triggered = false;
-            } else if self.sample_at_level_mode {
+            } else if self.sample_mode == TriggerMode::Literal {
                 // Level mode: literal comparison against TRIGGER_VAL (sa_val).
                 let sa_val = self.cfg.sample_at_value.clone().unwrap_or_default();
                 for i in 0..self.sample_at_current_vals.len() {
@@ -1389,15 +1817,13 @@ impl VcdHandler for Extractor {
             let find_val = self.find_val_cached.clone();
             for ti in 0..self.find_target_indices.len() {
                 let idx = self.find_target_indices[ti];
-                let matched = if let Some(ref edge) = self.find_edge_mode {
-                    let prev = &self.prev_find_vals[idx];
-                    let val = &self.current_vals[idx];
-                    let m = Self::check_edge(prev, val, edge);
-                    self.prev_find_vals[idx] = self.current_vals[idx].clone();
-                    m
-                } else {
-                    values_match(&self.current_vals[idx], &find_val)
-                };
+                let matched = self.find_mode.matches(
+                    Some(&self.prev_find_vals[idx]),
+                    &self.current_vals[idx],
+                    self.sig_widths[idx],
+                    &find_val,
+                );
+                self.prev_find_vals[idx] = self.current_vals[idx].clone();
                 if matched {
                     self.find_count += 1;
                     if !self.cfg.count_only {
@@ -1420,7 +1846,7 @@ impl VcdHandler for Extractor {
                 }
             }
             // Update prev for level mode
-            if self.find_edge_mode.is_none() {
+            if self.find_mode == TriggerMode::Literal {
                 for ti in 0..self.find_target_indices.len() {
                     let idx = self.find_target_indices[ti];
                     self.prev_find_vals[idx] = self.current_vals[idx].clone();
@@ -1638,7 +2064,7 @@ b11111111 #
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         // data becomes 0x0A at #10, first rising edge after is #15 -> cycle 2
         assert!(ext.find_count > 0);
@@ -1657,7 +2083,7 @@ b11111111 #
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         // data becomes FF at #20 -> 20ns
         assert!(ext.find_count > 0);
@@ -1676,7 +2102,7 @@ b11111111 #
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         // rstn goes 0->1 at #10
         assert_eq!(ext.find_count, 1);
@@ -1800,7 +2226,7 @@ b11111111 !
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         // b00001111 = 0F, should match "F" via values_match
         assert!(ext.find_count >= 1);
@@ -1902,7 +2328,7 @@ b11111111 #
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         // flag==1 and data changed at #10 and #30 -> 2 triggers
         assert_eq!(
@@ -1948,7 +2374,7 @@ b11111111 #
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         // flag rose at #10 and #30 -> 2 triggers
         assert_eq!(
@@ -1994,11 +2420,11 @@ b11111111 #
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
-        // flag transitions at #0 (x->0), #10 (0->1), #20 (1->0), #30 (0->1) -> 4 triggers
+        // The initial assignment seeds the predecessor; only observed transitions fire.
         assert_eq!(
-            ext.sample_at_count, 4,
+            ext.sample_at_count, 3,
             "change mode should trigger on any transition of trigger signal"
         );
     }
@@ -2017,7 +2443,7 @@ b11111111 #
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         // cycle 0 snapshot should emit before first post-reset edge
         assert!(ext.done, "should be done after cycle 0 snapshot");
@@ -2133,7 +2559,7 @@ b{} !\n",
         ext.init_from_header(&header, &header.signals).unwrap();
         let watched = ext.watched_ids();
         parse_streaming(&mut reader, &watched, &mut ext);
-        ext.finalize();
+        ext.finalize().unwrap();
 
         assert_eq!(ext.find_count, 1, "should find exactly one 256-bit match");
     }
@@ -2195,5 +2621,329 @@ $enddefinitions $end
         );
         assert_eq!(time_0, 10, "sig=0 from tick 0 to 10");
         assert_eq!(time_1, 20, "sig=1 from tick 10 to 30");
+    }
+    const CHANGE_HEADER: &str = "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! a $end\n$var wire 4 # b $end\n$var wire 1 $ clk $end\n$var wire 1 % rst_n $end\n$upscope $end\n$enddefinitions $end\n";
+
+    fn issue_1100_legacy(body: &str, mut cfg: ExtractConfig) -> Extractor {
+        let vcd = format!("{CHANGE_HEADER}{body}");
+        let mut reader = std::io::BufReader::new(vcd.as_bytes());
+        let header = parse_header(&mut reader);
+        if cfg.patterns.is_empty() {
+            cfg.patterns = vec!["a".into(), "b".into()];
+        }
+        let mut ext = Extractor::new(cfg);
+        ext.init_from_header(&header, &header.signals).unwrap();
+        let watched = ext.watched_ids();
+        parse_streaming(&mut reader, &watched, &mut ext);
+        ext.finalize().unwrap();
+        ext
+    }
+
+    fn issue_1100_cfg(sample: bool, asynchronous: bool) -> ExtractConfig {
+        let mut cfg = default_config();
+        cfg.async_mode = asynchronous;
+        cfg.patterns = vec!["a".into(), "b".into()];
+        if sample {
+            cfg.sample_at_pattern = Some("a".into());
+            cfg.sample_at_value = Some("ChAnGe".into());
+        } else {
+            cfg.find_pattern = Some("a".into());
+            cfg.find_value = Some("ChAnGe".into());
+        }
+        cfg
+    }
+
+    #[test]
+    fn issue_1100_legacy_raw_pulses_completed_snapshots_tail_and_count() {
+        let body = "#0\n0!\nb0000 #\n0$\n1%\n#2\n0!\n#5\n1$\n#7\n1!\nb0011 #\n#9\n0!\nb0010 #\n#10\n0$\n#15\n1$\n#17\n1!\nb0001 #\n#20\n0$\n#25\n1$\n#29\n0!\nb0100 #\n";
+        for sample in [false, true] {
+            for asynchronous in [false, true] {
+                let ext = issue_1100_legacy(body, issue_1100_cfg(sample, asynchronous));
+                let labels: Vec<_> = ext.change_events.iter().map(|event| event.0).collect();
+                assert_eq!(
+                    labels,
+                    if asynchronous {
+                        vec![7, 9, 17, 29]
+                    } else {
+                        vec![1, 1, 2, 3]
+                    }
+                );
+                if sample {
+                    assert_eq!(ext.change_events[0].2, vec!["1", "3"]);
+                }
+                let mut cfg = issue_1100_cfg(sample, asynchronous);
+                cfg.count_only = true;
+                let ext = issue_1100_legacy(body, cfg);
+                assert_eq!(
+                    if sample {
+                        ext.sample_at_count
+                    } else {
+                        ext.find_count
+                    },
+                    4
+                );
+                assert!(ext.change_events.iter().all(|event| event.2.is_empty()));
+            }
+        }
+    }
+
+    #[test]
+    fn issue_1100_legacy_final_timestamp_and_observed_unknowns() {
+        let body = "#0\nx!\n0$\n1%\n#10\n0!\n#15\n1!\n0!\n#20\nx!\n#30\nz!\n#40\n0!\n1!\n0!\n1!\nb0011 #\n";
+        for sample in [false, true] {
+            let ext = issue_1100_legacy(body, issue_1100_cfg(sample, true));
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![10, 20, 30, 40]
+            );
+            let mut cfg = issue_1100_cfg(sample, true);
+            cfg.time_min = 20;
+            cfg.time_max = Some(30);
+            let ext = issue_1100_legacy(body, cfg);
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![20, 30]
+            );
+        }
+    }
+
+    #[test]
+    fn issue_1100_legacy_signal_major_first_last_and_limits() {
+        let body = "#0\n0!\nb0000 #\n0$\n1%\n#10\nb0001 #\n#20\n1!\n#30\n0!\nb0011 #\n";
+        for (first, last, expected) in [
+            (true, false, vec![20]),
+            (false, true, vec![20, 30, 10, 30]),
+            (false, false, vec![20, 30, 10, 30]),
+        ] {
+            let mut cfg = issue_1100_cfg(false, true);
+            cfg.find_pattern = Some("*".into());
+            cfg.first_match = first;
+            cfg.last_match = last;
+            let ext = issue_1100_legacy(body, cfg);
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        for sample in [false, true] {
+            let mut cfg = issue_1100_cfg(sample, true);
+            cfg.max_lines = 1;
+            let ext = issue_1100_legacy(body, cfg);
+            assert_eq!(
+                if sample {
+                    ext.sample_at_count
+                } else {
+                    ext.find_count
+                },
+                1
+            );
+            let mut cfg = issue_1100_cfg(sample, true);
+            cfg.max_lines = 1;
+            cfg.count_only = true;
+            let ext = issue_1100_legacy(body, cfg);
+            assert_eq!(
+                if sample {
+                    ext.sample_at_count
+                } else {
+                    ext.find_count
+                },
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn issue_1100_legacy_reset_origin_unknown_reassert_never_and_no_period() {
+        for reset in ["1%", "x%", "z%"] {
+            let body =
+                format!("#0\n0!\n0$\n0%\n#7\n1!\n#10\n{reset}\n1!\n#15\n0!\n#20\n0%\n#25\n1!\n");
+            for sample in [false, true] {
+                let mut cfg = issue_1100_cfg(sample, false);
+                cfg.with_reset = false;
+                cfg.time_min = 10;
+                cfg.time_max = Some(25);
+                let ext = issue_1100_legacy(&body, cfg);
+                assert_eq!(
+                    ext.change_events
+                        .iter()
+                        .map(|event| event.0)
+                        .collect::<Vec<_>>(),
+                    vec![15, 25]
+                );
+            }
+        }
+        for sample in [false, true] {
+            let mut cfg = issue_1100_cfg(sample, false);
+            cfg.with_reset = false;
+            let ext = issue_1100_legacy("#0\n0!\n0$\n0%\n#10\n1!\n#20\n0!\n", cfg);
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![10, 20]
+            );
+        }
+        // Remove the clock declaration: automatic fallback still selects reset.
+        let vcd = format!(
+            "{}#0\n0!\n0%\n#7\n1!\n#10\n1%\n#15\n0!\n",
+            CHANGE_HEADER.replace("$var wire 1 $ clk $end\n", "")
+        );
+        let mut reader = std::io::BufReader::new(vcd.as_bytes());
+        let header = parse_header(&mut reader);
+        let mut cfg = issue_1100_cfg(false, false);
+        cfg.with_reset = false;
+        cfg.patterns = vec!["a".into()];
+        let mut ext = Extractor::new(cfg);
+        ext.init_from_header(&header, &header.signals).unwrap();
+        let watched = ext.watched_ids();
+        parse_streaming(&mut reader, &watched, &mut ext);
+        ext.finalize().unwrap();
+        assert_eq!(
+            ext.change_events
+                .iter()
+                .map(|event| event.0)
+                .collect::<Vec<_>>(),
+            vec![15]
+        );
+    }
+
+    #[test]
+    fn issue_1100_spool_cap_io_errors_propagate_and_cleanup() {
+        for failure in ["cap", "write", "read"] {
+            let vcd = format!("{CHANGE_HEADER}#0\n0!\n0$\n1%\n#10\n1!\n#20\n0!\n");
+            let mut reader = std::io::BufReader::new(vcd.as_bytes());
+            let header = parse_header(&mut reader);
+            let mut cfg = issue_1100_cfg(false, true);
+            cfg.patterns = vec!["a".into()];
+            let mut ext = Extractor::new(cfg);
+            ext.init_from_header(&header, &header.signals).unwrap();
+            let spool = ext.change_spool.as_mut().unwrap();
+            let path = spool.file.path().to_owned();
+            match failure {
+                "cap" => spool.cap = 1,
+                "write" => spool.fail_write = true,
+                _ => spool.fail_read = true,
+            };
+            let watched = ext.watched_ids();
+            parse_streaming(&mut reader, &watched, &mut ext);
+            assert!(ext.finalize().is_err(), "{failure}");
+            assert_eq!(ext.find_count, 0);
+            drop(ext);
+            assert!(!path.exists());
+        }
+        let mut spool = ChangeSpool::new(80).unwrap();
+        let path = spool.file.path().to_owned();
+        assert!(spool.append(0, 0, &[&"a".repeat(81)]).is_err());
+        assert!(spool.index.is_empty());
+        assert_eq!(spool.file.as_file().metadata().unwrap().len(), 0);
+        spool.append(0, 0, &[]).unwrap();
+        spool.append(1, 0, &[]).unwrap();
+        assert!(spool.append(2, 0, &[]).is_err());
+        drop(spool);
+        assert!(!path.exists());
+    }
+    #[test]
+    fn issue_1100_legacy_bus_directional_and_sample_selection() {
+        let body = "#0\n0!\nb0000 #\n0$\n1%\n#2\n1!\nb0001 #\n#5\n1$\n#7\n0!\nb0011 #\n#10\n0$\n#15\n1$\n#17\n1!\nb0010 #\n";
+        for sample in [false, true] {
+            for asynchronous in [false, true] {
+                let mut cfg = issue_1100_cfg(sample, asynchronous);
+                if sample {
+                    cfg.sample_at_pattern = Some("b".into());
+                } else {
+                    cfg.find_pattern = Some("b".into());
+                }
+                let ext = issue_1100_legacy(body, cfg);
+                assert_eq!(
+                    ext.change_events
+                        .iter()
+                        .map(|event| event.0)
+                        .collect::<Vec<_>>(),
+                    if asynchronous {
+                        vec![2, 7, 17]
+                    } else {
+                        vec![0, 1, 2]
+                    }
+                );
+                let mut cfg = issue_1100_cfg(sample, asynchronous);
+                if sample {
+                    cfg.sample_at_pattern = Some("b".into());
+                    cfg.sample_at_value = Some("RISING".into());
+                } else {
+                    cfg.find_pattern = Some("b".into());
+                    cfg.find_value = Some("RISING".into());
+                }
+                let ext = issue_1100_legacy(body, cfg);
+                assert_eq!(
+                    if sample {
+                        ext.sample_at_count
+                    } else {
+                        ext.find_count
+                    },
+                    0
+                );
+            }
+        }
+        for (first, last, label) in [(true, false, 2), (false, true, 17)] {
+            let mut cfg = issue_1100_cfg(true, true);
+            cfg.first_match = first;
+            cfg.last_match = last;
+            let ext = issue_1100_legacy(body, cfg);
+            assert_eq!(ext.change_events.len(), 1);
+            assert_eq!(ext.change_events[0].0, label);
+            assert_eq!(ext.sample_at_count, 1);
+        }
+    }
+    #[test]
+    fn issue_1100_legacy_first_observation_active_high_and_alias_name() {
+        for sample in [false, true] {
+            let mut cfg = issue_1100_cfg(sample, false);
+            cfg.with_reset = false;
+            let ext = issue_1100_legacy("#0\n0$\n0%\n#10\n1%\n#15\n1!\n#20\n0!\n", cfg);
+            assert_eq!(
+                ext.change_events
+                    .iter()
+                    .map(|event| event.0)
+                    .collect::<Vec<_>>(),
+                vec![20]
+            );
+        }
+        let header = CHANGE_HEADER.replace("rst_n", "rst").replace(
+            "$var wire 1 ! a $end",
+            "$var wire 1 ! a $end\n$var wire 1 ! alias $end",
+        );
+        let vcd = format!("{header}#0\n0!\n1%\n0$\n#7\n1!\n#10\n0%\n#15\n0!\n#20\n1%\n#25\n1!\n");
+        let mut reader = std::io::BufReader::new(vcd.as_bytes());
+        let header = parse_header(&mut reader);
+        let mut cfg = issue_1100_cfg(false, false);
+        cfg.with_reset = false;
+        cfg.find_pattern = Some("alias".into());
+        cfg.last_match = true;
+        let mut ext = Extractor::new(cfg);
+        ext.init_from_header(&header, &header.signals).unwrap();
+        let watched = ext.watched_ids();
+        parse_streaming(&mut reader, &watched, &mut ext);
+        assert_eq!(
+            ext.find_target_names[&ext.find_target_indices[0]],
+            "tb.alias"
+        );
+        ext.finalize().unwrap();
+        assert_eq!(
+            ext.change_events
+                .iter()
+                .map(|event| event.0)
+                .collect::<Vec<_>>(),
+            vec![15, 25]
+        );
     }
 }

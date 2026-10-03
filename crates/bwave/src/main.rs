@@ -23,7 +23,7 @@ use bwave::cache::{
     list_signals_from_cache, sample_at_from_cache, snapshot_from_cache, stats_from_cache,
     trace_from_cache, wave_from_cache, ColumnCache,
 };
-use bwave::format::{is_edge_keyword, parse_radix_suffix, parse_verilog_literal, TimeToken};
+use bwave::format::{parse_radix_suffix, parse_verilog_literal, TimeToken, TriggerMode};
 use bwave::parser::try_parse_header;
 use bwave::ExtractConfig;
 
@@ -523,7 +523,7 @@ fn split_patterns_and_radixes(
 
 /// Normalize a Verilog literal (or pass-through edge keyword) → canonical hex.
 fn normalize_value(val: &str) -> String {
-    if is_edge_keyword(val).is_some() {
+    if TriggerMode::classify(val) != TriggerMode::Literal {
         return val.to_string();
     }
     match parse_verilog_literal(val) {
