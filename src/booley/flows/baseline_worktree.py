@@ -171,7 +171,7 @@ def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
 
 def _materialize_baseline_submodules(project_root: Path, worktree: Path, ref: str) -> None:
     try:
-        materialize_project_submodules(project_root, worktree)
+        materialize_project_submodules(project_root, worktree, skip_standalone_project=True)
     except SubmoduleMaterializationError as exc:
         raise BaselineWorktreeError(
             f"initializing submodules for baseline ref {ref!r} failed offline: {exc}"
