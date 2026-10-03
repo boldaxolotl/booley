@@ -111,7 +111,8 @@ def prepare_execution(
             endpoint._publish_console_report(simulation)
             endpoint._report_criteria.project(simulation)
             return simulation
-    freeze(endpoint, simulation)
+    if endpoint.endpoint_kind in {"flow", "specialist"}:
+        freeze(endpoint, simulation)
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()
     dry_run = bool(getattr(endpoint.args, "dry_run", False))

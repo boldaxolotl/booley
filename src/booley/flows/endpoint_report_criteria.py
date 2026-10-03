@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from booley.criteria.state import CriterionChange
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import EndpointOutcome
-from booley.targets.domain import criterion_matches_target
+from booley.targets.domain import TARGET_AWARE_FLOWS, criterion_matches_target
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -63,6 +63,8 @@ class ReportCriteria:
 
 def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None = None) -> None:
     """Use prepared candidate authorities once, without changing invocation validation."""
+    if endpoint.endpoint_kind not in {"flow", "specialist"}:
+        return
     ledger = endpoint._report_criteria
     if ledger.frozen:
         return
@@ -81,13 +83,16 @@ def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None 
 
             handles = TargetCatalog.build(Path(endpoint.args.work_dir)).select_many(
                 ",".join(sorted(tokens)),
-                for_flow=endpoint.name if endpoint.endpoint_kind == "flow" else None,
+                for_flow=endpoint.name if endpoint.name in TARGET_AWARE_FLOWS else None,
             )
             ledger.targets = frozenset(handle.identity for handle in handles)
         ledger.planned = frozenset(_planned_keys(endpoint, handles, simulation))
     except (FuseSocError, OSError, ValueError):
         # Reporting lookups must not replace the endpoint's own admission errors.
-        ledger.known = not endpoint.satisfies
+        if endpoint.endpoint_kind == "flow" and endpoint.name not in TARGET_AWARE_FLOWS:
+            ledger.planned = frozenset(_planned_keys(endpoint, (), simulation))
+        else:
+            ledger.known = not endpoint.satisfies
 
 
 def _candidate_scope(owner, simulation):
@@ -119,7 +124,7 @@ def _families(endpoint: EndpointState, simulation) -> set[str]:
         return set(endpoint.satisfies)
     mode = str(getattr(endpoint.args, "mode", "simulate"))
     if mode == "elab_only_standalone":
-        return {"elaborate_standalone"}
+        return {"elab_pass", "elaborate_standalone"}
     if mode == "elab_only":
         return {"elab_pass"}
     families = {"sim_pass", "cycle_count"}
@@ -141,9 +146,12 @@ def _planned_keys(
     if endpoint.name == "reviewer":
         return {owner._criterion_key()}
     families = _families(endpoint, simulation)
-    if "elaborate_standalone" in families:
-        return {"elaborate_standalone"}
     keys: set[str] = set()
+    if "elaborate_standalone" in families and (
+        "elaborate_standalone" in endpoint.state.criteria or not endpoint.state.strict_criteria
+    ):
+        keys.add("elaborate_standalone")
+    families.discard("elaborate_standalone")
     conventional = _conventional_families(endpoint, simulation)
     for handle in handles:
         mapped = _target_keys(endpoint, handle, families, conventional)
@@ -172,8 +180,8 @@ def _named_keys(endpoint, name: str, families: set[str], conventional: set[str])
                 if alias in endpoint.state.criteria
                 and endpoint.state._alias_matches_run(alias, detail)
             )
-        elif family in endpoint.state.criteria:
-            keys.add(family)
+        elif generic.rsplit("_", 1)[0] in endpoint.state.criteria:
+            keys.add(generic.rsplit("_", 1)[0])
         elif not endpoint.state.strict_criteria and family in conventional:
             keys.add(generic)
 
@@ -188,7 +196,7 @@ def _conventional_families(endpoint: EndpointState, simulation) -> set[str]:
     if endpoint.name != "sim":
         return families.get(endpoint.name, set())
     mode = str(getattr(endpoint.args, "mode", "simulate"))
-    if mode == "elab_only":
+    if mode in {"elab_only", "elab_only_standalone"}:
         return {"elab_pass"}
     if endpoint.state._file_path is None:
         return {"sim_pass"}
@@ -273,32 +281,51 @@ def _campaign_keys(endpoint, handle, keys: set[str], simulation) -> set[str]:
         document = simulation.resume.candidate.manifest.document
         suite = document["required_suite"]
         registered = set(suite["names"])
-        selected = {
-            item["test"] for item in document["work_items"] if item.get("test") is not None
-        }
+        selected = set().union(
+            *(
+                set(item["selection"]["names"])
+                for item in document["work_items"]
+                if item["role"] == "candidate"
+            )
+        )
+        if not selected:
+            selected = {"default"} if suite["default_invocation"] else registered
     else:
         registered = set(lookup_target_section(simulation.test_names_map, handle.selector) or [])
         requested = getattr(endpoint.args, "test", None)
         selected = set((requested,) if isinstance(requested, str) else requested or registered)
+        if not selected and not registered:
+            selected = {"default"}
         skip = getattr(endpoint.args, "skip", None)
         selected.difference_update((skip or "").split(","))
     sim_keys = endpoint.flow.report_simulation_criterion_keys(
         handle.identity, handle.selector, handle.name, registered, selected
     )
-    return {
-        key
-        for key in keys
-        if (not key.startswith("sim_pass") or key in sim_keys or endpoint.state._file_path is None)
-        and (
-            not key.startswith("cycle_count_")
-            or endpoint.state.criteria[key].params.get("test") in selected
-        )
-    }
+    eligible = set()
+    for key in keys:
+        if (
+            key.startswith("sim_pass")
+            and key not in sim_keys
+            and endpoint.state._file_path is not None
+        ):
+            continue
+        if key.startswith("cycle_count_"):
+            entry = endpoint.state.criteria.get(key)
+            if entry is None:
+                endpoint._report_criteria.known = False
+                continue
+            if entry.params.get("test") not in selected:
+                continue
+        eligible.add(key)
+    return eligible
 
 
 def project(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
     """Normalize only endpoints owned by the common headline contract."""
     if endpoint.endpoint_kind not in {"flow", "specialist"}:
         return
-    freeze(endpoint)
+    if not endpoint._report_criteria.frozen:
+        outcome.criterion_key = ""
+        outcome.criterion_met = None
+        return
     endpoint._report_criteria.project(outcome)

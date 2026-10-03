@@ -539,6 +539,9 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
     with flow.context.publication_resources:
         outcome = flow._run_standalone_check(["sim_dut"])
     result = EndpointOutcome(exit_code=0 if outcome.passed else 1, detail=outcome.detail)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow.context)
     report = json.loads(flow.context.write_report(result).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == ("elaborate_standalone", met)
     assert flow.state._file_path is None

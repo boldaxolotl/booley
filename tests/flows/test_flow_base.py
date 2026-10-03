@@ -688,7 +688,13 @@ def test_final_report_uses_effective_evaluation(tmp_path, name, family, met):
     outcome = EndpointOutcome(
         exit_code=0 if met else 1, criterion_key="stale", criterion_met=not met
     )
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow)
     path = flow.write_report(outcome)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow)
     report = json.loads(path.read_text())
     assert (report["criterion_key"], report["criterion_met"]) == (f"{family}_core", met)
     assert report["$schema"] == (
@@ -724,6 +730,9 @@ def test_final_report_absent_verdict_is_null(tmp_path, target, keys):
     for key in keys:
         flow.set_criterion(key, True)
     outcome = EndpointOutcome(exit_code=2, criterion_key="stale", criterion_met=True)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow)
     report = json.loads(flow.write_report(outcome).read_text())
     assert report["criterion_key"] == ""
     assert report["criterion_met"] is None

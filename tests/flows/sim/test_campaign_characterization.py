@@ -740,7 +740,13 @@ def test_standalone_legacy_simulation_final_report_is_run_local(
         flow.context.publication_resources,
     ):
         outcome = flow._run()
+        from booley.flows.endpoint_report_criteria import freeze
+
+        freeze(flow.context)
         path = flow.context.write_report(outcome)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(flow.context)
     report = json.loads(path.read_text())
     assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_lite", met)
     assert "elab_pass_lite" not in flow.state.criteria

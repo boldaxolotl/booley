@@ -350,6 +350,9 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
     )
     with pytest.raises(OSError):
         SimulationAcceptanceCoordinator().reconcile(outcome, context)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(tool)
     report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_sim", True)
     assert report["passed"] is False
@@ -373,6 +376,9 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
     if not conclusive:
         outcome = replace(outcome, complete=False)
     _record_standalone_campaign(tool, outcome)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(tool)
     report = json.loads(tool.write_report(EndpointOutcome()).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == (
         ("sim_pass_sim", True) if conclusive else ("", None)

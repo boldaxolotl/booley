@@ -3965,6 +3965,9 @@ def test_final_reviewer_report_distinguishes_replay_from_error_evaluation(tmp_pa
     if evaluated:
         reviewer.set_criterion(key, False)
     result = McpToolResult(exit_code=2, criterion_key=key, criterion_met=False)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(reviewer)
     report = json.loads(reviewer.write_report(result).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == (
         (key, False) if evaluated else ("", None)
@@ -3995,5 +3998,8 @@ def test_ambiguous_reviewer_mapping_cannot_be_narrowed_by_one_evaluation(tmp_pat
     base = reviewer._criterion_base_key()
     reviewer.state.init_criteria({f"{base}_done": True, f"{base}_clean": True})
     reviewer.set_criterion(f"{base}_done", True)
+    from booley.flows.endpoint_report_criteria import freeze
+
+    freeze(reviewer)
     report = json.loads(reviewer.write_report(McpToolResult()).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)

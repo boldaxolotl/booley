@@ -3092,6 +3092,9 @@ def test_standalone_elab_only_final_headline(tmp_path, met):
     flow._record_elab_only_criterion(ElabOnlyTargetResult("lite", outcome=build))
     result = EndpointOutcome(exit_code=2 if met is None else (0 if met else 1))
     with flow.context.publication_resources:
+        from booley.flows.endpoint_report_criteria import freeze
+
+        freeze(flow.context)
         report = json.loads(flow.context.write_report(result).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == (
         ("", None) if met is None else ("elab_pass_lite", met)
