@@ -31,4 +31,3 @@ build is operational history and never substitutes for provenance.
 - Making the lifecycle module recreate Session Runtimes was rejected because
   image reconciliation and runtime attachment ownership have different failure
   and rollback semantics.
-
