@@ -101,7 +101,7 @@ def test_native_list_metadata_crosses_single_root_python_decoder(store: Path) ->
     assert metadata.scope_prefix == "tb"
     assert metadata.root_scopes == ("tb",)
     assert metadata.signal_count == 3
-    assert metadata.total_ticks == 185
+    assert metadata.total_ticks == 200
     assert len(signals) == 1
 
 
@@ -114,7 +114,7 @@ def test_native_list_metadata_crosses_multi_root_python_decoder(
     assert metadata.scope_prefix == ""
     assert metadata.root_scopes == ("$rootio", "uart16550")
     assert metadata.signal_count == 3
-    assert metadata.total_ticks == 5
+    assert metadata.total_ticks == 10
     assert len(signals) == 1
 
 
@@ -135,12 +135,12 @@ def test_trace_session_accepts_native_multi_root_store(
     assert inspection.artifact is not None
     assert inspection.artifact.top_scope == "$rootio, uart16550"
     assert inspection.artifact.signal_count == 3
-    assert inspection.artifact.total_ticks == 5
+    assert inspection.artifact.total_ticks == 10
     status = json.loads((work_dir / "trace_status.json").read_text(encoding="utf-8"))
     assert status["current_status"] == "usable"
     assert status["trace_metadata"]["top_scope"] == "$rootio, uart16550"
     assert status["trace_metadata"]["signal_count"] == 3
-    assert status["trace_metadata"]["total_ticks"] == 5
+    assert status["trace_metadata"]["total_ticks"] == 10
 
 
 def test_total_miss_is_exit_usage_plus_marker(store: Path) -> None:
@@ -191,3 +191,20 @@ def test_env_errors_stay_exit_env(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist.fst"
     result = _run("stats", str(missing), "-s", "*")
     assert result.returncode == EXIT_ENV, result.stderr
+
+
+def test_native_open_ended_range_includes_tail_clock_events(
+    store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.bwave import cli
+
+    monkeypatch.setattr(cli, "_load_sessions", lambda: {})
+    monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    resolver = cli._TickResolver(str(store), "test")
+    assert resolver.range_to_ticks("170ns:") == (170, 200)
+    result = _run(
+        "find", str(store), "clk", "rising", "--async", "-t", "170t:200t", "--format", "json"
+    )
+    assert result.returncode == EXIT_OK, result.stderr
+    times = [match["time"] for match in json.loads(result.stdout)["data"]["matches"]]
+    assert times == [175, 185, 195]

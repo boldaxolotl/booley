@@ -943,7 +943,7 @@ fn bench_virtual_eval(c: &mut Criterion) {
                     black_box(&resolved),
                     &[],
                     &all_transitions,
-                    cache.sim_start_tick,
+                    0,
                     cache.sim_end_tick,
                 )
             });
@@ -960,7 +960,7 @@ fn bench_virtual_eval(c: &mut Criterion) {
                     black_box(&resolved),
                     &[],
                     &all_transitions,
-                    cache.sim_start_tick,
+                    0,
                     cache.sim_end_tick,
                 )
             });
@@ -977,7 +977,7 @@ fn bench_virtual_eval(c: &mut Criterion) {
                     black_box(&resolved),
                     &[],
                     &all_transitions,
-                    cache.sim_start_tick,
+                    0,
                     cache.sim_end_tick,
                 )
             });
@@ -994,7 +994,7 @@ fn bench_virtual_eval(c: &mut Criterion) {
                     black_box(&resolved),
                     &[],
                     &all_transitions,
-                    cache.sim_start_tick,
+                    0,
                     cache.sim_end_tick,
                 )
             });
@@ -1011,7 +1011,7 @@ fn bench_virtual_eval(c: &mut Criterion) {
                     black_box(&resolved),
                     &[],
                     &all_transitions,
-                    cache.sim_start_tick,
+                    0,
                     cache.sim_end_tick,
                 )
             });
@@ -1028,7 +1028,7 @@ fn bench_virtual_eval(c: &mut Criterion) {
                     black_box(&resolved),
                     &[],
                     &all_transitions,
-                    cache.sim_start_tick,
+                    0,
                     cache.sim_end_tick,
                 )
             });
