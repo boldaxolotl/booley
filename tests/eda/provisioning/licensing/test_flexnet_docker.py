@@ -625,8 +625,8 @@ def test_dockerfile_pins_minimal_base_and_runs_as_numeric_user() -> None:
     path = Path("src/booley/data/docker/Dockerfile.flexnet-relay")
     dockerfile = path.read_text(encoding="utf-8")
     assert (
-        "FROM python:3.14.7-alpine3.24@sha256:"
-        "9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01" in dockerfile
+        "FROM python:3.14.8-alpine3.24@sha256:"
+        "8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1" in dockerfile
     )
     assert "USER 65532:65532" in dockerfile
     assert "HEALTHCHECK" in dockerfile

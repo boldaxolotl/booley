@@ -257,7 +257,7 @@ def candidate_image(environment_variable: str, proof_name: str) -> str:
     return image
 
 
-def assert_python_version(image: str, expected: str = "Python 3.14.7") -> None:
+def assert_python_version(image: str, expected: str = "Python 3.14.8") -> None:
     """Assert the exact Python patch packaged in a sidecar image."""
     version = docker("run", "--rm", "--entrypoint", "python3", image, "--version")
     assert_ok(version)

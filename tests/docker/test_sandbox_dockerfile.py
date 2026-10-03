@@ -296,17 +296,17 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert evidence_script.count(":py314") >= 3
     assert ":py313" not in evidence_script
     assert '"Python 3.13.15"' not in evidence_script
-    assert '"Python 3.14.7"' in evidence_script
+    assert '"Python 3.14.8"' in evidence_script
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
     assert (
-        'readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:'
-        '82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56"' in evidence_script
+        'readonly BOOKWORM_CANDIDATE="python:3.14.8-slim-bookworm@sha256:'
+        'c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88"' in evidence_script
     )
     assert (
-        'readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:'
-        '9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"' in evidence_script
+        'readonly ALPINE_CANDIDATE="python:3.14.8-alpine3.24@sha256:'
+        '8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"' in evidence_script
     )
     assert (
         'readonly DOCKER_CLI="docker:29.8.2-cli@sha256:'
@@ -357,18 +357,18 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
 
 
-def test_sidecars_pin_python_3_14_7_without_changing_distributions() -> None:
+def test_sidecars_pin_python_3_14_8_without_changing_distributions() -> None:
     egress = (_DOCKER_DIR / "Dockerfile.egress-proxy").read_text(encoding="utf-8")
     flexnet = (_DOCKER_DIR / "Dockerfile.flexnet-relay").read_text(encoding="utf-8")
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
     assert (
-        "FROM python:3.14.7-slim-bookworm@sha256:"
-        "82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56" in egress
+        "FROM python:3.14.8-slim-bookworm@sha256:"
+        "c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88" in egress
     )
     alpine = (
-        "FROM python:3.14.7-alpine3.24@sha256:"
-        "9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"
+        "FROM python:3.14.8-alpine3.24@sha256:"
+        "8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"
     )
     assert alpine in flexnet
     assert alpine in reaper

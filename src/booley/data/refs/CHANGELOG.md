@@ -78,6 +78,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   trace the wrong value backwards to the first divergent signal, check that the
   suspected trigger actually occurred, and confirm the mechanism before editing
   RTL. This applies in Interactive Mode and Ticket Mode alike.
+- Updated the egress proxy, FlexNet relay, and reaper sidecars to Python
+  3.14.8, which fixes ssl and asyncio hostname validation and ships libexpat
+  2.8.5.
+  ([#1067](https://github.com/boldaxolotl/Booley/issues/1067))
 
 ### Upgrade notes
 
