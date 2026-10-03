@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from functools import lru_cache
+from types import ModuleType
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +86,46 @@ def _codex_server_env(
     return merged_env
 
 
+@lru_cache(maxsize=1)
+def _codex_toml_parser() -> ModuleType:
+    """Resolve the compatible parser only when Codex config parsing is needed."""
+    try:
+        import tomli
+
+        probe = "probe = {\n enabled=true,\n}\n"
+        if tomli.loads(probe) != {"probe": {"enabled": True}}:
+            raise ValueError("Codex TOML capability probe returned an unexpected value")
+    except Exception as exc:  # Translate installation/probe failures, not user config.
+        raise RuntimeError(
+            "Incompatible Booley installation: Codex config requires tomli>=2.4.0 with "
+            "TOML1.1; reinstall dependencies or rebuild the compatible base"
+        ) from exc
+    return tomli
+
+
+def _warning_preference(existing_config: str | None) -> bool:
+    """Recover only the destination's root preference; interrupted scratch heals."""
+    if existing_config is None or existing_config == "":
+        return True
+    parser = _codex_toml_parser()
+    try:
+        parsed = parser.loads(existing_config)
+    except parser.TOMLDecodeError:
+        logger.warning(
+            "Cannot recover warning preference from malformed scratch Codex config; regenerating"
+        )
+        return True
+    value = parsed.get("suppress_unstable_features_warning", True)
+    if not isinstance(value, bool):
+        raise ValueError("suppress_unstable_features_warning must be a boolean")
+    return value
+
+
 def generate_codex_config(
     enabled_mcp_tools: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
+    *,
+    existing_config: str | None = None,
 ) -> str:
     """Generate config.toml content for the Codex MCP server.
 
@@ -101,7 +140,9 @@ def generate_codex_config(
     Returns:
         TOML-formatted string.
     """
+    preference = _warning_preference(existing_config)
     lines = [
+        f"suppress_unstable_features_warning = {str(preference).lower()}",
         'web_search = "disabled"',
         "",
         "[features]",
