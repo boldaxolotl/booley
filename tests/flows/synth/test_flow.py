@@ -1978,9 +1978,9 @@ class TestSingleConfigRun:
         ):
             result = flow._run()
 
-        assert result.exit_code == EXIT_FAILURE
-        assert "RESULT: FAIL" in result.report_text
-        assert "rc=1, no metrics" in result.report_text
+        assert result.exit_code == EXIT_ERROR
+        assert "RESULT: ERROR" in result.report_text
+        assert "frontend rejected converted Verilog" in result.report_text
         # The real subprocess error must reach the report, not just the generic
         # "no metrics" summary (it was previously discarded).
         assert "ERROR: frontend rejected converted Verilog" in result.report_text
@@ -1988,7 +1988,7 @@ class TestSingleConfigRun:
         report_path = tmp_path / "reports" / "synth_lite.json"
         data = json.loads(report_path.read_text(encoding="utf-8"))
         assert data["passed"] is False
-        assert data["returncode"] == 1
+        assert data["returncode"] == 2
         assert data["timed_out"] is False
         assert data["has_metrics"] is False
         assert data["area_kge"] is None
@@ -2061,6 +2061,30 @@ class TestBoundaryCommand:
         # passes the boundary command contract's regex.
         assert "python3" not in cmd
         assert _BOUNDARY_COMMAND_RE.fullmatch(" ".join(cmd))
+
+
+def _write_final_structural_failure(build_dir: Path, returncode: int) -> None:
+    """Write completed structural evidence, optionally followed by a tool crash."""
+    build_dir.mkdir(parents=True, exist_ok=True)
+    (build_dir / "yosys.log").write_text(
+        "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+        encoding="utf-8",
+    )
+    (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+    (build_dir / "check_dut.txt").write_text(
+        "Warning: found logic loop in module dut:\n    wire \\feedback\n"
+        "Warning: multiple conflicting drivers for dut.sig:\n"
+        "    port Q[0] of cell $procdff$1 ($dff)\n"
+        "Found and reported 2 problems.\n",
+        encoding="utf-8",
+    )
+    (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
+    if returncode:
+        with (build_dir / "yosys.log").open("a") as log:
+            log.write("ERROR: unknown tool exception after final outputs\n")
+    fresh = time.time() + 1
+    for artifact in build_dir.iterdir():
+        os.utime(artifact, (fresh, fresh))
 
 
 class TestFileBasedInterpretation:
@@ -2149,35 +2173,21 @@ class TestFileBasedInterpretation:
         assert criterion.detail["latches"] == 1
         assert criterion.detail["has_critical"] is True
 
+    @pytest.mark.parametrize("returncode", [0, 2])
     def test_final_check_structural_findings_fail_and_reach_every_report_surface(
-        self, flow_and_state, tmp_path: Path
+        self, flow_and_state, tmp_path: Path, returncode
     ):
         flow, state_file = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
-                encoding="utf-8",
-            )
-            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
-            (build_dir / "check_dut.txt").write_text(
-                "Warning: found logic loop in module dut:\n    wire \\feedback\n"
-                "Warning: multiple conflicting drivers for dut.sig:\n"
-                "    port Q[0] of cell $procdff$1 ($dff)\n"
-                "Found and reported 2 problems.\n",
-                encoding="utf-8",
-            )
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+            _write_final_structural_failure(build_dir, returncode)
+            return SubprocessResult(returncode=returncode, stdout="", stderr="", duration_s=1.0)
 
         with patch.object(flow, "_execute", side_effect=mock_execute):
             result = flow._run()
 
-        assert result.exit_code == EXIT_FAILURE
+        assert result.exit_code == (EXIT_ERROR if returncode else EXIT_FAILURE)
         assert "1 comb loop" in result.report_text
         assert "1 multi-driven" in result.report_text
         target = result.detail["lite"]
@@ -2186,11 +2196,19 @@ class TestFileBasedInterpretation:
         assert target["comb_loops"] == 1
         assert target["multi_driven"] == 1
         report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+        assert report["termination"] == (
+            "infrastructure_error" if returncode else "design_failure"
+        )
+        assert report["returncode"] == (2 if returncode else 1)
+        if returncode:
+            assert "unknown tool exception" in report["infra_error"]
+            assert "RESULT: ERROR" in result.report_text
         assert report["total_warnings"] == 2
         assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
-        criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
-        assert criterion.met is False
-        assert criterion.detail["total_warnings"] == 2
+        if not returncode:
+            criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
+            assert criterion.met is False
+            assert criterion.detail["total_warnings"] == 2
 
     def test_yosys_loop_fails_even_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
         flow, state_file = flow_and_state
@@ -2223,7 +2241,8 @@ class TestFileBasedInterpretation:
         assert target["comb_loops"] == 1
         assert target["passed"] is False
         report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-        assert report["returncode"] == 0
+        assert report["returncode"] == 1
+        assert report["termination"] == "design_failure"
         assert report["passed"] is False
         assert report["implementation"]["conditions"]["has_critical"] is True
         criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
@@ -2343,8 +2362,8 @@ class TestFileBasedInterpretation:
         with patch.object(flow, "_execute", side_effect=mock_execute):
             result = flow._run()
 
-        assert result.exit_code == EXIT_FAILURE
-        assert "FAIL (rc=1)" in result.report_text
+        assert result.exit_code == EXIT_ERROR
+        assert "RESULT: ERROR" in result.report_text
         # The scan verdict lands in the persisted full output (the report line
         # itself carries the bounded rc-based summary, as on the legacy path).
         run_log = (
@@ -2696,7 +2715,7 @@ class TestBaselineFlow:
 
         assert result.exit_code == EXIT_ERROR
         assert "baseline lite: ERROR -- baseline source resolution failed" in result.report_text
-        assert "RESULT: FAIL" in result.report_text
+        assert "RESULT: ERROR" in result.report_text
         assert result.detail["passed"] is False
         assert result.detail["lite"]["baseline_metrics"]["infra_error"] == (
             "baseline source resolution failed"
@@ -4047,7 +4066,7 @@ class TestTruncationResilientOutput:
         ):
             result = flow._run()
 
-        assert result.exit_code == EXIT_FAILURE
+        assert result.exit_code == EXIT_ERROR
         log_file = self._log_file(tmp_path)
         assert log_file.is_file()
         text = log_file.read_text(encoding="utf-8")
@@ -4546,7 +4565,8 @@ def test_authenticated_yosys_stage_rejects_unrelated_loader(tmp_path, executable
     flow._apply_boundary_completion(
         metrics, outcome, SubprocessResult(returncode=1, stderr=diagnostic), diagnostic
     )
-    assert not metrics.infra_error
+    assert metrics.termination == "infrastructure_error"
+    assert "missing tool:" not in metrics.infra_error
 
 
 @pytest.mark.parametrize("area", ["", "- ", "12 ", "12.5 ", "1.2e+2 "])
@@ -4778,7 +4798,7 @@ def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_pat
         flow_and_state, tmp_path, {"expected": 8, "unknown_area": True}
     )
     assert result.exit_code == EXIT_FAILURE
-    assert report["termination"] == "eda_tool_failure"
+    assert report["termination"] == "design_failure"
     assert report["implementation"]["conditions"]["has_critical"] is False
     assert report["ppa_complete"] is False
     excerpt = report["implementation"]["status"]["diagnostic_excerpt"]
@@ -4818,11 +4838,11 @@ def test_unrelated_openroad_failure_preserves_tool_status_and_latch_evidence(
         tmp_path,
         {"mode": "physical", "openroad": openroad, "process": {"returncode": 2}},
     )
-    assert result.exit_code == EXIT_FAILURE
+    assert result.exit_code == EXIT_ERROR
     assert report["returncode"] == 2
-    assert report["termination"] == "eda_tool_failure"
+    assert report["termination"] == "infrastructure_error"
     assert report["implementation"]["conditions"]["unexpected_latches"] == 8
-    assert "rc=2" in result.report_text
+    assert openroad in report["infra_error"]
     assert (
         "actual=8, expected=0, excess=8"
         in report["implementation"]["status"]["diagnostic_excerpt"]
@@ -4863,12 +4883,12 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
             "openroad": _LATCH_ORD if stale else "[ERROR STA-9999] unrelated.",
             "stale": stale,
             "yosys_decoy": _LATCH_ORD + "\n",
-            "process": {"returncode": 2, "stdout": _LATCH_ORD},
+            "process": {"returncode": 2, "stdout": "BOOLEY_STAGE: sta\n" + _LATCH_ORD},
         },
     )
-    assert result.exit_code == EXIT_FAILURE
+    assert result.exit_code == EXIT_ERROR
     assert report["returncode"] == 2
-    assert report["termination"] == "eda_tool_failure"
+    assert report["termination"] == "infrastructure_error"
 
 
 @pytest.mark.parametrize(
@@ -4909,10 +4929,11 @@ def test_latch_and_fresh_ord_do_not_override_stronger_execution_failure(
     )
     assert report["termination"] == termination
     assert report["implementation"]["conditions"]["unexpected_latches"] == 8
-    if termination == "infrastructure_error":
-        assert result.exit_code == EXIT_ERROR
-        assert report["returncode"] == 2
-        assert report["infra_error"]
+    assert result.exit_code == EXIT_ERROR
+    assert report["returncode"] == 2
+    assert report["infra_error"]
+    assert report["implementation"]["status"]["grade"] == "error"
+    assert "RESULT: ERROR —" in result.report_text
     assert report["ppa_complete"] is False
     assert report["timing_complete"] is False
 
@@ -5078,3 +5099,192 @@ def test_generic_failure_summary_separates_expected_latches(formatter):
     summary = formatter(metrics)
     assert "unmapped generic cell" in summary
     assert "actual=8, expected=8, excess=0" in summary
+
+
+@pytest.mark.parametrize(
+    ("tool", "diagnostic", "expected_exit", "termination"),
+    [
+        ("sv2v", "sv2v: unrecognized option --bogus", EXIT_ERROR, "infrastructure_error"),
+        (
+            "sv2v",
+            "dut.sv:2:3: Parse error: unexpected token 'killed'",
+            EXIT_FAILURE,
+            "design_failure",
+        ),
+        (
+            "yosys",
+            "dut.sv:2:3: error: include file missing.vh not found",
+            EXIT_ERROR,
+            "infrastructure_error",
+        ),
+    ],
+)
+def test_1095_public_frontend_failure(
+    flow_and_state, tmp_path, tool, diagnostic, expected_exit, termination
+):
+    flow, _ = flow_and_state
+    stub = _stub_plan(tmp_path, "lite", mode="logical")
+    plan = dataclasses.replace(stub, attempt_token=_LATCH_TOKEN)
+
+    def execute(*_args, **_kwargs):
+        plan.build_dir.mkdir(parents=True, exist_ok=True)
+        path = plan.build_dir / f"{tool}.log"
+        path.write_text(diagnostic + "\n")
+        os.utime(path, (100, 100))
+        return SubprocessResult(
+            returncode=2, stdout=f"BOOLEY_STAGE: {tool}\nmake: *** Error 1", dispatched_unix=99
+        )
+
+    with (
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_execute_boundary", side_effect=execute),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    assert result.exit_code == expected_exit
+    assert report["termination"] == termination
+    assert diagnostic in result.report_text
+    assert report["implementation"]["status"]["grade"] == (
+        "error" if expected_exit == EXIT_ERROR else "fail"
+    )
+    if expected_exit == EXIT_ERROR:
+        assert diagnostic in report["infra_error"]
+        assert "RESULT: ERROR — lite:" in result.report_text
+    else:
+        assert not report["infra_error"]
+
+
+def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):
+    flow, _ = flow_and_state
+    plan = dataclasses.replace(
+        _stub_plan(tmp_path, "lite", mode="logical"), attempt_token=_LATCH_TOKEN
+    )
+    process = SubprocessResult(
+        returncode=2,
+        stdout=f"BOOLEY_STAGE: sv2v\nBOOLEY_EDA_FAILURE token={_LATCH_TOKEN} kind=missing_eda_tool stage=sv2v subject=sv2v\n",
+    )
+    with (
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_execute_boundary", return_value=process),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    assert result.exit_code == EXIT_ERROR
+    assert report["implementation"]["status"]["grade"] == "error"
+    assert report["termination"] == "infrastructure_error"
+    assert "RESULT: ERROR — lite: missing tool: sv2v. Rebuild" in result.report_text
+    assert report["infra_error"] in result.report_text
+
+
+@pytest.mark.parametrize("tool", ["sv2v", "openroad"])
+def test_1095_first_diagnostic_survives_long_stage_tail(flow_and_state, tmp_path, tool):
+    diagnostic = (
+        "sv2v: unrecognized option --bogus"
+        if tool == "sv2v"
+        else "[ERROR STA-9999] unknown timing failure"
+    )
+    marker = "sv2v" if tool == "sv2v" else "sta"
+    flow, _ = flow_and_state
+    plan = dataclasses.replace(
+        _stub_plan(tmp_path, "lite", mode="logical" if tool == "sv2v" else "physical"),
+        attempt_token=_LATCH_TOKEN,
+    )
+
+    def execute(*_args, **_kwargs):
+        plan.build_dir.mkdir(parents=True, exist_ok=True)
+        path = plan.build_dir / f"{tool}.log"
+        path.write_text(
+            "Errors: 0\nReading error_model.v\nunknown cells: 0\n"
+            + diagnostic
+            + "\n"
+            + "\n".join(f"context {i}" for i in range(40))
+        )
+        os.utime(path, (100, 100))
+        return SubprocessResult(
+            returncode=2, stdout=f"BOOLEY_STAGE: {marker}\nmake: *** Error 1", dispatched_unix=99
+        )
+
+    with (
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_execute_boundary", side_effect=execute),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    assert result.exit_code == EXIT_ERROR
+    assert diagnostic in report["infra_error"]
+    assert diagnostic in result.report_text
+    assert "context 39" in result.report_text
+    assert "context 27" not in result.report_text
+    assert "make: ***" not in report["failure_output"]
+    assert "PPA_PROFILE" not in report["failure_output"]
+
+
+@pytest.mark.parametrize("returncode", [0, 2])
+def test_1095_public_parameter_mismatch_is_design(flow_and_state, tmp_path, returncode):
+    flow, _ = flow_and_state
+    stub = _stub_plan(tmp_path, "lite", mode="logical")
+    plan = dataclasses.replace(
+        stub, spec=dataclasses.replace(stub.spec, defines=("ENABLE_ZBB=1",))
+    )
+
+    def execute(*_args, **_kwargs):
+        _write_latch_artifacts(plan.build_dir, "Number of cells: 2\n", "", False)
+        (plan.build_dir / "effective_params_dut.il").write_text(
+            "module \\dut\n  parameter \\ENABLE_ZBB 1'0\nend\n"
+        )
+        return SubprocessResult(returncode=returncode, stdout="BOOLEY_STAGE: yosys\n")
+
+    with (
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_execute_boundary", side_effect=execute),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    assert result.exit_code == EXIT_FAILURE
+    assert report["termination"] == "design_failure"
+    assert report["implementation"]["status"]["grade"] == "fail"
+    assert "effective top-level parameter mismatch" in result.report_text
+    assert not report["infra_error"]
+
+
+@pytest.mark.parametrize("kind", ["mixed", "baseline", "comparison", "fallback"])
+def test_1095_aggregate_error_reasons_match_exit(flow_and_state, kind):
+    from booley.flows.implementation_report import ImplementationReport
+
+    flow, _ = flow_and_state
+    good = SynthMetrics(cells=2, area_kge=1)
+    design = SynthMetrics(
+        returncode=1, termination="design_failure", failure_output="dut.v:2: ERROR: syntax error"
+    )
+    infra = SynthMetrics(
+        returncode=2,
+        termination="infrastructure_error",
+        infra_error="sv2v: unrecognized option --bogus",
+    )
+    targets = ["lite", "full"] if kind == "mixed" else ["lite"]
+    current = {"lite": design, "full": infra} if kind == "mixed" else {"lite": good}
+    baseline = {"lite": infra} if kind == "baseline" else {}
+    if kind in {"comparison", "fallback"}:
+        report = flow._implementation_report("lite", good, None, None)
+        canonical = {
+            **report.canonical,
+            "status": {**report.canonical["status"], "grade": "error", "passed": False},
+            "comparison": {
+                "basis_errors": ["comparison recipe evidence missing"]
+                if kind == "comparison"
+                else []
+            },
+        }
+        flow._implementation_reports = {"lite": ImplementationReport(canonical)}
+    result = flow._aggregate_results(targets, current, baseline, "abc1234" if baseline else None)
+    assert result.exit_code == EXIT_ERROR
+    assert "RESULT: ERROR —" in result.report_text
+    assert (
+        "aggregate infrastructure error"
+        if kind == "fallback"
+        else "comparison recipe evidence missing"
+        if kind == "comparison"
+        else "unrecognized option"
+    ) in result.report_text
+    if kind == "mixed":
+        assert "lite:" in result.report_text and "full:" in result.report_text

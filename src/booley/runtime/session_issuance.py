@@ -41,6 +41,12 @@ from booley.runtime.devcontainer import (
     devcontainer_path,
     render_devcontainer_json,
 )
+from booley.runtime.incontainer_git_identity import (
+    GitIdentity,
+    GitIdentityError,
+    git_identity_environment,
+    load_git_identity,
+)
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -71,7 +77,7 @@ _ESCAPE_KEYS = frozenset({"dockerComposeFile", "service", "runServices", "worksp
 _FIXED_REGISTRAR = "python -m booley.harness.incontainer_register"
 _LEGACY_FIXED_REGISTRAR = "python -m booley.runtime.incontainer_register"
 _ACCEPTED_FIXED_REGISTRARS = frozenset({_FIXED_REGISTRAR, _LEGACY_FIXED_REGISTRAR})
-_FIXED_GIT_IDENTITY = "python -m booley.runtime.incontainer_git_identity"
+_FIXED_GIT_IDENTITY = "python -m booley.runtime.incontainer_git_identity_cleanup"
 _ACCEPTED_FIXED_START_TAILS = frozenset(
     {_FIXED_GIT_IDENTITY}
     | {f"{_FIXED_GIT_IDENTITY} && {registrar}" for registrar in _ACCEPTED_FIXED_REGISTRARS}
@@ -114,11 +120,15 @@ _REQUIRED_REMOTE_ENV = frozenset(
         "BOOLEY_AGENT_APP",
     }
 )
-_ALLOWED_REMOTE_ENV = _REQUIRED_REMOTE_ENV | {
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "OPENAI_API_KEY",
-    LOCAL_TIMEZONE_ENV,
-}
+_ALLOWED_REMOTE_ENV = (
+    _REQUIRED_REMOTE_ENV
+    | set(git_identity_environment(GitIdentity("Dev", "dev@localhost")))
+    | {
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        LOCAL_TIMEZONE_ENV,
+    }
+)
 _FIXED_REMOTE_ENV = {
     "HTTP_PROXY": "http://booley-proxy:8080",
     "HTTPS_PROXY": "http://booley-proxy:8080",
@@ -447,6 +457,7 @@ def _seal_with_requirements(
     project_data_path: Path,
     requirements: eda_requirements.SessionEdaRequirements,
 ) -> str:
+    _pin_git_identity(spec, project_data_path)
     run_args = spec.get("runArgs")
     if not isinstance(run_args, list) or any(not isinstance(item, str) for item in run_args):
         raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
@@ -605,6 +616,7 @@ def _session_spec_inputs(
                 {
                     **dict(requirements.container_environment),
                     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
+                    **_project_identity_environment(authorized_project_data_source(project)),
                 }.items()
             )
         ),
@@ -1091,6 +1103,7 @@ def _validate_generated_spec(
         raise RuntimeSpecError("devcontainer.json exposes Vivado without host authorization")
     _validate_overlaps(mounts)
     _validate_mount_surfaces(mounts, project_data_workspace_target)
+    _validate_git_identity_environment(spec, Path(issuance.project_data_source))
     _validate_environment(spec, requirements.license_environment)
     _validate_run_args(
         spec.get("runArgs"),
@@ -1154,6 +1167,29 @@ def _issuance_label_differences(expected_labels: tuple[str, ...], tail: list[str
     return format_differences(expected, actual)
 
 
+def _project_identity_environment(project_data: Path) -> dict[str, str]:
+    try:
+        return git_identity_environment(load_git_identity(project_data))
+    except GitIdentityError as exc:
+        raise RuntimeSpecError(f"invalid [agent.git] identity: {exc}") from exc
+
+
+def _pin_git_identity(spec: dict[str, Any], project_data: Path) -> None:
+    environment = _project_identity_environment(project_data)
+    for section in ("containerEnv", "remoteEnv"):
+        spec[section] = {**require_dict(spec.get(section), field=section), **environment}
+
+
+def _validate_git_identity_environment(spec: dict[str, Any], project_data: Path) -> None:
+    expected = _project_identity_environment(project_data)
+    container, remote = _environment_sections(spec)
+    for section in (container, remote):
+        if any(section.get(key) != value for key, value in expected.items()):
+            raise RuntimeSpecError(
+                "[agent.git] Sandbox identity has drifted; refresh and recreate the Sandbox"
+            )
+
+
 def _environment_sections(spec: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     container = spec.get("containerEnv", {})
     remote = spec.get("remoteEnv", {})
@@ -1208,7 +1244,10 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
         raise RuntimeSpecError(
             "Compiler-cache root differs from fixed Sandbox policy; refresh the Sandbox"
         )
-    allowed_container = {COMPILER_CACHE_ROOT_ENV}
+    allowed_container = {
+        COMPILER_CACHE_ROOT_ENV,
+        *git_identity_environment(GitIdentity("Dev", "dev@localhost")),
+    }
     if license_environment is not None:
         allowed_container.add("XILINXD_LICENSE_FILE")
     if set(container) != allowed_container:

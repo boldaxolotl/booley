@@ -996,8 +996,7 @@ FuseSoC cores. Cores under `.booley_project/cores/` use repository-root-relative
 fileset paths; `booley init` generates ignored `.booley-projected-*.core` copies
 at the repository root so FuseSoC reads pristine RTL directly, with no source
 symlinks or copied RTL. Booley refreshes the projections again before target
-resolution. This filesystem behavior requires explicit `enabled = true`; the
-legacy missing-key fallback applies only to history sanitation.
+resolution. This filesystem behavior requires explicit `enabled = true`.
 
 `ignore_native_cores` is an optional, default-false isolation switch for
 repositories whose shipped `.core` files are invalid, obsolete, or deliberately
@@ -1313,16 +1312,20 @@ name = "Expected Developer"
 email = "developer@example.com"
 ```
 
-Booley applies each configured value to the active checkout's worktree-specific
-Git configuration. This takes precedence over the host-global `.gitconfig` that
-VS Code copies into a Sandbox without changing the user's global Git
-configuration. A missing or empty `name` falls back to `Dev`; a missing or empty
-`email` falls back to `dev@localhost`.
+Interactive Mode supplies the configured identity through command-scope Git
+settings in both the Sandbox container and VS Code remote environment. These
+settings take precedence over copied host-global `.gitconfig` values and leave
+the host checkout's Git identity unchanged. A missing or empty `name` falls back
+to `Dev`; a missing or empty `email` falls back to `dev@localhost`.
 
-Interactive Mode refreshes the values when the Sandbox is created or
-started. Ticket Mode applies them when it creates a Ticket worktree. Explicit
-Git overrides such as `git commit --author` or the `GIT_AUTHOR_*` and
-`GIT_COMMITTER_*` environment variables still take precedence.
+Sandbox creation and startup with an updated image remove a complete legacy
+worktree identity pair matching the current settings or `Dev <dev@localhost>`;
+unrecognized custom overrides and other Git settings are preserved. Changed
+`[agent.git]` settings require refreshing and recreating the Sandbox to update
+its immutable environment. Ticket Mode still applies identity to each Ticket's
+worktree-specific Git configuration at creation. Explicit Git overrides such
+as `git commit --author` or the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment
+variables still take precedence.
 
 ### Developer Agent policy (`[developer]`)
 
@@ -1874,19 +1877,24 @@ the image is used as a Sandbox.
 ```console
 $ booley init
 [--] manual edits detected in docker/{Dockerfile} and image
-     'myproj-booley-sandbox' is not built — using your files as the build
+     'myproj-booley-sandbox-<root-digest>' is not built — using your files as the build
      input (leaving them untouched)
-[OK] built myproj-booley-sandbox
+[OK] built myproj-booley-sandbox-<root-digest>
 ```
 
 That is one pass, not a recipe: init builds the image **from your file
 verbatim** and re-seeds the devcontainer spec later in the same run. The image
-name is derived automatically from the project slug whenever
-`.booley_project/docker/Dockerfile` exists, so no matching `[sandbox].image`
-entry is written or needed. Set `[sandbox].image` only to select a genuinely
+name is derived automatically from the Project slug and canonical-root digest.
+A matching manual `.booley_project/docker/Dockerfile` is built above the selected
+Booley wheel overlay, so no matching `[sandbox].image` entry is written or needed. Set `[sandbox].image` only to select a genuinely
 custom name or a Booley flavor image.
 
 What init decides, and how to steer it:
+
+| Configured selection and recipe | Initialization behavior |
+|---|---|
+| Standard or Booley flavor with matching manual `FROM` | Build the selected wheel overlay, then the exact manual recipe under this Project's private image name. |
+| Manual `FROM` mismatches the selection or is ambiguous | Report the selection and parsed parent, preserve the recipe, and leave it unused. |
 
 | Your `.booley_project/docker/` state | What `booley init` does |
 |---|---|
@@ -1942,9 +1950,10 @@ edit.** For a headless Booley-managed Sandbox, `booley session refresh` plans
 the minimal invalid image closure, builds and verifies transaction candidates
 while the old Sandbox remains available, then pins the new immutable image ID,
 recreates the Sandbox, and probes its installed Booley wheel before discarding
-the predecessor. A Python-only change rebuilds only the final wheel overlay;
-compatible EDA, RISC-V, and Project-dependency substrates retain their exact
-immutable IDs. A failed recreation or probe restores the old Sandbox. If VS
+the predecessor. For generated recipes, a Python-only change rebuilds only the
+final wheel overlay; compatible EDA, RISC-V, and Project-dependency substrates
+retain their exact immutable IDs. A matching manual recipe remains above the
+wheel overlay and its descendants rebuild when that wheel changes. A failed recreation or probe restores the old Sandbox. If VS
 Code owns the running Sandbox, refresh the image with
 `booley init --force` and use **Dev Containers: Rebuild Container**. Explicit
 external images remain your responsibility: rebuild or pull them, run
@@ -1993,7 +2002,8 @@ make -C sw/... RV_ISA=rv32im_zicsr    # CoreMark's variable name
 The right variable name is the project's own; grep its makefiles for `rv32i`.
 Keep the override at the call site (the `post-setup` hook).
 
-Project Initialization owns this flavor image. Internally, both user-facing
+Project Initialization owns its private selected image; shared flavor and runtime-base
+artifacts remain immutable inputs. Internally, both user-facing
 images are assembled from reusable substrates in
 `ghcr.io/boldaxolotl/booley-sandbox-base`; those substrate tags are an
 implementation detail, not additional `[sandbox].image` choices.
@@ -2003,7 +2013,8 @@ standard and RISC-V substrates and installs the requested checkout's wheel in a
 final overlay. An installed official distribution pulls and verifies only the
 selected complete standard or RISC-V image.
 
-To build or refresh it by hand (this also rebuilds the base first):
+To build or refresh the host flavor by hand (Bootstrap acquires or reuses the
+contract-compatible runtime base; add `--refresh-base` to rebuild it explicitly):
 
 ```bash
 ./src/booley/data/docker/build-riscv.sh

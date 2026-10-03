@@ -653,21 +653,26 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
         assert observation["assertions"] == "not_observed"
 
 
-def test_coverage_infrastructure_build_failure_has_no_terminal_result(
+def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(_CoverageAggregateError):
-        _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=True))
+    outcome, _store = _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=True))
+    assert outcome.complete
+    assert outcome.aggregate_grade == "error"
 
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
     recovery = store.scan()
-    assert recovery.interrupted
+    assert not recovery.interrupted
     directory = store.work_item_directory(recovery.items[0].work_item_id)
     attempts = tuple((directory / "attempts").iterdir())
     assert len(attempts) == 1
     build = json.loads((attempts[0] / "private-build/build-result.json").read_bytes())
     assert build["state"] == "infrastructure_error"
-    assert not (directory / "result.json").exists()
+    assert (directory / "result.json").exists()
+    result = recovery.items[0].result
+    assert result is not None
+    assert result.document["state"] == "aborted"
+    assert result.document["grade"] == "error"
 
 
 def _unmanaged() -> AdmissionContext:
@@ -985,6 +990,7 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
         {
             "test": f"test_{index:02d}",
             "execution": "timeout" if index == 39 else "completed",
+            "failure_class": "design" if index == 39 else None,
             "functional": "fail" if index % 2 else "pass",
             "assertions": "dirty" if index % 3 == 0 else "clean",
             "assertion_count": index,
@@ -1010,6 +1016,7 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
     assert set(details["observations"][0]) == {
         "test",
         "execution",
+        "failure_class",
         "functional",
         "assertions",
         "assertion_count",

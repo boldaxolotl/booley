@@ -561,6 +561,9 @@ def test_named_simulation_criterion_records_observed_failure(
         _simulation_outcome(tmp_path, [observation]),
     )
 
+    if failure["failure_class"] == "infrastructure":
+        assert changes == ()
+        return
     assert [(change.key, change.met) for change in changes] == [("sim_pass_sim_half", False)]
     assert changes[0].detail["failed_tests"] == ["half"]
 

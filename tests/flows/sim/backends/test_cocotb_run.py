@@ -378,7 +378,7 @@ def test_missing_cocotb_config_names_cause_and_fix(tmp_path: Path, capsys):
     assert rc == 1
     out = capsys.readouterr().out
     assert "sandbox image predates cocotb support" in out
-    assert "rebuild the sandbox image" in out
+    assert "booley bootstrap --update" in out
     # result.json records the inconclusive verdict (never a silent pass).
     result = (tmp_path / "result.json").read_text(encoding="utf-8")
     assert '"passed": false' in result

@@ -229,10 +229,19 @@ experiment, not a setup requirement.
   Linux container reads as every file modified. `booley init` handles it: it
   inspects both the Project checkout and the resolved project-data directory
   when they are separate Git repositories. In each repository it sets
-  `core.autocrlf=false` locally and adds `* text=auto eol=lf` as the first line
-  of `.gitattributes`. `text=auto` preserves Git's binary-file detection, while
-  the first-line position lets any more-specific rule below it still win.
-  **Commit each `.gitattributes`**: the rule only reaches your team through git.
+  `core.autocrlf=false` locally. With Stealth enabled, the Project checkout's
+  `* text=auto eol=lf` default goes in Git's common `info/attributes`, local to
+  the repository and shared by linked worktrees; it does not travel through
+  commits. Existing upstream attributes policy suppresses that default to
+  preserve its rules. With Stealth disabled, and in independent project-data
+  repositories, init adds the default as the first line of root `.gitattributes`
+  unless the root already owns a whole-tree policy. `text=auto` preserves Git's
+  binary-file detection, and later rules in that file can override the default.
+  **Commit only published root `.gitattributes` files** to share their policy.
+  Init warns about an old untracked root default or a local default conflicting
+  with upstream rules or Stealth opt-out. Inspect those files and remove or
+  migrate the default if appropriate; init preserves them because ownership
+  cannot be proven.
 
   Files already on disk with CRLF are a separate matter. From a clean tracked
   tree, init stages Git-filtered LF replacements, verifies that the affected
@@ -292,8 +301,9 @@ experiment, not a setup requirement.
   the complete-sequence estimate before choosing that tradeoff. This is related
   to the recovery behavior discussed in [issue #790](https://github.com/boldaxolotl/booley/issues/790).
   Booley never prunes cache or removes images, volumes, Project artifacts, or
-  user data automatically. If Docker's reported root is not the filesystem that
-  actually stores its data, bypass only that invocation with
+  user data automatically. To explicitly accept disk-exhaustion risk, or when
+  Docker's reported root is not the filesystem that actually stores its data,
+  bypass only that invocation with
   `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`; any other value keeps the check enabled.
 
 - **Docker reports `No space left on device` after the capacity preflight
@@ -795,8 +805,12 @@ the Campaign-bound evidence tool.
 - Approve exits non-zero and the Ticket stays in review: the strict verdict with
   your accepted candidates would still fail. Rejections are kept; nothing was
   promoted. Fix the Ticket in review, reset it, or archive it.
-- Approver refused as the `[agent.git]` identity: set your own `user.name` and
-  `user.email` in the Project checkout.
+- Approver refused as the `[agent.git]` identity: approve on the host with your
+  personal `user.name` and `user.email`. The Sandbox intentionally uses the agent
+  identity and refuses approval. Refresh and recreate the Sandbox with an updated
+  image, or start an already updated Sandbox, to clean recognized legacy worktree
+  identity pairs. Unrecognized custom overrides are preserved; if host approval
+  still refuses, inspect the Project checkout's worktree identity overrides.
 - Candidate shown as stale or invalid: its source changed since recording, it
   came from another Campaign, or the evidence no longer supports it. Rerun
   coverage and the Analyst to record fresh candidates.

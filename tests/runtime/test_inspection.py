@@ -22,6 +22,7 @@ from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
     inspection,
+    project_image,
     runtime_context,
     session_runtime,
 )
@@ -602,7 +603,7 @@ class TestDevcontainerSpecStaleness:
             inspection.inspect_runtime(
                 inspection.RuntimeInspectionRequest(
                     tmp_path,
-                    dc.SANDBOX_IMAGE,
+                    project_image.project_image_name(tmp_path),
                     None,
                     declared_provider=None,
                     expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
@@ -642,7 +643,7 @@ class TestDevcontainerSpecStaleness:
             inspection.inspect_runtime(
                 inspection.RuntimeInspectionRequest(
                     tmp_path,
-                    dc.SANDBOX_IMAGE,
+                    project_image.project_image_name(tmp_path),
                     None,
                     declared_provider=None,
                     expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
@@ -678,7 +679,9 @@ class TestDevcontainerSpecStaleness:
 
         _record_report(
             inspection.inspect_runtime(
-                inspection.RuntimeInspectionRequest(tmp_path, dc.SANDBOX_IMAGE, None)
+                inspection.RuntimeInspectionRequest(
+                    tmp_path, project_image.project_image_name(tmp_path), None
+                )
             ).configuration,
             passed=rec.p,
             warned=rec.w,

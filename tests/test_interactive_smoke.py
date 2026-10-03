@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.core.project_dir import reset_cache
 from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
@@ -32,6 +33,7 @@ _BOOLEY_ENV_VARS = (
     "BOOLEY_STATE_FILE",
     "BOOLEY_LOGS_DIR",
     "BOOLEY_PROJECT_ROOT",
+    "BOOLEY_PROJECT_DIR",
 )
 
 
@@ -51,6 +53,7 @@ def _clear_ticket_env() -> None:
     saved = {k: os.environ.get(k) for k in _BOOLEY_ENV_VARS}
     for k in _BOOLEY_ENV_VARS:
         os.environ.pop(k, None)
+    reset_cache()
     try:
         yield
     finally:
@@ -59,6 +62,7 @@ def _clear_ticket_env() -> None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        reset_cache()
 
 
 def _make_interactive_simulate(
@@ -257,7 +261,7 @@ class TestAsicSynthesizeBaselineInteractive:
         import subprocess
 
         from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
-        from booley.mcp.base import McpToolResult
+        from booley.runtime.endpoint_execution import EndpointOutcome
 
         monkeypatch.delenv("BOOLEY_SLUG", raising=False)
 
@@ -325,8 +329,8 @@ targets:
             plans = target_pair_plans_for_handles({}, "synthesis_ok_", (handle,), flow="synth")
             results, short_sha = tool._run_baseline_configs(plans)
 
-        # It succeeded (no McpToolResult error) and resolved the baseline ref.
-        assert not isinstance(results, McpToolResult)
+        # It succeeded and resolved the baseline ref; retain actionable failures.
+        assert not isinstance(results, EndpointOutcome), results.report_text
         assert "synth_default" in results
         assert short_sha  # HEAD~1 resolved to a short sha
 
@@ -781,6 +785,14 @@ class TestInitInteractive:
             pytest.fail("missing Project data unexpectedly passed validation")
 
         monkeypatch.setattr(runtime_spec, "preview", strict_preview)
+        current_image = init_cmd.LifecycleResult(
+            selected_reference=init_cmd.pi.project_image_name(tmp_path),
+            selected_id="sha256:" + "a" * 64,
+            status=init_cmd.ImageLifecycleStatus.CURRENT,
+        )
+        monkeypatch.setattr(
+            init_cmd.image_lifecycle, "reconcile_planned", lambda *_args, **_kwargs: current_image
+        )
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
         rc = init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "subscription"))

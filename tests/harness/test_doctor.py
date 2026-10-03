@@ -53,6 +53,8 @@ from tests.diagnostic_helpers import (
     _Rec,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+
 
 def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> None:
     (tmp_path / "conditional.core").write_text(
@@ -192,9 +194,12 @@ def _seed_interactive(root: Path) -> None:
     devcontainer spec and the git info/exclude entries."""
     from booley.runtime import devcontainer as dc
 
-    dc.write_devcontainer(root, dc.build_devcontainer_spec(dc.APP_NONE))
+    dc.write_devcontainer(
+        root, dc.build_devcontainer_spec(dc.APP_NONE, image=doctor.pi.project_image_name(root))
+    )
     info_dir = root / ".git" / "info"
     info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "attributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
     (info_dir / "exclude").write_text(
         "/.devcontainer\n/.booley_project\n",
         encoding="utf-8",
@@ -268,6 +273,18 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
 
     def fake_run(cmd, **kwargs):  # noqa: PLR0911,PLR0912 — external-command boundary fixture
         calls.append([str(part) for part in cmd])
+        if cmd[:2] == ["git", "--literal-pathspecs"] and "--git-common-dir" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{root / '.git'}\n".encode(), stderr=b""
+            )
+        if cmd[:2] == ["git", "--literal-pathspecs"] and "worktree" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=os.fsencode(f"worktree {root}\0\0"), stderr=b""
+            )
+        if cmd[:2] == ["git", "-C"] and "var" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"")
+        if cmd[:2] == ["git", "--literal-pathspecs"] and "ls-files" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
         if cmd[:2] == ["git", "-C"] and "--show-toplevel" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{root}\n", stderr="")
         if cmd[:2] == ["git", "-C"] and "config" in cmd and "core.autocrlf" in cmd:
@@ -431,6 +448,8 @@ def test_git_exclude_warnings_are_scoped_per_missing_entry(tmp_path):
 @pytest.mark.parametrize("concise", [False, True])
 def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch, capsys, concise):
     project_dir = _write_project(tmp_path)
+    _disable_line_ending_stealth(tmp_path)
+    (tmp_path / ".git").mkdir(exist_ok=True)
     _patch_environment(monkeypatch, tmp_path, project_dir)
     # This broad integration fixture intentionally leaves several environmental
     # warnings active.  Exercise the real waiver path so the clean-run contract
@@ -471,7 +490,7 @@ permanent = true
     output = capsys.readouterr().out
     assert ("PASS  " not in output) is concise
     stamp = doctor_stamp.load_stamp(project_dir)
-    assert stamp is not None
+    assert stamp is not None, output
     assert stamp["fingerprint"] == doctor_stamp.compute_fingerprint(project_dir, tmp_path)
     # The stamp it just wrote must satisfy its own freshness check.
     assert doctor_stamp.check_stamp(project_dir, tmp_path) is None
@@ -6860,13 +6879,14 @@ class TestDisplayReportDir:
     <repo>/.booley_project/tmp/...).
     """
 
-    def test_container_mount_is_rendered_repo_relative(self):
+    def test_container_mount_is_rendered_repo_relative(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
 
-        from booley.runtime.devcontainer import PROJECT_DIR_TARGET
-
-        project = SimpleNamespace(project_dir=Path(PROJECT_DIR_TARGET))
-        report_dir = Path(PROJECT_DIR_TARGET) / "tmp" / "doctor" / "flow-reports"
+        mount = tmp_path / "project-mount"
+        mount.mkdir()
+        monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", mount.as_posix())
+        project = SimpleNamespace(project_dir=mount)
+        report_dir = mount / "tmp" / "doctor" / "flow-reports"
         hint = doctor._display_report_dir(project, report_dir)
         assert hint == ".booley_project/tmp/doctor/flow-reports (under the repo root)"
 
@@ -6924,6 +6944,7 @@ class TestLineEndingsCheck:
         )
 
     def test_lf_tree_with_autocrlf_off_passes(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         c = _Collector()
@@ -6933,6 +6954,7 @@ class TestLineEndingsCheck:
         assert c.passed and not c.warned and not c.failed
 
     def test_lf_tree_with_stale_crlf_index_stat_fails(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="true")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         (tmp_path / "a.v").unlink()
@@ -7039,6 +7061,7 @@ class TestLineEndingsCheck:
         assert c.passed and not c.warned and not c.failed
 
     def test_missing_gitattributes_rule_alone_is_silent(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         # Most vendored upstreams (the pristine picorv32 among them) will never
         # carry the rule, and on an LF host it changes nothing. Warning here
         # would be unfollowable advice on every Linux project.
@@ -7058,6 +7081,7 @@ class TestLineEndingsCheck:
         assert c.skipped and not c.failed
 
     def test_nested_crlf_failure_names_project_data_repository(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         project_dir = tmp_path / ".booley_project"
@@ -7089,9 +7113,10 @@ class TestLineEndingsCheck:
         assert any("project checkout" in message for message in c.passed)
 
     def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
+        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
+        project_dir.mkdir(exist_ok=True)
         self._repo(project_dir, autocrlf="true")
         reporter = doctor._Reporter.create()
 
@@ -7958,3 +7983,92 @@ targets:
     def test_icarus_target_is_ignored(self, tmp_path: Path):
         c = self._check(tmp_path, 'tfp->open("sim.vcd");', tool="icarus", options="[]")
         assert not c.warned and not c.passed
+
+
+def _disable_line_ending_stealth(root: Path) -> None:
+    data = root / ".booley_project"
+    data.mkdir(parents=True, exist_ok=True)
+    config = data / "booley.toml"
+    existing = config.read_text() if config.exists() else ""
+    config.write_text(existing + "\n[stealth]\nenabled = false\n")
+    # This fixture starts non-Stealth; it is not an on-to-off migration case.
+    (root / ".git/info/attributes").unlink(missing_ok=True)
+
+
+def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
+    TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
+    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley_project/\n")
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    paths = [tmp_path / ".git/config", tmp_path / ".git/index"]
+    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
+    c = _Collector()
+    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, project_dir=data)
+    assert c.warned and not c.passed and not c.failed
+    assert str(tmp_path / ".git/info/attributes") in c.warned[0]
+    assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
+    assert not (tmp_path / ".git/info/attributes").exists()
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root, alias = tmp_path / "selected", tmp_path / "alias"
+    for directory in (root, alias):
+        (directory / "reports").mkdir(parents=True)
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", root.as_posix())
+    original = Path.samefile
+    calls = []
+
+    def samefile(path, other):
+        if {path, Path(other)} == {root, alias}:
+            calls.append(path)
+            return True
+        return original(path, other)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    project = SimpleNamespace(project_dir=root)
+    assert (
+        doctor._display_report_dir(project, alias / "reports")
+        == ".booley_project/reports (under the repo root)"
+    )
+    assert calls
+    (root / "internal").symlink_to(root / "reports", target_is_directory=True)
+    assert (
+        doctor._display_report_dir(project, root / "internal")
+        == ".booley_project/reports (under the repo root)"
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    assert doctor._display_report_dir(project, root / "escape") == str(root / "escape")
+    assert doctor._display_report_dir(project, outside) == str(outside)
+
+
+def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root, alias = tmp_path / "root", tmp_path / "alias"
+    for directory in (root, alias):
+        directory.mkdir()
+        (directory / "target").mkdir()
+    (alias / "input").mkdir()
+    (root / "input").symlink_to(alias / "target", target_is_directory=True)
+    original = Path.samefile
+    monkeypatch.setattr(
+        Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
+    )
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", root.as_posix())
+    assert (
+        doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
+        == ".booley_project/target (under the repo root)"
+    )
+    (root / "target").rmdir()
+    (root / "real").mkdir()
+    (root / "target").symlink_to(root / "real", target_is_directory=True)
+    assert (
+        doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
+        == ".booley_project/real (under the repo root)"
+    )

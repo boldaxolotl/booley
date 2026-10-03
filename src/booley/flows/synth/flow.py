@@ -58,7 +58,12 @@ from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
-from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    EXIT_FAILURE,
+    EXIT_SUCCESS,
+    EndpointOutcome,
+)
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import TargetHandle
@@ -559,7 +564,9 @@ def _design_failure_reason(metrics: SynthMetrics) -> str:
     return (
         "unmapped latch"
         if "unmapped latch:" in metrics.failure_output
-        else "unmapped generic cell"
+        else (
+            metrics.failure_output.splitlines()[0] if metrics.failure_output else "design failure"
+        )
     )
 
 
@@ -621,8 +628,8 @@ def _parse_synth_output(
 
 
 _RESOURCE_KILL_RE = re.compile(
-    r"(?:\b(?:exit|code|error)\s*137\b|\breturncode\s*[=:]\s*137\b|\bkilled\b)",
-    re.IGNORECASE,
+    r"(?:\b(?:exit|code|error)\s*137\b|\breturncode\s*[=:]\s*137\b|^\s*(?:/bin/(?:ba)?sh:[^\n]*Killed(?:\s|$)|[0-9]+\s+Killed(?:\s|$)|Killed\s*$))",
+    re.IGNORECASE | re.MULTILINE,
 )
 _INPUT_ERROR_RE = re.compile(r"BOOLEY_INPUT_ERROR:\s*([^\r\n]+)")
 
@@ -665,16 +672,25 @@ def _result_line(
     selfcompare_msg: str | None,
     violated: list[str],
     eda_warnings: list[str] | None = None,
+    exit_code: int | None = None,
 ) -> str:
     """The single ``RESULT:`` headline, in strict severity order.
 
-    FAIL outranks every WARN; among the WARNs a meaningless baseline delta
-    outranks a timing violation. Each WARN still exits 0 — only *failed*
-    (which already folds in an opted-in
-    ``fail_on_timing_violation``, F-37) moves the exit code.
+    The canonical aggregate determines ERROR versus FAIL, which outrank WARN.
+    Among WARNs a meaningless baseline delta outranks a timing violation.
+    Warnings exit 0 unless timing violations are explicitly configured fatal.
     """
-    if failed:
-        return f"RESULT: FAIL ({'; '.join(failed)})"
+    if failed or exit_code in {EXIT_FAILURE, EXIT_ERROR}:
+        reasons = failed or [
+            "aggregate infrastructure error"
+            if exit_code == EXIT_ERROR
+            else "aggregate design failure"
+        ]
+        return (
+            "RESULT: ERROR — " + "; ".join(reasons)
+            if exit_code == EXIT_ERROR
+            else f"RESULT: FAIL ({'; '.join(reasons)})"
+        )
     if selfcompare_msg:
         # Structurally clean, but the baseline delta measured identical
         # sources -- the one thing --baseline exists to catch.
@@ -1316,6 +1332,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         outcome = syn_make.boundary_output(
             plan,
             result.returncode,
+            stdout=result.stdout,
             is_stale=lambda p: self._is_stale_artifact(p, result.dispatched_unix or None),
         )
         output = "\n".join(part for part in (result.stdout, result.stderr, outcome.text) if part)
@@ -1389,6 +1406,40 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 metrics.termination == "completed" and metrics.area_source == "yosys_mapped"
             )
         self._apply_design_failure(metrics, outcome, result, output)
+        self._apply_unknown_failure(metrics, outcome, result)
+
+    @staticmethod
+    def _apply_unknown_failure(
+        metrics: SynthMetrics, outcome: Any, result: SubprocessResult
+    ) -> None:
+        """Unknown failure is execution evidence, never an implicit RTL verdict."""
+        if metrics.termination in {"timeout", "oom", "resource_killed"}:
+            metrics.infra_error = f"synthesis execution {metrics.termination}"
+            metrics.returncode = 2
+        elif metrics.termination == "infrastructure_error" and not metrics.infra_error:
+            metrics.infra_error = "synthesis boundary could not start"
+            metrics.returncode = 2
+        elif metrics.returncode and metrics.termination not in {
+            "design_failure",
+            "infrastructure_error",
+        }:
+            stage = (
+                getattr(outcome, "stage_marker", None)
+                or getattr(outcome, "stage", None)
+                or "synthesis"
+            )
+            log = getattr(outcome, "stage_log", "") or "\n".join((result.stdout, result.stderr))
+            diagnostic = _first_tool_diagnostic(log)
+            metrics.infra_error = f"{stage}: {diagnostic[:500]}"
+            metrics.returncode = 2
+            metrics.termination = "infrastructure_error"
+        if metrics.termination != "completed":
+            log = getattr(outcome, "stage_log", "")
+            if log:
+                tail = _error_excerpt(log)
+                if metrics.failure_output and metrics.failure_output not in tail:
+                    tail = metrics.failure_output + "\n" + tail
+                metrics.failure_output = tail
 
     @staticmethod
     def _apply_design_failure(
@@ -1403,8 +1454,21 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 "latch" if re.search(r"\$_DLATCH", diagnostic, re.IGNORECASE) else "generic cell"
             )
             diagnostic = f"unmapped {kind}: {diagnostic}"
-        elif result.returncode == 0 and metrics.unexpected_latches:
-            diagnostic = _latch_diagnostic(metrics)
+        elif getattr(outcome, "design_diagnostic", None):
+            diagnostic = outcome.design_diagnostic
+        elif result.returncode == 0 and metrics.has_critical:
+            diagnostic = (
+                _latch_diagnostic(metrics)
+                if metrics.unexpected_latches
+                else "critical structural conditions"
+            )
+        elif (
+            metrics.has_critical
+            and result.returncode != 0
+            and not outcome.yosys_complete
+            and getattr(outcome, "stage", None) in {None, "yosys"}
+        ):
+            diagnostic = "critical structural conditions"
         if not diagnostic:
             return
         failure = classify_eda_failure(
@@ -1416,7 +1480,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if failure is not None and failure.kind == "design":
             metrics.returncode = 1
             metrics.termination = "design_failure"
-            metrics.failure_output = failure.diagnostic
+            metrics.failure_output = (
+                "ERROR: synthesis log reports an error despite exit 0:\n  "
+                if result.returncode == 0 and outcome.forced_failure
+                else ""
+            ) + failure.diagnostic
 
     @staticmethod
     def _apply_structural_completion(
@@ -1477,8 +1545,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif result.returncode != 0:
             logger.warning("Synth %s failed with rc=%d", target, result.returncode)
         if metrics.termination != "completed" or (not metrics.has_metrics and result.returncode):
-            metrics.failure_output = "\n".join(
-                part for part in (metrics.failure_output, _error_excerpt(output)) if part
+            metrics.failure_output = metrics.failure_output or _error_excerpt(
+                "\n".join((result.stdout, result.stderr))
             )
             if metrics.latches and not metrics.failure_output.startswith(
                 _latch_diagnostic(metrics)
@@ -2398,7 +2466,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 if str(message).startswith("baseline infrastructure error:"):
                     continue
                 lines.append(f"[synth] comparison {target}: ERROR -- {message}")
-                failures.append(f"comparison {target}: invalid evidence")
+                failures.append(f"comparison {target}: {message}")
         return lines, failures
 
     @staticmethod
@@ -2448,7 +2516,16 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self._append_fatal_timing_failure(failed_targets, violated)
         eda_warnings = self._eda_warning_headlines(targets, current_results)
         stdout_lines.extend(
-            ["", _result_line(failed_targets, selfcompare_msg, violated, eda_warnings)]
+            [
+                "",
+                _result_line(
+                    failed_targets,
+                    selfcompare_msg,
+                    violated,
+                    eda_warnings,
+                    implementation_aggregate.exit_code,
+                ),
+            ]
         )
         report_text = "\n".join(stdout_lines)
         print(report_text)
@@ -2493,7 +2570,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         for target, metrics in baseline_results.items():
             if metrics.infra_error:
                 lines.append(f"[synth] baseline {target}: ERROR -- {metrics.infra_error}")
-                failures.append(f"baseline {target}: infrastructure error")
+                failures.append(f"baseline {target}: {metrics.infra_error}")
         comparison_lines, comparison_failures = self._comparison_error_lines(reports)
         lines.extend(comparison_lines)
         failures.extend(comparison_failures)
@@ -2670,14 +2747,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     def _format_failure_summary(tgt: str, cur: SynthMetrics) -> str:
         """Format one target failure for the final RESULT line."""
         reason = "failed"
-        if cur.timed_out:
+        if cur.infra_error:
+            reason = cur.infra_error
+        elif cur.timed_out:
             reason = "timeout"
         elif cur.termination == "oom":
             reason = "OOM"
         elif cur.termination == "resource_killed":
             reason = "resource-killed"
-        elif cur.infra_error:
-            reason = "infrastructure error"
         elif cur.termination == "design_failure":
             reason = _design_failure_reason(cur)
         elif cur.returncode != 0 and not cur.has_metrics:
@@ -2765,25 +2842,31 @@ def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:
     return warnings
 
 
-_ERROR_LINE_RE = re.compile(
-    r"\b(error|fatal|not found|no such|permission denied)\b", re.IGNORECASE
-)
+def _first_tool_diagnostic(text: str) -> str:
+    """Keep the first actual tool diagnostic, ignoring execution wrappers."""
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+        and not line.startswith(("BOOLEY_STAGE:", "BOOLEY_EDA_FAILURE", "make:", "make["))
+    ]
+    return next(
+        (
+            line
+            for line in lines
+            if re.search(
+                r"(?i)(?:^|:\s|\]\s|\[)(?:error|fatal)\b|\bunrecognized (?:option|argument)\b|\bunknown (?:command|option|argument)\b|\bunsupported (?:command|option)\b|\b(?:not found|no such file|permission denied)\b|^usage:",
+                line,
+            )
+        ),
+        lines[0] if lines else "no diagnostic available",
+    )
 
 
 def _error_excerpt(output: str, max_lines: int = 12) -> str:
-    """Pull the actionable error out of swallowed synth subprocess output.
-
-    Prefers lines that look like diagnostics (the ``run_yosys_syn`` /
-    ``syn_core`` ``sys.exit("ERROR: ...")`` guards, yosys/sv2v errors); falls
-    back to the last non-empty lines so even a bare crash surfaces *something*.
-    Bounded to ``max_lines`` so a giant log tail can't swamp the report.
-    """
-    lines = [ln.rstrip() for ln in output.splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    err_lines = [ln for ln in lines if _ERROR_LINE_RE.search(ln)]
-    chosen = err_lines or lines[-max_lines:]
-    return "\n".join(chosen[-max_lines:])
+    """Retain the bounded nonempty tail of the failing tool's output."""
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    return "\n".join(lines[-max_lines:])
 
 
 if __name__ == "__main__":

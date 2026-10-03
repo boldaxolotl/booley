@@ -474,9 +474,15 @@ def _publish_coverage_build_failure(
         infrastructure=infrastructure,
         checkpoint=checkpoint,
     )
-    if infrastructure:
-        return None
-    return _blocked_result(request, directory, result, failed, elapsed)
+    return _blocked_result(
+        request,
+        directory,
+        result,
+        failed,
+        elapsed,
+        infrastructure=infrastructure,
+        evidence=_coverage_evidence(request, outcome),
+    )
 
 
 def _coverage_result_state(observations: list[dict[str, object]]) -> str:

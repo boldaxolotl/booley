@@ -318,3 +318,180 @@ class TestCaching:
         r2 = resolve_project_dir()
 
         assert r1 != r2
+
+
+class TestContainment:
+    def test_nonlexical_directory_identity(self, tmp_path, monkeypatch):
+        from booley.runtime import project_dir
+
+        root, alias = tmp_path / "selected", tmp_path / "alias"
+        for directory in (root, alias):
+            (directory / "inputs").mkdir(parents=True)
+            (directory / "inputs" / "file").write_text("data")
+        original = Path.samefile
+        calls = []
+
+        def samefile(path, other):
+            if {path, Path(other)} == {root, alias}:
+                calls.append(path)
+                return True
+            return original(path, other)
+
+        monkeypatch.setattr(Path, "samefile", samefile)
+        candidate = alias / "inputs" / "file"
+        assert not candidate.resolve().is_relative_to(root.resolve())
+        assert project_dir.contains(candidate, project_dir=root) == root / "inputs" / "file"
+        assert calls
+        assert (
+            project_dir.contains(root / "inputs" / "file", project_dir=alias)
+            == alias / "inputs" / "file"
+        )
+
+    def test_rebased_escape_is_denied(self, tmp_path, monkeypatch):
+        from booley.runtime import project_dir
+
+        root, alias, outside = (tmp_path / name for name in ("root", "alias", "outside"))
+        for directory in (root, alias, outside):
+            directory.mkdir()
+        (root / "escape").symlink_to(outside, target_is_directory=True)
+        (alias / "escape").mkdir()
+        original = Path.samefile
+        monkeypatch.setattr(
+            Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
+        )
+        assert project_dir.contains(alias / "escape" / "new", project_dir=root) is None
+
+    def test_contract_matrix(self, tmp_path, monkeypatch):
+        from booley.runtime.project_dir import contains
+
+        root = tmp_path / "root"
+        root.mkdir()
+        inside = root / "directory" / "file"
+        inside.parent.mkdir()
+        inside.write_text("data")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(root, target_is_directory=True)
+        (root / "escape").symlink_to(outside, target_is_directory=True)
+        (root / "internal").symlink_to(inside.parent, target_is_directory=True)
+        hardlink = outside / "hardlink"
+        hardlink.hardlink_to(inside)
+        for candidate, expected in (
+            (root, root),
+            (inside.parent, inside.parent),
+            (inside, inside),
+            (alias / "directory" / "file", inside),
+            (root / "internal" / "file", inside),
+            (root / "missing" / "child", root / "missing" / "child"),
+            (outside, None),
+            (hardlink, None),
+            (root / "escape" / "new", None),
+            (alias / "escape" / "new", None),
+            (root / ".." / "outside", None),
+            (tmp_path / "root-extra" / "file", None),
+        ):
+            assert contains(candidate, project_dir=root) == expected
+        assert contains(alias / "directory" / "file", project_dir=alias).samefile(inside)
+        monkeypatch.chdir(root)
+        assert contains("directory/file", project_dir=root) == inside
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root))
+        assert contains(inside) == inside
+        assert contains(inside, project_dir=tmp_path / "absent") is None
+
+    def test_errors(self, tmp_path, monkeypatch):
+        from booley.runtime import project_dir
+
+        root = tmp_path / "root"
+        root.mkdir()
+        with pytest.raises(ValueError):
+            project_dir.contains("bad\0path", project_dir=root)
+
+        def resolver():
+            raise ValueError("selection failed")
+
+        monkeypatch.setattr(project_dir, "resolve_project_dir", resolver)
+        with pytest.raises(ValueError, match="selection failed"):
+            project_dir.contains(root)
+        original = Path.resolve
+
+        def resolve(path, *args, **kwargs):
+            if path == root / "denied":
+                raise PermissionError("denied")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+        assert project_dir.contains(root / "denied", project_dir=root) is None
+        (root / "loop").symlink_to(root / "loop")
+        assert project_dir.contains(root / "loop", project_dir=root) is None
+        monkeypatch.setattr(
+            Path, "samefile", lambda *args: (_ for _ in ()).throw(PermissionError("denied"))
+        )
+        assert project_dir.contains(root, project_dir=root) is None
+
+    def test_inaccessible_candidate_stat(self, tmp_path, monkeypatch):
+        from booley.runtime.project_dir import contains
+
+        root = tmp_path / "root"
+        root.mkdir()
+        candidate = root / "denied"
+        original = Path.stat
+
+        def stat(path, *args, **kwargs):
+            if path == candidate:
+                raise PermissionError("denied")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", stat)
+        assert contains(candidate, project_dir=root) is None
+
+    def test_rebased_alias_child_symlink(self, tmp_path, monkeypatch):
+        from booley.runtime.project_dir import contains
+
+        root, alias = tmp_path / "root", tmp_path / "alias"
+        for directory in (root, alias):
+            directory.mkdir()
+            (directory / "target").mkdir()
+        (alias / "input").mkdir()
+        (root / "input").symlink_to(alias / "target", target_is_directory=True)
+        original = Path.samefile
+        monkeypatch.setattr(
+            Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
+        )
+        result = contains(alias / "input", project_dir=root)
+        assert result == root / "target"
+        assert result.relative_to(root) == Path("target")
+
+    def test_final_authority_rebase_escape_is_denied(self, tmp_path, monkeypatch):
+        from booley.runtime.project_dir import contains
+
+        root, alias, outside = (tmp_path / name for name in ("root", "alias", "outside"))
+        for directory in (root, alias, outside):
+            directory.mkdir()
+        (alias / "input").mkdir()
+        (alias / "target").mkdir()
+        (root / "input").symlink_to(alias / "target", target_is_directory=True)
+        (root / "target").symlink_to(outside, target_is_directory=True)
+        original = Path.samefile
+        monkeypatch.setattr(
+            Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
+        )
+        assert contains(alias / "input", project_dir=root) is None
+
+
+def test_containment_final_authority_internal_symlink(tmp_path, monkeypatch):
+    from booley.runtime.project_dir import contains
+
+    root, alias = tmp_path / "root", tmp_path / "alias"
+    for directory in (root, alias):
+        directory.mkdir()
+    (alias / "input").mkdir()
+    (alias / "target").mkdir()
+    (root / "real").mkdir()
+    (root / "input").symlink_to(alias / "target", target_is_directory=True)
+    (root / "target").symlink_to(root / "real", target_is_directory=True)
+    original = Path.samefile
+    monkeypatch.setattr(
+        Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
+    )
+    assert contains(alias / "input", project_dir=root) == root / "real"

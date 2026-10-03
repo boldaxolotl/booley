@@ -22,6 +22,12 @@ from pathlib import Path, PurePosixPath
 from booley.config.agent import SANDBOX_IMAGE
 from booley.runtime import auth_token
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
+from booley.runtime.incontainer_git_identity import (
+    GitIdentity,
+    GitIdentityError,
+    git_identity_environment,
+    load_git_identity,
+)
 from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
@@ -229,8 +235,8 @@ HOST_SKILLS_SIDECAR = f"{AGENT_HOME}/.booley-host-skills"
 
 
 def git_identity_command() -> str:
-    """Fixed command that applies the Project's Interactive Mode Git identity."""
-    return "python -m booley.runtime.incontainer_git_identity"
+    """Fixed command that cleans recognized legacy Interactive identity overrides."""
+    return "python -m booley.runtime.incontainer_git_identity_cleanup"
 
 
 def mcp_post_start_command() -> str:
@@ -840,9 +846,26 @@ def _build_creds_seed_command(
 
 
 def _runtime_start_tail(mcp_start_command: str | None) -> str:
-    """Apply identity before registration, preserving identity setup failure."""
+    """Clean legacy identity before registration, preserving cleanup failure."""
     identity = git_identity_command()
     return f"{identity} && {mcp_start_command}" if mcp_start_command else identity
+
+
+def _git_environment(project_source: str | None, fixed: dict[str, str] | None) -> dict[str, str]:
+    environment = git_identity_environment(GitIdentity("Dev", "dev@localhost"))
+    supplied = {key: value for key, value in (fixed or {}).items() if key in environment}
+    if supplied:
+        expected = git_identity_environment(
+            GitIdentity(
+                supplied.get("GIT_CONFIG_VALUE_0", ""), supplied.get("GIT_CONFIG_VALUE_1", "")
+            )
+        )
+        if supplied != expected:
+            raise GitIdentityError("[agent.git] fixed Git environment is incomplete or malformed")
+        return expected
+    if project_source:
+        return git_identity_environment(load_git_identity(Path(project_source)))
+    return environment
 
 
 def build_devcontainer_spec(
@@ -965,7 +988,9 @@ def build_devcontainer_spec(
         mask_paths,
         mask_source,
     )
+    identity_env = _git_environment(project_dir_source, fixed_container_env)
     remote_env = _build_remote_env(app, forward_oauth_token, local_timezone)
+    remote_env.update(identity_env)
     run_args = _build_run_args(memory)
 
     spec: dict = {
@@ -997,6 +1022,7 @@ def build_devcontainer_spec(
     }
     spec["containerEnv"] = {
         **(fixed_container_env or {}),
+        **identity_env,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
     }
 

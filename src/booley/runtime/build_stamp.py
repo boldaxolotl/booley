@@ -214,6 +214,24 @@ def resolve_wheel_source_fingerprint(booley_root: Path) -> str | None:
     return digest.hexdigest()
 
 
+def wheel_embedded_commit(wheel: Path) -> str:
+    """Read the embedded commit from a wheel without executing its contents."""
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            source = archive.read("booley/_build_commit.py").decode("utf-8")
+        module = ast.parse(source)
+    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile, SyntaxError) as exc:
+        raise ValueError(f"wheel build commit is invalid in {wheel}") from exc
+    for statement in module.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name) and target.id == "COMMIT":
+                value = ast.literal_eval(statement.value)
+                if isinstance(value, str):
+                    return value
+    raise ValueError(f"wheel build commit is missing in {wheel}")
+
+
 def wheel_embedded_source_fingerprint(wheel: Path) -> str:
     """Read the wheel-source identity from one built wheel without importing it."""
     try:
@@ -457,6 +475,17 @@ def extracted_development_context() -> Iterator[Path]:
         from booley._build_commit import DEVELOPMENT_CONTEXT_SHA256, PAYLOAD_FINGERPRINT
     except (ImportError, AttributeError) as exc:
         raise ValueError("development wheel has no embedded Sandbox Image build context") from exc
+    if DEVELOPMENT_CONTEXT_SHA256 == "" and not embedded_official_release():
+        raise ValueError(
+            "wheel has a runtime-image-style stamp without development context. "
+            "From a complete source checkout, run "
+            "python3 -P .github/scripts/build_development_wheel.py. The script uses "
+            "write_build_stamp(root, profile=BuildProfile.DEVELOPMENT_WHEEL), then "
+            "python3 -P -m build --wheel with fresh output staging, and removes "
+            "src/booley/_build_commit.py and "
+            "src/booley/data/development-build-context.tar.gz even on failure. See "
+            "docs/internals/CONTRIBUTING.md#building-a-development-wheel for the safe recipe."
+        )
     if not _is_sha256(DEVELOPMENT_CONTEXT_SHA256) or not _is_sha256(PAYLOAD_FINGERPRINT):
         raise ValueError("development wheel has invalid build-context provenance")
     package_root = Path(__file__).resolve().parents[1]
@@ -475,8 +504,8 @@ def extracted_development_context() -> Iterator[Path]:
 
 
 @contextlib.contextmanager
-def build_stamp(booley_root: Path) -> Iterator[str]:
-    """Stamp for the duration of a wheel build, then remove the stamp.
+def runtime_image_build_stamp(booley_root: Path) -> Iterator[str]:
+    """Stamp a wheel intended inside a Sandbox Image, without development context.
 
     The stamp only has to survive until the wheel is built. Leaving it behind
     makes the checkout report a baked commit it does not have (and fails

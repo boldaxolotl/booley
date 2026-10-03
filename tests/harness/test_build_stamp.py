@@ -33,7 +33,6 @@ from booley.runtime.build_stamp import (
     _extract_development_context,
     _validate_context_members,
     _write_development_context,
-    build_stamp,
     development_context_path,
     embedded_development_context_path,
     embedded_official_release,
@@ -43,6 +42,7 @@ from booley.runtime.build_stamp import (
     resolve_payload_fingerprint,
     resolve_source_updated_at,
     resolve_wheel_source_fingerprint,
+    runtime_image_build_stamp,
     stamp_path,
     wheel_embedded_source_fingerprint,
     write_build_stamp,
@@ -56,7 +56,11 @@ WHEEL_NAME = "booley_rtl-0.2.3-py3-none-any.whl"
 def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
     wheel = root / "dist" / name
     wheel.parent.mkdir(parents=True, exist_ok=True)
-    wheel.write_bytes(b"wheel")
+    with zipfile.ZipFile(wheel, "w") as archive:
+        stamp = stamp_path(root)
+        archive.writestr(
+            "booley/_build_commit.py", stamp.read_text() if stamp.is_file() else "COMMIT = ''\n"
+        )
     return wheel
 
 
@@ -219,13 +223,26 @@ class TestWriteBuildStamp:
         assert resolve_payload_fingerprint(repo) != before
         assert resolve_build_commit(repo).removesuffix("+dirty") == head
 
-    def test_context_manager_always_removes_the_stamp(self, repo: Path):
+    @pytest.mark.parametrize("fail", [False, True])
+    def test_context_manager_always_removes_the_stamp(self, repo: Path, fail: bool):
         """Leaving it behind makes the checkout claim a commit it doesn't have."""
-        with pytest.raises(RuntimeError), build_stamp(repo):
-            assert stamp_path(repo).is_file()
-            raise RuntimeError("build blew up")
 
+        def build():
+            with runtime_image_build_stamp(repo):
+                namespace = {}
+                exec(stamp_path(repo).read_text(), namespace)
+                assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
+                assert namespace["OFFICIAL_RELEASE"] is False
+                if fail:
+                    raise RuntimeError("build blew up")
+
+        if fail:
+            with pytest.raises(RuntimeError):
+                build()
+        else:
+            build()
         assert not stamp_path(repo).exists()
+        assert not development_context_path(repo).exists()
 
 
 class TestEmbeddedOfficialRelease:
@@ -536,3 +553,37 @@ class TestStampIsNotFingerprinted:
         assert development_context_path(root).relative_to(root).as_posix() not in [
             p.relative_to(root).as_posix() for p in iter_payload_files(root)
         ]
+
+
+@pytest.mark.parametrize("official", [False, None])
+def test_runtime_image_stamp_has_actionable_recovery(repo, monkeypatch, official):
+    write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
+    stamp = types.ModuleType("booley._build_commit")
+    exec(stamp_path(repo).read_text(), stamp.__dict__)
+    if official is None:
+        del stamp.OFFICIAL_RELEASE
+    monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+    with pytest.raises(ValueError) as caught, extracted_development_context():
+        pytest.fail("runtime-image wheel cannot supply development context")
+    message = str(caught.value)
+    assert "runtime-image-style" in message
+    assert "write_build_stamp(root, profile=BuildProfile.DEVELOPMENT_WHEEL)" in message
+    assert "python3 -P -m build --wheel" in message
+    assert "python3 -P .github/scripts/build_development_wheel.py" in message
+    assert "src/booley/_build_commit.py" in message
+    assert "src/booley/data/development-build-context.tar.gz" in message
+    assert "CONTRIBUTING.md#building-a-development-wheel" in message
+
+
+@pytest.mark.parametrize("context_hash,official", [("", True), ("bad", False), (None, False)])
+def test_invalid_or_official_context_has_no_runtime_recovery(monkeypatch, context_hash, official):
+    stamp = types.ModuleType("booley._build_commit")
+    stamp.DEVELOPMENT_CONTEXT_SHA256 = context_hash
+    stamp.PAYLOAD_FINGERPRINT = "a" * 64
+    stamp.OFFICIAL_RELEASE = official
+    monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+    with (
+        pytest.raises(ValueError, match="invalid build-context provenance"),
+        extracted_development_context(),
+    ):
+        pytest.fail("invalid provenance must fail closed")

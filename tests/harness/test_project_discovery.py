@@ -492,3 +492,46 @@ def test_explicit_external_data_symlink_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(alias))
     with pytest.raises(ProjectRootDiscoveryError, match="run from the Project checkout"):
         discover_project_root(outer)
+
+
+def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from booley.runtime import project_discovery
+
+    root, alias, unrelated = (tmp_path / name for name in ("selected", "alias", "unrelated"))
+    for directory in (root, alias, unrelated):
+        directory.mkdir()
+    original = Path.samefile
+    calls = []
+
+    def samefile(path, other):
+        if {path, Path(other)} == {root, alias}:
+            calls.append(path)
+            return True
+        return original(path, other)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root))
+    assert project_discovery._data_root(alias / "new", []) == root
+    assert calls
+    nested = alias / "embedded"
+    nested.mkdir()
+    assert project_discovery._data_root(nested, [nested]) is None
+    (nested / ".git").mkdir()
+    (nested / ".git" / "HEAD").write_text("ref: refs/heads/main")
+    (nested / "booley.toml").write_text(f'[project]\ndir = "{root.as_posix()}"\n')
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    (owner / ".git").mkdir()
+    (owner / ".git" / "HEAD").write_text("ref: refs/heads/main")
+    (owner / "booley.toml").write_text(f'[project]\ndir = "{root.as_posix()}"\n')
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(unrelated))
+    from booley.runtime.project_dir import reset_cache, resolve_project_dir
+
+    reset_cache()
+    assert resolve_project_dir() == unrelated
+    assert project_discovery._data_root(alias / "new", [owner]) == root
+    assert project_discovery._owning_checkouts([owner], root) == {owner}
+    reset_cache()
+    assert project_discovery._owning_checkouts([nested], root) == set()

@@ -29,7 +29,10 @@ from booley.flows.sim.campaign.coordinator import (
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
-from booley.flows.sim.execution.contract import SimulationArtifactEvidence
+from booley.flows.sim.execution.contract import (
+    SimulationArtifactEvidence,
+    SimulationInfrastructureFailure,
+)
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
@@ -438,6 +441,10 @@ def test_leased_session_build_and_run_counts(
 
 
 class _AdapterAbortExecution(_SessionBoundaryExecution):
+    termination = "fatal_init"
+    failure_kind = "missing_input"
+    first_pass = False
+    first_fail = False
     cocotb_path: Path | None = None
 
     def _prepare_build(self, handle):
@@ -477,8 +484,14 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
                         {
                             "name": name,
                             "module": "test_counter",
-                            "status": "fail",
-                            "failure": f"{detail} (rc=7)",
+                            "status": "pass"
+                            if self.first_pass and name == selected[0]
+                            else "fail",
+                            "failure": ""
+                            if self.first_pass and name == selected[0]
+                            else "earlier design failure"
+                            if self.first_fail and name == selected[0]
+                            else f"{detail} (rc=7)",
                             "elapsed_s": 0.01,
                         }
                         for name in selected
@@ -496,17 +509,25 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
                 0,
                 selected,
                 simulator_returncode=7,
-                termination="fatal_init",
-                missing_input_path="memory.hex",
-                failure_kind="missing_input",
+                termination=self.termination,
+                missing_input_path="memory.hex" if self.termination == "fatal_init" else "",
+                failure_kind=self.failure_kind,
                 detail=detail,
                 test_results=tuple(
                     AdapterTestResult(
                         name,
-                        "fail",
-                        detail=detail,
-                        termination="fatal_init",
-                        failure_kind="missing_input",
+                        "pass" if self.first_pass and name == selected[0] else "fail",
+                        detail=""
+                        if self.first_pass and name == selected[0]
+                        else "earlier design failure"
+                        if self.first_fail and name == selected[0]
+                        else detail,
+                        termination="completed"
+                        if (self.first_pass or self.first_fail) and name == selected[0]
+                        else self.termination,
+                        failure_kind=""
+                        if (self.first_pass or self.first_fail) and name == selected[0]
+                        else self.failure_kind,
                     )
                     for name in selected
                 ),
@@ -551,3 +572,152 @@ def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) 
     assert observation["failure_class"] == "design"
     assert observation["functional"] == "fail"
     assert observation["detail"] == {"reason": "$readmemh: Cannot open memory.hex (rc=7)"}
+
+
+@pytest.mark.parametrize(
+    "termination", ["disk_budget", "sim_time_stall", "trace_stall", "fatal_init"]
+)
+@pytest.mark.parametrize("first_pass", [False, True, "fail"])
+def test_infrastructure_guard_publishes_terminal_campaign(
+    tmp_path: Path, termination: str, first_pass: bool | str
+) -> None:
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
+    execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
+    execution.termination = termination
+    execution.failure_kind = "infrastructure"
+    execution.first_pass = first_pass is True
+    execution.first_fail = first_pass == "fail"
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,
+        execution_factory=lambda _options: execution,
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        )
+    )
+    assert outcome.complete
+    result = CampaignStore(invocation / "targets/sim/campaign").scan().items[0].result
+    assert result is not None
+    assert result.document["state"] == "aborted"
+    assert result.document["grade"] == "error"
+    for index, observation in enumerate(result.document["observations"]):
+        if first_pass and index == 0:
+            assert observation["execution"] == "completed"
+            assert observation["functional"] == ("fail" if first_pass == "fail" else "pass")
+            continue
+        assert observation["execution"] == "aborted"
+        assert observation["failure_class"] == "infrastructure"
+        assert observation["functional"] == observation["assertions"] == "not_observed"
+        assert observation["cycle_count"] is None
+        assert observation["detail"]["termination"] == termination
+
+
+class _NoVerdictExecution(_AdapterAbortExecution):
+    def _completed_group(self, *args, **kwargs):
+        outcome = super()._completed_group(*args, **kwargs)
+        return replace(
+            outcome,
+            tests=(),
+            infrastructure_failure=SimulationInfrastructureFailure(
+                "adapter_protocol", "simulator returned no verdict", detail="界" * 4000
+            ),
+            artifacts=(),
+        )
+
+
+@pytest.mark.parametrize("count", [2, 1000])
+def test_infrastructure_without_tests_retains_selected_identities(
+    tmp_path: Path, count: int
+) -> None:
+    names = ("count", "reset") if count == 2 else tuple(f"test_{index}" for index in range(count))
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names)
+    execution = _NoVerdictExecution(eda_tool="verilator", cocotb=True)
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        )
+    )
+    assert outcome.complete
+    result = CampaignStore(invocation / "targets/sim/campaign").scan().items[0].result
+    assert result is not None
+    assert result.document["grade"] == "error"
+    assert [item["test"] for item in result.document["observations"]] == list(names)
+    assert all(item["functional"] == "not_observed" for item in result.document["observations"])
+
+
+def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypatch) -> None:
+    unlink = Path.unlink
+
+    def denied_partial(path, *args, **kwargs):
+        if path.name.endswith(".partial"):
+            raise OSError("partial cleanup denied")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", denied_partial)
+    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", True)
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    result = store.scan().items[0].result
+    assert result is not None
+    assert any(
+        item["code"] == "artifact_persistence" and "cleanup denied" in item["message"]
+        for item in result.document["diagnostics"]
+    )
+
+
+def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> None:
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=())
+    execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
+    execution.termination = "sim_time_stall"
+    execution.failure_kind = "infrastructure"
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        )
+    )
+    assert outcome.complete
+    result = CampaignStore(invocation / "targets/sim/campaign").scan().items[0].result
+    assert result is not None
+    assert result.document["grade"] == "error"
+    assert result.document["observations"][0]["test"] is None
+    assert result.document["observations"][0]["detail"]["termination"] == "sim_time_stall"
+
+
+def test_campaign_scan_rejects_adapter_guard_for_foreign_target(tmp_path) -> None:
+    import hashlib
+
+    from booley.flows.sim.campaign.codec import (
+        SimulationCampaignIntegrityError,
+        canonical_json_bytes,
+    )
+
+    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    (result_path,) = store.root.glob("work-items/*/result.json")
+    document = json.loads(result_path.read_bytes())
+    (attempt,) = result_path.parent.glob("attempts/*")
+    reference = next(
+        item for item in document["evidence"] if item["kind"] == "simulation_adapter_result"
+    )
+    source_path = attempt / reference["path"]
+    source = json.loads(source_path.read_bytes())
+    source["target_identity"] = "foreign#sim"
+    raw = json.dumps(source, separators=(",", ":")).encode()
+    source_path.write_bytes(raw)
+    reference["bytes"] = len(raw)
+    reference["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    result_path.write_bytes(canonical_json_bytes(document))
+    with pytest.raises(SimulationCampaignIntegrityError, match="Target disagrees"):
+        store.scan()

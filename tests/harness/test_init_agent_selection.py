@@ -441,6 +441,13 @@ def test_seed_uses_resolved_provider_even_when_check_only_did_not_write(tmp_path
     calls = []
     monkeypatch.setattr(
         init_cmd,
+        "_step_image_lifecycle",
+        lambda _ctx: init_cmd.LifecycleResult(
+            "private", "sha256:id", init_cmd.ImageLifecycleStatus.CURRENT
+        ),
+    )
+    monkeypatch.setattr(
+        init_cmd,
         "_step_interactive",
         lambda _ctx, **kwargs: calls.append(kwargs),
     )

@@ -19,6 +19,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
+from booley.commit_policy.policy import stealth_enabled
+
 LineEndingRole = Literal["project-checkout", "project-data"]
 
 
@@ -49,6 +51,10 @@ class LineEndingObservationCode(StrEnum):
     CRLF_MISMATCH = "crlf-mismatch"
     STALE_INDEX = "stale-index"
     CANDIDATE_UNSAFE = "candidate-unsafe"
+    LOCAL_POLICY_MISSING = "local-policy-missing"
+    LEAKED_ROOT_POLICY = "leaked-root-policy"
+    LOCAL_POLICY_CONFLICT = "local-policy-conflict"
+    UPSTREAM_POLICY = "upstream-policy"
 
 
 class LineEndingActionKind(StrEnum):
@@ -67,6 +73,14 @@ class LineEndingActionState(StrEnum):
     COMPLETED = "completed"
     REFUSED = "refused"
     FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class AttributesTarget:
+    """Verified publication destination and its Git scope."""
+
+    path: Path
+    local: bool
 
 
 @dataclass(frozen=True)
@@ -119,6 +133,7 @@ class LineEndingActionResult:
     state: LineEndingActionState
     count: int | None = None
     detail: str | None = None
+    target: AttributesTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +199,9 @@ class _RepositoryPlan:
     attributes: _FileIdentity | None
     attributes_error: str | None
     owns_attributes_policy: bool
+    target: AttributesTarget
+    policy_inputs: dict[str, tuple[_FileIdentity | None, bytes]]
+    local_missing: bool
 
 
 @dataclass(frozen=True)
@@ -203,7 +221,25 @@ def line_ending_repository_display(role: LineEndingRole, root: Path) -> str:
 
 def _read_only_git_env() -> dict[str, str]:
     """Prevent observational Git commands from opportunistically locking the index."""
-    return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    return {
+        **{
+            key: value
+            for key, value in os.environ.items()
+            if key
+            not in {
+                "GIT_DIR",
+                "GIT_COMMON_DIR",
+                "GIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_PREFIX",
+                "GIT_CEILING_DIRECTORIES",
+                "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            }
+        },
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
 
 
 def _output_bytes(output: bytes | str | None) -> bytes:
@@ -705,6 +741,7 @@ def _stage_lf_files(project_root: Path, paths: list[str]) -> tuple[dict[str, Pat
             capture_output=True,
             check=False,
             timeout=300,
+            env=_read_only_git_env(),
         )
     except (subprocess.SubprocessError, OSError) as exc:
         return {}, f"could not stage LF replacements: {exc}"
@@ -781,6 +818,7 @@ def _update_index_paths(project_root: Path, option: str, paths: list[str]) -> st
             capture_output=True,
             check=False,
             timeout=60,
+            env=_read_only_git_env(),
         )
     except (subprocess.SubprocessError, OSError) as exc:
         return str(exc)
@@ -810,6 +848,7 @@ def _restore_index_state(project_root: Path, before: dict[str, _IndexPathState])
             capture_output=True,
             check=False,
             timeout=60,
+            env=_read_only_git_env(),
         )
     except (subprocess.SubprocessError, OSError) as exc:
         return str(exc)
@@ -860,6 +899,7 @@ def _refresh_normalized_index(project_root: Path, paths: list[str]) -> str | Non
             capture_output=True,
             check=False,
             timeout=300,
+            env=_read_only_git_env(),
         )
     except (subprocess.SubprocessError, OSError) as exc:
         recovery = _restore_and_verify_index_state(project_root, before)
@@ -943,8 +983,9 @@ def _action(
     *,
     count: int | None = None,
     detail: str | None = None,
+    target: AttributesTarget | None = None,
 ) -> LineEndingActionResult:
-    return LineEndingActionResult(kind, state, count=count, detail=detail)
+    return LineEndingActionResult(kind, state, count=count, detail=detail, target=target)
 
 
 def _read_required_policy(
@@ -989,9 +1030,476 @@ def _read_worktree_observations(
     return crlf_paths, phantom_paths, observations
 
 
+def _policy_git(root: Path, *args: str) -> bytes:
+    result = subprocess.run(
+        ["git", "--literal-pathspecs", "-C", str(root), *args],
+        capture_output=True,
+        check=False,
+        timeout=10,
+        env=_read_only_git_env(),
+    )
+    if result.returncode != 0:
+        raise ValueError(_error_text(result.stderr) or "Git attributes query failed")
+    return _output_bytes(result.stdout)
+
+
+def _common_attributes(root: Path) -> Path:
+    output = _policy_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    value = os.fsdecode(output).rstrip("\r\n")
+    if not value or "\n" in value or "\r" in value or not Path(value).is_absolute():
+        raise ValueError("Git common directory did not resolve to one absolute path")
+    common = Path(value)
+    if not common.is_dir():
+        raise ValueError("Git common directory is unavailable")
+    info = common / "info"
+    if info.is_symlink() or (info.exists() and not info.is_dir()):
+        raise ValueError(f"unsafe Git attributes directory: {info}")
+    return info / "attributes"
+
+
+def _policy_content(path: Path) -> tuple[_FileIdentity | None, bytes]:
+    identity, error = _optional_file_identity(path)
+    if error:
+        raise ValueError(f"{path}: {error}")
+    content = path.read_bytes() if identity else b""
+    after, error = _optional_file_identity(path)
+    if error or after != identity:
+        raise ValueError(f"attributes changed while reading {path}")
+    return identity, content
+
+
+def _attribute_files(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    seen = 0
+
+    def failed(exc: OSError) -> None:
+        raise exc
+
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=failed):
+        seen += 1 + len(files)
+        if seen > 100_000:
+            raise ValueError("attributes inventory exceeds 100000 entries")
+        has_attributes = ".gitattributes" in files or ".gitattributes" in dirs
+        dirs[:] = [
+            name
+            for name in dirs
+            if name != ".git"
+            and not (Path(directory) / name).is_symlink()
+            and not (Path(directory) / name / ".git").exists()
+        ]
+        if has_attributes:
+            paths.append(Path(directory) / ".gitattributes")
+    return paths
+
+
+def _upstream_attributes(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
+    inputs = {str(path): _policy_content(path) for path in _attribute_files(root)}
+    records = _policy_git(root, "ls-files", "--stage", "-z").split(b"\0")
+    if len(records) > 100_000:
+        raise ValueError("attributes index inventory exceeds 100000 entries")
+    for record in records:
+        entry, separator, raw_name = record.partition(b"\t")
+        if not separator or Path(os.fsdecode(raw_name)).name != ".gitattributes":
+            continue
+        name = os.fsdecode(raw_name)
+        if Path(name).is_absolute() or ".." in Path(name).parts:
+            raise ValueError("unsafe index attributes path")
+        path = root / name
+        if any(parent.is_symlink() for parent in path.parents if parent.is_relative_to(root)):
+            raise ValueError(f"symlink parent of index attributes path: {name}")
+        if path.is_absolute() and not path.is_relative_to(root):
+            raise ValueError("unsafe index attributes path")
+        mode, object_id, stage = entry.split()
+        if stage != b"0" or mode not in (b"100644", b"100755"):
+            raise ValueError(f"unsafe index attributes entry: {name}")
+        # Keep the index policy snapshot even when the worktree file is present.
+        content = _policy_git(root, "cat-file", "blob", object_id.decode("ascii"))
+        if len(content) > 4_000_000:
+            raise ValueError("attributes index blob exceeds 4 MB")
+        inputs["index:" + name] = (None, entry + b"\0" + content)
+        if str(path) not in inputs:
+            inputs[str(path)] = _policy_content(path)
+    return inputs
+
+
+def _has_policy(content: bytes) -> bool:
+    return any(
+        line.strip() and not line.lstrip().startswith(b"#") for line in content.splitlines()
+    )
+
+
+def _local_policy_owned(content: bytes) -> bool:
+    unrelated = {b"export-ignore", b"-export-ignore", b"export-subst", b"-export-subst"}
+    for line in content.splitlines():
+        fields = line.strip().split()
+        if not fields or fields[0].startswith(b"#"):
+            continue
+        if len(fields) < 2 or any(field not in unrelated for field in fields[1:]):
+            return True
+    return False
+
+
+def _local_default(content: bytes) -> bool:
+    return GITATTRIBUTES_RULE.encode() in [line.strip() for line in content.splitlines()]
+
+
+def _upstream_owned(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
+    for name, (_, raw_content) in inputs.items():
+        if name.startswith(("selection:", "link:")):
+            continue
+        content = raw_content.partition(b"\0")[2] if name.startswith("index:") else raw_content
+        if _has_policy(content):
+            return True
+    return False
+
+
+def _crlf_index_dirt(root: Path) -> bool:
+    records = _policy_git(root, "ls-files", "--eol", "-z").split(b"\0")
+    crlf = {record.partition(b"\t")[2] for record in records if record.startswith(b"i/crlf ")}
+    if not crlf:
+        return False
+    dirty = set(_policy_git(root, "diff", "--name-only", "-z").split(b"\0"))
+    staged = set(_policy_git(root, "diff", "--cached", "--name-only", "-z").split(b"\0"))
+    return bool(crlf.intersection(dirty | staged))
+
+
+def _attribute_path_result(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        check=False,
+        timeout=10,
+        env=_read_only_git_env(),
+    )
+
+
+def _native_attribute_path(root: Path, variable: str) -> tuple[bool, Path | None]:
+    result = _attribute_path_result(root, "var", variable)
+    if result.returncode == 1 and not result.stdout and not result.stderr:
+        return True, None
+    if result.returncode:
+        diagnostic = _output_bytes(result.stderr) + _output_bytes(result.stdout)
+        if b"usage: git var" in diagnostic:
+            return False, None
+        raise ValueError(f"could not resolve {variable}: {_error_text(result.stderr)}")
+    value = os.fsdecode(_output_bytes(result.stdout)).removesuffix("\n")
+    return True, _resolved_attribute_path(root, value)
+
+
+def _resolved_attribute_path(root: Path, value: str) -> Path | None:
+    if not value:
+        return None
+    if value.startswith(("~", "%(prefix)")):
+        raise ValueError("Git did not expand the selected attributes path")
+    path = Path(value)
+    return path if path.is_absolute() else root / path
+
+
+def _fallback_user_attributes(root: Path) -> Path | None:
+    result = _attribute_path_result(root, "config", "--path", "--get", "core.attributesFile")
+    if result.returncode == 0:
+        value = os.fsdecode(_output_bytes(result.stdout)).removesuffix("\n")
+        return _resolved_attribute_path(root, value)
+    if result.returncode != 1:
+        raise ValueError(f"could not read core.attributesFile: {_error_text(result.stderr)}")
+    xdg, home = os.environ.get("XDG_CONFIG_HOME"), os.environ.get("HOME")
+    if xdg:
+        return _resolved_attribute_path(root, str(Path(xdg) / "git/attributes"))
+    return (
+        _resolved_attribute_path(root, str(Path(home) / ".config/git/attributes"))
+        if home
+        else None
+    )
+
+
+def _user_file_snapshots(path: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
+    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
+    pending = path
+    for _ in range(40):
+        links = [part for part in (*reversed(pending.parents), pending) if part.is_symlink()]
+        if not links:
+            inputs["user-file:" + str(pending)] = _policy_content(pending)
+            return inputs
+        link = links[0]
+        metadata = link.lstat()
+        value = os.fsencode(link.readlink())
+        identity = _FileIdentity(
+            hashlib.sha256(value).digest(),
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_nlink,
+        )
+        inputs["link:" + str(link)] = (identity, value)
+        replacement = Path(os.fsdecode(value))
+        if not replacement.is_absolute():
+            replacement = link.parent / replacement
+        pending = replacement / pending.relative_to(link)
+    raise ValueError(f"attributes symlink chain exceeds 40 links: {path}")
+
+
+def _system_attributes_disabled() -> bool:
+    value = os.environ.get("GIT_ATTR_NOSYSTEM", "").lower()
+    if value in ("", "0", "false", "no", "off"):
+        return False
+    if value in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return int(value) != 0
+    except ValueError as exc:
+        raise ValueError("GIT_ATTR_NOSYSTEM is not a Git Boolean") from exc
+
+
+def _worktree_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
+    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
+    supported, path = _native_attribute_path(root, "GIT_ATTR_GLOBAL")
+    if not supported:
+        path = _fallback_user_attributes(root)
+    inputs["selection:user:" + str(root)] = (None, os.fsencode(path) if path else b"")
+    if path:
+        inputs.update(_user_file_snapshots(path))
+    if _system_attributes_disabled():
+        inputs["selection:system:" + str(root)] = (None, b"disabled")
+        return inputs
+    supported, system = _native_attribute_path(root, "GIT_ATTR_SYSTEM")
+    inputs["selection:system:" + str(root)] = (None, os.fsencode(system) if system else b"")
+    if not supported:
+        inputs["policy-unknown:system:" + str(root)] = (
+            None,
+            b"system attributes path unresolved on this Git version; no local default installed",
+        )
+    elif system:
+        inputs.update(_user_file_snapshots(system))
+    return inputs
+
+
+def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
+    listing = _policy_git(root, "worktree", "list", "--porcelain", "-z")
+    roots = [
+        Path(os.fsdecode(field.removeprefix(b"worktree ")))
+        for field in listing.split(b"\0")
+        if field.startswith(b"worktree ")
+    ]
+    if root not in roots or len(roots) > 128:
+        raise ValueError("Git user-attributes inventory requires 1 to 128 worktrees")
+    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {
+        "selection:worktrees": (None, listing)
+    }
+    for sibling in roots:
+        if not sibling.is_absolute():
+            raise ValueError("Git worktree listing did not provide absolute paths")
+        try:
+            if not sibling.is_dir():
+                raise ValueError("worktree directory is unavailable")
+            inputs.update(_worktree_user_inputs(sibling))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            if sibling == root:
+                raise
+            inputs["policy-unknown:sibling:" + str(sibling)] = (
+                None,
+                f"cannot inspect sibling worktree {sibling}: {exc}; no local default installed".encode(
+                    errors="surrogateescape"
+                ),
+            )
+    return inputs
+
+
+def _nonlocal_attributes_plan(repository: LineEndingRepository, target: AttributesTarget):
+    observations: list[LineEndingObservation] = []
+    if repository.role == "project-checkout":
+        try:
+            common = _common_attributes(repository.root)
+            _, content = _policy_content(common)
+            if _local_default(content):
+                observations.append(
+                    _observation(
+                        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+                        detail=f"{common}: existing local default conflicts with Stealth opt-out; inspect and remove the local rule if appropriate (Booley cannot prove ownership)",
+                    )
+                )
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            # This read-only migration check must not block the existing root writer.
+            observations.append(
+                _observation(
+                    LineEndingObservationCode.UPSTREAM_POLICY,
+                    detail=f"could not inspect repository-local attributes for Stealth opt-out: {exc}; root policy behavior is unchanged",
+                )
+            )
+    return target, {}, _eol_policy_is_user_owned(repository.root), False, observations, None
+
+
+def _attributes_plan(repository: LineEndingRepository, stealth: bool):
+    local = stealth and repository.role == "project-checkout"
+    target = AttributesTarget(repository.root / ".gitattributes", local=local)
+    if not local:
+        return _nonlocal_attributes_plan(repository, target)
+    observations: list[LineEndingObservation] = []
+    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
+    try:
+        common = _common_attributes(repository.root)
+        target = AttributesTarget(common, local=True)
+        common_identity, common_content = _policy_content(common)
+        inputs = _upstream_attributes(repository.root)
+        inputs.update(_effective_user_inputs(repository.root))
+        upstream = _upstream_owned(inputs)
+        default = _local_default(common_content)
+        if default and upstream:
+            observations.append(
+                _observation(
+                    LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+                    detail=f"{common}: existing local default conflicts with attributes policy; inspect and remove the local rule if appropriate (Booley cannot prove ownership)",
+                )
+            )
+        if default and _crlf_index_dirt(repository.root):
+            observations.append(
+                _observation(
+                    LineEndingObservationCode.CANDIDATE_UNSAFE,
+                    detail="tracked CRLF index blobs have meaningful changes; index content is preserved, inspect git diff before claiming a clean repair",
+                )
+            )
+        _record_stealth_policy(
+            repository.root, common, common_content, upstream, inputs, observations
+        )
+        inputs[str(common)] = (common_identity, common_content)
+        owned = upstream or _local_policy_owned(common_content)
+        return target, inputs, owned, not owned, observations, None
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return (
+            target,
+            inputs,
+            False,
+            local,
+            observations,
+            f"attributes policy inspection failed: {exc}",
+        )
+
+
+def _record_stealth_policy(
+    root: Path, common: Path, content: bytes, upstream: bool, inputs, observations
+) -> None:
+    root_content = inputs.get(str(root / ".gitattributes"), (None, b""))[1]
+    indexed = "index:.gitattributes" in inputs
+    if not indexed and root_content.strip() == GITATTRIBUTES_RULE.encode():
+        observations.append(
+            _observation(
+                LineEndingObservationCode.LEAKED_ROOT_POLICY,
+                detail="untracked .gitattributes contains an old default; inspect and remove or migrate it manually if appropriate (Booley cannot prove ownership)",
+            )
+        )
+    for name, (_, message) in inputs.items():
+        if name.startswith("policy-unknown:"):
+            observations.append(
+                _observation(
+                    LineEndingObservationCode.UPSTREAM_POLICY, detail=os.fsdecode(message)
+                )
+            )
+    if upstream:
+        observations.append(
+            _observation(
+                LineEndingObservationCode.UPSTREAM_POLICY,
+                detail="existing upstream/user/system attributes policy is preserved; no local default installed",
+            )
+        )
+    elif not _local_policy_owned(content):
+        observations.append(
+            _observation(
+                LineEndingObservationCode.LOCAL_POLICY_MISSING,
+                detail=f"repository-local line-ending policy missing at {common}; re-run booley init",
+            )
+        )
+
+
+def _publish_planned_attributes(
+    plan: _RepositoryPlan,
+    expected: _FileIdentity | None,
+    normalization: _NormalizationResult | None,
+) -> LineEndingActionResult:
+    if not plan.target.local:
+        result = _publish_attributes(plan.repository.root, expected)
+        return LineEndingActionResult(
+            result.kind, result.state, detail=result.detail, target=plan.target
+        )
+    error = _revalidate_local_policy(plan, normalization)
+    if error:
+        return _action(
+            LineEndingActionKind.PUBLISH_ATTRIBUTES,
+            LineEndingActionState.REFUSED,
+            detail=error,
+            target=plan.target,
+        )
+    path = plan.target.path
+    try:
+        path.parent.mkdir(exist_ok=True)
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise ValueError(f"unsafe attributes directory: {path.parent}")
+        current, error = _optional_file_identity(path)
+        if error or current != expected:
+            return _action(
+                LineEndingActionKind.PUBLISH_ATTRIBUTES,
+                LineEndingActionState.REFUSED,
+                detail=f"{path}: attributes changed during line-ending repair",
+                target=plan.target,
+            )
+        content = _attributes_replacement(path)
+        error = (
+            _update_attributes(path, expected, content)
+            if expected
+            else _create_attributes(path, content)
+        )
+    except (OSError, ValueError) as exc:
+        error = str(exc)
+    state = LineEndingActionState.FAILED if error else LineEndingActionState.COMPLETED
+    return _action(
+        LineEndingActionKind.PUBLISH_ATTRIBUTES,
+        state,
+        detail=f"{path}: {error}" if error else None,
+        target=plan.target,
+    )
+
+
+def _revalidate_local_policy(
+    plan: _RepositoryPlan, normalization: _NormalizationResult | None
+) -> str | None:
+    try:
+        if _common_attributes(plan.repository.root) != plan.target.path:
+            return "Git common attributes destination changed during line-ending repair"
+        current = _upstream_attributes(plan.repository.root)
+        current.update(_effective_user_inputs(plan.repository.root))
+        current[str(plan.target.path)] = _policy_content(plan.target.path)
+        expected = dict(plan.policy_inputs)
+        if normalization:
+            for name, identity in normalization.file_snapshots.items():
+                path = str(plan.repository.root / name)
+                content = (plan.repository.root / name).read_bytes()
+                before = plan.candidates[name].file
+                for key, (snapshot, _) in tuple(expected.items()):
+                    if key == path or (key.startswith("user-file:") and snapshot == before):
+                        expected[key] = (identity, content)
+        if current != expected:
+            return (
+                f"{plan.target.path}: attributes policy inputs changed during line-ending repair"
+            )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return f"{plan.target.path}: could not revalidate attributes policy: {exc}"
+    return None
+
+
+def _observe_attributes_snapshot(
+    target: AttributesTarget, error: str | None, observations: list[LineEndingObservation]
+) -> tuple[_FileIdentity | None, str | None]:
+    attributes = None
+    if error is None:
+        attributes, error = _optional_file_identity(target.path)
+    if error is not None:
+        observations.append(_observation(LineEndingObservationCode.CANDIDATE_UNSAFE, detail=error))
+    return attributes, error
+
+
 def _plan_repository(
     repository: LineEndingRepository,
     baseline_clean: bool | None = None,
+    *,
+    stealth: bool = False,
 ) -> tuple[_RepositoryPlan | None, tuple[LineEndingObservation, ...]]:
     effective, local, observations = _read_required_policy(repository)
     crlf_paths, phantom_paths, worktree_observations = _read_worktree_observations(repository)
@@ -1010,16 +1518,13 @@ def _plan_repository(
         clean = baseline_clean
     else:
         clean = _worktree_is_clean(repository.root)
-    needs_policy = bool(crlf_paths) or effective.value or not local.is_set or local.value
-    owns_policy = _eol_policy_is_user_owned(repository.root)
-    attributes: _FileIdentity | None = None
-    attributes_error: str | None = None
-    if needs_policy and not owns_policy:
-        attributes, attributes_error = _optional_file_identity(repository.root / ".gitattributes")
-        if attributes_error is not None:
-            observations.append(
-                _observation(LineEndingObservationCode.CANDIDATE_UNSAFE, detail=attributes_error)
-            )
+    target, inputs, owns_policy, local_missing, policy_observations, attributes_error = (
+        _attributes_plan(repository, stealth)
+    )
+    observations.extend(policy_observations)
+    attributes, attributes_error = _observe_attributes_snapshot(
+        target, attributes_error, observations
+    )
     return (
         _RepositoryPlan(
             repository=repository,
@@ -1033,6 +1538,9 @@ def _plan_repository(
             attributes=attributes,
             attributes_error=attributes_error,
             owns_attributes_policy=owns_policy,
+            target=target,
+            policy_inputs=inputs,
+            local_missing=local_missing,
         ),
         tuple(observations),
     )
@@ -1078,7 +1586,7 @@ def _planned_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...
     needs_policy = bool(plan.crlf_paths) or any(
         action.kind is LineEndingActionKind.PIN_AUTOCRLF for action in actions
     )
-    if needs_policy and not plan.owns_attributes_policy:
+    if (needs_policy or plan.local_missing) and not plan.owns_attributes_policy:
         state = (
             LineEndingActionState.REFUSED
             if plan.attributes_error
@@ -1089,15 +1597,21 @@ def _planned_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...
                 LineEndingActionKind.PUBLISH_ATTRIBUTES,
                 state,
                 detail=plan.attributes_error,
+                target=plan.target,
             )
         )
     return tuple(actions)
 
 
-def _inspection_report(repository: LineEndingRepository) -> RepositoryLineEndingReport:
-    plan, observations = _plan_repository(repository)
+def _inspection_report(
+    repository: LineEndingRepository, *, stealth: bool = False
+) -> RepositoryLineEndingReport:
+    plan, observations = _plan_repository(repository, stealth=stealth)
     actions = () if plan is None else _planned_actions(plan)
-    status = LineEndingStatus.SAFE if not observations else LineEndingStatus.UNSAFE
+    unsafe = any(
+        item.code is not LineEndingObservationCode.UPSTREAM_POLICY for item in observations
+    )
+    status = LineEndingStatus.UNSAFE if unsafe else LineEndingStatus.SAFE
     return RepositoryLineEndingReport(repository, status, observations, actions)
 
 
@@ -1129,6 +1643,7 @@ def _pin_autocrlf(plan: _RepositoryPlan) -> LineEndingActionResult:
             text=True,
             check=False,
             timeout=10,
+            env=_read_only_git_env(),
         )
     except (subprocess.SubprocessError, OSError) as exc:
         return _action(
@@ -1206,12 +1721,12 @@ def _create_attributes(path: Path, content: bytes) -> str | None:
     try:
         current, error = _optional_file_identity(path)
         if error is not None or current is not None:
-            return error or ".gitattributes changed during line-ending repair"
+            return error or f"{path}: attributes changed during line-ending repair"
         os.link(staged, path)
     except FileExistsError:
-        return ".gitattributes changed during line-ending repair"
+        return f"{path}: attributes changed during line-ending repair"
     except OSError as exc:
-        return f"could not atomically publish .gitattributes: {exc}"
+        return f"could not atomically publish {path}: {exc}"
     finally:
         with suppress(FileNotFoundError, PermissionError):
             staged.unlink()
@@ -1226,10 +1741,10 @@ def _update_attributes(path: Path, expected: _FileIdentity, content: bytes) -> s
     try:
         current, error = _optional_file_identity(path)
         if error is not None or current != expected:
-            return error or ".gitattributes changed during line-ending repair"
+            return error or f"{path}: attributes changed during line-ending repair"
         staged.replace(path)
     except OSError as exc:
-        return f"could not atomically publish .gitattributes: {exc}"
+        return f"could not atomically publish {path}: {exc}"
     finally:
         with suppress(FileNotFoundError, PermissionError):
             staged.unlink()
@@ -1278,9 +1793,13 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
         actions.append(action)
     elif plan.phantom_paths:
         actions.append(_refresh_action(plan))
-    if (plan.crlf_paths or needs_pin) and not plan.owns_attributes_policy:
+    if (plan.crlf_paths or needs_pin or plan.local_missing) and not plan.owns_attributes_policy:
         expected = plan.attributes
-        if normalization is not None and ".gitattributes" in normalization.file_snapshots:
+        if (
+            not plan.target.local
+            and normalization is not None
+            and ".gitattributes" in normalization.file_snapshots
+        ):
             expected = normalization.file_snapshots[".gitattributes"]
         if plan.attributes_error is not None:
             actions.append(
@@ -1288,17 +1807,18 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
                     LineEndingActionKind.PUBLISH_ATTRIBUTES,
                     LineEndingActionState.REFUSED,
                     detail=plan.attributes_error,
+                    target=plan.target,
                 )
             )
         else:
-            actions.append(_publish_attributes(plan.repository.root, expected))
+            actions.append(_publish_planned_attributes(plan, expected, normalization))
     return tuple(actions)
 
 
 def _repair_repository(
-    repository: LineEndingRepository, baseline_clean: bool | None = None
+    repository: LineEndingRepository, baseline_clean: bool | None = None, *, stealth: bool = False
 ) -> RepositoryLineEndingReport:
-    plan, initial_observations = _plan_repository(repository, baseline_clean)
+    plan, initial_observations = _plan_repository(repository, baseline_clean, stealth=stealth)
     if plan is None:
         return RepositoryLineEndingReport(
             repository,
@@ -1307,7 +1827,7 @@ def _repair_repository(
             (),
         )
     actions = _repair_actions(plan)
-    final = _inspection_report(repository)
+    final = _inspection_report(repository, stealth=stealth)
     incomplete = any(
         action.state in (LineEndingActionState.REFUSED, LineEndingActionState.FAILED)
         for action in actions
@@ -1351,10 +1871,11 @@ def reconcile_project_line_endings(
     if not discovery.repositories and not discovery.failures:
         return LineEndingReport(LineEndingStatus.NOT_APPLICABLE, (), ())
     baseline = clean_baseline or {}
+    stealth = stealth_enabled(project_root, project_dir=project_dir)
     reports = tuple(
-        _inspection_report(repository)
+        _inspection_report(repository, stealth=stealth)
         if mode is LineEndingMode.INSPECT
-        else _repair_repository(repository, baseline.get(repository.root))
+        else _repair_repository(repository, baseline.get(repository.root), stealth=stealth)
         for repository in discovery.repositories
     )
     unsafe = bool(discovery.failures) or any(

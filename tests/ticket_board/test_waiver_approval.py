@@ -288,3 +288,36 @@ def test_approver_identity_refuses_the_agent_identity(tmp_path: Path) -> None:
     _git(tmp_path, "config", "user.name", "Ada")
     _git(tmp_path, "config", "user.email", "ada@example.test")
     assert approval.approver_identity(tmp_path) == "Ada <ada@example.test>"
+
+
+@pytest.mark.parametrize("layout", [".booley_project", "legacy-data"])
+def test_sandbox_approver_uses_external_mounted_config(tmp_path, monkeypatch, layout):
+    from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init")
+    local = root / layout
+    local.mkdir()
+    (local / "booley.toml").write_text(
+        '[agent.git]\nname="Local Agent"\nemail="local@example.invalid"\n'
+    )
+    if layout != ".booley_project":
+        (root / "booley.toml").write_text(f'[project]\ndir="{layout}"\n')
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "booley.toml").write_text(
+        '[agent.git]\nname="Mounted Agent"\nemail="mounted@example.invalid"\n'
+    )
+    _git(root, "config", "user.name", "Human")
+    _git(root, "config", "user.email", "human@example.invalid")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+    assert approval.approver_identity(root) == "Human <human@example.invalid>"
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    for key, value in git_identity_environment(
+        GitIdentity("Mounted Agent", "mounted@example.invalid")
+    ).items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(WaiverDecisionError, match="approve waivers as yourself"):
+        approval.approver_identity(root)

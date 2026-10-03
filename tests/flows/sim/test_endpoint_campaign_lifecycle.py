@@ -248,3 +248,71 @@ def test_legacy_result_survives_terminal_progress_failure(
     assert result.detail["targets"] == {"first": {"simulation": "pass"}}
     assert result.detail["completion_error"]["operation"] == "publish simulation progress"
     assert result.detail["completion_error"]["path"] == str(tmp_path / "progress.json")
+
+
+@pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
+def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
+    tmp_path: Path, termination: str
+) -> None:
+    import json
+    import time
+
+    from booley.flows.endpoint_reporting import write_report
+    from booley.flows.sim.campaign.coordinator import (
+        CampaignPolicy,
+        NewCampaignRunRequest,
+        SimulationCampaign,
+    )
+    from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
+    from tests.flows.sim.test_campaign_characterization import (
+        _AdapterAbortExecution,
+        _plan,
+        _unmanaged,
+    )
+
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
+    execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
+    execution.termination = termination
+    execution.failure_kind = "infrastructure"
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,
+        execution_factory=lambda _options: execution,
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    campaign = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan,
+            tmp_path,
+            invocation.parent,
+            CampaignPolicy(),
+            invocation,
+            _unmanaged(),
+        )
+    )
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([campaign])
+    endpoint = SimpleNamespace(
+        args=SimpleNamespace(report_dir=invocation.parent, slug=""),
+        flow=flow,
+        name="sim",
+        endpoint_kind="flow",
+        _reserved_invocation_dir=invocation,
+        _start_time=time.monotonic(),
+        _selected_target="sim",
+        _eda_tool="verilator",
+        _raw_argv=None,
+    )
+    assert write_report(endpoint, result) == invocation / "report.json"
+    assert result.exit_code == 2
+    for path in (invocation / "report.json", invocation.parent / "sim.json"):
+        report = json.loads(path.read_bytes())
+        detail = report["detail"]["campaigns"]["sim"]
+        assert report["exit_code"] == 2
+        assert detail["complete"] is True
+        assert detail["grade"] == "error"
+        assert detail["termination_counts"][termination] > 0
+        assert detail["observations"][0]["failure_class"] == "infrastructure"
+        assert detail["observations"][0]["detail"]["termination"] == termination

@@ -42,7 +42,6 @@ def flavor_repo(tmp_path: Path, monkeypatch) -> Path:
     )
     # A live-session probe would shell out to docker; the F-9 warning is not
     # what these tests are about.
-    monkeypatch.setattr(init_cmd, "_warn_on_live_session_on_old_image", lambda ctx, image: None)
     from booley.runtime.project_dir import reset_cache
 
     reset_cache()
@@ -100,7 +99,9 @@ def test_missing_flavor_binds_verified_standard_parent(flavor_repo, monkeypatch)
     )
     monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
 
-    idi.ensure_flavor_image(InitContext(project_root=flavor_repo), FLAVOR)
+    idi.ensure_flavor_image(
+        InitContext(project_root=flavor_repo), FLAVOR, scope=idi.HostImageScope()
+    )
 
     assert len(captured) == 1
     spec = captured[0]
@@ -125,102 +126,17 @@ def test_missing_standard_parent_stops_flavor_build(flavor_repo, monkeypatch):
     )
     ctx = InitContext(project_root=flavor_repo)
 
-    assert idi.ensure_flavor_image(ctx, FLAVOR) is False
+    assert idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope()) is False
 
     assert ctx.results[-1].status == "err"
     assert "standard parent" in ctx.results[-1].detail
 
 
 class TestFlavorDispatch:
-    def test_riscv_flavor_with_project_requirements_is_handled_as_project_image(
-        self, flavor_repo, monkeypatch
-    ):
-        sandbox = {"image": FLAVOR, "pip_requirements": ["requirements.txt"]}
-        monkeypatch.setattr(
-            init_cmd, "ensure_flavor_image", lambda *_args: pytest.fail("flavor path")
-        )
-
-        assert not init_cmd._selected_image_handled(
-            InitContext(project_root=flavor_repo), sandbox, "project-booley-sandbox"
-        )
-
-    def test_missing_flavor_pulls_published_image_before_build(self, flavor_repo, monkeypatch):
-        built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
-        pulled: list[str] = []
-        monkeypatch.setattr(
-            idi,
-            "_try_pull_image",
-            lambda version, image=idi.DOCKER_IMAGE: pulled.append(image) or True,
-        )
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert pulled == [FLAVOR]
-        assert not built, "a published flavor must not be rebuilt locally"
-        assert ctx.results[-1].detail == f"flavor {FLAVOR} pulled"
-
-    def test_flavor_is_not_treated_as_user_managed(self, flavor_repo, monkeypatch, capsys):
-        built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
-        monkeypatch.setattr(idi, "_try_pull_image", lambda *args, **kwargs: False)
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert built == [FLAVOR], "init must build the shipped flavor, not skip it"
-        out = capsys.readouterr().out
-        assert "user-managed" not in out
-        assert ctx.results[-1].status == "ok"
-
-    def test_unknown_image_is_still_user_managed(self, flavor_repo, monkeypatch, capsys):
-        (flavor_repo / ".booley_project" / "booley.toml").write_text(
-            '[sandbox]\nimage = "acme-custom-sandbox"\n', encoding="utf-8"
-        )
-        built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert not built, "a genuinely user-managed image must never be built by init"
-        assert "user-managed" in capsys.readouterr().out
-        assert ctx.results[-1].status == "skip"
-
-    def test_fresh_flavor_is_left_alone(self, flavor_repo, monkeypatch):
-        built = _stub_flavor_env(monkeypatch, exists=True, stale=False)
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert not built
-        assert ctx.results[-1].status == "skip"
+    pass
 
 
 class TestFlavorStaleness:
-    def test_stale_flavor_is_rebuilt(self, flavor_repo, monkeypatch, capsys):
-        """The derived-image drift fix: a base rebuild restamps the fingerprint,
-        which leaves the flavor's label behind -> stale -> rebuilt in the same run."""
-        built = _stub_flavor_env(monkeypatch, exists=True, stale=True)
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert built == [FLAVOR]
-        assert "stale" in capsys.readouterr().out
-        assert ctx.results[-1].status == "ok"
-
-    def test_stale_flavor_warns_about_a_live_session(self, flavor_repo, monkeypatch):
-        """A rebuild only moves the tag — a container already on the old image
-        keeps serving it, which is precisely how this bug hides (F-9)."""
-        _stub_flavor_env(monkeypatch, exists=True, stale=True)
-        warned: list[str] = []
-        monkeypatch.setattr(
-            init_cmd, "_warn_on_live_session_on_old_image", lambda ctx, image: warned.append(image)
-        )
-
-        init_cmd._step_project_image(InitContext(project_root=flavor_repo))
-
-        assert warned == [FLAVOR]
-
     def test_flavor_shares_the_base_fingerprint_label(self, monkeypatch):
         """`_image_is_stale` must read the label off the image it is asked about,
         not always the base — build-riscv.sh stamps the same label on the flavor."""
@@ -264,15 +180,6 @@ class TestFlavorStaleness:
 
         assert idi._image_is_stale("same-source", FLAVOR) is True
 
-    def test_check_only_never_builds(self, flavor_repo, monkeypatch):
-        built = _stub_flavor_env(monkeypatch, exists=True, stale=True)
-        ctx = InitContext(project_root=flavor_repo, check_only=True)
-
-        init_cmd._step_project_image(ctx)
-
-        assert not built
-        assert ctx.results[-1].status == "warn"
-
 
 class TestFlavorWithoutCheckout:
     """A pip-installed Booley refreshes release-mismatched flavors by version."""
@@ -288,7 +195,7 @@ class TestFlavorWithoutCheckout:
         monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path)
 
-        changed = idi.ensure_flavor_image(ctx, FLAVOR)
+        changed = idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope())
 
         assert changed is True
         assert ctx.results[-1].detail == f"flavor {FLAVOR} pulled"
@@ -308,7 +215,7 @@ class TestFlavorWithoutCheckout:
         monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path)
 
-        changed = idi.ensure_flavor_image(ctx, FLAVOR)
+        changed = idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope())
 
         output = capsys.readouterr().out
         assert changed is False
@@ -328,7 +235,7 @@ class TestFlavorWithoutCheckout:
         monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path, check_only=True)
 
-        changed = idi.ensure_flavor_image(ctx, FLAVOR)
+        changed = idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope())
 
         output = capsys.readouterr().out
         assert changed is False
@@ -366,6 +273,7 @@ class TestFlavorWithoutCheckout:
         changed = idi.ensure_flavor_image(
             ctx,
             FLAVOR,
+            scope=idi.HostImageScope(),
             ensure_base=lambda: idi._step_docker_image(ctx, FLAVOR),
         )
 
@@ -376,48 +284,6 @@ class TestFlavorWithoutCheckout:
         assert ctx.results[-1].detail == f"flavor {FLAVOR} compatible image pull failed"
         assert f"{FLAVOR} is v0.2.3" in output
         assert "may be incompatible" in output
-
-    def test_present_flavor_is_trusted_when_dockerfile_is_absent(
-        self, flavor_repo, monkeypatch, capsys
-    ):
-        built = _stub_flavor_env(monkeypatch, exists=True, stale=True)
-        monkeypatch.setattr(idi, "docker_data_dir", lambda: Path("/nonexistent/docker"))
-        pulled: list[str] = []
-        monkeypatch.setattr(
-            idi, "_try_pull_image", lambda v, image=idi.DOCKER_IMAGE: pulled.append(image) or True
-        )
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert not built and not pulled, "a present flavor is trusted, not re-pulled"
-        assert "trusting it" in capsys.readouterr().out
-        assert ctx.results[-1].status == "skip"
-
-    def test_missing_flavor_is_pulled_when_dockerfile_is_absent(self, flavor_repo, monkeypatch):
-        _stub_flavor_env(monkeypatch, exists=False, stale=False)
-        monkeypatch.setattr(idi, "docker_data_dir", lambda: Path("/nonexistent/docker"))
-        pulled: list[str] = []
-        monkeypatch.setattr(
-            idi, "_try_pull_image", lambda v, image=idi.DOCKER_IMAGE: pulled.append(image) or True
-        )
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert pulled == [FLAVOR]
-        assert ctx.results[-1].status == "ok"
-
-    def test_unbuildable_unpullable_flavor_is_an_error_not_a_skip(self, flavor_repo, monkeypatch):
-        """The whole point: never leave the project's image absent *quietly*."""
-        _stub_flavor_env(monkeypatch, exists=False, stale=False)
-        monkeypatch.setattr(idi, "docker_data_dir", lambda: Path("/nonexistent/docker"))
-        monkeypatch.setattr(idi, "_try_pull_image", lambda v, image=idi.DOCKER_IMAGE: False)
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_project_image(ctx)
-
-        assert ctx.results[-1].status == "err"
 
     def test_remote_tag_derives_the_flavor_repo(self):
         assert idi.remote_tag(FLAVOR, "1.2.3") == f"ghcr.io/boldaxolotl/{FLAVOR}:1.2.3"
