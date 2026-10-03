@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 from booley.criteria.state import CriterionChange
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.targets.catalog import selector_names_match
 from booley.targets.domain import TARGET_AWARE_FLOWS, criterion_matches_target
-from booley.targets.selection import split_selector
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -283,7 +283,7 @@ def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[s
             if (
                 key not in keys
                 and isinstance(expected, str)
-                and split_selector(expected)[1] == split_selector(token)[1]
+                and selector_names_match(expected, token)
             ):
                 # Name inequality rules a Target out; equality cannot resolve its core.
                 # Actual evaluation resolves only this key, not other potential keys.
