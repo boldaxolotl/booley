@@ -448,10 +448,14 @@ def test_git_short_sha_falls_back_on_bad_ref(tmp_path: Path) -> None:
 def test_standalone_project_baseline_copies_stealth_cores(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     (tmp_path / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+    _add_private_project_submodule(tmp_path, tmp_path.with_name(tmp_path.name + "-dependency"))
+    dependency = tmp_path / "vendor/dependency"
+    _git(dependency, "checkout", "--detach", "HEAD~1")
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl/top.v").write_text("old\n", encoding="utf-8")
     _commit_all(tmp_path, "old RTL")
     (tmp_path / "rtl/top.v").write_text("current\n", encoding="utf-8")
+    _git(dependency, "checkout", "--detach", "refs/remotes/origin/HEAD")
     _commit_all(tmp_path, "current RTL")
     link = _stealth_core_linking_to_rtl(tmp_path)
     project = tmp_path / ".booley_project"
@@ -465,6 +469,8 @@ def test_standalone_project_baseline_copies_stealth_cores(tmp_path: Path) -> Non
         assert (copied / "top.core").is_file()
         assert (copied / "rtl/top.v").read_text(encoding="utf-8") == "old\n"
         assert not (baseline / ".booley_project/.git").exists()
+        assert (baseline / "vendor/dependency/f.txt").read_text(encoding="utf-8") == "v1\n"
+        assert (dependency / "f.txt").read_text(encoding="utf-8") == "v2\n"
         assert (link / "top.v").read_text(encoding="utf-8") == "current\n"
     assert not baseline.exists()
 
@@ -506,7 +512,7 @@ def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tu
         "[flows.fpga]\nenabled = true\n",
         encoding="utf-8",
     )
-    _git(project, "init", "-q")
+    _git(project, "init", "-q", "-b", "project-owner")
     _git(project, "config", "user.name", "Test")
     _git(project, "config", "user.email", "test@example.invalid")
     _commit_all(project, "Project Targets")
@@ -573,7 +579,7 @@ def _link_project_checkout(tmp_path: Path, project: Path) -> None:
     _git(project, "clone", "-q", str(project), str(source))
     shutil.rmtree(project)
     _git(source, "worktree", "add", "-b", "paired", str(project), "HEAD")
-    _git(project, "branch", "--set-upstream-to=master")
+    _git(project, "branch", "--set-upstream-to=project-owner")
 
 
 def _baseline_implementation_unit(target, _recipe, *, role, revision):

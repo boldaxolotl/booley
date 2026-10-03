@@ -107,7 +107,9 @@ def test_project_topology_classifies_real_checkout(
     from booley.runtime.project_repositories import project_topology
 
     outer = _repository(tmp_path)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    ambient = tmp_path / "empty-project"
+    ambient.mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(ambient))
     reset_cache()
     project = outer / ("custom" if kind == "configured" else ".booley_project")
     if kind != "absent":
