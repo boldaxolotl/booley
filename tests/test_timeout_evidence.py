@@ -13,7 +13,7 @@ import pytest
 
 @pytest.mark.parametrize("workers", [0, 1])
 def test_thread_timeout_retains_evidence_after_process_exit(tmp_path: Path, workers: int) -> None:
-    result, evidence = _run_timeout_case(tmp_path, workers, "")
+    result, evidence = _run_pytest_case(tmp_path, workers, "")
 
     assert result.returncode == 1, result.stdout + result.stderr
     if workers:
@@ -32,14 +32,14 @@ def test_thread_timeout_retains_evidence_after_process_exit(tmp_path: Path, work
 
 
 def test_integration_timeout_overrides_unit_budget_without_false_evidence(tmp_path: Path) -> None:
-    result, evidence = _run_timeout_case(tmp_path, 1, "@pytest.mark.timeout(10)")
+    result, evidence = _run_pytest_case(tmp_path, 1, "@pytest.mark.timeout(10)")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
     assert not list(evidence.glob("timeout-*.log"))
 
 
-def _run_timeout_case(
+def _run_pytest_case(
     tmp_path: Path, workers: int, marker: str, body: str = "time.sleep(2)"
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
@@ -97,7 +97,7 @@ def test_failed_evidence_write_still_terminates_worker(tmp_path: Path) -> None:
         "(Path(os.environ['BOOLEY_PYTEST_EVIDENCE_DIR']) / "
         "f'timeout-gw0-{os.getpid()}.log').mkdir(); time.sleep(2)"
     )
-    result, _evidence = _run_timeout_case(tmp_path, 1, "", body)
+    result, _evidence = _run_pytest_case(tmp_path, 1, "", body)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "Not properly terminated" in result.stdout
@@ -112,7 +112,7 @@ def test_native_crash_retains_fatal_stack(tmp_path: Path, workers: int) -> None:
         "if os.name == 'posix' else ''); "
         "__import__('ctypes').string_at(0)"
     )
-    result, evidence = _run_timeout_case(tmp_path, workers, "@pytest.mark.timeout(10)", body)
+    result, evidence = _run_pytest_case(tmp_path, workers, "@pytest.mark.timeout(10)", body)
 
     assert result.returncode != 0, result.stdout + result.stderr
     reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
