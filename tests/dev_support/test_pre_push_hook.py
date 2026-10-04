@@ -2026,8 +2026,8 @@ def test_minimum_git_upstream_ancestry_has_bounded_output(
     subprocess.run(
         ["git", "fast-import", "--quiet"],
         cwd=repo,
-        input="".join(records),
-        text=True,
+        # fast-import is a byte protocol; Windows text pipes would translate LF to CRLF.
+        input="".join(records).encode("utf-8"),
         check=True,
         capture_output=True,
         timeout=30,
