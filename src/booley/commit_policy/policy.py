@@ -28,6 +28,7 @@ try:
         is_str_list,
         require_bool,
         require_int,
+        require_str,
     )
 except ImportError:
     from boundary import (  # pyright: ignore[reportMissingImports]
@@ -36,6 +37,7 @@ except ImportError:
         is_str_list,
         require_bool,
         require_int,
+        require_str,
     )
 
 logger = logging.getLogger(__name__)
@@ -188,18 +190,32 @@ def _configuration_candidate(path: Path, *, strict: bool) -> bool:
     return True
 
 
-def validate_push_configuration(project_root: Path | None = None) -> None:
+@dataclass(frozen=True)
+class UpstreamImport:
+    """Owner-selected provenance for an immutable imported history boundary."""
+
+    repository: str
+    base: str
+
+
+def validate_push_configuration(
+    project_root: Path | None = None, *, project_dir: Path | None = None
+) -> UpstreamImport | None:
     """Strictly validate the selected policy before checking an active push."""
     if source_checkout_policy_owner(project_root):
-        return
-    section = _load_booley_config(project_root, strict=True).get("stealth", {})
+        return None
+    section = _load_booley_config(project_root, strict=True, project_dir=project_dir).get(
+        "stealth", {}
+    )
     if not isinstance(section, dict):
         raise ValueError("[stealth] must be a table")
-    if "upstream_repository" in section or "upstream_base" in section:
-        raise ValueError(
-            "[stealth]: remove these unsupported import settings; "
-            "all newly exposed history is checked"
-        )
+    if "upstream_repository" not in section and "upstream_base" not in section:
+        return None
+    repository = require_str(section, "upstream_repository")
+    base = require_str(section, "upstream_base")
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", base) or set(base) == {"0"}:
+        raise ValueError("[stealth] upstream_base must be a full nonzero commit object ID")
+    return UpstreamImport(repository, base.lower())
 
 
 def _stealth_section(project_root: Path | None = None, *, project_dir: Path | None = None) -> dict:
@@ -367,7 +383,9 @@ def enforce_convention(project_root: Path | None = None) -> bool:
     return stealth_policy(project_root).enforce_convention
 
 
-def allowed_authors(project_root: Path | None = None) -> list[str]:
+def allowed_authors(
+    project_root: Path | None = None, *, project_dir: Path | None = None
+) -> list[str]:
     """``[stealth] allowed_authors``: identity allowlist for outgoing commits.
 
     An empty list means *unrestricted* — both when the knob is absent and when
@@ -375,7 +393,7 @@ def allowed_authors(project_root: Path | None = None) -> list[str]:
     reads as "this check is off", and avoids the footgun where a half-written
     allowlist silently blocks every push instead of doing nothing.
     """
-    return list(stealth_policy(project_root).allowed_authors)
+    return list(stealth_policy(project_root, project_dir=project_dir).allowed_authors)
 
 
 def identity_allowed(name: str, email: str, patterns: list[str]) -> bool:

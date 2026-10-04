@@ -1108,7 +1108,9 @@ compared by their visible label. The hook leaves the raw message unchanged and
 tells you to remove the footer and retry. This avoids both silent deletion and
 recognizable redaction debris while preserving ordinary prose such as
 "Generated with care by the whole team" or "Generated with Docker for
-reproducibility."
+reproducibility." These lines are not rejected; banned words inside them are
+still redacted. With the built-in vocabulary, both examples are stored verbatim:
+`generated`, `docker`, and `agent` are ordinary prose, not default banned words.
 
 An empty `banned_words = []`, with `banned_substrings` absent or empty, disables
 vocabulary redaction and therefore cannot confirm that an ambiguous plain "Generated with …" line names a protected
@@ -1174,11 +1176,43 @@ allowed_authors = [
 ]
 ```
 
-Unset or `[]` disables the check. The hook skips commits the remote already
-has and checks the rest, including imported upstream history, so the allowlist
-must cover collaborators' and upstream authors' identities too. A malformed
-`booley.toml` or a shallow clone blocks the push. `BOOLEY_SKIP_PUSH_GUARD=1`
-skips the scan for one push.
+Unset or `[]` disables the identity allowlist check. The hook scans all pushed
+commit ancestry except history already at the actual destination and a verified
+upstream import boundary, when configured. Local remote-tracking refs alone
+grant no exemption. Without an upstream boundary, imported history is checked
+too, including on a first push to an empty destination.
+
+To import a trusted source's pristine history, record its canonical repository
+location and the full commit ID at which local development began:
+
+```toml
+[stealth]
+upstream_repository = "https://example.com/team/design.git"
+upstream_base = "0123456789abcdef0123456789abcdef01234567"
+```
+
+Set both keys together in the Project's `booley.toml`. The base must be a
+locally available commit reachable from the source's advertised refs; fetch
+the source's complete history if necessary before pushing. Only that base and
+its ancestors are exempt. Advancing upstream never exempts later local commits,
+even if upstream now contains them. The trusted source and pinned base are
+owner-selected policy: do not point them at a copy of your local development
+branch to exempt new work.
+
+Supported source locations are canonical HTTPS or SSH URLs (including SSH
+`host:path` syntax), or an absolute local repository path or `file://` URL.
+A local source must have complete independent object storage: the pushing
+repository itself, shared object directories, alternates, shallow sources, and
+promisor sources are refused. Transport authentication, canonical location,
+and Git policy checks apply to source discovery as they do to the destination.
+Missing, malformed, or unverifiable import settings block an active push;
+remove both keys to return to scanning imported history. No-update and deletion
+pushes need no import discovery.
+
+Malformed or unreadable `booley.toml`, missing inspected history, and shallow
+boundaries in the selected scan range block the push. Run Project Setup or
+Doctor after upgrading to refresh installed Git-hook bundles.
+`BOOLEY_SKIP_PUSH_GUARD=1` skips every guard check for one push.
 
 #### What survives a fresh clone
 
