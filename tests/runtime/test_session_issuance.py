@@ -19,9 +19,15 @@ import pytest
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
-from booley.harness import eda_grants
+from booley.harness import booley, eda_grants
 from booley.runtime import devcontainer as dc
-from booley.runtime import session_admission, session_runtime, session_spec
+from booley.runtime import (
+    issuance_invalidation,
+    session_admission,
+    session_refresh,
+    session_runtime,
+    session_spec,
+)
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
@@ -517,8 +523,178 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
     project, spec, path, stamp = issued
     assert runtime_spec.validate(project, spec, path) == stamp
     runtime_spec.stamp_path(project).unlink()
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="missing or corrupt"):
+    with pytest.raises(runtime_spec.RuntimeSpecError) as raised:
         runtime_spec.validate(project, spec, path)
+    assert str(raised.value) == _WITHDRAWN_ISSUANCE
+    assert isinstance(raised.value.__cause__, FileNotFoundError)
+
+
+_WITHDRAWN_ISSUANCE = (
+    "Sandbox issuance was withdrawn (EDA grant change, invalidation or Project forget); "
+    "run booley init --seed on the host to reissue"
+)
+
+
+@pytest.mark.parametrize("reader", ["validate", "authenticate", "issued", "recovery"])
+@pytest.mark.parametrize("remove_parent", [False, True])
+def test_missing_issuance_is_withdrawn(issued, reader, remove_parent) -> None:
+    project, spec, path, _stamp = issued
+    current = runtime_spec.stamp_path(project)
+    current.unlink()
+    assert not runtime_spec._legacy_stamp_path(str(project.resolve())).exists()
+    if remove_parent:
+        current.parent.rmdir()
+    readers = {
+        "validate": lambda: runtime_spec.validate(project, spec, path),
+        "authenticate": lambda: runtime_spec.authenticate(project, spec, path),
+        "issued": lambda: runtime_spec.load_issued_snapshot(project),
+        "recovery": lambda: runtime_spec.load_recovery_snapshot(project, spec, path),
+    }
+    with pytest.raises(runtime_spec.RuntimeSpecError) as raised:
+        readers[reader]()
+    assert str(raised.value) == _WITHDRAWN_ISSUANCE
+    assert isinstance(raised.value.__cause__, FileNotFoundError)
+
+
+@pytest.mark.parametrize("damage", ["json", "utf8", "schema", "version", "type", "permission"])
+def test_corrupt_issuance_is_not_withdrawn(issued, monkeypatch, damage) -> None:
+    project, spec, path, _stamp = issued
+    current = runtime_spec.stamp_path(project)
+    if damage == "permission":
+        original_open = os.open
+
+        def denied(file, flags, *args, **kwargs):
+            if file == current:
+                raise PermissionError("stamp access denied")
+            return original_open(file, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", denied)
+    elif damage in {"json", "utf8"}:
+        current.write_bytes(b"{" if damage == "json" else b"\xff")
+    else:
+        document = json.loads(current.read_text(encoding="utf-8"))
+        if damage == "schema":
+            del document["image"]
+        else:
+            document["version"] = 999 if damage == "version" else "invalid"
+        current.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(runtime_spec.RuntimeSpecError) as raised:
+        runtime_spec.validate(project, spec, path)
+    assert "corrupt" in str(raised.value)
+    assert "withdrawn" not in str(raised.value)
+    causes = {
+        "json": json.JSONDecodeError,
+        "utf8": UnicodeDecodeError,
+        "permission": PermissionError,
+        "schema": runtime_spec.RuntimeSpecError,
+        "version": runtime_spec.RuntimeSpecError,
+        "type": runtime_spec.RuntimeSpecError,
+    }
+    assert isinstance(raised.value.__cause__, causes[damage])
+
+
+def test_valid_legacy_issuance_still_authenticates(issued) -> None:
+    project, spec, path, stamp = issued
+    current = runtime_spec.stamp_path(project)
+    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
+    authority._store().ensure_directory()
+    legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    current.replace(legacy)
+    assert runtime_spec.validate(project, spec, path) == stamp
+
+
+@pytest.mark.parametrize("operation", ["add", "recover"])
+def test_real_invalidation_removes_both_issuance_stamps(issued, monkeypatch, operation) -> None:
+    project, spec, path, _stamp = issued
+    current = runtime_spec.stamp_path(project)
+    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
+    authority._store().ensure_directory()
+    legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    legacy.write_bytes(current.read_bytes())
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    if operation == "add":
+        profile = authority.register_license(
+            "site",
+            server_ipv4="10.20.30.40",
+            server_hostid="licenses.example.internal",
+            lmgrd_port=2100,
+            vendor_port=2101,
+        )
+        grant = eda_grants.GrantCoordinator().add(
+            project,
+            "vivado",
+            installation=None,
+            license_profile=profile.name,
+        )
+        assert authority.load_state().grants == (grant,)
+    else:
+        issuance_invalidation.prepare(str(project.resolve()), cleanup_resources=True)
+        assert issuance_invalidation.recover_project_locked(
+            str(project.resolve()),
+            cleanup_resources=lambda _identity: (),
+        )
+    assert not current.exists()
+    assert not legacy.exists()
+    assert issuance_invalidation.pending_invalidations() == ()
+    with pytest.raises(runtime_spec.RuntimeSpecError) as raised:
+        runtime_spec.validate(project, spec, path)
+    assert str(raised.value) == _WITHDRAWN_ISSUANCE
+
+
+def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mock:
+    profile = authority.register_license(
+        "site",
+        server_ipv4="10.20.30.40",
+        server_hostid="licenses.example.internal",
+        lmgrd_port=2100,
+        vendor_port=2101,
+    )
+    grant = authority._add_grant(project, "vivado", license_profile=profile.name)
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setattr(
+        session_refresh,
+        "recover_project_locked",
+        lambda _root: SimpleNamespace(outcome=session_refresh.RecoveryOutcome.NONE),
+    )
+    cleanup = Mock(return_value=())
+    monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", cleanup)
+    docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
+    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
+    monkeypatch.setattr(session_runtime, "_run", docker)
+    monkeypatch.setattr(session_runtime, "_create_session_container", docker)
+    monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", docker)
+    assert eda_grants.GrantCoordinator().revoke(project, "vivado") == grant
+    assert authority.load_state().grants == ()
+    assert issuance_invalidation.pending_invalidations() == ()
+    assert not runtime_spec.stamp_path(project).exists()
+    cleanup.assert_called_once_with(str(project.resolve()))
+    return docker
+
+
+@pytest.mark.parametrize("boundary", ["enter", "cli", "refresh"])
+def test_real_revoke_reports_withdrawal_at_enter_and_cli(
+    issued, monkeypatch, capsys, boundary
+) -> None:
+    project, _spec, _path, _stamp = issued
+    docker = _revoke_issued_project(project, monkeypatch)
+    if boundary == "enter":
+        with pytest.raises(session_runtime.SessionError) as raised:
+            session_runtime.enter(project, ["true"], tty=False)
+        assert _WITHDRAWN_ISSUANCE in str(raised.value)
+        assert "corrupt" not in str(raised.value)
+    elif boundary == "cli":
+        args = SimpleNamespace(session_command="enter", exec_cmd=["--", "true"])
+        assert booley._cmd_session(args, project) == 2
+        error = capsys.readouterr().err
+        assert _WITHDRAWN_ISSUANCE in error
+        assert "corrupt" not in error
+    else:
+        with pytest.raises(session_runtime.SessionError) as refresh_error:
+            session_refresh._load_recovery_issuance(project)
+        assert str(refresh_error.value) == (
+            "cannot preserve the prior Sandbox: " + _WITHDRAWN_ISSUANCE
+        )
+    docker.assert_not_called()
 
 
 def test_inspect_prepared_accepts_exact_current_issuance(issued) -> None:
