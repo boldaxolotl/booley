@@ -401,6 +401,7 @@ def format_disk_runaway(
     baseline: int = 0,
     used: int = 0,
     biggest: list[tuple[str, int]] | None = None,
+    killed: bool = True,
 ) -> str:
     """The disk-budget kill report: measured facts first, causes as a list.
 
@@ -412,8 +413,9 @@ def format_disk_runaway(
     a single cause, because the previous wording ("a default-on testbench
     tracer") was simply the wrong diagnosis for that run.
     """
+    action = "killed" if killed else "aborted"
     parts = [
-        f"simulation killed: run directory {rundir} grew by {grown:,} bytes during "
+        f"simulation {action}: run directory {rundir} grew by {grown:,} bytes during "
         f"this run ({baseline:,} -> {used:,} bytes on disk), over the "
         f"{budget:,}-byte growth budget ([flows.sim].max_rundir_bytes)."
     ]
@@ -469,6 +471,9 @@ class DiskBudgetGuard:
         self.proc = proc
         self.interval = interval
         self._stop = threading.Event()
+        self._state_lock = threading.Lock()
+        self._finalized = False
+        self._killed = True
         self._thread: threading.Thread | None = None
         self.tripped = False
         self.baseline = 0
@@ -507,34 +512,50 @@ class DiskBudgetGuard:
             if self.proc.poll() is not None:
                 return  # run already exited — nothing to guard
             used = dir_size_bytes(self.rundir)
-            # Growth is measured from the SMALLEST the tree has been, not from
-            # its size at spawn: a testbench that deletes 3 GB of staged vectors
-            # at startup would otherwise be handed budget + 3 GB of real disk
-            # before the guard bit. (Overwriting a file in place is not a
-            # defeat — same bytes, same disk — so only real shrinkage moves it.)
-            self.baseline = min(self.baseline, used)
-            if used - self.baseline > self.budget:
-                # The tree walk above can be expensive. Re-check immediately
-                # before claiming ownership of a kill so a naturally finished
-                # child keeps its real verdict.
-                if self.proc.poll() is not None:
+            with self._state_lock:
+                if self._stop.is_set() or self._finalized or self.proc.poll() is not None:
                     return
-                self.used = used
-                self.grown = used - self.baseline
-                self.tripped = True
-                # Kill FIRST, then collect evidence: largest_files_written_since
-                # is a second full walk of a tree that is by definition huge and
-                # still growing, and on exactly this pathological run that walk
-                # is more seconds of runaway writing. A SIGKILLed sim cannot
-                # truncate anything, so the evidence survives the kill.
+                self._measure(used)
+                if not self.tripped:
+                    continue
+            # Publish ownership before killing; finish preserves this live trip.
+            try:
                 kill_process_tree(self.proc)
                 self.biggest = largest_files_written_since(self.rundir, self._started_at)
+            finally:
                 self._evidence.set()
+            return
+
+    def _measure(self, used: int) -> None:
+        """Publish one measurement while the caller owns the state lock."""
+        self.baseline = min(self.baseline, used)
+        self.used = used
+        self.grown = used - self.baseline
+        self.tripped = self.grown > self.budget
+
+    def finish(self) -> None:
+        """Account for final growth after reap, without killing an exited child."""
+        with self._state_lock:
+            self._stop.set()
+            if self._finalized or self.tripped or self.budget <= 0:
                 return
+            self._finalized = True
+        # A delayed poll must discard its walk; no lock spans a walk or join.
+        self.stop()
+        used = dir_size_bytes(self.rundir)
+        with self._state_lock:
+            self._measure(used)
+            self._killed = False
+        if self.tripped:
+            try:
+                self.biggest = largest_files_written_since(self.rundir, self._started_at)
+            finally:
+                self._evidence.set()
 
     def stop(self) -> None:
         """Stop the watchdog and join its thread (idempotent)."""
-        self._stop.set()
+        with self._state_lock:
+            self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=self.interval + 1)
 
@@ -553,6 +574,7 @@ class DiskBudgetGuard:
             baseline=self.baseline,
             used=self.used,
             biggest=self.biggest,
+            killed=self._killed,
         )
 
 
