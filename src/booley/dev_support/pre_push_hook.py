@@ -5,7 +5,8 @@ The commit-msg sanitizer covers ``git commit`` and ``git merge`` — but git
 runs no message hook at all for ``git revert``/``git cherry-pick``, and
 ``--no-verify`` disables commit-msg entirely (F-17). This hook is the safety
 net at the last interception point git offers: it scans every newly exposed commit
-outside actual destination history and refuses the push on any of these offenses:
+outside actual destination history or a verified pinned upstream base and refuses
+the push on any of these offenses:
 
 1. **Banned phrases** in the message, either identity, a changed tracked path,
    or a changed symlink target.
@@ -36,6 +37,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from urllib.parse import unquote, urlsplit
 
 # Ensure the bundle root is on sys.path so flat imports resolve when called
@@ -288,6 +290,30 @@ class _Inspection(_Protocol):
             raise InspectionError("malformed outgoing commit inventory")
         return raw
 
+    def reaches(self, base: str, tips: list[str]) -> bool:
+        """Prove ancestry without materializing all source history in Python."""
+        self.stable()
+        if base in tips:
+            return True
+        deadline = monotonic() + 60
+        for tip in tips:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise InspectionError("upstream ancestry verification timed out; retry")
+            result = _run_git(
+                [*self.prefix, "merge-base", "--is-ancestor", base, tip],
+                cwd=self.root,
+                env=self.env,
+                timeout=remaining,
+            )
+            if result.returncode not in (0, 1):
+                raise InspectionError(
+                    "cannot verify upstream ancestry; fetch complete history and retry"
+                )
+            if result.returncode == 0:
+                return True
+        return False
+
     def objects(self, ids) -> dict[str, tuple[str, bytes] | None]:
         self.stable()
         requested = list(dict.fromkeys(ids))
@@ -516,11 +542,13 @@ def _secure_https(root, location, env):
             )
 
 
-def _advertised(inspection, location):
+def _advertised(inspection, location, *, upstream=False):
     env, path = _transport_environment(inspection.root, location)
     if path is not None:
         external = _probe_environment(external=True)
         authority = _file_authority_state(path, external)
+        if upstream:
+            _independent_upstream(inspection, authority)
         for key in (
             "GIT_DIR",
             "GIT_WORK_TREE",
@@ -530,7 +558,15 @@ def _advertised(inspection, location):
         ):
             env.pop(key, None)
     result = _run_git(
-        ["-c", "http.followRedirects=false", "ls-remote", "--refs", "--", location],
+        [
+            "-c",
+            "http.followRedirects=false",
+            "ls-remote",
+            "--refs",
+            "--",
+            location,
+            *(["refs/heads/*", "refs/tags/*"] if upstream else []),
+        ],
         cwd=inspection.root,
         env=env,
         timeout=10,
@@ -539,23 +575,68 @@ def _advertised(inspection, location):
         raise InspectionError(
             "advertisement unavailable; repair credentials/network or fetch and retry"
         )
-    ids = []
-    for line in result.stdout.splitlines():
-        fields = line.decode("utf-8", "strict").split("\t")
-        if len(fields) != 2 or not inspection.oid(fields[0]) or not fields[1].startswith("refs/"):
-            raise InspectionError("malformed repository advertisement")
-        if not _valid_ref_name(fields[1]):
-            raise InspectionError("invalid advertised ref")
-        ids.append(fields[0].lower())
+    ids = _advertisement_ids(result.stdout, inspection, upstream=upstream)
     if (
         path is not None
         and _file_authority_state(path, _probe_environment(external=True)) != authority
     ):
         raise InspectionError("file authority changed during advertisement")
+    if upstream and path is not None:
+        _independent_upstream(inspection, authority)
     return ids
 
 
-def _outgoing_range(inspection, updates, destination):
+def _advertisement_ids(raw, inspection, *, upstream=False):
+    ids = []
+    for line in raw.splitlines():
+        fields = line.decode("utf-8", "strict").split("\t")
+        if len(fields) != 2 or not inspection.oid(fields[0]) or not fields[1].startswith("refs/"):
+            raise InspectionError("malformed repository advertisement")
+        if not _valid_ref_name(fields[1]):
+            raise InspectionError("invalid advertised ref")
+        if upstream and not fields[1].startswith(("refs/heads/", "refs/tags/")):
+            continue
+        ids.append(fields[0].lower())
+    return ids
+
+
+def _independent_upstream(inspection, authority):
+    common, objects, _ = authority
+    if common == inspection.state[0] or objects == inspection.state[1]:
+        raise InspectionError("upstream authority must be independent of the pushing repository")
+    for path in (objects / "info" / "alternates", common / "shallow"):
+        if _structural_node_present(path) and path.read_bytes().strip():
+            raise InspectionError(
+                "upstream authority must have complete independent object storage"
+            )
+
+
+def _upstream_exclusion(inspection, upstream):
+    if upstream is None:
+        return []
+    if not inspection.oid(upstream.base):
+        raise InspectionError("upstream_base has the wrong Git object format")
+    _, path = _location(upstream.repository, inspection.root)
+    if path is not None and not (
+        Path(upstream.repository).is_absolute() or upstream.repository.startswith("file://")
+    ):
+        raise InspectionError("upstream_repository requires a canonical absolute path or URL")
+    ids = _advertised(inspection, upstream.repository, upstream=True)
+    value = inspection.objects([upstream.base])[upstream.base]
+    if value is None:
+        raise InspectionError("upstream_base is missing locally; fetch source history and retry")
+    if value[0] != "commit":
+        raise InspectionError("upstream_base must identify a commit, not a tag, tree, or blob")
+    tips = inspection.commits(ids)
+    if not inspection.reaches(upstream.base, tips):
+        raise InspectionError(
+            "upstream_base is not reachable from available advertised upstream branches or tags; "
+            "fetch upstream history or repair the pinned source and retry"
+        )
+    return [upstream.base]
+
+
+def _outgoing_range(inspection, updates, destination, upstream=None):
     tips = inspection.commits([update.local for update in updates])
     # Different tags may peel to the same commit; validate each local update.
     if len(tips) != len({update.local for update in updates}) and any(
@@ -566,7 +647,9 @@ def _outgoing_range(inspection, updates, destination):
             "history or select a commit update and retry"
         )
     old = inspection.commits([update.old for update in updates if set(update.old) != {"0"}])
+    imported = _upstream_exclusion(inspection, upstream)
     excluded, unavailable = _destination_exclusions(inspection, destination, old)
+    excluded = [*excluded, *imported]
     candidate = inspection.inventory(tips, excluded)
     shallow = Path(inspection.git(["rev-parse", "--git-path", "shallow"]).decode().strip())
     shallow = inspection.root / shallow if not shallow.is_absolute() else shallow
@@ -977,11 +1060,11 @@ def _inspect_push(repository_root):
     updates = _updates(protocol, _Protocol(repository_root))
     if not updates:
         return [], False
-    validate_push_configuration(repository_root)
+    upstream = validate_push_configuration(repository_root)
     if len(sys.argv) != 3 or not sys.argv[1] or not sys.argv[2]:
         raise InspectionError("active push requires destination name and location")
     inspection = _Inspection(repository_root)
-    commits, unavailable = _outgoing_range(inspection, updates, sys.argv[2])
+    commits, unavailable = _outgoing_range(inspection, updates, sys.argv[2], upstream)
     policy = stealth_policy(repository_root)
     offenders = _inspect_commits(
         inspection,
