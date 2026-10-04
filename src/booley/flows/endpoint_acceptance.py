@@ -55,6 +55,7 @@ def set_criterion(
         source_target=source_target,
     )
     changes = endpoint.state.set_criterion(key, met, detail=stamped_detail)
+    endpoint.record_report_criteria(changes)
     if endpoint.state._file_path is not None:
         endpoint._record_acceptance_changes(changes)
         endpoint.state.save()

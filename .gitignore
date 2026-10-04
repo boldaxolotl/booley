@@ -75,7 +75,6 @@ dist/
 src/booley/data/bin/
 
 # Internal evidence and planning docs — local-only, never distributed.
-docs/adr/
 docs/benchmarks/
 docs/plans/
 docs/research/

@@ -443,7 +443,15 @@ def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findi
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
     valid &= _add_config_audit(project_schema.audit_developer_table(data), report)
-    _add_config_audit(project_schema.audit_known_tables(data), report)
+    valid &= _add_config_audit(project_schema.audit_known_tables(data), report)
+    from booley.mcp.registry import discover_mcp_tools
+
+    specialists = {
+        endpoint.name
+        for endpoint in discover_mcp_tools(project_mcp_tools_dir=project_dir / "mcp_tools")
+        if endpoint.kind == "specialist"
+    }
+    valid &= _add_config_audit(project_schema.audit_specialist_table(data, specialists), report)
     # Source RTL/TB layout is validated from the .core tags:[tb] partition (see
     # _run_core_checks → sim_target_has_untagged_tb), not a booley.toml
     # [sources.*] table — those fields were retired (ADR 0026 follow-through).

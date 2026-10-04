@@ -849,106 +849,15 @@ def parse_stats_output(stdout: str) -> dict[str, int]:
     return stats
 
 
-def _cache_clock_signal(oracle: VcdOracle) -> str | None:
-    """Return the clock signal B-wave's cache builder would auto-detect."""
-    candidates = [
-        name
-        for name, width in oracle.signals().items()
-        if width == 1 and "clk" in name.split("[", 1)[0].lower()
-    ]
-    candidates.sort(key=lambda name: (name.count("."), name))
-    return candidates[0] if candidates else None
-
-
-def _cache_reset_signal(oracle: VcdOracle) -> str | None:
-    """Return the reset signal B-wave's cache builder would auto-detect."""
-    candidates = [
-        name
-        for name, width in oracle.signals().items()
-        if width == 1 and "rst" in name.split("[", 1)[0].lower()
-    ]
-    candidates.sort(key=lambda name: (name.count("."), name))
-    return candidates[0] if candidates else None
-
-
-def _infer_cache_sim_range(oracle: VcdOracle) -> tuple[int, int]:  # noqa: PLR0912, PLR0915 — reimplements the cache builder's edge-scan heuristic; many sequential branches over VCD ticks
-    """Infer the cache sim_start/sim_end ticks used by async stats.
-
-    B-wave's cache builder starts stats at the first detected clock rising edge
-    after reset is inactive.  It records sim_end as the largest VCD timestamp.
-    """
-    timestamps = oracle.timestamps()
-    if not timestamps:
-        all_ticks = [
-            tick for name in oracle.signal_names() for tick, _value in oracle.transitions(name)
-        ]
-        end_tick = max(all_ticks) if all_ticks else 0
-        return 0, end_tick
-
-    clock_name = _cache_clock_signal(oracle)
-    reset_name = _cache_reset_signal(oracle)
-    clock_id = oracle._name_to_id(clock_name) if clock_name is not None else None
-    reset_id = oracle._name_to_id(reset_name) if reset_name is not None else None
-
-    reset_active_low = False
-    if reset_name is not None:
-        reset_leaf = reset_name.split("[", 1)[0].split(".")[-1].lower()
-        reset_active_low = reset_leaf.endswith("n") or "_n" in reset_leaf
-
-    events_by_tick: dict[int, list[tuple[str, str]]] = {}
-    for tick, vcd_id, value in oracle._events:
-        events_by_tick.setdefault(tick, []).append((vcd_id, value))
-
-    current_tick = 0
-    sim_start_tick = 0
-    sim_end_tick = 0
-    first_timestamp_seen = False
-    cycle_count = 0
-    rising_edge_pending = False
-    clock_prev = "x"
-    reset_active = True
-
-    for tick in timestamps:
-        if first_timestamp_seen:
-            prev_tick = current_tick
-            if reset_id is not None and reset_active:
-                rising_edge_pending = False
-            elif rising_edge_pending:
-                rising_edge_pending = False
-                cycle_count += 1
-                if cycle_count == 1:
-                    sim_start_tick = prev_tick
-
-        current_tick = tick
-        sim_end_tick = max(sim_end_tick, tick)
-        if not first_timestamp_seen:
-            first_timestamp_seen = True
-            sim_start_tick = tick
-
-        for vcd_id, value in events_by_tick.get(tick, []):
-            scalar = VcdOracle._to_scalar(value)
-            if vcd_id == clock_id:
-                if scalar == "1" and clock_prev == "0":
-                    rising_edge_pending = True
-                clock_prev = scalar
-            if vcd_id == reset_id and scalar in {"0", "1"}:
-                is_asserted = scalar == "0" if reset_active_low else scalar == "1"
-                reset_active = is_asserted
-
-    if rising_edge_pending and not (reset_id is not None and reset_active):
-        cycle_count += 1
-        if cycle_count == 1:
-            sim_start_tick = current_tick
-
-    return sim_start_tick, sim_end_tick
-
-
 def cache_transition_count(oracle: VcdOracle, signal_name: str) -> int:
-    """Expected count for B-wave async stats after cache sim-window rebasing."""
-    start_tick, end_tick = _infer_cache_sim_range(oracle)
-    return sum(
-        1 for tick, _value in oracle.transitions(signal_name) if start_tick <= tick <= end_tick
-    )
+    """Actual changes over the raw trace; tick-zero assignments seed the value."""
+    previous = "x"
+    count = 0
+    for tick, value in oracle.transitions(signal_name):
+        if tick > 0 and value != previous:
+            count += 1
+        previous = value
+    return count
 
 
 def parse_wave_output(stdout: str) -> dict[int, dict[str, str]]:
@@ -1375,12 +1284,12 @@ def _make_test_class(design: str, simulator: str) -> type:
         @unittest.skipIf(skip_sim, f"{simulator} not available")
         @unittest.skipIf(skip_extract, "bwave not built")
         def test_stats(self) -> None:
-            """Cache-windowed transition counts match bwave async stats."""
+            """Raw-window value changes match bwave async stats."""
             oracle = self.__class__.oracle
             assert oracle is not None
 
-            # Async stats count decoded cache records from the cache sim_start
-            # through sim_end.  Sync stats intentionally rebase after reset.
+            # Async stats count actual changes over the whole raw trace.
+            # Tick-zero initialization is a seed; sync stats skip reset.
             stdout, stderr = run_bwave(["stats", self.vcd_path, "--async", "-s", "*"])
             extract_stats = parse_stats_output(stdout)
 
@@ -1853,15 +1762,10 @@ class TestVirtualSignalGroundTruth(unittest.TestCase):
         """Virtual signal-to-signal EQUAL matches oracle."""
         virtual_def = "veq_vr = *valid* == *ready*"
 
-        # Skip reset period — virtual signals are only evaluated at
-        # transition points, so steady-state during reset is invisible.
-        # Start from the cycle where reset deasserts (reset_edge - 1) since
-        # bwave evaluates virtual signals at that transition.
-        reset_edge = _find_reset_edge(self.oracle)
-        start = max(0, reset_edge - 1)
-
+        # --with-reset evaluates the predicate at every raw clock edge,
+        # including the held initial equality during reset.
         oracle_cycles = set()
-        for cycle in range(start, len(self.clock_edges)):
+        for cycle in range(len(self.clock_edges)):
             v = self._oracle_hex_at_cycle("tb.dut.valid", cycle)
             r = self._oracle_hex_at_cycle("tb.dut.ready", cycle)
             if v is not None and r is not None and v == r:

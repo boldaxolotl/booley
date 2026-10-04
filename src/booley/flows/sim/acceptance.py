@@ -61,6 +61,7 @@ class AcceptanceContext:
     recorder: AcceptanceRecorder
     invocation_id: str
     diagnostic: bool = False
+    observer: Callable[[list[CriterionChange]], None] | None = None
     detail_stamper: Callable[[CriterionChange, str], dict[str, Any]] | None = None
 
 
@@ -93,6 +94,8 @@ class SimulationAcceptanceCoordinator:
             ]
         if not changes:
             return AcceptanceOutcome(False, None, (), "no_applicable_criteria")
+        if context.observer is not None:
+            context.observer(changes)
         transaction = context.recorder.record_or_verify_transaction(
             context.state,
             changes,
@@ -179,6 +182,28 @@ def _matching_simulation_keys(
             and criterion_matches_target(entry.params or {}, identity=identity, selector=selector)
         )
     ]
+
+
+def eligible_simulation_keys(
+    state: DevelopmentState,
+    identity: str,
+    selector: str,
+    name: str,
+    registered: set[str],
+    selected: set[str],
+) -> set[str]:
+    """Return declared sim Criteria whose required tests fit the candidate workload."""
+    target = {"vlnv": identity.rsplit("#", 1)[0], "selector": selector}
+    keys = _matching_simulation_keys(state, target, name)
+    eligible: set[str] = set()
+    for key in keys:
+        contract = resolve_simulation_criterion_contract(
+            state.criteria[key].params or {}, registered, selected
+        )
+        required = registered if contract.selector == "all" else contract.required_tests
+        if required.issubset(selected):
+            eligible.add(key)
+    return eligible
 
 
 def _candidate_simulation_observations(
@@ -297,6 +322,7 @@ def record_campaign_acceptance(
         recorder,
         endpoint._invocation_id,
         diagnostic=bool(getattr(endpoint.args, "diagnostic", False)),
+        observer=endpoint.record_report_criteria,
         detail_stamper=(
             lambda change, selector: (
                 stamp(
@@ -317,6 +343,8 @@ def record_campaign_acceptance(
     for item in outcomes:
         if not isinstance(item, CampaignOutcome):
             raise TypeError("invalid Simulation Campaign outcome")
+        if endpoint.state._file_path is None and not context.diagnostic:
+            _record_standalone_campaign(endpoint, item)
         accepted = reconciler.reconcile(item, context)
         acceptances.append(accepted)
         keys.extend(change.key for change in accepted.changes)
@@ -329,6 +357,24 @@ def record_campaign_acceptance(
         projection = _campaign_projection(item)
         origin = item.manifest_path.parents[1] / "simulation.json"
         write_compatibility_projection(origin, projection, acceptance_committed=complete)
+
+
+def _record_standalone_campaign(endpoint: EndpointState, outcome: CampaignOutcome) -> None:
+    """Record a conclusive candidate workload without creating Ticket state."""
+    if not outcome.complete or outcome.target["role"] != "candidate":
+        return
+    if outcome.aggregate_grade not in {"pass", "fail"}:
+        return
+    facts = outcome.acceptance_facts.document
+    observations = _candidate_simulation_observations(facts, outcome.target)
+    if not observations or any(_unobserved_infrastructure(item) for item in observations.values()):
+        return
+    endpoint.set_criterion(
+        f"sim_pass_{outcome.target['name']}",
+        outcome.aggregate_grade == "pass",
+        source_target=str(outcome.target["selector"]),
+        detail={"mode": "simulate", "selected_tests": [_test_name(name) for name in observations]},
+    )
 
 
 def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:

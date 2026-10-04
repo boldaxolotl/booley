@@ -155,7 +155,16 @@ def test_state_backed_simulation_preflight_rejection_reaches_stderr(
         lambda: EndpointOutcome(exit_code=2, report_text="Simulation preflight rejected"),
     )
 
-    execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
+    execution = flow.execute_cli(
+        [
+            "--target",
+            "demo",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
 
     captured = capsys.readouterr()
     assert execution.exit_code == 2
@@ -255,3 +264,54 @@ def test_campaign_preflight_orders_candidate_before_historical_baseline(
     assert isinstance(prepared, PreparedSimulationEndpoint)
     assert prepared.targets == (candidate, baseline)
     assert prepared.targets[1].project_root == baseline_root
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_campaign_authorization_materializes_project_topologies(tmp_path, monkeypatch, topology):
+    from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = root
+    flow._args.resume_from = None
+    candidate = TargetCatalog.build(root).select("sim_core", for_flow="sim")
+    flow._target_handles = {"sim_core": candidate}
+    _pin_baseline(flow, revision)
+    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim_core"])
+    monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
+    try:
+        handles, resume, selected, _tests = flow._prepare_campaign_targets()
+        assert resume is None
+        assert selected == ("sim_core",)
+        assert handles[0] is candidate
+        assert handles[1].identity == candidate.identity
+        baseline = handles[1].project_root
+        _assert_topology_baseline(baseline, root, "sim_core")
+        assert baseline.exists()
+        assert flow.args.work_dir == root
+    finally:
+        flow.context.publication_resources.close()
+    assert not baseline.exists()
+
+
+def test_prepare_resets_report_only_metadata_before_early_gate(monkeypatch):
+    from booley.flows.endpoint_session import prepare_execution
+
+    flow = SimulateFlow()
+    context = flow.context
+    previous = (object(),)
+    context._simulation_report_outcomes = previous
+    context._simulation_campaign_outcomes = previous
+    rejected = EndpointOutcome(exit_code=2)
+
+    def gate():
+        assert context._simulation_report_outcomes == ()
+        assert context._simulation_campaign_outcomes is previous
+        return rejected
+
+    monkeypatch.setattr(context, "_apply_pre_state_gate", gate)
+    assert prepare_execution(context) is rejected

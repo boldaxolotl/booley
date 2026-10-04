@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
     resolve_coverage_campaign_reference,
 )
-from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
+from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
@@ -312,7 +313,7 @@ def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
 
 def _assert_campaign_report_schema(tmp_path: Path, campaign: dict[str, object]) -> None:
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
-    assert report["$schema"] == "booley.simulation-report/v2"
+    assert report["$schema"] == "booley.simulation-report/v3"
     assert report["detail"]["campaigns"]["sim_0"]["artifacts"] == campaign["artifacts"]
 
 
@@ -413,6 +414,32 @@ def test_coverage_simulation_projection_error_tail_is_text(tmp_path, monkeypatch
             assert "{" not in error_tail
 
 
+def _frozen_hook_execution(tmp_path, data, received):
+    class PreSimPassingExecution(NativeExecution):
+        def run(self, request):
+            result = super().run(request)
+            from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+
+            evidence = run_pre_sim_commands(
+                SimpleNamespace(project_root=tmp_path, selector="sim_0"),
+                test_names=(request.test.name,),
+                build_root=tmp_path / "build",
+                eda_tool="verilator",
+                timeout_s=5,
+                commands=received[-1][1],
+            )
+            return SimulationRunResult(result.verdict, result.output, evidence)
+
+    def execution_factory(_handle, options, commands, access):
+        received.append((options, commands, access))
+        (data / "booley.toml").write_text(
+            '[flows.sim]\npre_run_commands = ["echo live-hook; exit 7"]\n'
+        )
+        return PreSimPassingExecution()
+
+    return execution_factory
+
+
 def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -423,25 +450,12 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
         "[flows.sim]\n"
         "build_timeout_ms = 7000\n"
         "timeout_ms = 5000\n"
-        'pre_run_commands = ["python3 scripts/stage.py"]\n'
+        'pre_run_commands = ["echo frozen-hook"]\n'
         'pre_sim_build_access = "legacy-per-test"\n'
     )
     received = []
 
-    class PreSimPassingExecution(NativeExecution):
-        def run(self, request):
-            result = super().run(request)
-            evidence = PreSimEvidence(
-                ("python3 scripts/stage.py",),
-                (request.test.name,),
-                "passed",
-                0.25,
-            )
-            return SimulationRunResult(result.verdict, result.output, evidence)
-
-    def execution_factory(_handle, options, commands, access):
-        received.append((options, commands, access))
-        return PreSimPassingExecution()
+    execution_factory = _frozen_hook_execution(tmp_path, data, received)
 
     result = SimulateFlow(coverage_execution=execution_factory).execute(
         SimRequest(
@@ -456,11 +470,85 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
     assert received == [
         (
             SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
-            ("python3 scripts/stage.py",),
+            ("echo frozen-hook",),
             "legacy-per-test",
         )
     ]
-    assert "sim_0: pre-sim=passed test=reset duration=0.250s" in result.outcome.report_text
+    assert "pre_run_commands (1 line(s)) for sim_0/reset: rc=0 in " in result.outcome.report_text
+    from booley.flows.sim.campaign import read_pre_sim_firings
+
+    firings = read_pre_sim_firings(tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json")
+    assert len(firings) == 1
+    assert firings[0].document["stdout_tail"] == "frozen-hook\n"
+
+
+def _publish_real_hook_series(request, handle, commands, count):
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+
+    for ordinal in range(1, count + 1):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("alpha",),
+            build_root=request.attempt_directory / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+            commands=commands,
+            run_cwd=".",
+        )
+        assert evidence is not None
+        publish_pre_sim_firing(request, evidence, ordinal=ordinal)
+
+
+def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_path, monkeypatch):
+    import json
+
+    from booley.flows.sim.campaign import read_pre_sim_firings
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _handle, _request
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+
+    def transform(document):
+        document["workload"]["coverage"] = True
+        document["work_items"][0]["kind"] = "coverage_aggregate"
+
+    commands = ("echo hook-out; echo hook-err >&2",)
+    plan, _disclosures = _pre_sim_plan("immutable", commands, transform)
+    invocation = tmp_path / "reports/1"
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    store.publish_manifest(plan.manifest)
+    handle = _handle(tmp_path)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+    flow = SimulateFlow()
+    flow._current_published_pre_sim_keys = set()
+    request = replace(request, pre_sim_firing_published=flow._record_pre_sim_firing)
+    _executor(tmp_path / "build", {}).prepare_attempt(request)
+    _publish_real_hook_series(request, handle, commands, 40)
+    flow.context._reserved_invocation_dir = invocation
+    reads = _observe_pre_sim_projection(monkeypatch)
+    result = flow._attach_published_pre_sim(
+        EndpointOutcome(exit_code=2, report_text="interrupted coverage")
+    )
+    assert result.detail["pre_sim_total"] == result.detail["pre_sim_current"] == 40
+    assert (
+        len(result.detail["pre_sim_lines"]) == result.report_text.count("pre_run_commands") == 40
+    )
+    assert len(result.detail["pre_sim_runs"]) <= 32
+    assert len(json.dumps(result.detail["pre_sim_runs"]).encode()) <= 16 * 1024
+    assert result.detail["pre_sim_preview_truncated"] is True
+    assert reads["manifest"] == 1
+    assert reads["decoder_manifest"] == 1
+    assert reads["preview"] <= 32
+    firings = read_pre_sim_firings(store.manifest_path)
+    assert len(firings) == 40
+    assert all(
+        firing.document["stdout_tail"] == "hook-out\n"
+        and firing.document["stderr_tail"] == "hook-err\n"
+        for firing in firings
+    )
 
 
 @pytest.mark.parametrize(
@@ -1035,7 +1123,8 @@ def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
     )
 
     assert result.exit_code == 0
-    assert result.outcome.criterion_met is False
+    assert result.outcome.criterion_key == ""
+    assert result.outcome.criterion_met is None
     progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
     assert progress["detail"]["sim_custom"]["exit_code"] == 0
     campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
@@ -2670,3 +2759,317 @@ def test_no_waivers_resume_with_criterion_needs_diagnostic(tmp_path, monkeypatch
 
     assert diagnostic.exit_code == 0, diagnostic.outcome
     assert state_path.read_bytes() == before
+
+
+def _coverage_headline_state(tmp_path, monkeypatch, ticket):
+    from booley.criteria.state import CriterionEntry
+
+    state_path = tmp_path / "state.json"
+    if ticket == "none":
+        return state_path
+    state = DevelopmentState.load(state_path)
+    if ticket in {"coverage", "coverage_only"}:
+        state.strict_criteria = True
+        state.criteria = {
+            "coverage_sim_0": CriterionEntry(
+                params={
+                    "target": "acme:demo:counter:1#sim_0",
+                    "_target_selector": "sim_0",
+                    "tests": "all",
+                    "metrics": {"line": {"min_pct": 100}},
+                }
+            ),
+            "sim_pass_sim_0": CriterionEntry(
+                params={"target": "acme:demo:counter:1#sim_0", "_target_selector": "sim_0"}
+            ),
+        }
+    if ticket == "coverage_only":
+        del state.criteria["sim_pass_sim_0"]
+    state.slug = "headline-ticket"
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    return state_path
+
+
+def _assert_coverage_headline_results(results, ticket, verdict, state_path):
+    expected = (
+        ("sim_pass_sim_0", verdict == "pass")
+        if ticket == "none"
+        else ("coverage_sim_0", False)
+        if ticket == "coverage_only"
+        else ("", None)
+    )
+    evaluation = "fail" if ticket in {"coverage", "coverage_only"} else "not_requested"
+    for result in results:
+        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == evaluation
+        assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+        assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
+    if ticket == "undeclared":
+        assert DevelopmentState.load(state_path).criteria == {}
+    if ticket in {"coverage", "coverage_only"}:
+        saved = DevelopmentState.load(state_path)
+        if ticket == "coverage":
+            assert saved.criteria["sim_pass_sim_0"].met is True
+        assert saved.criteria["coverage_sim_0"].met is False
+    elif ticket == "none":
+        assert not state_path.exists()
+
+
+@pytest.mark.parametrize(
+    "ticket,verdict",
+    [
+        ("none", "pass"),
+        ("none", "fail"),
+        ("undeclared", "pass"),
+        ("coverage", "pass"),
+        ("coverage_only", "pass"),
+    ],
+)
+def test_public_coverage_campaign_headline_fresh_and_resume(
+    tmp_path, monkeypatch, ticket, verdict
+):
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    reports = _prepare_coverage_origin(tmp_path, monkeypatch)
+    state_path = _coverage_headline_state(tmp_path, monkeypatch, ticket)
+    runs = []
+
+    class Counted(NativeExecution):
+        def run(self, request):
+            runs.append(request.test)
+            return super().run(request)
+
+    def invoke(request):
+        adapter = (
+            _AcceptanceAdapter(
+                log_dir=tmp_path / "logs",
+                ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+            )
+            if ticket in {"coverage", "coverage_only"}
+            else None
+        )
+        return SimulateFlow(
+            coverage_execution=lambda *_args: Counted(hits=0, verdict=verdict)
+        ).execute(request, adapter=adapter)
+
+    fresh = invoke(
+        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    )
+    completed = tuple(runs)
+    assert tuple(item.name for item in completed) == ("reset", "wrap")
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    resumed = invoke(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
+    assert tuple(runs) == completed
+    _assert_coverage_headline_results((fresh, resumed), ticket, verdict, state_path)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_public_publication_resumable_coverage_mismatch_diagnostics(
+    tmp_path, monkeypatch, dry_run
+):
+    reports, _request, runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    before = {
+        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
+        for path in manifest.parent.rglob("*")
+        if path.is_file()
+    }
+    report_before = {
+        path.relative_to(reports).as_posix(): path.read_bytes()
+        for path in reports.rglob("*")
+        if path.is_file()
+    }
+    (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// changed\n")
+
+    def forbidden_execution(*_args):
+        pytest.fail("mismatch refusal must precede coverage build and collection")
+
+    result = SimulateFlow(coverage_execution=forbidden_execution).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, dry_run=dry_run)
+    )
+    assert result.exit_code == 2
+    assert "source changed: rtl/counter.sv" in result.outcome.report_text
+    assert "5 derived fingerprints differ" in result.outcome.report_text
+    assert result.outcome.detail["derived_fingerprint_count"] == 5
+    assert result.outcome.detail["mismatches"]
+    assert [test.name for test in runs] == ["reset", "wrap"]
+    after = {
+        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
+        for path in manifest.parent.rglob("*")
+        if path.is_file()
+    }
+    assert {
+        key: value for key, value in after.items() if not key.startswith("dependency-receipts/")
+    } == before
+    if dry_run:
+        assert {
+            path.relative_to(reports).as_posix(): path.read_bytes()
+            for path in reports.rglob("*")
+            if path.is_file()
+        } == report_before
+
+
+def _coverage_hook_flow_fixture(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+    (data / "booley.toml").write_text('[flows.sim]\npre_run_commands = ["echo frozen-hook"]\n')
+    return SimulateFlow(coverage_execution=_frozen_hook_execution(tmp_path, data, []))
+
+
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_actual_coverage_hook_publication_crash_keeps_only_durable_evidence(
+    tmp_path, monkeypatch, side
+):
+    from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
+    from tests.flows.sim.test_campaign_crash_matrix import _CrashOnce, _InjectedProcessDeath
+
+    original = CoverageAggregateExecutor.__init__
+    crash = _CrashOnce(f"{side}:pre_sim_evidence")
+
+    def with_checkpoint(executor, **kwargs):
+        original(executor, **{**kwargs, "publication_checkpoint": crash})
+
+    monkeypatch.setattr(CoverageAggregateExecutor, "__init__", with_checkpoint)
+    flow = _coverage_hook_flow_fixture(tmp_path, monkeypatch)
+    with pytest.raises(_InjectedProcessDeath):
+        flow.execute(
+            SimRequest(
+                target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+            )
+        )
+    assert crash.tripped
+    manifest = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    from booley.flows.sim.campaign import read_pre_sim_firings
+
+    firings = read_pre_sim_firings(manifest)
+    assert len(firings) == int(side == "after")
+    assert all(f.document["stdout_tail"] == "frozen-hook\n" for f in firings)
+    assert not list(manifest.parent.glob("work-items/*/result.json"))
+
+
+def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_path, monkeypatch):
+    from booley.flows.sim import flow as flow_module
+    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.campaign.store import CampaignStore
+
+    original = CampaignStore.publish_pre_sim_evidence
+    failure_outcome = flow_module._coverage_failure_outcome
+    categories = []
+
+    def preserve_category(*args, **kwargs):
+        categories.append(type(args[3]))
+        return failure_outcome(*args, **kwargs)
+
+    monkeypatch.setattr(flow_module, "_coverage_failure_outcome", preserve_category)
+
+    def fail_after_publication(store, directory, ordinal, raw, **kwargs):
+        original(store, directory, ordinal, raw, **kwargs)
+        raise SimulationCampaignIntegrityError("hook publication integrity probe")
+
+    monkeypatch.setattr(CampaignStore, "publish_pre_sim_evidence", fail_after_publication)
+    flow = _coverage_hook_flow_fixture(tmp_path, monkeypatch)
+    result = flow.execute(
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        )
+    )
+    assert result.exit_code == 2
+    assert "hook publication integrity probe" in result.outcome.report_text
+    assert "collector_error" not in result.outcome.report_text
+    assert categories == [SimulationCampaignIntegrityError]
+    from booley.flows.sim.campaign import read_pre_sim_firings
+
+    firings = read_pre_sim_firings(tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json")
+    assert len(firings) == 1
+    assert firings[0].document["stdout_tail"] == "frozen-hook\n"
+    assert result.outcome.detail["pre_sim_current"] == 1
+
+
+def _observe_pre_sim_projection(monkeypatch):
+    from booley.flows.sim import flow as flow_module
+    from booley.flows.sim.campaign import pre_sim_evidence
+
+    reads = {"manifest": 0, "preview": 0, "decoder_manifest": 0}
+    digest = pre_sim_evidence.manifest_digest
+    artifact = flow_module._report_artifact_reference
+    preview = flow_module._pre_sim_preview_record
+
+    def reference(*args, **kwargs):
+        reads["manifest"] += int(kwargs["kind"] == "simulation_campaign_manifest")
+        return artifact(*args, **kwargs)
+
+    def record(*args):
+        reads["preview"] += 1
+        return preview(*args)
+
+    def manifest_digest(manifest):
+        reads["decoder_manifest"] += 1
+        return digest(manifest)
+
+    monkeypatch.setattr(pre_sim_evidence, "manifest_digest", manifest_digest)
+    monkeypatch.setattr(flow_module, "_report_artifact_reference", reference)
+    monkeypatch.setattr(flow_module, "_pre_sim_preview_record", record)
+    return reads
+
+
+def _owned_coverage_hook_request(tmp_path):
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
+    from booley.flows.sim.campaign.planning import finalize_manifest
+    from booley.flows.sim.campaign.serial_execution import _attempt
+    from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.test_campaign_phase3_integrity import (
+        _maximum_hook_selection_plan,
+        _request,
+    )
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _refresh_hook_workload_identity
+
+    plan, _ = _maximum_hook_selection_plan(("wrap",))
+    document = json.loads(canonical_json_bytes(plan.manifest.document))
+    document.pop("fingerprints")
+    document["target"]["vlnv"] = "acme:demo:counter:1"
+    document["workload"]["source_recipe"]["pre_sim_commands"] = ["echo owned-hook"]
+    _refresh_hook_workload_identity(document)
+    manifest = finalize_manifest(document)
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    store.publish_manifest(manifest)
+    request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
+    store.publish_attempt(request.attempt_directory, _attempt(request)[0])
+    return request
+
+
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_owned_coverage_sink_crash_preserves_actual_hook_before_adapter_launch(
+    tmp_path, monkeypatch, side
+):
+    from booley.flows.sim.campaign.coverage_execution import _publish_hook
+    from tests.flows.sim.test_campaign_crash_matrix import _CrashOnce, _InjectedProcessDeath
+    from tests.flows.sim.test_verilator_coverage_execution import (
+        _build_coverage,
+        _execution_fixture,
+        _run_request,
+    )
+
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    request = _owned_coverage_hook_request(tmp_path)
+    assert target.identity == "acme:demo:counter:1#sim"
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.resolve_pre_sim_commands",
+        lambda _root: ("echo owned-hook",),
+    )
+    crash = _CrashOnce(f"{side}:pre_sim_evidence")
+    execution.set_pre_sim_evidence_sink(
+        lambda evidence: _publish_hook(request, evidence, 1, crash)
+    )
+    with pytest.raises(_InjectedProcessDeath):
+        execution.run(_run_request(target, raw_path))
+    assert crash.tripped
+    assert "run_script" not in captured
+    firings = request.store.read_pre_sim_firings()
+    assert len(firings) == int(side == "after")
+    assert all(f.document["stdout_tail"] == "owned-hook\n" for f in firings)
+    assert all(f.document["returncode"] == 0 for f in firings)
+    assert not list(request.store.root.glob("work-items/*/result.json"))

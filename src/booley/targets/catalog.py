@@ -28,7 +28,12 @@ from booley.targets.domain import (
     TargetRef,
     flow_can_drive,
 )
-from booley.targets.selection import minimal_selector, resolve
+from booley.targets.selection import minimal_selector, resolve, split_selector
+
+
+def selector_names_match(first: str, second: str) -> bool:
+    """Compare selector names without claiming their core identities match."""
+    return split_selector(first)[1] == split_selector(second)[1]
 
 
 def _doctor_private_authority() -> bool:
@@ -320,4 +325,4 @@ def _canonical_flow(flow: str | None) -> str | None:
     return result
 
 
-__all__ = ["TargetCatalog", "TargetCompileSurface"]
+__all__ = ["TargetCatalog", "TargetCompileSurface", "selector_names_match"]

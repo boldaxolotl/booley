@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -103,44 +104,56 @@ class TestAgentBackendHealth:
             lambda: SimpleNamespace(active_backend=backend),
         )
 
-    def test_backend_raising_becomes_warn_not_crash(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("deep", [False, True])
+    def test_backend_raising_becomes_warn_not_crash(self, tmp_path, monkeypatch, deep):
         def boom() -> str:
             raise RuntimeError("backend exploded")
 
         self._patch_backend(monkeypatch, SimpleNamespace(name="claude", health_check=boom))
         rec = _Rec()
-        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w)
+        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w, deep=deep)
         assert rec.kinds() == {"warn"}
         assert "backend exploded" in rec.warns()[0]
 
-    def test_config_load_failure_becomes_warn(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("deep", [False, True])
+    def test_config_load_failure_becomes_warn(self, tmp_path, monkeypatch, deep):
         def bad_load(_root) -> None:
             raise ValueError("models.toml is garbage")
 
         monkeypatch.setattr(runtime_agent_config, "load_backend_config", bad_load)
         rec = _Rec()
-        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w)
+        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w, deep=deep)
         assert rec.kinds() == {"warn"}
         assert "models.toml is garbage" in rec.warns()[0]
 
-    def test_backend_warning_string_is_relayed(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("deep", [False, True])
+    def test_backend_warning_string_is_relayed(self, tmp_path, monkeypatch, deep):
         self._patch_backend(
             monkeypatch,
             SimpleNamespace(name="codex", health_check=lambda: "auth token expires soon"),
         )
         rec = _Rec()
-        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w)
+        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w, deep=deep)
         assert rec.kinds() == {"warn"}
         assert "codex" in rec.warns()[0]
         assert "auth token expires soon" in rec.warns()[0]
 
-    def test_locally_healthy_backend_is_an_offline_note(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("deep", [False, True])
+    @pytest.mark.parametrize("note_sink", [False, True])
+    def test_locally_healthy_backend_is_an_offline_note(
+        self, tmp_path, monkeypatch, deep, note_sink
+    ):
         self._patch_backend(monkeypatch, SimpleNamespace(name="claude", health_check=lambda: ""))
         rec = _Rec()
-        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w, _note=rec.n)
-        assert rec.kinds() == {"note"}
-        assert "provider authorization was not exercised" in rec.events[0][1]
-        assert "--deep" in rec.events[0][1]
+        doctor._check_agent_backend_health(
+            tmp_path, rec.p, rec.w, _note=rec.n if note_sink else None, deep=deep
+        )
+        expected = (
+            "worker backend configured locally: claude; "
+            "provider authorization was not exercised and the CLI was not started "
+            "by plain Doctor (run `booley doctor --deep` for a live check)"
+        )
+        assert rec.events == ([] if deep else [("note" if note_sink else "pass", expected)])
 
     # LATENT (documenting, not fixing): the except tuple is (ImportError,
     # AttributeError, RuntimeError, OSError, ValueError) — a backend whose
@@ -599,6 +612,10 @@ def test_vivado_outer_timeout_and_unavailable_runtime(monkeypatch):
     assert rec.kinds() == {"skip"}
 
 
+# The probe only runs inside the Linux Sandbox, and termination is observed via
+# /proc. Elsewhere (MSYS sh/timeout on Windows) the 0.2s budget races shell
+# startup and process-group semantics differ, so the test would prove nothing.
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux Sandbox process-group contract")
 @pytest.mark.parametrize("delayed_exit", [False, True])
 def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch, delayed_exit):
     import os

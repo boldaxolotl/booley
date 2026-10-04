@@ -30,7 +30,7 @@ class EndpointOutcome:
 
     exit_code: int = EXIT_SUCCESS
     criterion_key: str = ""
-    criterion_met: bool = False
+    criterion_met: bool | None = False
     detail: dict[str, Any] = field(default_factory=dict)
     report_text: str = ""
     input_tokens: int = 0

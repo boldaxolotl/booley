@@ -638,15 +638,15 @@ fn test_at_time_async_ps() {
 }
 
 #[test]
-fn test_at_time_async_ps_beyond_range_holds_last_value() {
-    // FST snapshot semantics hold the final value beyond the recorded range.
+fn test_at_time_async_ps_beyond_range_is_input_error() {
+    // Public point queries reject times beyond the recorded trace.
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "999999999t", "--async"]);
-    assert_eq!(code, 0);
-    assert!(stdout.contains("# Snapshot at 999999999"));
-    assert!(stdout.contains("counter[7:0]"));
+    let (stdout, stderr, code) = run_query(&["value", &vcd, "--at", "999999999t", "--async"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("beyond simulation range"));
 }
 
 #[test]
@@ -1535,7 +1535,11 @@ fn test_distance_two_event_stats() {
     assert!(stdout.contains("count=5"), "count: {}", stdout);
     assert!(stdout.contains("min=3"), "min: {}", stdout);
     assert!(stdout.contains("max=5"), "max: {}", stdout);
-    assert!(stdout.contains("avg=3.8"), "avg: {}", stdout);
+    assert!(
+        stdout.contains("mean=3.8  median=4.0"),
+        "summary: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -2537,4 +2541,438 @@ fn test_native_verilator_fst_clock_rederivation() {
     // clock meta is re-derived from FST content: 10ns period, 36 cycles
     assert!(stdout.contains("36 cycles"), "got: {}", stdout);
     assert!(stdout.contains("10ns period"), "got: {}", stdout);
+}
+
+/// Real CLI conversion, unique temp paths, and cleanup even after an assertion fails.
+struct Issue1098Store(PathBuf, PathBuf);
+impl Issue1098Store {
+    fn new(declarations: &str, events: &str) -> Self {
+        let seq = QUERY_STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let vcd = std::env::temp_dir().join(format!("bwave-1098-{}-{seq}.vcd", std::process::id()));
+        let fst = vcd.with_extension("fst");
+        std::fs::write(&vcd, format!("$timescale 1ns $end\n$scope module tb $end\n{declarations}$upscope $end\n$enddefinitions $end\n{events}")).unwrap();
+        let store = Self(vcd, fst);
+        let (_, err, code) = run_bwave(&[
+            "build",
+            store.0.to_str().unwrap(),
+            "-o",
+            store.1.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{err}");
+        store
+    }
+    fn query(&self, command: &str, args: &[&str]) -> String {
+        let mut full = vec![command, self.1.to_str().unwrap()];
+        full.extend_from_slice(args);
+        let (out, err, code) = run_bwave(&full);
+        assert_eq!(code, 0, "{err}");
+        out
+    }
+    fn json(&self, command: &str, args: &[&str]) -> serde_json::Value {
+        let mut full = args.to_vec();
+        full.extend(["--format", "json"]);
+        serde_json::from_str(&self.query(command, &full)).unwrap()
+    }
+    fn reset(active_low: bool, clock_first: bool) -> Self {
+        let name = if active_low { "rst_n" } else { "rst" };
+        let asserted = if active_low { '0' } else { '1' };
+        let inactive = if active_low { '1' } else { '0' };
+        let declarations = format!("$var wire 1 ! clk $end\n$var wire 1 \" {name} $end\n$var wire 1 # stable $end\n$var wire 1 $ reset_only $end\n$var wire 8 % count $end\n");
+        let mut events = format!("#0\n0!\n{asserted}\"\n1#\n0$\nb00000000 %\n");
+        for tick in (5..=1200).step_by(5) {
+            events.push_str(&format!("#{tick}\n"));
+            let clock = if tick % 10 == 5 { '1' } else { '0' };
+            if tick == 1000 && !clock_first {
+                events.push_str(&format!("{inactive}\"\n"));
+            }
+            events.push_str(&format!("{clock}!\n"));
+            if tick == 1000 && clock_first {
+                events.push_str(&format!("{inactive}\"\n"));
+            }
+            if tick == 100 {
+                events.push_str("1$\n");
+            }
+            if tick % 10 == 5 {
+                events.push_str(&format!("b{:08b} %\n", tick / 10));
+            }
+        }
+        Self::new(&declarations, &events)
+    }
+}
+impl Drop for Issue1098Store {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(&self.1);
+    }
+}
+
+#[test]
+fn issue_1098_stats_reset_window_and_initial_occupancy() {
+    for active_low in [false, true] {
+        for clock_first in [false, true] {
+            let store = Issue1098Store::reset(active_low, clock_first);
+            let high = if active_low { "'h0" } else { "'h1" };
+            let low = if active_low { "'h1" } else { "'h0" };
+            for (mode, total) in [
+                (vec!["--with-reset"], 1200),
+                (vec![], 200),
+                (vec!["--async"], 1200),
+                (vec!["--reset", "missing"], 1200),
+            ] {
+                let mut args = vec!["-s", "tb.rst*"];
+                args.extend(mode);
+                let json = store.json("stats", &args);
+                let data = &json["data"];
+                assert_eq!(data["total_ticks"], total);
+                assert_eq!(data["simulation_ns"], total);
+                assert_eq!(data["total_cycles"], total / 10);
+                let signal = &data["signals"][0];
+                assert_eq!(signal["transitions"], 1);
+                assert_eq!(signal["time_in_state_ticks"][low], 200);
+                assert_eq!(signal["value_hist"][low], 1);
+                if total == 1200 {
+                    assert_eq!(signal["time_in_state_ticks"][high], 1000);
+                    assert_eq!(signal["value_hist"][high], 1);
+                } else {
+                    assert!(signal["time_in_state_ticks"].get(high).is_none());
+                }
+            }
+            assert!(store
+                .query("stats", &["-s", "stable"])
+                .contains("200ns, 20 cycles"));
+            assert!(store
+                .query("stats", &["-s", "stable", "--with-reset"])
+                .contains("1200ns, 120 cycles"));
+        }
+    }
+}
+
+#[test]
+fn issue_1098_stuck_seed_and_whole_window() {
+    let store = Issue1098Store::reset(false, false);
+    for mode in [vec![], vec!["--with-reset"]] {
+        let mut args = vec!["-s", "stable"];
+        args.extend(mode.clone());
+        let data = store.json("stats", &args);
+        let sig = &data["data"]["signals"][0];
+        assert_eq!(sig["transitions"], 0);
+        assert_eq!(sig["value_hist"], serde_json::json!({"'h1": 1}));
+        assert_eq!(sig["time_in_state_ticks"].as_object().unwrap().len(), 1);
+        let mut args = vec!["-s", "stable"];
+        args.extend(mode);
+        let stuck = store.query("stuck", &args);
+        assert!(
+            stuck.contains("stable")
+                && stuck.contains(if args.contains(&"--with-reset") {
+                    "120 cycles"
+                } else {
+                    "20 cycles"
+                }),
+            "{stuck}"
+        );
+    }
+    assert!(store
+        .query("stuck", &["-s", "reset_only"])
+        .contains("reset_only"));
+    assert!(!store
+        .query("stuck", &["-s", "reset_only", "--with-reset"])
+        .lines()
+        .any(|l| l.starts_with("reset_only")));
+}
+
+#[test]
+fn issue_1098_list_raw_end_and_predicate_reset_phase() {
+    let store = Issue1098Store::reset(false, false);
+    assert_eq!(store.json("list", &[])["data"]["total_ticks"], 1200);
+    let args = [
+        "virt",
+        "rising",
+        "--virtual",
+        "virt = tb.reset_only == 'h1",
+        "--with-reset",
+        "--async",
+    ];
+    let out = store.query("find", &args);
+    assert!(out.contains("100"), "{out}");
+    let out = store.query(
+        "find",
+        &["virt", "rising", "--virtual", "virt = tb.reset_only == 'h1"],
+    );
+    assert!(
+        !out.lines()
+            .any(|l| !l.starts_with('#') && l.contains("virt")),
+        "{out}"
+    );
+}
+
+#[test]
+fn issue_1098_occupancy_edges_without_clock_or_reset() {
+    let declarations = "$var wire 1 ! flag $end\n";
+    for (events, hist, times, changes) in [
+        (
+            "#0\n1!\n#10\n1!\n#20\n0!\n#30\n1!\n#40\n",
+            serde_json::json!({"'h1":2,"'h0":1}),
+            serde_json::json!({"'h1":30,"'h0":10}),
+            2,
+        ),
+        (
+            "#0\n1!\n#10\n0!\n",
+            serde_json::json!({"'h1":1}),
+            serde_json::json!({"'h1":10}),
+            1,
+        ),
+        ("#0\n1!\n", serde_json::json!({}), serde_json::json!({}), 0),
+        (
+            "#10\n1!\n#20\n",
+            serde_json::json!({"'hx":1,"'h1":1}),
+            serde_json::json!({"'hx":10,"'h1":10}),
+            1,
+        ),
+    ] {
+        let store = Issue1098Store::new(declarations, events);
+        let data = store.json("stats", &[]);
+        let sig = &data["data"]["signals"][0];
+        assert_eq!(sig["value_hist"], hist);
+        assert_eq!(sig["time_in_state_ticks"], times);
+        assert_eq!(sig["transitions"], changes);
+    }
+}
+
+#[test]
+fn issue_1098_predicate_samples_and_edges_are_actual_events() {
+    let store = Issue1098Store::reset(false, false);
+    let definition = "virt = tb.reset_only == 'h1";
+    let sampled = store.query(
+        "sample",
+        &[
+            "stable",
+            "'h1",
+            "-s",
+            "virt",
+            "--virtual",
+            definition,
+            "--with-reset",
+            "-t",
+            "15:16",
+        ],
+    );
+    assert!(
+        sampled.lines().all(|line| line.ends_with("virt 1")),
+        "{sampled}"
+    );
+    assert!(!sampled.contains("'hx"), "{sampled}");
+    let wave = store.query(
+        "wave",
+        &[
+            "-s",
+            "virt",
+            "--virtual",
+            definition,
+            "--with-reset",
+            "-t",
+            "9:12",
+        ],
+    );
+    let row = wave
+        .lines()
+        .find(|line| line.trim_start().starts_with("virt"))
+        .unwrap_or_else(|| panic!("{wave}"));
+    assert_eq!(
+        row.split_whitespace().collect::<Vec<_>>(),
+        vec!["virt", "0", "0", "1", "1"]
+    );
+    let (distance, diagnostic, code) = run_bwave(&[
+        "distance",
+        store.1.to_str().unwrap(),
+        "virt",
+        "rising",
+        "--to",
+        "count",
+        "change",
+        "--virtual",
+        definition,
+    ]);
+    assert_eq!(code, 0, "{diagnostic}");
+    assert_eq!(
+        distance.trim(),
+        "",
+        "pre-reset virtual edge must be excluded"
+    );
+    assert!(
+        diagnostic.contains("pattern 'virt' matched but value 'rising' never occurred"),
+        "{diagnostic}"
+    );
+    let post = store.json(
+        "find",
+        &["post", "rising", "--virtual", "post = tb.count >= 'd110"],
+    );
+    assert_eq!(post["data"]["count"], 1);
+    assert_eq!(post["data"]["matches"][0]["time"], 11);
+}
+
+#[test]
+fn issue_1098_never_deasserted_reset_and_clock_boundary_order() {
+    for clock_first in [false, true] {
+        // A rising edge at the deassert boundary preserves the established
+        // file-order policy for clock transitions, but never creates a zero run.
+        let boundary = if clock_first {
+            "1!\n0\"\n"
+        } else {
+            "0\"\n1!\n"
+        };
+        let events =
+            format!("#0\n0!\n1\"\n#5\n1!\n#10\n0!\n#15\n{boundary}#20\n0!\n#25\n1!\n#30\n");
+        let store =
+            Issue1098Store::new("$var wire 1 ! clk $end\n$var wire 1 \" rst $end\n", &events);
+        let data = store.json("stats", &["-s", "clk"]);
+        let sig = &data["data"]["signals"][0];
+        assert_eq!(data["data"]["total_ticks"], 15);
+        // FST loading approximates file order by any coincident clock event.
+        // Both VCD orders therefore retain the existing strict boundary.
+        assert_eq!(sig["transitions"], 2);
+        assert_eq!(
+            sig["time_in_state_ticks"],
+            serde_json::json!({"'h1":10,"'h0":5})
+        );
+    }
+    let store = Issue1098Store::new(
+        "$var wire 1 ! clk $end\n$var wire 1 \" rst $end\n",
+        "#0\n0!\n1\"\n#5\n1!\n#10\n0!\n#15\n1!\n#20\n",
+    );
+    let data = store.json("stats", &["-s", "rst"]);
+    assert_eq!(data["data"]["total_ticks"], 20);
+    assert_eq!(
+        data["data"]["signals"][0]["time_in_state_ticks"],
+        serde_json::json!({"'h1":20})
+    );
+    assert!(store.query("stuck", &["1", "-s", "rst"]).contains("rst"));
+}
+
+#[test]
+fn issue_1098_clockless_reset_keeps_selected_window_policy() {
+    let store = Issue1098Store::new(
+        "$var wire 1 ! rst $end\n$var wire 1 \" held $end\n",
+        "#0\n1!\n1\"\n#10\n0!\n#20\n",
+    );
+    assert_eq!(
+        store.json("stats", &["-s", "held"])["data"]["total_ticks"],
+        10
+    );
+    assert_eq!(
+        store.json("stats", &["-s", "held", "--with-reset"])["data"]["total_ticks"],
+        20
+    );
+    assert_eq!(
+        store.json("stats", &["-s", "held", "--async"])["data"]["total_ticks"],
+        20
+    );
+}
+
+#[test]
+fn issue_1098_snapshot_hint_and_empty_stats_envelope_use_selected_window() {
+    let store = Issue1098Store::reset(false, false);
+    for (mode, start, total) in [(vec!["--with-reset"], 0, 1200), (vec![], 1000, 200)] {
+        let mut args = vec!["value", store.1.to_str().unwrap(), "--at", "999"];
+        args.extend(mode.clone());
+        let (_, err, _) = run_bwave(&args);
+        assert!(
+            err.contains(&format!("Simulation time range: {start}ns..1200ns")),
+            "{err}"
+        );
+        let mut args = vec![
+            "stats",
+            store.1.to_str().unwrap(),
+            "-s",
+            "missing",
+            "--format",
+            "json",
+        ];
+        args.extend(mode);
+        let (out, _, code) = run_bwave(&args);
+        assert_eq!(code, 2);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(json["data"]["total_ticks"], total);
+        assert_eq!(json["data"]["signals"], serde_json::json!([]));
+    }
+}
+
+#[test]
+fn issue_1098_unknown_states_keep_occupancy_without_binary_coverage() {
+    for unknown in ["x", "z"] {
+        let events = format!("#0\n{unknown}!\n#10\n0!\n#20\n1!\n#30\n");
+        let store = Issue1098Store::new("$var wire 1 ! flag $end\n", &events);
+        let json = store.json("stats", &[]);
+        let signal = &json["data"]["signals"][0];
+        assert_eq!(signal["time_in_state_ticks"][format!("'h{unknown}")], 10);
+        assert_eq!(signal["value_hist"][format!("'h{unknown}")], 1);
+        assert_eq!(signal["value_pct"], 100.0);
+        assert_eq!(signal["toggle_pct"], 100.0);
+        let events = format!("#0\n{unknown}!\n#10\n1!\n#20\n");
+        let store = Issue1098Store::new("$var wire 1 ! flag $end\n", &events);
+        let json = store.json("stats", &[]);
+        assert_eq!(json["data"]["signals"][0]["toggle_pct"], 0.0);
+        assert_eq!(json["data"]["signals"][0]["value_pct"], 50.0);
+    }
+}
+
+#[test]
+fn issue_1108_public_find_rejects_invalid_row_selector_without_panic() {
+    const STORE_ENV: &str = "BWAVE_1108_LIBRARY_FIND_STORE";
+    const INVALID_ENV: &str = "BWAVE_1108_LIBRARY_FIND_INVALID";
+    if let Some(store) = std::env::var_os(STORE_ENV) {
+        let cache = bwave::cache::ColumnCache::load_from_file(&PathBuf::from(store)).unwrap();
+        let mut patterns = vec!["state".into()];
+        if std::env::var_os(INVALID_ENV).is_some() {
+            patterns.insert(0, "bad\\".into());
+        }
+        let cfg = bwave::ExtractConfig {
+            patterns,
+            signal_radixes: vec![("state".into(), bwave::format::Radix::Dec)],
+            find_pattern: Some("state".into()),
+            find_value: Some("0".into()),
+            async_mode: true,
+            first_match: true,
+            ..Default::default()
+        };
+        bwave::cache::find_value_from_cache(&cache, &cfg);
+        return;
+    }
+    let fst = build_bwave("small_clocked.vcd", "1108-library-find-invalid-selector");
+    let mut outcomes = Vec::new();
+    for invalid in [false, true] {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "issue_1108_public_find_rejects_invalid_row_selector_without_panic",
+            "--nocapture",
+        ]);
+        command.env(STORE_ENV, &fst);
+        command.env_remove(INVALID_ENV);
+        if invalid {
+            command.env(INVALID_ENV, "1");
+        }
+        outcomes.push((invalid, command.output().unwrap()));
+    }
+    std::fs::remove_file(fst).unwrap();
+    for (invalid, output) in outcomes {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(if invalid { 2 } else { 0 }),
+            "{stdout}\n{stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        if invalid {
+            assert!(stderr.contains("invalid glob pattern"), "{stderr}");
+        } else {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.split_whitespace().collect::<Vec<_>>()
+                        == ["0", "state[3:0]", "0"]),
+                "{stdout}"
+            );
+        }
+    }
 }

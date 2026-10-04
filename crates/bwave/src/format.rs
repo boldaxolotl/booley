@@ -814,13 +814,40 @@ fn print_tree_node(
     Ok(())
 }
 
-/// Check if a value string is an edge keyword. Returns Some("rising")/Some("falling")/None.
-pub fn is_edge_keyword(value: &str) -> Option<&'static str> {
-    match value.to_lowercase().as_str() {
-        "rising" => Some("rising"),
-        "falling" => Some("falling"),
-        "change" => Some("change"),
-        _ => None,
+/// Shared classification for all waveform trigger queries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TriggerMode {
+    #[default]
+    Literal,
+    Rising,
+    Falling,
+    Change,
+}
+
+impl TriggerMode {
+    pub fn classify(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("rising") {
+            Self::Rising
+        } else if value.eq_ignore_ascii_case("falling") {
+            Self::Falling
+        } else if value.eq_ignore_ascii_case("change") {
+            Self::Change
+        } else {
+            Self::Literal
+        }
+    }
+
+    pub fn directional(self) -> bool {
+        matches!(self, Self::Rising | Self::Falling)
+    }
+
+    pub fn matches(self, previous: Option<&str>, current: &str, width: u32, literal: &str) -> bool {
+        match self {
+            Self::Literal => values_match(current, literal),
+            Self::Change => previous.is_some_and(|prev| prev != current),
+            Self::Rising => width == 1 && previous == Some("0") && current == "1",
+            Self::Falling => width == 1 && previous == Some("1") && current == "0",
+        }
     }
 }
 
@@ -870,6 +897,28 @@ pub fn values_match(actual: &str, target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn issue_1100_trigger_classification_and_observation() {
+        use super::TriggerMode;
+        for (keyword, mode) in [
+            ("ChAnGe", TriggerMode::Change),
+            ("RISING", TriggerMode::Rising),
+            ("FaLlInG", TriggerMode::Falling),
+        ] {
+            assert_eq!(TriggerMode::classify(keyword), mode);
+        }
+        for literal in ["10", "'h10", "'d16", "'b10000", "x", "CHANGE "] {
+            assert_eq!(TriggerMode::classify(literal), TriggerMode::Literal);
+        }
+        assert!(!TriggerMode::Change.matches(None, "0", 1, ""));
+        assert!(TriggerMode::Change.matches(Some("x"), "0", 4, ""));
+        assert!(TriggerMode::Change.matches(Some("x"), "z", 4, ""));
+        assert!(!TriggerMode::Change.matches(Some("0"), "0", 4, ""));
+        assert!(!TriggerMode::Rising.matches(Some("0"), "1", 4, ""));
+        assert!(TriggerMode::Rising.matches(Some("0"), "1", 1, ""));
+        assert!(TriggerMode::Literal.matches(None, "A", 8, "a"));
+    }
+
     use super::*;
     use proptest::prelude::*;
 

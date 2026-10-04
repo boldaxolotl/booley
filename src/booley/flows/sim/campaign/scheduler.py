@@ -238,8 +238,18 @@ class BoundedCampaignScheduler:
                 self._registry.project_data,
                 lambda: permit.lease_health.lost.is_set() or self._capacity.shutdown_requested,
             )
-            with supervised_execution_scope(scope):
-                self._execute(attempt, str(child_id), prepared.entry_sha256)
+            try:
+                with supervised_execution_scope(scope):
+                    self._execute(attempt, str(child_id), prepared.entry_sha256)
+            except HeavyCapacityError as exc:
+                from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+
+                if (
+                    isinstance(exc.__cause__, PreSimScopeStoppedError)
+                    and permit.lease_health.lost.is_set()
+                ):
+                    state.terminal_cause = "lease_lost"
+                raise
             if permit.lease_health.lost.is_set():
                 state.terminal_cause = "lease_lost"
             self._registry.mark_terminal(prepared, state.terminal_cause)

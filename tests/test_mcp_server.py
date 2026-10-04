@@ -2046,3 +2046,73 @@ def test_committed_process_result_preserves_latest_unmet_report(tmp_path, monkey
     assert report["detail"]["report_submission_status"] == "completed"
     assert "committed" in diagnosis.lower()
     assert "invalidated" in diagnosis
+
+
+def test_simulation_count_transport_omits_only_full_mapping():
+    from copy import deepcopy
+
+    from booley.mcp.server import _structured_from_report
+
+    report = {
+        "$schema": "booley.simulation-report/v3",
+        "flow": "sim",
+        "passed": True,
+        "detail": {
+            "campaigns": {
+                "sim": {
+                    "observations": [{"test": "one", "cycle_count": 7}],
+                    "artifacts": {"simulation": {"path": "targets/sim/simulation.json"}},
+                }
+            }
+        },
+        "cycle_counts": {
+            "sim": [{"test": "x" * 512, "cycle_count": index} for index in range(4000)]
+        },
+    }
+    before = deepcopy(report)
+    result = _structured_from_report(report)
+    assert report == before
+    expected = {key: value for key, value in report.items() if key != "cycle_counts"}
+    assert result["reports"] == [expected]
+    report["flow"] = "synth"
+    assert _structured_from_report(report)["truncated"] is True
+
+
+@pytest.mark.parametrize("completion_error", [False, True])
+def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
+    monkeypatch, completion_error
+):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.flow import _campaign_report_lines
+    from booley.mcp.server import _format_mcp_tool_result
+    from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
+
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "4000")
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "4000")
+    observation = {"test": "smoke", "cycle_count": 7, "detail": {"reason": "x" * 3870}}
+    outcome = SimpleNamespace(
+        target={"selector": "sim"}, aggregate_grade="fail", observations=[observation]
+    )
+    card = "\n".join(_campaign_report_lines([outcome]))
+    assert len(card.encode()) + 2 <= 4000
+    result = EndpointOutcome(exit_code=1, report_text=card)
+    if completion_error:
+        normalize_completion_error(result, OSError("y" * 200), "publish")
+    stderr = "earlier output\n" * 300 + "\n" + result.report_text + "\n"
+    rendered = _format_mcp_tool_result(
+        result.exit_code, "", stderr, {"report_text": result.report_text}
+    )
+    assert rendered.count("sim: FAIL") == 1
+    assert ("--- report ---" in rendered) is completion_error
+
+
+def test_fetched_simulation_card_never_expands_top_level_counts():
+    from booley.mcp.server import _format_report_card
+
+    report = {
+        "flow": "sim",
+        "detail": {"campaigns": {}},
+        "cycle_counts": {"sim": [{"test": "hidden-full-row", "cycle_count": 7}]},
+    }
+    assert "hidden-full-row" not in _format_report_card(report, "sim")

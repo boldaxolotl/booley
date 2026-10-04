@@ -719,7 +719,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     (row 11), does the user want any Booley Specialist explicitly disabled
     from the start — `reviewer`, `mutation_tester`, or another? Every installed
     Specialist is discovered automatically; Step 2 writes
-    `[mcp_tools.<name>].enabled = false` only for an intentional opt-out. One caveat
+    `[specialists.<name>].enabled = false` only for an intentional opt-out. One caveat
     before enabling: **`mutation_tester`
     has not supported cocotb-based sim Targets** — its baseline runner drives a
     `V<toplevel>` binary, and a Cocotb Target builds `Vtop` driven from Python

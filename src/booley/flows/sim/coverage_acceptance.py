@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,12 +28,15 @@ class CoverageAcceptance:
 
     state: DevelopmentState
     recorder: AcceptanceRecorder = field(compare=False)
+    observer: Callable[[list[CriterionChange]], None] | None = field(default=None, compare=False)
 
     def publish(self, plan: CoverageTargetPlan, campaign: CoverageCampaign, path: Path) -> None:
         """Append normalized evidence before committing the mutable state projection."""
         shadow = deepcopy(self.state)
         shadow.work_dir = str(plan.handle.project_root)
         changes = _apply_campaign(shadow, plan, campaign, path)
+        if self.observer is not None:
+            self.observer(changes)
         if not changes:
             return
         if shadow.strict_criteria:

@@ -41,7 +41,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 |---|---|
 | `flow`, `target`, `argv` | Which Flow ran, the requested Target selector, and the parsed arguments. |
 | `exit_code`, `passed` | The overall result. |
-| `criterion_key`, `criterion_met` | The Criterion result, when the run maps to exactly one Criterion. Empty or false for multi-Target runs. |
+| `criterion_key`, `criterion_met` | The effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and the Ticket slug (empty outside a Ticket). |
 | `detail` | Flow-specific results and pointers to per-Target files. |
 | `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |
@@ -132,12 +132,14 @@ no longer be resumed.
 ### Report schemas and references
 
 - `simulation.json` uses `booley.simulation-projection/v2`.
-- `report.json` uses `booley.simulation-report/v2`.
+- `report.json` uses `booley.simulation-report/v3`; other Flow reports use `booley.flow-report/v1` and Specialist reports use `booley.specialist-report/v1`. Older v2 and unversioned files retain their historical ambiguity; existing files are not migrated.
 - Target-level `coverage.json` uses `booley.coverage-campaign-reference/v1`.
 - The selected nested `coverage.json` is the current Coverage Campaign manifest.
 
-To find a Target's results, follow `artifacts[target].report` in the run's
-`report.json`. Every path inside these files is relative, and each reference
+To find a Simulation Campaign Target's results, follow
+`detail.campaigns.<selector>.artifacts.simulation` in `report.json` (legacy
+reports keep their old artifact hints). Every path inside these files is
+relative, and each reference
 says what it is relative to: `report_invocation` (this run's directory),
 `reports_root` (the report root, used when a resumed run points at the original
 run's Campaign), or `external_origin_target` (an original run under a different
@@ -148,6 +150,14 @@ copying only the resumed run leaves those references dangling.
 
 If writing the final report fails, the run exits `2` with
 `detail.completion_error`; results already written are kept.
+
+`report.json` also stores every observed cycle count in top-level
+`cycle_counts.<Target selector>[]` rows `{test, cycle_count}`; both fields are
+nullable (`test: null` = unnamed test). This is distinct from the legacy
+`detail.cycle_counts[]` rows. The `detail.campaigns.<selector>.observations`
+preview keeps only the first 32. Inline MCP output drops the full mapping. If
+the counts can't be computed, the report records `cycle_counts_error:
+unavailable` instead; the verdict and Criteria are unaffected.
 
 ### `simulation.json`
 
@@ -162,7 +172,9 @@ If writing the final report fails, the run exits `2` with
 | `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
 | `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
 
-Each `tests[]` entry has `name`, `passed`, `verdict`, `termination`,
+Simulation Campaign entries have `name` (`default` for an unnamed test),
+`passed`, nullable `cycles`, `sva_errors`, `timed_out`, `execution`,
+`failure_kind`, and `error_tail`. Each legacy/unprepared `tests[]` entry has `name`, `passed`, `verdict`, `termination`,
 `failure_kind`, `timed_out`,
 `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`,
 `error_tail`, `test_validated`, `phase_timings_s`, and `resources`

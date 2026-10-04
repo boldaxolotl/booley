@@ -807,6 +807,11 @@ booley projects                   # list known projects
 booley projects discover <dir>    # find existing projects under <dir>
 ```
 
+`booley projects discover` stops descending at each initialized Project to
+avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported
+by that scan; run `booley projects discover <nested path>` on a nested Project
+directly to import it.
+
 Booley also runs a quick health check on its own when the container starts and
 before `booley run`: about once a week, daily while problems remain, and
 whenever the configuration changes. It never blocks work. New problems show up

@@ -91,7 +91,13 @@ Every built-in Flow uses the same exit codes:
 |---:|---|---|
 | `0` | The Flow ran and the check passed. | Nothing. Advisory findings (such as lint warnings with `warnings_as_errors = false`) may still be reported. |
 | `1` | The Flow reached a design verdict and it failed. | Fix the RTL or testbench. |
-| `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, timeout. | Fix the setup; the result says nothing about the design. |
+| `1` | Simulation was `inconclusive` (for example, no pass/fail sentinel after a clean run). The Criterion is skipped. | Repair the testbench verdict or missing evidence, then rerun. |
+| `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, tool or build timeout. | Fix the setup; the result says nothing about the design. |
+
+A simulation run that exceeds its run budget gets a `timeout` verdict and exits
+`1`; it fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock, or
+raise `--timeout-ms` or `[flows.sim].timeout_ms` if the test legitimately needs
+longer. Build, Elaboration Check, and Pre-Sim Command timeouts instead exit `2`.
 
 The CLI prints a final verdict card: stdout on success, stderr on failure.
 
@@ -138,6 +144,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |
 | `--no-waivers` | With `--coverage`, report raw coverage without applying approved waivers. With a Coverage Criterion it also needs `--diagnostic` (see [Collecting vs. gating](#collecting-vs-gating)). |
 | `--resume-from <manifest.json>` | Resume an interrupted run (see [Resuming](#resuming-an-interrupted-run)). |
+| `--verbose` | With `--resume-from`, include full Simulation Campaign mismatch pointers and values (also with `--dry-run`). |
 | `--result-verbosity <compact\|full>` | cocotb console detail. `full` prints every testcase; the complete XML/JSON is always kept. |
 | `--no-kill` | Skip the pre-run cleanup of stale simulator processes. Diagnostic use only. |
 
@@ -171,7 +178,10 @@ Each test gets one verdict:
 - **cocotb testbenches** use cocotb's result file; assertion output can still
   fail the test.
 - A test that exits cleanly without a valid verdict is **inconclusive**, never a
-  pass. So is a `--trace` run that produced no fresh waveform.
+  pass. So is a `--trace` run that produced no fresh waveform. An inconclusive
+  run exits `1` and skips the `sim_pass_*` Criterion.
+- A simulation run that exceeds its run budget gets a **timeout** verdict,
+  exits `1`, and fails `sim_pass_*`.
 - A test stopped by a Booley guard stays **aborted** even if the simulator
   exits `0`. An infrastructure abort is exit `2`. A `$readmemh` input file that
   is missing and not declared in the Target is a design failure
@@ -470,6 +480,13 @@ numbered report directory (qualified Target selectors are percent-encoded):
       native/merged/         merged Verilator database
       hooks/                 hook evidence, when collected
 ```
+
+Cycle counts: the numbered `report.json` lists every test's count under
+`cycle_counts.<Target selector>[]` as `{test, cycle_count}` (`test: null` for
+an unnamed test, or `cycle_counts_error: unavailable` if counts couldn't be
+collected). Each Target's `simulation.json` has them as `tests[].cycles`; find
+it via `detail.campaigns.<selector>.artifacts.simulation`, whose `path_base`
+may point at the original run after a resume.
 
 The Target reference's `coverage_campaign.path` resolves from the origin Target
 directory, as declared by `coverage_campaign.path_base: origin_target`. The

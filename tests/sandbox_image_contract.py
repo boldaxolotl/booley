@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from booley.runtime.dockerfile_syntax import logical_instructions
+
 _BASE_DOCKERFILE = "src/booley/data/docker/Dockerfile.base"
 _SUBSTRATE_DOCKERFILE = "src/booley/data/docker/Dockerfile.substrate"
 _OVERLAY_DOCKERFILE = "src/booley/data/docker/Dockerfile.wheel"
@@ -19,13 +21,6 @@ _VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
 _INVENTORY_EXPORTER = ".github/scripts/image_package_inventory.py"
 _INVENTORY_LABEL = "io.booley.runtime-base.package-inventory"
 _INVENTORY_PATH = "/usr/local/share/booley/base-package-inventory.json"
-
-
-@dataclass(frozen=True)
-class Instruction:
-    keyword: str
-    value: str
-    line: int
 
 
 @dataclass(frozen=True)
@@ -108,31 +103,6 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path}: workflow must be a mapping")
     return value
-
-
-def logical_instructions(contents: str) -> tuple[Instruction, ...]:
-    instructions: list[Instruction] = []
-    parts: list[str] = []
-    start = 0
-    for number, raw in enumerate(contents.splitlines(), 1):
-        stripped = raw.strip()
-        if not parts and (not stripped or stripped.startswith("#")):
-            continue
-        if not parts:
-            start = number
-        continued = raw.rstrip().endswith("\\")
-        part = raw.rstrip()[:-1] if continued else raw
-        parts.append(part.strip())
-        if continued:
-            continue
-        logical = " ".join(parts)
-        keyword, separator, value = logical.partition(" ")
-        if separator:
-            instructions.append(Instruction(keyword.upper(), value.strip(), start))
-        parts = []
-    if parts:
-        raise ValueError(f"Dockerfile:{start}: unterminated logical instruction")
-    return tuple(instructions)
 
 
 def dockerfile_parents(contents: str) -> tuple[str, ...]:

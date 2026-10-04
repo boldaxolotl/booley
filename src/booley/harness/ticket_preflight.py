@@ -68,7 +68,12 @@ def run_ticket_preflight(project_root: Path) -> None:
         raise TicketPreflightError(failures)
 
     # 7. Custom MCP endpoints & criteria validation
-    _validate_custom_endpoints_and_criteria(project_root)
+    from booley.mcp.endpoint_config import EndpointConfigError
+
+    try:
+        _validate_custom_endpoints_and_criteria(project_root)
+    except EndpointConfigError as exc:
+        raise TicketPreflightError([str(exc)]) from exc
 
     # 8. Active agent backend health (warning only)
     _check_agent_backend()
@@ -281,7 +286,7 @@ def _validate_custom_endpoints_and_criteria(project_root: Path) -> None:
     all_criteria_names = _validate_criteria_structure(project_root)
 
     # --- Load endpoint config and check structural endpoint errors ---
-    mcp_tool_config, flow_config = _load_endpoint_config(project_root)
+    specialist_config, flow_config = _load_endpoint_config(project_root)
     custom_mcp_tools_dir = project_root / ".booley_project" / "mcp_tools"
     # --- Per-endpoint validation (warn + skip on error) ---
     if not custom_mcp_tools_dir.is_dir():
@@ -293,7 +298,7 @@ def _validate_custom_endpoints_and_criteria(project_root: Path) -> None:
         if py_file.stem.startswith("_"):
             continue
         _validate_single_endpoint(
-            py_file, mcp_tool_config, flow_config, builtin_names, all_criteria_names
+            py_file, specialist_config, flow_config, builtin_names, all_criteria_names
         )
 
     logger.debug("Custom MCP endpoint validation complete")
@@ -361,7 +366,7 @@ def _warn_retired_sandbox_attr(
 
 def _validate_single_endpoint(
     py_file: Path,
-    mcp_tool_config: dict[str, Any],
+    specialist_config: dict[str, Any],
     flow_config: dict[str, Any],
     builtin_names: set[str],
     all_criteria_names: set[str],
@@ -389,9 +394,9 @@ def _validate_single_endpoint(
         )
         return
 
-    namespace = flow_config if info.kind == "flow" else mcp_tool_config
-    entry = namespace.get(info.name)
-    if isinstance(entry, dict) and entry.get("enabled") is False:
+    from booley.mcp.endpoint_config import endpoint_is_enabled
+
+    if not endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config):
         return
 
     # Check 4: Name collision with builtin
@@ -419,24 +424,11 @@ def _validate_single_endpoint(
 
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Load the ``[mcp_tools]`` and ``[flows]`` sections from booley.toml."""
-    toml_path = project_root / ".booley_project" / "booley.toml"
-    if not toml_path.exists():
-        return {}, {}
-    try:
-        import tomllib
+    """Load the ``[specialists]`` and ``[flows]`` sections from booley.toml."""
+    from booley.mcp.endpoint_config import read_endpoint_config
 
-        with toml_path.open("rb") as f:
-            data = tomllib.load(f)
-        mcp_tools = data.get("mcp_tools", {})
-        flows = data.get("flows", {})
-        return (
-            mcp_tools if isinstance(mcp_tools, dict) else {},
-            flows if isinstance(flows, dict) else {},
-        )
-    except Exception as e:  # noqa: BLE001 — malformed TOML degrades; validation continues
-        logger.warning("Failed to load booley.toml: %s", e)
-        return {}, {}
+    toml_path = project_root / ".booley_project" / "booley.toml"
+    return read_endpoint_config(toml_path)
 
 
 def _extract_sandbox_attr(tree: ast.Module) -> str | None:

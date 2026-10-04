@@ -531,6 +531,8 @@ def test_scope_expansion_rechecks_mandatory_sim_policy(tmp_path: Path) -> None:
     assert amendment.pending_amendment(root, "blocked-again") is None
 
 
+# Git integration can exceed the Windows CI 60-second unit-test budget.
+@pytest.mark.timeout(180)
 def test_paired_publication_retains_both_implementation_participants(tmp_path: Path) -> None:
     from booley.ticket_board.io import TicketFileSpec
 

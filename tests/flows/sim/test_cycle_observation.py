@@ -606,3 +606,68 @@ def test_schema_four_relative_cycle_criterion_joins_baseline_by_identity() -> No
     flow._record_cycle_count_criteria(result)
 
     assert flow.set_criterion.call_args.args == (key, True)
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monkeypatch, topology):
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = root
+    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
+    flow._target_handles = {"sim_core": handle}
+    _pin_baseline(flow, revision)
+    roots = []
+
+    def preview(targets, tests, *, role, revision):
+        baseline = Path(flow.args.work_dir)
+        _assert_topology_baseline(baseline, root, "sim_core")
+        roots.append(baseline)
+        assert targets == ["sim_core"]
+        assert tests == {"sim_core": ["coremark"]}
+        return [_plan_unit(role, identity=handle.identity, revision=revision)], []
+
+    monkeypatch.setattr(flow, "_plan_simulation_targets", preview)
+    units, errors = flow._plan_cycle_count_baseline_units(["sim_core"], {"sim_core": ["coremark"]})
+    assert errors == []
+    assert units[0].target_identity == handle.identity
+    assert units[0].revision == revision
+    assert flow.args.work_dir == root
+    assert roots and all(not path.exists() for path in roots)
+
+
+@pytest.mark.parametrize("topology", ["standalone", "linked"])
+def test_cycle_baseline_execution_materializes_project_topologies(tmp_path, monkeypatch, topology):
+    from tests.flows.test_baseline_worktree import (
+        _assert_topology_baseline,
+        _project_topology_checkout,
+    )
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = root
+    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
+    flow._target_handles = {"sim_core": handle}
+    _pin_baseline(flow, revision)
+    _install_baseline_plan(flow, identity=handle.identity, revision=revision)
+    roots = []
+
+    def run(target, top, tests, _unused, *, plan_role):
+        baseline = Path(flow.args.work_dir)
+        _assert_topology_baseline(baseline, root, target)
+        roots.append(baseline)
+        assert top == "top"
+        assert tests == {"sim_core": ["coremark"]}
+        assert plan_role == "baseline"
+        return TargetResult(target=target, passed=True, tests=[])
+
+    monkeypatch.setattr(flow, "_run_target", run)
+    results = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
+    assert list(results) == [handle.identity]
+    assert results[handle.identity].target_identity == handle.identity
+    assert flow.args.work_dir == root
+    assert roots and all(not path.exists() for path in roots)
