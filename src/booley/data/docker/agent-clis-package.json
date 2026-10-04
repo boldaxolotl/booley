@@ -4,7 +4,7 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.285",
     "@anthropic-ai/claude-code-linux-x64": "2.1.285",
-    "@openai/codex": "0.159.3",
-    "@openai/codex-linux-x64": "npm:@openai/codex@0.159.3-linux-x64"
+    "@openai/codex": "0.160.0",
+    "@openai/codex-linux-x64": "npm:@openai/codex@0.160.0-linux-x64"
   }
 }

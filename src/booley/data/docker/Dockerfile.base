@@ -106,7 +106,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
 # Minimal Sandbox. The immutable upstream development image remains the
 # EDA builder, but none of its compilers, Docker tooling, Pandoc, LLVM, CMake,
 # headers, or build caches become runtime layers.
-FROM docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
+FROM docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/Los_Angeles \
@@ -254,7 +254,7 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
     && test "$(claude --version | awk '{print $1}')" = "2.1.285" \
-    && test "$(codex --version | awk '{print $2}')" = "0.159.3" \
+    && test "$(codex --version | awk '{print $2}')" = "0.160.0" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
 
@@ -410,6 +410,6 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       io.booley.openroad.source-revision=c4d317e4fa2398b9880920a1411c20258a2175a9 \
       io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d \
       io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 \
-      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
+      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 
 WORKDIR /work
