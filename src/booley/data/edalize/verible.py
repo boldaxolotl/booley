@@ -105,3 +105,7 @@ class Verible(Edatool):
         )
         commands.set_default_target("lint")
         self.commands = commands
+
+
+class Veriblelint(Verible):
+    """Flow alias preserving Edalize's lowercase class-name option namespace."""

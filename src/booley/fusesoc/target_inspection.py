@@ -275,6 +275,7 @@ class _TargetSourceInspector:
             cocotb_module=handle.cocotb_module,
             doctor_flows=handle.doctor_flows,
             doctor_selftest=handle.doctor_private,
+            lint_flow_eda_tool_missing=handle.lint_flow_eda_tool_missing,
         )
         tb_paths = fusesoc_registry.target_source_files_for_ref(
             self.root, source_ref, include_dependencies=True

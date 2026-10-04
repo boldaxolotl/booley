@@ -547,8 +547,11 @@ semantic checks, Verible for style and naming. To run both, declare two Targets
 and select both.
 
 ```bash
-booley flow lint --target lint_soc,style_soc --scope rtl/fifo.sv
+booley flow lint --target lint_soc,lint_style --scope rtl/fifo.sv
 ```
+
+See [Verible lint Target](CONFIG.md#verible-lint-target) for the Target recipe
+and EDA-tool compatibility policy.
 
 - `--scope <file,...>` limits reported findings to the listed files.
 - `[flows.lint].warnings_as_errors` decides whether warnings fail the exit code.

@@ -762,22 +762,34 @@ def core_identity_key(core_doc: Mapping[str, Any]) -> str:
     return _vlnv_key(vlnv) if isinstance(vlnv, str) and vlnv else ""
 
 
+def _enumerated_ref(doc: Mapping[str, Any], name: str, vlnv: str, core_file: Path) -> TargetRef:
+    """Preserve one authored declaration and its explicit lint selection fact."""
+    cocotb_module = core_target_flow_option(doc, name, "cocotb_module")
+    flow = core_target_flow(doc, name)
+    return TargetRef(
+        name=name,
+        vlnv=vlnv,
+        core_file=core_file,
+        eda_tool=core_target_eda_tool(doc, name),
+        flow=flow,
+        cocotb_module=str(cocotb_module) if cocotb_module else None,
+        doctor_flows=core_target_doctor_flows(doc, name),
+        doctor_selftest=core_target_is_doctor_selftest(doc, name),
+        lint_flow_eda_tool_missing=flow == "lint"
+        and not core_target_flow_option(doc, name, "tool"),
+    )
+
+
 def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
-    """Map every selectable Target name to *all* cores that declare it (ADR 0030).
+    """Map selectable Target names to all declaring cores (ADR 0030).
 
-    Reads ``.core`` YAML directly (decision 6) — no CLI, no trust boundary. A
-    name declared by several *distinct* cores is legal and expected in a
-    multi-core FuseSoC repo (``lint`` on 54 cores in ibex): every declaring core
-    is kept, ordered by :func:`discover_cores` (deterministic). Two *versions* of
-    the same logical core (identical ``vendor:library:name``) collapse to the
-    first discovered — FuseSoC resolves the version at run time. The implicit
-    ``default`` Target is not enumerated. Never raises on a name clash: global
-    uniqueness (ADR 0022 dec 10) is retired; disambiguation happens at selection
-    (:func:`resolve_ref`), not enumeration.
-
-    One clash IS fatal: the same logical VLNV authored both in the repo tree
-    and in ``.booley_project/cores/`` raises :class:`CoreCollisionError` (ADR
-    0036) — cross-root shadowing must never resolve silently.
+    Read core YAML directly without CLI/trust boundaries (decision 6). Keep
+    distinct cores in deterministic discover_cores order; versions of the same
+    vendor:library:name collapse to the first discovered for runtime resolution.
+    Exclude the implicit default. Name clashes are legal: selection resolves
+    them, replacing retired global uniqueness (ADR 0022 decision 10).
+    The same logical VLNV across repo/state roots raises CoreCollisionError:
+    cross-root shadowing never resolves silently (ADR 0036).
     """
     root = Path(project_root)
     refs: dict[str, list[TargetRef]] = {}
@@ -812,19 +824,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
             bucket = refs.setdefault(name, [])
             if any(_vlnv_key(r.vlnv) == _vlnv_key(vlnv) for r in bucket):
                 continue  # same logical core, another version — first wins
-            cocotb_module = core_target_flow_option(doc, name, "cocotb_module")
-            bucket.append(
-                TargetRef(
-                    name=name,
-                    vlnv=vlnv,
-                    core_file=core_file,
-                    eda_tool=core_target_eda_tool(doc, name),
-                    flow=core_target_flow(doc, name),
-                    cocotb_module=str(cocotb_module) if cocotb_module else None,
-                    doctor_flows=core_target_doctor_flows(doc, name),
-                    doctor_selftest=core_target_is_doctor_selftest(doc, name),
-                )
-            )
+            bucket.append(_enumerated_ref(doc, name, vlnv, core_file))
     return refs
 
 
@@ -2329,6 +2329,7 @@ def resolve_target_handle(
         cocotb_module=handle.cocotb_module,
         doctor_flows=handle.doctor_flows,
         doctor_selftest=handle.doctor_private,
+        lint_flow_eda_tool_missing=handle.lint_flow_eda_tool_missing,
     )
     preflight_target_sources_for_ref(
         root,
