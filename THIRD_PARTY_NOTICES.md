@@ -113,7 +113,7 @@ THE LIBRARY.
 
 The `bwave` executable statically links Rust crates recorded in
 `crates/bwave/Cargo.lock`. The dependency versions below describe the lockfile at
-Booley 0.2.15. Where a crate offers a choice of licenses, this distribution uses
+Booley 0.3.0. Where a crate offers a choice of licenses, this distribution uses
 the license named by the group.
 
 ### BSD-3-Clause
@@ -178,10 +178,14 @@ The following crates are distributed under Apache-2.0. The complete
 Apache-2.0 terms are in the repository's `LICENSE` file.
 
 - `adler2 2.0.1`
-- `anstream 1.0.0`, `anstyle 1.0.14`, `anstyle-parse 1.0.0`, `anstyle-query 1.1.5`, `colorchoice 1.0.5`, `is_terminal_polyfill 1.70.2`, and Windows-only `anstyle-wincon 3.0.11`
+- `anstream 1.0.0`, `anstyle 1.0.14`, `anstyle-parse 1.0.0`, `anstyle-query 1.1.5`, `colorchoice 1.0.5`, `is_terminal_polyfill 1.70.2`, and Windows-only `anstyle-wincon 3.0.11` and `once_cell_polyfill 1.70.2`
+- `bitflags 2.11.1`
 - `bstr 1.12.1`
+- `cfg-if 1.0.4`
 - `clap 4.6.0`, `clap_builder 4.6.0`, `clap_derive 4.6.0`, and `clap_lex 1.1.0`
 - `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.18`, and `crossbeam-utils 0.8.21`
+- `fastrand 2.4.1`, `getrandom 0.4.2`, `libc 0.2.186`, `once_cell 1.21.4`, and `tempfile 3.27.0`
+- `rustix 1.1.4` and `linux-raw-sys 0.12.1`
 - `either 1.15.0`, `equivalent 1.0.2`, `hashbrown 0.17.1`, `heck 0.5.0`, and `indexmap 2.14.0`
 - `itoa 1.0.18`, `log 0.4.29`, `miniz_oxide 0.8.9`, and `miniz_oxide 0.9.1`
 - `num_enum 0.7.6`, `num_enum_derive 0.7.6`, `proc-macro-crate 3.5.0`, `proc-macro2 1.0.106`, `quote 1.0.45`, and `syn 2.0.117`
