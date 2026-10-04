@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -388,7 +389,7 @@ class TestMain:
 
     def test_blocks_tracked_project_state_root(self, repo, monkeypatch, capsys):
         _configure_external_project_state(repo, monkeypatch)
-        # Isolate the tracked-path contract from strict configuration-node validation.
+        # Isolate tracked paths from strict configuration-node validation.
         monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
         (repo / ".booley_project").write_text("private project state\n", encoding="utf-8")
         _git(repo, "add", ".booley_project")
@@ -501,11 +502,12 @@ def matrix_repo(actual_git, repo, monkeypatch):
     return repo
 
 
-def _retired_pair(repo, upstream, base=None):
+def _upstream_pair(repo, upstream, base=None):
     config = repo / ".booley_project" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
+    location = upstream.as_posix() if isinstance(upstream, Path) else upstream
     config.write_text(
-        f'[stealth]\nupstream_repository = "{upstream.as_posix()}"\nupstream_base = "{base or _head(repo)}"\n',
+        f'[stealth]\nupstream_repository = "{location}"\nupstream_base = "{base or _head(repo)}"\n',
         encoding="utf-8",
     )
 
@@ -742,7 +744,7 @@ def test_malformed_protocol_refuses_without_discovery(
 
 def test_no_update_and_deletion_avoid_network(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(repo)
-    _retired_pair(repo, repo.parent / "offline.git", "f" * 40)
+    _upstream_pair(repo, repo.parent / "offline.git", "f" * 40)
     original = pre_push_hook._run_git
 
     def observe(args, **kwargs):
@@ -753,6 +755,7 @@ def test_no_update_and_deletion_avoid_network(repo: Path, monkeypatch: pytest.Mo
     with patch("sys.stdin", io.StringIO("")):
         assert main() == 0
     assert _push(_ZERO_SHA, _head(repo)) == 0
+    monkeypatch.setattr(pre_push_hook, "_run_git", original)
     assert _push(_head(repo)) == 1
 
 
@@ -1265,6 +1268,7 @@ def test_source_checkout_policy_never_reads_push_configuration(
         pytest.fail("source pre-push must never load the Project push configuration")
 
     monkeypatch.setattr(pre_push_hook, "validate_push_configuration", forbidden)
+    monkeypatch.setattr(pre_push_hook, "_guard_project_dir", forbidden)
     assert policy.source_checkout_policy_owner(root)
     assert main() == 0
 
@@ -1295,7 +1299,7 @@ def test_minimum_git_reference_and_inherited_alternate_are_complete(
     assert _push(leak) == 1
 
 
-def test_disabled_project_does_not_load_upstream_retired_pair(
+def test_disabled_project_does_not_load_upstream_pair(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(repo)
@@ -1780,15 +1784,288 @@ def test_identifier_symlink_and_identities(repo, monkeypatch):
     assert any("banned terms" in offense for offense in _commit_offenses(sha, []))
 
 
-def test_minimum_git_retired_pair_requires_removal(
+def test_minimum_git_pinned_upstream_import_and_fresh_metadata(
     matrix_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     repo = matrix_repo
     base = _commit(repo, "fix(core): claude imported identity")
     upstream = _clone_upstream(repo)
-    _retired_pair(repo, upstream, base)
+    _upstream_pair(repo, upstream, base)
+    assert _push(base) == 0
+    assert "unavailable" not in capsys.readouterr().err
+    assert _push(_commit(repo, "fix(core): clean local work")) == 0
+    fresh = _commit(repo, "fix(core): claude fresh local metadata")
+    # Source advancement never expands the pinned exemption to new commits.
+    _git(repo, "push", "--no-verify", str(upstream), "HEAD:refs/heads/main")
+    assert _push(fresh) == 1
+
+
+def test_minimum_git_upstream_base_can_be_advertised_ancestor(matrix_repo: Path) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude imported identity", author="Foreign <old@source.test>")
+    tip = _commit(repo, "fix(core): subsequent upstream work")
+    upstream = _clone_upstream(repo)
+    _upstream_pair(repo, upstream, base)
+    config = repo / ".booley_project" / "booley.toml"
+    config.write_text(config.read_text() + 'allowed_authors = ["*@example.com"]\n')
+    assert _push(tip) == 0
+    assert _push(_commit(repo, "fix(core): local work", author="Foreign <old@source.test>")) == 1
+    _git(repo, "reset", "--hard", tip)
+    assert _push(_commit_symlink(repo, "guide", ".booley_project/private")) == 1
+
+
+def test_minimum_git_upstream_advance_requires_fetch_before_verification(
+    matrix_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    source = repo.parent / "advancing-source"
+    _git(repo, "clone", str(repo), str(source))
+    _git(source, "config", "user.name", "Upstream Dev")
+    _git(source, "config", "user.email", "upstream@example.com")
+    _git(source, "config", "maintenance.auto", "false")
+    advanced = _commit(source, "fix(core): ordinary upstream advancement")
+    with pytest.raises(subprocess.CalledProcessError):
+        _git(repo, "cat-file", "-e", advanced)
+    _upstream_pair(repo, source, base)
     assert _push(base) == 1
-    assert "remove these unsupported import settings" in capsys.readouterr().err
+    assert "fetch upstream history" in capsys.readouterr().err
+    _git(repo, "fetch", str(source), "main")
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude local metadata")) == 1
+
+
+@pytest.mark.parametrize("base_kind", ["fresh", "tag", "blob", "missing", "wrong-format"])
+def test_minimum_git_invalid_upstream_base_refuses(
+    matrix_repo: Path, base_kind: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude imported identity")
+    upstream = _clone_upstream(repo)
+    if base_kind == "fresh":
+        base = _commit(repo, "fix(core): clean but unverified baseline")
+    elif base_kind == "tag":
+        _git(repo, "tag", "-a", "base", "-m", "base")
+        base = _git(repo, "rev-parse", "refs/tags/base")
+    elif base_kind == "blob":
+        base = _git(repo, "rev-parse", "HEAD:file.txt")
+    elif base_kind == "missing":
+        base = "f" * 40
+    else:
+        base = "f" * 64
+    _upstream_pair(repo, upstream, base)
+    assert _push(_head(repo)) == 1
+    assert "upstream_base" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "source_kind", ["self", "shared", "empty", "missing", "relative", "promisor", "shallow"]
+)
+def test_minimum_git_unverifiable_upstream_refuses(
+    matrix_repo: Path, source_kind: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude imported identity")
+    upstream = repo.parent / "upstream.git"
+    if source_kind == "self":
+        upstream = repo
+    elif source_kind == "shared":
+        _git(repo, "clone", "--bare", "--shared", str(repo), str(upstream))
+    elif source_kind == "empty":
+        _git(repo, "init", "--bare", str(upstream))
+    elif source_kind != "missing":
+        upstream = _clone_upstream(repo)
+        if source_kind == "relative":
+            upstream = Path("../") / upstream.name
+        elif source_kind == "promisor":
+            _git(upstream, "config", "remote.origin.promisor", "true")
+        elif source_kind == "shallow":
+            (upstream / "shallow").write_text(base + "\n")
+    _upstream_pair(repo, upstream, base)
+    assert _push(base) == 1
+    assert "ERROR: push blocked:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("foreign_policy", ["disabled", "missing"])
+def test_minimum_git_upstream_ignores_foreign_environment_policy(
+    matrix_repo: Path, monkeypatch: pytest.MonkeyPatch, foreign_policy: str
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude imported identity")
+    upstream = _clone_upstream(repo)
+    _upstream_pair(repo, upstream, base)
+    state = repo.parent / "foreign-state"
+    state.mkdir()
+    if foreign_policy == "disabled":
+        (state / "booley.toml").write_text("[stealth]\nenabled = false\nbanned_words = []\n")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude fresh metadata")) == 1
+
+
+def test_minimum_git_native_bundled_upstream_import(matrix_repo: Path) -> None:
+    from booley.harness.setup.project_git_hook_bundle import build_project_git_hook_bundle
+
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): generated upstream instructions by claude")
+    upstream = _clone_upstream(repo)
+    _upstream_pair(repo, upstream, base)
+    bundle = repo / ".booley_project" / ".managed" / "project-git-hooks.pyz"
+    bundle.parent.mkdir()
+    bundle.write_bytes(build_project_git_hook_bundle().content)
+    hook = repo / ".git" / "hooks" / "pre-push"
+    command = f'{shlex.quote(sys.executable)} -I {shlex.quote(str(bundle))} pre-push "$@"'
+    hook.write_text(f"#!/bin/sh\nexec {command}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    destination = sys.argv[2]
+    _git(repo, "push", destination, "HEAD:refs/heads/main")
+    assert _git(Path(destination), "rev-parse", "refs/heads/main") == base
+    fresh = _commit(repo, "fix(core): claude fresh metadata")
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        _git(repo, "push", destination, "HEAD:refs/heads/main")
+    assert "push blocked" in failure.value.stderr and fresh[:12] in failure.value.stderr
+    assert _git(Path(destination), "rev-parse", "refs/heads/main") == base
+
+
+@pytest.mark.parametrize("ref_kind", ["pull-only", "annotated-tag"])
+def test_minimum_git_upstream_import_requires_branch_or_tag(
+    matrix_repo: Path, ref_kind: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    _git(repo, "tag", "-a", "import", "-m", "import point")
+    upstream = _clone_upstream(repo)
+    _git(upstream, "update-ref", "-d", "refs/heads/main")
+    if ref_kind == "pull-only":
+        _git(upstream, "update-ref", "-d", "refs/tags/import")
+        _git(upstream, "update-ref", "refs/pull/7/head", base)
+    _upstream_pair(repo, upstream, base)
+    assert _push(base) == (1 if ref_kind == "pull-only" else 0)
+    if ref_kind == "pull-only":
+        assert "upstream_base is not reachable" in capsys.readouterr().err
+
+
+def test_minimum_git_encoded_file_upstream_import(matrix_repo: Path) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    upstream = _clone_upstream(repo, "upstream with spaces.git")
+    _upstream_pair(repo, upstream.as_uri(), base)
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude local metadata")) == 1
+
+
+@pytest.mark.parametrize("transport", ["https", "ssh"])
+def test_upstream_authenticated_transport_keeps_new_commits_checked(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, transport: str
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    base = _commit(repo, "fix(core): claude pristine import")
+    location = f"{transport}://example.test/upstream.git"
+    _upstream_pair(repo, location, base)
+    original = pre_push_hook._run_git
+
+    def advertisement(args, **kwargs):
+        if "ls-remote" in args and location in args:
+            assert "refs/heads/*" in args and "refs/tags/*" in args
+            if transport == "ssh":
+                assert "StrictHostKeyChecking=yes" in kwargs["env"]["GIT_SSH_COMMAND"]
+            else:
+                assert "http.followRedirects=false" in args
+            return subprocess.CompletedProcess(args, 0, f"{base}\trefs/heads/main\n".encode(), b"")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", advertisement)
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude local metadata")) == 1
+
+
+@pytest.mark.parametrize(
+    ("location", "key", "value"),
+    [
+        ("https://example.test/source", "http.sslVerify", "false"),
+        (
+            "https://example.test/source",
+            "http.https://example.test/source.followRedirects",
+            "true",
+        ),
+        ("ssh://example.test/source", "core.sshCommand", "ssh -o StrictHostKeyChecking=no"),
+    ],
+)
+def test_upstream_insecure_transport_refuses_before_discovery(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, location: str, key: str, value: str
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    _git(repo, "config", key, value)
+    _upstream_pair(repo, location)
+    original = pre_push_hook._run_git
+
+    def observe(args, **kwargs):
+        assert "ls-remote" not in args
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    assert _push(_head(repo)) == 1
+
+
+def test_minimum_git_upstream_ancestry_has_bounded_output(
+    matrix_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    records = []
+    for index in range(1, 1025):
+        parent = base if index == 1 else f":{index - 1}"
+        records.append(
+            f"commit refs/heads/source\nmark :{index}\n"
+            "committer Real Dev <dev@example.com> 1700000000 +0000\n"
+            f"data 13\nupstream work\nfrom {parent}\n\n"
+        )
+    subprocess.run(
+        ["git", "fast-import", "--quiet"],
+        cwd=repo,
+        # fast-import is a byte protocol; Windows text pipes would translate LF to CRLF.
+        input="".join(records).encode("utf-8"),
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    upstream = _clone_upstream(repo)
+    _git(upstream, "update-ref", "-d", "refs/heads/main")
+    _upstream_pair(repo, upstream, base)
+    fresh = _commit(repo, "fix(core): ordinary local work")
+    original = pre_push_hook._run_git
+
+    def observe(args, **kwargs):
+        result = original(args, **kwargs)
+        if "rev-list" in args:
+            # Only the single new local commit should cross the output boundary.
+            assert result.stdout == (fresh + "\n").encode()
+        return result
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    assert _push(fresh) == 0
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["http://example.test/repo", "git://example.test/repo", "ext::unsafe", "file:/absolute/repo"],
+)
+def test_upstream_unsafe_transport_refuses_before_discovery(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, location: str
+) -> None:
+    monkeypatch.chdir(repo)
+    _upstream_pair(repo, location)
+    original = pre_push_hook._run_git
+
+    def observe(args, **kwargs):
+        assert "ls-remote" not in args
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    assert _push(_head(repo)) == 1
 
 
 def test_minimum_git_unadvertised_protected_import_refuses(matrix_repo: Path) -> None:
@@ -1811,7 +2088,7 @@ def test_minimum_git_destination_advertised_merge_import(
     assert _push(_commit(repo, "fix(core): claude fresh local metadata")) == 1
 
 
-@pytest.mark.parametrize("configuration", ["retired", "malformed", "unreadable"])
+@pytest.mark.parametrize("configuration", ["incomplete-pair", "malformed", "unreadable"])
 def test_minimum_git_zero_active_push_needs_no_selected_config(
     matrix_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1822,7 +2099,7 @@ def test_minimum_git_zero_active_push_needs_no_selected_config(
     config = repo / ".booley_project" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
     config.write_text(
-        '[stealth]\nupstream_base = ""\n' if configuration == "retired" else "[stealth]\n"
+        '[stealth]\nupstream_base = ""\n' if configuration == "incomplete-pair" else "[stealth]\n"
     )
     if configuration == "malformed":
         config.write_text("[stealth]\nallowed_authors = [")
@@ -1848,7 +2125,7 @@ def test_minimum_git_zero_active_push_needs_no_selected_config(
     assert _push(_head(repo)) == 1
     error = capsys.readouterr().err
     assert (
-        "unsupported import settings" if configuration == "retired" else "cannot read selected"
+        "upstream_repository" if configuration == "incomplete-pair" else "cannot read selected"
     ) in error
 
 
