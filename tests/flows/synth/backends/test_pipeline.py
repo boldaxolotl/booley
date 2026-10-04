@@ -634,10 +634,10 @@ class TestSv2vRecipeSharesTheArgvBuilder:
         assert recipe.endswith("-w sv2v_converted.v")
 
 
-@pytest.mark.parametrize("empty", ["stat_dut.txt", "check_dut.txt", "synth_dut.v"])
+@pytest.mark.parametrize("empty", ["yosys.log", "stat_dut.txt", "check_dut.txt", "synth_dut.v"])
 def test_authenticated_empty_required_yosys_output_is_missing(tmp_path, empty):
     plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-    for name in ["stat_dut.txt", "check_dut.txt", "synth_dut.v", "sv2v_converted.v"]:
+    for name in ["yosys.log", "stat_dut.txt", "check_dut.txt", "synth_dut.v", "sv2v_converted.v"]:
         (plan.build_dir / name).write_text("Found and reported 0 problems.\n")
     (plan.build_dir / empty).write_text("")
     outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
@@ -649,6 +649,7 @@ def test_authenticated_empty_required_yosys_output_is_missing(tmp_path, empty):
     "subject,stage",
     [
         ("sv2v_converted.v", "sv2v"),
+        ("yosys.log", "yosys"),
         ("stat_dut.txt", "yosys"),
         ("check_dut.txt", "yosys"),
         ("synth_dut.v", "yosys"),
@@ -662,6 +663,7 @@ def test_all_authenticated_required_artifacts(tmp_path, subject, stage, state):
     plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
     names = [
         "sv2v_converted.v",
+        "yosys.log",
         "stat_dut.txt",
         "check_dut.txt",
         "synth_dut.v",
@@ -713,7 +715,7 @@ def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
         "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
         "yosys": "#!/bin/sh\nexit 0\n"
         if failing_stage == "yosys"
-        else '#!/bin/sh\necho "Chip area for module dut: 1000.0" > stat_dut.txt\necho "Found and reported 0 problems." > check_dut.txt\necho "module dut; endmodule" > synth_dut.v\n',
+        else '#!/bin/sh\necho "Chip area for module dut: 1000.0" > stat_dut.txt\ncat stat_dut.txt\necho "Found and reported 0 problems." > check_dut.txt\necho "module dut; endmodule" > synth_dut.v\n',
         "openroad": "#!/bin/sh\nexit 0\n",
     }
     for name, script in scripts.items():

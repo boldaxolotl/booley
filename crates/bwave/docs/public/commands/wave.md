@@ -3,10 +3,10 @@
 ## Synopsis
 
 ```bash
-bwave wave <FST_FILE> -t START:END [-s PATTERN[%RADIX] ...]
+bwave wave <FST_FILE> [-t START:END] [-s PATTERN[%RADIX] ...]
            [--async] [--clock PAT] [--reset PAT] [--with-reset]
            [--virtual "name = expr"] [--marker NAME TIME]
-           [--format text|json] [--limit N]
+           [--format text] [--limit N]
 ```
 
 ## Semantics
@@ -25,9 +25,8 @@ the row reads like an ASCII waveform.
 - `<FST_FILE>` required. Like `diff` and `distance`,
   `wave` strictly requires a built `.fst` store; there is
   no raw-VCD fallback.
-- `-t START:END` is effectively required: without a time
-  window the output would be unbounded. Open-ended ranges
-  work but you'll quickly hit `--limit`.
+- `-t START:END` is optional; `--limit` bounds the columns
+  when the time window is omitted or open-ended.
 - `-s PATTERN` optionally selects stored and Virtual Signal
   rows. Without it, every stored and virtual row is selected.
   Wide tables truncate at terminal width.
@@ -41,27 +40,19 @@ the row reads like an ASCII waveform.
 Text mode example:
 
 ```
-# clock: tb.dut.clk  period=10ns
-              100         110         120         130
-              |---------- |---------- |---------- |----------
-clk           ^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_^_
-valid         ____________________^^^^^^^^^^^^^^^^____________
-ready         ________________________^^^^^^^^^^^^^^^^^^^^^^^^
-state         'h0  'h0  'h0  'h0  'h0  'h1  'h1  'h2  'h3  'h3
+time  0  1  5
+   b  0  1  2
 ```
 
 With markers:
 
 ```
-              error_start            dma_done
-              v                      v
-              500         510         520         530
-              |---------- |---------- |---------- |----------
-...
+         change
+time  0       1  5
+   b  0       1  2
 ```
 
-JSON mode is **not yet implemented** for `wave`. Text mode
-only.
+`--format json` exits with code 2: `JSON output is not implemented for wave; use find/value/stats/list`.
 
 ## Common errors
 

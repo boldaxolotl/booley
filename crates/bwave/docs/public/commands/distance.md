@@ -5,10 +5,10 @@
 ```bash
 bwave distance <FST_FILE> <PATTERN> <VALUE>
                [--to <PATTERN_B> <VALUE_B>] [--stats]
-               [-s PATTERN[%RADIX] ...] [-t START:END]
+               [-t START:END]
                [--async] [--clock PAT] [--reset PAT] [--with-reset]
                [--virtual "name = expr"]
-               [--format text|json] [--limit N]
+               [--format text] [--limit N]
 ```
 
 ## Semantics
@@ -28,7 +28,8 @@ Two modes:
    latency".
 
 `--stats` collapses the per-pair list into summary
-statistics (count, min, max, mean, median).
+statistics (count, min, max, mean, median). Mean and median
+use one decimal; an even median averages the two middle distances.
 
 Both `VALUE` and `--to`'s value accept Verilog literals
 and edge keywords.
@@ -50,53 +51,43 @@ and edge keywords.
 Text mode, same-signal periods:
 
 ```
-# distance: tb.dut.valid == 'h1 (consecutive matches)
-A_cycle  B_cycle  delta
-     42       50      8
-     50       67     17
-     67       89     22
-# 3 intervals
+# same-signal: a 1
+@ 1000 -> @ 4000  d=3000
+@ 4000 -> @ 10000  d=6000
+@ 10000 -> @ 25000  d=15000
 ```
 
 Two-event mode (`--to`):
 
 ```
-# distance: tb.dut.req == 'h1  ->  tb.dut.ack == 'h1
-A_cycle  B_cycle  latency
-     42       46      4
-     50       55      5
-     67       70      3
-# 3 pairs
+# A: a 1 -> B: b 2
+@ 1000 -> @ 5000  d=4000
+@ 4000 -> @ 5000  d=1000
 ```
 
 With `--stats`:
 
 ```
-# distance: tb.dut.req == 'h1  ->  tb.dut.ack == 'h1
-count    3
-min      3
-max      5
-mean   4.00
-median   4
+# same-signal: a 1
+count=3  min=3000  max=15000  mean=8000.0  median=6000.0
 ```
 
-JSON mode is **not yet implemented** for `distance`.
-Text mode only.
+`--format json` exits with code 2: `JSON output is not implemented for distance; use find/value/stats/list`.
 
 ## Common errors
 
 - **`requires a built waveform store`**: no VCD fallback.
   Build one first: `bwave build <vcd> -o trace.fst`.
 - **B event has no matching A**: pairing is strictly
-  A then next-B. If A fires twice before B, the second
-  A pairs with the same B (overlapping is allowed), but
-  if B fires twice before any A, only the first B is
-  consumed. Verify expectations with `find`.
+  A then the first B strictly later than A. Multiple A
+  events can reuse the same B (overlapping is allowed).
+  Verify expectations with `find`.
 - **Distances look 10x too big**: you're in async mode
   and reading the result as cycles. Check
-  `mode`/`unit` in the header or switch to sync.
-- **`--stats` says count=0**: neither A nor B matched.
-  Run `find` for each side separately.
+  the stderr pair footer for the unit or switch to sync.
+- **`# no pairs found`**: no qualifying A-to-B pairs.
+  Same-signal mode reports `# no pairs found (need at least
+  2 events, found N)`. Run `find` for each side separately.
 
 ## Examples
 

@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
 from booley.runtime.filesystem_utils import safe_rmtree
+from booley.runtime.project_dir import checkout_project_dir_relative_to
+from booley.runtime.project_repositories import RepositoryCheckoutError, project_topology
 
 _TIMEOUT_S = 300
 _GIT_CONFIG = ("-c", "protocol.allow=never", "-c", "submodule.recurse=false")
@@ -42,6 +44,7 @@ def _materialize_selection(
     source_root: Path,
     destination_root: Path,
     selected: list[Path],
+    excluded_paths: frozenset[str] = frozenset(),
 ) -> None:
     """Populate one already-resolved top-level selection with rollback."""
     created: list[tuple[Path, bool]] = []
@@ -53,6 +56,7 @@ def _materialize_selection(
             Path(),
             created,
             selected,
+            excluded_paths,
         )
     except SubmoduleMaterializationError:
         _rollback(destination_root, created)
@@ -65,31 +69,34 @@ def _materialize_selection(
         raise
 
 
-def materialize_project_submodules(source_root: Path, destination_root: Path) -> None:
-    """Populate every repository in a composite Project checkout offline."""
-    from booley.runtime.project_dir import checkout_project_dir_relative_to
-    from booley.runtime.project_repositories import (
-        RepositoryCheckoutError,
-        paired_project_repository,
-        resolve_inner_project_repo,
-    )
-
+def materialize_project_submodules(
+    source_root: Path, destination_root: Path, *, skip_standalone_project: bool = False
+) -> None:
+    """Populate composites; baseline policy skips standalone and uses the fixed paired layout."""
     source_root = source_root.resolve()
     destination_root = destination_root.resolve()
     try:
-        paired_source = paired_project_repository(source_root)
+        topology = project_topology(source_root)
     except RepositoryCheckoutError as exc:
         raise SubmoduleMaterializationError(str(exc)) from exc
-    project_source = (
-        paired_source.worktree
-        if paired_source is not None
-        else resolve_inner_project_repo(source_root)
-    )
+    if skip_standalone_project and topology.paired is None and topology.standalone is not None:
+        _materialize_selection(
+            source_root,
+            destination_root,
+            _selected_top_level_paths(destination_root),
+            _standalone_project_exclusion(source_root, topology.standalone),
+        )
+        return
+    project_source = topology.paired.worktree if topology.paired else topology.standalone
     if project_source is None:
         materialize_submodules(source_root, destination_root)
         return
     try:
-        project_relative = checkout_project_dir_relative_to(source_root)
+        project_relative = (
+            Path(topology.paired.path_prefix)
+            if topology.paired and skip_standalone_project
+            else checkout_project_dir_relative_to(source_root)
+        )
     except (FileNotFoundError, ValueError) as exc:
         raise SubmoduleMaterializationError(f"paired project path is unavailable: {exc}") from exc
     project_destination = destination_root / project_relative
@@ -109,6 +116,18 @@ def materialize_project_submodules(source_root: Path, destination_root: Path) ->
     )
 
 
+def _standalone_project_exclusion(source_root: Path, project: Path) -> frozenset[str]:
+    """Exclude only a safe, nonempty checkout-local standalone Project path."""
+    try:
+        relative = project.relative_to(source_root)
+    except ValueError:
+        return frozenset()
+    if not relative.parts:
+        return frozenset()
+    _validate_relative_path(relative)
+    return frozenset({relative.as_posix()})
+
+
 def _materialize_tree(
     source_root: Path,
     destination_repo: Path,
@@ -116,21 +135,38 @@ def _materialize_tree(
     prefix: Path,
     created: list[tuple[Path, bool]],
     selected: list[Path] | None = None,
+    excluded_paths: frozenset[str] = frozenset(),
 ) -> None:
     for relative in selected if selected is not None else submodule_paths(destination_repo):
         full_relative = prefix / relative
+        if full_relative.as_posix() in excluded_paths:
+            continue
         source = source_root / full_relative
         destination = destination_root / full_relative
         commit = _gitlink_commit(destination_repo, relative)
         _assert_link_free_path(destination, destination_root, "destination")
         _validate_source(source, source_root, full_relative)
         if _accept_existing(destination, commit):
-            _materialize_tree(source_root, destination, destination_root, full_relative, created)
+            _materialize_tree(
+                source_root,
+                destination,
+                destination_root,
+                full_relative,
+                created,
+                excluded_paths=excluded_paths,
+            )
             continue
         had_placeholder = _remove_empty_placeholder(destination, destination_root)
         created.append((destination, had_placeholder))
         _create_repository(source, destination, commit, full_relative)
-        _materialize_tree(source_root, destination, destination_root, full_relative, created)
+        _materialize_tree(
+            source_root,
+            destination,
+            destination_root,
+            full_relative,
+            created,
+            excluded_paths=excluded_paths,
+        )
 
 
 def _selected_top_level_paths(destination_root: Path) -> list[Path]:

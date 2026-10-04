@@ -272,3 +272,80 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
     assert not (tmp_path / "__pycache__").exists()
     assert not list(tmp_path.glob("*.pyc"))
     assert not (tmp_path / ".pytest_cache").exists()
+
+
+@pytest.mark.parametrize("returncode", [0, 7, -9, 127])
+def test_hook_preserves_actual_rc_and_independent_utf8_tails(
+    tmp_path: Path, returncode: int
+) -> None:
+    handle = _handle(tmp_path)
+    process = subprocess.CompletedProcess([], returncode, "\u03b1" * 10000, "β" * 10000)
+    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", return_value=process):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+        )
+    assert evidence is not None
+    assert evidence.returncode == returncode
+    assert evidence.stdout_tail == "\u03b1" * 4096
+    assert evidence.stderr_tail == "β" * 4096
+    assert len(evidence.detail.encode("utf-8")) <= 8192
+
+
+def test_timeout_partial_byte_streams_preserve_unknown_exit_code(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    timeout = subprocess.TimeoutExpired("bash", 5, output=b"hook-out\n", stderr=b"hook-err\n")
+    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", side_effect=timeout):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+        )
+    assert evidence is not None and evidence.status == "timed_out"
+    assert evidence.returncode is None
+    assert evidence.stdout_tail == "hook-out\n"
+    assert evidence.stderr_tail == "hook-err\n"
+
+
+def test_pre_cancelled_scope_does_not_spawn_or_fabricate_a_firing(tmp_path: Path) -> None:
+    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+    from booley.runtime.supervised_execution import (
+        SupervisedExecutionScope,
+        supervised_execution_scope,
+    )
+
+    handle = _handle(tmp_path)
+    scope = SupervisedExecutionScope(None, tmp_path / ".booley_project", lambda: True)
+    with (
+        supervised_execution_scope(scope),
+        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen") as spawn,
+        pytest.raises(PreSimScopeStoppedError),
+    ):
+        run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+        )
+    spawn.assert_not_called()
+
+
+def test_actual_hook_normalizes_invalid_utf8_output(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    evidence = run_pre_sim_commands(
+        handle,
+        test_names=("smoke",),
+        build_root=tmp_path / "build",
+        eda_tool="icarus",
+        timeout_s=5,
+        commands=("printf '\\377hook-out\\n'; printf '\\376hook-err\\n' >&2",),
+    )
+    assert evidence is not None and evidence.returncode == 0
+    assert evidence.stdout_tail == "�hook-out\n"
+    assert evidence.stderr_tail == "�hook-err\n"

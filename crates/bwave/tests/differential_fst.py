@@ -22,6 +22,15 @@ COMMANDS: tuple[tuple[str, ...], ...] = (
     ("value", "--async", "--at", "0t"),
     ("value", "--async", "--at", "50t"),
     ("find", "*clk*", "rising", "--async", "--limit", "20"),
+    ("find", "*clk*", "ChAnGe", "--async", "--count"),
+    ("find", "*clk*", "change", "--async", "--limit", "20"),
+    ("sample", "*clk*", "change", "--async", "-s", "*", "--limit", "30"),
+    ("distance", "*clk*", "change", "--async", "-t", "0t:80t"),
+    ("find", "*", "change", "--async", "--count"),
+    ("find", "*", "change", "--async", "--limit", "40"),
+    ("sample", "*", "change", "--async", "-s", "*", "--limit", "40"),
+    ("distance", "*", "change", "--async", "-t", "0t:80t"),
+    ("distance", "*clk*", "change", "--to", "*", "change", "--async", "-t", "0t:80t"),
     ("wave", "--async", "-t", "0t:80t", "-s", "*clk*", "--limit", "20"),
 )
 

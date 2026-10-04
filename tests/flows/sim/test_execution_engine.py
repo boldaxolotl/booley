@@ -3219,3 +3219,29 @@ def test_missing_literal_run_cwd_fails_plain_run_before_any_build(tmp_path: Path
     assert detail.startswith("sim setup failed: literal run directory must already exist")
     assert ".gitkeep" in detail
     assert invocations == []
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        ("[SIM_CYCLES] smoke 1234\n", 1234),
+        ("[SIM_CYCLES] smoke -1\n", None),
+        ("[SIM_CYCLES] smoke nope\n", None),
+        ("", None),
+    ],
+)
+def test_actual_engine_ascii_cycle_records(tmp_path, record, expected):
+    from dataclasses import replace
+
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    passing = _passing_attempt_invoker(
+        handle, prepared, (("abc123", ("smoke",)),), adapter="icarus"
+    )
+
+    def invoke(command, *, timeout):
+        result = passing(command, timeout=timeout)
+        return replace(result, stdout=result.stdout + record)
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+    assert outcome.tests[0].cycles == expected

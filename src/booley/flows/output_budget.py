@@ -37,17 +37,26 @@ def mcp_stdout_budget() -> int:
     — a zero/negative cap would render every excerpt empty, which is never
     what an operator wants.
     """
-    raw = os.environ.get(_BUDGET_ENV)
+    return _stream_budget(_BUDGET_ENV, _DEFAULT_BUDGET_BYTES)
+
+
+def mcp_stderr_budget() -> int:
+    """Mirror the MCP server's validated stderr limit."""
+    return _stream_budget("BOOLEY_MCP_MAX_STDERR_BYTES", 4000)
+
+
+def _stream_budget(variable: str, default: int) -> int:
+    raw = os.environ.get(variable)
     if raw is None or raw == "":
-        return _DEFAULT_BUDGET_BYTES
+        return default
     try:
         value = int(raw)
     except ValueError:
-        logger.warning("Ignoring invalid %s=%r", _BUDGET_ENV, raw)
-        return _DEFAULT_BUDGET_BYTES
+        logger.warning("Ignoring invalid %s=%r", variable, raw)
+        return default
     if value <= 0:
-        logger.warning("Ignoring non-positive %s=%r", _BUDGET_ENV, raw)
-        return _DEFAULT_BUDGET_BYTES
+        logger.warning("Ignoring non-positive %s=%r", variable, raw)
+        return default
     return value
 
 

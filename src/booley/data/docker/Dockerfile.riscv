@@ -5,19 +5,41 @@
 # (ibex, picorv32, biriscv, …) whose flows compile firmware/tests with a
 # RISC-V cross-compiler before simulating the RTL.
 #
+# Two stages (ADR 0070). `riscv-tooling` builds /opt/riscv and /opt/riscv-docs
+# FROM the same digest-pinned Ubuntu image as the final stage of
+# Dockerfile.base and depends on no Booley image. Its exact text is the RISC-V
+# tooling key (.github/scripts/riscv_tooling.py), so any edit to it — even a
+# comment — re-keys the published tooling image. Keep every ARG it uses inside
+# the stage, keep it free of COPY/ADD, and declare no ARG before the first FROM.
+# CI may replace this stage with a published, label-verified image through a
+# same-named build context; local and release builds always build it here.
+#
 # BuildKit maps `booley-standard-substrate` through an explicit named context.
 # Source convergence binds it to the prepared wheel-free standard substrate;
 # legacy Project Initialization binds it to the verified standard Sandbox
 # Image. Both adapters use a local tag as the context source and record its
-# separately inspected immutable image ID as provenance. Keep this file
-# COPY-free: installed Booley distributions always pull the complete published
-# image, while local builds use data/docker/ as their otherwise-unused context.
+# separately inspected immutable image ID as provenance. Keep this file free of
+# build-context COPY/ADD (`COPY --from=riscv-tooling` is stage-internal):
+# installed Booley distributions always pull the complete published image,
+# while local builds use data/docker/ as their otherwise-unused context.
 
-FROM booley-standard-substrate
+FROM docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78 AS riscv-tooling
 
-# Everything below installs system-wide; drop back to the agent user at the end
-# to match the base image's runtime posture.
-USER root
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Same clock-skew tolerance as Dockerfile.base: Windows/WSL2 hosts with a
+# skewed clock otherwise reject fresh apt Release files. Integrity stays
+# GPG-verified.
+RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-clock-skew
+
+# Builder-only packages. Nothing installed here reaches the final image: only
+# /opt/riscv and /opt/riscv-docs are copied out. device-tree-compiler serves
+# Spike's `make check`; the final stage installs its own runtime copy.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl device-tree-compiler file git xz-utils \
+    && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
 # RISC-V GNU toolchain (prebuilt, pinned) — the xPack Newlib bare-metal build.
@@ -76,44 +98,20 @@ RUN echo ">>> Installing xPack RISC-V GNU toolchain ${XPACK_GCC_VERSION} (multil
     && /opt/riscv/bin/riscv-none-elf-gcc --version
 ENV PATH="/opt/riscv/bin:${PATH}"
 
-# Post-PATH executable test. The in-layer check above runs before the ENV, so it
-# can only prove the absolute path works; this proves the driver actually
-# resolves the way every downstream Makefile will invoke it. Both aliased
-# triples are covered because gcc derives its binutils lookup from argv[0].
-RUN riscv-none-elf-gcc --version >/dev/null \
-    && riscv32-unknown-elf-gcc --version >/dev/null \
-    && riscv64-unknown-elf-gcc --version >/dev/null \
-    && echo ">>> RISC-V toolchain on PATH: $(riscv-none-elf-gcc -dumpversion)"
-
-# ---------------------------------------------------------------------------
-# RISC-V build/sim helper programs from apt:
-#   srecord              — srec_cat; ibex hard-depends on it for .vmem memory
-#                          image generation (examples/.../common.mk).
-#   device-tree-compiler — dtc; Spike compiles its device tree at runtime, and
-#                          many RISC-V SoC flows need it.
-#   poppler-utils        — pdftotext; makes the baked reference PDFs searchable
-#                          from an agent or shell without network access.
-# ---------------------------------------------------------------------------
-RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        srecord device-tree-compiler poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
-
 # ---------------------------------------------------------------------------
 # Spike (riscv-isa-sim) — the canonical RISC-V reference ISS, used as the
-# golden model for differential testing / co-simulation (picorv32 torture &
-# csmith flows, ibex's UVM riscv-dv DV flow). Bundles libfesvr. Installed into
-# /opt/riscv so it shares the toolchain's already-on-PATH bin dir.
+# golden model for differential testing (e.g. picorv32 torture & csmith flows).
+# Bundles libfesvr. Installed into /opt/riscv so it shares the toolchain's
+# already-on-PATH bin dir. This is official upstream Spike; Ibex's UVM
+# co-simulation needs lowRISC's ibex-cosim fork, which is not provided here.
 #
-# Spike has no maintained release series: v1.1.0 predates the <cstdint>
-# header-hygiene fixes and fails to compile on GCC 13 (Ubuntu 24.04's default)
-# with "uint64_t not declared". Use tested snapshots of official upstream
-# master, always pinned by full SHA. Before moving the pin, require upstream
-# Ubuntu 26.04 evidence plus this image build, make check, the PicoRV32 demo,
-# and Spike differential flows. See docs/research/spike-release-channel.md.
-# The explicit checks make a broken build fail the image loudly.
+# Spike has no maintained release series (v1.1.0, from 2021, no longer
+# compiles with modern GCC), so this pins a tested snapshot of official
+# upstream master by full SHA. ADR 0069 defines how the pin is selected,
+# refreshed, and accepted. The explicit checks make a broken build fail the
+# image loudly.
 # ---------------------------------------------------------------------------
-ARG SPIKE_REF=c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb
+ARG SPIKE_REF=609dbe0b9994154833039209fa37151e7c05e9d4
 RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && git init /tmp/spike \
     && cd /tmp/spike \
@@ -123,6 +121,7 @@ RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && test "$(git rev-parse HEAD)" = "${SPIKE_REF}" \
     && mkdir -p /tmp/spike/build && cd /tmp/spike/build \
     && ../configure --prefix=/opt/riscv \
+        --without-boost --without-boost-asio --without-boost-regex \
     && make -j"$(nproc)" \
     && make check \
     && make install \
@@ -182,7 +181,47 @@ RUN echo ">>> Downloading ratified RISC-V International specifications..." \
         '' \
         'Source: https://github.com/riscv  •  path exported as $BOOLEY_RISCV_DOCS' \
         > /opt/riscv-docs/INDEX.md
+
+# ---------------------------------------------------------------------------
+# Final stage: the exact standard substrate plus the RISC-V tooling payload.
+# ---------------------------------------------------------------------------
+FROM booley-standard-substrate
+
+# Everything below installs system-wide; drop back to the agent user at the end
+# to match the base image's runtime posture.
+USER root
+
+# ---------------------------------------------------------------------------
+# RISC-V build/sim helper programs from apt:
+#   srecord              — srec_cat; ibex hard-depends on it for .vmem memory
+#                          image generation (examples/.../common.mk).
+#   device-tree-compiler — dtc; Spike compiles its device tree at runtime, and
+#                          many RISC-V SoC flows need it.
+#   poppler-utils        — pdftotext; makes the baked reference PDFs searchable
+#                          from an agent or shell without network access.
+# ---------------------------------------------------------------------------
+RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        srecord device-tree-compiler poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# One COPY per tree keeps every xPack hard-link group inside a single exported
+# layer, which the image contract's link audit requires.
+COPY --from=riscv-tooling /opt/riscv /opt/riscv
+COPY --from=riscv-tooling /opt/riscv-docs /opt/riscv-docs
+ENV PATH="/opt/riscv/bin:${PATH}"
 ENV BOOLEY_RISCV_DOCS=/opt/riscv-docs
+
+# Post-PATH executable test on the composed image. The tooling stage's checks
+# ran on the bare builder; this proves the copied drivers resolve the way every
+# downstream Makefile will invoke them and that Spike's shared libraries load
+# against this substrate. Both aliased triples are covered because gcc derives
+# its binutils lookup from argv[0].
+RUN riscv-none-elf-gcc --version >/dev/null \
+    && riscv32-unknown-elf-gcc --version >/dev/null \
+    && riscv64-unknown-elf-gcc --version >/dev/null \
+    && spike --help >/dev/null \
+    && echo ">>> RISC-V toolchain on PATH: $(riscv-none-elf-gcc -dumpversion)"
 
 # Marks the image variant so utility scripts and Doctor can detect the RISC-V flavour.
 ENV BOOLEY_SANDBOX_FLAVOR=riscv

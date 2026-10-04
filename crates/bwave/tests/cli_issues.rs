@@ -2018,3 +2018,1399 @@ fn async_wave_columns_ignore_unselected_virtual_helper_transitions() {
 
 // Partial miss (one of two patterns matches) keeps exit 0 with a per-pattern
 // warning — covered above by `unmatched_pattern_is_reported`.
+
+fn issue_1100_store(body: &str, engine: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("source.vcd");
+    let fst = dir.path().join("source.fst");
+    let header = "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! scalar $end\n$var wire 4 # bus $end\n$var wire 1 $ clk $end\n$var wire 1 % rst_n $end\n$upscope $end\n$enddefinitions $end\n";
+    std::fs::write(&vcd, format!("{header}{body}")).unwrap();
+    let (_, err, code) = issue_1100_run(&[
+        "build",
+        "--engine",
+        engine,
+        vcd.to_str().unwrap(),
+        "-o",
+        fst.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+fn issue_1100_run(args: &[&str]) -> (String, String, i32) {
+    let mut child = Command::new(exe_path())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("bwave timeout: {args:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+fn issue_1100_query(
+    store: &str,
+    command: &str,
+    signal: &str,
+    trigger: &str,
+    extra: &[&str],
+) -> String {
+    let mut args = vec![command, store, signal, trigger];
+    args.extend_from_slice(extra);
+    let (out, err, code) = issue_1100_run(&args);
+    assert_eq!(code, 0, "{args:?}: {err}");
+    out.lines()
+        .filter(|line| !line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const ISSUE_1100_TIMELINE: &str = "#0\n0!\nb0000 #\n0$\n1%\n#5\n0!\nb0000 #\n#10\n1!\nb0001 #\n#15\n1!\nb0001 #\n#20\n0!\nb0011 #\n#30\n1!\nb0010 #\n#40\n0!\nb0000 #\n";
+
+#[test]
+fn issue_1100_scalar_change_count() {
+    let (_dir, store) = issue_1100_store(ISSUE_1100_TIMELINE, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "scalar",
+            "change",
+            &["--async", "--with-reset", "--count"]
+        ),
+        "4"
+    );
+}
+
+#[test]
+fn issue_1100_bus_change_distance() {
+    let (_dir, store) = issue_1100_store(ISSUE_1100_TIMELINE, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "bus",
+            "change",
+            &["--async", "--with-reset", "-t", "10t:30t"]
+        ),
+        "@ 10 -> @ 20  d=10\n@ 20 -> @ 30  d=10"
+    );
+}
+
+#[test]
+fn issue_1100_change_commands_agree_and_preserve_literals() {
+    for engine in ["parallel", "serial"] {
+        let (_dir, store) = issue_1100_store(ISSUE_1100_TIMELINE, engine);
+        for signal in ["scalar", "bus"] {
+            let values = if signal == "scalar" {
+                ["1", "0", "1"]
+            } else {
+                ["1", "3", "2"]
+            };
+            let expected = [10, 20, 30]
+                .iter()
+                .zip(values)
+                .map(|(tick, val)| format!("{tick} {signal} {val}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for keyword in ["change", "ChAnGe"] {
+                let flags = ["--async", "--with-reset", "-t", "10t:30t"];
+                assert_eq!(
+                    issue_1100_query(&store, "find", signal, keyword, &flags),
+                    expected
+                );
+                assert_eq!(
+                    issue_1100_query(
+                        &store,
+                        "sample",
+                        signal,
+                        keyword,
+                        &["--async", "--with-reset", "-t", "10t:30t", "-s", signal]
+                    ),
+                    expected
+                );
+                assert_eq!(
+                    issue_1100_query(
+                        &store,
+                        "find",
+                        signal,
+                        keyword,
+                        &["--async", "--count", "-t", "10t:30t"]
+                    ),
+                    "3"
+                );
+                assert_eq!(
+                    issue_1100_query(
+                        &store,
+                        "distance",
+                        signal,
+                        keyword,
+                        &["--async", "-t", "10t:30t", "--to", signal, keyword]
+                    ),
+                    "@ 10 -> @ 20  d=10\n@ 20 -> @ 30  d=10"
+                );
+            }
+        }
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "RISING", &["--async", "--count"]),
+            "2"
+        );
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "FaLlInG", &["--async", "--count"]),
+            "2"
+        );
+        for literal in ["'d3", "'h3", "'b0011"] {
+            assert_eq!(
+                issue_1100_query(&store, "find", "bus", literal, &["--async"]),
+                "20 bus 3"
+            );
+        }
+        for command in ["find", "sample"] {
+            let extra = if command == "sample" {
+                vec!["--async", "--count", "-s", "bus"]
+            } else {
+                vec!["--async", "--count"]
+            };
+            assert_eq!(
+                issue_1100_query(&store, command, "bus", "rising", &extra),
+                "0"
+            );
+        }
+        let (_, error, _) = issue_1100_run(&["distance", &store, "bus", "rising", "--async"]);
+        assert!(error.contains("only fires on 1-bit signals"));
+    }
+}
+
+#[test]
+fn issue_1100_raw_pulses_unknowns_virtuals_and_fallback() {
+    let pulse = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#7\n1!\nb0001 #\n#9\n0!\nb0000 #\n#10\n0$\n#15\n1$\n#17\n1!\nb0001 #\n#20\n0$\n#25\n1$\n#29\n0!\nb0000 #\n";
+    let (_dir, store) = issue_1100_store(pulse, "parallel");
+    for signal in ["scalar", "bus"] {
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "find",
+                signal,
+                "change",
+                &["--with-reset", "-t", "1:2"]
+            ),
+            format!("cycle 1 {signal} 1\ncycle 1 {signal} 0\ncycle 2 {signal} 1")
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "sample",
+                signal,
+                "change",
+                &["--with-reset", "-t", "1:2", "-s", signal]
+            ),
+            format!("1 {signal} 1\n1 {signal} 0\n2 {signal} 1")
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "distance",
+                signal,
+                "change",
+                &["--with-reset", "-t", "1:2"]
+            ),
+            "@ 1 -> @ 1  d=0\n@ 1 -> @ 2  d=0"
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "distance",
+                signal,
+                "change",
+                &["--async", "-t", "7t:17t"]
+            ),
+            "@ 7 -> @ 9  d=2\n@ 9 -> @ 17  d=8"
+        );
+    }
+    for command in ["find", "sample", "distance"] {
+        let mut args = vec!["--async", "--virtual", "v=scalar=='b1", "-t", "7t:17t"];
+        if command == "sample" {
+            args.extend(["-s", "v"]);
+        }
+        let out = issue_1100_query(&store, command, "v", "change", &args);
+        if command == "distance" {
+            assert_eq!(out, "@ 7 -> @ 9  d=2\n@ 9 -> @ 17  d=8");
+        } else {
+            assert_eq!(out, "7 v 1\n9 v 0\n17 v 1");
+        }
+    }
+    for (flag, expected) in [("--first", "7 v 1"), ("--last", "17 v 1"), ("--count", "3")] {
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "find",
+                "v",
+                "change",
+                &[
+                    "--async",
+                    "--virtual",
+                    "v=scalar=='b1",
+                    "-t",
+                    "7t:17t",
+                    flag
+                ]
+            ),
+            expected
+        );
+    }
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "v",
+            "change",
+            &["--virtual", "v=scalar=='b1", "-t", "1:2"]
+        ),
+        "cycle 1 v 1\ncycle 1 v 0\ncycle 2 v 1"
+    );
+    for clock in ["", "#5\n1$\n"] {
+        let timeline =
+            format!("#0\nx!\n0$\n0%\n{clock}#10\n0!\n#15\n1%\n#20\nx!\n#30\nz!\n#40\n1!\n");
+        let (_dir, store) = issue_1100_store(&timeline, "parallel");
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "change", &["-t", "10:30"]),
+            "20 scalar x\n30 scalar z"
+        );
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "sample",
+                "scalar",
+                "change",
+                &["-t", "10:30", "-s", "scalar"]
+            ),
+            "20 scalar x\n30 scalar z"
+        );
+        assert_eq!(
+            issue_1100_query(&store, "distance", "scalar", "change", &["-t", "10:30"]),
+            "@ 20 -> @ 30  d=10"
+        );
+        assert_eq!(
+            issue_1100_query(&store, "find", "scalar", "change", &["--async", "--count"]),
+            "4"
+        );
+    }
+}
+
+#[test]
+fn issue_1100_reset_cutoff_reassert_unknown_and_first_last_limit() {
+    for reset in ["1%", "x%", "z%"] {
+        let body = format!("#0\n0!\nb0000 #\n0$\n0%\n#5\n1$\n#7\n1!\nb0001 #\n#10\n0$\n{reset}\n1!\n#15\n1$\n#17\n0!\nb0000 #\n#20\n0$\n0%\n#25\n1$\n#27\n1!\nb0001 #\n");
+        let (_dir, store) = issue_1100_store(&body, "parallel");
+        for (flag, expected) in [
+            ("--first", "cycle 1 v 0"),
+            ("--last", "cycle 2 v 1"),
+            ("--count", "2"),
+        ] {
+            assert_eq!(
+                issue_1100_query(
+                    &store,
+                    "find",
+                    "v",
+                    "change",
+                    &["--virtual", "v=scalar=='b1", "-t", "1:2", flag]
+                ),
+                expected
+            );
+        }
+        for signal in ["scalar", "bus"] {
+            assert_eq!(
+                issue_1100_query(&store, "find", signal, "change", &[]),
+                format!("cycle 1 {signal} 0\ncycle 2 {signal} 1")
+            );
+            assert_eq!(
+                issue_1100_query(&store, "sample", signal, "change", &["-s", signal]),
+                format!("1 {signal} 0\n2 {signal} 1")
+            );
+            assert_eq!(
+                issue_1100_query(&store, "distance", signal, "change", &[]),
+                "@ 1 -> @ 2  d=1"
+            );
+            assert_eq!(
+                issue_1100_query(
+                    &store,
+                    "find",
+                    signal,
+                    "change",
+                    &["--with-reset", "--count"]
+                ),
+                "3"
+            );
+        }
+    }
+    let body = "#0\n0!\nb0000 #\n0$\n1%\n#10\nb0001 #\n#20\n1!\n#30\n0!\nb0011 #\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(&store, "find", "*", "change", &["--async", "--first"]),
+        "20 scalar 1"
+    );
+    assert_eq!(
+        issue_1100_query(&store, "find", "*", "change", &["--async", "--last"]),
+        "30 bus 3"
+    );
+    assert_eq!(
+        issue_1100_query(&store, "find", "*", "change", &["--async", "--limit", "1"]),
+        "20 scalar 1"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "*",
+            "change",
+            &["--async", "--limit", "1", "--count"]
+        ),
+        "4"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "sample",
+            "scalar",
+            "change",
+            &["--async", "-s", "scalar", "-s", "bus", "--limit", "1"]
+        ),
+        "20 scalar 1"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "sample",
+            "scalar",
+            "change",
+            &["--async", "-s", "scalar", "-s", "bus", "--limit", "1", "--count"]
+        ),
+        "2"
+    );
+}
+
+#[test]
+fn issue_1100_mixed_distance_preserves_other_mode_reset_origin() {
+    let body = "#0\n0!\nb0000 #\n0$\n0%\n#7\n1!\n#10\n1%\n#17\nb0001 #\n#20\n0!\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "scalar",
+            "rising",
+            &["--to", "bus", "change"]
+        ),
+        "@ 7 -> @ 17  d=10"
+    );
+    let body =
+        "#0\n0!\nb0000 #\n0$\n0%\n#7\nb0001 #\n#9\n1!\n#10\n1%\n#12\n0!\n#17\nb0011 #\n#20\n1!\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "bus",
+            "change",
+            &["--to", "scalar", "rising"]
+        ),
+        "@ 17 -> @ 20  d=3"
+    );
+    let body = "#0\n0!\nb0000 #\n0$\n0%\n#5\n1$\n#7\n1!\n#9\nb0001 #\n#10\n0$\n1%\n#12\n0!\n#15\n1$\n#17\n1!\n#19\nb0011 #\n#20\n0$\n#25\n1$\n#27\n0!\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "scalar",
+            "rising",
+            &["--to", "bus", "change"]
+        ),
+        "@ 1 -> @ 1  d=0"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "distance",
+            "bus",
+            "change",
+            &["--to", "scalar", "falling"]
+        ),
+        "@ 1 -> @ 2  d=0"
+    );
+}
+
+#[test]
+fn issue_1100_late_first_write_observes_fst_start_frame() {
+    for engine in ["serial", "parallel"] {
+        let (_dir, store) =
+            issue_1100_store("#0\n0$\n1%\n#10\n1!\nb0001 #\n#20\n0!\nb0010 #\n", engine);
+        let (value, error, code) =
+            issue_1100_run(&["value", &store, "--async", "--at", "0t", "-s", "scalar"]);
+        assert_eq!(code, 0, "{error}");
+        assert!(
+            value
+                .lines()
+                .any(|line| line.split_whitespace().collect::<Vec<_>>() == ["scalar", "=", "x"]),
+            "{value}"
+        );
+        for signal in ["scalar", "bus"] {
+            assert_eq!(
+                issue_1100_query(&store, "find", signal, "change", &["--async", "--count"]),
+                "2"
+            );
+            assert_eq!(
+                issue_1100_query(
+                    &store,
+                    "sample",
+                    signal,
+                    "change",
+                    &["--async", "--count", "-s", signal]
+                ),
+                "2"
+            );
+            assert_eq!(
+                issue_1100_query(&store, "distance", signal, "change", &["--async"]),
+                "@ 10 -> @ 20  d=10"
+            );
+        }
+    }
+}
+
+fn issue_1108_store(label: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("bwave-1108-{}-{label}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcd = dir.join("input.vcd");
+    let fst = dir.join("input.fst");
+    std::fs::write(&vcd, "$timescale 1ps $end\n$scope module tb $end\n$var wire 4 ! a $end\n$var wire 4 ! alias $end\n$var wire 4 \" b $end\n$var wire 4 # c $end\n$var wire 4 $ constant $end\n$upscope $end\n$enddefinitions $end\n#0\nb0000 !\nb0000 \"\nb0000 #\nb1010 $\n#1000\nb0001 !\nb0001 \"\nb0001 #\n#3000\nb0000 !\n#4000\nb0001 !\n#5000\nb0010 \"\nb0010 #\n#9000\nb0000 !\n#10000\nb0001 !\n#20000\nb0000 !\n#25000\nb0001 !\n#100000\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst)
+}
+
+#[test]
+fn issue_1108_unsupported_json_before_io() {
+    for (command, positionals) in [
+        ("signal", vec![]),
+        ("wave", vec![]),
+        ("sample", vec!["a", "change"]),
+        ("diff", vec!["1", "2"]),
+        ("distance", vec!["a", "change"]),
+        ("stuck", vec![]),
+    ] {
+        let mut args = vec![command, "/nonexistent/1108.fst"];
+        args.extend(positionals);
+        args.extend(["--format", "json"]);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 2, "{command}: {err}");
+        assert!(out.is_empty());
+        assert!(
+            err.contains(&format!(
+                "JSON output is not implemented for {command}; use find/value/stats/list"
+            )),
+            "{err}"
+        );
+    }
+    let (_, err, code) = run(&[
+        "list",
+        "/nonexistent/1108.fst",
+        "--tree",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 2, "{err}");
+}
+
+#[test]
+fn issue_1108_exact_aliases_and_limits() {
+    let (dir, fst) = issue_1108_store("aliases-and-limits");
+    let p = fst.to_str().unwrap();
+    for command in ["value", "wave", "signal", "stats", "diff", "sample"] {
+        let mut args = vec![command, p];
+        match command {
+            "value" => args.extend(["--at", "1000t"]),
+            "diff" => args.extend(["0t", "1000t"]),
+            "sample" => args.extend(["a", "change"]),
+            _ => {}
+        }
+        args.extend(["--async", "-s", "tb.a", "-s", "tb.alias", "--limit", "100"]);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command}: {err}");
+        for name in ["a", "alias"] {
+            let found = out.lines().any(|line| {
+                if command == "signal" || command == "sample" {
+                    line.split_whitespace().nth(1) == Some(name)
+                } else {
+                    line.split_whitespace().next() == Some(name)
+                }
+            });
+            assert!(found, "{command} omitted {name}: {out}");
+        }
+        assert!(!err.contains("shown once"));
+    }
+    for command in ["value", "stats"] {
+        let mut args = vec![command, p, "--async", "--format", "json", "--limit", "2"];
+        if command == "value" {
+            args.extend(["--at", "1000t"]);
+        }
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{err}");
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            json["data"]["signals"].as_array().unwrap().len(),
+            2,
+            "{out}"
+        );
+        assert!(!json["warnings"].as_array().unwrap().is_empty(), "{out}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_point_errors_stats_window_and_stuck_literal() {
+    let (dir, fst) = issue_1108_store("points");
+    let p = fst.to_str().unwrap();
+    for point in ["-1t", "100001t"] {
+        for command in ["value", "diff"] {
+            let mut args = vec![command, p, "--async"];
+            if command == "value" {
+                args.extend(["--at", point]);
+            } else {
+                args.extend(["0t", point]);
+            }
+            let (_, err, code) = run(&args);
+            assert_eq!(code, 2, "{command} {point}: {err}");
+        }
+    }
+    let (out, err, code) = run(&["stuck", p, "'hA", "--async", "-s", "constant"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("stuck at A"), "{out}");
+    let (_, err, code) = run(&["stuck", p, "rising", "--async"]);
+    assert_eq!(code, 2, "{err}");
+    let (out, err, code) = run(&[
+        "stats",
+        p,
+        "--async",
+        "-s",
+        "b",
+        "-t",
+        "2000t:4000t",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["data"]["total_ticks"], 2000, "{out}");
+    assert_eq!(json["data"]["signals"][0]["transitions"], 0, "{out}");
+    let (_, err, code) = run(&["sample", p, "a", "change", "-s", "missing", "--async"]);
+    assert_eq!(code, 2, "{err}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_distance_contract() {
+    let (dir, fst) = issue_1108_store("distance");
+    let p = fst.to_str().unwrap();
+    let (out, err, code) = run(&[
+        "distance", p, "a", "'h1", "--async", "--stats", "--limit", "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("mean=8000.0  median=6000.0"), "{out}");
+    let (out, err, code) = run(&["distance", p, "a", "'h1", "--async", "--limit", "2"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("@ ")).count(),
+        2,
+        "{out}"
+    );
+    assert!(err.contains("truncated"), "{err}");
+    let (_, err, code) = run(&["distance", p, "a", "change", "-s", "b"]);
+    assert_eq!(code, 2, "{err}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn issue_1108_case(case: &str) {
+    let (dir, fst) = issue_1108_store(case);
+    let p = fst.to_str().unwrap();
+    match case {
+        "aliases" | "mixed" | "radix" => {
+            let selectors = match case {
+                "mixed" => vec!["tb.a", "tb.*"],
+                "radix" => vec!["tb.*%d", "tb.a"],
+                _ => vec!["tb.alias", "tb.a", "tb.a"],
+            };
+            let mut args = vec!["value", p, "--at", "1000t", "--async"];
+            for selector in selectors {
+                args.extend(["-s", selector]);
+            }
+            let (out, err, code) = run(&args);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(
+                out.lines().filter(|l| l.starts_with("a ")).count(),
+                1,
+                "{out}"
+            );
+            if case == "aliases" {
+                assert_eq!(
+                    out.lines().filter(|l| l.starts_with("alias ")).count(),
+                    1,
+                    "{out}"
+                );
+                assert!(!err.contains("shown once"));
+            } else {
+                assert!(err.contains("shown once"), "{err}");
+                if case == "radix" {
+                    assert!(
+                        out.lines()
+                            .any(|line| line.starts_with("constant ") && line.ends_with("= 10")),
+                        "{out}"
+                    );
+                }
+            }
+        }
+        "glob_json" | "event_json" => {
+            let args = if case == "glob_json" {
+                vec![
+                    "value", p, "--at", "1000t", "--async", "-s", "tb.*", "--format", "json",
+                ]
+            } else {
+                vec!["find", p, "tb.*", "change", "--async", "--format", "json"]
+            };
+            let (out, err, code) = run(&args);
+            assert_eq!(code, 0, "{err}");
+            let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert!(
+                json["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|w| w.as_str().unwrap().contains("alias")),
+                "{out}"
+            );
+            if case == "event_json" {
+                assert!(!out.contains("shown once"));
+            }
+        }
+        "stats_window" => {
+            let (out, err, code) = run(&[
+                "stats", p, "--async", "-s", "b", "-t", "2ns:4ns", "--format", "json",
+            ]);
+            assert_eq!(code, 0, "{err}");
+            let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(json["data"]["total_ticks"], 2000, "{out}");
+            assert_eq!(json["data"]["signals"][0]["transitions"], 0, "{out}");
+            assert_eq!(
+                json["data"]["signals"][0]["time_in_state_ticks"]["'h1"], 2000,
+                "{out}"
+            );
+        }
+        "diff_ps" => {
+            let (out, err, code) = run(&["diff", p, "0ns", "1ns", "--async", "-s", "b"]);
+            assert_eq!(code, 0, "{err}");
+            let (ticks, _, tickcode) = run(&["diff", p, "0t", "1000t", "--async", "-s", "b"]);
+            assert_eq!(tickcode, 0);
+            assert_eq!(out, ticks);
+            assert!(out.contains("@1000=1"), "{out}");
+        }
+        "stuck_literal" => {
+            let (out, err, code) = run(&["stuck", p, "8'd10", "--async", "-s", "constant"]);
+            assert_eq!(code, 0, "{err}");
+            assert!(out.contains("stuck at A"), "{out}");
+        }
+        "sample_miss" => {
+            let (_, err, code) = run(&["sample", p, "a", "change", "-s", "missing", "--async"]);
+            assert_eq!(code, 2, "{err}");
+        }
+        "invalid_glob_find" | "invalid_glob_distance" => {
+            let command = if case.ends_with("find") {
+                "find"
+            } else {
+                "distance"
+            };
+            let (_, err, code) = run(&[command, p, "[oops", "change", "--async"]);
+            assert_eq!(code, 2, "{err}");
+            assert!(err.contains("invalid glob pattern"), "{err}");
+        }
+        "value_out" | "diff_out" => {
+            let args = if case.starts_with("value") {
+                vec!["value", p, "--at", "100001t", "--async", "--format", "json"]
+            } else {
+                vec!["diff", p, "0t", "100001t", "--async"]
+            };
+            let (out, err, code) = run(&args);
+            assert_eq!(code, 2, "{err}");
+            assert!(out.is_empty(), "{out}");
+        }
+        "zero_limit" => {
+            let (_, err, code) = run(&["wave", p, "--limit", "0"]);
+            assert_eq!(code, 2, "{err}");
+        }
+        "find_limit" | "find_boundary" => {
+            let limit = if case == "find_boundary" { "4" } else { "2" };
+            let (out, err, code) = run(&[
+                "find", p, "a", "'h1", "--async", "--format", "json", "--limit", limit,
+            ]);
+            assert_eq!(code, 0, "{err}");
+            let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(json["data"]["truncated"], case == "find_limit", "{out}");
+            assert_eq!(
+                !json["warnings"].as_array().unwrap().is_empty(),
+                case == "find_limit",
+                "{out}"
+            );
+            assert_eq!(
+                json["data"]["count"],
+                limit.parse::<u64>().unwrap(),
+                "{out}"
+            );
+        }
+        "signal_boundary" | "sample_boundary" => {
+            let args = if case.starts_with("signal") {
+                vec!["signal", p, "--async", "-s", "b", "--limit", "3"]
+            } else {
+                vec![
+                    "sample", p, "b", "change", "--async", "-s", "c", "--limit", "3",
+                ]
+            };
+            let (_, err, code) = run(&args);
+            assert_eq!(code, 0, "{err}");
+            assert!(!err.contains("truncated"), "{err}");
+        }
+        "diff_limit" => {
+            let (out, err, code) = run(&["diff", p, "0t", "1000t", "--async", "--limit", "2"]);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(
+                out.lines().filter(|l| !l.starts_with('#')).count(),
+                2,
+                "{out}"
+            );
+            assert!(err.contains("truncated"), "{err}");
+        }
+        "help" => {
+            for command in ["signal", "wave", "sample", "diff", "distance", "stuck"] {
+                for help in ["-h", "--help"] {
+                    let (out, _, code) = run(&[command, help]);
+                    assert_eq!(code, 0);
+                    assert!(
+                        out.contains("Output format: text (JSON requests exit 2)"),
+                        "{out}"
+                    );
+                    assert!(
+                        !live_usage(&out).contains("possible values: text, json"),
+                        "{out}"
+                    );
+                }
+            }
+        }
+        _ => panic!("unknown case {case}"),
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+macro_rules! issue_1108_cases {
+    ($($name:ident => $case:literal),* $(,)?) => {$(#[test] fn $name(){issue_1108_case($case);})*};
+}
+issue_1108_cases! {
+    issue_1108_alias_rows => "aliases", issue_1108_mixed_rows => "mixed", issue_1108_mixed_radix => "radix",
+    issue_1108_glob_json => "glob_json", issue_1108_event_json => "event_json", issue_1108_stats_window => "stats_window",
+    issue_1108_diff_ps => "diff_ps", issue_1108_stuck_literal => "stuck_literal", issue_1108_sample_miss => "sample_miss",
+    issue_1108_invalid_glob_find => "invalid_glob_find", issue_1108_invalid_glob_distance => "invalid_glob_distance",
+    issue_1108_value_out => "value_out", issue_1108_diff_out => "diff_out", issue_1108_zero_limit => "zero_limit",
+    issue_1108_find_limit => "find_limit", issue_1108_find_boundary => "find_boundary", issue_1108_signal_boundary => "signal_boundary",
+    issue_1108_sample_boundary => "sample_boundary", issue_1108_diff_limit => "diff_limit", issue_1108_help => "help",
+}
+
+#[test]
+fn issue_1108_documentation_goldens() {
+    let (dir, fst) = issue_1108_store("doc-goldens");
+    let p = fst.to_str().unwrap();
+    let cases: &[(&str, &[&str])] = &[
+        ("signal", &["--async", "-s", "b", "-t", "0t:5000t"]),
+        ("wave", &["--async", "-s", "b", "-t", "0t:5000t"]),
+        ("value", &["--async", "-s", "b", "--at", "1000t"]),
+        ("find", &["--async", "b", "'h1"]),
+        ("sample", &["--async", "b", "'h1", "-s", "c"]),
+        ("diff", &["--async", "0t", "5000t", "-s", "b"]),
+        ("stats", &["--async", "-s", "b", "-t", "0t:5000t"]),
+        ("stuck", &["--async", "-s", "constant"]),
+        ("distance", &["--async", "a", "'h1"]),
+    ];
+    for (command, options) in cases {
+        let mut args = vec![*command, p];
+        args.extend_from_slice(options);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{err}");
+        let doc = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("docs/public/commands/{command}.md")),
+        )
+        .unwrap();
+        let shape = doc.split("## Output shape").nth(1).unwrap();
+        let golden = shape
+            .split("```\n")
+            .nth(1)
+            .unwrap()
+            .split("```")
+            .next()
+            .unwrap();
+        assert_eq!(out, golden, "{command}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_alias_warning_budget_and_implicit_selection() {
+    let (dir, fst) = issue_1108_store("many-aliases");
+    let vcd = dir.join("input.vcd");
+    let mut input = "$timescale 1ps $end\n$scope module tb $end\n".to_string();
+    for i in 0..34 {
+        input.push_str(&format!("$var wire 1 ! a{i} $end\n"));
+    }
+    input.push_str("$upscope $end\n$enddefinitions $end\n#0\n0!\n#1000\n1!\n#2000\n");
+    std::fs::write(&vcd, input).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let p = fst.to_str().unwrap();
+    for command in ["value", "stats", "stuck", "diff", "sample", "find"] {
+        let mut args = vec![command, p, "--async"];
+        match command {
+            "value" => args.extend(["--at", "1000t"]),
+            "diff" => args.extend(["0t", "1000t"]),
+            "find" | "sample" => args.extend(["tb.a0", "change"]),
+            _ => {}
+        }
+        let (_, err, code) = run(&args);
+        assert_eq!(code, 0, "{command}: {err}");
+        assert!(!err.contains("alias"), "{command}: {err}");
+    }
+    let (out, err, code) = run(&[
+        "value", p, "--async", "--at", "1000t", "-s", "tb.*", "--format", "json",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let warnings = json["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 33, "{out}");
+    assert_eq!(
+        warnings[32],
+        "additional 1 alias names shown once; narrow selectors for details"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_list_clock_override_metadata() {
+    let fst = build_bwave("small_clocked.vcd", "1108-list-clock");
+    let (out, err, code) = run(&[
+        "list",
+        fst.to_str().unwrap(),
+        "--clock",
+        "flag",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["data"]["clock"], "tb.dut.flag");
+    std::fs::remove_file(fst).unwrap();
+}
+
+#[test]
+fn issue_1108_stats_zero_duration_and_raw_window_consumers() {
+    let (dir, fst) = issue_1108_store("windows");
+    let p = fst.to_str().unwrap();
+    for command in ["signal", "wave", "stats", "find", "sample", "distance"] {
+        let mut base = vec![command, p, "--async"];
+        match command {
+            "find" | "sample" => base.extend(["b", "'h1"]),
+            "distance" => base.extend(["a", "'h1"]),
+            _ => {}
+        }
+        if command != "find" && command != "distance" {
+            base.extend(["-s", "b"]);
+        }
+        let mut physical = base.clone();
+        physical.extend(["-t", "1ns:5ns"]);
+        let mut ticks = base;
+        ticks.extend(["-t", "1000t:5000t"]);
+        let (out, err, code) = run(&physical);
+        let (other, othererr, othercode) = run(&ticks);
+        assert_eq!(code, 0, "{command}: {err}");
+        assert_eq!(othercode, 0, "{othererr}");
+        assert_eq!(out, other, "{command}");
+    }
+    let (out, err, code) = run(&[
+        "stats",
+        p,
+        "--async",
+        "-s",
+        "b",
+        "-t",
+        "1000t:1000t",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["data"]["total_ticks"], 0);
+    assert_eq!(json["data"]["signals"][0]["transitions"], 1);
+    assert_eq!(
+        json["data"]["signals"][0]["time_in_state_ticks"],
+        serde_json::json!({})
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_distance_even_public_and_all_pairs_stats() {
+    let (dir, fst) = issue_1108_store("even");
+    let vcd = dir.join("input.vcd");
+    let input = std::fs::read_to_string(&vcd)
+        .unwrap()
+        .replace("#100000\n", "#26000\nb0000 !\n#27000\nb0001 !\n#100000\n");
+    std::fs::write(&vcd, input).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let p = fst.to_str().unwrap();
+    let mut expected = None;
+    for limit in ["1", "4", "100"] {
+        let (out, err, code) = run(&[
+            "distance", p, "a", "'h1", "--async", "--stats", "--limit", limit,
+        ]);
+        assert_eq!(code, 0, "{err}");
+        assert!(
+            out.contains("count=4  min=2000  max=15000  mean=6500.0  median=4500.0"),
+            "{out}"
+        );
+        if let Some(ref prev) = expected {
+            assert_eq!(&out, prev);
+        }
+        expected = Some(out);
+        assert!(!err.contains("truncated"));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_stuck_limits_literals_and_unknowns() {
+    let (dir, fst) = issue_1108_store("constants");
+    let vcd = dir.join("input.vcd");
+    std::fs::write(&vcd,"$timescale 1ns $end\n$scope module tb $end\n$var wire 8 ! aaa $end\n$var wire 8 \" bbb $end\n$var wire 8 # ccc $end\n$var wire 8 $ xxx $end\n$var wire 8 % zzz $end\n$upscope $end\n$enddefinitions $end\n#0\nb00001010 !\nb00001010 \"\nb00001010 #\nbxxxx $\nbzzzz %\n#10\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let p = fst.to_str().unwrap();
+    for literal in ["'hA", "'h000a", "8'd10", "'b1010"] {
+        for limit in ["2", "3"] {
+            let (out, err, code) = run(&["stuck", p, literal, "--async", "--limit", limit]);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(
+                out.lines().filter(|l| l.contains("stuck at")).count(),
+                limit.parse::<usize>().unwrap(),
+                "{out}"
+            );
+            assert_eq!(err.contains("truncated"), limit == "2", "{err}");
+        }
+    }
+    for literal in ["x", "'hX", "z", "'hZ"] {
+        let (out, err, code) = run(&["stuck", p, literal, "--async"]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            out.lines().filter(|l| l.contains("stuck at")).count(),
+            1,
+            "{out}"
+        );
+    }
+    for literal in ["rising", "change", "A", "'hQ"] {
+        let (_, err, code) = run(&["stuck", p, literal, "--async"]);
+        assert_eq!(code, 2, "{err}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_list_value_stats_limit_boundaries() {
+    let (dir, fst) = issue_1108_store("limit-boundaries");
+    let p = fst.to_str().unwrap();
+    for command in ["list", "value", "stats"] {
+        for limit in ["3", "4"] {
+            let mut args = vec![
+                command, p, "--limit", limit, "--format", "json", "-s", "tb.*",
+            ];
+            if command == "value" {
+                args.extend(["--at", "1000t", "--async"]);
+            } else if command == "stats" {
+                args.push("--async");
+            }
+            let (out, err, code) = run(&args);
+            assert_eq!(code, 0, "{err}");
+            let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+            let warnings = json["warnings"].as_array().unwrap();
+            let expected_total = if command == "list" { 5 } else { 4 };
+            assert_eq!(
+                json["data"]["signals"].as_array().unwrap().len(),
+                limit.parse::<usize>().unwrap().min(expected_total),
+                "{out}"
+            );
+            assert_eq!(
+                warnings
+                    .iter()
+                    .filter(|w| w.as_str().unwrap().contains("truncated"))
+                    .count(),
+                usize::from(limit.parse::<usize>().unwrap() < expected_total),
+                "{out}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_clockless_sync_and_negative_points() {
+    let (dir, fst) = issue_1108_store("clockless");
+    let p = fst.to_str().unwrap();
+    let (a, err, code) = run(&["diff", p, "0", "1000", "-s", "b"]);
+    assert_eq!(code, 0, "{err}");
+    let (b, err, code) = run(&["diff", p, "0t", "1000t", "--async", "-s", "b"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(a, b);
+    for mode in [vec![], vec!["--with-reset"]] {
+        for format in ["text", "json"] {
+            let mut args = vec!["value", p, "--at=-1", "--format", format];
+            args.extend(mode.clone());
+            let (out, err, code) = run(&args);
+            assert_eq!(code, 2, "{err}");
+            assert!(out.is_empty());
+        }
+    }
+    let (out, err, code) = run(&[
+        "sample", p, "a", "change", "-s", "missing", "--async", "--count", "--limit", "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.trim().parse::<u64>().unwrap() > 1, "{out}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_supplemental_documentation_goldens() {
+    let (dir, fst) = issue_1108_store("extra-doc-goldens");
+    let p = fst.to_str().unwrap();
+    let cases: &[(&str, usize, &[&str])] = &[
+        ("find", 1, &["--async", "b", "'h1", "--count"]),
+        ("sample", 1, &["--async", "b", "'h1", "-s", "c", "--count"]),
+        ("distance", 1, &["a", "'h1", "--to", "b", "'h2", "--async"]),
+        ("distance", 2, &["a", "'h1", "--async", "--stats"]),
+        (
+            "wave",
+            1,
+            &[
+                "--async", "-s", "b", "-t", "0t:5000t", "--marker", "change", "1000t",
+            ],
+        ),
+        ("stuck", 1, &["'hA", "--async", "-s", "constant"]),
+    ];
+    for (command, index, options) in cases {
+        let mut args = vec![*command, p];
+        args.extend_from_slice(options);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{err}");
+        let doc = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("docs/public/commands/{command}.md")),
+        )
+        .unwrap();
+        let shape = doc.split("## Output shape").nth(1).unwrap();
+        let blocks: Vec<&str> = shape
+            .split("```")
+            .skip(1)
+            .step_by(2)
+            .map(|b| b.strip_prefix('\n').unwrap_or(b))
+            .collect();
+        let normalized: String = out
+            .lines()
+            .map(|line| format!("{}\n", line.trim_end()))
+            .collect();
+        assert_eq!(normalized, blocks[*index], "{command}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_stats_clock_override_window_and_reset_policy() {
+    let fst = build_bwave("small_clocked.vcd", "1108-stats-clock");
+    let p = fst.to_str().unwrap();
+    for (clock, expected) in [("clk", 10), ("flag", 140)] {
+        let (out, err, code) = run(&[
+            "stats", p, "--clock", clock, "-s", "state", "-t", "2:3", "--format", "json",
+        ]);
+        assert_eq!(code, 0, "{err}");
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(json["data"]["total_ticks"], expected, "{out}");
+        let durations = json["data"]["signals"][0]["time_in_state_ticks"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_u64().unwrap())
+            .sum::<u64>();
+        assert_eq!(durations, expected as u64, "{out}");
+    }
+    std::fs::remove_file(fst).unwrap();
+}
+
+#[test]
+fn issue_1108_diff_physical_tick_equivalence_in_ps_and_ns() {
+    let (dir, fst) = issue_1108_store("diff-units");
+    for (scale, middle, end, lo, hi) in [
+        ("1ps", 50000, 100000, "35000t", "95000t"),
+        ("1ns", 50, 100, "35t", "95t"),
+    ] {
+        let vcd = dir.join("input.vcd");
+        std::fs::write(&vcd, format!("$timescale {scale} $end\n$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#{middle}\n1!\n#{end}\n")).unwrap();
+        let p = fst.to_str().unwrap();
+        let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", p]);
+        assert_eq!(code, 0, "{err}");
+        let (out, err, code) = run(&["diff", p, "35ns", "95ns", "--async", "-s", "data"]);
+        assert_eq!(code, 0, "{err}");
+        assert!(
+            out.lines().any(|line| {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                fields.len() == 3
+                    && fields[0] == "data"
+                    && fields[1].ends_with("=0")
+                    && fields[2].ends_with("=1")
+            }),
+            "{out}"
+        );
+        let (other, err, code) = run(&["diff", p, lo, hi, "--async", "-s", "data"]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(out, other);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_alias_command_order_and_radix_provenance() {
+    let (dir, fst) = issue_1108_store("row-order");
+    let vcd = dir.join("input.vcd");
+    std::fs::write(&vcd,"$timescale 1ns $end\n$scope module tb $end\n$var wire 4 ! zheld $end\n$var wire 4 ! aheld $end\n$var wire 4 \" z $end\n$var wire 4 \" a $end\n$var wire 1 # event $end\n$upscope $end\n$enddefinitions $end\n#0\nb1010 !\nb0000 \"\n0#\n#10\nb1010 \"\n1#\n#20\n0#\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let p = fst.to_str().unwrap();
+    for command in [
+        "value", "wave", "signal", "sample", "stats", "stuck", "diff",
+    ] {
+        let diff = command == "diff";
+        let names = if diff { ["z", "a"] } else { ["zheld", "aheld"] };
+        let mut args = vec![command, p, "--async", "-s", names[1], "-s", names[0]];
+        match command {
+            "value" => args.extend(["--at", "10t"]),
+            "diff" => args.extend(["0t", "10t"]),
+            "sample" => args.extend(["event", "rising"]),
+            _ => {}
+        }
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command}: {err}");
+        let rows: Vec<&str> = out
+            .lines()
+            .filter_map(|line| {
+                let mut tokens = line.split_whitespace();
+                let candidate = if command == "signal" || command == "sample" {
+                    tokens.nth(1)
+                } else {
+                    tokens.next()
+                };
+                candidate.filter(|name| names.contains(name))
+            })
+            .collect();
+        let expected = if command == "stats" || command == "stuck" {
+            vec![names[1], names[0]]
+        } else {
+            vec![names[0], names[1]]
+        };
+        assert_eq!(rows, expected, "{command}: {out}");
+    }
+    let (out, err, code) = run(&[
+        "value", p, "--async", "--at", "10t", "-s", "zheld%d", "-s", "aheld%h",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("zheld ") && l.ends_with("= 10")),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("aheld ") && l.ends_with("= A")),
+        "{out}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_find_combined_namespaces_warns_once() {
+    let (dir, fst) = issue_1108_store("combined-find");
+    let (out, err, code) = run(&[
+        "find",
+        fst.to_str().unwrap(),
+        "*",
+        "'h1",
+        "--async",
+        "--virtual",
+        "v = b",
+        "--limit",
+        "2",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert_eq!(err.matches("output truncated").count(), 1, "{err}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_exact_unsuffixed_alias_does_not_inherit_glob_radix() {
+    let (dir, fst) = issue_1108_store("exact-glob-radix");
+    let vcd = dir.join("input.vcd");
+    let input = std::fs::read_to_string(&vcd)
+        .unwrap()
+        .replace("b0001 !", "b1010 !");
+    std::fs::write(&vcd, input).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let (out, err, code) = run(&[
+        "value",
+        fst.to_str().unwrap(),
+        "--async",
+        "--at",
+        "1000t",
+        "-s",
+        "tb.*%d",
+        "-s",
+        "tb.a",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("a ") && l.ends_with("= A")),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("constant ") && l.ends_with("= 10")),
+        "{out}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_vector_alias_names_are_exact_selectors() {
+    let (dir, fst) = issue_1108_store("vector-aliases");
+    let vcd = dir.join("input.vcd");
+    let input = std::fs::read_to_string(&vcd)
+        .unwrap()
+        .replace("! a $end", "! a [3:0] $end")
+        .replace("! alias $end", "! alias [3:0] $end");
+    std::fs::write(&vcd, input).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let (out, err, code) = run(&[
+        "value",
+        fst.to_str().unwrap(),
+        "--async",
+        "--at",
+        "1000t",
+        "-s",
+        "tb.a[3:0]",
+        "-s",
+        "tb.alias[3:0]",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.lines().any(|l| l.starts_with("a[3:0] ")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("alias[3:0] ")), "{out}");
+    assert!(!err.contains("shown once"), "{err}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_brace_glob_aliases_are_deduplicated() {
+    let (dir, fst) = issue_1108_store("brace-glob");
+    let (out, err, code) = run(&[
+        "value",
+        fst.to_str().unwrap(),
+        "--async",
+        "--at",
+        "1000t",
+        "-s",
+        "{tb.a,tb.alias}",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out.lines().filter(|l| l.contains(" = ")).count(),
+        1,
+        "{out}"
+    );
+    assert!(err.contains("shown once"), "{err}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_sync_signal_limits_changed_records() {
+    let dir = std::env::temp_dir().join(format!("bwave-1108-sync-limit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcd = dir.join("input.vcd");
+    let fst = dir.join("input.fst");
+    std::fs::write(&vcd, "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$var wire 1 \" first $end\n$var wire 1 # later $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n0\"\n0#\n#5\n1!\n#10\n0!\n1#\n#15\n1!\n#20\n0!\n0#\n#25\n1!\n#30\n0!\n#35\n1!\n#40\n0!\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let p = fst.to_str().unwrap();
+    for (window, withheld) in [("2:2", false), ("2:3", true)] {
+        let (out, err, code) = run(&[
+            "signal", p, "-s", "first", "-s", "later", "-t", window, "--limit", "1",
+        ]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(out, "2 later 1\n", "{err}");
+        assert_eq!(
+            err.matches("output truncated").count(),
+            usize::from(withheld),
+            "{err}"
+        );
+        assert!(!err.contains("showing held values"), "{err}");
+    }
+    let (out, err, code) = run(&[
+        "signal", p, "-s", "first", "-s", "later", "-t", "2:3", "--limit", "2",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "2 later 1\n3 later 0\n");
+    assert!(!err.contains("output truncated"), "{err}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_1108_point_errors_preserve_buffered_diagnostics() {
+    let (dir, fst) = issue_1108_store("point-error-diagnostics");
+    let p = fst.to_str().unwrap();
+    for point in ["-1", "100001"] {
+        let (out, err, code) = run(&["value", p, "--at", point, "-s", "b"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(out.is_empty(), "{out}");
+        assert!(err.contains("# scope: tb"), "{err}");
+        let warning = err
+            .find("no clock signal found, falling back to async mode")
+            .expect(&err);
+        let error = err.find("ERROR: value time").expect(&err);
+        assert!(warning < error, "{err}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

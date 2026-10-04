@@ -73,16 +73,42 @@ def is_standalone_git_repository(path: Path) -> bool:
     return (path / ".git").is_dir() and is_git_worktree_root(path)
 
 
+@dataclass(frozen=True)
+class ProjectTopology:
+    """Independent checkout-local linked and configured standalone selections."""
+
+    paired: RepositoryCheckout | None = None
+    standalone: Path | None = None
+
+
+def project_topology(
+    checkout_root: Path, *, discover_paired: bool = True, discover_standalone: bool = True
+) -> ProjectTopology:
+    """Inspect requested Project repository selections without changing their policy."""
+    paired = _inspect_paired_project_repository(checkout_root) if discover_paired else None
+    standalone = None
+    if discover_standalone:
+        try:
+            project_dir = resolve_checkout_project_dir(checkout_root).resolve()
+        except FileNotFoundError:
+            pass
+        else:
+            if is_standalone_git_repository(project_dir):
+                standalone = project_dir
+    return ProjectTopology(paired, standalone)
+
+
 def resolve_inner_project_repo(project_root: Path) -> Path | None:
-    """Return this checkout's project dir only when it is its own Git repo."""
-    try:
-        project_dir = resolve_checkout_project_dir(project_root).resolve()
-    except FileNotFoundError:
-        return None
-    return project_dir if is_standalone_git_repository(project_dir) else None
+    """Return this checkout's configured standalone Project repository."""
+    return project_topology(project_root, discover_paired=False).standalone
 
 
 def paired_project_repository(checkout_root: Path) -> RepositoryCheckout | None:
+    """Return the fixed checkout-local linked Project, without resolving config."""
+    return project_topology(checkout_root, discover_standalone=False).paired
+
+
+def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckout | None:
     """Return the checkout's linked inner worktree, when one is installed."""
     nested = checkout_root / PROJECT_DIR_NAME
     if not (nested / ".git").is_file():

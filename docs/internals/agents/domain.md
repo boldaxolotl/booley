@@ -7,7 +7,7 @@ index of context ownership.
 
 - Read `CONTEXT-MAP.md`, then `docs/CONTEXT.md` and every context glossary whose
   owned concepts the work touches.
-- Read relevant ADRs under `docs/adr/` when that directory exists.
+- Read relevant ADRs under `docs/adr/`.
 - If an expected document does not exist, proceed silently. Domain-modeling
   creates documentation lazily when terminology or durable decisions are
   resolved.

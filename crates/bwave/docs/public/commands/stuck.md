@@ -5,7 +5,7 @@
 ```bash
 bwave stuck <FST_FILE> [VALUE] [-s PATTERN[%RADIX] ...]
             [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--format text|json] [--limit N]
+            [--format text] [--limit N]
 ```
 
 ## Semantics
@@ -39,25 +39,18 @@ stuck at 0" or "find anything stuck at X".
 Text mode, one signal per row, with the constant value:
 
 ```
-# stuck: signals that never transitioned
-NAME                             VALUE   WIDTH
-tb.dut.tied_high                 'h1     1
-tb.dut.unused_strap              'h0     1
-tb.dut.dbg_const                 'h2A    8
-# 3 signals
+# Stuck signals: 1 of 1 analyzed
+  constant  4-bit  stuck at A  (100%, 100ns)
 ```
 
 With an explicit `VALUE` filter:
 
 ```
-# stuck at 'h0: signals that held 0 throughout
-tb.dut.unused_strap              'h0     1
-tb.dut.never_set                 'h0     1
-# 2 signals
+# Stuck signals: 1 of 1 analyzed (filter: A)
+  constant  4-bit  stuck at A  (100%, 100ns)
 ```
 
-JSON mode is **not yet implemented** for `stuck`. Text
-mode only.
+`--format json` exits with code 2: `JSON output is not implemented for stuck; use find/value/stats/list`.
 
 ## Common errors
 

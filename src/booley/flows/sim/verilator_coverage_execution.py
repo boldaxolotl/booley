@@ -309,6 +309,10 @@ class VerilatorCoverageExecution:
                 infrastructure_error=True,
             )
 
+    def set_pre_sim_evidence_sink(self, sink: Callable[[PreSimEvidence], None]) -> None:
+        """Install an attempt-owned publisher before any coverage run starts."""
+        self._pre_sim_evidence_sink = sink
+
     def _run_prepared(
         self,
         request: SimulationRunRequest,
@@ -330,6 +334,9 @@ class VerilatorCoverageExecution:
         work = self._prepare_work(request, prepared, transport)
         before = _snapshot_pre_sim_state(self._handle, prepared, request, self._artifact_paths)
         pre_sim = self._run_pre_sim(prepared, test_names, work.run_cwd)
+        sink = getattr(self, "_pre_sim_evidence_sink", None)
+        if pre_sim is not None and sink is not None:
+            sink(pre_sim)
         try:
             _verify_pre_sim_state(
                 prepared,

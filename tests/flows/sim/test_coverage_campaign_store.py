@@ -40,6 +40,59 @@ def _campaign():
     return decode_coverage_campaign(_valid_document(), TARGET)
 
 
+@pytest.mark.parametrize("boundary", ["manifest", "jsonl"])
+def test_nested_coverage_exact_and_over_limit_preserve_authoritative_hook_sidecars(
+    tmp_path, monkeypatch, boundary
+):
+    import booley.flows.sim.coverage_campaign_store as store
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    _invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    firing = outcome.pre_sim_firings[0]
+    before = firing.path.read_bytes()
+    attempt = firing.path.parent.parent
+    campaign = _campaign()
+    runs = tuple(
+        replace(
+            run,
+            attributes=freeze_coverage_mapping(
+                {
+                    **dict(run.attributes),
+                    "pre_sim": {
+                        "status": "passed",
+                        "returncode": 0,
+                        "command_count": 2,
+                        "elapsed_s": 0.1,
+                        "stdout_tail": "s" * 8192,
+                        "stderr_tail": "e" * 8192,
+                    },
+                }
+            ),
+        )
+        for run in campaign.runs
+    )
+    campaign = replace(campaign, runs=runs)
+    measured = publish_coverage_campaign(attempt / "measured", campaign)
+    if boundary == "manifest":
+        limit = measured.campaign.stat().st_size
+        constant = "MAX_MANIFEST_BYTES"
+    else:
+        limit = max(
+            len(line)
+            for line in gzip.decompress(measured.points.read_bytes()).splitlines(keepends=True)
+        )
+        constant = "MAX_LINE_BYTES"
+    monkeypatch.setattr(store, constant, limit)
+    exact = publish_coverage_campaign(attempt / "exact", campaign)
+    assert exact.campaign.is_file()
+    monkeypatch.setattr(store, constant, limit - 1)
+    with pytest.raises(CoverageCampaignStoreError):
+        publish_coverage_campaign(attempt / "over", campaign)
+    assert firing.path.read_bytes() == before
+    assert not (attempt / "over/coverage.json").exists()
+    assert not (attempt / "over/coverage-points.jsonl.gz").exists()
+
+
 def _invalid_campaign():
     campaign = _campaign()
     return replace(

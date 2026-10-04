@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -250,12 +251,16 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     Also writes a flat ``{endpoint_name}.json`` copy for backward compatibility
     (developer prompt rule 11, MCP ``_try_read_report``).
     """
+    from booley.flows.endpoint_report_criteria import project
+
+    project(endpoint, result)
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
     if not getattr(endpoint, "_skip_report_detail_refresh", False):
         _refresh_report_detail(endpoint, result)
+    project(endpoint, result)
     report = _report_document(endpoint, result)
     inv_dir = endpoint._reserved_invocation_dir
     if inv_dir is None:
@@ -291,7 +296,13 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
-    if endpoint.name == "sim":
+    if endpoint.endpoint_kind == "flow":
+        report["$schema"] = (
+            "booley.simulation-report/v3" if endpoint.name == "sim" else "booley.flow-report/v1"
+        )
+    elif endpoint.endpoint_kind == "specialist":
+        report["$schema"] = "booley.specialist-report/v1"
+    elif endpoint.name == "sim":
         report["$schema"] = "booley.simulation-report/v2"
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
@@ -312,7 +323,33 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         report["usage"] = _report_usage(result)
     if result.report_text:
         report["report_text"] = result.report_text
+    _add_persisted_cycle_counts(endpoint, report)
     return report
+
+
+def _add_persisted_cycle_counts(endpoint: EndpointState, report: dict[str, Any]) -> None:
+    callback = getattr(getattr(endpoint, "flow", endpoint), "persisted_cycle_counts", None)
+    if not callable(callback):
+        return
+    try:
+        payload = callback()
+        if not isinstance(payload, dict) or any(
+            not isinstance(selector, str) or not isinstance(rows, list)
+            for selector, rows in payload.items()
+        ):
+            raise TypeError("invalid persisted cycle count mapping")
+        if any(
+            not isinstance(row, dict) or set(row) != {"test", "cycle_count"}
+            for rows in payload.values()
+            for row in rows
+        ):
+            raise TypeError("invalid persisted cycle count row")
+        json.dumps(payload, sort_keys=True)
+        if payload:
+            report["cycle_counts"] = payload
+    except Exception:  # reporting metadata must not change verdict or acceptance
+        logger.warning("Simulation cycle count metadata unavailable", exc_info=True)
+        report["cycle_counts_error"] = "unavailable"
 
 
 def _report_usage(result: EndpointOutcome) -> dict[str, object]:

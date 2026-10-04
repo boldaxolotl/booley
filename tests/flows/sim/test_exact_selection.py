@@ -145,3 +145,15 @@ def test_plain_selection_preserves_input_order(tmp_path) -> None:
         ["--target", "sim", "--work-dir", str(tmp_path), "--test", "gap", "--test", "full"]
     )
     assert flow._resolve_tests_to_run("sim", {"sim": ["full", "gap"]}) == ["gap", "full"]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_resume_verbose_parser_to_request_is_output_only(tmp_path, dry_run):
+    argv = ["--resume-from", str(tmp_path / "manifest.json"), "--verbose"]
+    if dry_run:
+        argv.append("--dry-run")
+    request = parse_request(SimulateFlow(), argv)
+    assert request.verbose is True
+    assert request.dry_run is dry_run
+    assert request.target == ""
+    assert SimRequest(target="sim").verbose is False

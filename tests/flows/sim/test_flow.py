@@ -1174,12 +1174,13 @@ class TestCriterionGating:
             tests=[TestResult(name="lite_smoke", passed=True)],
         )
 
-    def test_no_state_file_skips_criterion(self, tmp_path: Path):
+    def test_no_state_file_records_workload_criterion(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         flow.args.state_file = None  # standalone / Interactive Mode
         flow.set_criterion = MagicMock()
         flow._record_sim_criterion(self._passed_target())
-        flow.set_criterion.assert_not_called()
+        flow.set_criterion.assert_called_once()
+        assert flow.set_criterion.call_args.args == ("sim_pass_lite", True)
 
     def test_state_file_records_criterion(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
@@ -2023,12 +2024,62 @@ class TestTimeout:
         assert test["timed_out"] is True
         assert test["verdict"] == "timeout"
         assert "TIMEOUT: simulation exceeded" in test["error_tail"]
+        timeout_line = next(line for line in result.report_text.splitlines() if "TIMEOUT:" in line)
+        assert (
+            "raise --timeout-ms or [flows.sim].timeout_ms if the test legitimately needs longer"
+        ) in timeout_line
         assert test["phase_timings_s"]["build"] == 0.25
         assert test["phase_timings_s"]["run"] == 599.75
         assert test["resources"] == {
             "command_peak_rss_mb": 96.5,
             "command_oom_kill_delta": 1,
         }
+
+    @pytest.mark.parametrize(
+        "backend_detail",
+        [
+            "Verilator simulation timed out (5s)",
+            "Icarus simulation timed out (5s)",
+            cocotb_results.TIMEOUT_ACTIVE_DETAIL,
+        ],
+    )
+    def test_backend_timeout_preserves_detail_and_adds_hint(self, tmp_path: Path, backend_detail):
+        flow = _make_flow(tmp_path, config="lite")
+        adapter = AdapterResult(
+            passed=False,
+            inconclusive=False,
+            sva_errors=0,
+            tests=("lite",),
+            simulator_returncode=-9,
+            termination="timeout",
+            failure_kind="timeout",
+            detail=backend_detail,
+            test_results=(
+                AdapterTestResult(
+                    "lite",
+                    "timeout",
+                    detail=backend_detail,
+                    termination="timeout",
+                    failure_kind="timeout",
+                ),
+            ),
+        )
+        with (
+            patch("booley.flows.sim.flow._get_test_names", return_value={}),
+            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
+            patch.object(flow, "_execute", return_value=SubprocessResult(returncode=-9)),
+            patch(f"{__name__}._adapter_result_for_test_process", return_value=adapter),
+            flow.context.publication_resources,
+        ):
+            result = flow._run()
+        assert result.exit_code == EXIT_FAILURE
+        timeout_line = next(
+            line for line in result.report_text.splitlines() if backend_detail in line
+        )
+        assert f"{backend_detail} (rc=-9)" in timeout_line
+        assert (
+            "raise --timeout-ms or [flows.sim].timeout_ms if the test legitimately needs longer"
+        ) in timeout_line
 
 
 # ---------------------------------------------------------------------------
@@ -3079,3 +3130,30 @@ class TestErrorExcerptSelection:
         lines: list[str] = []
         _append_test_output_line(tr, lines)
         assert "--- error output (last 1 lines) ---" in "\n".join(lines)
+
+
+@pytest.mark.parametrize("met", [True, False, None])
+def test_standalone_elab_only_final_headline(tmp_path, met):
+    from booley.flows.sim.build import BuildOutcome
+    from booley.flows.sim.flow import ElabOnlyTargetResult
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = _make_flow(tmp_path, config="lite", extra_args=["--mode", "elab-only"])
+    flow.args.state_file = None
+    flow.read_state()
+    build = BuildOutcome(
+        True,
+        None if met is None else ("pass" if met else "fail"),
+        "infrastructure" if met is None else (None if met else "design"),
+    )
+    flow._record_elab_only_criterion(ElabOnlyTargetResult("lite", outcome=build))
+    result = EndpointOutcome(exit_code=2 if met is None else (0 if met else 1))
+    with flow.context.publication_resources:
+        from booley.flows.endpoint_report_criteria import freeze
+
+        freeze(flow.context)
+        report = json.loads(flow.context.write_report(result).read_text())
+    assert (report["criterion_key"], report["criterion_met"]) == (
+        ("", None) if met is None else ("elab_pass_lite", met)
+    )
+    assert flow.state._file_path is None

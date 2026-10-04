@@ -16,6 +16,8 @@ import pytest
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+pytest_plugins = ["tests.timeout_evidence"]
+
 
 @pytest.fixture
 def isolated_git_attributes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

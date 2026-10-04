@@ -49,7 +49,7 @@ required_paths = [
   "/etc/claude-code/managed-settings.json",
   "/etc/codex/requirements.toml",
   "/opt/or-tools/lib/libortools.so.9",
-  "/usr/local/share/doc/openroad/OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz",
+  "/usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz",
   "/usr/local/share/doc/openroad/source-manifest.json",
   "/usr/local/include/iverilog/vpi_user.h",
   "/usr/include/zlib.h",
@@ -290,6 +290,35 @@ done
 test /opt/riscv/bin/riscv-none-elf-c++ -ef /opt/riscv/bin/riscv-none-elf-g++
 test /opt/riscv/bin/riscv-none-elf-gcc -ef /opt/riscv/bin/riscv-none-elf-gcc-15.2.0
 test /opt/riscv/bin/riscv-none-elf-ld -ef /opt/riscv/bin/riscv-none-elf-ld.bfd
+'''
+
+# ADR 0070: the tooling stage is built on bare Ubuntu, not on this candidate's
+# runtime base, so every host ELF it ships anywhere under /opt/riscv must still
+# resolve its shared libraries here. RISC-V target objects are not host ELFs
+# and are skipped. One batched `file` call keeps the full-tree scan fast.
+# riscv-tooling-publish.yml runs every [riscv] probe against the bare tooling
+# image too, so probes may rely only on what that stage installs.
+[[riscv.probe]]
+name = "RISC-V tooling shared libraries resolve"
+timeout_seconds = 180
+command = '''
+checked=0
+unresolved=0
+while IFS= read -r -d '' path && IFS= read -r -d '' kind; do
+  case "$kind" in
+    ELF*x86-64*dynamically\ linked*) ;;
+    *) continue ;;
+  esac
+  checked=$((checked + 1))
+  if ldd "$path" 2>&1 | grep -q 'not found'; then
+    echo "unresolved shared libraries: $path" >&2
+    ldd "$path" 2>&1 | grep 'not found' >&2
+    unresolved=$((unresolved + 1))
+  fi
+done < <(find /opt/riscv -type f -print0 | xargs -0 -r file -00 --)
+echo "checked $checked dynamically linked host ELF files"
+test "$checked" -ge 10
+test "$unresolved" -eq 0
 '''
 
 [[riscv.probe]]

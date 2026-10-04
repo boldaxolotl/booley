@@ -12,6 +12,7 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
+from booley.flows.endpoint_report_criteria import ReportCriteria, freeze, project
 from booley.flows.endpoint_reporting import _StdoutWitness
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -78,10 +79,18 @@ def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
+    reset = getattr(endpoint, "reset_report_metadata", None)
+    if callable(reset):
+        reset()
+    endpoint._report_criteria = ReportCriteria()
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
+        if endpoint.endpoint_kind in {"flow", "specialist"}:
+            endpoint._report_criteria.project(early_outcome)
         return early_outcome
     if (early_outcome := _apply_default_endpoint_report_root(endpoint)) is not None:
+        if endpoint.endpoint_kind in {"flow", "specialist"}:
+            endpoint._report_criteria.project(early_outcome)
         return early_outcome
     endpoint.read_state()
     endpoint._default_target_args()
@@ -90,6 +99,7 @@ def prepare_execution(
         binding_error = endpoint._criterion_binding_gate()
         if binding_error is not None:
             endpoint._publish_console_report(binding_error)
+            endpoint._report_criteria.project(binding_error)
             return binding_error
     if hasattr(endpoint, "prepare_target_endpoint"):
         target_error = endpoint.prepare_target_endpoint()
@@ -102,7 +112,15 @@ def prepare_execution(
         simulation = flow.prepare_simulation_endpoint()
         if isinstance(simulation, EndpointOutcome):
             endpoint._publish_console_report(simulation)
+            endpoint._report_criteria.project(simulation)
             return simulation
+    if endpoint.endpoint_kind in {"flow", "specialist"}:
+        freeze(endpoint, simulation)
+    return _prepared_execution(endpoint, simulation)
+
+
+def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> PreparedExecution:
+    """Publish the start event after all preparation gates have succeeded."""
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()
     dry_run = bool(getattr(endpoint.args, "dry_run", False))
@@ -200,6 +218,7 @@ def finish_execution(
 ) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
     final_outcome = endpoint._adapt_outcome(outcome)
+    project(endpoint, final_outcome)
     exit_code = endpoint._finish_main(
         final_outcome,
         prepared.display_target,

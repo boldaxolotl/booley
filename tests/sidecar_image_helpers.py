@@ -22,6 +22,18 @@ from booley.core.boundary import BoundaryError, require_dict, require_list, requ
 DIND_IMAGE = (
     "docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
 )
+# Sidecar Python bases. Keep in lockstep with the Dockerfile.egress-proxy,
+# Dockerfile.flexnet-relay, and Dockerfile.reaper FROM lines and with
+# .github/scripts/sidecar-build-evidence.sh; the pin tests compare against these.
+SIDECAR_PYTHON_VERSION = "Python 3.14.8"
+SIDECAR_BOOKWORM_BASE = (
+    "python:3.14.8-slim-bookworm"
+    "@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88"
+)
+SIDECAR_ALPINE_BASE = (
+    "python:3.14.8-alpine3.24"
+    "@sha256:8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"
+)
 _DOCKER_SOCKET = "unix:///var/run/docker.sock"
 _NAME_PREFIX_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
@@ -257,7 +269,7 @@ def candidate_image(environment_variable: str, proof_name: str) -> str:
     return image
 
 
-def assert_python_version(image: str, expected: str = "Python 3.14.7") -> None:
+def assert_python_version(image: str, expected: str = SIDECAR_PYTHON_VERSION) -> None:
     """Assert the exact Python patch packaged in a sidecar image."""
     version = docker("run", "--rm", "--entrypoint", "python3", image, "--version")
     assert_ok(version)

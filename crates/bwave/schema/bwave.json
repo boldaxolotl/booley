@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.15/crates/bwave/schema/bwave.json",
   "title": "B-Wave --format json envelope",
-  "description": "Every `bwave <cmd> --format json` payload is wrapped in this envelope. Phase 2 of v0.2 implements `list`, `value`, `find`, and `stats`; other commands still emit text only.",
+  "description": "Every `bwave <cmd> --format json` payload is wrapped in this envelope. Phase 2 of v0.2 implements `list`, `value`, `find`, and `stats`; signal/wave/sample/diff/distance/stuck reject JSON requests with exit code 2.",
   "type": "object",
   "required": ["$schema", "command", "data", "warnings"],
   "additionalProperties": false,

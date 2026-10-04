@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -72,7 +72,9 @@ def discover_projects(search_roots: tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(sorted(discovered, key=str))
 
 
-def forget_project(project_root: Path) -> Path:
+def forget_project(
+    project_root: Path, *, before_forget: Callable[[Path], None] | None = None
+) -> Path:
     """Forget one exact remembered Project path."""
     with _locked_roots() as roots:
         identity = _remembered_identity(project_root, roots)
@@ -80,6 +82,8 @@ def forget_project(project_root: Path) -> Path:
             raise ProjectInventoryError(
                 f"cannot forget {identity}: revoke its live Project Grant first"
             )
+        if before_forget is not None:
+            before_forget(Path(identity))
         roots.remove(identity)
     return Path(identity)
 
@@ -102,6 +106,23 @@ def project_inventory() -> tuple[ProjectInventoryEntry, ...]:
         )
         for root in sorted(roots)
     )
+
+
+@contextmanager
+def locked_protected_roots() -> Iterator[Callable[[], frozenset[str]]]:
+    """Hold inventory stable and expose fresh remembered and Grant identities.
+
+    Callers acquire lifecycle coordination first. Grant reads take no authority
+    lock: production Grant mutations are serialized by lifecycle coordination.
+    """
+    store = _store()
+    store.ensure_directory()
+    with store.locked(
+        _LOCK_FILENAME,
+        busy_message="Project Inventory is busy with another operation; retry later",
+    ):
+        roots = _load_roots()
+        yield lambda: frozenset(roots | {grant.project_root for grant in _authority_grants()})
 
 
 def state_path() -> Path:
