@@ -115,3 +115,11 @@ def test_json_error_result_is_recorded_verbatim() -> None:
 def test_success_returns_the_decoded_document() -> None:
     evidence = _evidence_returning(_text(json.dumps({"view": "overview"})))
     assert evidence.query(view="overview") == {"view": "overview"}
+
+
+def test_error_without_text_preserves_the_raw_result() -> None:
+    result = {"isError": True, "content": [{"type": "image", "data": "rejection"}]}
+    evidence = _evidence_returning(result)
+    with pytest.raises(ValueError) as caught:
+        evidence.query(view="overview")
+    assert json.loads(str(caught.value)) == result

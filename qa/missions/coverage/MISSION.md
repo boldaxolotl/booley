@@ -165,7 +165,7 @@ Try:
   (Target reference; the script rebinds it), then run the Analyst CLI on that reference → rejected before
   the model: v1, v2, missing/changed points, truncated gzip, trailing data, point count, sizes, digest,
   unsafe/absolute path, symlink, invalid final record, duplicate point, wrong rollup/source
-  rollup/evaluation, resource ceiling.
+  rollup/evaluation, invalid-overall-score, invalid-source-score, resource ceiling.
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
   …/simulation.json`, the Ticket `booley_state.json` acceptance write, terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
@@ -256,7 +256,8 @@ fixture Project, Tickets and branches in `resources.md`.
   an active producer.
 - Parallel sub-agents share the host Sandbox cap (`[sandbox] max_sessions`, default 4). New
   Sandbox starts are refused at capacity; live work is not evicted to make room. Before fanning out,
-  inspect `booley session list` and allow for pending starts as well as live Sandboxes. Reuse existing
-  Sandboxes or reduce parallelism when the host is full.
+  count live Sandboxes (`docker ps -q --filter label=booley.role=interactive | wc -l`) and
+  allow for pending starts. A capacity refusal lists both live Sandboxes and pending editor starts.
+  Reuse existing Sandboxes or reduce parallelism when the host is full.
 - Parallel Claude agents share one 5-hour rate-limit window: four agents reached ~95% in one run. Check
   the remaining allowance before fanning out, and prefer fewer agents over a mid-run stall.

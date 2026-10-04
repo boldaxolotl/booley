@@ -157,6 +157,24 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
     [
         ("duplicate-point", {"COV_POINT_ID_DUPLICATE"}),
         ("invalid-final-record", {"COV_POINT_RUN_UNKNOWN", "COV_POINT_HIT_NONPOSITIVE"}),
+        ("missing-points", {"COV_PATH_UNSAFE"}),
+        ("changed-points", {"COV_POINT_INTEGRITY"}),
+        ("truncated-gzip", {"COV_POINT_FORMAT"}),
+        ("trailing-data", {"COV_POINT_FORMAT"}),
+        ("point-count", {"COV_POINT_COUNT_MISMATCH"}),
+        ("compressed-size", {"COV_POINT_INTEGRITY"}),
+        ("uncompressed-size", {"COV_POINT_INTEGRITY"}),
+        ("point-digest", {"COV_POINT_INTEGRITY"}),
+        ("unsafe-relative-path", {"COV_POINT_PATH"}),
+        ("absolute-path", {"COV_POINT_PATH"}),
+        ("symlink", {"COV_PATH_UNSAFE"}),
+        ("wrong-rollup", {"COV_SOURCE_ROLLUP_MISMATCH"}),
+        ("wrong-evaluation", {"COV_EVALUATION_MISMATCH"}),
+        ("resource-ceiling", {"COV_POINT_LIMIT"}),
+        ("v1", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
+        ("v2", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
+        ("invalid-overall-score", {"COV_INVALID_SCORING_SUMMARY"}),
+        ("invalid-source-score", {"COV_INVALID_SCORING_SUMMARY"}),
     ],
 )
 def test_fault_reaches_product_content_validation(
@@ -170,6 +188,7 @@ def test_fault_reaches_product_content_validation(
     )
 
     from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
+    from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
     from booley.flows.sim.coverage_reference import (
         publish_coverage_campaign_reference,
         resolve_coverage_campaign_reference,
@@ -185,9 +204,14 @@ def test_fault_reaches_product_content_validation(
 
     faults.mutate(reference, owned, mode)
 
-    with pytest.raises(CoverageCampaignValidationError) as caught:
+    with pytest.raises((CoverageCampaignValidationError, CoverageCampaignStoreError)) as caught:
         resolve_coverage_campaign_reference(reference)
-    codes = {finding.code for finding in caught.value.findings}
+    error = caught.value
+    codes = (
+        {finding.code for finding in error.findings}
+        if isinstance(error, CoverageCampaignValidationError)
+        else {error.code}
+    )
     assert expected_codes <= codes
     assert "COV_POINT_CANONICAL" not in codes
 

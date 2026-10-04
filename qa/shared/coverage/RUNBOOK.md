@@ -143,7 +143,7 @@ full stdout/stderr, exit status and tool identity. The command proves
 `value[0] == 0` by temporal induction from zero initialization under the
 parity-preserving +2 transition. It must exit zero and prove induction. Copy its
 log to the owned approved directory's `proof/parity.log` **before** invoking
-`faults/approvals.py unreachable <campaign> --project <project> --directory
+`faults/approvals.py unreachable <nested-v4>/coverage.json --project <project> --directory
 <approval-dir> --inputs <asset>/approval-inputs.json`. The binder only fills the
 exact retained point IDs and byte digests, and refuses to replace existing output
 files. Keep the proof log next to its resulting TOML.
@@ -231,7 +231,9 @@ Create `.qa-coverage-fault-copy` at that new owned root and invoke
 the copied Target reference. The script follows the reference to the nested
 Campaign, mutates it, writes point lines and the manifest in Booley's canonical
 compact encoding, and rebinds the reference's `bytes`/`sha256`. The original
-Campaign is never mutated. Truncation and final-record cases update unrelated
+Campaign is never mutated. The `invalid-overall-score` and `invalid-source-score`
+modes retain a scoring inventory that an invalid Campaign must not publish;
+`wrong-source-rollup` swaps two distinct source distributions. Truncation and final-record cases update unrelated
 envelope digests/sizes to reach the intended deeper validation. Note the
 particular error code/field proving that boundary; an unrelated earlier parse
 error does not show the deeper validation works. Restore by discarding only that

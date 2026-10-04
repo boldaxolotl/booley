@@ -91,7 +91,7 @@ class Evidence:
         )
         if result.get("isError"):
             # Schema rejections are plain text, not JSON: record the raw rejection verbatim.
-            raise ValueError(text)
+            raise ValueError(text or json.dumps(result, sort_keys=True))
         document = json.loads(text)
         if document.get("error"):
             raise ValueError(document)
