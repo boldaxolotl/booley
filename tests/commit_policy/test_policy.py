@@ -562,10 +562,10 @@ def test_default_inventory_is_exhaustively_audited() -> None:
         'upstream_base = "' + "f" * 40 + '"',
         'upstream_repository = ""\nupstream_base = "' + "f" * 40 + '"',
         'upstream_repository = 3\nupstream_base = "' + "f" * 40 + '"',
-        'upstream_repository = "../relative"\nupstream_base = "' + "f" * 40 + '"',
         'upstream_repository = "/upstream"\nupstream_base = "main"',
         'upstream_repository = "/upstream"\nupstream_base = "' + "f" * 39 + '"',
         'upstream_repository = "/upstream"\nupstream_base = 42',
+        'upstream_repository = "/upstream"\nupstream_base = "' + "0" * 40 + '"',
         "upstream_repository = [",
     ],
 )
@@ -577,7 +577,7 @@ def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path: Path, t
         validate_push_configuration(tmp_path)
 
 
-def test_validate_push_configuration_absent_and_retired_immutable_pairs(tmp_path: Path) -> None:
+def test_validate_push_configuration_absent_and_immutable_pairs(tmp_path: Path) -> None:
     assert validate_push_configuration(tmp_path) is None
     config = tmp_path / ".booley_project" / "booley.toml"
     config.parent.mkdir()
@@ -585,8 +585,10 @@ def test_validate_push_configuration_absent_and_retired_immutable_pairs(tmp_path
         config.write_text(
             f'[stealth]\nupstream_repository = "https://example.test/upstream.git"\nupstream_base = "{base}"\n'
         )
-        with pytest.raises(ValueError, match="remove these unsupported import settings"):
-            validate_push_configuration(tmp_path)
+        upstream = validate_push_configuration(tmp_path)
+        assert upstream is not None
+        assert upstream.repository == "https://example.test/upstream.git"
+        assert upstream.base == base.lower()
 
 
 def test_validate_push_configuration_unreadable_selected_config_refuses(
@@ -682,7 +684,7 @@ def test_validate_push_configuration_non_table_stealth_refuses(tmp_path: Path) -
 @pytest.mark.parametrize(
     "repository", ["http://example.test/repo", "git://example.test/repo", "ext::unsafe"]
 )
-def test_validate_push_configuration_unsafe_url_is_not_scp(
+def test_validate_push_configuration_leaves_transport_validation_to_hook(
     tmp_path: Path, repository: str
 ) -> None:
     config = tmp_path / ".booley_project" / "booley.toml"
@@ -690,19 +692,21 @@ def test_validate_push_configuration_unsafe_url_is_not_scp(
     config.write_text(
         f'[stealth]\nupstream_repository = "{repository}"\nupstream_base = "{"f" * 40}"\n'
     )
-    with pytest.raises(ValueError, match="unsupported import settings"):
-        validate_push_configuration(tmp_path)
+    upstream = validate_push_configuration(tmp_path)
+    assert upstream is not None and upstream.repository == repository
 
 
-def test_validate_push_configuration_refuses_file_scp_form(tmp_path: Path) -> None:
+def test_validate_push_configuration_preserves_file_location_for_hook_validation(
+    tmp_path: Path,
+) -> None:
     directory = tmp_path / ".booley_project"
     directory.mkdir()
     (directory / "booley.toml").write_text(
         '[stealth]\nupstream_repository = "file:/absolute/repo"\n'
         'upstream_base = "' + "a" * 40 + '"\n'
     )
-    with pytest.raises(ValueError, match="unsupported import settings"):
-        validate_push_configuration(tmp_path)
+    upstream = validate_push_configuration(tmp_path)
+    assert upstream is not None and upstream.repository == "file:/absolute/repo"
 
 
 class TestIdentifierRegression:
