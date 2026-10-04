@@ -1076,6 +1076,7 @@ def test_windows_timeout_diagnostics_are_retained_after_failure() -> None:
             encoding="utf-8"
         )
     )
+    assert workflow["jobs"]["test"]["env"]["PYTHONFAULTHANDLER"] == "1"
     directory = "${{ runner.temp }}/pytest-timeouts"
     assert workflow["jobs"]["test"]["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == directory
     uploads = [

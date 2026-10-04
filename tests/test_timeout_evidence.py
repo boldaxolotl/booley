@@ -18,7 +18,9 @@ def test_thread_timeout_retains_evidence_after_process_exit(tmp_path: Path, work
     assert result.returncode == 1, result.stdout + result.stderr
     if workers:
         assert "Not properly terminated" in result.stdout
-    reports = list(evidence.glob("*.log"))
+        exit_report = json.loads((evidence / "worker-exit-gw0.json").read_text())
+        assert exit_report["exit_code"] == 1
+    reports = list(evidence.glob("timeout-*.log"))
     assert len(reports) == 1
     lines = reports[0].read_text(encoding="utf-8").splitlines()
     metadata = json.loads(lines[0])
@@ -34,15 +36,15 @@ def test_integration_timeout_overrides_unit_budget_without_false_evidence(tmp_pa
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
-    assert not list(evidence.glob("*.log"))
+    assert not list(evidence.glob("timeout-*.log"))
 
 
 def _run_timeout_case(
-    tmp_path: Path, workers: int, marker: str
+    tmp_path: Path, workers: int, marker: str, body: str = "time.sleep(2)"
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (tmp_path / "test_case.py").write_text(
-        f"import time\nimport pytest\n{marker}\ndef test_slow():\n    time.sleep(2)\n",
+        f"import time\nimport pytest\n{marker}\ndef test_slow():\n    {body}\n",
         encoding="utf-8",
     )
     evidence = tmp_path / "evidence"
@@ -55,6 +57,8 @@ def _run_timeout_case(
             "-q",
             "-p",
             "pytest_timeout",
+            "-p",
+            "faulthandler",
             "-p",
             "xdist.plugin",
             "-p",
@@ -88,9 +92,34 @@ def _timeout_environment(evidence: Path) -> dict[str, str]:
 
 
 def test_failed_evidence_write_still_terminates_worker(tmp_path: Path) -> None:
-    (tmp_path / "evidence").write_text("not a directory", encoding="utf-8")
-
-    result, _evidence = _run_timeout_case(tmp_path, 1, "")
+    body = (
+        "import os; from pathlib import Path; "
+        "(Path(os.environ['BOOLEY_PYTEST_EVIDENCE_DIR']) / "
+        "f'timeout-gw0-{os.getpid()}.log').mkdir(); time.sleep(2)"
+    )
+    result, _evidence = _run_timeout_case(tmp_path, 1, "", body)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "Not properly terminated" in result.stdout
+
+
+@pytest.mark.parametrize("workers", [0, 1])
+def test_native_crash_retains_fatal_stack(tmp_path: Path, workers: int) -> None:
+    # Prevent core files from an intentionally crashing subprocess on POSIX.
+    body = (
+        "import os; "
+        "exec('import resource; resource.setrlimit(resource.RLIMIT_CORE, (0, 0))' "
+        "if os.name == 'posix' else ''); "
+        "__import__('ctypes').string_at(0)"
+    )
+    result, evidence = _run_timeout_case(tmp_path, workers, "@pytest.mark.timeout(10)", body)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
+    assert len(reports) == 1
+    stack = reports[0].read_text(encoding="utf-8")
+    assert "test_case.py" in stack
+    assert not list(evidence.glob("timeout-*.log"))
+    if workers:
+        exit_report = json.loads((evidence / "worker-exit-gw0.json").read_text())
+        assert exit_report["exit_code"] not in (None, 0, 1)

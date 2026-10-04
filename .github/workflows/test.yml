@@ -266,6 +266,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
+      PYTHONFAULTHANDLER: "1"
       BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
       TEST_MARK_EXPRESSION: >-
         ${{ needs.changes.outputs.exhaustive_recovery == 'true' &&
