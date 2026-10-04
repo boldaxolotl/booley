@@ -395,7 +395,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
                 if _kill_with_reason(proc, trace, bwave_proc, lines, reason):
                     return lines, proc, RunTermination("timeout", reason, "timeout")
         return _finish_stream(
-            proc, trace, bwave_proc, guard, timed_out["hit"], deadline, _timeout_reason, lines
+            proc, trace, bwave_proc, guard, timed_out, deadline, _timeout_reason, lines
         )
     finally:
         if stdout is not None:
@@ -414,7 +414,7 @@ def _finish_stream(proc, trace, bwave_proc, guard, timed_out, deadline, timeout_
         print(guard.message)
         lines.append(guard.message + "\n")
         return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
-    if timed_out:
+    if timed_out["hit"]:
         reason = timeout_reason()
         return lines, proc, _record_timeout(proc, lines, reason)
     try:
@@ -424,6 +424,15 @@ def _finish_stream(proc, trace, bwave_proc, guard, timed_out, deadline, timeout_
         proc.wait()
         exc.output = "".join(lines)
         raise
+    guard.stop()
+    if timed_out["hit"] and not guard.tripped:
+        return lines, proc, _record_timeout(proc, lines, timeout_reason())
+    if not guard.tripped and not (trace and trace.stall_killed):
+        guard.finish()
+    if guard.tripped:
+        print(guard.message)
+        lines.append(guard.message + "\n")
+        return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
     return lines, proc, RunTermination()
 
 

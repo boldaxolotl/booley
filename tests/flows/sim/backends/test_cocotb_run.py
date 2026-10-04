@@ -639,3 +639,118 @@ def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
     assert order == ["baseline", "spawn"]
     assert proc.stdout is not None
     assert proc.stdout.closed
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode):
+    import io
+    from types import SimpleNamespace
+
+    import booley.flows.sim.run_guard as guard_module
+    import booley.runtime.platform_paths as platform
+
+    def spawn(*args, **kwargs):
+        (tmp_path / "output.bin").write_bytes(b"x" * 9)
+        return SimpleNamespace(
+            stdout=io.StringIO("PASS\n"),
+            returncode=returncode,
+            pid=4321,
+            poll=lambda: returncode,
+            wait=lambda **kwargs: returncode,
+        )
+
+    monkeypatch.setattr(crun.subprocess, "Popen", spawn)
+    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
+
+    def unexpected_kill(proc):
+        pytest.fail("already exited child must not be killed")
+
+    monkeypatch.setattr(platform, "kill_process_tree", unexpected_kill)
+    lines, proc, termination = crun._stream_output(["fake"], tmp_path, {}, 30, max_rundir_bytes=8)
+    assert termination.kind == "disk_budget"
+    assert termination.failure_kind == "infrastructure"
+    assert proc.returncode == returncode
+    assert "simulation aborted:" in "".join(lines)
+    work = tmp_path / "work"
+    work.mkdir()
+    results_file = tmp_path / "results.xml"
+    results_file.write_text(
+        '<testsuites><testsuite><testcase name="done" classname="test_demo" time="0.1"/></testsuite></testsuites>'
+    )
+    output, passed = crun._evaluate_verdict(
+        "".join(lines), returncode, False, work, results_file, ["done"], termination=termination
+    )
+    assert passed is False
+    identity = AdapterTransportIdentity(
+        "cocotb", "attempt", "acme:lib:dut:1#sim", ("done",), tmp_path / "adapter.json"
+    )
+    crun._publish_adapter_result(
+        identity, output, passed, termination=termination, simulator_returncode=returncode
+    )
+    result = read_adapter_result(identity)
+    assert result.termination == "disk_budget"
+    assert result.failure_kind == "infrastructure"
+    assert result.simulator_returncode == returncode
+
+
+@pytest.mark.parametrize("prior", ["fatal_init", "timeout", "sim_time_stall"])
+def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
+    import io
+    import threading
+    from types import SimpleNamespace
+
+    import booley.flows.sim.run_guard as guard_module
+    import booley.runtime.platform_paths as platform
+
+    stalls = []
+    real_stall = guard_module.SimTimeStallGuard
+
+    def stall_guard(*args):
+        guard = real_stall(*args)
+        stalls.append(guard)
+        return guard
+
+    monkeypatch.setattr(guard_module, "SimTimeStallGuard", stall_guard)
+    timers = []
+    alive = [True]
+
+    class Timer:
+        def __init__(self, delay, callback):
+            timers.append(callback)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    def wait(**kwargs):
+        if prior == "sim_time_stall":
+            stalls[0].tripped = True
+        if prior == "timeout" and alive[0]:
+            timers[0]()
+        alive[0] = False
+        return 0
+
+    def spawn(*args, **kwargs):
+        (tmp_path / "output.bin").write_bytes(b"x" * 9)
+        line = "$readmemh: Cannot open memory.hex\n" if prior == "fatal_init" else "PASS\n"
+        return SimpleNamespace(
+            stdout=io.StringIO(line),
+            returncode=0,
+            pid=4321,
+            poll=lambda: None if alive[0] else 0,
+            wait=wait,
+        )
+
+    monkeypatch.setattr(threading, "Timer", Timer)
+    monkeypatch.setattr(crun.subprocess, "Popen", spawn)
+    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
+    monkeypatch.setattr(platform, "kill_process_tree", lambda proc: alive.__setitem__(0, False))
+    monkeypatch.setattr(
+        guard_module.DiskBudgetGuard,
+        "finish",
+        lambda guard: pytest.fail("prior abort must skip final scan"),
+    )
+    _, _, termination = crun._stream_output(["fake"], tmp_path, {}, 30, max_rundir_bytes=8)
+    assert termination.kind == prior

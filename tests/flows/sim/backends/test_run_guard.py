@@ -644,3 +644,133 @@ def test_parent_death_guard_kills_the_whole_tree(monkeypatch):
     finally:
         rg._supervised_children.clear()
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+@pytest.mark.parametrize(
+    ("budget", "used", "tripped"), [(8, 7, False), (8, 8, False), (8, 9, True), (0, 99, False)]
+)
+def test_final_budget_threshold_and_idempotence(tmp_path, monkeypatch, budget, used, tripped):
+    proc = _FakeProc()
+    guard = rg.DiskBudgetGuard(tmp_path, budget, proc, baseline=(100, time.time()))
+    guard.start()
+    proc.wait()
+    walks = []
+    monkeypatch.setattr(rg, "dir_size_bytes", lambda path: walks.append(path) or 100 + used)
+    monkeypatch.setattr(rg, "largest_files_written_since", lambda *args: [])
+    guard.finish()
+    guard.finish()
+    guard.stop()
+    assert guard.tripped is tripped
+    assert len(walks) == (1 if budget else 0)
+    assert not proc.killed
+    if budget:
+        assert guard.grown == used
+    if tripped:
+        assert guard.message.startswith("simulation aborted:")
+
+
+def test_final_budget_discards_delayed_poll(tmp_path, monkeypatch):
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+    proc = _FakeProc()
+    guard = rg.DiskBudgetGuard(tmp_path, 8, proc, interval=0.001, baseline=(0, time.time()))
+    calls = []
+
+    def measure(path):
+        calls.append(threading.current_thread())
+        if threading.current_thread() is guard._thread:
+            entered.set()
+            assert release.wait(5)
+            return 999
+        return 9
+
+    monkeypatch.setattr(rg, "dir_size_bytes", measure)
+    monkeypatch.setattr(rg, "largest_files_written_since", lambda *args: [])
+    guard.start()
+    try:
+        assert entered.wait(5)
+        proc.wait()
+        guard.finish()
+        release.set()
+        guard._thread.join(timeout=5)
+        assert not guard._thread.is_alive()
+        assert guard.used == 9
+        assert guard.grown == 9
+        assert guard.tripped
+        assert not proc.killed
+        guard.finish()
+        assert len(calls) == 2
+    finally:
+        release.set()
+        guard.stop()
+
+
+@pytest.mark.parametrize("evidence", [False, True])
+def test_final_budget_exception_is_not_retried(tmp_path, monkeypatch, evidence):
+    guard = rg.DiskBudgetGuard(tmp_path, 8, _FakeProc(), baseline=(0, time.time()))
+    guard.start()
+    guard.proc.wait()
+    calls = []
+
+    def fail(*args):
+        calls.append(1)
+        raise RuntimeError("walk failed")
+
+    monkeypatch.setattr(rg, "dir_size_bytes", (lambda path: 9) if evidence else fail)
+    monkeypatch.setattr(rg, "largest_files_written_since", fail)
+    with pytest.raises(RuntimeError, match="walk failed"):
+        guard.finish()
+    guard.stop()
+    guard.finish()
+    assert calls == [1]
+    if evidence:
+        assert guard._evidence.is_set()
+
+
+def test_final_budget_preserves_live_trip_evidence(tmp_path, monkeypatch):
+    import threading
+
+    import booley.runtime.platform_paths as platform
+
+    entered = threading.Event()
+    release = threading.Event()
+    guard = rg.DiskBudgetGuard(tmp_path, 8, _FakeProc(), interval=0.001, baseline=(0, 0))
+    monkeypatch.setattr(rg, "dir_size_bytes", lambda path: 9)
+    monkeypatch.setattr(platform, "kill_process_tree", lambda proc: proc.kill())
+
+    def evidence(*args):
+        entered.set()
+        assert release.wait(5)
+        return [("output", 9)]
+
+    monkeypatch.setattr(rg, "largest_files_written_since", evidence)
+    guard.start()
+    try:
+        assert entered.wait(5)
+        guard.finish()
+        assert guard.tripped
+        assert guard.grown == 9
+        release.set()
+        guard.stop()
+        assert guard.message.startswith("simulation killed:")
+        assert guard.biggest == [("output", 9)]
+    finally:
+        release.set()
+        guard.stop()
+
+
+def test_final_budget_uses_observed_low_water(tmp_path, monkeypatch):
+    guard = rg.DiskBudgetGuard(tmp_path, 8, _FakeProc(), baseline=(100, 0))
+    guard.start()
+    guard.stop()
+    with guard._state_lock:
+        guard._measure(90)
+    guard.proc.wait()
+    monkeypatch.setattr(rg, "dir_size_bytes", lambda path: 99)
+    monkeypatch.setattr(rg, "largest_files_written_since", lambda *args: [])
+    guard.finish()
+    assert guard.baseline == 90
+    assert guard.grown == 9
+    assert guard.tripped
