@@ -50,7 +50,8 @@ USER agent
 
 def _dockerfile(tmp_path: Path, contents: str) -> Path:
     path = tmp_path / "Dockerfile.riscv"
-    path.write_text(contents, encoding="utf-8")
+    # newline="" keeps LF on Windows; the shipped Dockerfile is eol=lf.
+    path.write_text(contents, encoding="utf-8", newline="")
     return path
 
 
