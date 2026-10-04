@@ -612,6 +612,35 @@ def test_setup_dependency_core_refactors_preserve_order_and_target_identity() ->
     assert "steps/2-project-config.md" in core_template
 
 
+def test_setup_never_authors_timing_constraints_and_blocks_on_missing_file():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+    template = _compact_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
+
+    # Row 10: the only sources are the repo's own file or a user-supplied one.
+    for required in (
+        "**Never author, generate, or guess one.**",
+        "**The repo ships it.**",
+        "**The user supplies it.**",
+        "the Target is **blocked** until the user provides a file",
+        "Unattended: leave that Target unconfigured",
+        "`synth_mode: logical` needs no SDC",
+        "never switch to it silently",
+        "is still authoring and is forbidden",
+    ):
+        assert required in plan
+    assert "no upstream SDC; user must supply" in plan
+    assert "somebody must author** (an SDC" not in plan
+    # Step 2 wires the recorded file verbatim and never patches it.
+    for required in (
+        "**Timing constraints (SDC/XDC) are never authored here.**",
+        "Do not change its contents",
+        "Never write a placeholder SDC to unblock Doctor",
+    ):
+        assert required in project_config
+    assert "never agent-authored (a missing file blocks the Target)" in template
+
+
 def test_setup_plans_one_project_wide_tech_cell_replacement():
     plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
     template = _compact_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
