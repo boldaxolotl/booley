@@ -109,6 +109,7 @@ def test_cycle_card_global_limits_and_utf8_names(monkeypatch, budget):
     outcomes = [
         SimpleNamespace(
             target={"selector": str(index)},
+            manifest_path=Path("/manifest.json"),
             aggregate_grade="fail",
             observations=[
                 {"test": "é" * 256, "cycle_count": value, "detail": {}} for value in range(100)
@@ -117,7 +118,12 @@ def test_cycle_card_global_limits_and_utf8_names(monkeypatch, budget):
         for index in range(2)
     ]
     base = [
-        SimpleNamespace(target=item.target, aggregate_grade=item.aggregate_grade, observations=[])
+        SimpleNamespace(
+            target=item.target,
+            manifest_path=item.manifest_path,
+            aggregate_grade=item.aggregate_grade,
+            observations=[],
+        )
         for item in outcomes
     ]
     plain = "\n".join(_campaign_report_lines(base))
@@ -151,6 +157,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
 
     outcome = SimpleNamespace(
         target={"selector": "sim"},
+        manifest_path=Path("/manifest.json"),
         aggregate_grade="fail",
         coverage_reference=object(),
         observations=[
@@ -168,8 +175,11 @@ def test_endpoint_cycle_budget_includes_pre_sim_hook_lines(monkeypatch):
 
     from booley.flows.sim import flow
 
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "200")
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "200")
+    manifest = Path("/manifest.json")
+    pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
+    budget = 200 + pointer_bytes
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget))
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
     hooks = ["pre-sim " + "h" * 130]
     calls = []
     monkeypatch.setattr(
@@ -186,18 +196,20 @@ def test_endpoint_cycle_budget_includes_pre_sim_hook_lines(monkeypatch):
     owner = SimpleNamespace(
         context=SimpleNamespace(_reserved_invocation_dir=None),
         _campaign_completed_display_label=lambda _outcomes: None,
+        _report_destination=lambda: None,
     )
     outcome = SimpleNamespace(
         target={"selector": "sim"},
         aggregate_grade="pass",
         coverage_reference=None,
+        manifest_path=manifest,
         observations=[{"test": "test" * 30, "cycle_count": None, "detail": {}}],
     )
     baseline = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
-    assert baseline.endswith(hooks[0]) and len(baseline.encode()) < 200
+    assert baseline.endswith(hooks[0]) and len(baseline.encode()) < budget
     outcome.observations = [{"test": "test" * 30, "cycle_count": 7, "detail": {}}]
     rendered = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
-    assert rendered.endswith(hooks[0]) and len(rendered.encode()) <= 200
+    assert rendered.endswith(hooks[0]) and len(rendered.encode()) <= budget
     assert rendered == baseline
     assert calls == [True, True]
 
@@ -922,7 +934,7 @@ def test_original_renderer_and_detail_errors_precede_hook_probe(tmp_path, monkey
 
     events = []
 
-    def base(*_args):
+    def base(*_args, report_path=None):
         events.append("base")
         if fault == "base":
             raise KeyError("original base")
@@ -941,6 +953,7 @@ def test_original_renderer_and_detail_errors_precede_hook_probe(tmp_path, monkey
     owner = SimpleNamespace(
         context=SimpleNamespace(_reserved_invocation_dir=tmp_path),
         _current_published_pre_sim_keys=set(),
+        _report_destination=lambda: None,
     )
     outcome = SimpleNamespace(
         target={"selector": "sim"},
