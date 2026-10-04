@@ -631,6 +631,8 @@ def test_interrupted_amendment_reconciles_runtime_on_retry(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("snapshot_state", ["absent", "malformed", "stale", "matching"])
+# Git integration can exceed the Windows CI 60-second unit-test budget.
+@pytest.mark.timeout(180)
 async def test_intake_repairs_snapshot_after_owner_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

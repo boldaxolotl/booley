@@ -685,7 +685,7 @@ def test_primary_pytest_jobs_share_evidence_publishing() -> None:
 
     action_path = REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml"
     rendered_action = action_path.read_text(encoding="utf-8")
-    assert rendered_action.count("actions/upload-artifact@") == 2
+    assert rendered_action.count("actions/upload-artifact@") == 3
     assert ".github/scripts/assert_junit.py" in rendered_action
     assert "always() && inputs.publish-shard == 'true'" in rendered_action
 
@@ -1067,3 +1067,22 @@ def test_booley_never_uses_sqlite() -> None:
     ]
 
     assert offenders == []
+
+
+def test_windows_timeout_diagnostics_are_retained_after_failure() -> None:
+    workflow = _test_workflow()
+    action = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    directory = "${{ runner.temp }}/pytest-timeouts"
+    assert workflow["jobs"]["test"]["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == directory
+    uploads = [
+        step
+        for step in action["runs"]["steps"]
+        if step.get("with", {}).get("path") == directory + "/"
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
+    assert uploads[0]["with"]["if-no-files-found"] == "ignore"

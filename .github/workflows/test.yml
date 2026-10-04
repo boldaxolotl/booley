@@ -266,6 +266,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
+      BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
       TEST_MARK_EXPRESSION: >-
         ${{ needs.changes.outputs.exhaustive_recovery == 'true' &&
         'not native_bwave' || 'not native_bwave and not exhaustive_recovery' }}
