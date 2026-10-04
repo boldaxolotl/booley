@@ -80,6 +80,8 @@ def test_amendment_serializer_error_is_domain_error(tmp_path: Path, monkeypatch)
         amendment._serialize_ticket(tmp_path, "ticket", object())
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -> None:
     authored_body = "\n## Description\n\nRecover publication.  \n\n"
     root, blocked, tio = _blocked_ticket(tmp_path, body=authored_body)
@@ -136,6 +138,8 @@ def test_optional_conversion_preserves_dirty_source_and_queues(tmp_path: Path) -
     )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_amendment_created_stamp_survives_execution_init(tmp_path: Path) -> None:
     _root, blocked, tio = _blocked_ticket(tmp_path)
     created = "2026-09-29T00:00:00Z"
@@ -227,6 +231,8 @@ def test_numeric_amendment_rebuilds_only_the_relaxed_atomic_criterion(
     assert rebuilt.criteria[area.identity].params["area_um2_max"] == 100
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_repeated_amendment_preserves_ticket_only_authority(tmp_path: Path) -> None:
     root, blocked, tio = _blocked_ticket(tmp_path, extra_file="EXTRA.md")
     state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
@@ -578,6 +584,8 @@ def test_paired_publication_retains_both_implementation_participants(tmp_path: P
     assert validate_ticket_spec(tio.load_document(slug).spec, project_root=root) == []
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_publication_interruption_rolls_forward_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -646,6 +654,8 @@ def test_pre_generated_identity_journal_recovers(
     assert result["status"] == "queued"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_return_to_draft_clears_amendment_marker(tmp_path: Path) -> None:
     _root, _blocked, tio = _blocked_ticket(tmp_path)
     state = DevelopmentState.load(runtime_file(tio.logs_dir, "blocked-again", "booley_state.json"))
@@ -663,6 +673,8 @@ def test_return_to_draft_clears_amendment_marker(tmp_path: Path) -> None:
     assert "machine" not in fields
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_reset_uses_latest_requirements_and_original_authoring_source(tmp_path: Path) -> None:
     from booley.ticket_board.operations import op_reset
 

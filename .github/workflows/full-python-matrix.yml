@@ -43,7 +43,7 @@ jobs:
           pytest tests/ -q --tb=short -n 4
           --dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
-          --timeout=60 --durations=30
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }} --durations=30
           --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Prove the full suite executed

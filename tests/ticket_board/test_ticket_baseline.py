@@ -375,6 +375,8 @@ def _paired_basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     return root, project_dir, TicketIO(project_dir / "tickets", project_root=root)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_reviewer_loads_running_ticket_from_paired_control_board(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -827,6 +829,8 @@ def test_enqueue_publishes_ticket_machine_metadata_without_record_or_receipt(
 
 
 @pytest.mark.asyncio
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 async def test_enqueued_paired_basis_materializes_for_ticket_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1041,6 +1045,8 @@ def test_prepared_ticket_view_recreates_core_projections(tmp_path: Path) -> None
     assert tuple(isolated_registry_root(root).glob("*.core"))
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_live_isolated_cores_accept_recorded_host_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1125,6 +1131,8 @@ def test_outer_only_isolated_cores_accept_recorded_host_root(
     assert_live_inputs_unchanged(basis, root, reference)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_live_project_worktree_uses_canonical_admin_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1267,6 +1275,8 @@ def test_validate_ticket_recreates_missing_authoring_workspace(
     assert workspace.is_dir()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_return_to_draft_preserves_old_ref_and_allocates_new_generation(
     tmp_path: Path,
 ) -> None:
@@ -2487,6 +2497,8 @@ def _create_submodule_transition_ticket(ticket_io: TicketIO, slug: str, summary:
     assert ticket is not None
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(150)
 def test_return_to_draft_relocates_standalone_submodules(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2523,6 +2535,8 @@ def test_return_to_draft_relocates_standalone_submodules(
     assert not draft_transition.transition_pending(root, "submodule-transition")
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(150)
 def test_native_submodule_recovery(tmp_path: Path) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
     slug = "n"
@@ -2566,6 +2580,8 @@ def test_native_submodule_recovery(tmp_path: Path) -> None:
     assert not draft_transition.transition_pending(root, slug)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_paired_submodule_move(tmp_path: Path) -> None:
     root, project_dir, tio = _paired_basis_project(tmp_path)
     slug = "p"
@@ -2585,6 +2601,8 @@ def test_paired_submodule_move(tmp_path: Path) -> None:
     assert not draft_transition.transition_pending(root, slug)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_board_show_matches_outer_and_project_data_cwd(tmp_path, monkeypatch, capsys):
     from argparse import Namespace
 

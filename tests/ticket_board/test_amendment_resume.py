@@ -32,6 +32,8 @@ def _restore_execution_environment(monkeypatch: pytest.MonkeyPatch):
     reset_cache()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_amendment_refreshes_existing_mounted_ticket(tmp_path: Path, monkeypatch) -> None:
     from booley.evidence.review_receipt import ReviewInvocation, build_review_contract_detail
 
@@ -495,7 +497,7 @@ def _assert_single_real_package_rejections(root, path, manifest, fields):
 )
 @pytest.mark.parametrize("drop_snapshot", [False, True])
 # Real endpoint, repository and review lifecycle on Windows exceeds the CI 60s unit bound.
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(450)
 async def test_amended_ticket_resumes_simulation_and_reaches_review(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -595,6 +597,8 @@ def _interrupt_amendment_publication(patch, boundary, ticket, snapshot):
 
 
 @pytest.mark.parametrize("boundary", ["board", "snapshot", "state", "board_phase"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_interrupted_amendment_reconciles_runtime_on_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -794,6 +798,8 @@ def _select_old_acceptance(tio, log):
     return state, frozen
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_amendment_retires_old_acceptance_selection_but_keeps_immutable_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -851,6 +857,8 @@ def _legacy_history(snapshot, result):
 
 
 @pytest.mark.asyncio
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(150)
 async def test_successful_old_amendment_runtime_is_repaired_without_pending_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -901,7 +909,7 @@ async def test_successful_old_amendment_runtime_is_repaired_without_pending_jour
 
 @pytest.mark.asyncio
 # Real endpoint, repository and review lifecycle on Windows exceeds the CI 60s unit bound.
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(270)
 async def test_report_disabled_zero_mandatory_amendment_declares_gate_and_finalizes(
     tmp_path, monkeypatch
 ):
@@ -934,6 +942,8 @@ async def test_report_disabled_zero_mandatory_amendment_declares_gate_and_finali
 
 
 @pytest.mark.asyncio
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 async def test_failed_compensation_cannot_resurrect_report_on_real_simulation_replay(
     tmp_path, monkeypatch
 ):

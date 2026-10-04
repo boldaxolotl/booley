@@ -1000,3 +1000,70 @@ def test_scheduled_windows_matrix_retains_crash_diagnostics() -> None:
     assert len(uploads) == 1
     assert uploads[0]["if"] == "always()"
     assert uploads[0]["with"]["if-no-files-found"] == "ignore"
+
+
+def test_windows_pytest_legs_enforce_timeout_headroom(pytestconfig: pytest.Config) -> None:
+    """Windows timeouts kill the worker silently, so CI fails tests that drift near one."""
+    guard = "${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }}"
+    primary = _test_workflow()["jobs"]["test"]["steps"]
+    scheduled = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/workflows/full-python-matrix.yml").read_text(encoding="utf-8")
+    )["jobs"]["test"]["steps"]
+    pytest_steps = [
+        step for step in [*primary, *scheduled] if str(step.get("run", "")).startswith("pytest ")
+    ]
+
+    assert len(pytest_steps) == 4
+    assert all(guard in step["run"] for step in pytest_steps)
+    assert "tests.timeout_headroom" in _suite_config(pytestconfig).pytest_plugins
+
+
+def test_suite_default_timeout_applies_without_a_cli_timeout() -> None:
+    """The conftest ceiling engages under pytest-timeout's entry-point plugin name."""
+    environment = {
+        name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-p",
+            "no:cacheprovider",
+            "tests/test_timeout_headroom.py::test_guard_is_off_without_the_option",
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "\ntimeout: 120s\n" in result.stdout
+
+
+def test_verilator_image_acceptance_declares_its_tool_sized_ceiling() -> None:
+    """Its tests allow 300 s tool calls, so they must not inherit the 120 s default."""
+    runs = [
+        run
+        for run in _nested_runs(_test_workflow()["jobs"]["bwave-smoke"])
+        if "test_verilator_compiler_cache_smoke" in run
+    ]
+
+    assert len(runs) == 1
+    assert "--timeout=900" in runs[0]
+
+
+def _nested_runs(node: object) -> list[str]:
+    """Return every ``run`` script, including steps inside parallel groups."""
+    if isinstance(node, list):
+        return [run for child in node for run in _nested_runs(child)]
+    if not isinstance(node, dict):
+        return []
+    own = [node["run"]] if isinstance(node.get("run"), str) else []
+    return own + [
+        run for key, child in node.items() if key != "run" for run in _nested_runs(child)
+    ]

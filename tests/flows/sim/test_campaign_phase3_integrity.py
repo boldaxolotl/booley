@@ -859,6 +859,8 @@ def _aggregate_result_bound_fixture(tmp_path):
     return store, request, document
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_path):
     from booley.flows.sim.campaign.codec import RECORD_MAX_BYTES, decode_simulation_result
 

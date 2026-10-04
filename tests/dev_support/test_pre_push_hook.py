@@ -802,6 +802,8 @@ def test_url_rewriting_denies_authority(repo: Path, monkeypatch: pytest.MonkeyPa
     assert _push(base) == 1
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_deep_history_oldest_leak_and_bounded_batches(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

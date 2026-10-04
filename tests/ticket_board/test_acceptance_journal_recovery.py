@@ -188,6 +188,8 @@ def _repository_crash_state(
     ],
 )
 @pytest.mark.parametrize("timing", ["before", "after"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_retry_survives_every_semantic_checkpoint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -231,6 +233,8 @@ def test_retry_survives_every_semantic_checkpoint(
 )
 @pytest.mark.parametrize("role", ["project", "outer"])
 @pytest.mark.parametrize("timing", ["before", "after"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_retry_survives_each_repository_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
