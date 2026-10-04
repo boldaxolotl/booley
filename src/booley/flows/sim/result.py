@@ -138,6 +138,7 @@ _HARNESS_INFRA_MARKER_RE = re.compile(
     rf"|ERROR: {_HARNESS_EDA_TOOL} simulation timed out"
     # run_guard watchdogs: disk budget, frozen simulator clock
     r"|(?:ERROR: )?simulation killed:"
+    r"|simulation aborted: run directory "
     # run_guard's fatal missing-$readmemh abort
     r"|ERROR: (?:missing \$readmem|declared runtime input .+ before \$readmem)"
     # trace-session watchdog abort

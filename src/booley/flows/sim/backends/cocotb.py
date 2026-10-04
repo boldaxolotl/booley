@@ -565,8 +565,6 @@ def _stream_output(
     cocotb-specific frozen-clock guard (F-25). Returns
     ``(lines, proc, timed_out)``.
     """
-    import threading
-
     from booley.flows.sim.run_guard import (
         DiskBudgetGuard,
         SimTimeStallGuard,
@@ -581,7 +579,6 @@ def _stream_output(
     lines: deque[str] = deque(maxlen=5_000)
     cpu_started = child_cpu_snapshot()
     # The pre-spawn baseline prevents simulator output from escaping the budget while walking.
-    # otherwise land in the baseline free of charge (fpu F-23).
     disk_baseline = snapshot_dir_baseline(run_cwd, max_rundir_bytes)
     proc = subprocess.Popen(
         cmd,
@@ -596,16 +593,7 @@ def _stream_output(
         **child_death_kwargs(),
     )
     supervise_child(proc)
-    timed_out = {"hit": False}
-
-    def _kill_on_timeout() -> None:
-        if proc.poll() is None:
-            timed_out["hit"] = True
-            kill_process_tree(proc)
-
-    timer = threading.Timer(timeout, _kill_on_timeout)
-    timer.daemon = True
-    timer.start()
+    timer, timed_out = _start_timeout(proc, timeout)
     guard = DiskBudgetGuard(run_cwd, max_rundir_bytes, proc, baseline=disk_baseline)
     guard.start()
     stall_guard = SimTimeStallGuard(proc, sim_time_grace_s)
@@ -634,6 +622,9 @@ def _stream_output(
     finally:
         _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started)
 
+    if fatal_termination is None and not timed_out["hit"] and not stall_guard.tripped:
+        guard.finish()
+
     termination = _append_abort_reason(
         lines,
         fatal_termination=fatal_termination,
@@ -643,6 +634,25 @@ def _stream_output(
         timeout=timeout,
     )
     return lines, proc, termination
+
+
+def _start_timeout(proc: subprocess.Popen, timeout: int):
+    """Start the timer and retain its mutable ownership through reap."""
+    import threading
+
+    from booley.runtime.platform_paths import kill_process_tree
+
+    timed_out = {"hit": False}
+
+    def kill_on_timeout() -> None:
+        if proc.poll() is None:
+            timed_out["hit"] = True
+            kill_process_tree(proc)
+
+    timer = threading.Timer(timeout, kill_on_timeout)
+    timer.daemon = True
+    timer.start()
+    return timer, timed_out
 
 
 def _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started) -> None:
