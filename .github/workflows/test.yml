@@ -1449,8 +1449,9 @@ jobs:
       # - local (and compatibility fallback): automatic local-build runs from
       #   2026-10-03 to 2026-10-04 measured 1122-1189 s of job time; the
       #   measured maximum plus 10%, rounded up, is 1310 s.
-      # - registry: PROVISIONAL, equal to the local budget until this change's
-      #   own hit runs are measured.
+      # - registry: this change's own hit runs on hosted runners measured
+      #   611-631 s on the budget clock (RISC-V lane 344-351 s, no longer the
+      #   critical lane); the measured maximum plus 10%, rounded up, is 700 s.
       # Stable-base changes deliberately retain the 180-minute safety cap.
       - name: Enforce duration budget
         if: always() && steps.runtime-base.outputs.build != 'true'
@@ -1460,7 +1461,7 @@ jobs:
           STARTED_AT_EPOCH: ${{ steps.duration-clock.outputs.started_at_epoch }}
           TOOLING_RECORD: ${{ runner.temp }}/riscv-image-evidence/tooling-source.json
           STANDARD_BUDGET_SECONDS: 600
-          REGISTRY_BUDGET_SECONDS: 1310
+          REGISTRY_BUDGET_SECONDS: 700
           LOCAL_BUDGET_SECONDS: 1310
         run: |
           budget="${STANDARD_BUDGET_SECONDS}"
