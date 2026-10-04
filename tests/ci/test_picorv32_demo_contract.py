@@ -492,6 +492,8 @@ def test_ticket_installer_requires_ticket_free_checkout(tmp_path: Path) -> None:
     assert not ticket_document_path(tickets, "demo").exists()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -> None:
     project = _demo_git_project(tmp_path)
     fixture = tmp_path / "fixture.md"

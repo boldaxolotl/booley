@@ -16,7 +16,7 @@ import pytest
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-pytest_plugins = ["tests.timeout_evidence"]
+pytest_plugins = ["tests.timeout_evidence", "tests.timeout_headroom"]
 
 
 @pytest.fixture
@@ -113,9 +113,15 @@ def pytest_configure(config: pytest.Config) -> None:
     this is a deliberate no-op that emits *no* config warning, keeping the suite
     warning-free (principle 12) in bare environments.
     """
+    # Imported here: pytest_plugins must load it first for assertion rewriting.
+    from tests.timeout_headroom import timeout_plugin_loaded
+
     _isolate_xdist_worker_temp()
-    if config.pluginmanager.hasplugin("pytest_timeout") and not config.option.timeout:
-        config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
+    if timeout_plugin_loaded(config):
+        from pytest_timeout import get_env_settings
+
+        if get_env_settings(config).timeout is None:
+            config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

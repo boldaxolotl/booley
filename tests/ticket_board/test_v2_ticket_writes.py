@@ -179,6 +179,8 @@ def test_waiting_basis_refresh_preserves_v2_authored_body(tmp_path: Path, monkey
     assert not basis_refresh._operation_path(project, journal.operation_id).exists()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_waiting_refresh_serialization_failure_is_blocked_and_scan_continues(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -283,6 +285,8 @@ def _interrupt_refresh_snapshot(patch, snapshot):
 
 
 @pytest.mark.parametrize("interruption", ["snapshot", "finish"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_refresh_reconciles_existing_unexecuted_runtime_and_recovers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

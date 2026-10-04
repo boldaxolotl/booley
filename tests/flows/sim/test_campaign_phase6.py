@@ -496,6 +496,8 @@ def _resume_request(store: CampaignStore, project: Path):
     )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

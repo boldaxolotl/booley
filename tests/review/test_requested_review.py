@@ -283,6 +283,8 @@ def _automatic_accepted_handoff(blocked, monkeypatch):
     "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
 )
 @pytest.mark.parametrize("no_merge", [False, True])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_automatic_accepted_handoff_can_be_publicly_approved(blocked, monkeypatch, no_merge):
     from booley.ticket_board import operations
     from booley.ticket_board.review_lifecycle import approve_review_command
@@ -369,7 +371,7 @@ def test_stale_accepted_handoff_refuses_approval_without_state_change(
 
 @pytest.mark.parametrize("blocked", _STALE_HANDOFF_CASES, indirect=True)
 # Git-heavy recovery lifecycle: allow CI latency; native worker-crash cause is unconfirmed.
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(210)
 def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monkeypatch, capsys):
     from booley.harness import booley as harness
     from booley.ticket_board.review_lifecycle import review_command, run_review_command
@@ -402,6 +404,8 @@ def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monke
 
 
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_current_accepted_review_validation_names_immutable_exits(blocked, monkeypatch):
     from booley.ticket_board import review_preparation
     from booley.ticket_board.review_lifecycle import run_review_command
@@ -427,6 +431,8 @@ def test_current_accepted_review_validation_names_immutable_exits(blocked, monke
 
 
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_unaccepted_review_drift_is_not_stale_acceptance(blocked):
     from tests.ticket_board.test_ticket_baseline import _git
 
@@ -453,7 +459,7 @@ def test_unaccepted_review_drift_is_not_stale_acceptance(blocked):
     ],
     indirect=True,
 )
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(420)
 def test_stale_selected_accepted_review_uses_shared_approval_diagnostic(blocked, capsys):
     from booley.ticket_board.review_lifecycle import (
         approve_review_command,
@@ -506,6 +512,8 @@ def test_stale_selected_accepted_review_uses_shared_approval_diagnostic(blocked,
     [{"merge": True, "cleanup": True, "criterion": "implementation_done"}],
     indirect=True,
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_accepted_handoff_honors_independent_merge_override(blocked, monkeypatch):
     from booley.ticket_board.review_lifecycle import approve_review_command
 
@@ -526,6 +534,8 @@ def test_accepted_handoff_honors_independent_merge_override(blocked, monkeypatch
         {"request": True, "repair": True, "reason": "recover review"},
     ],
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_automatic_accepted_handoff_review_reuses_bound_package(blocked, monkeypatch, options):
     from booley.ticket_board.review_lifecycle import review_command
 
@@ -549,6 +559,8 @@ def test_automatic_accepted_handoff_review_reuses_bound_package(blocked, monkeyp
     "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
 )
 @pytest.mark.parametrize("facade", ["prepare_review", "prepare_review_command"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_prepare_review_force_preserves_accepted_handoff_package(blocked, monkeypatch, facade):
     from booley.ticket_board import review_lifecycle
 
@@ -566,6 +578,8 @@ def test_prepare_review_force_preserves_accepted_handoff_package(blocked, monkey
 @pytest.mark.parametrize(
     "blocked", [{"merge": True, "criterion": "implementation_done"}], indirect=True
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_accepted_handoff_guides_review_when_bound_package_changed(blocked, monkeypatch):
     from booley.ticket_board.review_lifecycle import approve_review_command, review_command
 
@@ -641,6 +655,8 @@ def test_blocked_request_generates_readable_unaccepted_package(blocked):
 
 
 @pytest.mark.parametrize("blocked", [{"live_freshness": True}], indirect=True)
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_requested_review_and_board_show_project_live_stale_criteria_read_only(blocked, capsys):
     from tests.ticket_board.test_ticket_baseline import _git
 
@@ -674,6 +690,8 @@ def test_requested_review_and_board_show_project_live_stale_criteria_read_only(b
     assert state_path.read_bytes() == before
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_dirty_request_preserves_work_and_blocked_state(blocked):
     root, tio, worktree = blocked
     (worktree / "README.md").write_text("unfinished edits")
@@ -686,6 +704,8 @@ def test_dirty_request_preserves_work_and_blocked_state(blocked):
         assert (worktree / "README.md").read_text() == content
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_missing_observations_are_visible(blocked):
     root, tio, _ = blocked
     (tio.logs_dir / "demo" / ".runtime" / "booley_state.json").unlink()
@@ -708,6 +728,8 @@ def test_request_review_rejects_corrupt_criteria_satisfaction_record(blocked):
     assert "Criteria Satisfaction Record is corrupt" in outcome.message
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_failed_refresh_retains_previous_generation(blocked, monkeypatch):
     root, tio, _ = blocked
     first = asyncio.run(request_review_command(root, "demo", reason="inspect"))
@@ -725,6 +747,8 @@ def test_failed_refresh_retains_previous_generation(blocked, monkeypatch):
     assert read_entry(tio.logs_dir / "demo") == before
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_repair_stranded_review_requires_explicit_option(blocked):
     root, tio, _ = blocked
     # Strand the Ticket in review without a review entry.
@@ -747,6 +771,8 @@ def _strand_provisional_review(tio, execution_id: str = "first") -> None:
     marker.write_text(json.dumps({"schema": 1, "execution_id": execution_id}))
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_provisional_review_publishes_unaccepted_inspection_without_repair(blocked):
     """ADR 0066: board review opens the inspection a provisional handoff awaits."""
     from booley.ticket_board.review_lifecycle import approve_review_command, review_command
@@ -769,6 +795,8 @@ def test_provisional_review_publishes_unaccepted_inspection_without_repair(block
     assert tio.find_ticket("demo")["status"] == "review"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_waiver_candidate_record_change_makes_the_package_stale(blocked):
     """ADR 0066: the candidate record is a review input, so edits must be noticed."""
     from booley.ticket_board import waiver_candidates as store
@@ -801,6 +829,8 @@ def test_review_without_provisional_marker_still_needs_repair(blocked):
     assert read_entry(tio.logs_dir / "demo") is None
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_unaccepted_completion_and_finalization_reject_unmet_gates(blocked):
     from booley.ticket_board.operations import _completion_acceptance_valid
 
@@ -813,6 +843,8 @@ def test_unaccepted_completion_and_finalization_reject_unmet_gates(blocked):
     assert read_entry(tio.logs_dir / "demo")["disposition"] == "unaccepted"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_approve_rejects_unmet_selection_without_agent(blocked, monkeypatch):
     from booley.ticket_board.review_lifecycle import approve_review_command
 
@@ -859,6 +891,8 @@ def test_board_review_prepares_blocked_without_transition(blocked, monkeypatch):
     assert read_entry(tio.logs_dir / "demo") is None
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_board_approve_rejects_changed_selected_head(blocked):
     from booley.ticket_board.review_lifecycle import approve_review_command
     from tests.ticket_board.test_ticket_baseline import _git
@@ -883,6 +917,8 @@ def test_board_approve_rejects_changed_selected_head(blocked):
     assert not (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle as requests
 
@@ -907,6 +943,8 @@ def test_concurrent_mutator_is_fenced_during_generation(blocked, monkeypatch):
 
 
 @pytest.mark.parametrize("boundary", ["entry", "board"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_publication_recovers_without_duplicate_transition(blocked, monkeypatch, boundary):
     from booley.ticket_board import review_lifecycle as requests
 
@@ -937,6 +975,8 @@ def test_publication_recovers_without_duplicate_transition(blocked, monkeypatch,
     assert transitions.count("review-entry") == 1
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_changed_evidence_rejects_publication(blocked, monkeypatch):
     root, tio, _ = blocked
     original = prep._prepare_resolved_review
@@ -956,6 +996,8 @@ def test_changed_evidence_rejects_publication(blocked, monkeypatch):
     assert tio.find_ticket("demo")["status"] == "blocked"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_report_disabled_package_tampering_is_rejected(blocked):
     root, _tio, _ = blocked
     outcome = asyncio.run(request_review_command(root, "demo", reason="inspect"))
@@ -966,6 +1008,8 @@ def test_report_disabled_package_tampering_is_rejected(blocked):
 
 
 @pytest.mark.parametrize("blocked", [{"model": True}], indirect=True)
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_model_cannot_approve_unaccepted_work(blocked, monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -993,7 +1037,7 @@ def test_model_cannot_approve_unaccepted_work(blocked, monkeypatch):
 
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
 @pytest.mark.parametrize("interrupt", [False, True])
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(450)
 def test_scoped_endpoint_records_real_evidence_then_requires_run_report(
     blocked, monkeypatch, interrupt
 ):
@@ -1048,6 +1092,8 @@ def test_review_exec_parser_keeps_board_dispatch():
     assert args.endpoint_command == ["python", "-m", "example"]
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(180)
 def test_refresh_selects_new_heads_while_regenerate_does_not(blocked):
     from tests.ticket_board.test_ticket_baseline import _git
 
@@ -1076,6 +1122,8 @@ def test_refresh_selects_new_heads_while_regenerate_does_not(blocked):
     assert prep.review_briefing_command(root, "demo", open_diffs=False).status == "ready"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_interrupted_publication_can_be_resumed_by_new_process(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle as requests
 
@@ -1093,6 +1141,8 @@ def test_interrupted_publication_can_be_resumed_by_new_process(blocked, monkeypa
     assert recovered.ready, recovered.message
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_second_request_is_idempotent(blocked):
     root, _, _ = blocked
     first = asyncio.run(request_review_command(root, "demo", reason="inspect"))
@@ -1101,6 +1151,8 @@ def test_second_request_is_idempotent(blocked):
     assert first.package_path == second.package_path
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(150)
 def test_stale_interrupted_request_can_be_retried_without_reset(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle as requests
     from tests.ticket_board.test_ticket_baseline import _git
@@ -1131,6 +1183,8 @@ def test_stale_interrupted_request_can_be_retried_without_reset(blocked, monkeyp
     assert (worktree / "README.md").read_text() == "new interactive work\n"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch):
     import os
 
@@ -1164,6 +1218,8 @@ def test_scoped_context_rejects_foreign_worktree_and_state(blocked, monkeypatch)
         execution_context.validate_recording(worktree)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_review_exec_rejects_preexisting_basis_drift(blocked):
     from booley.ticket_board import review_execution as interactive
 
@@ -1203,6 +1259,8 @@ def _rewrite_record(tio, drift: str) -> None:
         ("job", "matching detached job"),
     ],
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_review_exec_lease_rejects_lifecycle_drift(blocked, monkeypatch, drift, message):
     import os
 
@@ -1294,6 +1352,8 @@ def test_malformed_job_record_blocks_request_without_mutation(blocked):
 
 
 @pytest.mark.parametrize("token", [None, "another-lease"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_review_mutation_fails_closed_for_legacy_or_unrelated_jobs(blocked, monkeypatch, token):
     from booley.ticket_board import review_lifecycle as requests
     from booley.ticket_board import review_records, ticket_jobs
@@ -1320,6 +1380,8 @@ def test_review_mutation_fails_closed_for_legacy_or_unrelated_jobs(blocked, monk
     )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_review_exec_cleanup_preserves_lease_for_any_active_ticket_job(blocked, monkeypatch):
     import sys
 
@@ -1338,6 +1400,8 @@ def test_review_exec_cleanup_preserves_lease_for_any_active_ticket_job(blocked, 
     assert requests.operation_path(tio.logs_dir / "demo").is_file()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_missing_diff_artifact_invalidates_inspection(blocked):
     from tests.ticket_board.test_ticket_baseline import _git
 
@@ -1469,7 +1533,7 @@ def _interrupt_public_approval(root, tio, monkeypatch, interrupt):
 @pytest.mark.parametrize("blocked", [{"criterion": "implementation_done"}], indirect=True)
 @pytest.mark.parametrize("interrupt", [False, True, "completion", "capture"])
 @pytest.mark.parametrize("waiver_writes", [False, True])
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(330)
 def test_board_approve_freezes_selected_package_without_agent(
     blocked, monkeypatch, interrupt, waiver_writes
 ):
@@ -1525,6 +1589,8 @@ def test_board_approve_freezes_selected_package_without_agent(
     assert read_closed_ticket(tio.tickets_dir, "demo").path.read_bytes() == record
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_waiver_approval_capture_still_rejects_unrelated_input_changes(blocked):
     from booley.ticket_board import review_lifecycle as lifecycle
 
@@ -1542,6 +1608,8 @@ def test_waiver_approval_capture_still_rejects_unrelated_input_changes(blocked):
 
 
 @pytest.mark.parametrize("damage", ["missing", "downgraded"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_finalize_requires_every_basis_mandatory_criterion(blocked, damage):
     from booley.ticket_board.acceptance_ledger import read_acceptance
 
@@ -1567,6 +1635,8 @@ def test_finalize_requires_every_basis_mandatory_criterion(blocked, damage):
 @pytest.mark.parametrize(
     "field", ["state", "heads", "ticket_generation", "ticket_identity", "execution_id"]
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_review_entry_rejects_missing_required_fields(blocked, field):
     from booley.ticket_board.review_records import (
         criteria_projection,
@@ -1585,6 +1655,8 @@ def test_review_entry_rejects_missing_required_fields(blocked, field):
 
 
 @pytest.mark.parametrize("bad", ["true", 1, None, {}])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_review_entry_rejects_invalid_criterion_flags(blocked, bad):
     from booley.ticket_board.review_records import digest, entry_path
 
@@ -1641,6 +1713,8 @@ def _repair_accepted_fixture(root, tio, outcome, interrupt, monkeypatch):
         (("state", "criteria", "review_rtl_bugs_done", "transition_evidence"), ["invalid"]),
     ],
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_invalid_review_metadata_is_rejected_before_projection(blocked, keys, value):
     from booley.ticket_board.review_records import (
         criteria_projection,
@@ -1676,6 +1750,8 @@ def test_invalid_json_and_checksum_fail_before_reading_criteria(tmp_path):
 
 
 @pytest.mark.parametrize("damage", ["schema", "approval"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_unaccepted_package_rejects_invalid_schema_or_approval(blocked, damage):
     from booley.review.artifact import ReviewArtifactError, ReviewPackage
 
@@ -1948,6 +2024,8 @@ def test_approve_review_command_rejects_missing_and_non_review_ticket(blocked):
 
 
 @pytest.mark.asyncio
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 async def test_review_command_reports_blocked_dossier_and_state_errors(blocked, monkeypatch):
     from booley.ticket_board import review_lifecycle
 
@@ -2238,7 +2316,7 @@ def _advisory_running(blocked, monkeypatch):
     return root, tio, worktree
 
 
-@pytest.mark.timeout(90)
+@pytest.mark.timeout(210)
 def test_real_advisory_inspection_and_explicit_human_approval(blocked, monkeypatch):
     from booley.ticket_board.acceptance_ledger import read_acceptance
     from booley.ticket_board.operations import op_handoff
@@ -2276,7 +2354,7 @@ def test_real_advisory_inspection_and_explicit_human_approval(blocked, monkeypat
     _assert_closed_done(tio, "demo")
 
 
-@pytest.mark.timeout(90)
+@pytest.mark.timeout(180)
 def test_human_approval_claim_requires_intact_selected_binding(blocked, monkeypatch, tmp_path):
     """Only the exact approved selection with its intact package binding claims approval."""
     from booley.ticket_board import operations, review_lifecycle
@@ -2312,7 +2390,7 @@ def test_human_approval_claim_requires_intact_selected_binding(blocked, monkeypa
 
 
 @pytest.mark.parametrize("changed_heads", [False, True])
-@pytest.mark.timeout(90)
+@pytest.mark.timeout(180)
 def test_advisory_failed_package_retry_selects_unaccepted_current_heads(
     blocked, monkeypatch, changed_heads
 ):
@@ -2372,6 +2450,8 @@ def test_advisory_failed_package_retry_selects_unaccepted_current_heads(
 
 
 @pytest.mark.parametrize("kind", ["valid", "corrupt", "stale"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_real_prior_acceptance_never_auto_completes_advisory_findings(
     blocked, monkeypatch, capsys, kind
 ):
@@ -2424,6 +2504,8 @@ def test_real_prior_acceptance_never_auto_completes_advisory_findings(
 
 
 @pytest.mark.parametrize("drift", ["heads", "mandatory"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(150)
 def test_selected_advisory_approval_keeps_ordinary_validation_gates(blocked, monkeypatch, drift):
     from booley.ticket_board.acceptance_ledger import read_acceptance
     from booley.ticket_board.operations import op_handoff
@@ -2453,7 +2535,7 @@ def test_selected_advisory_approval_keeps_ordinary_validation_gates(blocked, mon
 @pytest.mark.parametrize("retained_mandatory", [None, False, True])
 @pytest.mark.parametrize("optional_met", [False, True])
 # Real endpoint, repository and review lifecycle on Windows exceeds the CI 60s unit bound.
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(300)
 def test_conditional_report_gate_requested_finalization(
     blocked, monkeypatch, enabled, retained_mandatory, optional_met
 ):

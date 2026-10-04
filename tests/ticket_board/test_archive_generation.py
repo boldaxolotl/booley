@@ -302,6 +302,8 @@ def test_archive_refuses_missing_paired_repository(tmp_path: Path, monkeypatch) 
     assert _git(outer, "branch", "--list", branch)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_archive_published_ticket_uses_machine_refs(tmp_path: Path, monkeypatch) -> None:
     reset_cache()
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
@@ -785,6 +787,8 @@ def test_archive_retries_descriptor_failure_after_close(tmp_path: Path, monkeypa
 
 
 @pytest.mark.parametrize("command", [_cmd_archive, "harness"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_partial_resume_fails_in_both_clis(tmp_path: Path, command, capsys, monkeypatch) -> None:
     from booley.harness.booley import _cmd_board_archive
 
