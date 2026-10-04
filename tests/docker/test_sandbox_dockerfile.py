@@ -430,7 +430,8 @@ def test_openroad_uses_verified_26q4_oci_artifact() -> None:
         "COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad"
         in dockerfile
     )
-    assert "--exclude='./build'" in dockerfile
+    assert "--exclude='./build' --exclude='./install'" in dockerfile
+    assert "! grep -Eq '^\\./(build|install)(/|$)'" in dockerfile
     assert "OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz" in dockerfile
     assert "openroad -version" in dockerfile
     assert "COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE" in dockerfile
