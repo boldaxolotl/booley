@@ -1039,7 +1039,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    if not stealth_enabled(repository_root, project_dir=_guard_project_dir(repository_root)):
+    if not stealth_enabled(repository_root):
         return 0
 
     try:
@@ -1060,18 +1060,17 @@ def _inspect_push(repository_root):
     updates = _updates(protocol, _Protocol(repository_root))
     if not updates:
         return [], False
-    project_dir = _guard_project_dir(repository_root)
-    upstream = validate_push_configuration(repository_root, project_dir=project_dir)
+    upstream = validate_push_configuration(repository_root)
     if len(sys.argv) != 3 or not sys.argv[1] or not sys.argv[2]:
         raise InspectionError("active push requires destination name and location")
     inspection = _Inspection(repository_root)
     commits, unavailable = _outgoing_range(inspection, updates, sys.argv[2], upstream)
-    policy = stealth_policy(repository_root, project_dir=project_dir)
+    policy = stealth_policy(repository_root)
     offenders = _inspect_commits(
         inspection,
         commits,
-        allowed_authors(repository_root, project_dir=project_dir),
-        project_dir,
+        allowed_authors(repository_root),
+        _guard_project_dir(repository_root),
         policy,
     )
     return offenders, unavailable

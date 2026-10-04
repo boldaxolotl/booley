@@ -198,15 +198,11 @@ class UpstreamImport:
     base: str
 
 
-def validate_push_configuration(
-    project_root: Path | None = None, *, project_dir: Path | None = None
-) -> UpstreamImport | None:
+def validate_push_configuration(project_root: Path | None = None) -> UpstreamImport | None:
     """Strictly validate the selected policy before checking an active push."""
     if source_checkout_policy_owner(project_root):
         return None
-    section = _load_booley_config(project_root, strict=True, project_dir=project_dir).get(
-        "stealth", {}
-    )
+    section = _load_booley_config(project_root, strict=True).get("stealth", {})
     if not isinstance(section, dict):
         raise ValueError("[stealth] must be a table")
     if "upstream_repository" not in section and "upstream_base" not in section:
@@ -383,9 +379,7 @@ def enforce_convention(project_root: Path | None = None) -> bool:
     return stealth_policy(project_root).enforce_convention
 
 
-def allowed_authors(
-    project_root: Path | None = None, *, project_dir: Path | None = None
-) -> list[str]:
+def allowed_authors(project_root: Path | None = None) -> list[str]:
     """``[stealth] allowed_authors``: identity allowlist for outgoing commits.
 
     An empty list means *unrestricted* — both when the knob is absent and when
@@ -393,7 +387,7 @@ def allowed_authors(
     reads as "this check is off", and avoids the footgun where a half-written
     allowlist silently blocks every push instead of doing nothing.
     """
-    return list(stealth_policy(project_root, project_dir=project_dir).allowed_authors)
+    return list(stealth_policy(project_root).allowed_authors)
 
 
 def identity_allowed(name: str, email: str, patterns: list[str]) -> bool:

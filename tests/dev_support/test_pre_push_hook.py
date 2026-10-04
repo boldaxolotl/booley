@@ -389,6 +389,8 @@ class TestMain:
 
     def test_blocks_tracked_project_state_root(self, repo, monkeypatch, capsys):
         _configure_external_project_state(repo, monkeypatch)
+        # Isolate tracked paths from strict configuration-node validation.
+        monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
         (repo / ".booley_project").write_text("private project state\n", encoding="utf-8")
         _git(repo, "add", ".booley_project")
         _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add state")
@@ -408,7 +410,8 @@ class TestMain:
     )
     def test_allows_checkout_project_state_name_lookalikes(self, repo, monkeypatch, relative_path):
         _configure_external_project_state(repo, monkeypatch)
-        config = Path(os.environ["BOOLEY_PROJECT_DIR"]) / "booley.toml"
+        config = repo / ".booley_project" / "booley.toml"
+        config.parent.mkdir()
         config.write_text("[stealth]\nbanned_words = []\n")
         path = repo / relative_path
         path.parent.mkdir(parents=True)
@@ -1265,6 +1268,7 @@ def test_source_checkout_policy_never_reads_push_configuration(
         pytest.fail("source pre-push must never load the Project push configuration")
 
     monkeypatch.setattr(pre_push_hook, "validate_push_configuration", forbidden)
+    monkeypatch.setattr(pre_push_hook, "_guard_project_dir", forbidden)
     assert policy.source_checkout_policy_owner(root)
     assert main() == 0
 
@@ -1858,18 +1862,21 @@ def test_minimum_git_unverifiable_upstream_refuses(
             (upstream / "shallow").write_text(base + "\n")
     _upstream_pair(repo, upstream, base)
     assert _push(base) == 1
-    assert "ERROR: push blocked" in capsys.readouterr().err
+    assert "ERROR: push blocked:" in capsys.readouterr().err
 
 
-def test_minimum_git_upstream_uses_runtime_project_state(
-    matrix_repo: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("foreign_policy", ["disabled", "missing"])
+def test_minimum_git_upstream_ignores_foreign_environment_policy(
+    matrix_repo: Path, monkeypatch: pytest.MonkeyPatch, foreign_policy: str
 ) -> None:
     repo = matrix_repo
     base = _commit(repo, "fix(core): claude imported identity")
     upstream = _clone_upstream(repo)
     _upstream_pair(repo, upstream, base)
-    state = repo.parent / "runtime-state"
-    (repo / ".booley_project").rename(state)
+    state = repo.parent / "foreign-state"
+    state.mkdir()
+    if foreign_policy == "disabled":
+        (state / "booley.toml").write_text("[stealth]\nenabled = false\nbanned_words = []\n")
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
     assert _push(base) == 0
     assert _push(_commit(repo, "fix(core): claude fresh metadata")) == 1
@@ -1901,7 +1908,7 @@ def test_minimum_git_native_bundled_upstream_import(matrix_repo: Path) -> None:
 
 @pytest.mark.parametrize("ref_kind", ["pull-only", "annotated-tag"])
 def test_minimum_git_upstream_import_requires_branch_or_tag(
-    matrix_repo: Path, ref_kind: str
+    matrix_repo: Path, ref_kind: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     repo = matrix_repo
     base = _commit(repo, "fix(core): claude pristine import")
@@ -1913,6 +1920,8 @@ def test_minimum_git_upstream_import_requires_branch_or_tag(
         _git(upstream, "update-ref", "refs/pull/7/head", base)
     _upstream_pair(repo, upstream, base)
     assert _push(base) == (1 if ref_kind == "pull-only" else 0)
+    if ref_kind == "pull-only":
+        assert "upstream_base is not reachable" in capsys.readouterr().err
 
 
 def test_minimum_git_encoded_file_upstream_import(matrix_repo: Path) -> None:

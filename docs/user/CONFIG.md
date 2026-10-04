@@ -1111,6 +1111,9 @@ recognizable redaction debris while preserving ordinary prose such as
 reproducibility." These lines are not rejected; banned words inside them are
 still redacted. With the built-in vocabulary, both examples are stored verbatim:
 `generated`, `docker`, and `agent` are ordinary prose, not default banned words.
+The audit retains `cursor`, `ticket`, `gpt`, and `llm` in the token-matched tier;
+they never gain the identity tier's substring matching. Override `banned_words`
+when a Project uses these terms in its ordinary engineering vocabulary.
 
 An empty `banned_words = []`, with `banned_substrings` absent or empty, disables
 vocabulary redaction and therefore cannot confirm that an ambiguous plain "Generated with …" line names a protected
