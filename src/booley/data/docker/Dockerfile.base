@@ -10,9 +10,17 @@ FROM docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f
 
 USER root
 ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9
-RUN tar --sort=name --mtime='UTC 2026-10-01' --owner=0 --group=0 --numeric-owner \
-        --exclude='./build' -C /OpenROAD -czf \
-        "/tmp/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" .
+# Corresponding Source excludes build outputs. Since 26Q4 the builder also
+# leaves an install prefix whose ./install/bin/openroad duplicates the shipped
+# executable (~58 MB compressed), so both trees stay out and the archive
+# listing must prove it before the archive leaves this stage.
+RUN archive="/tmp/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" \
+    && tar --sort=name --mtime='UTC 2026-10-01' --owner=0 --group=0 --numeric-owner \
+        --exclude='./build' --exclude='./install' -C /OpenROAD -czf "$archive" . \
+    && tar -tzf "$archive" > /tmp/openroad-source-listing.txt \
+    && grep -Fx './src/rsz/src/Resizer.tcl' /tmp/openroad-source-listing.txt >/dev/null \
+    && ! grep -Eq '^\./(build|install)(/|$)' /tmp/openroad-source-listing.txt \
+    && rm /tmp/openroad-source-listing.txt
 
 FROM docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 AS eda-artifacts
 
