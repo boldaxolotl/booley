@@ -580,6 +580,144 @@ def test_failed_build_partial_terminal_result_fails_closed(
         SimulationCampaign(executor).run(request)
 
 
+@pytest.mark.parametrize("boundary", ["before:manifest_commit", "after:manifest_commit"])
+def test_manifest_notification_is_committed_before_fault_checkpoint(
+    tmp_path: Path, boundary: str
+) -> None:
+    manifest = _crash_manifest()
+    plan = create_simulation_campaign_plan(manifest)
+    project, _build, _log = _crash_environment(tmp_path)
+    invocation = tmp_path / "reports/000001"
+    invocation.mkdir(parents=True)
+    request = NewCampaignRunRequest(
+        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    )
+    published: list[Path] = []
+
+    def notify(path: Path) -> None:
+        assert path.is_file()
+        published.append(path)
+
+    campaign = SimulationCampaign(
+        publication_checkpoint=_CrashOnce(boundary), manifest_published=notify
+    )
+    with pytest.raises(_InjectedProcessDeath):
+        campaign.publish_new(request)
+    assert len(published) == (0 if boundary.startswith("before") else 1)
+    if published:
+        campaign.publish_new(request)
+        assert published == [published[0], published[0]]
+
+
+def test_closed_console_does_not_skip_postcommit_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+
+    from booley.flows.sim.flow import SimulateFlow
+
+    flow = SimulateFlow()
+    flow.context._console_publication_requested = True
+    stream = io.StringIO()
+    stream.close()
+    monkeypatch.setattr("booley.flows.sim.flow.sys.stderr", stream)
+    published: list[Path] = []
+    manifest = _crash_manifest()
+    plan = create_simulation_campaign_plan(manifest)
+    project, _build, _log = _crash_environment(tmp_path)
+    invocation = tmp_path / "reports/000001"
+    invocation.mkdir(parents=True)
+    request = NewCampaignRunRequest(
+        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    )
+    campaign = SimulationCampaign(
+        publication_checkpoint=_CrashOnce("after:manifest_commit"),
+        manifest_published=flow._manifest_publisher(published),
+    )
+    with pytest.raises(_InjectedProcessDeath):
+        campaign.publish_new(request)
+    assert len(published) == 1 and published[0].is_file()
+
+
+def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.flows.sim.flow import SimulateFlow
+
+    manifest = _crash_manifest()
+    baseline = _baseline_disclosure_manifest(manifest)
+    project, _build, _log = _crash_environment(tmp_path)
+    invocation = tmp_path / "reports/000001"
+    invocation.mkdir(parents=True)
+    requests = [
+        NewCampaignRunRequest(
+            create_simulation_campaign_plan(item),
+            project,
+            invocation.parent,
+            CampaignPolicy(),
+            invocation,
+            _admission(),
+        )
+        for item in (baseline, manifest)
+    ]
+    flow = SimulateFlow()
+    flow.context._console_publication_requested = True
+    published: list[Path] = []
+    campaign = SimulationCampaign(manifest_published=flow._manifest_publisher(published))
+    paths = [campaign.publish_new(request) for request in requests]
+    # Repeated publication notifications retain one recovery path per invocation.
+    for request in requests:
+        campaign.publish_new(request)
+    # A new successful publication at the same destination needs no repeated pointer.
+    paths[0].unlink()
+    campaign.publish_new(requests[0])
+    assert paths[0].is_file()
+    assert len(set(paths)) == 2
+    assert paths[0].parents[1].name == "sim%40baseline-abc123"
+    assert capsys.readouterr().err == "".join(
+        f"campaign manifest: {path.resolve()}\n" for path in paths
+    )
+    for request in requests:
+        campaign._open_campaign(request)
+    assert capsys.readouterr().err == ""
+    assert published == paths
+
+
+def test_minimal_context_defaults_to_silent_manifest_notification(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.flows.sim.flow import SimulateFlow
+
+    flow = SimulateFlow()
+    flow.context = SimpleNamespace()
+    published: list[Path] = []
+    flow._manifest_publisher(published)(tmp_path / "manifest.json")
+    assert published == [tmp_path / "manifest.json"]
+    assert capsys.readouterr().err == ""
+
+
+def _baseline_disclosure_manifest(manifest):
+    document = json.loads(canonical_json_bytes(manifest.document))
+    document.pop("fingerprints")
+    document["target"]["role"] = "cycle_count_baseline"
+    for item in document["work_items"]:
+        item["target"] = document["target"]
+        item["role"] = "cycle_count_baseline"
+        identity = {
+            key: value
+            for key, value in item.items()
+            if key not in {"work_item_id", "fingerprint_sha256"}
+        }
+        fingerprint = (
+            "sha256:" + hashlib.sha256(canonical_json_bytes(identity).rstrip(b"\n")).hexdigest()
+        )
+        item["fingerprint_sha256"] = fingerprint
+        item["work_item_id"] = (
+            f"item:{item['ordinal']:04d}:{fingerprint.removeprefix('sha256:')[:16]}"
+        )
+    return finalize_manifest(document)
+
+
 def _resume_real_hook_crash(tmp_path, invocation, store):
     from tests.flows.sim.test_campaign_phase3_integrity import (
         _executor,
