@@ -1463,15 +1463,15 @@ jobs:
           budget="${STANDARD_BUDGET_SECONDS}"
           if [[ "${RISCV_IMAGE}" == true ]]; then
             # A lane that stopped before resolving its source is judged as local.
-            source=local
+            tooling_source=local
             if [[ -f "${TOOLING_RECORD}" ]]; then
-              source="$(jq -er .source "${TOOLING_RECORD}")"
+              tooling_source="$(jq -er .source "${TOOLING_RECORD}")"
             fi
             budget="${LOCAL_BUDGET_SECONDS}"
-            if [[ "${source}" == registry ]]; then
+            if [[ "${tooling_source}" == registry ]]; then
               budget="${REGISTRY_BUDGET_SECONDS}"
             fi
-            echo "RISC-V tooling source: \`${source}\` (budget ${budget} s)" >> "${GITHUB_STEP_SUMMARY}"
+            echo "RISC-V tooling source: \`${tooling_source}\` (budget ${budget} s)" >> "${GITHUB_STEP_SUMMARY}"
           fi
           PYTHONPATH=src python .github/scripts/ci_duration_budget.py \
             --label bwave-smoke \

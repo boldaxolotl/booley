@@ -39,6 +39,7 @@ from pathlib import Path
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 
+from booley.core.boundary import as_dict
 from booley.runtime.docker_base_contract import RemoteImage, resolve_labeled_image_remote
 from booley.runtime.dockerfile_syntax import Instruction, logical_instructions
 from booley.runtime.image_provenance import ImageProvenanceError, resolve_recipe_fingerprint
@@ -62,7 +63,8 @@ _TOOLING_PATH_PREFIXES = ("/opt/riscv/", "/opt/riscv-docs/")
 # local build, and a registry lookup that exceeded the workflow's timeout
 # cannot be distinguished from absence safely, so it also builds locally.
 FORCED_LOCAL_REASONS = ("cold", "registry-timeout")
-_RECORD_SCHEMA = 1
+RECORD_SCHEMA = 1
+TOOLING_SOURCES = ("registry", "local", "local-compat-fallback")
 
 
 class ToolingStageError(ValueError):
@@ -217,8 +219,11 @@ def resolve_source(dockerfile: Path, force_local: str | None = None) -> dict[str
     """
     key = tooling_key(dockerfile)
     reference = final_image(key)
-    record: dict[str, object] = {"schema_version": _RECORD_SCHEMA, "key": key}
-    record["reference"] = reference
+    record: dict[str, object] = {
+        "schema_version": RECORD_SCHEMA,
+        "key": key,
+        "reference": reference,
+    }
     if force_local is not None:
         return {**record, "source": "local", "reason": force_local}
     try:
@@ -236,13 +241,16 @@ def resolve_source(dockerfile: Path, force_local: str | None = None) -> dict[str
     }
 
 
-def _read_record(path: Path) -> dict[str, object]:
+def read_source_record(path: Path) -> dict[str, object]:
+    """Return a validated tooling source record; raise ``ValueError`` otherwise."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = as_dict(json.loads(path.read_text(encoding="utf-8")))
     except json.JSONDecodeError as error:
         raise ValueError(f"{path} is not a tooling source record: {error}") from error
-    if not isinstance(record, dict) or record.get("schema_version") != _RECORD_SCHEMA:
-        raise ValueError(f"{path} is not a version {_RECORD_SCHEMA} tooling source record")
+    if record is None or record.get("schema_version") != RECORD_SCHEMA:
+        raise ValueError(f"{path} is not a version {RECORD_SCHEMA} tooling source record")
+    if record.get("source") not in TOOLING_SOURCES:
+        raise ValueError(f"{path} names an unknown tooling source: {record.get('source')!r}")
     return record
 
 
@@ -261,7 +269,7 @@ def compat_fallback(path: Path, detail: str) -> dict[str, object]:
     tooling, so CI rebuilds the stage locally. The rejected digest stays in
     the record; repeated fallbacks for one key mean it needs republishing.
     """
-    record = _read_record(path)
+    record = read_source_record(path)
     if record.get("source") != "registry":
         raise ValueError(f"{path} does not record a registry tooling source")
     rejected = record.pop("digest_reference")

@@ -17,6 +17,8 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 
+from riscv_tooling import read_source_record
+
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
@@ -38,7 +40,6 @@ PhaseOutcome = Literal["running", "success", "failure", "unavailable", "incomple
 # `cold` forces a local tooling build so controlled pairs can attribute the
 # registry's effect (ADR 0070); `automatic` is ordinary path-gated CI.
 MeasurementArm = Literal["automatic", "cold"]
-_TOOLING_SOURCES = frozenset({"registry", "local", "local-compat-fallback"})
 
 
 class PhaseRecord(TypedDict):
@@ -509,12 +510,10 @@ def load_tooling_source(path: Path) -> dict[str, Any] | None:
     """
     if not path.exists():
         return None
-    record = as_dict(_read_json(path))
-    if record is None or record.get("schema_version") != 1:
-        raise TimingError(f"{path} is not a version 1 tooling source record")
-    if record.get("source") not in _TOOLING_SOURCES:
-        raise TimingError(f"{path} names an unknown tooling source: {record.get('source')!r}")
-    return record
+    try:
+        return read_source_record(path)
+    except (OSError, ValueError) as error:
+        raise TimingError(f"invalid tooling source record: {error}") from error
 
 
 def summarize_records(
