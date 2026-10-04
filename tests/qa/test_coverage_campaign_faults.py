@@ -152,6 +152,26 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
         faults.mutate(manifest, owned, "point-count")
 
 
+def _product_reference(owned: Path, mode: str) -> Path:
+    from tests.flows.sim.test_coverage_campaign_reference import _nested_campaign
+    from tests.flows.sim.test_coverage_campaign_reference import _reference as product_reference
+    from tests.flows.sim.test_coverage_campaign_store import _two_source_line_campaign
+
+    from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
+    from booley.flows.sim.coverage_reference import publish_coverage_campaign_reference
+
+    target = owned / "targets/sim_counter"
+    manifest = _nested_campaign(target)
+    if mode == "wrong-source-rollup":
+        manifest.unlink()
+        (manifest.parent / "coverage-points.jsonl.gz").unlink()
+        publish_coverage_campaign(manifest.parent, _two_source_line_campaign())
+    reference = target / "coverage.json"
+    publish_coverage_campaign_reference(reference, product_reference(target, manifest))
+    (owned / ".qa-coverage-fault-copy").touch()
+    return reference
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_codes"),
     [
@@ -169,6 +189,7 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
         ("absolute-path", {"COV_POINT_PATH"}),
         ("symlink", {"COV_PATH_UNSAFE"}),
         ("wrong-rollup", {"COV_SOURCE_ROLLUP_MISMATCH"}),
+        ("wrong-source-rollup", {"COV_SOURCE_ROLLUP_MISMATCH"}),
         ("wrong-evaluation", {"COV_EVALUATION_MISMATCH"}),
         ("resource-ceiling", {"COV_POINT_LIMIT"}),
         ("v1", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
@@ -180,26 +201,16 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
 def test_fault_reaches_product_content_validation(
     tmp_path: Path, mode: str, expected_codes: set[str]
 ) -> None:
-    from tests.flows.sim.test_coverage_campaign_reference import (
-        _nested_campaign,
-    )
-    from tests.flows.sim.test_coverage_campaign_reference import (
-        _reference as product_reference,
-    )
+    from tests.conftest import require_symlinks
 
     from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
     from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
-    from booley.flows.sim.coverage_reference import (
-        publish_coverage_campaign_reference,
-        resolve_coverage_campaign_reference,
-    )
+    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
 
+    if mode == "symlink":
+        require_symlinks(tmp_path)
     owned = tmp_path / "owned"
-    target = owned / "targets/sim_counter"
-    manifest = _nested_campaign(target)
-    reference = target / "coverage.json"
-    publish_coverage_campaign_reference(reference, product_reference(target, manifest))
-    (owned / ".qa-coverage-fault-copy").touch()
+    reference = _product_reference(owned, mode)
     resolve_coverage_campaign_reference(reference)
 
     faults.mutate(reference, owned, mode)

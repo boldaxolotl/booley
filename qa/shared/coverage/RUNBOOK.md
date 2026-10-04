@@ -224,7 +224,9 @@ or `coverage.core` after planning; capture the before bytes and restore them.
 Use a declared included `rtl/constants.svh` with a comment-only change for the
 include-source analysis case; it must be in the recorded closure before collection.
 
-Campaign fault cases copy an entire completed numbered invocation into a new
+Campaign faults use fresh V4 evidence. Use `baseline.native` for point mutations
+(the Campaign must contain points) and `baseline.multi` for `wrong-source-rollup`
+(two RTL sources with distinct distributions). Copy an entire completed numbered invocation into a new
 owned reports root, preserving `sim/N/targets/<target>/coverage.json` layout.
 Create `.qa-coverage-fault-copy` at that new owned root and invoke
 `faults/campaign.py <mode> <copied-target>/coverage.json --owned <copy-root>`, passing
@@ -235,7 +237,7 @@ Campaign is never mutated. The `invalid-overall-score` and `invalid-source-score
 modes retain a scoring inventory that an invalid Campaign must not publish;
 `wrong-source-rollup` swaps two distinct source distributions. Truncation and final-record cases update unrelated
 envelope digests/sizes to reach the intended deeper validation. Note the
-particular error code/field proving that boundary; an unrelated earlier parse
+particular error code, field, and message proving that boundary; an unrelated earlier parse
 error does not show the deeper validation works. Restore by discarding only that
 copy, recreating it from the original, and successfully analyzing the valid pair.
 
