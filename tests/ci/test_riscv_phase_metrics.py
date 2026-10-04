@@ -13,6 +13,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 from riscv_phase_metrics import (
     TimingError,
+    finalize,
     finish_build_record,
     finish_record,
     start_record,
@@ -122,8 +123,7 @@ def test_finalizer_preserves_interrupted_phase(tmp_path: Path) -> None:
         "attempt": 3,
         "candidate_sha": "abc123",
         "measurement_arm": "automatic",
-        "cache_state": "not-requested",
-        "tooling_cache_hit": False,
+        "tooling": None,
     }
     assert summary["phases"][0]["outcome"] == "incomplete"
 
@@ -254,39 +254,69 @@ def test_parallel_headroom_uses_completion_times_not_durations(tmp_path: Path) -
     assert topology["riscv_headroom_seconds"] == 0
 
 
-def test_warm_cache_miss_is_not_a_representative_sample(tmp_path: Path) -> None:
-    record = tmp_path / "records" / "build.json"
-    progress = tmp_path / "progress.jsonl"
-    start_record(record, "riscv_tool_substrate", "nested")
-    _rawjson(
-        progress,
-        _CONTEXT,
-        _vertex(
-            "sha256:compile",
-            "[1/1] RUN build",
-            "2026-09-24T12:00:00Z",
-            "2026-09-24T12:00:01Z",
-            cached=True,
-        ),
-        _vertex(
-            "sha256:load", "exporting to image", "2026-09-24T12:00:01Z", "2026-09-24T12:00:02Z"
-        ),
-    )
-    finish_build_record(
-        record,
-        0,
-        progress,
-        tmp_path / "metadata.json",
-        tmp_path / "image.json",
-        tmp_path / "parent.json",
-    )
+_REGISTRY_SOURCE = {
+    "schema_version": 1,
+    "key": "0" * 64,
+    "reference": "ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-" + "0" * 64,
+    "source": "registry",
+    "reason": "published",
+    "digest_reference": "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64,
+    "platform_manifest": "sha256:" + "e" * 64,
+}
 
-    miss = summarize_records([record], 1, 1, "sha", "2026-09-24T12:00:00Z", "warm", "miss")
-    hit = summarize_records([record], 2, 1, "sha", "2026-09-24T12:00:00Z", "warm", "hit")
 
-    assert miss["representative"] is False
-    assert hit["representative"] is True
-    assert hit["run"]["tooling_cache_hit"] is True
+def test_finalizer_retains_the_tooling_source_record(tmp_path: Path) -> None:
+    """The #568 cohort is filtered by tooling source, so every run records it."""
+    directory = tmp_path / "evidence"
+    _completed_record(directory / "records" / "lane.json", "riscv_candidate", "parallel")
+    source = tmp_path / "tooling-source.json"
+    _write(source, _REGISTRY_SOURCE)
+    output = directory / "phases.json"
+
+    finalize(directory, output, 7, 1, "sha", "automatic", source)
+
+    run = json.loads(output.read_text(encoding="utf-8"))["run"]
+    assert run["tooling"] == _REGISTRY_SOURCE
+    assert "cache_state" not in run
+
+
+def test_finalizer_tolerates_a_lane_that_never_resolved_its_tooling(tmp_path: Path) -> None:
+    directory = tmp_path / "evidence"
+    _completed_record(directory / "records" / "lane.json", "riscv_candidate", "parallel")
+    output = directory / "phases.json"
+
+    finalize(directory, output, 7, 1, "sha", "automatic", tmp_path / "absent.json")
+
+    assert json.loads(output.read_text(encoding="utf-8"))["run"]["tooling"] is None
+
+
+@pytest.mark.parametrize(
+    "contents",
+    ["[]", '{"schema_version": 1, "source": "warm"}', '{"schema_version": 2, "source": "local"}'],
+    ids=["not-an-object", "unknown-source", "unknown-schema"],
+)
+def test_finalizer_rejects_malformed_tooling_source(tmp_path: Path, contents: str) -> None:
+    directory = tmp_path / "evidence"
+    _completed_record(directory / "records" / "lane.json", "riscv_candidate", "parallel")
+    source = tmp_path / "tooling-source.json"
+    source.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(TimingError, match="tooling source"):
+        finalize(directory, directory / "phases.json", 7, 1, "sha", "automatic", source)
+
+
+def test_compat_check_phase_is_optional(tmp_path: Path) -> None:
+    """Only registry hits run the compatibility check; local runs stay comparable."""
+    lane = tmp_path / "records" / "lane.json"
+    compat = tmp_path / "records" / "compat.json"
+    _completed_record(lane, "riscv_candidate", "parallel")
+    _completed_record(compat, "riscv_tooling_compat", "nested")
+
+    without = summarize_records([lane], 1, 1, "sha", "2026-09-24T12:00:00Z")
+    with_check = summarize_records([lane, compat], 1, 1, "sha", "2026-09-24T12:00:00Z")
+
+    assert "riscv_tooling_compat" not in {phase["name"] for phase in without["phases"]}
+    assert "riscv_tooling_compat" in {phase["name"] for phase in with_check["phases"]}
 
 
 def test_schema_rejects_negative_elapsed_time() -> None:
@@ -438,11 +468,11 @@ def test_tooling_cache_hit_requires_every_build_step_cached(
     assert buildkit["cache_hit"] is expected_hit
 
 
-def test_baseline_arm_is_a_representative_sample(tmp_path: Path) -> None:
+def test_cold_arm_is_recorded(tmp_path: Path) -> None:
     record = tmp_path / "records" / "lane.json"
     _completed_record(record, "riscv_candidate", "parallel")
 
-    summary = summarize_records([record], 1, 1, "sha", "2026-09-24T12:00:00Z", "baseline")
+    summary = summarize_records([record], 1, 1, "sha", "2026-09-24T12:00:00Z", "cold")
 
-    assert summary["run"]["measurement_arm"] == "baseline"
-    assert summary["representative"] is True
+    assert summary["run"]["measurement_arm"] == "cold"
+    assert "representative" not in summary
