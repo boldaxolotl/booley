@@ -24,7 +24,8 @@ queued publication of one key never displaces another key's. The `Tests` workflo
 checks its role and key labels, and passes the digest as a named build context that overrides the
 `riscv-tooling` stage. CI builds the stage itself in three cases: the tag is absent (for example, in
 a pull request that changes the stage), the registry cannot be reached, or the composed candidate
-fails a quick shared-library and executable check against the published tooling. The last case is
+fails against the published tooling: either its build (whose final stage runs the tooling's
+executables) fails or it fails a quick shared-library and executable check. The last case is
 recorded as a compatibility fallback. Pull requests never push. Release publication and local builds
 keep building the stage from source.
 
@@ -80,7 +81,7 @@ key does not capture apt drift: whichever apt state the first publication sees b
 for that key. The stable-base contract accepts the same limitation. Here it has three mitigations.
 The publisher records the builder's `libc6`, `libstdc++6`, `libgcc-s1`, and compiler package
 versions on the published image, and it runs the session runtime contract's own RISC-V probes
-against the bare tooling image before promotion. A composed candidate that fails the quick compatibility check falls back to a
+against the bare tooling image before promotion. A composed candidate that fails to build or fails the quick compatibility check falls back to a
 local build instead of failing the pull request. Editing the stage, even only a comment, produces a
 new key, which forces a fresh publication.
 

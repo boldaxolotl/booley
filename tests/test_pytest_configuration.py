@@ -285,10 +285,8 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     assert "started_at_epoch=$(date +%s)" in start["run"]
     assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
-    assert canary["env"]["DURATION_BUDGET_SECONDS"] == (
-        "${{ needs.changes.outputs.riscv_image == 'true' && 1190 || 600 }}"
-    )
-    assert '--budget-seconds "${DURATION_BUDGET_SECONDS}"' in canary["run"]
+    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 600
+    assert '--budget-seconds "${budget}"' in canary["run"]
     assert steps.index(canary) > next(
         index
         for index, step in enumerate(steps)
@@ -320,7 +318,7 @@ def test_riscv_measurement_dispatch_reaches_the_classifier() -> None:
         if step.get("name") == "Classify changed paths"
     )
 
-    assert dispatch["options"] == ["automatic", "baseline", "warm", "cold"]
+    assert dispatch["options"] == ["automatic", "cold"]
     assert dispatch["default"] == "automatic"
     assert (
         "--riscv-measurement \"${{ inputs.riscv_measurement || 'automatic' }}\""
@@ -351,9 +349,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
     ibex_prepare = next(
         step for step in steps if step.get("name") == "Prepare exact reviewed Ibex candidate"
     )
-    warm_cache = next(
-        step for step in steps if step.get("name") == "Restore warm RISC-V tooling cache"
-    )
+    resolve = next(step for step in steps if step.get("id") == "riscv-tooling")
     ibex_run = next(step for step in steps if step.get("name") == "Run pinned Ibex lint demo")
     restore = next(
         step for step in steps if step.get("name") == "Restore RISC-V demo checkout ownership"
@@ -365,9 +361,8 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert steps.index(prepare) < group_index
     assert ibex_prepare["if"] == gate
     assert steps.index(ibex_prepare) < group_index
-    assert "inputs.riscv_measurement == 'warm'" in warm_cache["if"]
-    assert warm_cache["uses"].startswith("actions/cache@")
-    assert steps.index(warm_cache) < group_index
+    assert resolve["if"] == gate
+    assert steps.index(resolve) < group_index
     assert riscv["if"] == gate
     assert "Dockerfile.riscv" in riscv["run"]
     assert "--progress rawjson" in riscv["run"]
@@ -377,121 +372,13 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert "wheel-overlay-metadata.json" in riscv["run"]
     assert "verify_riscv_image_contract.sh" in riscv["run"]
     assert "run_picorv32_ci_demo.sh" in riscv["run"]
-    assert "--cache-from" in riscv["run"]
-    assert "--cache-to" in riscv["run"]
-    assert "type=local" in riscv["run"]
-    assert "--no-cache" in riscv["run"]
+    assert '--build-context "riscv-tooling=${TOOLING_CONTEXT}"' in riscv["run"]
     assert ibex_run["if"] == gate
     assert steps.index(ibex_run) > group_index
     assert "--network none" in ibex_run["run"]
     assert restore["if"] == f"always() && {gate}"
     assert upload["if"] == f"always() && {gate}"
     assert steps.index(restore) > group_index
-
-
-def test_controlled_riscv_measurements_share_cache_capable_image_store() -> None:
-    workflow = _test_workflow()
-    steps = workflow["jobs"]["bwave-smoke"]["steps"]
-    docker_setup = next(
-        step for step in steps if step.get("name") == "Enable cache-capable Docker image store"
-    )
-
-    assert " ".join(docker_setup["if"].split()) == (
-        "needs.changes.outputs.riscv_image == 'true' && "
-        "github.event_name == 'workflow_dispatch' && "
-        'contains(fromJSON(\'["baseline", "warm", "cold"]\'), inputs.riscv_measurement)'
-    )
-    assert steps.index(docker_setup) < next(
-        index for index, step in enumerate(steps) if step.get("id") == "base-contract"
-    )
-    assert steps.index(docker_setup) < next(
-        index
-        for index, step in enumerate(steps)
-        if str(step.get("uses", "")).startswith("docker/setup-buildx-action@")
-    )
-    assert docker_setup["uses"].startswith("docker/setup-docker-action@")
-    assert docker_setup["with"]["version"] == "v28.0.4"
-    assert docker_setup["with"]["set-host"] is True
-    assert "containerd-snapshotter" in docker_setup["with"]["daemon-config"]
-
-
-def test_warm_riscv_cache_tracks_exact_candidate_parent() -> None:
-    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
-    parent = next(step for step in steps if step.get("id") == "riscv-cache-parent")
-    cache = next(step for step in steps if step.get("id") == "riscv-warm-cache")
-    assert parent["if"] == cache["if"]
-    assert "{{json .Config}} {{json .RootFS}} {{.Architecture}} {{.Os}}" in parent["run"]
-    assert "booley-standard-substrate:ci" in parent["run"]
-    assert "sha256sum" in parent["run"]
-    assert steps.index(parent) < steps.index(cache)
-    assert steps.index(parent) > next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Build standard wheel overlay"
-    )
-    assert "${{ steps.riscv-cache-parent.outputs.fingerprint }}" in cache["with"]["key"]
-    assert cache["with"]["key"].startswith("riscv-tooling-v3-")
-    assert "restore-keys" not in cache["with"]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Measurement shell runs on the Linux CI runner")
-@pytest.mark.parametrize(("docker_exit", "empty"), [(0, False), (0, True), (1, False)])
-def test_warm_riscv_parent_fingerprint_fails_on_inspect_error(
-    tmp_path: Path, docker_exit: int, empty: bool
-) -> None:
-    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
-    parent = next(step for step in steps if step.get("id") == "riscv-cache-parent")
-    fake_docker = tmp_path / "docker"
-    fake_docker.write_text(
-        "#!/bin/sh\n"
-        + ("" if empty else 'echo \'{} {"Layers":["sha256:layer"]} amd64 linux\'\n')
-        + f"exit {docker_exit}\n"
-    )
-    fake_docker.chmod(0o755)
-    output = tmp_path / "output.txt"
-    result = subprocess.run(
-        ["bash", "-e", "-u", "-o", "pipefail", "-c", parent["run"]],
-        env={
-            **os.environ,
-            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-            "GITHUB_OUTPUT": str(output),
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if docker_exit == 0 and not empty:
-        assert result.returncode == 0, result.stderr
-        assert output.read_text().startswith("fingerprint=")
-        assert len(output.read_text().strip().split("=", 1)[1]) == 64
-    else:
-        assert result.returncode == 1
-        assert not output.exists()
-
-
-def test_warm_riscv_rebuilt_base_fails_before_build_or_cache_export() -> None:
-    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
-    reject = next(
-        step
-        for step in steps
-        if step.get("name") == "Reject warm measurements with a locally rebuilt stable base"
-    )
-    assert " ".join(reject["if"].split()) == (
-        "inputs.riscv_measurement == 'warm' && steps.runtime-base.outputs.build == 'true'"
-    )
-    assert "exit 1" in reject["run"]
-    assert steps.index(reject) > next(
-        index for index, step in enumerate(steps) if step.get("id") == "runtime-base"
-    )
-    assert steps.index(reject) < next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Build changed stable runtime base locally"
-    )
-    assert steps.index(reject) < next(
-        index for index, step in enumerate(steps) if step.get("id") == "riscv-warm-cache"
-    )
 
 
 def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None:
@@ -533,7 +420,7 @@ def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None
     assert "--name ibex_runtime --topology post-group" in ibex["run"]
     assert "riscv_phase_metrics.py finalize" in finalizer["run"]
     assert "phases.json" in finalizer["run"]
-    assert '--cache-state "${cache_state}"' in finalizer["run"]
+    assert "--tooling-source" in finalizer["run"]
     assert steps.index(finalizer) < steps.index(upload)
 
 
