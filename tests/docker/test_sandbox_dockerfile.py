@@ -81,7 +81,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     ) in base
     assert (
         "FROM docker.io/library/ubuntu:26.04@sha256:"
-        "da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78"
+        "f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
     ) in base
     assert "COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/" in base
     assert "COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/" in base
@@ -393,7 +393,7 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
     assert '"@anthropic-ai/claude-code": "2.1.285"' in lock
-    assert '"@openai/codex": "0.159.3"' in lock
+    assert '"@openai/codex": "0.160.0"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -404,7 +404,7 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
 
     assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.285"
     assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.159.3-linux-x64"
+        "npm:@openai/codex@0.160.0-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]

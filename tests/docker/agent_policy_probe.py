@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED_CLAUDE = "2.1.285"
-EXPECTED_CODEX = "0.159.3"
+EXPECTED_CODEX = "0.160.0"
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"
 CANARY_TEXT = "booley-agent-policy-canary"
