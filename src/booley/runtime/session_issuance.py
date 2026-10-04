@@ -1918,8 +1918,13 @@ def _load_stamp(path: Path) -> Issuance:
             if descriptor >= 0:
                 os.close(descriptor)
         stamp = issuance_from_document(raw)
+    except FileNotFoundError as exc:
+        raise RuntimeSpecError(
+            "Sandbox issuance was withdrawn (EDA grant change, invalidation or Project forget); "
+            "run booley init --seed on the host to reissue"
+        ) from exc
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeSpecError) as exc:
-        raise RuntimeSpecError(f"host-issued spec stamp is missing or corrupt: {exc}") from exc
+        raise RuntimeSpecError(f"host-issued spec stamp is corrupt: {exc}") from exc
     if os.name != "nt" and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
         raise RuntimeSpecError(f"host-issued spec stamp has insecure ownership/mode: {path}")
     if os.name != "nt":
