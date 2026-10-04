@@ -117,8 +117,11 @@ def pytest_configure(config: pytest.Config) -> None:
     from tests.timeout_headroom import timeout_plugin_loaded
 
     _isolate_xdist_worker_temp()
-    if timeout_plugin_loaded(config) and not config.option.timeout:
-        config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
+    if timeout_plugin_loaded(config):
+        from pytest_timeout import get_env_settings
+
+        if get_env_settings(config).timeout is None:
+            config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

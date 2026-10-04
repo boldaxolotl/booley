@@ -2,8 +2,8 @@
 
 Every case uses a budget far above the test's runtime and a headroom fraction
 chosen so the sleep in the inner test is clearly above or below the limit. The
-outcome depends only on which budget the guard selects, never on host speed or
-a timer firing.
+budget-selection cases inject report durations, so their outcome never depends
+on host speed or a timer firing.
 """
 
 from __future__ import annotations
@@ -73,7 +73,9 @@ def test_ratio_is_recorded_in_junit(tmp_path: Path) -> None:
 
 def test_marker_budget_overrides_cli_budget(tmp_path: Path) -> None:
     # 0.001 of the 60 s CLI budget would trip; 0.001 of 600 s (0.6 s) does not.
-    result = _run_case(tmp_path, [_TRIP], marker="@pytest.mark.timeout(600)")
+    result = _run_case(
+        tmp_path, [_TRIP], marker="@pytest.mark.timeout(600)", durations={"call": 0.2}
+    )
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert _counts(result.stdout) == {"passed": 1}
@@ -95,6 +97,7 @@ def test_func_only_budget_ignores_fixture_time(tmp_path: Path) -> None:
         marker=fixture + "@pytest.mark.timeout(60, func_only=True)",
         body="pass",
         arguments="slow_setup",
+        durations={"setup": 0.2},
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -104,7 +107,7 @@ def test_func_only_budget_ignores_fixture_time(tmp_path: Path) -> None:
 def test_suggestion_never_lowers_the_current_budget(tmp_path: Path) -> None:
     # 0.7 s exceeds 0.001 x 600 s; 3x 0.7 s alone would suggest 30 s.
     result = _run_case(
-        tmp_path, [_TRIP], marker="@pytest.mark.timeout(600)", body="time.sleep(0.7)"
+        tmp_path, [_TRIP], marker="@pytest.mark.timeout(600)", durations={"call": 0.7}
     )
 
     output = result.stdout + result.stderr
@@ -129,6 +132,39 @@ def test_setup_error_is_not_reported_twice(tmp_path: Path) -> None:
     assert result.returncode == 1, output
     assert _counts(output) == {"error": 1}, output
     assert "headroom limit is" not in output
+
+
+@pytest.mark.parametrize(
+    ("marker", "body", "outcome"),
+    [
+        ("", "pytest.skip('missing prerequisite')", "skipped"),
+        ("@pytest.mark.xfail(reason='known failure')", "assert False", "xfailed"),
+        ("", "pytest.xfail('known failure')", "xfailed"),
+    ],
+)
+def test_nonpassing_test_is_not_a_headroom_error(
+    tmp_path: Path, marker: str, body: str, outcome: str
+) -> None:
+    result = _run_case(tmp_path, [_TRIP], marker=marker, body=body, durations={"call": 0.2})
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f"1 {outcome}" in output
+    assert "headroom limit is" not in output
+    assert "0 tests checked" in output
+
+
+def test_setup_skip_is_not_a_headroom_error(tmp_path: Path) -> None:
+    fixture = "@pytest.fixture\ndef missing():\n    pytest.skip('missing prerequisite')\n"
+    result = _run_case(
+        tmp_path, [_TRIP], marker=fixture, arguments="missing", durations={"setup": 0.2}
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "1 skipped" in output
+    assert "headroom limit is" not in output
+    assert "0 tests checked" in output
 
 
 @pytest.mark.parametrize("value", ["0", "-0.5", "1.5", "nan", "inf", "half"])
@@ -174,12 +210,14 @@ def _run_case(
     arguments: str = "",
     timeout_plugin: bool = True,
     autoload: bool = False,
+    durations: dict[str, float] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (tmp_path / "test_case.py").write_text(
         f"import time\nimport pytest\n{marker}\ndef test_case({arguments}):\n    {body}\n",
         encoding="utf-8",
     )
+    _control_durations(tmp_path, durations)
     # A private basetemp keeps the inner run away from the host's shared one.
     plugins = ["-p", "timeout_headroom", "-p", "no:cacheprovider"]
     plugins.append(f"--basetemp={tmp_path / 'inner'}")
@@ -205,3 +243,17 @@ def _run_case(
         timeout=30,
         check=False,
     )
+
+
+def _control_durations(tmp_path: Path, durations: dict[str, float] | None) -> None:
+    """Set deterministic phase durations before the guard consumes the reports."""
+    if durations is not None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n"
+            "@pytest.hookimpl(wrapper=True, trylast=True)\n"
+            "def pytest_runtest_makereport(item, call):\n"
+            "    report = yield\n"
+            f"    report.duration = {durations!r}.get(report.when, 0.0)\n"
+            "    return report\n",
+            encoding="utf-8",
+        )

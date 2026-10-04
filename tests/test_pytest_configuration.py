@@ -1018,11 +1018,28 @@ def test_windows_pytest_legs_enforce_timeout_headroom(pytestconfig: pytest.Confi
     assert "tests.timeout_headroom" in _suite_config(pytestconfig).pytest_plugins
 
 
-def test_suite_default_timeout_applies_without_a_cli_timeout() -> None:
-    """The conftest ceiling engages under pytest-timeout's entry-point plugin name."""
+@pytest.mark.parametrize(
+    ("options", "environment_timeout", "expected"),
+    [
+        ([], None, "120s"),
+        (["--timeout=0"], None, "0.0s"),
+        (["--timeout=600"], None, "600.0s"),
+        (["-o", "timeout=0"], None, "0.0s"),
+        (["-o", "timeout=900"], None, "900.0s"),
+        ([], "0", "0.0s"),
+        ([], "600", "600.0s"),
+        (["--timeout=60", "-o", "timeout=900"], "600", "60.0s"),
+    ],
+)
+def test_suite_default_timeout_preserves_explicit_settings(
+    options: list[str], environment_timeout: str | None, expected: str
+) -> None:
+    """The 120 s fallback must preserve explicit CLI, environment, and ini settings."""
     environment = {
         name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")
     }
+    if environment_timeout is not None:
+        environment["PYTEST_TIMEOUT"] = environment_timeout
     result = subprocess.run(
         [
             sys.executable,
@@ -1032,6 +1049,7 @@ def test_suite_default_timeout_applies_without_a_cli_timeout() -> None:
             "-p",
             "no:cacheprovider",
             "tests/test_timeout_headroom.py::test_guard_is_off_without_the_option",
+            *options,
         ],
         cwd=REPOSITORY_ROOT,
         env=environment,
@@ -1042,7 +1060,10 @@ def test_suite_default_timeout_applies_without_a_cli_timeout() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "\ntimeout: 120s\n" in result.stdout
+    if expected == "0.0s":
+        assert "\ntimeout:" not in result.stdout
+    else:
+        assert f"\ntimeout: {expected}\n" in result.stdout
 
 
 def test_verilator_image_acceptance_declares_its_tool_sized_ceiling() -> None:

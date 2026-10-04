@@ -25,7 +25,7 @@ import pytest
 _BUDGET_MULTIPLIER = 3
 _BUDGET_GRANULARITY_S = 30
 _ELAPSED = pytest.StashKey[float]()
-_PHASE_FAILED = pytest.StashKey[bool]()
+_PHASE_NOT_PASSED = pytest.StashKey[bool]()
 # Recorded on each teardown report; JUnit keeps it as a <property>.
 _RATIO_PROPERTY = "timeout_headroom_ratio"
 
@@ -113,15 +113,15 @@ def pytest_runtest_makereport(
     fraction = item.config.getoption("timeout_headroom")
     if fraction is None:
         return report
-    item.stash[_PHASE_FAILED] = item.stash.get(_PHASE_FAILED, False) or report.failed
+    item.stash[_PHASE_NOT_PASSED] = item.stash.get(_PHASE_NOT_PASSED, False) or not report.passed
     budget_scope = _budget_scope(item)
     if budget_scope is None:
         return report
     budget, func_only = budget_scope
     if not func_only or report.when == "call":
         item.stash[_ELAPSED] = item.stash.get(_ELAPSED, 0.0) + report.duration
-    # A test that already failed is reported once, for its own failure.
-    if report.when == "teardown" and not item.stash[_PHASE_FAILED]:
+    # Only passing tests are eligible; failures, skips, and xfails retain their outcome.
+    if report.when == "teardown" and not item.stash[_PHASE_NOT_PASSED]:
         elapsed = item.stash.get(_ELAPSED, 0.0)
         report.user_properties.append((_RATIO_PROPERTY, round(elapsed / budget, 4)))
         if elapsed > fraction * budget:
