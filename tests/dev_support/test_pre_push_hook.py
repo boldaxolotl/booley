@@ -1533,14 +1533,19 @@ def _destination_inspection_state(
     files = {
         str(path.relative_to(objects)): path.read_bytes()
         for path in objects.rglob("*")
-        if path.is_file()
+        # Git maintenance uses this transient lock; it is not an object.
+        if path.is_file() and path != objects / "maintenance.lock"
     }
     return files, request_trace.read_bytes() if request_trace.exists() else b""
 
 
 @pytest.mark.skipif(os.name == "nt", reason="invalid UTF-8 filename fixture is POSIX-specific")
+@pytest.mark.parametrize("maintenance_lock", [False, True])
 def test_minimum_git_invalid_utf8_file_destination_falls_back(
-    matrix_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    matrix_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    maintenance_lock: bool,
 ) -> None:
     repo = matrix_repo
     _clone_upstream(repo, "encoded-\ufffd.git")
@@ -1552,6 +1557,8 @@ def test_minimum_git_invalid_utf8_file_destination_falls_back(
     advertisements = []
 
     def observe(args, **kwargs):
+        if maintenance_lock:
+            (repo / ".git" / "objects" / "maintenance.lock").touch()
         if "ls-remote" in args:
             advertisements.append(args)
         return original(args, **kwargs)
@@ -1570,6 +1577,18 @@ def test_minimum_git_invalid_utf8_file_destination_falls_back(
     assert _push(fresh) == 1
     assert not advertisements
     assert before == _destination_inspection_state(objects, request_trace)
+
+
+def test_destination_inspection_state_detects_loose_object_changes(matrix_repo: Path) -> None:
+    repo = matrix_repo
+    objects = repo / ".git" / "objects"
+    trace = repo.parent / "requests.trace"
+    before = _destination_inspection_state(objects, trace)
+    oid = _git(repo, "rev-parse", "HEAD:file.txt")
+    blob = objects / oid[:2] / oid[2:]
+    blob.chmod(blob.stat().st_mode | stat.S_IWRITE)
+    blob.write_bytes(blob.read_bytes() + b"unexpected mutation")
+    assert before != _destination_inspection_state(objects, trace)
 
 
 @pytest.mark.parametrize("storage", ["self", "shared"])
