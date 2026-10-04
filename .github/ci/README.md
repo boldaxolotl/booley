@@ -94,72 +94,43 @@ only when BuildKit exposes a distinct daemon import, layer-load, or unpack
 interval. Otherwise transfer/load is explicitly `unavailable`, the command
 duration remains attributed to the combined construction/export/transfer/load
 operation, and the sample is not complete.
-A tooling cache hit means every Dockerfile step vertex was cached; the named
-parent context is always reported cached and does not count.
+The summary's `run.tooling` holds the lane's tooling source record (see
+"RISC-V tooling stage"), so every run says whether it reused the published
+tooling image. A registry hit adds an optional `riscv_tooling_compat` phase for
+the compatibility check.
 
 Use the `Tests` workflow's `riscv_measurement` dispatch input for controlled
 samples. Main and manual runs otherwise skip the RISC-V lane unless the last
-commit changed its inputs, so every arm except `automatic` forces the lane on
-dispatch (for example `gh workflow run test.yml --ref main -f
-riscv_measurement=cold`). All controlled arms (`baseline`, `warm`, and `cold`)
-use pinned Docker v28.0.4 with the containerd image store and the daemon-backed
-`--builder default --load` path. This gives every arm the same image-store/load
-boundary and retains access to the exact local candidate parent.
+commit changed its inputs. `cold` forces the lane and builds the tooling stage
+locally instead of asking the registry (for example `gh workflow run test.yml
+--ref <branch> -f riscv_measurement=cold`); `automatic` keeps path gating and
+registry reuse. Both arms use the hosted runner's own Docker and image store,
+so a pair differs only in its tooling source. The input cannot be set on pull
+requests. ADR 0070 retired the Phase-1 `baseline` and `warm` arms and their
+containerd image store.
 
-`baseline` adds no explicit RISC-V cache import/export. `warm` restores a
-tooling-input-, stable-base-, and standard-parent-content-scoped local BuildKit cache through GitHub's
-branch-aware cache service. Pull-request caches cannot replace the trusted
-default-branch entry. The cache key includes the standard candidate
-runtime-content fingerprint: changing its configuration or layer ancestry gets a
-new key rather than an immutable stale cache hit. The fingerprint hashes the
-inspected runtime configuration, RootFS layer diff IDs, architecture, and OS.
-It excludes the containerd index's timestamped attestations, which can change
-between otherwise identical builds, and does not depend on exporter-specific
-config-digest metadata. The candidate's inspected image ID remains
-in the retained provenance evidence. A cache miss seeds a later rerun and is
-marked non-representative. Only a restored cache for which BuildKit reports an actual
-tooling cache hit is a warm sample. `cold` adds `--no-cache` to both candidate
-builds and does not restore or export the RISC-V cache. `automatic` retains the
-hosted-runner Docker setup, `--builder default --load` path, and path gating;
-the measurement input cannot be set on pull requests.
+#568 claims sustained savings only from two cohorts, reported on the issue:
 
-For the decision sample, use the published stable-base path and verify the
-same standard parent runtime-content fingerprint across runs. A locally rebuilt stable
-base stamps a fresh creation time and can change parent identity on every run;
-warm dispatches on that path fail before building/exporting an unusable cache.
-Use `cold` to exercise that path's correctness.
-Compare controlled arms at the same candidate SHA, stable-base digest, Docker
-version, storage driver, and runner architecture; retain the image-size report's
-Docker/storage environment evidence with each sample. Alternate cold and warm
-runs to limit runner/time drift, excluding warm seed runs and any sample with
-incomplete phase evidence. Use at least two controlled cold runs and three
-restored warm runs for the five-run decision sample. The controlled `baseline`
-is an uncached-import reference on containerd, not the classic-store production
-baseline. Analyze `automatic` runs separately; do not attribute an image-store
-switch to tooling-cache savings.
+- **Controlled pairs (attribution).** On one temporary measurement branch at
+  one SHA, alternate `automatic` (registry) and `cold` (local) dispatches with
+  the same pinned published stable base. Pin `PUBLISHED_BASE` to an immutable
+  digest, because `:main` moves on every stable-base merge, and avoid `main`,
+  where `tests-${{ github.ref }}` concurrency cancels dispatches. Collect at
+  least three complete registry runs and two complete local runs.
+- **Sustained cohort (at least 20 runs).** Count automatic `pull_request` and
+  `push` runs only when `riscv_image` was selected, the stable base was the
+  published one (`runtime-base.build == false`), the job set, Docker version,
+  storage driver (from the image-size environment evidence), and platform
+  match, the job succeeded, and `run.tooling.source` is `registry`. Report
+  local-base runs, misses, and compatibility fallbacks separately, with the
+  hit rate over all RISC-V-lane runs.
 
-The controlled experiment establishes cache effects within containerd. Before
-using it to justify a production carrier rollout, separately retain ordinary
-`automatic` run totals and critical-path headroom on the classic store. Missing
-classic-store transfer attribution does not invalidate those aggregate totals,
-but it prevents a phase-level load claim. Bound the production prediction by
-observed classic-store headroom, report the Docker setup/store effect separately,
-and obtain a matched classic/containerd comparison before extrapolating the
-controlled cache savings to production. If that comparison cannot isolate the
-store effect, the production go/no-go remains unresolved.
-
-Before considering a reusable tooling carrier, collect at least
-five complete representative runs, including two cold runs. Compare runs with
-the same stable base path and report the median and range for every phase and
-parallel lane, workflow queue time, critical-path elapsed time, runner minutes,
-and rounded job minutes. Do not claim sustained savings until at least 20
-comparable RISC-V-enabled runs have been reported. Recoverable time is capped
-by the completion-time gap between the RISC-V lane and the latest-finishing
-other parallel lane; add Ibex only after native group completion. Proceed only
-when tooling construction plus directly measured avoidable load time predicts
-at least two minutes and 20% of the RISC-V lane. After any later cache rollout,
-keep cold correctness coverage and track warm and cold budgets separately so
-the 1080-second cold ceiling cannot mask a warm regression.
+Compare the sustained cohort with automatic classic-store runs from the 30 days
+before the consumer change, using only aggregate totals: RISC-V lane,
+`bwave-smoke` critical path, required gate, queue time, and runner minutes.
+Classic-store phase evidence has no transfer attribution, so report medians and
+ranges for both cohorts and state that the controlled pairs bound the
+cross-period difference without proving it.
 
 ### RISC-V tooling stage
 
@@ -194,6 +165,30 @@ Runs serialize per key. The publisher never overwrites a key tag, and no other
 workflow writes one. Check a key with
 `python .github/scripts/riscv_tooling.py published`.
 
-The `Tests` workflow does not consume the published image yet; its RISC-V lane
-still builds the stage locally. Consumption, its compatibility fallback, and
-source-dependent duration budgets follow in the next #568 change.
+`bwave-smoke` consumes the published image. When `riscv_image` is selected,
+`riscv_tooling.py resolve` computes the key, resolves the key's tag to a
+digest, checks its role and key labels, and writes the **tooling source
+record** `riscv-image-evidence/tooling-source.json`:
+
+| Source | When | Lane behavior |
+| --- | --- | --- |
+| `registry` | The key's tag exists with matching labels | Builds `Dockerfile.riscv` with `--build-context riscv-tooling=docker-image://<repository>@<digest>`, then runs the compatibility check |
+| `local` | The tag is absent, the registry errors, the lookup exceeds 120 s, or the arm is `cold` | Builds the stage from source; the record's `reason` says why |
+| `local-compat-fallback` | A registry hit whose composed candidate failed to build or failed the compatibility check | Moves the rejected attempt's evidence to `registry-attempt/`, then builds the stage from source |
+
+A tag with the wrong labels fails the job: that is an integrity failure, not a
+miss. Only the label-verified digest reaches BuildKit. The compatibility check
+runs `riscv_tooling.py checks` (the contract's `[riscv]` probes, including the
+shared-library closure of every host ELF under `/opt/riscv`) in the composed
+RISC-V substrate before the wheel overlay. A fallback is a warning, not a
+failure, and the full contract, size, and demo checks still judge whichever
+image the lane finishes with. Repeated fallbacks for one key mean the
+published image has drifted from the runtime base; republish it by editing
+the stage, which mints a new key. Local and release builds always build the
+stage from source.
+
+The `bwave-smoke` duration budget follows the recorded source. Registry hits
+and local builds (including fallbacks) each get their own budget, derived from
+measured runs of that source, so a slow hit cannot hide behind the
+local-build ceiling. A lane that stopped before writing its record is judged
+against the local budget.

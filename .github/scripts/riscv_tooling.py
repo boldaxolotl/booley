@@ -13,6 +13,12 @@ published the verified bytes, and renders the runtime contract's RISC-V checks
 for a bare tooling image. Only a digest whose role and key labels match is
 trusted: GHCR tags are mutable.
 
+For the ``Tests`` workflow it selects the **tooling source**: ``registry``
+reuses the published digest, ``local`` builds the stage in CI, and
+``local-compat-fallback`` records a published image that failed the composed
+candidate's quick compatibility check. The JSON source record is the evidence
+the run's duration budget and the #568 savings report are derived from.
+
 Runs from a plain checkout before Booley is installed; it imports only
 stdlib-only modules under ``src/``.
 """
@@ -21,6 +27,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import re
 import shlex
 import subprocess
@@ -50,6 +58,11 @@ KEY_LABEL = "io.booley.riscv-tooling.key"
 RECIPE_LABEL = "io.booley.build.recipe-fingerprint"
 # Contract paths the tooling stage itself must ship.
 _TOOLING_PATH_PREFIXES = ("/opt/riscv/", "/opt/riscv-docs/")
+# Why CI may skip the registry entirely: the `cold` measurement arm forces a
+# local build, and a registry lookup that exceeded the workflow's timeout
+# cannot be distinguished from absence safely, so it also builds locally.
+FORCED_LOCAL_REASONS = ("cold", "registry-timeout")
+_RECORD_SCHEMA = 1
 
 
 class ToolingStageError(ValueError):
@@ -193,6 +206,76 @@ def verify_promotion(candidate: str, key: str) -> RemoteImage:
     return published
 
 
+def resolve_source(dockerfile: Path, force_local: str | None = None) -> dict[str, object]:
+    """Select where CI gets the tooling stage and return the source record.
+
+    A label-verified published digest is a ``registry`` source. A missing tag
+    or an unreachable registry is a ``local`` source: availability wins over
+    speed, so a registry problem never fails the candidate. A tag with the
+    wrong labels raises ``ValueError``; that is an integrity failure, not a
+    miss.
+    """
+    key = tooling_key(dockerfile)
+    reference = final_image(key)
+    record: dict[str, object] = {"schema_version": _RECORD_SCHEMA, "key": key}
+    record["reference"] = reference
+    if force_local is not None:
+        return {**record, "source": "local", "reason": force_local}
+    try:
+        image = published_image(reference, key)
+    except ToolingRegistryError as error:
+        return {**record, "source": "local", "reason": "registry-error", "detail": str(error)}
+    if image is None:
+        return {**record, "source": "local", "reason": "absent"}
+    return {
+        **record,
+        "source": "registry",
+        "reason": "published",
+        "digest_reference": image.digest_reference,
+        "platform_manifest": image.platform_manifest,
+    }
+
+
+def _read_record(path: Path) -> dict[str, object]:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path} is not a tooling source record: {error}") from error
+    if not isinstance(record, dict) or record.get("schema_version") != _RECORD_SCHEMA:
+        raise ValueError(f"{path} is not a version {_RECORD_SCHEMA} tooling source record")
+    return record
+
+
+def _write_record(path: Path, record: dict[str, object]) -> None:
+    """Replace the record atomically so a reader never sees half of it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def compat_fallback(path: Path, detail: str) -> dict[str, object]:
+    """Rewrite a registry source record as a compatibility fallback.
+
+    The composed candidate failed its quick check against the published
+    tooling, so CI rebuilds the stage locally. The rejected digest stays in
+    the record; repeated fallbacks for one key mean it needs republishing.
+    """
+    record = _read_record(path)
+    if record.get("source") != "registry":
+        raise ValueError(f"{path} does not record a registry tooling source")
+    rejected = record.pop("digest_reference")
+    record.pop("platform_manifest", None)
+    record.update(
+        source="local-compat-fallback",
+        reason="compat-check-failed",
+        detail=detail,
+        rejected_digest_reference=rejected,
+    )
+    _write_record(path, record)
+    return record
+
+
 def tooling_checks(contract: Path) -> str:
     """Return a bash script that checks a bare tooling image.
 
@@ -231,7 +314,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     promoted.add_argument("--candidate", required=True, help="verified candidate digest reference")
     checks = commands.add_parser("checks", help="print the bash checks for a tooling image")
     checks.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
-    for command in (key, published, promoted):
+    resolve = commands.add_parser(
+        "resolve", help="select the tooling source for CI and write its source record"
+    )
+    resolve.add_argument("--record", type=Path, required=True, help="source record to write")
+    resolve.add_argument(
+        "--force-local", choices=FORCED_LOCAL_REASONS, help="build locally for this reason"
+    )
+    fallback = commands.add_parser(
+        "fallback", help="record that the published tooling failed the compatibility check"
+    )
+    fallback.add_argument("--record", type=Path, required=True, help="source record to rewrite")
+    fallback.add_argument("--detail", required=True, help="why the check failed")
+    for command in (key, published, promoted, resolve):
         command.add_argument("--dockerfile", type=Path, default=DEFAULT_DOCKERFILE)
         command.add_argument("--github-output", type=Path, help="append outputs to this file")
     return parser.parse_args(argv)
@@ -259,9 +354,27 @@ def _image_outputs(reference: str, image: RemoteImage | None) -> str:
     )
 
 
+def _resolve_outputs(arguments: argparse.Namespace) -> str:
+    record = resolve_source(arguments.dockerfile, arguments.force_local)
+    _write_record(arguments.record, record)
+    outputs = f"key={record['key']}\nsource={record['source']}\nreason={record['reason']}\n"
+    if record["source"] == "registry":
+        # Only the immutable, label-verified digest reaches BuildKit.
+        outputs += f"context=docker-image://{record['digest_reference']}\n"
+    elif record["reason"] == "registry-error":
+        # Stdout carries GitHub workflow commands; stderr would not annotate.
+        print(f"::warning::RISC-V tooling builds locally: {record['detail']}")
+    return outputs
+
+
 def _outputs(arguments: argparse.Namespace) -> str:
     if arguments.command == "checks":
         return tooling_checks(arguments.contract)
+    if arguments.command == "resolve":
+        return _resolve_outputs(arguments)
+    if arguments.command == "fallback":
+        record = compat_fallback(arguments.record, arguments.detail)
+        return f"source={record['source']}\n"
     key = tooling_key(arguments.dockerfile)
     if arguments.command == "key":
         return _key_outputs(arguments.dockerfile, key)

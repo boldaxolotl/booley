@@ -227,9 +227,8 @@ def test_windows_shard_benchmark_rejects_other_events(tmp_path: Path) -> None:
     assert "requires workflow_dispatch" in result.stderr
 
 
-@pytest.mark.parametrize("arm", ["baseline", "warm", "cold"])
 def test_dispatched_riscv_measurement_builds_riscv_image_without_riscv_changes(
-    tmp_path: Path, arm: str
+    tmp_path: Path,
 ) -> None:
     """A measurement dispatch on main must yield a sample even when HEAD^..HEAD is unrelated."""
     repo, base = _repository(tmp_path)
@@ -237,7 +236,7 @@ def test_dispatched_riscv_measurement_builds_riscv_image_without_riscv_changes(
     head = _commit(repo, "unrelated docs change")
 
     outputs = _classify(
-        repo, base, head, force_all=True, event_name="workflow_dispatch", riscv_measurement=arm
+        repo, base, head, force_all=True, event_name="workflow_dispatch", riscv_measurement="cold"
     )
 
     assert outputs["riscv_image"] == "true"
@@ -286,11 +285,26 @@ def test_riscv_measurement_rejects_windows_shard_benchmark(tmp_path: Path) -> No
         head,
         event_name="workflow_dispatch",
         windows_shard_benchmark=True,
-        riscv_measurement="baseline",
+        riscv_measurement="cold",
     )
 
     assert result.returncode == 2
     assert "cannot be combined" in result.stderr
+
+
+@pytest.mark.parametrize("arm", ["baseline", "warm"])
+def test_retired_riscv_measurement_arms_are_rejected(tmp_path: Path, arm: str) -> None:
+    """ADR 0070 retired the Phase-1 containerd cache arms."""
+    repo, base = _repository(tmp_path)
+    _write(repo, "docs/unrelated.md")
+    head = _commit(repo, "unrelated docs change")
+
+    result, _output = _run_classifier(
+        repo, base, head, event_name="workflow_dispatch", riscv_measurement=arm
+    )
+
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
 
 
 def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(
