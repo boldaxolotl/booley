@@ -12,10 +12,12 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast, get_args
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
+
+from riscv_tooling import read_source_record
 
 from booley.core.boundary import (
     BoundaryError,
@@ -35,8 +37,9 @@ class TimingError(ValueError):
 
 PhaseTopology = Literal["parallel", "nested", "post-group"]
 PhaseOutcome = Literal["running", "success", "failure", "unavailable", "incomplete"]
-MeasurementArm = Literal["automatic", "baseline", "warm", "cold"]
-CacheState = Literal["not-requested", "hit", "miss"]
+# `cold` forces a local tooling build so controlled pairs can attribute the
+# registry's effect (ADR 0070); `automatic` is ordinary path-gated CI.
+MeasurementArm = Literal["automatic", "cold"]
 
 
 class PhaseRecord(TypedDict):
@@ -77,6 +80,9 @@ _EXPECTED_PHASES = {
     "wheel_overlay_construction_export": "nested",
     "wheel_overlay_transfer_load": "nested",
 }
+# Phases only some runs have. A registry hit runs the composed candidate's
+# quick compatibility check; a local build has nothing to check it against.
+_OPTIONAL_PHASES = {"riscv_tooling_compat": "nested"}
 
 
 def _utc_now() -> str:
@@ -496,15 +502,18 @@ def _parallel_topology(phases: list[PhaseRecord]) -> dict[str, Any]:
     }
 
 
-def _tooling_cache_hit(phases: list[PhaseRecord]) -> bool:
-    construction = next(
-        (phase for phase in phases if phase["name"] == "riscv_tool_substrate_construction_export"),
-        None,
-    )
-    if construction is None:
-        return False
-    buildkit = as_dict(construction.get("buildkit"), default={}) or {}
-    return buildkit.get("cache_hit") is True
+def load_tooling_source(path: Path) -> dict[str, Any] | None:
+    """Return the run's tooling source record, or ``None`` if it was never written.
+
+    ``riscv_tooling.py resolve`` writes the record before the lane builds, so a
+    missing record means the lane stopped before choosing a source.
+    """
+    if not path.exists():
+        return None
+    try:
+        return read_source_record(path)
+    except (OSError, ValueError) as error:
+        raise TimingError(f"invalid tooling source record: {error}") from error
 
 
 def summarize_records(
@@ -514,20 +523,19 @@ def summarize_records(
     candidate_sha: str,
     observed_at: str,
     measurement_arm: MeasurementArm = "automatic",
-    cache_state: CacheState = "not-requested",
+    tooling: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate and merge independent phase files into run-level evidence."""
     phases = [phase for path in records for phase in _load_record(path)]
     names = [phase["name"] for phase in phases]
     if len(names) != len(set(names)):
         raise TimingError("phase names must be unique")
-    unexpected = sorted(set(names) - _EXPECTED_PHASES.keys())
+    unexpected = sorted(set(names) - _EXPECTED_PHASES.keys() - _OPTIONAL_PHASES.keys())
     if unexpected:
         raise TimingError(f"unexpected phase names: {unexpected}")
     _add_missing_phases(phases, observed_at)
     phases.sort(key=lambda phase: (_timestamp(phase["started_at"], "started"), phase["name"]))
     parallel = _parallel_topology(phases)
-    tooling_cache_hit = _tooling_cache_hit(phases)
     ibex = next((phase for phase in phases if phase["name"] == "ibex_runtime"), None)
     critical = None
     if parallel["group_completed_at"] and ibex and ibex["completed_at"]:
@@ -542,14 +550,10 @@ def summarize_records(
             "attempt": run_attempt,
             "candidate_sha": candidate_sha,
             "measurement_arm": measurement_arm,
-            "cache_state": cache_state,
-            "tooling_cache_hit": tooling_cache_hit,
+            "tooling": tooling,
         },
         "observed_at": observed_at,
         "complete": all(phase["outcome"] == "success" for phase in phases),
-        "representative": (
-            measurement_arm != "warm" or (cache_state == "hit" and tooling_cache_hit)
-        ),
         "phases": phases,
         "topology": {"parallel_group": parallel, "critical_path_elapsed_seconds": critical},
     }
@@ -562,15 +566,16 @@ def finalize(
     attempt: int,
     sha: str,
     measurement_arm: MeasurementArm,
-    cache_state: CacheState,
+    tooling_source: Path,
 ) -> None:
     """Merge every independent record while preserving partial evidence."""
     records = sorted((directory / "records").glob("*.json"))
     if not records:
         raise TimingError("no phase records were found")
+    tooling = load_tooling_source(tooling_source)
     _write_json(
         output,
-        summarize_records(records, run_id, attempt, sha, _utc_now(), measurement_arm, cache_state),
+        summarize_records(records, run_id, attempt, sha, _utc_now(), measurement_arm, tooling),
     )
 
 
@@ -600,13 +605,9 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--run-id", type=int, required=True)
     child.add_argument("--run-attempt", type=int, required=True)
     child.add_argument("--candidate-sha", required=True)
+    child.add_argument("--measurement-arm", choices=get_args(MeasurementArm), default="automatic")
     child.add_argument(
-        "--measurement-arm",
-        choices=("automatic", "baseline", "warm", "cold"),
-        default="automatic",
-    )
-    child.add_argument(
-        "--cache-state", choices=("not-requested", "hit", "miss"), default="not-requested"
+        "--tooling-source", type=Path, required=True, help="riscv_tooling.py source record"
     )
     return parser
 
@@ -640,7 +641,7 @@ def main() -> int:
                 args.run_attempt,
                 args.candidate_sha,
                 args.measurement_arm,
-                args.cache_state,
+                args.tooling_source,
             )
     except TimingError as error:
         print(f"error: {error}", file=sys.stderr)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -452,3 +453,147 @@ def test_shipped_contract_renders_tooling_checks() -> None:
     assert "tooling check failed: RISC-V tooling shared libraries resolve" in script
     assert "find /opt/riscv -type f" in script
     assert "test -e /opt/riscv/lib/libriscv.so" in script
+
+
+def _resolve_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: object, *extra: str
+) -> tuple[int, str, Path, list[tuple[str, dict[str, str]]]]:
+    """Run ``resolve`` against a fake registry; return status, outputs, record, calls."""
+    path = _dockerfile(tmp_path, _TOOLING + _FINAL)
+    final = f"ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-{tooling_key(path)}"
+    resolve, calls = _resolver(_missing(final) if outcome == "missing" else outcome)
+    monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
+    output = tmp_path / "github-output"
+    record = tmp_path / "evidence" / "tooling-source.json"
+    status = main(
+        [
+            "resolve",
+            "--dockerfile",
+            str(path),
+            "--record",
+            str(record),
+            "--github-output",
+            str(output),
+            *extra,
+        ]
+    )
+    outputs = output.read_text(encoding="utf-8") if output.exists() else ""
+    return status, outputs, record, calls
+
+
+def test_resolve_uses_the_label_verified_digest_on_a_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status, outputs, record, calls = _resolve_cli(tmp_path, monkeypatch, _VERIFIED)
+    key = tooling_key(tmp_path / "Dockerfile.riscv")
+
+    assert status == 0
+    assert calls == [(riscv_tooling.final_image(key), riscv_tooling.expected_labels(key))]
+    assert "source=registry\nreason=published\n" in outputs
+    # Only the immutable digest reaches BuildKit, never the mutable tag.
+    assert f"context=docker-image://{_VERIFIED.digest_reference}\n" in outputs
+    assert json.loads(record.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "key": key,
+        "reference": riscv_tooling.final_image(key),
+        "source": "registry",
+        "reason": "published",
+        "digest_reference": _VERIFIED.digest_reference,
+        "platform_manifest": _VERIFIED.platform_manifest,
+    }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        ("missing", "absent"),
+        (_registry_failure("ERROR: 503 Service Unavailable"), "registry-error"),
+    ],
+    ids=["absent", "unreachable"],
+)
+def test_resolve_builds_locally_when_the_registry_cannot_supply_the_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    outcome: object,
+    reason: str,
+) -> None:
+    """Availability over speed: a registry problem never fails the pull request."""
+    status, outputs, record, _calls = _resolve_cli(tmp_path, monkeypatch, outcome)
+
+    assert status == 0
+    assert f"source=local\nreason={reason}\n" in outputs
+    assert "context=" not in outputs
+    stored = json.loads(record.read_text(encoding="utf-8"))
+    assert (stored["source"], stored["reason"]) == ("local", reason)
+    assert "digest_reference" not in stored
+    if reason == "registry-error":
+        assert "503 Service Unavailable" in stored["detail"]
+        assert "::warning::" in capsys.readouterr().out
+
+
+def test_resolve_fails_on_a_tag_with_the_wrong_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A retagged image is an integrity failure, not a cache miss."""
+    status, outputs, record, _calls = _resolve_cli(
+        tmp_path, monkeypatch, ValueError("io.booley.riscv-tooling.key label mismatch")
+    )
+
+    assert status == 1
+    assert outputs == ""
+    assert not record.exists()
+    assert "label mismatch" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("reason", ["cold", "registry-timeout"])
+def test_resolve_force_local_skips_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    status, outputs, record, calls = _resolve_cli(
+        tmp_path, monkeypatch, _VERIFIED, "--force-local", reason
+    )
+
+    assert status == 0
+    assert calls == []
+    assert f"source=local\nreason={reason}\n" in outputs
+    assert json.loads(record.read_text(encoding="utf-8"))["key"] == tooling_key(
+        tmp_path / "Dockerfile.riscv"
+    )
+
+
+def test_resolve_rejects_unknown_force_local_reasons(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        main(["resolve", "--record", str(tmp_path / "r.json"), "--force-local", "warm"])
+
+
+def test_fallback_records_the_rejected_registry_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _status, _outputs, record, _calls = _resolve_cli(tmp_path, monkeypatch, _VERIFIED)
+
+    assert main(["fallback", "--record", str(record), "--detail", "ldd: not found"]) == 0
+
+    stored = json.loads(record.read_text(encoding="utf-8"))
+    assert stored["source"] == "local-compat-fallback"
+    assert stored["reason"] == "compat-check-failed"
+    assert stored["detail"] == "ldd: not found"
+    assert stored["rejected_digest_reference"] == _VERIFIED.digest_reference
+    assert "digest_reference" not in stored
+    assert "platform_manifest" not in stored
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [None, "not json", '{"schema_version": 1, "source": "local", "reason": "absent"}'],
+    ids=["missing", "malformed", "not-a-registry-hit"],
+)
+def test_fallback_requires_a_registry_hit_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], contents: str | None
+) -> None:
+    record = tmp_path / "tooling-source.json"
+    if contents is not None:
+        record.write_text(contents, encoding="utf-8")
+
+    assert main(["fallback", "--record", str(record), "--detail", "x"]) == 1
+    assert "riscv_tooling:" in capsys.readouterr().err

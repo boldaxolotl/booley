@@ -48,10 +48,11 @@ CONDITIONAL_JOBS = (
 ALWAYS_JOBS = ("changes", "release-semantic")
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 WINDOWS_SHARD_COUNTS = (4, 6, 8)
-# Explicit RISC-V timing arms. "automatic" keeps path-gated selection; every
-# other arm is a controlled measurement sample and must build the RISC-V image
-# even when the dispatched commit does not touch its inputs.
-RISCV_MEASUREMENT_ARMS = ("automatic", "baseline", "warm", "cold")
+# Explicit RISC-V timing arms. "automatic" keeps path-gated selection. "cold"
+# is the forced-local arm of the controlled pairs (ADR 0070): it builds the
+# RISC-V tooling stage instead of reusing the published image, so it must build
+# the RISC-V image even when the dispatched commit does not touch its inputs.
+RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
 DEFAULT_WINDOWS_SHARD_COUNT = 6
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
