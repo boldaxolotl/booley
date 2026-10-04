@@ -15,7 +15,7 @@ import sysconfig
 import tempfile
 import tomllib
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -175,7 +175,6 @@ class SessionSpecInputs:
     fixed_container_environment: tuple[tuple[str, str], ...]
     installation_name: str | None
     license_profile_name: str | None
-    project_data_layout: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,6 +580,10 @@ def _prepare_spec(
     )
     _pin_devcontainer_mount(spec, project)
     digest = _seal_with_requirements(project, spec, project_data_path, requirements.runtime)
+    # The Project-data layout is derived from the sealed spec (and the pinned
+    # image's alias capability), so it belongs to the prospective issuance, not
+    # to the host inputs: issue_prepared re-derives the issuance and compares
+    # it, while a fresh authority snapshot can never observe a derived layout.
     prospective = _prospective_issuance(
         project,
         spec,
@@ -588,7 +591,6 @@ def _prepare_spec(
         requirements.runtime,
         project_data_path,
     )
-    inputs = replace(inputs, project_data_layout=prospective.project_data_layout)
     return PreparedSessionSpec(spec, digest, inputs, prospective)
 
 

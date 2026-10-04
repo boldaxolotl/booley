@@ -2180,6 +2180,40 @@ def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
         runtime_spec.issue(project, spec, path)
 
 
+@pytest.mark.parametrize("alias_capable", [False, True], ids=["legacy", "canonical-alias"])
+def test_previewed_spec_issues_for_every_project_data_layout(
+    issued, monkeypatch, alias_capable
+) -> None:
+    """Init's preview -> issue_prepared round trip must accept its own layout.
+
+    An in-repository Project-data directory on an alias-capable image yields a
+    canonical-alias spec; that prepared spec must issue without being mistaken
+    for authority drift (the 0.3.0 release-candidate init Step 15 failure).
+    """
+    from booley.runtime import project_image
+
+    project, _spec, _path, _stamp = issued
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: alias_capable)
+    expected_layout = "canonical-alias" if alias_capable else "legacy"
+
+    def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
+        return dc.build_devcontainer_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            project_dir_source=docker_mount_path(inputs.project_data_source),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+        )
+
+    prepared = runtime_spec.preview(project, build)
+    assert prepared.prospective_issuance is not None
+    assert prepared.prospective_issuance.project_data_layout == expected_layout
+
+    stamp = runtime_spec.issue_prepared(project, prepared)
+
+    assert stamp.project_data_layout == expected_layout
+    assert runtime_spec.inspect_prepared(project, prepared) == stamp
+
+
 @pytest.mark.parametrize("key", ["dst", "destination"])
 def test_canonical_alias_rejects_nonbind_mount_destination_synonyms(issued, monkeypatch, key):
     from booley.runtime import project_image
