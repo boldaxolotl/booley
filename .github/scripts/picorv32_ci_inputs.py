@@ -27,7 +27,9 @@ RISCV_IMAGE_FILES = frozenset(
         ".github/scripts/image_package_inventory.py",
         ".github/scripts/image_runtime_resources.py",
         ".github/scripts/image_size_report.py",
+        ".github/scripts/riscv_tooling.py",
         ".github/scripts/verify_riscv_image_contract.sh",
+        ".github/workflows/riscv-tooling-publish.yml",
         ".github/workflows/test.yml",
         *PICORV32_INPUT_FILES,
     }

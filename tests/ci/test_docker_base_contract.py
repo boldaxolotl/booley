@@ -419,6 +419,32 @@ def test_remote_resolution_rejects_missing_or_wrong_contract_label(
         docker_base_contract.resolve_image_remote(reference, "contract-value")
 
 
+def test_labeled_remote_resolution_verifies_every_expected_label(monkeypatch) -> None:
+    reference, documents = _remote_image_documents()
+    image_reference = next(key[0] for key in documents if key[0] != reference)
+    documents[(image_reference, "{{json .Image}}")]["config"]["Labels"] = {
+        "io.booley.artifact.role": "riscv-tooling",
+        "io.booley.riscv-tooling.key": "old-key",
+    }
+    monkeypatch.setattr(docker_base_contract.subprocess, "run", _remote_runner(documents))
+    expected = {"io.booley.artifact.role": "riscv-tooling", "io.booley.riscv-tooling.key": "k"}
+
+    with pytest.raises(
+        ValueError, match=r"io\.booley\.riscv-tooling\.key mismatch: expected k, image has old-key"
+    ):
+        docker_base_contract.resolve_labeled_image_remote(reference, expected)
+
+    expected["io.booley.riscv-tooling.key"] = "old-key"
+    assert docker_base_contract.resolve_labeled_image_remote(reference, expected) == (
+        f"ghcr.io/acme/base@sha256:{'a' * 64}"
+    )
+
+
+def test_labeled_remote_resolution_requires_an_expected_label() -> None:
+    with pytest.raises(ValueError, match="at least one expected label"):
+        docker_base_contract.resolve_labeled_image_remote("ghcr.io/acme/base:main", {})
+
+
 @pytest.mark.parametrize("document", ["index", "manifest"])
 def test_remote_resolution_rejects_non_v2_schema(monkeypatch, document: str) -> None:
     reference, documents = _remote_image_documents()

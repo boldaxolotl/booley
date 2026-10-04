@@ -292,6 +292,32 @@ test /opt/riscv/bin/riscv-none-elf-gcc -ef /opt/riscv/bin/riscv-none-elf-gcc-15.
 test /opt/riscv/bin/riscv-none-elf-ld -ef /opt/riscv/bin/riscv-none-elf-ld.bfd
 '''
 
+# ADR 0070: the tooling stage is built on bare Ubuntu, not on this candidate's
+# runtime base, so every host ELF it ships must still resolve its shared
+# libraries here. RISC-V target objects are not host ELFs and are skipped.
+[[riscv.probe]]
+name = "RISC-V tooling shared libraries resolve"
+timeout_seconds = 180
+command = '''
+checked=0
+unresolved=0
+while IFS= read -r -d '' path; do
+  case "$(file -b "$path")" in
+    ELF*x86-64*dynamically\ linked*) ;;
+    *) continue ;;
+  esac
+  checked=$((checked + 1))
+  if ldd "$path" 2>&1 | grep -q 'not found'; then
+    echo "unresolved shared libraries: $path" >&2
+    ldd "$path" 2>&1 | grep 'not found' >&2
+    unresolved=$((unresolved + 1))
+  fi
+done < <(find /opt/riscv/bin /opt/riscv/lib /opt/riscv/libexec -type f -print0)
+echo "checked $checked dynamically linked host ELF files"
+test "$checked" -ge 10
+test "$unresolved" -eq 0
+'''
+
 [[riscv.probe]]
 name = "RISC-V multilib C and C++ links"
 timeout_seconds = 180

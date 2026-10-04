@@ -160,3 +160,34 @@ when tooling construction plus directly measured avoidable load time predicts
 at least two minutes and 20% of the RISC-V lane. After any later cache rollout,
 keep cold correctness coverage and track warm and cold budgets separately so
 the 1080-second cold ceiling cannot mask a warm regression.
+
+### RISC-V tooling stage
+
+`Dockerfile.riscv` builds the xPack GCC toolchain, Spike, and the offline
+RISC-V specifications in a `riscv-tooling` stage that starts from the same
+digest-pinned Ubuntu image as `Dockerfile.base` and depends on no Booley image
+(ADR 0070). The final stage copies `/opt/riscv` and `/opt/riscv-docs` from it
+onto the exact standard substrate, so every candidate still runs the full
+RISC-V contract, size, and demo checks.
+
+The tooling key is a hash of that stage's exact text, a schema version, and the
+platform: `python .github/scripts/riscv_tooling.py key`. Any edit inside the
+stage, including a comment, mints a new key. The script fails closed when the
+stage gains a build-context `COPY`/`ADD`, a `RUN --mount`, an undigested
+`FROM`, or a global `ARG`, because any of those would change the tooling
+without changing its key.
+
+`riscv-tooling-publish.yml` runs on `main` when the stage or the key
+derivation changes. It builds `--target riscv-tooling`, pushes a
+run-scoped candidate tag, verifies its labels, toolchain, multilibs, hard
+links, and shared-library closure, records the builder's `libc6`,
+`libstdc++6`, `libgcc-s1`, and `g++` versions, and only then creates
+`ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-<key>` with those
+versions as an index annotation. An existing key tag with matching labels ends
+the run; one with different labels fails it. The publisher never overwrites a
+key tag, and no other workflow writes one. Check a key with
+`python .github/scripts/riscv_tooling.py published`.
+
+The `Tests` workflow does not consume the published image yet; its RISC-V lane
+still builds the stage locally. Consumption, its compatibility fallback, and
+source-dependent duration budgets follow in the next #568 change.

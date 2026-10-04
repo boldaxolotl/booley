@@ -9,10 +9,13 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 DEFAULT_MANIFEST = "src/booley/data/docker/stable-base-inputs.txt"
 _CONTRACT_LABEL = "io.booley.runtime-base.contract"
+# Human wording for label mismatches; other labels are reported by name.
+_LABEL_PURPOSES = {_CONTRACT_LABEL: "stable-base contract"}
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE_INDEX_MEDIA_TYPES = {
     "application/vnd.oci.image.index.v1+json",
@@ -164,17 +167,20 @@ def _linux_amd64_descriptor(index: dict, reference: str) -> dict:
     return candidates[0]
 
 
-def _verify_remote_image_config(image: dict, expected_contract: str, reference: str) -> None:
+def _verify_remote_image_config(
+    image: dict, expected_labels: Mapping[str, str], reference: str
+) -> None:
     if image.get("os") != "linux" or image.get("architecture") != "amd64":
         raise ValueError(f"remote image configuration is not Linux/AMD64: {reference}")
     config = image.get("config")
     labels = config.get("Labels") if isinstance(config, dict) else None
-    label = labels.get(_CONTRACT_LABEL) if isinstance(labels, dict) else None
-    if label != expected_contract:
-        raise ValueError(
-            f"stable-base contract mismatch: expected {expected_contract}, "
-            f"image has {label or '<none>'}"
-        )
+    for name, expected in expected_labels.items():
+        label = labels.get(name) if isinstance(labels, dict) else None
+        if label != expected:
+            raise ValueError(
+                f"{_LABEL_PURPOSES.get(name, name)} mismatch: expected {expected}, "
+                f"image has {label or '<none>'}"
+            )
 
 
 def _is_attestation_manifest(manifest: dict) -> bool:
@@ -186,7 +192,19 @@ def _is_attestation_manifest(manifest: dict) -> bool:
 
 
 def resolve_image_remote(reference: str, expected_contract: str) -> str:
-    """Resolve and validate a registry image without pulling its layers."""
+    """Resolve and validate a stable-base registry image without pulling its layers."""
+    return resolve_labeled_image_remote(reference, {_CONTRACT_LABEL: expected_contract})
+
+
+def resolve_labeled_image_remote(reference: str, expected_labels: Mapping[str, str]) -> str:
+    """Resolve a Linux/AMD64 registry image to its digest and verify its labels.
+
+    Reads only manifests and the image configuration, never layers. Raises
+    ``ValueError`` when the image is malformed or any expected label differs,
+    and ``subprocess.CalledProcessError`` when the registry lookup fails.
+    """
+    if not expected_labels:
+        raise ValueError("at least one expected label is required")
     repository = _repository(reference)
     top = _remote_document(reference, "Manifest")
     if "schemaVersion" in top:
@@ -213,7 +231,7 @@ def resolve_image_remote(reference: str, expected_contract: str) -> str:
         raise ValueError(f"invalid image configuration descriptor: {image_reference}")
     _require_digest(config.get("digest"), "image configuration")
     image = _remote_document(image_reference, "Image")
-    _verify_remote_image_config(image, expected_contract, image_reference)
+    _verify_remote_image_config(image, expected_labels, image_reference)
     return f"{repository}@{top_digest}"
 
 
