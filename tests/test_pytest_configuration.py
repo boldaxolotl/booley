@@ -685,7 +685,7 @@ def test_primary_pytest_jobs_share_evidence_publishing() -> None:
 
     action_path = REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml"
     rendered_action = action_path.read_text(encoding="utf-8")
-    assert rendered_action.count("actions/upload-artifact@") == 2
+    assert rendered_action.count("actions/upload-artifact@") == 3
     assert ".github/scripts/assert_junit.py" in rendered_action
     assert "always() && inputs.publish-shard == 'true'" in rendered_action
 
@@ -1067,3 +1067,49 @@ def test_booley_never_uses_sqlite() -> None:
     ]
 
     assert offenders == []
+
+
+def test_windows_timeout_diagnostics_are_retained_after_failure() -> None:
+    workflow = _test_workflow()
+    action = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert workflow["jobs"]["test"]["env"]["PYTHONFAULTHANDLER"] == "1"
+    directory = "${{ runner.temp }}/pytest-timeouts"
+    pytest_steps = [
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if "pytest tests/" in str(step.get("run", ""))
+        or "pytest tests/architecture" in str(step.get("run", ""))
+    ]
+    assert len(pytest_steps) == 3
+    assert all(step["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == directory for step in pytest_steps)
+    assert "BOOLEY_PYTEST_EVIDENCE_DIR" not in workflow["jobs"]["test"]["env"]
+    uploads = [
+        step
+        for step in action["runs"]["steps"]
+        if step.get("with", {}).get("path") == directory + "/"
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
+    assert uploads[0]["with"]["if-no-files-found"] == "ignore"
+
+
+def test_scheduled_windows_matrix_retains_crash_diagnostics() -> None:
+    workflow = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/workflows/full-python-matrix.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["test"]["steps"]
+    execution = next(step for step in steps if "pytest tests/" in str(step.get("run", "")))
+    assert execution["env"]["PYTHONFAULTHANDLER"] == "1"
+    assert execution["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == "${{ runner.temp }}/pytest-timeouts"
+    uploads = [
+        step
+        for step in steps
+        if step.get("with", {}).get("path") == "${{ runner.temp }}/pytest-timeouts/"
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
+    assert uploads[0]["with"]["if-no-files-found"] == "ignore"

@@ -212,6 +212,8 @@ def _legacy_amended_runtime(tmp_path, count):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("snapshot_state", ["missing", "malformed", "stale", "matching"])
 @pytest.mark.parametrize("amendments", [1, 2])
+# Git integration can exceed the Windows CI 60-second unit-test budget.
+@pytest.mark.timeout(180)
 async def test_old_amendment_cohort_repairs_without_a_readable_recent_snapshot(
     tmp_path, monkeypatch, snapshot_state, amendments
 ):
