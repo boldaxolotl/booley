@@ -5,7 +5,7 @@
 ```bash
 bwave signal <FST_FILE> [-s PATTERN[%RADIX] ...] [-t START:END]
             [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--format text|json] [--limit N]
+            [--format text] [--limit N]
 ```
 
 ## Semantics
@@ -36,17 +36,12 @@ VCD transition is its own row with the raw timestamp.
 
 ## Output shape
 
-Text mode prints a header showing the resolved clock and
-reset, then change rows:
+Text mode prints time/name/value change rows:
 
 ```
-# clock: tb.dut.clk  period=10ns
-# reset: tb.dut.rst_n  deasserts @ cycle 5
-# signals: state, data_out
-cycle     state  data_out
-       6       1  'h00000000
-      12       2  'h00000001
-      18       3  'h0000DEAD
+0 b 0
+1000 b 1
+5000 b 2
 ```
 
 In async mode the first column is `time` (timescale units)
@@ -58,16 +53,14 @@ holding right now?" query — it falls back to the held
 value at the window start and says so on stderr:
 
 ```
-# no transitions in cycles 56:56 — showing held values at cycle 56
-      56  expanded_key  'h62636363
+# no transitions in cycles 3:3 — showing held values at cycle 3
+3 data_a[7:0] 39
 ```
 
 `value --at 56` remains the direct way to ask that
 question, and snapshots every matching signal.
 
-JSON mode is **not yet implemented** for `signal`. Use
-text mode for now, or `value`/`find`/`stats` if you need
-structured output.
+`--format json` exits with code 2: `JSON output is not implemented for signal; use find/value/stats/list`.
 
 ## Common errors
 

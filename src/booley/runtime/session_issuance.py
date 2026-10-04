@@ -362,7 +362,12 @@ def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: 
 
 def keeper_image(project_root: Path) -> str:
     """Private Docker tag retaining the image bytes for one Project issuance."""
-    identity = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()
+    return keeper_image_for_identity(str(project_root.resolve()))
+
+
+def keeper_image_for_identity(project_root: str) -> str:
+    """Retain bytes for an already canonical stored Project identity."""
+    identity = hashlib.sha256(project_root.encode()).hexdigest()
     return f"booley-issued-{identity}:session"
 
 

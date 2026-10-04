@@ -8,8 +8,14 @@ import shlex
 from pathlib import Path
 
 import yaml
-from tests.sandbox_image_contract import logical_instructions
-from tests.sidecar_image_helpers import DIND_IMAGE
+from tests.sidecar_image_helpers import (
+    DIND_IMAGE,
+    SIDECAR_ALPINE_BASE,
+    SIDECAR_BOOKWORM_BASE,
+    SIDECAR_PYTHON_VERSION,
+)
+
+from booley.runtime.dockerfile_syntax import logical_instructions
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
 _DOCKER_DIR = _DOCKERFILE.parent
@@ -66,11 +72,11 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert "YOSYS_REF" in base
     assert (
         "FROM docker.io/openroad/ubuntu26.04@sha256:"
-        "63771c032b50317169bdc19a304cfe9dce068b19ec29969012cc4e696698ce66"
+        "c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d"
     ) in base
     assert (
         "FROM docker.io/openroad/ubuntu26.04-dev@sha256:"
-        "9569cbf83385f791569a798c42b85fce04a6d3c68ee6166b3caebdeb0273d119 "
+        "a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 "
         "AS eda-artifacts"
     ) in base
     assert (
@@ -296,18 +302,12 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert evidence_script.count(":py314") >= 3
     assert ":py313" not in evidence_script
     assert '"Python 3.13.15"' not in evidence_script
-    assert '"Python 3.14.7"' in evidence_script
+    assert f'"{SIDECAR_PYTHON_VERSION}"' in evidence_script
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
-    assert (
-        'readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:'
-        '82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56"' in evidence_script
-    )
-    assert (
-        'readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:'
-        '9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"' in evidence_script
-    )
+    assert f'readonly BOOKWORM_CANDIDATE="{SIDECAR_BOOKWORM_BASE}"' in evidence_script
+    assert f'readonly ALPINE_CANDIDATE="{SIDECAR_ALPINE_BASE}"' in evidence_script
     assert (
         'readonly DOCKER_CLI="docker:29.8.2-cli@sha256:'
         'b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"' in evidence_script
@@ -357,19 +357,13 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
 
 
-def test_sidecars_pin_python_3_14_7_without_changing_distributions() -> None:
+def test_sidecars_pin_expected_python_bases_without_changing_distributions() -> None:
     egress = (_DOCKER_DIR / "Dockerfile.egress-proxy").read_text(encoding="utf-8")
     flexnet = (_DOCKER_DIR / "Dockerfile.flexnet-relay").read_text(encoding="utf-8")
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
-    assert (
-        "FROM python:3.14.7-slim-bookworm@sha256:"
-        "82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56" in egress
-    )
-    alpine = (
-        "FROM python:3.14.7-alpine3.24@sha256:"
-        "9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01"
-    )
+    assert f"FROM {SIDECAR_BOOKWORM_BASE}" in egress
+    alpine = f"FROM {SIDECAR_ALPINE_BASE}"
     assert alpine in flexnet
     assert alpine in reaper
 
@@ -416,14 +410,20 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
 
 
-def test_openroad_uses_verified_26q3_oci_artifact() -> None:
+def test_openroad_uses_verified_26q4_oci_artifact() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8" in dockerfile
-    assert "ARG OPENROAD_BINARY_VERSION=26Q2-2580-ga9147cf3ae" in dockerfile
+    assert "ARG OPENROAD_VERSION=26Q4" in dockerfile
+    manifest = json.loads((_DOCKER_DIR / "openroad-source-manifest.json").read_text())
+    assert manifest["revision"] == "c4d317e4fa2398b9880920a1411c20258a2175a9"
+    assert len(manifest["submodules"]) == 5
+    sta = next(item for item in manifest["submodules"] if item["path"] == "src/sta")
+    assert sta["revision"] == "e983e15b2cb346badf8f23725fd3914d25312c44"
+    assert "ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9" in dockerfile
+    assert "ARG OPENROAD_BINARY_VERSION=26Q3-2927-gc4d317e4fa" in dockerfile
     assert (
         "ARG OPENROAD_SOURCE_SENTINEL_SHA256="
-        "c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f"
+        "8f72ff3a40bf361df9eee1d4a6ecf163285ebabca3d49c0f8eb958810f65a590"
     ) in dockerfile
     assert "./src/rsz/src/Resizer.tcl | sha256sum" in dockerfile
     assert (
@@ -431,7 +431,7 @@ def test_openroad_uses_verified_26q3_oci_artifact() -> None:
         in dockerfile
     )
     assert "--exclude='./build'" in dockerfile
-    assert "OpenROAD-a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.tar.gz" in dockerfile
+    assert "OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz" in dockerfile
     assert "openroad -version" in dockerfile
     assert "COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE" in dockerfile
     assert "Precision-Innovations/OpenROAD/releases/download" not in dockerfile
@@ -484,13 +484,165 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     spike_ref = re.search(r"^ARG SPIKE_REF=([0-9a-f]{40})$", riscv, re.MULTILINE)
 
     assert spike_ref is not None
-    assert spike_ref.group(1) == "c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb"
+    assert spike_ref.group(1) == "609dbe0b9994154833039209fa37151e7c05e9d4"
+    # The user-facing tool list names the exact pin, so it must move with it.
+    supported_tools = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
+    assert f"`{spike_ref.group(1)}`" in supported_tools
     assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
     assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 
     spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
     assert "make check" in spike_build
     assert "test -x /opt/riscv/bin/spike" in spike_build
+
+
+def _from_images(contents: str) -> list[str]:
+    return [
+        instruction.value.split()[0]
+        for instruction in logical_instructions(contents)
+        if instruction.keyword == "FROM"
+    ]
+
+
+def test_riscv_tooling_builds_on_the_runtime_base_ubuntu_digest() -> None:
+    """ADR 0070: tooling binaries link against the Ubuntu the base runs on."""
+    base_images = _from_images(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
+    riscv_images = _from_images((_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8"))
+
+    assert base_images[-1].startswith("docker.io/library/ubuntu:26.04@sha256:")
+    assert riscv_images == [base_images[-1], "booley-standard-substrate"]
+
+
+def test_riscv_final_stage_copies_only_from_the_tooling_stage() -> None:
+    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    instructions = logical_instructions(riscv)
+    final_from = max(
+        index for index, instruction in enumerate(instructions) if instruction.keyword == "FROM"
+    )
+    imports = [
+        instruction.value for instruction in instructions if instruction.keyword in {"ADD", "COPY"}
+    ]
+
+    assert instructions[final_from].value == "booley-standard-substrate"
+    assert imports == [
+        "--from=riscv-tooling /opt/riscv /opt/riscv",
+        "--from=riscv-tooling /opt/riscv-docs /opt/riscv-docs",
+    ]
+    assert all(
+        "--mount" not in instruction.value
+        for instruction in instructions
+        if instruction.keyword == "RUN"
+    )
+
+
+def test_no_workflow_overrides_a_riscv_tooling_build_argument() -> None:
+    """A --build-arg would change the tooling without changing its key."""
+    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    tooling_arguments = set(re.findall(r"^ARG ([A-Z0-9_]+)=", riscv, re.MULTILINE))
+    assert {"SPIKE_REF", "XPACK_GCC_VERSION", "PSABI_SHA256"} <= tooling_arguments
+
+    for path in [*Path(".github/workflows").glob("*.yml"), _DOCKER_DIR / "build-riscv.sh"]:
+        text = path.read_text(encoding="utf-8")
+        for argument in tooling_arguments:
+            assert not re.search(rf"\b{argument}=", text), f"{path} overrides {argument}"
+
+
+_RISCV_TOOLING_PUBLISHER = ".github/workflows/riscv-tooling-publish.yml"
+
+
+def test_riscv_tooling_publisher_is_main_only_and_keyed_on_its_inputs() -> None:
+    workflow = _workflow(_RISCV_TOOLING_PUBLISHER)
+    # PyYAML's YAML 1.1 resolver reads the Actions key ``on`` as boolean true.
+    events = workflow[True]
+    key_job = workflow["jobs"]["key"]
+    job = workflow["jobs"]["publish"]
+
+    assert events["push"]["branches"] == ["main"]
+    # The key reads Dockerfile.riscv through its own derivation and parser;
+    # any of them can mint a new key, so each must trigger publication.
+    assert set(events["push"]["paths"]) == {
+        "src/booley/data/docker/Dockerfile.riscv",
+        ".github/scripts/riscv_tooling.py",
+        "src/booley/runtime/dockerfile_syntax.py",
+        _RISCV_TOOLING_PUBLISHER,
+    }
+    assert "workflow_dispatch" in events
+    assert key_job["if"] == "github.ref == 'refs/heads/main'"
+    assert key_job["permissions"] == {"contents": "read"}
+    assert job["needs"] == "key"
+    assert job["permissions"] == {"contents": "read", "packages": "write"}
+    # A workflow-wide group keeps only one pending run, so a queued key could
+    # be dropped behind another key's publication. Group per key instead.
+    assert "concurrency" not in workflow
+    assert job["concurrency"] == {
+        "group": "publish-riscv-tooling-${{ needs.key.outputs.key }}",
+        "cancel-in-progress": False,
+    }
+
+
+def test_riscv_tooling_publisher_stages_verifies_then_promotes_without_overwrite() -> None:
+    job = _workflow(_RISCV_TOOLING_PUBLISHER)["jobs"]["publish"]
+    names = [step.get("name", step.get("uses", "")) for step in job["steps"]]
+    order = [
+        "Check for an existing tooling image",
+        "Build and push candidate tooling image",
+        "Verify candidate labels and digest",
+        "Verify candidate tooling",
+        "Record builder package versions",
+        "Promote verified candidate to the key tag",
+    ]
+    assert [name for name in names if name in order] == order
+
+    existing = _named_step(job, order[0])
+    assert "riscv_tooling.py published" in existing["run"]
+    for name in order[1:]:
+        assert _named_step(job, name)["if"] == "steps.existing.outputs.state == 'absent'"
+
+    build = _named_step(job, order[1])["with"]
+    assert build["target"] == "riscv-tooling"
+    # Digest-only push: no staging tag accumulates or resolves by name.
+    assert "tags" not in build
+    assert "push" not in build
+    assert "push-by-digest=true" in build["outputs"]
+    assert "push=true" in build["outputs"]
+    # Role, key, and recipe labels come from the script, not retyped here.
+    assert build["labels"].startswith("${{ needs.key.outputs.labels }}")
+    assert "io.booley.riscv-tooling.key=" not in build["labels"]
+    assert "cache-from" not in build
+    assert "cache-to" not in build
+    assert "build-args" not in build
+
+    verify = _named_step(job, order[3])["run"]
+    assert "riscv_tooling.py checks" in verify
+    assert 'bash < "${checks}"' in verify
+
+    promote = _named_step(job, order[5])["run"]
+    assert promote.index("riscv_tooling.py published") < promote.index("imagetools create")
+    assert promote.index("imagetools create") < promote.index("riscv_tooling.py promoted")
+    assert "not overwriting" in promote
+    assert "index:io.booley.riscv-tooling.builder-packages=" in promote
+    assert '--tag "${FINAL}" "${CANDIDATE}"' in promote
+    assert '--candidate "${CANDIDATE}"' in promote
+
+
+def test_only_the_tooling_publisher_writes_riscv_tooling_tags() -> None:
+    for path in Path(".github/workflows").glob("*.yml"):
+        if path.as_posix() == _RISCV_TOOLING_PUBLISHER:
+            continue
+        for job in _workflow(str(path))["jobs"].values():
+            for step in job.get("steps", []):
+                pushes = step.get("with", {}).get("push") is True
+                tags = str(step.get("with", {}).get("tags", ""))
+                assert not (pushes and "riscv-tooling" in tags), f"{path} pushes tooling tags"
+                run = str(step.get("run", ""))
+                assert not ("imagetools create" in run and "riscv-tooling" in run), path
+
+    test_workflow = _workflow(".github/workflows/test.yml")
+    assert test_workflow["permissions"]["packages"] == "read"
+    assert all(
+        job.get("permissions", {}).get("packages") != "write"
+        for job in test_workflow["jobs"].values()
+    )
 
 
 def test_release_build_dependency_is_pinned() -> None:

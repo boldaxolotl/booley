@@ -102,6 +102,35 @@ def test_sidecar_proofs_have_cancellation_cleanup() -> None:
     assert "tests/docker/test_sidecar_image_helpers.py" in step["run"]
 
 
+_EXPECTED_NATIVE_BWAVE_NODES = {
+    "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit0]",
+    "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit1]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra0]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra1]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra2]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra3]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra4]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra5]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra6]",
+    "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra7]",
+    "tests/bwave/test_contract.py::test_native_list_metadata_crosses_single_root_python_decoder",
+    "tests/bwave/test_contract.py::test_native_list_metadata_crosses_multi_root_python_decoder",
+    "tests/bwave/test_contract.py::test_trace_session_accepts_native_multi_root_store",
+    "tests/bwave/test_contract.py::test_total_miss_is_exit_usage_plus_marker",
+    "tests/bwave/test_contract.py::test_list_tree_stderr_carries_the_scope_line",
+    "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
+    "tests/bwave/test_contract.py::test_empty_store_marker_survives_in_binary",
+    "tests/bwave/test_contract.py::test_env_errors_stay_exit_env",
+    "tests/bwave/test_contract.py::test_native_open_ended_range_includes_tail_clock_events",
+    "tests/bwave/test_sessions.py::test_query_uses_default_session",
+    "tests/bwave/test_sessions.py::test_query_uses_named_alias",
+    "tests/bwave/test_sessions.py::test_query_explicit_overrides_session",
+    "tests/bwave/test_sessions.py::test_stale_session_warning",
+    "tests/bwave/test_sessions.py::test_fresh_trace_with_old_registration_does_not_warn",
+    "tests/bwave/test_sessions.py::test_register_reports_trace_identity_and_age",
+}
+
+
 def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     """The native integration job owns every test that executes B-Wave."""
     result = subprocess.run(
@@ -128,23 +157,7 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
 
     assert result.returncode == 0, result.stderr
     selected = {line for line in result.stdout.splitlines() if line.startswith("tests/")}
-    assert selected == {
-        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_single_root_python_decoder",
-        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_multi_root_python_decoder",
-        "tests/bwave/test_contract.py::test_trace_session_accepts_native_multi_root_store",
-        "tests/bwave/test_contract.py::test_total_miss_is_exit_usage_plus_marker",
-        "tests/bwave/test_contract.py::test_list_tree_stderr_carries_the_scope_line",
-        "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
-        "tests/bwave/test_contract.py::test_empty_store_marker_survives_in_binary",
-        "tests/bwave/test_contract.py::test_env_errors_stay_exit_env",
-        "tests/bwave/test_contract.py::test_native_open_ended_range_includes_tail_clock_events",
-        "tests/bwave/test_sessions.py::test_query_uses_default_session",
-        "tests/bwave/test_sessions.py::test_query_uses_named_alias",
-        "tests/bwave/test_sessions.py::test_query_explicit_overrides_session",
-        "tests/bwave/test_sessions.py::test_stale_session_warning",
-        "tests/bwave/test_sessions.py::test_fresh_trace_with_old_registration_does_not_warn",
-        "tests/bwave/test_sessions.py::test_register_reports_trace_identity_and_age",
-    }
+    assert selected == _EXPECTED_NATIVE_BWAVE_NODES
 
 
 def test_generic_python_matrix_excludes_native_bwave() -> None:
@@ -672,7 +685,7 @@ def test_primary_pytest_jobs_share_evidence_publishing() -> None:
 
     action_path = REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml"
     rendered_action = action_path.read_text(encoding="utf-8")
-    assert rendered_action.count("actions/upload-artifact@") == 2
+    assert rendered_action.count("actions/upload-artifact@") == 3
     assert ".github/scripts/assert_junit.py" in rendered_action
     assert "always() && inputs.publish-shard == 'true'" in rendered_action
 
@@ -1054,3 +1067,49 @@ def test_booley_never_uses_sqlite() -> None:
     ]
 
     assert offenders == []
+
+
+def test_windows_timeout_diagnostics_are_retained_after_failure() -> None:
+    workflow = _test_workflow()
+    action = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert workflow["jobs"]["test"]["env"]["PYTHONFAULTHANDLER"] == "1"
+    directory = "${{ runner.temp }}/pytest-timeouts"
+    pytest_steps = [
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if "pytest tests/" in str(step.get("run", ""))
+        or "pytest tests/architecture" in str(step.get("run", ""))
+    ]
+    assert len(pytest_steps) == 3
+    assert all(step["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == directory for step in pytest_steps)
+    assert "BOOLEY_PYTEST_EVIDENCE_DIR" not in workflow["jobs"]["test"]["env"]
+    uploads = [
+        step
+        for step in action["runs"]["steps"]
+        if step.get("with", {}).get("path") == directory + "/"
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
+    assert uploads[0]["with"]["if-no-files-found"] == "ignore"
+
+
+def test_scheduled_windows_matrix_retains_crash_diagnostics() -> None:
+    workflow = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/workflows/full-python-matrix.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["test"]["steps"]
+    execution = next(step for step in steps if "pytest tests/" in str(step.get("run", "")))
+    assert execution["env"]["PYTHONFAULTHANDLER"] == "1"
+    assert execution["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == "${{ runner.temp }}/pytest-timeouts"
+    uploads = [
+        step
+        for step in steps
+        if step.get("with", {}).get("path") == "${{ runner.temp }}/pytest-timeouts/"
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
+    assert uploads[0]["with"]["if-no-files-found"] == "ignore"

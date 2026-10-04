@@ -76,6 +76,7 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -91,6 +92,7 @@ from .contract import (
     DefaultSelection,
     NamedTests,
     PreSimEvidence,
+    PreSimScopeStoppedError,
     SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
     SimulationOptions,
@@ -617,6 +619,7 @@ class SimulationExecution:
         self._reset_build_roots: set[Path] = set()
         self._build_session: SimulationBuildSession | None = None
         self._fresh_generation: Path | None = None
+        self._pre_sim_firings: list[PreSimEvidence] = []
 
     @contextmanager
     def ordinary_group(
@@ -671,6 +674,7 @@ class SimulationExecution:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
         self._reset_build_roots.clear()
+        self._pre_sim_firings.clear()
         run_cwd_problem = literal_run_cwd_problem(handle.project_root)
         if run_cwd_problem is not None:
             return _setup_failure(handle, run_cwd_problem, started)
@@ -685,13 +689,28 @@ class SimulationExecution:
         )
         try:
             results = self._run_groups_with_session(handle, groups)
-        except SimulationBuildSlotError as exc:
-            return _build_slot_failure(handle, exc, started)
-        except _BuildRootResetError as exc:
-            return _build_root_failure(handle, exc, started)
-        except SimulationBuildPreparationError as exc:
-            return _setup_failure(handle, str(exc), started)
+        except (
+            SimulationBuildSlotError,
+            _BuildRootResetError,
+            SimulationBuildPreparationError,
+            PreSimScopeStoppedError,
+        ) as exc:
+            return self._group_exception_outcome(handle, exc, started)
         return _aggregate_group_results(handle, inspection.toplevel, results, started)
+
+    def _group_exception_outcome(self, handle, error, started) -> SimulationTargetOutcome:
+        if isinstance(error, SimulationBuildSlotError):
+            outcome = _build_slot_failure(handle, error, started)
+        elif isinstance(error, _BuildRootResetError):
+            outcome = _build_root_failure(handle, error, started)
+        elif isinstance(error, PreSimScopeStoppedError):
+            failure = SimulationInfrastructureFailure(
+                "build", "Simulation execution scope stopped", detail=str(error)
+            )
+            outcome = _setup_infrastructure_failure(handle, failure, started)
+        else:
+            outcome = _setup_failure(handle, str(error), started)
+        return replace(outcome, pre_sim_runs=tuple(self._pre_sim_firings))
 
     def _run_groups_with_session(
         self, handle: TargetHandle, groups: tuple[tuple[str, ...], ...]
@@ -781,6 +800,11 @@ class SimulationExecution:
         prepared_inputs = snapshot_build_inputs(attempt.prepared)
         generation_before = snapshot_generation_files(attempt.prepared)
         pre_sim = self._run_pre_sim(handle, attempt)
+        if pre_sim is not None:
+            self._pre_sim_firings.append(pre_sim)
+            scope = current_supervised_execution()
+            if scope is not None and scope.cancelled():
+                raise PreSimScopeStoppedError("execution scope stopped after Pre-Sim Commands")
         if pre_sim is not None and pre_sim.status != "passed":
             failure = (
                 _pre_sim_infrastructure_failure
@@ -2034,12 +2058,20 @@ def _test_reason(
     trace,
     failure_kind=None,
 ) -> str:
+    if (
+        termination != "completed"
+        and detail
+        and (failure_kind != "infrastructure" or simulator_returncode not in (None, 0))
+    ):
+        detail = f"{detail} (rc={simulator_returncode})"
+    if verdict == "timeout":
+        reason = detail or f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+        return (
+            f"{reason} (raise --timeout-ms or [flows.sim].timeout_ms "
+            "if the test legitimately needs longer)"
+        )
     if termination != "completed" and detail:
-        if failure_kind == "infrastructure" and simulator_returncode in (None, 0):
-            return detail
-        return f"{detail} (rc={simulator_returncode})"
-    if verdict == "timeout" and not detail:
-        return f"TIMEOUT: simulation exceeded {_timeout_ms(process)} ms"
+        return detail
     if verdict == "crash" and not detail:
         return f"simulator process terminated by signal {-process.returncode}"
     if inconclusive and termination == "completed" and not detail:

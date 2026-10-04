@@ -266,6 +266,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
+      PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: >-
         ${{ needs.changes.outputs.exhaustive_recovery == 'true' &&
         'not native_bwave' || 'not native_bwave and not exhaustive_recovery' }}
@@ -287,6 +288,7 @@ jobs:
         if: matrix.mode == 'full'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
+          BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
@@ -297,6 +299,7 @@ jobs:
         if: matrix.mode == 'compatibility'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
+          BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
         run: >-
           pytest tests/architecture tests/config
           tests/runtime/test_file_lock.py tests/runtime/test_pid.py
@@ -310,6 +313,7 @@ jobs:
         env:
           PYTHONPATH: .github/scripts
           RUNNER_TEMP: ${{ runner.temp }}
+          BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=worksteal
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"

@@ -17,6 +17,10 @@ class InvalidSimulationRequestError(ValueError):
     """A Simulation execution request violates the interface invariants."""
 
 
+class PreSimScopeStoppedError(Exception):
+    """The execution scope stopped at the Pre-Sim boundary; no further work may start."""
+
+
 @dataclass(frozen=True)
 class NamedTests:
     """A nonempty ordered selection of unique registered test names."""
@@ -71,6 +75,9 @@ class PreSimEvidence:
     status: PreSimStatus
     elapsed_s: float
     detail: str = ""
+    returncode: int | None = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
 
 
 def pre_sim_failure_message(status: PreSimStatus, detail: str = "") -> str:
@@ -172,6 +179,7 @@ __all__ = [
     "InvalidSimulationRequestError",
     "NamedTests",
     "PreSimEvidence",
+    "PreSimScopeStoppedError",
     "PreSimStatus",
     "SimulationArtifactEvidence",
     "SimulationInfrastructureFailure",

@@ -215,6 +215,7 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
         )
     )
     _assert_shared_campaign(outcome, compile_count[0], launches, bindings, invocation)
+    assert [item["cycle_count"] for item in outcome.observations] == [1234, 1234]
 
 
 def test_failed_shared_build_blocks_each_named_work_item_with_its_own_selection(
@@ -539,7 +540,9 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count, bindi
 
 
 def _shared_outcome(name, handle, run_log):
-    test = SimulationTestOutcome(name=name, verdict="pass", passed=True, run_log_path=str(run_log))
+    test = SimulationTestOutcome(
+        name=name, verdict="pass", passed=True, cycles=1234, run_log_path=str(run_log)
+    )
     return SimulationTargetOutcome(
         target="sim",
         target_identity=handle.identity,

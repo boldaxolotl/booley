@@ -342,6 +342,8 @@ def _stale_automatic_handoff(blocked, monkeypatch):
 
 
 @pytest.mark.parametrize("blocked", _STALE_HANDOFF_CASES, indirect=True)
+# Git integration can exceed the Windows CI 60-second unit-test budget.
+@pytest.mark.timeout(180)
 def test_stale_accepted_handoff_refuses_approval_without_state_change(
     blocked, monkeypatch, capsys
 ):
@@ -619,6 +621,8 @@ def test_validate_action_names_public_approve_command(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("blocked", [{}, {"paired": True}], indirect=True)
+# Git integration can exceed the Windows CI 60-second unit-test budget.
+@pytest.mark.timeout(180)
 def test_blocked_request_generates_readable_unaccepted_package(blocked):
     root, tio, worktree = blocked
     outcome = asyncio.run(request_review_command(root, "demo", reason="Finish interactively"))
@@ -825,6 +829,8 @@ def test_approve_rejects_unmet_selection_without_agent(blocked, monkeypatch):
     assert not (tio.logs_dir / "demo" / "acceptance" / "accepted.json").exists()
 
 
+# Git integration can exceed the Windows CI 60-second unit-test budget.
+@pytest.mark.timeout(180)
 def test_review_reuses_current_requested_package(blocked):
     from booley.ticket_board.review_lifecycle import review_command
 

@@ -550,6 +550,7 @@ def _missing_output_marker(
     spec = plan.spec
     physical = runs_openroad(spec.timing.mode)
     required_outputs = [
+        ("yosys", "yosys.log", fresh_text("yosys.log")),
         ("yosys", f"stat_{spec.design_name}.txt", stat_text),
         ("yosys", f"check_{spec.design_name}.txt", final_check),
         ("yosys", f"synth_{spec.design_name}.v", fresh_text(f"synth_{spec.design_name}.v")),
@@ -603,10 +604,11 @@ def _boundary_sections(
 
 
 def _yosys_complete(plan: SynthPlan, fresh_text: Callable[[str], str | None]) -> bool:
-    """Require the final stat, check, and mapped netlist artifacts together."""
+    """Require mapping evidence, final stat, check, and mapped netlist together."""
     return all(
         bool(fresh_text(name))
         for name in (
+            "yosys.log",
             f"stat_{plan.spec.design_name}.txt",
             f"check_{plan.spec.design_name}.txt",
             f"synth_{plan.spec.design_name}.v",

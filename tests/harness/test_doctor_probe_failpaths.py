@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -611,6 +612,10 @@ def test_vivado_outer_timeout_and_unavailable_runtime(monkeypatch):
     assert rec.kinds() == {"skip"}
 
 
+# The probe only runs inside the Linux Sandbox, and termination is observed via
+# /proc. Elsewhere (MSYS sh/timeout on Windows) the 0.2s budget races shell
+# startup and process-group semantics differ, so the test would prove nothing.
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux Sandbox process-group contract")
 @pytest.mark.parametrize("delayed_exit", [False, True])
 def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch, delayed_exit):
     import os

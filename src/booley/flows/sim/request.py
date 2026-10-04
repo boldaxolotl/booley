@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.boundary import require_bool_value
 from booley.flows.request import FlowRequest
 
 from .mode import SimulationMode
@@ -24,6 +25,7 @@ class SimRequest(FlowRequest):
     test: tuple[str, ...] | None = None
     tests_file: Path | None = None
     resume_from: Path | None = None
+    verbose: bool = False
     trace: bool = False
     coverage: bool = False
     # Raw coverage: apply no approved waivers (requires ``coverage``).
@@ -34,6 +36,7 @@ class SimRequest(FlowRequest):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        require_bool_value(self.verbose, field="verbose")
         if not isinstance(self.coverage, bool):
             raise ValueError("coverage must be boolean")
         if not isinstance(self.no_waivers, bool):

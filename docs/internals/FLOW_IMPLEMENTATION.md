@@ -404,9 +404,12 @@ reference. Legacy producer-absolute strings are compatibility hints only; local
 Simulation Campaign authentication is authoritative. The projection also carries
 the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
 `passed` flag, and a `tests`
-list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
-`error_tail`. Entries also carry `cycles`, a typed `cycle_observation` status,
-and a workload fingerprint when resolved inputs are available. For native HDL Targets, every entry also carries
+list: Simulation Campaign entries contain `name`, `passed`, nullable `cycles`,
+`sva_errors`, `timed_out`, `execution`, `failure_kind`, and `error_tail`.
+Legacy/unprepared entries also carry `verdict`, `cycle_observation`, and a
+workload fingerprint when resolved inputs are available. Full cycle counts are
+also copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For
+native HDL Targets, every entry also carries
 `artifacts.run_log`, a work-directory-relative pointer to an atomic,
 unabridged, attempt-specific copy of that test's simulator output. A grouped
 run preserves this copy before starting the next test, including for failed,
@@ -1061,7 +1064,7 @@ resolved nested path; the Target reference is a separate schema. The Coverage
 Analyst requires the canonical Target-level reference and matching completed
 `simulation.json`; it resolves and authenticates the nested manifest internally
 and does not accept the nested path as its input.
-`booley.simulation-report/v2` artifact
+`booley.simulation-report/v3` artifact
 references use `report_invocation` or `reports_root`, resolved from the containing
 `report.json`; cross-root resume references instead use `external_origin_target`,
 resolved from an explicitly supplied origin Target directory. Resume reports do
