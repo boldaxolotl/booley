@@ -83,3 +83,35 @@ def test_failed_evidence_setup_is_not_replaced_by_intended_model_fault(case, ada
     assert last["type"] in {"turn.failed", "result"}
     assert "real MCP initialization failed" in json.dumps(last)
     assert "maximum context" not in json.dumps(last)
+
+
+def _evidence_returning(result: dict):
+    """Build an Evidence client whose tool call returns *result* without a server."""
+    evidence = provider.Evidence.__new__(provider.Evidence)
+    evidence.request = lambda method, params: result
+    return evidence
+
+
+def _text(value: str) -> dict:
+    return {"content": [{"type": "text", "text": value}]}
+
+
+def test_plain_text_schema_rejection_is_recorded_verbatim() -> None:
+    rejection = "Invalid tool arguments at $.limit: 100000 is greater than the maximum of 100"
+    evidence = _evidence_returning({**_text(rejection), "isError": True})
+    with pytest.raises(ValueError) as caught:
+        evidence.query(view="points", limit=100000)
+    assert str(caught.value) == rejection
+
+
+def test_json_error_result_is_recorded_verbatim() -> None:
+    rejection = json.dumps({"error": "coverage_evidence_rejected", "message": "Malformed cursor"})
+    evidence = _evidence_returning({**_text(rejection), "isError": True})
+    with pytest.raises(ValueError) as caught:
+        evidence.query(view="points", cursor="bad")
+    assert str(caught.value) == rejection
+
+
+def test_success_returns_the_decoded_document() -> None:
+    evidence = _evidence_returning(_text(json.dumps({"view": "overview"})))
+    assert evidence.query(view="overview") == {"view": "overview"}
