@@ -67,6 +67,26 @@ no cached Campaign substitutes. The 4,096-instance workload is fixed and needs
 about 8 GiB runtime memory and 20 GiB disposable disk. Without that headroom,
 skip the large-Campaign cases; never shrink the workload.
 
+## Campaign paths
+
+The Flow reports `<reports>/sim/<N>/targets/<target>/coverage.json`. That file is
+a `booley.coverage-campaign-reference/v1` pointer, not the Campaign. Pass it
+unchanged to the Coverage Analyst. The fixture scripts `evaluator/measurements.py`
+and `faults/approvals.py` need the nested V4 manifest it points to:
+
+```bash
+python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent / json.loads(r.read_text())["coverage_campaign"]["path"])' <target>/coverage.json
+```
+
+`path_base` is `origin_target`: resolve against the Target directory that wrote
+the reference. The result is `.../campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
+That Campaign directory holds `coverage-points.jsonl.gz`, `native/raw/`,
+`native/merged/` and `hooks/`. Run ids are the manifest's `tests.runs[].id`
+(`run:001:<test>`), not test names. Each run's raw database is the
+`artifacts[]` entry whose `id` equals that run's `raw_artifact`, at a path
+relative to the Campaign directory (`native/raw/001-<test>.dat`). For example:
+`--native run:001:half=<campaign-dir>/native/raw/001-half.dat`.
+
 ## Exact arithmetic and policy fixtures
 
 `expected.json` is authored from literal transitions and equality properties.
@@ -123,7 +143,7 @@ full stdout/stderr, exit status and tool identity. The command proves
 `value[0] == 0` by temporal induction from zero initialization under the
 parity-preserving +2 transition. It must exit zero and prove induction. Copy its
 log to the owned approved directory's `proof/parity.log` **before** invoking
-`faults/approvals.py unreachable <campaign> --project <project> --directory
+`faults/approvals.py unreachable <nested-v4>/coverage.json --project <project> --directory
 <approval-dir> --inputs <asset>/approval-inputs.json`. The binder only fills the
 exact retained point IDs and byte digests, and refuses to replace existing output
 files. Keep the proof log next to its resulting TOML.
@@ -177,12 +197,15 @@ new authoritative evidence. Keep every failed transaction for inspection.
 
 ## Native and input corruption recipes
 
-Native missing/stale/malformed/incompatible cases run `sim_custom` with the exact
-registered test `native-missing`, `native-stale`, `native-malformed`, or
-`native-incompatible`. The fixture main first executes the real simulation and
-coverage hook, then deletes its own raw file, sets its mtime to the epoch, writes a
-malformed record, or writes an incompatible header, respectively. These are
-explicit controlled native inputs, not real EDA-success evidence.
+Native missing/malformed/incompatible cases run `sim_custom` with the exact
+registered test `native-missing`, `native-malformed`, or `native-incompatible`.
+The fixture main first executes the real simulation and coverage hook, then
+deletes its own raw file, writes a malformed record, or writes an incompatible
+header, respectively. These are explicit controlled native inputs, not real
+EDA-success evidence. There is no stale-native case. Booley reports a raw file as
+stale only when it is unchanged from its pre-run snapshot. A raw file created by
+this run at its per-attempt path is fresh even with an old mtime, by design.
+`COV_RAW_FILE_STALE` is not exercised by this mission.
 `native-fsm`, `native-covergroup`, `native-unknown` append a record with that
 native class using an existing source/hierarchy identity; judge the expected
 unscored or capability/finding behavior independently. They make no claim that
@@ -201,13 +224,20 @@ or `coverage.core` after planning; capture the before bytes and restore them.
 Use a declared included `rtl/constants.svh` with a comment-only change for the
 include-source analysis case; it must be in the recorded closure before collection.
 
-Campaign fault cases copy an entire completed numbered invocation into a new
+Campaign faults use fresh V4 evidence. Use `baseline.native` for point mutations
+(the Campaign must contain points) and `baseline.multi` for `wrong-source-rollup`
+(two RTL sources with distinct distributions). Copy an entire completed numbered invocation into a new
 owned reports root, preserving `sim/N/targets/<target>/coverage.json` layout.
 Create `.qa-coverage-fault-copy` at that new owned root and invoke
-`faults/campaign.py <mode> <copied-campaign> --owned <copy-root>`. The original
-Campaign is never mutated. Truncation and final-record cases update unrelated
+`faults/campaign.py <mode> <copied-target>/coverage.json --owned <copy-root>`, passing
+the copied Target reference. The script follows the reference to the nested
+Campaign, mutates it, writes point lines and the manifest in Booley's canonical
+compact encoding, and rebinds the reference's `bytes`/`sha256`. The original
+Campaign is never mutated. The `invalid-overall-score` and `invalid-source-score`
+modes retain a scoring inventory that an invalid Campaign must not publish;
+`wrong-source-rollup` swaps two distinct source distributions. Truncation and final-record cases update unrelated
 envelope digests/sizes to reach the intended deeper validation. Note the
-particular error code/field proving that boundary; an unrelated earlier parse
+particular error code, field, and message proving that boundary; an unrelated earlier parse
 error does not show the deeper validation works. Restore by discarding only that
 copy, recreating it from the original, and successfully analyzing the valid pair.
 
