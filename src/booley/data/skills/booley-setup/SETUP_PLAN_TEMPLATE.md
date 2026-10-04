@@ -41,7 +41,7 @@
 | 7 | Sandbox image | | | | | |
 | 8 | Data files / built artifacts | | | | | |
 | 9 | Vendored-core quarantine | | | | | |
-| 10 | Constraints (SDC/XDC) | | | | | |
+| 10 | Constraints (SDC/XDC): upstream path or user-supplied file; never agent-authored (a missing file blocks the Target) | | | | | |
 | 10a | Memory implementation: every synthesis-reachable candidate, evidence, disposition, replacement seam, timing shape, and confidence | | | | | |
 | 11 | Style lint opt-in | | | | | |
 | 12 | Elaboration Check / standalone need | | | | | |
