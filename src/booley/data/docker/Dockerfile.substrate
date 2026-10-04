@@ -11,7 +11,7 @@ USER root
 
 # Edalize patch (ADR 0033).
 COPY src/booley/data/edalize/verible.py /tmp/booley-build/verible.py
-RUN python -c 'import pathlib, shutil, edalize.tools; src = pathlib.Path("/tmp/booley-build/verible.py"); dst = pathlib.Path(list(edalize.tools.__path__)[0]) / "verible.py"; shutil.copyfile(src, dst)' \
+RUN python -c 'import pathlib, shutil, edalize.tools; src = pathlib.Path("/tmp/booley-build/verible.py"); dst = pathlib.Path(list(edalize.tools.__path__)[0]); shutil.copyfile(src, dst / "verible.py"); shutil.copyfile(src, dst / "veriblelint.py")' \
     && rm -f /tmp/booley-build/verible.py
 
 RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \

@@ -281,3 +281,15 @@ print(json.dumps({
     "prepared": len(prepared.candidates),
 }))
 """
+
+
+def test_verible_node_source_change_invalidates_standard_substrate(tmp_path: Path) -> None:
+    root = _source_tree(tmp_path)
+    before = contracts.source_image_build_contracts(root)
+    # Both installed module names share this source; its subclass change is
+    # hashed. Dockerfile-only edits do not independently imply this result.
+    source = root / "src/booley/data/edalize/verible.py"
+    source.write_text("class Veriblelint(Verible): pass\n", encoding="utf-8")
+    after = contracts.source_image_build_contracts(root)
+    assert before.runtime_base == after.runtime_base
+    assert before.standard_substrate != after.standard_substrate
