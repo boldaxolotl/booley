@@ -1078,11 +1078,37 @@ def test_windows_timeout_diagnostics_are_retained_after_failure() -> None:
     )
     assert workflow["jobs"]["test"]["env"]["PYTHONFAULTHANDLER"] == "1"
     directory = "${{ runner.temp }}/pytest-timeouts"
-    assert workflow["jobs"]["test"]["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == directory
+    pytest_steps = [
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if "pytest tests/" in str(step.get("run", ""))
+        or "pytest tests/architecture" in str(step.get("run", ""))
+    ]
+    assert len(pytest_steps) == 3
+    assert all(step["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == directory for step in pytest_steps)
+    assert "BOOLEY_PYTEST_EVIDENCE_DIR" not in workflow["jobs"]["test"]["env"]
     uploads = [
         step
         for step in action["runs"]["steps"]
         if step.get("with", {}).get("path") == directory + "/"
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
+    assert uploads[0]["with"]["if-no-files-found"] == "ignore"
+
+
+def test_scheduled_windows_matrix_retains_crash_diagnostics() -> None:
+    workflow = yaml.safe_load(
+        (REPOSITORY_ROOT / ".github/workflows/full-python-matrix.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["test"]["steps"]
+    execution = next(step for step in steps if "pytest tests/" in str(step.get("run", "")))
+    assert execution["env"]["PYTHONFAULTHANDLER"] == "1"
+    assert execution["env"]["BOOLEY_PYTEST_EVIDENCE_DIR"] == "${{ runner.temp }}/pytest-timeouts"
+    uploads = [
+        step
+        for step in steps
+        if step.get("with", {}).get("path") == "${{ runner.temp }}/pytest-timeouts/"
     ]
     assert len(uploads) == 1
     assert uploads[0]["if"] == "always()"

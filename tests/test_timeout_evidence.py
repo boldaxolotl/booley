@@ -105,14 +105,9 @@ def test_failed_evidence_write_still_terminates_worker(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("workers", [0, 1])
 def test_native_crash_retains_fatal_stack(tmp_path: Path, workers: int) -> None:
-    # Prevent core files from an intentionally crashing subprocess on POSIX.
-    body = (
-        "import os; "
-        "exec('import resource; resource.setrlimit(resource.RLIMIT_CORE, (0, 0))' "
-        "if os.name == 'posix' else ''); "
-        "__import__('ctypes').string_at(0)"
+    result, evidence = _run_pytest_case(
+        tmp_path, workers, "@pytest.mark.timeout(10)", _native_crash_body()
     )
-    result, evidence = _run_pytest_case(tmp_path, workers, "@pytest.mark.timeout(10)", body)
 
     assert result.returncode != 0, result.stdout + result.stderr
     reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
@@ -123,3 +118,31 @@ def test_native_crash_retains_fatal_stack(tmp_path: Path, workers: int) -> None:
     if workers:
         exit_report = json.loads((evidence / "worker-exit-gw0.json").read_text())
         assert exit_report["exit_code"] not in (None, 0, 1)
+
+
+def test_native_crash_during_unconfigure_retains_fatal_stack(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n@pytest.hookimpl(tryfirst=True)\ndef pytest_unconfigure(config):\n    "
+        + _native_crash_body()
+        + "\n",
+        encoding="utf-8",
+    )
+    result, evidence = _run_pytest_case(tmp_path, 0, "@pytest.mark.timeout(10)", "pass")
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
+    assert len(reports) == 1
+    assert "conftest.py" in reports[0].read_text(encoding="utf-8")
+
+
+def _native_crash_body() -> str:
+    # Avoid POSIX core files and Windows Error Reporting delays in crash probes.
+    # 0x0002 is SEM_NOGPFAULTERRORBOX (SetErrorMode).
+    return (
+        "import os; "
+        "exec('import resource; resource.setrlimit(resource.RLIMIT_CORE, (0, 0))' "
+        "if os.name == 'posix' else ''); "
+        "exec('import ctypes; ctypes.windll.kernel32.SetErrorMode(0x0002)' "
+        "if os.name == 'nt' else ''); "
+        "__import__('ctypes').string_at(0)"
+    )

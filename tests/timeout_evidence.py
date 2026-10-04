@@ -84,14 +84,15 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_sessionfinish(session: pytest.Session) -> Generator[None, object, object]:
-    """Keep the fatal-handler descriptor open until all session-finish hooks complete."""
+def pytest_unconfigure(config: pytest.Config) -> Generator[None, object, object]:
+    """Retain fatal-error stacks through pytest shutdown and restore its handler safely."""
     try:
         return (yield)
     finally:
-        report = session.config.stash.get(_FATAL_REPORT, None)
+        report = config.stash.get(_FATAL_REPORT, None)
         if report is not None:
-            faulthandler.disable()
+            # pytest's faulthandler plugin has now disabled this descriptor
+            # and restored the original handler, if one was enabled.
             report.close()
             path = Path(report.name)
             if path.stat().st_size == 0:
@@ -112,7 +113,7 @@ def pytest_testnodedown(node: Any, error: object | None) -> None:
     exit_code = None
     if process is not None:
         with suppress(subprocess.TimeoutExpired):
-            exit_code = process.wait(timeout=1)
+            exit_code = process.wait(timeout=5)
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
     metadata = {"worker": node.gateway.id, "exit_code": exit_code, "error": str(error)}
