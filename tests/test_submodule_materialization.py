@@ -15,13 +15,22 @@ from booley.runtime.submodule_materialization import (
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    result = subprocess.run(
         ["git", *args],
         cwd=repo,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    # Surface git's own diagnosis: a bare CalledProcessError hides stderr, which
+    # left a one-off CI failure of `git worktree add` (exit 128) undiagnosable.
+    if result.returncode != 0:
+        pytest.fail(
+            f"git {' '.join(args)} failed in {repo} (exit {result.returncode})\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            pytrace=False,
+        )
+    return result
 
 
 def _init_repo(repo: Path) -> None:

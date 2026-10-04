@@ -258,6 +258,9 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
         progress.final_flush(lines)
         append_child_cpu_marker(lines, cpu_started)
 
+    if not readmemh_error and not timed_out["hit"] and not guard.tripped:
+        guard.finish()
+
     # Precedence: an explicit fatal (readmemh) over the disk runaway over the
     # wall-clock timeout — the first is the most specific cause of death.
     termination = RunTermination()

@@ -53,6 +53,11 @@ class SimArguments(BuiltinArguments):
             metavar="MANIFEST",
             help="Resume one exact Simulation Campaign manifest.json",
         )
+        parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="Include full Simulation Campaign resume mismatch pointers and values",
+        )
         SimArguments._add_run_control_args(parser)
 
     @staticmethod

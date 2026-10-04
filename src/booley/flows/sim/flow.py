@@ -13,10 +13,11 @@ import logging
 import os
 import re
 import shlex
+import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -160,7 +161,12 @@ from .campaign.flow_planning import (
     plan_ordinary_hdl_campaign,
 )
 from .campaign.model import simulation_status_from_observations
-from .campaign.planning import canonical_sha256, manifest_digest
+from .campaign.planning import (
+    SimulationCampaignWorkloadMismatchError,
+    canonical_sha256,
+    manifest_digest,
+    verify_workload,
+)
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
 from .coverage_campaign_store import load_coverage_campaign
 from .coverage_reference import (
@@ -514,14 +520,85 @@ def _resolved_coverage_campaigns(
 def _campaign_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+    trailing_lines: Sequence[str] | None = (),
+    *,
+    blocks: list[str] | None = None,
+    report_path: Path | None = None,
 ) -> list[str]:
-    resolved = coverage_campaigns
-    if resolved is None and any(
+    """Compose counts; None trailing lines means unavailable optional byte budget."""
+    if coverage_campaigns is None and any(
+        getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
+    ):
+        coverage_campaigns = _resolved_coverage_campaigns(outcomes)
+    if blocks is None:
+        blocks = _campaign_base_report_lines(outcomes, coverage_campaigns, report_path=report_path)
+    if trailing_lines is None:
+        return blocks
+    stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
+    base_bytes = len("\n".join((*blocks, *trailing_lines)).encode("utf-8")) + 2
+    budget = min(stream // 4, max(0, stream - base_bytes))
+    additions = _campaign_cycle_lines(outcomes, budget)
+    if not any(additions):
+        return blocks
+    return _campaign_base_report_lines(
+        outcomes, coverage_campaigns, additions, report_path=report_path
+    )
+
+
+def _campaign_cycle_lines(outcomes: Sequence[CampaignOutcome], budget: int) -> list[list[str]]:
+    additions: list[list[str]] = [[] for _ in outcomes]
+    records = [
+        (index, item)
+        for index, outcome in enumerate(outcomes)
+        for item in outcome.observations
+        if item.get("cycle_count") is not None
+    ]
+    if not records:
+        return additions
+    notice = f"  {len(records)} cycle counts omitted"
+    remaining = max(0, budget - len(notice.encode("utf-8")) - 1)
+    shown = 0
+    for index, item in records[:32]:
+        line = _cycle_display_line(item, remaining)
+        if line is None:
+            continue
+        additions[index].append(line)
+        remaining -= len(line.encode("utf-8")) + 1
+        shown += 1
+    omitted = len(records) - shown
+    notice = f"  {omitted} cycle counts omitted"
+    if omitted and len(notice.encode("utf-8")) + 1 <= budget:
+        additions[-1].append(notice)
+    return additions
+
+
+def _cycle_display_line(item: Mapping[str, object], budget: int) -> str | None:
+    try:
+        suffix = f": cycles={item['cycle_count']}"
+    except ValueError:
+        return None
+    name = str(item["test"] or "default").replace("\n", " ").replace("\r", " ")
+    available = budget - len(suffix.encode("utf-8")) - 3
+    if available < 3:
+        return None
+    if len(name.encode("utf-8")) > available:
+        name = name.encode("utf-8")[: available - 3].decode("utf-8", errors="ignore") + "…"
+    return f"  {name}{suffix}"
+
+
+def _campaign_base_report_lines(
+    outcomes: Sequence[CampaignOutcome],
+    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+    cycle_lines: Sequence[Sequence[str]] | None = None,
+    *,
+    report_path: Path | None = None,
+) -> list[str]:
+    if (resolved := coverage_campaigns) is None and any(
         getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
     ):
         resolved = _resolved_coverage_campaigns(outcomes)
     lines: list[str] = []
-    for outcome in outcomes:
+    for index, outcome in enumerate(outcomes):
         acceptance = getattr(outcome, "acceptance_facts", None)
         facts = getattr(acceptance, "document", {})
         campaign_id = facts.get("campaign_id", "unavailable")
@@ -548,7 +625,14 @@ def _campaign_report_lines(
         build_detail = _campaign_build_infrastructure_detail([outcome])
         if build_detail and reasons:
             line += f": {reasons[0].splitlines()[0]}"
-        report_lines = [line, *(f"  {reason}" for reason in reasons)]
+        report_lines = [
+            line,
+            f"  manifest: {outcome.manifest_path.resolve()}",
+            *([f"  report: {report_path.resolve()}"] if report_path is not None else []),
+            *(f"  {reason}" for reason in reasons),
+        ]
+        if cycle_lines is not None:
+            report_lines.extend(cycle_lines[index])
         if getattr(outcome, "coverage_reference", None) is not None:
             report_lines.extend(_waiver_block_hint_lines(campaign))
             report_lines.extend(source_gap_report_lines(campaign))
@@ -724,6 +808,29 @@ def _campaign_pre_sim_report_lines(outcomes, invocation: Path | None) -> list[st
         return [line for lines in groups.values() for line in lines]
     labels = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
     return [line for role, lines in groups.items() for line in (labels[role] + ":", *lines)]
+
+
+def _campaign_published_hook_lines(
+    outcomes: Sequence[CampaignOutcome],
+    invocation: Path,
+    published_keys: frozenset[tuple[str, str, str, int]],
+) -> list[str] | None:
+    """Budget authenticated current hook facts; missing keys make the budget unavailable."""
+    from types import SimpleNamespace
+
+    firings = {
+        firing.key: firing
+        for outcome in outcomes
+        for firing in getattr(outcome, "pre_sim_firings", ())
+    }
+    if not published_keys.issubset(firings):
+        return None
+    context = SimpleNamespace(
+        pre_sim_firings=tuple(firings.values()),
+        producer_invocation_directory=invocation.absolute(),
+        current_pre_sim_keys=published_keys,
+    )
+    return _campaign_pre_sim_report_lines([context], invocation)
 
 
 def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
@@ -944,6 +1051,7 @@ def _campaign_observation_preview(
             "functional": item["functional"],
             "assertions": item["assertions"],
             "assertion_count": item["assertion_count"],
+            "cycle_count": item.get("cycle_count"),
             "detail": _structured_json(item["detail"]),
         }
         for item in observations[:limit]
@@ -2169,6 +2277,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         record_campaign_acceptance(self.context, outcomes)
 
+    def persisted_cycle_counts(self) -> dict[str, list[dict[str, object]]]:
+        """Derive complete observational counts without affecting acceptance."""
+        # FlowSession stores the report-only snapshot untyped; only
+        # Simulation Campaign runs populate it, always with CampaignOutcome.
+        outcomes = cast("tuple[CampaignOutcome, ...]", self.context._simulation_report_outcomes)
+        return {
+            str(outcome.target["selector"]): [
+                {"test": item["test"], "cycle_count": item["cycle_count"]}
+                for item in outcome.observations
+            ]
+            for outcome in outcomes
+        }
+
     def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
         """Bind final projection references after acceptance publication."""
         outcomes = getattr(self.context, "_simulation_campaign_outcomes", ())
@@ -2853,7 +2974,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         assert isinstance(preview, ResumeCampaignPreview)
         status = _campaign_recovery_detail(preview.recovery)
-        status["mismatches"] = [item.message for item in preview.mismatches]
+        status.update(preview.diagnostic.detail)
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
         lines = [
             f"manifest: {validated.path}",
@@ -2862,6 +2983,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             f"pending: {len(preview.recovery.pending)}",
             f"mismatches: {len(preview.mismatches)}",
         ]
+        if preview.mismatches:
+            lines.append(preview.diagnostic.report(verbose=self.args.verbose))
         return EndpointOutcome(
             exit_code=EXIT_ERROR if preview.mismatches else EXIT_SUCCESS,
             detail=status,
@@ -2888,17 +3011,23 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if dependency_error is not None:
             return dependency_error
+        published: list[Path] = []
         try:
             outcome, progress_error = self._execute_validated_resume(
-                validated, invocation, admission
+                validated, invocation, admission, self._manifest_publisher(published)
             )
         except SimulationCampaignCancellationError as exc:
-            return self._campaign_cancelled_outcome(
-                exc,
-                _fresh_campaign_recovery_detail(validated, observed),
+            return self._with_campaign_paths(
+                self._campaign_cancelled_outcome(
+                    exc,
+                    _fresh_campaign_recovery_detail(validated, observed),
+                ),
+                published,
             )
         except (OSError, ValueError, RuntimeError) as exc:
-            return self._campaign_resume_failure(validated, observed, invocation, exc)
+            return self._with_campaign_paths(
+                self._campaign_resume_failure(validated, observed, invocation, exc), published
+            )
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))
         if progress_error is not None:
@@ -2954,6 +3083,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         error: Exception,
     ) -> EndpointOutcome:
         detail = _fresh_campaign_recovery_detail(validated, observed)
+        message = str(error)
+        if isinstance(error, SimulationCampaignWorkloadMismatchError):
+            detail.update(error.diagnostic.detail)
+            message = error.diagnostic.report(verbose=self.args.verbose)
         if isinstance(error, ProgressPublicationError):
             detail["progress_error"] = str(error)
         if isinstance(error, SimulationBuildInfrastructureError):
@@ -2979,7 +3112,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             detail["targets"] = {selector: target}
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
-            report_text=f"Simulation Campaign resume failed: {error}",
+            report_text=f"Simulation Campaign resume failed: {message}",
             detail=detail,
         )
 
@@ -2988,6 +3121,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         validated: ValidatedResumeManifest,
         invocation: Path,
         admission: AdmissionContext,
+        manifest_published: Callable[[Path], None],
     ) -> tuple[CampaignOutcome, Exception | None]:
         coverage_plan = (
             self._resume_coverage_target_plan(validated)
@@ -3002,7 +3136,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if progress is None:
             return (
                 self._run_validated_resume_campaign(
-                    validated, invocation, admission, coverage_plan
+                    validated, invocation, admission, coverage_plan, manifest_published
                 ),
                 None,
             )
@@ -3014,8 +3148,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             with lifecycle:
                 progress.checkpoint()
                 outcome = self._run_validated_resume_campaign(
-                    validated, invocation, admission, coverage_plan
+                    validated, invocation, admission, coverage_plan, manifest_published
                 )
+                self.context._simulation_report_outcomes = (outcome,)
                 _checkpoint_coverage_campaign(progress, outcome)
                 supersede_progress(
                     validated.path.parents[3] / "progress.json",
@@ -3036,10 +3171,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         invocation: Path,
         admission: AdmissionContext,
         coverage_plan: CoverageTargetPlan | None,
+        manifest_published: Callable[[Path], None],
     ) -> CampaignOutcome:
         plan = self._resume_campaign_plan(
             validated, int(invocation.name), coverage_plan=coverage_plan
         )
+        verify_workload(validated.manifest, plan.manifest)
+        manifest_published(validated.path)
         executor = self._resume_campaign_executor(coverage_plan)
         return SimulationCampaign(
             executor, publication_checkpoint=self._campaign_publication_checkpoint
@@ -3349,17 +3487,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         lifecycle = ProgressLifecycle(
             lambda phase: progress.checkpoint(complete=True, phase=phase)
         )
+        published: list[Path] = []
         result: EndpointOutcome | None = None
         try:
             with lifecycle:
                 progress.checkpoint()
-                campaign, requests = self._coverage_campaign_session(admission, invocation)
+                campaign, requests = self._coverage_campaign_session(
+                    admission, invocation, self._manifest_publisher(published)
+                )
                 result = self._execute_coverage_campaign_requests(campaign, requests, progress)
                 if result.exit_code != EXIT_ERROR and len(progress.outcomes) == len(
                     progress.targets
                 ):
                     lifecycle.complete()
-                return result
+                return self._with_campaign_paths(result, published)
         except (OSError, ValueError, RuntimeError) as exc:
             if result is not None:
                 failure = (
@@ -3377,14 +3518,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             detail = (
                 {"progress_error": str(exc)} if isinstance(exc, ProgressPublicationError) else {}
             )
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                detail=detail,
-                report_text=f"Simulation Campaign coverage planning failed: {exc}",
+            return self._with_campaign_paths(
+                EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    detail=detail,
+                    report_text=f"Simulation Campaign coverage planning failed: {exc}",
+                ),
+                published,
             )
 
     def _coverage_campaign_session(
-        self, admission: AdmissionContext, invocation: Path
+        self,
+        admission: AdmissionContext,
+        invocation: Path,
+        manifest_published: Callable[[Path], None] | None = None,
     ) -> tuple[
         SimulationCampaign,
         list[NewCampaignRunRequest],
@@ -3400,6 +3547,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         campaign = SimulationCampaign(
             executor,
             publication_checkpoint=self._campaign_publication_checkpoint,
+            manifest_published=manifest_published,
         )
         execution_id = str(admission.execution_id or "")
         requests = [
@@ -3430,6 +3578,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 outcome = campaign.run(request)
             except SimulationCampaignCancellationError as exc:
+                self.context._simulation_report_outcomes = tuple(outcomes)
                 return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
@@ -3468,6 +3617,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
+        self.context._simulation_report_outcomes = (
+            (*outcomes, failed_outcome) if failed_outcome is not None else tuple(outcomes)
+        )
         targets = _coverage_compatibility_targets(
             outcomes,
             self.context._reserved_invocation_dir,
@@ -3664,7 +3816,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 "targets": targets,
                 "pre_sim_lines": [line for line in lines if line.startswith("pre_run_commands ")],
             },
-            report_text="\n".join(lines),
+            report_text=self._with_campaign_paths(
+                EndpointOutcome(report_text="\n".join(lines))
+            ).report_text,
         )
 
     def _run_selected_mode(
@@ -3763,7 +3917,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             except MissingExecutableError as exc:
                 return self._missing_executable_result(exc, target)
             except SimulationBuildInfrastructureError as exc:
-                return self._build_infrastructure_result(exc)
+                return self._build_infrastructure_result(
+                    exc, report_path=self._report_destination()
+                )
             self._record_legacy_target(targets, results, result)
         return lines, all(result.passed for result in results)
 
@@ -3851,13 +4007,49 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if block:
                 detail.setdefault("artifacts", {})[result.target] = block
 
+    def _manifest_publisher(self, published: list[Path]) -> Callable[[Path], None]:
+        """Retain committed paths even when console publication is unavailable."""
+
+        def publish(path: Path) -> None:
+            path = path.resolve()
+            if path in published:
+                return
+            published.append(path)
+            if getattr(self.context, "_console_publication_requested", False):
+                with suppress(OSError, ValueError):
+                    print(f"campaign manifest: {path.resolve()}", file=sys.stderr, flush=True)
+
+        return publish
+
+    def _report_destination(self) -> Path | None:
+        args = getattr(self.context, "_args", None)
+        if args is None or getattr(args, "dry_run", False):
+            return None
+        root = getattr(args, "report_dir", None)
+        return (Path(root) / "sim.json").resolve() if root is not None else None
+
+    def _with_campaign_paths(
+        self, result: EndpointOutcome, published: Sequence[Path] = ()
+    ) -> EndpointOutcome:
+        lines = [result.report_text] if result.report_text else []
+        existing = set(result.report_text.splitlines())
+        for path in published:
+            line = f"  manifest: {path.resolve()}"
+            if line not in existing:
+                lines.append(line)
+                existing.add(line)
+        report = self._report_destination()
+        if report is not None and f"  report: {report}" not in existing:
+            lines.append(f"  report: {report}")
+        result.report_text = "\n".join(lines)
+        return result
+
     def _run_ordinary_campaigns(
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
         admission: object | None,
     ) -> EndpointOutcome:
-        """Run every ordinary Target through manifest-first serial authority."""
         invocation = self.reserve_invocation_dir()
         assert invocation is not None
         if not isinstance(admission, AdmissionContext):
@@ -3865,25 +4057,24 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 exit_code=EXIT_ERROR,
                 report_text="sim: Simulation Campaign has no borrowed admission context",
             )
+        published: list[Path] = []
         campaign = SimulationCampaign(
             OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
             publication_checkpoint=self._campaign_publication_checkpoint,
+            manifest_published=self._manifest_publisher(published),
         )
         outcomes: list[CampaignOutcome] = []
-        result: EndpointOutcome | None = None
         lifecycle = ProgressLifecycle(
             lambda phase: self._write_campaign_progress(
                 targets, outcomes, phase=phase, complete=True
             )
         )
+        result: EndpointOutcome | None = None
         try:
             with lifecycle:
                 self._write_campaign_progress(targets, outcomes, phase="starting", complete=False)
                 baseline_requests, prerequisites = self._plan_campaign_baselines(
-                    invocation,
-                    admission,
-                    targets,
-                    test_names_map,
+                    invocation, admission, targets, test_names_map
                 )
                 candidate_requests = self._candidate_campaign_requests(
                     targets, test_names_map, prerequisites, invocation, admission
@@ -3901,28 +4092,42 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lifecycle.complete()
                 return result
         except SimulationCampaignCancellationError as exc:
-            return self._campaign_cancelled_outcome(exc)
+            self.context._simulation_report_outcomes = tuple(outcomes)
+            return self._with_campaign_paths(self._campaign_cancelled_outcome(exc), published)
         except (OSError, ValueError, RuntimeError) as exc:
-            if result is not None and isinstance(exc, ProgressPublicationError):
-                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
-                return normalize_completion_error(
-                    result,
-                    failure,
-                    "publish simulation progress",
-                    path=invocation / "progress.json",
-                )
-            detail: dict[str, object] = (
-                {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+            return self._with_campaign_paths(
+                self._ordinary_campaign_failure(exc, outcomes, result, invocation), published
             )
-            if isinstance(exc, ProgressPublicationError):
-                detail["progress_error"] = str(exc)
-            if isinstance(exc, SimulationBuildInfrastructureError):
-                detail.update(_build_infrastructure_detail(exc))
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                detail=detail,
-                report_text=f"Simulation Campaign execution failed: {exc}",
+
+    def _ordinary_campaign_failure(
+        self,
+        error: Exception,
+        outcomes: list[CampaignOutcome],
+        result: EndpointOutcome | None,
+        invocation: Path,
+    ) -> EndpointOutcome:
+        """Retain the existing ordinary error detail and completion semantics."""
+        self.context._simulation_report_outcomes = tuple(outcomes)
+        if result is not None and isinstance(error, ProgressPublicationError):
+            failure = error.__cause__ if isinstance(error.__cause__, Exception) else error
+            return normalize_completion_error(
+                result,
+                failure,
+                "publish simulation progress",
+                path=invocation / "progress.json",
             )
+        detail: dict[str, object] = (
+            {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+        )
+        if isinstance(error, ProgressPublicationError):
+            detail["progress_error"] = str(error)
+        if isinstance(error, SimulationBuildInfrastructureError):
+            detail.update(_build_infrastructure_detail(error))
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            detail=detail,
+            report_text=f"Simulation Campaign execution failed: {error}",
+        )
 
     @staticmethod
     def _campaign_cancelled_outcome(
@@ -4405,6 +4610,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
         self.context._simulation_campaign_outcomes = tuple(outcomes)
+        self.context._simulation_report_outcomes = tuple(outcomes)
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
         exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or max(
@@ -4413,20 +4619,35 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         threshold_missed = any(
             campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
         )
-        lines = _campaign_report_lines(outcomes, coverage_campaigns)
-        campaigns = _campaign_structured_details(outcomes, self.context._reserved_invocation_dir)
+        report_path = self._report_destination()
+        lines = _campaign_base_report_lines(outcomes, coverage_campaigns, report_path=report_path)
+        invocation = self.context._reserved_invocation_dir
+        campaigns = _campaign_structured_details(outcomes, invocation)
         coverage_targets = _coverage_compatibility_targets(
             outcomes,
-            self.context._reserved_invocation_dir,
+            invocation,
             coverage_campaigns,
         )
         detail: dict[str, object] = {"campaigns": campaigns}
-        hook_detail = _campaign_pre_sim_details(outcomes, self.context._reserved_invocation_dir)
-        detail.update(hook_detail)
-        lines.extend(
-            _campaign_pre_sim_report_lines(outcomes, self.context._reserved_invocation_dir)
-        )
+        detail.update(_campaign_pre_sim_details(outcomes, invocation))
+        hook_lines = _campaign_pre_sim_report_lines(outcomes, invocation)
         detail.update(_campaign_build_infrastructure_detail(outcomes))
+        budget_lines = hook_lines
+        keys = getattr(self, "_current_published_pre_sim_keys", None)
+        if (
+            invocation is not None
+            and keys is not None
+            and any(
+                item.get("cycle_count") is not None
+                for outcome in outcomes
+                for item in outcome.observations
+            )
+        ):
+            budget_lines = _campaign_published_hook_lines(outcomes, invocation, frozenset(keys))
+        lines = _campaign_report_lines(
+            outcomes, coverage_campaigns, budget_lines, blocks=lines, report_path=report_path
+        )
+        lines.extend(hook_lines)
         if coverage_targets:
             detail.update(
                 coverage=True,
@@ -4481,7 +4702,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Compile, elaborate, and link selected Simulation Targets without tests."""
         preflight = self._elab_only_preflight()
         if isinstance(preflight, EndpointOutcome):
-            return preflight
+            return (
+                self._with_campaign_paths(preflight)
+                if preflight.exit_code != EXIT_SUCCESS
+                else preflight
+            )
         targets = preflight
         results: list[ElabOnlyTargetResult] = []
         result: EndpointOutcome | None = None
@@ -4526,10 +4751,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     "publish elaboration progress",
                     path=invocation / "progress.json" if invocation is not None else None,
                 )
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                detail={"progress_error": str(exc)},
-                report_text=f"sim: progress publication failed: {exc}",
+            return self._with_campaign_paths(
+                EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    detail={"progress_error": str(exc)},
+                    report_text=f"sim: progress publication failed: {exc}",
+                )
             )
 
     @staticmethod
@@ -4758,7 +4985,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if standalone is not None:
             lines.extend(standalone.lines)
         lines += ["", f"RESULT: {verdict} ({passed}/{len(results)})"]
-        report_text = "\n".join(lines)
+        report_text = self._with_campaign_paths(
+            EndpointOutcome(report_text="\n".join(lines))
+        ).report_text
         print(report_text)
         eda_tools = [result.eda_tool for result in results if result.eda_tool]
         if eda_tools:
@@ -5189,7 +5418,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if isinstance(exc, MissingExecutableError):
             return self._missing_executable_result(exc, targets[0])
         if isinstance(exc, SimulationBuildInfrastructureError):
-            return self._build_infrastructure_result(exc)
+            return self._build_infrastructure_result(exc, report_path=self._report_destination())
         if isinstance(exc, BaselineWorktreeError):
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
         return EndpointOutcome(
@@ -5220,7 +5449,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "and re-run; `booley doctor` checks the toolchain."
         )
         tail = "\n".join(exc.context.strip().splitlines()[-15:])
-        report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
+        report_text = self._with_campaign_paths(
+            EndpointOutcome(
+                report_text=f"{message}\n\n--- output tail ---\n{tail}" if tail else message
+            )
+        ).report_text
         print(report_text)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
@@ -5236,6 +5469,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     @staticmethod
     def _build_infrastructure_result(
         exc: SimulationBuildInfrastructureError,
+        *,
+        report_path: Path | None = None,
     ) -> EndpointOutcome:
         """Report a no-verdict build outcome without changing Criteria."""
         outcome = exc.outcome
@@ -5246,6 +5481,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         tail = build_output_tail(outcome.output)
         report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
+        if report_path is not None:
+            report_text += f"\n  report: {report_path.resolve()}"
         print(report_text)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
@@ -5654,6 +5891,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         target's verdict or cycle counts out of the surviving window.
         """
         lines = [*output_lines, *self._headline_lines(all_results)]
+        report_path = self._report_destination()
+        if report_path is not None:
+            lines.append(f"  report: {report_path}")
         any_inconclusive = any(r.inconclusive for r in all_results)
         targets_passed = sum(1 for r in all_results if r.passed)
         if any_inconclusive:

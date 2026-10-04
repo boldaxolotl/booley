@@ -9,7 +9,9 @@ simulation, synthesis, linting, and ticket workflows.
   `origin/main` (`git pull --ff-only` in the main checkout), then create a
   worktree and new branch from `main`.
 - Keep the main checkout on `main` and clean: make every edit in a worktree,
-  and leave no modified or untracked files in the main checkout.
+  and leave no modified or untracked files in the main checkout. Clean up only
+  paths you created in this session; report any other untracked path to the
+  user and leave it in place (it may hold another workflow's evidence).
 - Before creating that worktree, run the Agent Readiness Check's `prepare`
   phase with the intended `codex/` branch. After creating it and before
   modifying files, run `develop` from the intended worktree:

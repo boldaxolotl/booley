@@ -98,6 +98,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- Local RISC-V Sandbox Images rebuild once after this upgrade. `Dockerfile.riscv`
+  now builds the RISC-V toolchain, Spike, and the offline specifications in a
+  separate stage on plain Ubuntu and copies them into the image; the installed
+  tools and their versions are unchanged. ADR 0070 explains why.
+  ([#568](https://github.com/boldaxolotl/Booley/issues/568))
+
 - The Project `AGENTS.md` template now limits Doctor during task work: Flows
   plus at most plain `booley doctor`, with `booley doctor --deep` reserved for
   Project Setup, `/booley-heal`, and Booley version changes. Existing Projects

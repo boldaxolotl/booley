@@ -24,6 +24,7 @@ from booley.harness import init_cmd
 from booley.harness.setup import docker_image as idi
 from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
+from booley.runtime.dockerfile_syntax import build_context_imports
 
 FLAVOR = "booley-sandbox-riscv"
 
@@ -299,13 +300,12 @@ class TestShippedFlavorFiles:
     def test_flavor_dockerfiles_are_copy_free(self):
         """init builds a flavor with data/docker/ as the context so a
         pip-installed Booley (no repo root) can build it — a COPY would break
-        that silently, at build time, on someone else's machine."""
+        that silently, at build time, on someone else's machine. Copying from
+        a stage defined in the same file reads no build context (ADR 0070)."""
         docker_dir = idi.docker_data_dir()
         for dockerfile in idi.FLAVOR_IMAGES.values():
             body = (docker_dir / dockerfile).read_text(encoding="utf-8")
-            offenders = [
-                ln for ln in body.splitlines() if ln.strip().upper().startswith(("COPY ", "ADD "))
-            ]
+            offenders = [item.value for item in build_context_imports(body)]
             assert not offenders, f"{dockerfile} must stay COPY-free: {offenders}"
 
     def test_flavor_names_can_never_collide_with_a_generated_project_name(self):

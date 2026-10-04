@@ -853,9 +853,12 @@ and conflicts with `target`, `test`, explicit `mode`, `coverage`, `trace`, and `
 Structured campaign output reports `grade`, `complete`, aggregate
 `observation_counts`, and a maximum-32 `observations` preview. Every preview
 entry retains `test`, `execution`, `functional`, `assertions`,
-`assertion_count`, and bounded `detail`; `observation_total` and
-`observations_truncated` disclose whether the preview is complete. The
-independent observation axes mean:
+`assertion_count`, nullable `cycle_count`, and bounded `detail`; `observation_total` and
+`observations_truncated` disclose whether the preview is complete. The full
+`report.json.cycle_counts` mapping (see
+[FLOW_REPORTS.md](FLOW_REPORTS.md)) is dropped from inline output before the
+64 KiB structured budget check; read the numbered report for all counts.
+The independent observation axes mean:
 
 - `execution`: whether the simulator completed, timed out, was guard-aborted,
   or failed before producing trustworthy test evidence;

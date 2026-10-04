@@ -1089,6 +1089,7 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
         "functional",
         "assertions",
         "assertion_count",
+        "cycle_count",
         "detail",
     }
     assert details["observation_counts"]["execution"] == {"completed": 39, "timeout": 1}
@@ -1102,6 +1103,9 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
         observations=({"detail": {"reason": "intentional simulator failure"}},),
     )
 
-    assert _campaign_report_lines((outcome,))[0] == (
-        "sim_fail: FAIL (Simulation Campaign unavailable)\n  intentional simulator failure"
+    assert _campaign_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (
+        "sim_fail: FAIL (Simulation Campaign unavailable)\n"
+        f"  manifest: {(tmp_path / 'campaign/manifest.json').resolve()}\n"
+        f"  report: {(tmp_path / 'sim.json').resolve()}\n"
+        "  intentional simulator failure"
     )

@@ -113,6 +113,11 @@
         "type": "boolean",
         "default": false,
         "description": "With --coverage, report raw coverage without applying approved waivers; with a Coverage Criterion also requires --diagnostic"
+      },
+      "verbose": {
+        "type": "boolean",
+        "default": false,
+        "description": "Include full Simulation Campaign resume mismatch pointers and values"
       }
     },
     "additionalProperties": false

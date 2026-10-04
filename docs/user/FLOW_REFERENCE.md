@@ -144,6 +144,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |
 | `--no-waivers` | With `--coverage`, report raw coverage without applying approved waivers. With a Coverage Criterion it also needs `--diagnostic` (see [Collecting vs. gating](#collecting-vs-gating)). |
 | `--resume-from <manifest.json>` | Resume an interrupted run (see [Resuming](#resuming-an-interrupted-run)). |
+| `--verbose` | With `--resume-from`, include full Simulation Campaign mismatch pointers and values (also with `--dry-run`). |
 | `--result-verbosity <compact\|full>` | cocotb console detail. `full` prints every testcase; the complete XML/JSON is always kept. |
 | `--no-kill` | Skip the pre-run cleanup of stale simulator processes. Diagnostic use only. |
 
@@ -479,6 +480,13 @@ numbered report directory (qualified Target selectors are percent-encoded):
       native/merged/         merged Verilator database
       hooks/                 hook evidence, when collected
 ```
+
+Cycle counts: the numbered `report.json` lists every test's count under
+`cycle_counts.<Target selector>[]` as `{test, cycle_count}` (`test: null` for
+an unnamed test, or `cycle_counts_error: unavailable` if counts couldn't be
+collected). Each Target's `simulation.json` has them as `tests[].cycles`; find
+it via `detail.campaigns.<selector>.artifacts.simulation`, whose `path_base`
+may point at the original run after a resume.
 
 The Target reference's `coverage_campaign.path` resolves from the origin Target
 directory, as declared by `coverage_campaign.path_base: origin_target`. The
