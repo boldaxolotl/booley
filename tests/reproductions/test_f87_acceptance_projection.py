@@ -76,6 +76,8 @@ def _ticket_context(root: Path) -> TicketContext:
     )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_generated_projection_is_stable_and_markerless_drift_is_blocked_twice(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from booley.harness._ticket_ops import DirectTicketOps
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 from booley.ticket_board.board_layout import read_state_record, write_state_record
@@ -355,6 +357,8 @@ def _review_completion_case(tmp_path: Path, monkeypatch):
     return root, tio, unrelated_ticket, source, original
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_review_completion_blocks_on_product_edits_but_not_on_ignored_board_documents(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -379,6 +383,8 @@ def test_review_completion_blocks_on_product_edits_but_not_on_ignored_board_docu
     assert "lint_toy_new" in (root / "toy.core").read_text(encoding="utf-8")
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_closing_a_ticket_leaves_the_checkout_clean(tmp_path: Path, monkeypatch) -> None:
     """With init's ignore patterns, a user's ``git add -A`` never tracks the board.
 

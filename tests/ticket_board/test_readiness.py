@@ -61,6 +61,8 @@ def _assert_actual_intake(root: Path, project: Path, ticket: Path) -> None:
     assert not (root / "generated.hex").exists()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_check_ticket_ready_prepares_generated_target_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

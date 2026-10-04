@@ -9,6 +9,8 @@ from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from booley.criteria.state import DevelopmentState
 from booley.runtime.project_dir import reset_cache
@@ -50,6 +52,8 @@ from .test_ticket_baseline import (
 # ---------------------------------------------------------------------------
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_amend_preview_and_apply_commands(tmp_path, capsys):
     _, _, tio = _blocked_ticket(tmp_path)
     state = DevelopmentState.load(tio.logs_dir / "blocked-again/.runtime/booley_state.json")
@@ -148,6 +152,8 @@ def _paired_generated_amendment(
     return root, tio, slug, blocked, workspace
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(180)
 def test_amend_preview_and_apply_ignore_owned_generated_artifacts(tmp_path, capsys):
     root, tio, slug, blocked, workspace = _paired_generated_amendment(tmp_path)
     prepare_acceptance_checkout(root, workspace, slug=slug, ticket_path=blocked)
@@ -200,6 +206,8 @@ def test_amend_preview_and_apply_ignore_owned_generated_artifacts(tmp_path, caps
         assert "picosoc/FUSESOC_IGNORE" not in committed
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(150)
 def test_amend_apply_rejects_changed_generated_projection(tmp_path, capsys):
     root, tio, slug, blocked, workspace = _paired_generated_amendment(tmp_path)
     prepare_acceptance_checkout(root, workspace, slug=slug, ticket_path=blocked)
@@ -501,6 +509,8 @@ class TestCmdNextStage:
 
 
 class TestCmdValidateLogs:
+    # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+    @pytest.mark.timeout(90)
     def test_validate_logs_executable_runtime_ticket(self, tmp_path, monkeypatch, capsys, request):
         root, project_dir, tio = _paired_basis_project(tmp_path)
         slug = "validate-runtime-ticket"

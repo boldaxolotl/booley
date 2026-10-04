@@ -278,6 +278,16 @@ Porting EDA tools is #1, but not the only way to help:
   to fix.
 - **Match the surrounding code**: comment density, naming, and idiom.
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are three PRs.
+- **Keep slow tests well inside their time budget.** CI gives each test 60
+  seconds unless a `@pytest.mark.timeout(N)` marker says otherwise. On Windows
+  an expired budget kills the whole xdist worker with no traceback, so Windows
+  CI runs with `--timeout-headroom=0.5`: a test that passes but uses more than
+  half its budget fails, and the message names the marker value to use. Size a
+  budget at three times the test's slowest Windows CI duration, rounded up to
+  a 30-second multiple. Per-test durations are the `time` values in the
+  uploaded `junit-windows-*` and `full-junit-windows-latest-*` artifacts, and
+  each test's `timeout_headroom_ratio` property records how much of its
+  budget it used.
 
 ## Branch and pull request workflow
 

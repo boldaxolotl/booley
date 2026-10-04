@@ -244,6 +244,8 @@ async def test_old_amendment_cohort_repairs_without_a_readable_recent_snapshot(
 
 
 @pytest.mark.asyncio
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 async def test_explicit_intake_recovers_a_queued_unfinished_refresh(tmp_path, monkeypatch):
     from booley.harness.setup.intake import run
     from booley.ticket_board.basis_refresh import load_basis_refresh
@@ -257,6 +259,8 @@ async def test_explicit_intake_recovers_a_queued_unfinished_refresh(tmp_path, mo
 
 
 @pytest.mark.parametrize("content", ["[]", "{"])
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_corrupt_amendment_history_is_an_attributed_domain_error(tmp_path, content):
     _root, tio, snapshot, _state, first = _legacy_amended_runtime(tmp_path, 1)
     path = snapshot.parent / "amendments" / f"{first['operation_id']}.json"
@@ -267,6 +271,8 @@ def test_corrupt_amendment_history_is_an_attributed_domain_error(tmp_path, conte
     assert snapshot.read_bytes() == before
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_preview_and_handoff_explain_demoted_unchanged_proof(tmp_path):
     _root, _ticket, tio = _blocked_ticket(tmp_path)
     log = tio.logs_dir / "blocked-again"

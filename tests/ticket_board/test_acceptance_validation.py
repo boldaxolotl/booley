@@ -429,6 +429,8 @@ def test_live_only_ordinary_core_remains_rejected(tmp_path: Path) -> None:
         ),
     ],
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_authored_acceptance_inputs_remain_protected(
     tmp_path: Path,
     paired: bool,

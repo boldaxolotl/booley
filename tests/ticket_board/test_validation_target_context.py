@@ -262,6 +262,8 @@ def test_coverage_accepts_verilator_target(project, capsys) -> None:
     _assert_both_valid(root, path, capsys)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_draft_provider_target_is_not_consumer_authored(project, capsys) -> None:
     root, board = project
     _provider(root, board)
@@ -329,6 +331,8 @@ def _deferred_provider(root: Path, board: TicketIO) -> None:
     assert board.enqueue_ticket("provider")
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_draft_provider_test_table_and_missing_rtl_placeholder(project, capsys) -> None:
     root, board = project
     _deferred_provider(root, board)
@@ -420,6 +424,8 @@ def test_published_validation_rejects_invalid_machine_metadata(project, capsys) 
     _assert_both_reject(root, path, capsys, "generation")
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_draft_validation_rejects_unplanned_consumer_target(project, capsys) -> None:
     root, board = project
     _provider(root, board)

@@ -860,6 +860,8 @@ def test_cleanup_preserves_dirty_ticket_worktree_until_retry(
     assert not ticket_worktree.exists()
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_retry_resumes_after_project_cleanup_completed_before_journal_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -986,6 +988,8 @@ def test_cross_repository_plan_conflict_leaves_repositories_unmodified(
     assert _git(project, "worktree", "list", "--porcelain") == project_worktrees
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_cleanup_validates_every_identity_before_removing_any_ref(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1051,6 +1055,8 @@ def test_cleanup_prevalidates_keepalives_before_removing_any_artifact(
         assert acceptance_impl._ref_commit(repository, candidate["staging_ref"]) is not None
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_retry_rejects_recreated_artifact_for_cleaned_participant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1184,6 +1190,8 @@ def test_finalization_retains_submodule_target_and_test_registration(tmp_path: P
     assert '"acme:lib:retained:1.0#retained"' in retained
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_complete_finalizes_target_in_project_repository_before_outer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1392,6 +1400,8 @@ def test_schema_two_retry_is_rejected_after_hard_cutoff(
     assert "acceptance journal schema must be 5" in capsys.readouterr().err
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_schema_two_retry_rejects_unrelated_staging_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1432,6 +1442,8 @@ def _assert_destinations_unchanged(
         )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_retry_rejects_unknown_finalization_identity_before_any_ref_moves(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1472,6 +1484,8 @@ def test_retry_rejects_unknown_finalization_identity_before_any_ref_moves(
     assert tio.entry["status"] == "review"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_retry_rejects_tag_object_at_finalized_staging_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1560,6 +1574,8 @@ def _assert_retained_target_removal_completion(
 @pytest.mark.parametrize(
     "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_retry_converges_each_finalization_ref_update(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1578,6 +1594,8 @@ def test_retry_converges_each_finalization_ref_update(
     _assert_retained_target_removal_completion(root, project, tio, participants)
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_retry_recreates_absent_staging_ref_at_finalized_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1608,6 +1626,8 @@ def test_retry_recreates_absent_staging_ref_at_finalized_identity(
     )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_target_finalization_cleanup_removes_all_journal_owned_refs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1642,6 +1662,8 @@ def test_target_finalization_cleanup_removes_all_journal_owned_refs(
 @pytest.mark.parametrize(
     "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_retry_converges_finalized_identity_journal_interruption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1679,6 +1701,8 @@ def test_retry_converges_finalized_identity_journal_interruption(
 @pytest.mark.parametrize(
     "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_retry_converges_each_finalized_keepalive_update(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1724,6 +1748,8 @@ def test_retry_converges_each_finalized_keepalive_update(
 @pytest.mark.parametrize(
     "timing", ["before", pytest.param("after", marks=pytest.mark.exhaustive_recovery)]
 )
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_retry_converges_finalization_worktree_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1842,6 +1868,8 @@ def test_retry_rejects_changed_target_removal_policy(tmp_path: Path) -> None:
         )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "rtl"
     outer_base = _repository(root)
@@ -1876,6 +1904,8 @@ def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monk
     assert _git(root, "show", "main:design.txt") == "outer implementation"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_complete_preserves_unrelated_untracked_project_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1904,6 +1934,8 @@ def test_complete_preserves_unrelated_untracked_project_state(
     )
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_project_gitignore_backfill_blocks_until_committed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2024,6 +2056,8 @@ def test_complete_preserves_unrelated_untracked_outer_state(tmp_path: Path) -> N
     assert _git(root, "show", "main:design.txt") == "implemented"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(120)
 def test_retry_rolls_forward_after_only_project_was_published(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2282,6 +2316,8 @@ def test_complete_rejects_unrelated_dirty_product_edit(tmp_path: Path) -> None:
     assert tio.entry["status"] == "review"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_complete_accepts_project_board_transition_through_bind_mount_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2305,6 +2341,8 @@ def test_complete_rejects_staged_board_transition_through_bind_mount_alias(
     assert tio.entry["status"] == "review"
 
 
+# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
+@pytest.mark.timeout(90)
 def test_complete_preserves_unrelated_project_edit_through_bind_mount_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
