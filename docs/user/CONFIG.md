@@ -1197,11 +1197,21 @@ upstream_base = "0123456789abcdef0123456789abcdef01234567"
 Set both keys together in the Project's `booley.toml`. The base must be a
 locally available commit reachable from the source's advertised branches or tags;
 pull-request refs and other ref namespaces grant no import exemption. Fetch
-the source's complete history if necessary before pushing. Only that base and
+the source's complete history if necessary before pushing. Verification needs
+at least one currently advertised branch or tag containing the base available
+locally. If upstream advances beyond your fetched history, fetch it again before
+pushing; the hook never downloads objects automatically. This applies to
+incremental pushes too, even when the destination already has the import.
+Only that base and
 its ancestors are exempt. Advancing upstream never exempts later local commits,
 even if upstream now contains them. The trusted source and pinned base are
 owner-selected policy: do not point them at a copy of your local development
 branch to exempt new work.
+
+After importing newer upstream history, deliberately advance the pin to the
+upstream commit you imported, not your local merge commit. Until then, newer
+upstream commits receive ordinary checks. The new local merge commit and its
+changed paths remain checked in either case.
 
 Supported source locations are canonical HTTPS or SSH URLs (including SSH
 `host:path` syntax), or an absolute local repository path or `file://` URL.

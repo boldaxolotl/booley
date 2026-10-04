@@ -1814,6 +1814,27 @@ def test_minimum_git_upstream_base_can_be_advertised_ancestor(matrix_repo: Path)
     assert _push(_commit_symlink(repo, "guide", ".booley_project/private")) == 1
 
 
+def test_minimum_git_upstream_advance_requires_fetch_before_verification(
+    matrix_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    source = repo.parent / "advancing-source"
+    _git(repo, "clone", str(repo), str(source))
+    _git(source, "config", "user.name", "Upstream Dev")
+    _git(source, "config", "user.email", "upstream@example.com")
+    _git(source, "config", "maintenance.auto", "false")
+    advanced = _commit(source, "fix(core): ordinary upstream advancement")
+    with pytest.raises(subprocess.CalledProcessError):
+        _git(repo, "cat-file", "-e", advanced)
+    _upstream_pair(repo, source, base)
+    assert _push(base) == 1
+    assert "fetch upstream history" in capsys.readouterr().err
+    _git(repo, "fetch", str(source), "main")
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude local metadata")) == 1
+
+
 @pytest.mark.parametrize("base_kind", ["fresh", "tag", "blob", "missing", "wrong-format"])
 def test_minimum_git_invalid_upstream_base_refuses(
     matrix_repo: Path, base_kind: str, capsys: pytest.CaptureFixture[str]
