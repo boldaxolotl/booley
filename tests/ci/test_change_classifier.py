@@ -541,6 +541,7 @@ def test_image_related_test_requires_image_smoke(tmp_path: Path) -> None:
             # RISC-V candidate composes, so they must run the full lane.
             ".github/scripts/riscv_tooling.py",
             ".github/workflows/riscv-tooling-publish.yml",
+            "src/booley/runtime/dockerfile_syntax.py",
             ".github/actions/prepare-picorv32-demo/action.yml",
             "demo/picorv32.core",
         }

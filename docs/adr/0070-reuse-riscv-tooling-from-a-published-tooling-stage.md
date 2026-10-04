@@ -6,7 +6,9 @@ stage's exact text, a key-schema version, and the platform. The stage starts `FR
 digest-pinned Ubuntu image as the final stage of `Dockerfile.base`, declares every `ARG` it uses
 inside the stage, and copies nothing from the build context. It must not depend on the Booley
 runtime base, the standard substrate, or any other application image. The key therefore covers
-every input Booley pins. Mutable apt state is not covered; see Consequences.
+every input Booley pins. Mutable apt state is not covered; see Consequences. Spike's `configure` disables
+its optional Boost support explicitly, so packages the builder happens to carry cannot change which
+Spike the key names.
 
 The final stage stays `FROM booley-standard-substrate`. It installs the RISC-V runtime helper
 packages (`srecord`, `device-tree-compiler`, `poppler-utils`), copies `/opt/riscv` and
@@ -15,8 +17,10 @@ its layer-prefix contract over the exact standard substrate, and every candidate
 RISC-V runtime contract, image-size check, and PicoRV32 demo.
 
 A trusted publisher workflow builds `--target riscv-tooling` only from `main` and stores it in GHCR as
-`booley-sandbox-base:riscv-tooling-<key>`. It verifies a staging tag before creating the final tag,
-and it never replaces an existing final tag. The `Tests` workflow resolves that tag to a digest,
+`booley-sandbox-base:riscv-tooling-<key>`. It pushes the candidate by digest only, verifies that
+digest, and then creates the final tag, confirming that the tag serves the verified Linux/AMD64
+image manifest. It never replaces an existing final tag. Publisher runs serialize per key, so a
+queued publication of one key never displaces another key's. The `Tests` workflow resolves that tag to a digest,
 checks its role and key labels, and passes the digest as a named build context that overrides the
 `riscv-tooling` stage. CI builds the stage itself in three cases: the tag is absent (for example, in
 a pull request that changes the stage), the registry cannot be reached, or the composed candidate
@@ -75,7 +79,8 @@ also fails the existing Spike and multilib probes. Apt packages in both images s
 key does not capture apt drift: whichever apt state the first publication sees becomes the artifact
 for that key. The stable-base contract accepts the same limitation. Here it has three mitigations.
 The publisher records the builder's `libc6`, `libstdc++6`, `libgcc-s1`, and compiler package
-versions on the published image. A composed candidate that fails the quick compatibility check falls back to a
+versions on the published image, and it runs the session runtime contract's own RISC-V probes
+against the bare tooling image before promotion. A composed candidate that fails the quick compatibility check falls back to a
 local build instead of failing the pull request. Editing the stage, even only a comment, produces a
 new key, which forces a fresh publication.
 

@@ -14,9 +14,10 @@ from tests.sandbox_image_contract import (
     dockerfile_parents,
     find_step,
     load_sources,
-    logical_instructions,
     validate_sources,
 )
+
+from booley.runtime.dockerfile_syntax import logical_instructions
 
 _ROOT = Path(__file__).parents[2]
 

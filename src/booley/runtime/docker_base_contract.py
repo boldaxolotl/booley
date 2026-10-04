@@ -10,12 +10,11 @@ import re
 import subprocess
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 DEFAULT_MANIFEST = "src/booley/data/docker/stable-base-inputs.txt"
 _CONTRACT_LABEL = "io.booley.runtime-base.contract"
-# Human wording for label mismatches; other labels are reported by name.
-_LABEL_PURPOSES = {_CONTRACT_LABEL: "stable-base contract"}
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE_INDEX_MEDIA_TYPES = {
     "application/vnd.oci.image.index.v1+json",
@@ -178,8 +177,7 @@ def _verify_remote_image_config(
         label = labels.get(name) if isinstance(labels, dict) else None
         if label != expected:
             raise ValueError(
-                f"{_LABEL_PURPOSES.get(name, name)} mismatch: expected {expected}, "
-                f"image has {label or '<none>'}"
+                f"{name} label mismatch: expected {expected}, image has {label or '<none>'}"
             )
 
 
@@ -191,13 +189,30 @@ def _is_attestation_manifest(manifest: dict) -> bool:
     return manifest.get("artifactType") is not None or reference_type == "attestation-manifest"
 
 
+@dataclass(frozen=True)
+class RemoteImage:
+    """A label-verified registry image.
+
+    ``digest_reference`` pins the tag's top-level index or manifest.
+    ``platform_manifest`` is the Linux/AMD64 image manifest digest Docker pulls;
+    two references with equal ``platform_manifest`` run identical bytes even
+    when their indexes differ (for example, by an index annotation).
+    """
+
+    digest_reference: str
+    platform_manifest: str
+
+
 def resolve_image_remote(reference: str, expected_contract: str) -> str:
     """Resolve and validate a stable-base registry image without pulling its layers."""
-    return resolve_labeled_image_remote(reference, {_CONTRACT_LABEL: expected_contract})
+    image = resolve_labeled_image_remote(reference, {_CONTRACT_LABEL: expected_contract})
+    return image.digest_reference
 
 
-def resolve_labeled_image_remote(reference: str, expected_labels: Mapping[str, str]) -> str:
-    """Resolve a Linux/AMD64 registry image to its digest and verify its labels.
+def resolve_labeled_image_remote(
+    reference: str, expected_labels: Mapping[str, str]
+) -> RemoteImage:
+    """Resolve a Linux/AMD64 registry image and verify its labels.
 
     Reads only manifests and the image configuration, never layers. Raises
     ``ValueError`` when the image is malformed or any expected label differs,
@@ -232,7 +247,7 @@ def resolve_labeled_image_remote(reference: str, expected_labels: Mapping[str, s
     _require_digest(config.get("digest"), "image configuration")
     image = _remote_document(image_reference, "Image")
     _verify_remote_image_config(image, expected_labels, image_reference)
-    return f"{repository}@{top_digest}"
+    return RemoteImage(f"{repository}@{top_digest}", image_digest)
 
 
 def resolve_image_pull(reference: str, expected_contract: str) -> str:

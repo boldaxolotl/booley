@@ -11,7 +11,6 @@ visible, and the no-checkout fallbacks.
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -25,22 +24,9 @@ from booley.harness import init_cmd
 from booley.harness.setup import docker_image as idi
 from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
+from booley.runtime.dockerfile_syntax import build_context_imports
 
 FLAVOR = "booley-sandbox-riscv"
-
-
-def _context_copies(body: str) -> list[str]:
-    """Return COPY/ADD lines that read the build context.
-
-    ``COPY --from=<stage>`` naming a stage of the same file reads no context.
-    """
-    stages = set(re.findall(r"^FROM\s+\S+\s+AS\s+(\S+)\s*$", body, re.I | re.M))
-    return [
-        line
-        for line in body.splitlines()
-        if line.strip().upper().startswith(("COPY ", "ADD "))
-        and not any(line.strip().startswith(f"COPY --from={stage} ") for stage in stages)
-    ]
 
 
 @pytest.fixture
@@ -319,12 +305,8 @@ class TestShippedFlavorFiles:
         docker_dir = idi.docker_data_dir()
         for dockerfile in idi.FLAVOR_IMAGES.values():
             body = (docker_dir / dockerfile).read_text(encoding="utf-8")
-            offenders = _context_copies(body)
+            offenders = [item.value for item in build_context_imports(body)]
             assert not offenders, f"{dockerfile} must stay COPY-free: {offenders}"
-
-    def test_copy_free_check_rejects_context_copies_beside_stage_copies(self, tmp_path):
-        body = "FROM x@sha256:1 AS tools\nFROM base\nCOPY --from=tools /a /a\nCOPY src/ /src\n"
-        assert _context_copies(body) == ["COPY src/ /src"]
 
     def test_flavor_names_can_never_collide_with_a_generated_project_name(self):
         """No repo name can generate a tag that shadows a flavor.

@@ -9,6 +9,7 @@ on:
     paths:
       - src/booley/data/docker/Dockerfile.riscv
       - .github/scripts/riscv_tooling.py
+      - src/booley/runtime/dockerfile_syntax.py
       - .github/workflows/riscv-tooling-publish.yml
   workflow_dispatch:
 
@@ -16,22 +17,19 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: boldaxolotl/booley-sandbox-base
 
-# Publication is idempotent per key. Never cancel a run mid-promotion; a newer
-# run for the same key finds the tag and exits, and a different key is a
-# different tag.
-concurrency:
-  group: publish-riscv-tooling
-  cancel-in-progress: false
-
 jobs:
-  publish:
+  key:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 5
     permissions:
       contents: read
-      packages: write
-
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      tag: ${{ steps.key.outputs.tag }}
+      image: ${{ steps.key.outputs.image }}
+      labels: ${{ steps.key.outputs.labels }}
+      revision: ${{ steps.key.outputs.revision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -39,10 +37,28 @@ jobs:
         id: key
         run: |
           python .github/scripts/riscv_tooling.py key --github-output "${GITHUB_OUTPUT}"
-          {
-            echo "revision=$(git rev-parse HEAD)"
-            echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
-          } >> "${GITHUB_OUTPUT}"
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+  publish:
+    needs: key
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    # One group per tooling key. Runs for the same key serialize, so the
+    # absence re-check before promotion cannot race another promotion of that
+    # tag; a newer queued run replacing an older one is harmless because both
+    # publish the same key. Different keys never share a group, so a queued
+    # key is never dropped. Never cancel a run mid-promotion.
+    concurrency:
+      group: publish-riscv-tooling-${{ needs.key.outputs.key }}
+      cancel-in-progress: false
+    env:
+      FINAL: ${{ needs.key.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -60,7 +76,9 @@ jobs:
           python .github/scripts/riscv_tooling.py published --github-output "${GITHUB_OUTPUT}"
 
       # The stage is 2+ GB and rebuilt only when its text changes, so no
-      # Actions cache is read or written.
+      # Actions cache is read or written. The candidate is pushed by digest
+      # only: no staging tag is left behind, and an unpromoted candidate is
+      # never reachable by a tag lookup.
       - name: Build and push candidate tooling image
         id: build
         if: steps.existing.outputs.state == 'absent'
@@ -69,64 +87,40 @@ jobs:
           context: src/booley/data/docker
           file: src/booley/data/docker/Dockerfile.riscv
           target: riscv-tooling
-          push: true
           sbom: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.key.outputs.tag }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           labels: |
-            io.booley.artifact.role=riscv-tooling
-            io.booley.riscv-tooling.key=${{ steps.key.outputs.key }}
-            io.booley.build.source-revision=${{ steps.key.outputs.revision }}
-            io.booley.build.recipe-fingerprint=${{ steps.key.outputs.recipe_fingerprint }}
+            ${{ needs.key.outputs.labels }}
+            io.booley.build.source-revision=${{ needs.key.outputs.revision }}
             io.booley.build.origin=registry
 
       - name: Verify candidate labels and digest
         id: candidate
         if: steps.existing.outputs.state == 'absent'
         env:
-          CANDIDATE_TAG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.key.outputs.tag }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           BUILT: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
-          inspected="$(python .github/scripts/riscv_tooling.py published --reference "${CANDIDATE_TAG}")"
-          printf '%s\n' "${inspected}" >> "${GITHUB_OUTPUT}"
-          verified="$(sed -n 's/^digest_reference=//p' <<< "${inspected}")"
+          python .github/scripts/riscv_tooling.py published \
+            --reference "${BUILT}" --github-output "${GITHUB_OUTPUT}"
+          verified="$(sed -n 's/^digest_reference=//p' "${GITHUB_OUTPUT}" | tail -n 1)"
           if test "${verified}" != "${BUILT}"; then
-            echo "::error::candidate tag resolves to ${verified:-nothing}, build produced ${BUILT}"
+            echo "::error::candidate resolves to ${verified:-nothing}, build produced ${BUILT}"
             exit 1
           fi
 
+      # The checks are the session runtime contract's own [riscv] probes and
+      # tooling paths, so the publisher and the composed-image contract can
+      # never drift apart.
       - name: Verify candidate tooling
         if: steps.existing.outputs.state == 'absent'
         env:
           CANDIDATE: ${{ steps.candidate.outputs.digest_reference }}
         run: |
+          checks="${RUNNER_TEMP}/riscv-tooling-checks.sh"
+          python .github/scripts/riscv_tooling.py checks > "${checks}"
           docker pull "${CANDIDATE}"
-          docker run --rm -i "${CANDIDATE}" bash -euo pipefail <<'VERIFY'
-          riscv-none-elf-gcc --version
-          riscv32-unknown-elf-gcc --version >/dev/null
-          riscv64-unknown-elf-gcc --version >/dev/null
-          spike --help >/dev/null
-          test "$(riscv-none-elf-gcc -print-multi-lib | wc -l)" -eq 32
-          set -- $(find /opt/riscv/riscv-none-elf/lib -type f -name libg.a)
-          test "$#" -eq 32
-          for duplicate do
-            test "${duplicate%/libg.a}/libc.a" -ef "${duplicate}"
-          done
-          checked=0
-          while IFS= read -r -d '' path; do
-            case "$(file -b "${path}")" in
-              ELF*x86-64*dynamically\ linked*) ;;
-              *) continue ;;
-            esac
-            checked=$((checked + 1))
-            if ldd "${path}" 2>&1 | grep -q 'not found'; then
-              ldd "${path}" >&2
-              exit 1
-            fi
-          done < <(find /opt/riscv/bin /opt/riscv/lib /opt/riscv/libexec -type f -print0)
-          test "${checked}" -ge 10
-          test -s /opt/riscv-docs/INDEX.md
-          VERIFY
+          docker run --rm "${CANDIDATE}" riscv-none-elf-gcc --version
+          docker run --rm -i "${CANDIDATE}" bash < "${checks}"
 
       # A build cannot label itself with versions it produces, so the builder's
       # ABI-relevant package versions become an index annotation at promotion
@@ -136,6 +130,8 @@ jobs:
         if: steps.existing.outputs.state == 'absent'
         env:
           CANDIDATE: ${{ steps.candidate.outputs.digest_reference }}
+          KEY: ${{ needs.key.outputs.key }}
+          REVISION: ${{ needs.key.outputs.revision }}
         run: |
           evidence="${RUNNER_TEMP}/riscv-tooling-evidence"
           mkdir -p "${evidence}"
@@ -144,9 +140,9 @@ jobs:
           packages="${packages% }"
           printf '%s\n' "${packages}" > "${evidence}/builder-packages.txt"
           {
-            echo "key=${{ steps.key.outputs.key }}"
+            echo "key=${KEY}"
             echo "candidate=${CANDIDATE}"
-            echo "revision=${{ steps.key.outputs.revision }}"
+            echo "revision=${REVISION}"
           } > "${evidence}/candidate.txt"
           echo "packages=${packages}" >> "${GITHUB_OUTPUT}"
 
@@ -158,13 +154,14 @@ jobs:
           path: ${{ runner.temp }}/riscv-tooling-evidence/
           if-no-files-found: error
 
-      # Re-check right before promotion: the concurrency group serializes this
-      # workflow, but the registry itself does not make tags immutable.
+      # Re-check right before promotion: the per-key concurrency group
+      # serializes this tag's publishers, but the registry itself does not
+      # make tags immutable. Promotion writes a new index (the annotation), so
+      # `promoted` then proves the final tag serves the verified image manifest.
       - name: Promote verified candidate to the key tag
         if: steps.existing.outputs.state == 'absent'
         env:
           CANDIDATE: ${{ steps.candidate.outputs.digest_reference }}
-          FINAL: ${{ steps.key.outputs.image }}
           PACKAGES: ${{ steps.packages.outputs.packages }}
         run: |
           state="$(python .github/scripts/riscv_tooling.py published | sed -n 's/^state=//p')"
@@ -176,20 +173,20 @@ jobs:
           docker buildx imagetools create \
             --annotation "index:io.booley.riscv-tooling.builder-packages=${PACKAGES}" \
             --tag "${FINAL}" "${CANDIDATE}"
-          python .github/scripts/riscv_tooling.py published | grep -qx 'state=present'
+          python .github/scripts/riscv_tooling.py promoted --candidate "${CANDIDATE}"
 
       - name: Summarize publication
         if: always()
         env:
           STATE: ${{ steps.existing.outputs.state }}
-          FINAL: ${{ steps.key.outputs.image }}
+          KEY: ${{ needs.key.outputs.key }}
           CANDIDATE: ${{ steps.candidate.outputs.digest_reference }}
           PACKAGES: ${{ steps.packages.outputs.packages }}
         run: |
           {
             echo "### RISC-V tooling image"
             echo
-            echo "- Key: \`${{ steps.key.outputs.key }}\`"
+            echo "- Key: \`${KEY}\`"
             echo "- Tag: \`${FINAL}\`"
             if test "${STATE}" = present; then
               echo "- Already published; nothing built."

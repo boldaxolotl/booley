@@ -8,13 +8,14 @@ import shlex
 from pathlib import Path
 
 import yaml
-from tests.sandbox_image_contract import logical_instructions
 from tests.sidecar_image_helpers import (
     DIND_IMAGE,
     SIDECAR_ALPINE_BASE,
     SIDECAR_BOOKWORM_BASE,
     SIDECAR_PYTHON_VERSION,
 )
+
+from booley.runtime.dockerfile_syntax import logical_instructions
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
 _DOCKER_DIR = _DOCKERFILE.parent
@@ -553,21 +554,28 @@ def test_riscv_tooling_publisher_is_main_only_and_keyed_on_its_inputs() -> None:
     workflow = _workflow(_RISCV_TOOLING_PUBLISHER)
     # PyYAML's YAML 1.1 resolver reads the Actions key ``on`` as boolean true.
     events = workflow[True]
+    key_job = workflow["jobs"]["key"]
     job = workflow["jobs"]["publish"]
 
     assert events["push"]["branches"] == ["main"]
-    # The key reads Dockerfile.riscv and its own derivation; either change
-    # can mint a new key, so either must trigger publication.
+    # The key reads Dockerfile.riscv through its own derivation and parser;
+    # any of them can mint a new key, so each must trigger publication.
     assert set(events["push"]["paths"]) == {
         "src/booley/data/docker/Dockerfile.riscv",
         ".github/scripts/riscv_tooling.py",
+        "src/booley/runtime/dockerfile_syntax.py",
         _RISCV_TOOLING_PUBLISHER,
     }
     assert "workflow_dispatch" in events
-    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert key_job["if"] == "github.ref == 'refs/heads/main'"
+    assert key_job["permissions"] == {"contents": "read"}
+    assert job["needs"] == "key"
     assert job["permissions"] == {"contents": "read", "packages": "write"}
-    assert workflow["concurrency"] == {
-        "group": "publish-riscv-tooling",
+    # A workflow-wide group keeps only one pending run, so a queued key could
+    # be dropped behind another key's publication. Group per key instead.
+    assert "concurrency" not in workflow
+    assert job["concurrency"] == {
+        "group": "publish-riscv-tooling-${{ needs.key.outputs.key }}",
         "cancel-in-progress": False,
     }
 
@@ -592,24 +600,29 @@ def test_riscv_tooling_publisher_stages_verifies_then_promotes_without_overwrite
 
     build = _named_step(job, order[1])["with"]
     assert build["target"] == "riscv-tooling"
-    assert (
-        build["tags"].strip().endswith("-candidate-${{ github.run_id }}-${{ github.run_attempt }}")
-    )
-    assert "io.booley.artifact.role=riscv-tooling" in build["labels"]
-    assert "io.booley.riscv-tooling.key=${{ steps.key.outputs.key }}" in build["labels"]
+    # Digest-only push: no staging tag accumulates or resolves by name.
+    assert "tags" not in build
+    assert "push" not in build
+    assert "push-by-digest=true" in build["outputs"]
+    assert "push=true" in build["outputs"]
+    # Role, key, and recipe labels come from the script, not retyped here.
+    assert build["labels"].startswith("${{ needs.key.outputs.labels }}")
+    assert "io.booley.riscv-tooling.key=" not in build["labels"]
     assert "cache-from" not in build
     assert "cache-to" not in build
     assert "build-args" not in build
 
     verify = _named_step(job, order[3])["run"]
-    for check in ("spike --help", "-print-multi-lib", "libg.a", "ldd", "riscv64-unknown-elf-gcc"):
-        assert check in verify
+    assert "riscv_tooling.py checks" in verify
+    assert 'bash < "${checks}"' in verify
 
     promote = _named_step(job, order[5])["run"]
     assert promote.index("riscv_tooling.py published") < promote.index("imagetools create")
+    assert promote.index("imagetools create") < promote.index("riscv_tooling.py promoted")
     assert "not overwriting" in promote
     assert "index:io.booley.riscv-tooling.builder-packages=" in promote
     assert '--tag "${FINAL}" "${CANDIDATE}"' in promote
+    assert '--candidate "${CANDIDATE}"' in promote
 
 
 def test_only_the_tooling_publisher_writes_riscv_tooling_tags() -> None:

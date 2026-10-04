@@ -31,6 +31,7 @@ RISCV_IMAGE_FILES = frozenset(
         ".github/scripts/verify_riscv_image_contract.sh",
         ".github/workflows/riscv-tooling-publish.yml",
         ".github/workflows/test.yml",
+        "src/booley/runtime/dockerfile_syntax.py",
         *PICORV32_INPUT_FILES,
     }
 )

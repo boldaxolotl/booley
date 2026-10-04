@@ -178,14 +178,20 @@ stage gains a build-context `COPY`/`ADD`, a `RUN --mount`, an undigested
 without changing its key.
 
 `riscv-tooling-publish.yml` runs on `main` when the stage or the key
-derivation changes. It builds `--target riscv-tooling`, pushes a
-run-scoped candidate tag, verifies its labels, toolchain, multilibs, hard
-links, and shared-library closure, records the builder's `libc6`,
-`libstdc++6`, `libgcc-s1`, and `g++` versions, and only then creates
+derivation changes. It builds `--target riscv-tooling` and pushes the
+candidate by digest only, so failed runs leave no tag behind. It verifies the
+candidate's labels, then runs the session runtime contract's `[riscv]` probes
+and tooling paths against it (`riscv_tooling.py checks`): toolchain,
+multilibs, hard links, Spike, and the shared-library closure of every host ELF
+under `/opt/riscv`. It records the builder's `libc6`, `libstdc++6`,
+`libgcc-s1`, and `g++` versions, and only then creates
 `ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-<key>` with those
-versions as an index annotation. An existing key tag with matching labels ends
-the run; one with different labels fails it. The publisher never overwrites a
-key tag, and no other workflow writes one. Check a key with
+versions as an index annotation. `riscv_tooling.py promoted` then confirms the
+tag serves the verified image manifest. An existing key tag with matching
+labels ends the run; one with different labels fails it. Only buildx's exact
+missing-tag error counts as absence; any other registry error fails the run.
+Runs serialize per key. The publisher never overwrites a key tag, and no other
+workflow writes one. Check a key with
 `python .github/scripts/riscv_tooling.py published`.
 
 The `Tests` workflow does not consume the published image yet; its RISC-V lane

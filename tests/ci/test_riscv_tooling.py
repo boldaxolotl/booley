@@ -14,6 +14,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 import riscv_tooling
 from riscv_tooling import (
+    DEFAULT_CONTRACT,
     DEFAULT_DOCKERFILE,
     ToolingRegistryError,
     ToolingStageError,
@@ -21,8 +22,13 @@ from riscv_tooling import (
     published_image,
     stage_text,
     tag,
+    tooling_checks,
     tooling_key,
+    verify_promotion,
 )
+
+from booley.runtime.docker_base_contract import RemoteImage
+from booley.runtime.image_provenance import resolve_recipe_fingerprint
 
 _DIGEST = "sha256:" + "a" * 64
 _TOOLING = f"""FROM docker.io/library/ubuntu:26.04@{_DIGEST} AS riscv-tooling
@@ -146,14 +152,29 @@ def test_tag_rejects_malformed_keys() -> None:
 
 
 def test_shipped_dockerfile_yields_a_key() -> None:
-    text = stage_text(_ROOT / DEFAULT_DOCKERFILE).decode("utf-8")
+    text = stage_text(DEFAULT_DOCKERFILE).decode("utf-8")
 
     assert text.startswith("FROM docker.io/library/ubuntu:26.04@sha256:")
     assert "ARG SPIKE_REF=" in text
     assert "ARG XPACK_GCC_VERSION=" in text
     assert "ARG PSABI_SHA256=" in text
     assert "booley-standard-substrate" not in text
-    assert len(tooling_key(_ROOT / DEFAULT_DOCKERFILE)) == 64
+    assert len(tooling_key(DEFAULT_DOCKERFILE)) == 64
+
+
+def test_default_paths_do_not_depend_on_the_working_directory() -> None:
+    script = _ROOT / ".github/scripts/riscv_tooling.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "key"],
+        cwd=_ROOT / "tests",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"key={tooling_key(DEFAULT_DOCKERFILE)}\n" in result.stdout
 
 
 def test_cli_writes_github_outputs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -164,9 +185,15 @@ def test_cli_writes_github_outputs(tmp_path: Path, capsys: pytest.CaptureFixture
     assert main(["key", "--dockerfile", str(path), "--github-output", str(output)]) == 0
 
     key = tooling_key(path)
+    fingerprint = resolve_recipe_fingerprint((path,))
     expected = (
         f"key={key}\ntag=riscv-tooling-{key}\n"
         f"image=ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-{key}\n"
+        "labels<<RISCV_TOOLING_LABELS\n"
+        "io.booley.artifact.role=riscv-tooling\n"
+        f"io.booley.riscv-tooling.key={key}\n"
+        f"io.booley.build.recipe-fingerprint={fingerprint}\n"
+        "RISCV_TOOLING_LABELS\n"
     )
     assert output.read_text(encoding="utf-8") == "existing=1\n" + expected
     assert capsys.readouterr().out == expected
@@ -183,24 +210,33 @@ def test_cli_reports_unkeyable_stage(tmp_path: Path, capsys: pytest.CaptureFixtu
 
 
 _REFERENCE = "ghcr.io/acme/base:riscv-tooling-" + "0" * 64
-_VERIFIED = "ghcr.io/acme/base@sha256:" + "d" * 64
+_VERIFIED = RemoteImage("ghcr.io/acme/base@sha256:" + "d" * 64, "sha256:" + "e" * 64)
 
 
 def _resolver(outcome: object):
-    """Fake the registry resolver: return a digest or raise ``outcome``."""
+    """Fake the registry resolver: return ``outcome`` or raise it.
+
+    ``outcome`` may also map references to per-reference outcomes.
+    """
     calls: list[tuple[str, dict[str, str]]] = []
 
-    def resolve(reference: str, labels: dict[str, str]) -> str:
+    def resolve(reference: str, labels: dict[str, str]) -> RemoteImage:
         calls.append((reference, dict(labels)))
-        if isinstance(outcome, BaseException):
-            raise outcome
-        return str(outcome)
+        result = outcome.get(reference) if isinstance(outcome, dict) else outcome
+        if isinstance(result, BaseException):
+            raise result
+        assert isinstance(result, RemoteImage)
+        return result
 
     return resolve, calls
 
 
 def _registry_failure(stderr: str) -> subprocess.CalledProcessError:
     return subprocess.CalledProcessError(1, ["docker", "buildx"], output="", stderr=stderr)
+
+
+def _missing(reference: str) -> subprocess.CalledProcessError:
+    return _registry_failure(f"ERROR: {reference}: not found\n")
 
 
 def test_published_image_requires_role_and_key_labels(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -216,42 +252,55 @@ def test_published_image_requires_role_and_key_labels(monkeypatch: pytest.Monkey
     ]
 
 
-@pytest.mark.parametrize(
-    "stderr",
-    [
-        "ERROR: ghcr.io/acme/base:riscv-tooling-x: not found",
-        "ERROR: MANIFEST_UNKNOWN: manifest unknown",
-    ],
-)
-def test_missing_tag_is_absent(monkeypatch: pytest.MonkeyPatch, stderr: str) -> None:
-    resolve, _calls = _resolver(_registry_failure(stderr))
+def test_only_the_exact_missing_tag_report_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    resolve, _calls = _resolver(_missing(_REFERENCE))
     monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
 
     assert published_image(_REFERENCE, "k") is None
 
 
-def test_other_registry_failures_are_not_absence(monkeypatch: pytest.MonkeyPatch) -> None:
-    resolve, _calls = _resolver(_registry_failure("ERROR: 503 Service Unavailable"))
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "ERROR: 503 Service Unavailable",
+        "ERROR: failed to authorize: token endpoint not found",
+        "ERROR: failed to solve: docker-container driver not found",
+        f"ERROR: {_REFERENCE}@sha256:{'f' * 64}: not found",
+        "ERROR: MANIFEST_UNKNOWN: manifest unknown",
+        f"WARNING: retrying\nERROR: {_REFERENCE}: not found",
+    ],
+    ids=["unavailable", "auth", "driver", "other-reference", "unqualified", "extra-lines"],
+)
+def test_other_registry_failures_are_not_absence(
+    monkeypatch: pytest.MonkeyPatch, stderr: str
+) -> None:
+    """A misread failure would let the publisher overwrite a tag it could not see."""
+    resolve, _calls = _resolver(_registry_failure(stderr))
     monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
 
-    with pytest.raises(ToolingRegistryError, match="503 Service Unavailable"):
+    with pytest.raises(ToolingRegistryError, match="cannot inspect"):
         published_image(_REFERENCE, "k")
 
 
 def test_wrong_labels_are_an_integrity_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    resolve, _calls = _resolver(ValueError("io.booley.riscv-tooling.key mismatch"))
+    resolve, _calls = _resolver(ValueError("io.booley.riscv-tooling.key label mismatch"))
     monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
 
-    with pytest.raises(ValueError, match="key mismatch"):
+    with pytest.raises(ValueError, match="key label mismatch"):
         published_image(_REFERENCE, "k")
 
 
 @pytest.mark.parametrize(
     ("outcome", "expected", "status"),
     [
-        (_VERIFIED, f"state=present\ndigest_reference={_VERIFIED}\n", 0),
-        (_registry_failure("not found"), "state=absent\n", 0),
-        (ValueError("io.booley.artifact.role mismatch"), None, 1),
+        (
+            _VERIFIED,
+            f"state=present\ndigest_reference={_VERIFIED.digest_reference}\n"
+            f"platform_manifest={_VERIFIED.platform_manifest}\n",
+            0,
+        ),
+        ("missing", "state=absent\n", 0),
+        (ValueError("io.booley.artifact.role label mismatch"), None, 1),
         (_registry_failure("connection reset"), None, 1),
     ],
     ids=["present", "absent", "mismatch", "unreachable"],
@@ -264,15 +313,15 @@ def test_cli_reports_publication_state(
     expected: str | None,
     status: int,
 ) -> None:
-    resolve, calls = _resolver(outcome)
-    monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
     path = _dockerfile(tmp_path, _TOOLING + _FINAL)
+    key = tooling_key(path)
+    default = f"ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-{key}"
+    resolve, calls = _resolver(_missing(default) if outcome == "missing" else outcome)
+    monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
     output = tmp_path / "github-output"
 
     result = main(["published", "--dockerfile", str(path), "--github-output", str(output)])
 
-    key = tooling_key(path)
-    default = f"ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-{key}"
     assert result == status
     assert calls[0][0] == default
     if expected is None:
@@ -291,3 +340,114 @@ def test_cli_inspects_an_explicit_candidate_reference(
 
     assert main(["published", "--dockerfile", str(path), "--reference", _REFERENCE]) == 0
     assert calls[0] == (_REFERENCE, riscv_tooling.expected_labels(tooling_key(path)))
+
+
+_KEY = "0" * 64
+_CANDIDATE = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "c" * 64
+_FINAL_TAG = f"ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-{_KEY}"
+
+
+def test_promotion_accepts_a_reindexed_tag_serving_the_verified_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The annotation changes the index digest but not the image manifest."""
+    promoted = RemoteImage(
+        "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "a" * 64,
+        _VERIFIED.platform_manifest,
+    )
+    resolve, calls = _resolver({_FINAL_TAG: promoted, _CANDIDATE: _VERIFIED})
+    monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
+
+    assert verify_promotion(_CANDIDATE, _KEY) == promoted
+    assert [reference for reference, _labels in calls] == [_FINAL_TAG, _CANDIDATE]
+
+
+@pytest.mark.parametrize(
+    ("final", "error", "message"),
+    [
+        (
+            RemoteImage(_VERIFIED.digest_reference, "sha256:" + "9" * 64),
+            ValueError,
+            "but the verified candidate is",
+        ),
+        (_missing(_FINAL_TAG), ToolingRegistryError, "missing after promotion"),
+        (ValueError("label mismatch"), ValueError, "label mismatch"),
+    ],
+    ids=["different-image", "missing", "wrong-labels"],
+)
+def test_promotion_rejects_a_tag_not_serving_the_verified_image(
+    monkeypatch: pytest.MonkeyPatch, final: object, error: type[Exception], message: str
+) -> None:
+    resolve, _calls = _resolver({_FINAL_TAG: final, _CANDIDATE: _VERIFIED})
+    monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
+
+    with pytest.raises(error, match=message):
+        verify_promotion(_CANDIDATE, _KEY)
+
+
+def test_cli_promoted_reports_the_final_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _dockerfile(tmp_path, _TOOLING + _FINAL)
+    final = f"ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-{tooling_key(path)}"
+    resolve, _calls = _resolver({final: _VERIFIED, _CANDIDATE: _VERIFIED})
+    monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
+
+    assert main(["promoted", "--dockerfile", str(path), "--candidate", _CANDIDATE]) == 0
+    assert capsys.readouterr().out.startswith(f"reference={final}\nstate=present\n")
+
+
+def _contract(tmp_path: Path, probes: str) -> Path:
+    path = tmp_path / "contract.toml"
+    path.write_text(
+        '[riscv]\nrequired_paths = ["/opt/riscv-docs/INDEX.md", "/usr/bin/srec_cat"]\n' + probes,
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_checks_render_tooling_paths_and_every_probe(tmp_path: Path) -> None:
+    contract = _contract(
+        tmp_path,
+        "[[riscv.probe]]\nname = \"first\"\ncommand = '''\necho \"it's\"\n'''\n"
+        "[[riscv.probe]]\nname = \"second\"\ncommand = 'true'\n",
+    )
+
+    script = tooling_checks(contract)
+
+    assert "test -e /opt/riscv-docs/INDEX.md\n" in script
+    assert "srec_cat" not in script
+    assert script.count("bash -euo pipefail -c ") == 2
+    assert "tooling check failed: first" in script
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="renders a POSIX bash script")
+@pytest.mark.parametrize(
+    ("command", "status"),
+    [("true", 0), ("false\ntrue", 1), ('set -- a b\ntest "$#" -eq 2', 0)],
+    ids=["passes", "set-e-stops-a-probe", "positional-arguments"],
+)
+def test_rendered_checks_keep_errexit_inside_each_probe(
+    tmp_path: Path, command: str, status: int
+) -> None:
+    """A probe that fails midway must fail the script, not fall through."""
+    toml_command = command.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    contract = tmp_path / "contract.toml"
+    contract.write_text(
+        f'[riscv]\n[[riscv.probe]]\nname = "probe"\ncommand = "{toml_command}"\n',
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["bash"], input=tooling_checks(contract), capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == status, result.stderr
+
+
+def test_shipped_contract_renders_tooling_checks() -> None:
+    script = tooling_checks(DEFAULT_CONTRACT)
+
+    assert "tooling check failed: RISC-V tooling shared libraries resolve" in script
+    assert "find /opt/riscv -type f" in script
+    assert "test -e /opt/riscv/lib/libriscv.so" in script
