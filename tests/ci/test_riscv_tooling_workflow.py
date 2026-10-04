@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import get_args
 
 import pytest
 import yaml
@@ -320,3 +321,16 @@ def test_registry_budget_never_exceeds_the_local_budget() -> None:
     env = _step("Enforce duration budget")["env"]
 
     assert env["REGISTRY_BUDGET_SECONDS"] <= env["LOCAL_BUDGET_SECONDS"]
+
+
+def test_measurement_arms_agree_across_workflow_classifier_and_evidence() -> None:
+    """The dispatch input, its validator, and the evidence schema name the same arms."""
+    sys.path.insert(0, str(_ROOT / ".github/scripts"))
+    import ci_changes
+    import riscv_phase_metrics
+
+    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]["riscv_measurement"]["options"]
+
+    assert tuple(dispatch) == ci_changes.RISCV_MEASUREMENT_ARMS
+    assert get_args(riscv_phase_metrics.MeasurementArm) == ci_changes.RISCV_MEASUREMENT_ARMS

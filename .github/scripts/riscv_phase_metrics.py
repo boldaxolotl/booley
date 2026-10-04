@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast, get_args
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
@@ -605,7 +605,7 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--run-id", type=int, required=True)
     child.add_argument("--run-attempt", type=int, required=True)
     child.add_argument("--candidate-sha", required=True)
-    child.add_argument("--measurement-arm", choices=("automatic", "cold"), default="automatic")
+    child.add_argument("--measurement-arm", choices=get_args(MeasurementArm), default="automatic")
     child.add_argument(
         "--tooling-source", type=Path, required=True, help="riscv_tooling.py source record"
     )

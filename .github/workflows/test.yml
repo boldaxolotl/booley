@@ -1400,6 +1400,8 @@ jobs:
 
       - name: Finalize RISC-V phase evidence
         if: always() && needs.changes.outputs.riscv_image == 'true'
+        env:
+          MEASUREMENT_ARM: ${{ inputs.riscv_measurement || 'automatic' }}
         run: |
           python .github/scripts/riscv_phase_metrics.py finalize \
             --directory "${RUNNER_TEMP}/riscv-image-evidence" \
@@ -1407,7 +1409,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --candidate-sha "${{ github.sha }}" \
-            --measurement-arm "${{ inputs.riscv_measurement || 'automatic' }}" \
+            --measurement-arm "${MEASUREMENT_ARM}" \
             --tooling-source "${RUNNER_TEMP}/riscv-image-evidence/tooling-source.json"
 
       - name: Upload candidate RISC-V evidence
@@ -1455,6 +1457,7 @@ jobs:
         shell: bash
         env:
           RISCV_IMAGE: ${{ needs.changes.outputs.riscv_image }}
+          STARTED_AT_EPOCH: ${{ steps.duration-clock.outputs.started_at_epoch }}
           TOOLING_RECORD: ${{ runner.temp }}/riscv-image-evidence/tooling-source.json
           STANDARD_BUDGET_SECONDS: 600
           REGISTRY_BUDGET_SECONDS: 1310
@@ -1475,7 +1478,7 @@ jobs:
           fi
           PYTHONPATH=src python .github/scripts/ci_duration_budget.py \
             --label bwave-smoke \
-            --started-at-epoch "${{ steps.duration-clock.outputs.started_at_epoch }}" \
+            --started-at-epoch "${STARTED_AT_EPOCH}" \
             --budget-seconds "${budget}" \
             --summary "${GITHUB_STEP_SUMMARY}"
 
