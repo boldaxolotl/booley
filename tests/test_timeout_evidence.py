@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+# CPython's crash probe bypasses ctypes' Windows SEH wrapper and disables core
+# dumps / Windows Error Reporting before dereferencing NULL in native code.
+_NATIVE_CRASH = "__import__('faulthandler')._read_null()"
+_NATIVE_EXIT_CODES = (
+    {0xC0000005}
+    if os.name == "nt"
+    else {-signal.SIGSEGV, -getattr(signal, "SIGBUS", signal.SIGSEGV)}
+)
 
 
 @pytest.mark.parametrize("workers", [0, 1])
@@ -106,10 +116,12 @@ def test_failed_evidence_write_still_terminates_worker(tmp_path: Path) -> None:
 @pytest.mark.parametrize("workers", [0, 1])
 def test_native_crash_retains_fatal_stack(tmp_path: Path, workers: int) -> None:
     result, evidence = _run_pytest_case(
-        tmp_path, workers, "@pytest.mark.timeout(10)", _native_crash_body()
+        tmp_path, workers, "@pytest.mark.timeout(10)", _NATIVE_CRASH
     )
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert result.returncode in ({1} if workers else _NATIVE_EXIT_CODES), (
+        result.stdout + result.stderr
+    )
     reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
     assert len(reports) == 1
     stack = reports[0].read_text(encoding="utf-8")
@@ -117,32 +129,19 @@ def test_native_crash_retains_fatal_stack(tmp_path: Path, workers: int) -> None:
     assert not list(evidence.glob("timeout-*.log"))
     if workers:
         exit_report = json.loads((evidence / "worker-exit-gw0.json").read_text())
-        assert exit_report["exit_code"] not in (None, 0, 1)
+        assert exit_report["exit_code"] in _NATIVE_EXIT_CODES
 
 
 def test_native_crash_during_unconfigure_retains_fatal_stack(tmp_path: Path) -> None:
     (tmp_path / "conftest.py").write_text(
         "import pytest\n@pytest.hookimpl(tryfirst=True)\ndef pytest_unconfigure(config):\n    "
-        + _native_crash_body()
+        + _NATIVE_CRASH
         + "\n",
         encoding="utf-8",
     )
     result, evidence = _run_pytest_case(tmp_path, 0, "@pytest.mark.timeout(10)", "pass")
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert result.returncode in _NATIVE_EXIT_CODES, result.stdout + result.stderr
     reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
     assert len(reports) == 1
     assert "conftest.py" in reports[0].read_text(encoding="utf-8")
-
-
-def _native_crash_body() -> str:
-    # Avoid POSIX core files and Windows Error Reporting delays in crash probes.
-    # 0x0002 is SEM_NOGPFAULTERRORBOX (SetErrorMode).
-    return (
-        "import os; "
-        "exec('import resource; resource.setrlimit(resource.RLIMIT_CORE, (0, 0))' "
-        "if os.name == 'posix' else ''); "
-        "exec('import ctypes; ctypes.windll.kernel32.SetErrorMode(0x0002)' "
-        "if os.name == 'nt' else ''); "
-        "__import__('ctypes').string_at(0)"
-    )
