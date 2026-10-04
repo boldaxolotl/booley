@@ -502,8 +502,9 @@ def matrix_repo(actual_git, repo, monkeypatch):
 def _upstream_pair(repo, upstream, base=None):
     config = repo / ".booley_project" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
+    location = upstream.as_posix() if isinstance(upstream, Path) else upstream
     config.write_text(
-        f'[stealth]\nupstream_repository = "{upstream.as_posix()}"\nupstream_base = "{base or _head(repo)}"\n',
+        f'[stealth]\nupstream_repository = "{location}"\nupstream_base = "{base or _head(repo)}"\n',
         encoding="utf-8",
     )
 
@@ -1898,6 +1899,126 @@ def test_minimum_git_native_bundled_upstream_import(matrix_repo: Path) -> None:
     assert _git(Path(destination), "rev-parse", "refs/heads/main") == base
 
 
+@pytest.mark.parametrize("ref_kind", ["pull-only", "annotated-tag"])
+def test_minimum_git_upstream_import_requires_branch_or_tag(
+    matrix_repo: Path, ref_kind: str
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    _git(repo, "tag", "-a", "import", "-m", "import point")
+    upstream = _clone_upstream(repo)
+    _git(upstream, "update-ref", "-d", "refs/heads/main")
+    if ref_kind == "pull-only":
+        _git(upstream, "update-ref", "-d", "refs/tags/import")
+        _git(upstream, "update-ref", "refs/pull/7/head", base)
+    _upstream_pair(repo, upstream, base)
+    assert _push(base) == (1 if ref_kind == "pull-only" else 0)
+
+
+def test_minimum_git_encoded_file_upstream_import(matrix_repo: Path) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    upstream = _clone_upstream(repo, "upstream with spaces.git")
+    _upstream_pair(repo, upstream.as_uri(), base)
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude local metadata")) == 1
+
+
+@pytest.mark.parametrize("transport", ["https", "ssh"])
+def test_upstream_authenticated_transport_keeps_new_commits_checked(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, transport: str
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    base = _commit(repo, "fix(core): claude pristine import")
+    location = f"{transport}://example.test/upstream.git"
+    _upstream_pair(repo, location, base)
+    original = pre_push_hook._run_git
+
+    def advertisement(args, **kwargs):
+        if "ls-remote" in args and location in args:
+            assert "refs/heads/*" in args and "refs/tags/*" in args
+            if transport == "ssh":
+                assert "StrictHostKeyChecking=yes" in kwargs["env"]["GIT_SSH_COMMAND"]
+            else:
+                assert "http.followRedirects=false" in args
+            return subprocess.CompletedProcess(args, 0, f"{base}\trefs/heads/main\n".encode(), b"")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", advertisement)
+    assert _push(base) == 0
+    assert _push(_commit(repo, "fix(core): claude local metadata")) == 1
+
+
+@pytest.mark.parametrize(
+    ("location", "key", "value"),
+    [
+        ("https://example.test/source", "http.sslVerify", "false"),
+        (
+            "https://example.test/source",
+            "http.https://example.test/source.followRedirects",
+            "true",
+        ),
+        ("ssh://example.test/source", "core.sshCommand", "ssh -o StrictHostKeyChecking=no"),
+    ],
+)
+def test_upstream_insecure_transport_refuses_before_discovery(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, location: str, key: str, value: str
+) -> None:
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    _git(repo, "config", key, value)
+    _upstream_pair(repo, location)
+    original = pre_push_hook._run_git
+
+    def observe(args, **kwargs):
+        assert "ls-remote" not in args
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    assert _push(_head(repo)) == 1
+
+
+def test_minimum_git_upstream_ancestry_has_bounded_output(
+    matrix_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = matrix_repo
+    base = _commit(repo, "fix(core): claude pristine import")
+    records = []
+    for index in range(1, 1025):
+        parent = base if index == 1 else f":{index - 1}"
+        records.append(
+            f"commit refs/heads/source\nmark :{index}\n"
+            "committer Real Dev <dev@example.com> 1700000000 +0000\n"
+            f"data 13\nupstream work\nfrom {parent}\n\n"
+        )
+    subprocess.run(
+        ["git", "fast-import", "--quiet"],
+        cwd=repo,
+        input="".join(records),
+        text=True,
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    upstream = _clone_upstream(repo)
+    _git(upstream, "update-ref", "-d", "refs/heads/main")
+    _upstream_pair(repo, upstream, base)
+    fresh = _commit(repo, "fix(core): ordinary local work")
+    original = pre_push_hook._run_git
+
+    def observe(args, **kwargs):
+        result = original(args, **kwargs)
+        if "rev-list" in args:
+            # Only the single new local commit should cross the output boundary.
+            assert result.stdout == (fresh + "\n").encode()
+        return result
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    assert _push(fresh) == 0
+
+
 @pytest.mark.parametrize(
     "location",
     ["http://example.test/repo", "git://example.test/repo", "ext::unsafe", "file:/absolute/repo"],
@@ -1906,17 +2027,11 @@ def test_upstream_unsafe_transport_refuses_before_discovery(
     repo: Path, monkeypatch: pytest.MonkeyPatch, location: str
 ) -> None:
     monkeypatch.chdir(repo)
-    _upstream_pair(repo, Path(location))
-    # Preserve URL bytes; pathlib normalizes the URL's double slash.
-    config = repo / ".booley_project" / "booley.toml"
-    config.write_text(
-        f'[stealth]\nupstream_repository = "{location}"\nupstream_base = "{_head(repo)}"\n'
-    )
+    _upstream_pair(repo, location)
     original = pre_push_hook._run_git
 
     def observe(args, **kwargs):
-        if "ls-remote" in args:
-            assert args[-1] == sys.argv[2]
+        assert "ls-remote" not in args
         return original(args, **kwargs)
 
     monkeypatch.setattr(pre_push_hook, "_run_git", observe)

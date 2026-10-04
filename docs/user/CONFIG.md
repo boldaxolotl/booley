@@ -1192,7 +1192,8 @@ upstream_base = "0123456789abcdef0123456789abcdef01234567"
 ```
 
 Set both keys together in the Project's `booley.toml`. The base must be a
-locally available commit reachable from the source's advertised refs; fetch
+locally available commit reachable from the source's advertised branches or tags;
+pull-request refs and other ref namespaces grant no import exemption. Fetch
 the source's complete history if necessary before pushing. Only that base and
 its ancestors are exempt. Advancing upstream never exempts later local commits,
 even if upstream now contains them. The trusted source and pinned base are

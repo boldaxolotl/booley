@@ -37,6 +37,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from urllib.parse import unquote, urlsplit
 
 # Ensure the bundle root is on sys.path so flat imports resolve when called
@@ -289,6 +290,30 @@ class _Inspection(_Protocol):
             raise InspectionError("malformed outgoing commit inventory")
         return raw
 
+    def reaches(self, base: str, tips: list[str]) -> bool:
+        """Prove ancestry without materializing all source history in Python."""
+        self.stable()
+        if base in tips:
+            return True
+        deadline = monotonic() + 60
+        for tip in tips:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise InspectionError("upstream ancestry verification timed out; retry")
+            result = _run_git(
+                [*self.prefix, "merge-base", "--is-ancestor", base, tip],
+                cwd=self.root,
+                env=self.env,
+                timeout=remaining,
+            )
+            if result.returncode not in (0, 1):
+                raise InspectionError(
+                    "cannot verify upstream ancestry; fetch complete history and retry"
+                )
+            if result.returncode == 0:
+                return True
+        return False
+
     def objects(self, ids) -> dict[str, tuple[str, bytes] | None]:
         self.stable()
         requested = list(dict.fromkeys(ids))
@@ -533,7 +558,15 @@ def _advertised(inspection, location, *, upstream=False):
         ):
             env.pop(key, None)
     result = _run_git(
-        ["-c", "http.followRedirects=false", "ls-remote", "--refs", "--", location],
+        [
+            "-c",
+            "http.followRedirects=false",
+            "ls-remote",
+            "--refs",
+            "--",
+            location,
+            *(["refs/heads/*", "refs/tags/*"] if upstream else []),
+        ],
         cwd=inspection.root,
         env=env,
         timeout=10,
@@ -542,14 +575,7 @@ def _advertised(inspection, location, *, upstream=False):
         raise InspectionError(
             "advertisement unavailable; repair credentials/network or fetch and retry"
         )
-    ids = []
-    for line in result.stdout.splitlines():
-        fields = line.decode("utf-8", "strict").split("\t")
-        if len(fields) != 2 or not inspection.oid(fields[0]) or not fields[1].startswith("refs/"):
-            raise InspectionError("malformed repository advertisement")
-        if not _valid_ref_name(fields[1]):
-            raise InspectionError("invalid advertised ref")
-        ids.append(fields[0].lower())
+    ids = _advertisement_ids(result.stdout, inspection, upstream=upstream)
     if (
         path is not None
         and _file_authority_state(path, _probe_environment(external=True)) != authority
@@ -557,6 +583,20 @@ def _advertised(inspection, location, *, upstream=False):
         raise InspectionError("file authority changed during advertisement")
     if upstream and path is not None:
         _independent_upstream(inspection, authority)
+    return ids
+
+
+def _advertisement_ids(raw, inspection, *, upstream=False):
+    ids = []
+    for line in raw.splitlines():
+        fields = line.decode("utf-8", "strict").split("\t")
+        if len(fields) != 2 or not inspection.oid(fields[0]) or not fields[1].startswith("refs/"):
+            raise InspectionError("malformed repository advertisement")
+        if not _valid_ref_name(fields[1]):
+            raise InspectionError("invalid advertised ref")
+        if upstream and not fields[1].startswith(("refs/heads/", "refs/tags/")):
+            continue
+        ids.append(fields[0].lower())
     return ids
 
 
@@ -582,12 +622,15 @@ def _upstream_exclusion(inspection, upstream):
     ):
         raise InspectionError("upstream_repository requires a canonical absolute path or URL")
     ids = _advertised(inspection, upstream.repository, upstream=True)
-    if inspection.commits([upstream.base]) != [upstream.base]:
-        raise InspectionError("upstream_base must be a locally available commit; fetch and retry")
+    value = inspection.objects([upstream.base])[upstream.base]
+    if value is None:
+        raise InspectionError("upstream_base is missing locally; fetch source history and retry")
+    if value[0] != "commit":
+        raise InspectionError("upstream_base must identify a commit, not a tag, tree, or blob")
     tips = inspection.commits(ids)
-    if upstream.base not in inspection.inventory(tips):
+    if not inspection.reaches(upstream.base, tips):
         raise InspectionError(
-            "upstream_base is not reachable from available advertised upstream refs; "
+            "upstream_base is not reachable from available advertised upstream branches or tags; "
             "fetch upstream history or repair the pinned source and retry"
         )
     return [upstream.base]
@@ -604,8 +647,9 @@ def _outgoing_range(inspection, updates, destination, upstream=None):
             "history or select a commit update and retry"
         )
     old = inspection.commits([update.old for update in updates if set(update.old) != {"0"}])
+    imported = _upstream_exclusion(inspection, upstream)
     excluded, unavailable = _destination_exclusions(inspection, destination, old)
-    excluded = [*excluded, *_upstream_exclusion(inspection, upstream)]
+    excluded = [*excluded, *imported]
     candidate = inspection.inventory(tips, excluded)
     shallow = Path(inspection.git(["rev-parse", "--git-path", "shallow"]).decode().strip())
     shallow = inspection.root / shallow if not shallow.is_absolute() else shallow
