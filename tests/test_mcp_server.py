@@ -2088,14 +2088,20 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
 
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "4000")
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "4000")
+    manifest = Path("/manifest.json")
+    pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
+    budget = 4000 + pointer_bytes
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget))
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
     observation = {"test": "smoke", "cycle_count": 7, "detail": {"reason": "x" * 3870}}
     outcome = SimpleNamespace(
-        target={"selector": "sim"}, aggregate_grade="fail", observations=[observation]
+        target={"selector": "sim"},
+        manifest_path=manifest,
+        aggregate_grade="fail",
+        observations=[observation],
     )
     card = "\n".join(_campaign_report_lines([outcome]))
-    assert len(card.encode()) + 2 <= 4000
+    assert len(card.encode()) + 2 <= budget
     result = EndpointOutcome(exit_code=1, report_text=card)
     if completion_error:
         normalize_completion_error(result, OSError("y" * 200), "publish")
