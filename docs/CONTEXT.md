@@ -69,7 +69,7 @@ A named, mandatory boolean condition held by a session in Goal Mode, met only by
 _Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
 
 **Goalset**:
-A predefined, named bundle of Goals in strict syntax, selectable when entering Goal Mode.
+A named, Project-owned bundle of Goals, written as free-form prose that the agent translates into Goals when entering Goal Mode.
 _Avoid_: Ticket Creation Guidance, criteria defaults, goal profile
 
 **Session Summary**:
@@ -238,7 +238,11 @@ _Avoid_: regex, marker, exit-code-only verdict
 
 **Console**:
 The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the display for Ticket execution.
-_Avoid_: flashy mode, monitor, dashboard
+_Avoid_: flashy mode, monitor
+
+**Booley Dashboard**:
+The read-only terminal view, one per Sandbox, of every Goal Mode, Booley Flow job, and health signal in that Sandbox. It replaces the Console.
+_Avoid_: control room, console, monitor
 
 ## Retired and ambiguous terminology
 
