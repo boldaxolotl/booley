@@ -2,26 +2,32 @@
 
 The module is the single seam for Target Plan policy.  Callers provide the
 authoring repositories and their Git-visible paths; the implementation owns
-semantic ``.core`` comparison, owned ``tests.toml`` comparison, selector
-canonicalization, Target-owned fileset and parameter coverage, Criterion
-coverage, and derived removals.
+Ticket policy over the semantic ``.core`` and ``tests.toml`` deltas described
+by :mod:`booley.targets.surface_diff`, selector canonicalization, Target-owned
+fileset and parameter coverage, Criterion coverage, and derived removals.
 """
 
 from __future__ import annotations
 
-import tomllib
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
-
-import yaml
+from typing import TYPE_CHECKING, Any
 
 from booley.config.project_config import TEST_LISTS_TABLE
 from booley.core.models import TargetPlan, TargetPlanEntry, TargetPlanError, TargetPlanRole
-from booley.fusesoc import fusesoc_registry
+from booley.targets import surface_diff
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
+from booley.targets.surface_diff import (
+    ChangeSet,
+    ParameterDefinition,
+    SurfaceDelta,
+    SurfaceDiffError,
+    TargetDefinition,
+    TargetSurfaceFile,
+)
 
 from .acceptance_targets import canonical_acceptance_bindings, criterion_targets
 from .target_surface_edit import (
@@ -51,214 +57,45 @@ class TargetPlanAnalysis:
     authored_parameters: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class _TargetDefinition:
-    canonical: str
-    name: str
-    body: Any
+# Delta types moved to ``booley.targets.surface_diff``; these private names stay
+# for the existing Target Plan tests.
+_TargetDefinition = TargetDefinition
+_ChangeSet = ChangeSet
+_SurfaceDelta = SurfaceDelta
 
 
-@dataclass(frozen=True)
-class _FilesetDefinition:
-    """One core-local fileset and the Targets that may select it."""
-
-    key: str
-    path: str
-    name: str
-    body: Any
-    referenced_by: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _ParameterDefinition:
-    """One core-local parameter declaration and the Targets that select it."""
-
-    key: str
-    path: str
-    name: str
-    body: Any
-    referenced_by: tuple[str, ...]
-
-
-_Change = TypeVar("_Change")
-
-
-@dataclass(frozen=True)
-class _ChangeSet(Generic[_Change]):
-    added: tuple[_Change, ...] = ()
-    modified: tuple[_Change, ...] = ()
-    deleted: tuple[_Change, ...] = ()
-
-
-@dataclass(frozen=True)
-class _SurfaceDelta:
-    targets: _ChangeSet[_TargetDefinition] = field(default_factory=_ChangeSet)
-    test_tables: _ChangeSet[str] = field(default_factory=_ChangeSet)
-    filesets: _ChangeSet[_FilesetDefinition] = field(default_factory=_ChangeSet)
-    parameters: _ChangeSet[_ParameterDefinition] = field(default_factory=_ChangeSet)
-
-
-@dataclass(frozen=True)
-class TargetSurfaceFile:
-    """Before/current bytes for one authoring surface supplied by the workspace layer."""
-
-    path: str
-    baseline: bytes | None
-    current: bytes | None
+@contextmanager
+def _surface_errors() -> Iterator[None]:
+    """Report unparseable or invalid authoring surfaces as Target Plan failures."""
+    try:
+        yield
+    except SurfaceDiffError as exc:
+        raise TargetPlanValidationError(str(exc)) from exc
 
 
 def _core_document(content: bytes | None, *, path: str) -> Mapping[str, Any]:
-    if content is None:
-        return {}
-    try:
-        document = yaml.safe_load(content)
-    except yaml.YAMLError as exc:
-        raise TargetPlanValidationError(f"cannot parse .core {path}: {exc}") from exc
-    if not isinstance(document, Mapping):
-        raise TargetPlanValidationError(f".core {path} is not a mapping")
-    return document
+    with _surface_errors():
+        return surface_diff.core_document(content, path=path)
 
 
-def _core_targets(content: bytes | None, *, path: str) -> dict[str, _TargetDefinition]:
-    document = _core_document(content, path=path)
-    if not document:
-        return {}
-    vlnv = document.get("name")
-    targets = document.get("targets", {})
-    if not isinstance(vlnv, str) or not vlnv:
-        raise TargetPlanValidationError(f".core {path} has no valid name")
-    if not isinstance(targets, Mapping):
-        raise TargetPlanValidationError(f".core {path} has no mapping-valued targets block")
-    result = {}
-    for name, body in targets.items():
-        if not isinstance(name, str):
-            raise TargetPlanValidationError(f".core {path} contains a non-string Target name")
-        canonical = f"{vlnv}#{name}"
-        result[canonical] = _TargetDefinition(canonical, name, body)
-    return result
-
-
-def _core_filesets(content: bytes | None, *, path: str) -> dict[str, Any]:
-    document = _core_document(content, path=path)
-    filesets = document.get("filesets", {}) if document else {}
-    if not isinstance(filesets, Mapping):
-        raise TargetPlanValidationError(f".core {path} has no mapping-valued filesets block")
-    if any(not isinstance(name, str) for name in filesets):
-        raise TargetPlanValidationError(f".core {path} contains a non-string fileset name")
-    return dict(filesets)
-
-
-def _core_parameters(content: bytes | None, *, path: str) -> dict[str, Any]:
-    document = _core_document(content, path=path)
-    parameters = document.get("parameters", {}) if document else {}
-    if not isinstance(parameters, Mapping):
-        raise TargetPlanValidationError(f".core {path} has no mapping-valued parameters block")
-    if any(not isinstance(name, str) for name in parameters):
-        raise TargetPlanValidationError(f".core {path} contains a non-string parameter name")
-    return dict(parameters)
-
-
-def _fileset_references(content: bytes | None, *, path: str) -> dict[str, tuple[str, ...]]:
-    document = _core_document(content, path=path)
-    if not document:
-        return {}
-    vlnv = document.get("name")
-    targets = document.get("targets", {})
-    if not isinstance(vlnv, str) or not isinstance(targets, Mapping):
-        return {}
-    references: dict[str, set[str]] = {}
-    for target_name, body in targets.items():
-        if not isinstance(target_name, str) or not isinstance(body, Mapping):
-            continue
-        canonical = f"{vlnv}#{target_name}"
-        try:
-            selected = fusesoc_registry.target_fileset_definitions(document, body)
-        except FuseSocError as exc:
-            raise TargetPlanValidationError(f".core {path}: {exc}") from exc
-        for fileset in selected:
-            references.setdefault(fileset, set()).add(canonical)
-    return {name: tuple(sorted(targets)) for name, targets in references.items()}
-
-
-def _fileset_definitions(content: bytes | None, *, path: str) -> dict[str, _FilesetDefinition]:
-    filesets = _core_filesets(content, path=path)
-    references = _fileset_references(content, path=path)
-    return {
-        name: _FilesetDefinition(f"{path}#{name}", path, name, body, references.get(name, ()))
-        for name, body in filesets.items()
-    }
-
-
-def _parameter_references(content: bytes | None, *, path: str) -> dict[str, tuple[str, ...]]:
-    document = _core_document(content, path=path)
-    if not document:
-        return {}
-    vlnv = document.get("name")
-    targets = document.get("targets", {})
-    if not isinstance(vlnv, str) or not isinstance(targets, Mapping):
-        return {}
-    references: dict[str, set[str]] = {}
-    for target_name, body in targets.items():
-        if not isinstance(target_name, str) or not isinstance(body, Mapping):
-            continue
-        canonical = f"{vlnv}#{target_name}"
-        for parameter in fusesoc_registry.possible_target_parameter_names(body):
-            references.setdefault(parameter, set()).add(canonical)
-    return {name: tuple(sorted(targets)) for name, targets in references.items()}
-
-
-def _parameter_definitions(content: bytes | None, *, path: str) -> dict[str, _ParameterDefinition]:
-    parameters = _core_parameters(content, path=path)
-    references = _parameter_references(content, path=path)
-    return {
-        name: _ParameterDefinition(f"{path}#{name}", path, name, body, references.get(name, ()))
-        for name, body in parameters.items()
-    }
+def _core_targets(content: bytes | None, *, path: str) -> dict[str, TargetDefinition]:
+    with _surface_errors():
+        return surface_diff.core_targets(content, path=path)
 
 
 def _table_mapping(content: bytes | None, *, path: str) -> dict[str, Any]:
-    if content is None:
-        return {}
-    try:
-        raw = tomllib.loads(content.decode())
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise TargetPlanValidationError(f"cannot parse {path}: {exc}") from exc
-    return dict(raw)
+    with _surface_errors():
+        return surface_diff.tests_toml_tables(content, path=path)
 
 
-def _changed_rows(
-    before: Mapping[str, Any], after: Mapping[str, Any]
-) -> tuple[tuple[str, ...], ...]:
-    added = tuple(sorted(set(after) - set(before)))
-    deleted = tuple(sorted(set(before) - set(after)))
-    modified = tuple(sorted(key for key in set(before) & set(after) if before[key] != after[key]))
-    return added, modified, deleted
-
-
-def _merge_changes(
-    changes: Iterable[_ChangeSet[_Change]], key: Callable[[_Change], Any]
-) -> _ChangeSet[_Change]:
-    rows = tuple(changes)
-    return _ChangeSet(
-        added=tuple(sorted((item for row in rows for item in row.added), key=key)),
-        modified=tuple(sorted((item for row in rows for item in row.modified), key=key)),
-        deleted=tuple(sorted((item for row in rows for item in row.deleted), key=key)),
-    )
-
-
-def _surface_delta(files: tuple[TargetSurfaceFile, ...]) -> _SurfaceDelta:
+def _surface_delta(files: tuple[TargetSurfaceFile, ...]) -> SurfaceDelta:
     deltas = []
     for surface in files:
         if Path(surface.path).suffix.casefold() == ".core":
             deltas.append(_core_surface_delta(surface))
         elif Path(surface.path).name == "tests.toml":
             deltas.append(_tests_surface_delta(surface))
-    return _SurfaceDelta(
-        targets=_merge_changes((delta.targets for delta in deltas), lambda item: item.canonical),
-        test_tables=_merge_changes((delta.test_tables for delta in deltas), str),
-        filesets=_merge_changes((delta.filesets for delta in deltas), lambda item: item.key),
-        parameters=_merge_changes((delta.parameters for delta in deltas), lambda item: item.key),
-    )
+    return surface_diff.merge_deltas(deltas)
 
 
 def _validate_shared_core_content(surface: TargetSurfaceFile) -> None:
@@ -275,73 +112,61 @@ def _validate_shared_core_content(surface: TargetSurfaceFile) -> None:
         )
 
 
-def _parameter_delta(surface: TargetSurfaceFile):
-    before_bodies = _core_parameters(surface.baseline, path=surface.path)
-    after_bodies = _core_parameters(surface.current, path=surface.path)
-    added, modified, deleted = _changed_rows(before_bodies, after_bodies)
+def _parameter_delta(surface: TargetSurfaceFile) -> ChangeSet[ParameterDefinition]:
+    before_bodies = surface_diff.core_parameters(surface.baseline, path=surface.path)
+    after_bodies = surface_diff.core_parameters(surface.current, path=surface.path)
+    rows = surface_diff.changed_rows(before_bodies, after_bodies)
+    _added, modified, deleted = rows
     if modified or deleted:
         changed = ", ".join(sorted((*modified, *deleted)))
         raise TargetPlanValidationError(
             f"Ticket creation cannot modify or delete existing parameters in "
             f"{surface.path}: {changed}"
         )
-    before = _parameter_definitions(surface.baseline, path=surface.path)
-    after = _parameter_definitions(surface.current, path=surface.path)
-    return added, modified, deleted, before, after
+    before = surface_diff.parameter_definitions(surface.baseline, path=surface.path)
+    after = surface_diff.parameter_definitions(surface.current, path=surface.path)
+    return surface_diff.change_set(before, after, rows)
 
 
-def _core_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
+def _core_surface_delta(surface: TargetSurfaceFile) -> SurfaceDelta:
+    # Each step mirrors one step of ``surface_diff.diff_core_surface`` with Ticket
+    # policy between them, so the first failing check is the one Ticket Mode reports.
     _validate_new_core(surface.baseline, surface.current, Path(surface.path))
     _validate_shared_core_content(surface)
-    before = _core_targets(surface.baseline, path=surface.path)
-    after = _core_targets(surface.current, path=surface.path)
-    added, modified, deleted = _changed_rows(before, after)
-    before_fileset_bodies = _core_filesets(surface.baseline, path=surface.path)
-    after_fileset_bodies = _core_filesets(surface.current, path=surface.path)
-    fileset_added, fileset_modified, fileset_deleted = _changed_rows(
-        before_fileset_bodies, after_fileset_bodies
-    )
-    if fileset_modified or fileset_deleted:
-        changed = ", ".join(sorted((*fileset_modified, *fileset_deleted)))
-        raise TargetPlanValidationError(
-            f"Ticket creation cannot modify or delete existing filesets in "
-            f"{surface.path}: {changed}"
+    with _surface_errors():
+        before = surface_diff.core_targets(surface.baseline, path=surface.path)
+        after = surface_diff.core_targets(surface.current, path=surface.path)
+        targets = surface_diff.change_set(before, after, surface_diff.changed_rows(before, after))
+        fileset_rows = surface_diff.changed_rows(
+            surface_diff.core_filesets(surface.baseline, path=surface.path),
+            surface_diff.core_filesets(surface.current, path=surface.path),
         )
-    before_filesets = _fileset_definitions(surface.baseline, path=surface.path)
-    after_filesets = _fileset_definitions(surface.current, path=surface.path)
-    parameter_added, parameter_modified, parameter_deleted, before_parameters, after_parameters = (
-        _parameter_delta(surface)
-    )
-    if not modified and not deleted:
+        if fileset_rows[1] or fileset_rows[2]:
+            changed = ", ".join(sorted((*fileset_rows[1], *fileset_rows[2])))
+            raise TargetPlanValidationError(
+                f"Ticket creation cannot modify or delete existing filesets in "
+                f"{surface.path}: {changed}"
+            )
+        filesets = surface_diff.change_set(
+            surface_diff.fileset_definitions(surface.baseline, path=surface.path),
+            surface_diff.fileset_definitions(surface.current, path=surface.path),
+            fileset_rows,
+        )
+        parameters = _parameter_delta(surface)
+    if not targets.modified and not targets.deleted:
         _validate_core_source_boundary(
             surface,
-            tuple(after[key].name for key in added),
-            tuple(after_filesets[key].name for key in fileset_added),
-            tuple(after_parameters[key].name for key in parameter_added),
+            tuple(item.name for item in targets.added),
+            tuple(item.name for item in filesets.added),
+            tuple(item.name for item in parameters.added),
         )
-    return _SurfaceDelta(
-        targets=_ChangeSet(
-            tuple(after[key] for key in added),
-            tuple(after[key] for key in modified),
-            tuple(before[key] for key in deleted),
-        ),
-        filesets=_ChangeSet(
-            tuple(after_filesets[key] for key in fileset_added),
-            tuple(after_filesets[key] for key in fileset_modified),
-            tuple(before_filesets[key] for key in fileset_deleted),
-        ),
-        parameters=_ChangeSet(
-            tuple(after_parameters[key] for key in parameter_added),
-            tuple(after_parameters[key] for key in parameter_modified),
-            tuple(before_parameters[key] for key in parameter_deleted),
-        ),
-    )
+    return SurfaceDelta(targets=targets, filesets=filesets, parameters=parameters)
 
 
-def _tests_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
+def _tests_surface_delta(surface: TargetSurfaceFile) -> SurfaceDelta:
     before = _table_mapping(surface.baseline, path=surface.path)
     after = _table_mapping(surface.current, path=surface.path)
-    added, modified, deleted = _changed_rows(before, after)
+    added, modified, deleted = surface_diff.changed_rows(before, after)
     invalid = [
         key
         for key in (*added, *modified)
@@ -353,7 +178,7 @@ def _tests_surface_delta(surface: TargetSurfaceFile) -> _SurfaceDelta:
         )
     if not modified and not deleted:
         _validate_tests_source_boundary(surface, added)
-    return _SurfaceDelta(test_tables=_ChangeSet(added, modified, deleted))
+    return SurfaceDelta(test_tables=ChangeSet(added, modified, deleted))
 
 
 def _validate_core_source_boundary(
