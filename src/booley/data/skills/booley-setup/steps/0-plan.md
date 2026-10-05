@@ -16,6 +16,11 @@ The step has four parts: **A** — gather feasibility evidence; **B** — turn i
 into a decision sheet; **C** — grill the user on the open rows; **D** — write
 the plan and get it approved.
 
+Use `../GLOSSARY.md` definitions verbatim on first use of each Booley term in
+the grill or plan; do not paraphrase from `CONTEXT.md`. Ask each question by its
+plain label from the template; give the row number/internal key only in
+parentheses.
+
 ## Interactive vs. unattended
 
 - **Interactive (default).** A human is present. Run the grill in Part C and
@@ -65,17 +70,21 @@ The resolution modes:
 - **`inferred`** — an ordinary reading of the repo; carry a `high`/`medium`/
   `low` confidence beside it. `low` becomes `review` in unattended mode.
 - **`review`** — a genuine user judgment call, or an inference the evidence
-  points at but does not force. **Rows 16 (git footprint), 17 (specialists),
-  19 (agent backend), and 20 (commit-message scrub) can never be
-  evidence-forced** — no codebase signal exists for any of them. Interactive:
-  grill them. Unattended: take the documented fallback, star the row `review`,
-  and surface it in the final report as something the user must audit.
+  points at but does not force. **Rows 16 (git footprint), 19 (agent backend),
+  and 20 (commit-message scrub) can never be evidence-forced.** Interactive:
+  ask the merged history question and any missing backend choice. Unattended:
+  take the documented fallback, star the row `review`, and surface it in the
+  final report as something the user must audit.
 
-"Mandatory grill row" (Part C) means **never resolved silently** — asked when
-a human is there, and otherwise carried in the plan with an explicit resolution
-mode and its evidence line. It does not mean "always starred": starring an
-`evidence-forced` or `pre-set` row is noise that trains the user to skim past
-the stars that matter.
+Row 17 has no codebase signal for an intentional Specialist opt-out: it takes
+its default (none disabled) and is shown in the defaults block. Unattended:
+record that default as `inferred`/high, without a star.
+
+"Mandatory grill row" means row 4 (unless evidence-forced), merged rows 16 + 20,
+and row 19 only when init left a field unset. Existing hand-set values resolve
+`pre-set` and receive one confirmation line rather than a new question. In
+unattended mode, unresolved mandatory choices take their documented fallback
+and an explicit `review` star; evidence-forced and pre-set rows are unstarred.
 
 ## Part A — Feasibility triage (evidence)
 
@@ -608,7 +617,8 @@ separate columns (see "How a row resolves"). The standard checklist:
    smoke to the measured fastest". Re-pinning from a measurement is a *minor*
    deviation (log one line in §3), never a stop-and-ask.
    **Does any test need a non-RTL build step before it can run** (per-case
-   firmware compile, vector staging)? — always a grill question. If yes, the
+   firmware compile, vector staging)? — use repo evidence or the defaults
+   block; ask when the build recipe is unresolved. If yes, the
    command lines become `[flows.sim].pre_run_commands` and the toolchain
    they need goes into the sandbox image (row 7). Two shape constraints to plan
    against, both from CONFIG.md: `pre_run_commands` and `run_cwd` live under
@@ -713,88 +723,91 @@ separate columns (see "How a row resolves"). The standard checklist:
     fate (merge / overwrite / leave); any project gotchas the user wants
     recorded (Step 3 only writes gotchas that came from an instruction file or
     from the user — collect them here, not mid-execution).
-16. **Git footprint — hidden, open, or an explicitly requested hybrid?** Whether `.booley_project/` is visible
-    in the RTL repo's tracked tree. **Always a grill question**: the codebase
-    cannot answer whether the user's colleagues are meant to know. *Hidden* (the
-    default, and what `booley init` already set up): `.booley_project/` stays
-    **untracked** in the RTL repo, excluded through the parent repo's
-    `.git/info/exclude` — never `.gitignore`, which is itself a tracked file and
-    would advertise Booley in the history it is supposed to keep clean. *Open*:
-    `.booley_project/` is **committed** to the RTL repo like any other project
-    config. **Hybrid** is reserved for an explicit port/integration policy:
-    keep `.booley_project/` hidden, but track the named native cores,
-    constraints, wrappers, durable root `AGENTS.md`, and report required by
-    that policy. Record the exact tracked allowlist in this row; do not broaden
-    it into committing operational state. Step 4 executes whichever this row says.
-    A hidden authored `.core` is the stealth layout: row 20 must enable stealth,
-    which also activates ignored root-level core projection. An open project
-    uses tracked native cores. A hidden config-only project may leave stealth
-    off, but it cannot author cores under `.booley_project/cores/`.
-    When native `.core` files exist, ask exactly: **"Should Booley ignore the
-    repository's existing `.core` files and use only the stealth-authored
-    cores?"** Record `ignore_native_cores = true` only from an explicit yes.
-    Recommend yes when evidence shows the native cores fail the installed
-    FuseSoC schema or cannot express the selected Flow Targets; otherwise
-    recommend no. Explain that the switch affects Booley resolution, not raw
+16. **Git footprint — Keep Booley out of your git history?** **Always a grill
+    question**, merged with row 20: ask exactly **"Keep Booley out of your git
+    history?"** Explain both effects before taking the answer:
+    - **Yes (hidden):** `.booley_project/` stays **untracked** in the RTL repo,
+      excluded through the parent repo's `.git/info/exclude` (never tracked
+      `.gitignore`), **and stealth mode turns on**: the commit-message scrub
+      removes protected AI/tool names from new commit messages, and hidden-core
+      projection makes ignored root copies when Booley authors cores.
+      Row 16 = `hidden`, row 20 = `enabled = true`; both are `user-confirmed`
+      from this one answer, including for hidden config-only projects.
+    - **No (open):** `.booley_project/` is **committed** to the RTL repo like
+      other project config, builds use tracked native cores, and row 20 =
+      `enabled = false`. Both rows are `user-confirmed` from this answer.
+    Recommend Yes/hidden for a port (matching `booley init`'s footprint), and
+    No/open for greenfield. Step 4 executes whichever footprint this row says.
+    **Existing hand-set `[stealth]` wins:** keep row 20 `pre-set` verbatim,
+    explain its effects alongside the footprint answer, and reopen it only if
+    the proposed core layout directly contradicts it.
+    **Hidden without the scrub** is a follow-up only if the user volunteers
+    that preference; never offer it unprompted. It is valid only for a
+    config-only project: resolve row 20 `enabled = false`, flag that the hidden
+    project dir is versioned nowhere, and author no hidden cores. Hidden
+    authored cores require stealth's projection and scrub together.
+    **Hybrid** is reserved for an explicitly requested port/integration policy:
+    keep `.booley_project/` hidden and stealth enabled, but track only the named
+    native cores, constraints, wrappers, durable root `AGENTS.md`, and report
+    required by that policy. Record the exact tracked allowlist in this row;
+    keep operational state hidden.
+    Once hidden is settled and native `.core` files exist, ask exactly:
+    **"Should Booley ignore the repository's existing `.core` files and use
+    only the stealth-authored cores?"** Record `ignore_native_cores = true`
+    only from an explicit yes, and only with stealth enabled. Recommend yes
+    when evidence shows the native cores fail the installed FuseSoC schema or
+    cannot express the selected Flow Targets; otherwise recommend no. Explain
+    that the switch affects Booley resolution, not raw
     `fusesoc --cores-root <repo>` commands.
-17. **Specialists** — beyond the core Flows (rows 1, 12) and style lint
-    (row 11), does the user want any Booley Specialist explicitly disabled
-    from the start — `reviewer`, `mutation_tester`, or another? Every installed
-    Specialist is discovered automatically; Step 2 writes
-    `[specialists.<name>].enabled = false` only for an intentional opt-out. One caveat
-    before enabling: **`mutation_tester`
-    has not supported cocotb-based sim Targets** — its baseline runner drives a
-    `V<toplevel>` binary, and a Cocotb Target builds `Vtop` driven from Python
-    over VPI. Verify current support before enabling it on a cocotb project;
-    unsupported, it burns a full specialist run to report an infra error.
-18. **Parity check (optional)** — whether to validate Booley's results against
-    the repo's **native build system** in an optional Step 5, and with which
-    oracle. **A grill question**: the codebase cannot say whether the
-    self-checking TB is a strong enough correctness oracle on its own, or
-    whether the user wants the old flow captured as a cross-check. Gated on
-    **EDA tool identity** — parity is comparable only per phase where Booley's
-    selected EDA tool equals the native flow's EDA tool (native VCS vs Booley Verilator
-    → not comparable, `none`). The first cut compares `sim` only (verdict +
-    cheap telemetry). Default `none`; see `steps/5-parity.md`.
-    **Symmetric case: when the EDA tools are *identical*, do not default to
-    `none`.** A repo whose native sim script runs the same engine Booley
-    selected (Verilator ↔ Verilator, Icarus ↔ Icarus, same design, same TB) is
-    handing you a free exact oracle — same EDA tool, same sources, so any verdict
-    difference is Booley's wiring and nothing else, and Step 5 is minutes of
-    work post-gate. Propose `sim` parity with the native script named as
-    evidence. Unattended fallback for this case is **`sim`, not `none`**;
-    `none` stays the fallback only where the EDA tools differ or the repo has no
-    runnable native flow. It is post-gate and never blocks completion, so the
-    downside of a wrong `yes` is one skipped optional step.
+    **Unattended:** keep row 16 `hidden` (init's default), starred `review`;
+    row 20 follows its unattended rule below, also starred `review` unless
+    pre-set. Hidden alone supplies no consent to rewriting commit messages.
+17. **Specialists** — a **defaults block** row: default = none disabled.
+    Every installed Specialist is discovered automatically; Step 2 writes
+    `[specialists.<name>].enabled = false` only for an intentional opt-out.
+    Show optional reviewers and mutation testers with that proposed default.
+    One reason to change it: **`mutation_tester` has not supported cocotb-based
+    sim Targets** — its baseline runner drives a `V<toplevel>` binary, and a
+    Cocotb Target builds `Vtop` driven from Python over VPI. Verify current
+    support before using it on a cocotb project; unsupported, it burns a full
+    specialist run to report an infra error. Unattended: take the default as
+    `inferred`/high, **no star**; an existing opt-out stays `pre-set`.
+18. **Parity check (optional)** — a **defaults block** row: compare Booley's
+    results against the repo's native build system after the Step 4 gate.
+    Comparable only per phase where Booley and the native build use the
+    **same EDA tool** (native VCS vs Booley Verilator → `none`, evidence-forced).
+    Default `none` where no runnable native flow exists; see `steps/5-parity.md`.
+    When an identical native sim script exists (same EDA tool, design, and TB),
+    propose `sim` in the defaults block with the script as evidence. This is a
+    proposed default, not an individual question. The first cut compares sim
+    verdicts and cheap telemetry; it is optional and never blocks completion.
+    Unattended: take the default, **`sim`, not `none`** for that identical-tool
+    case, otherwise `none`; record `inferred` with confidence, **no star**
+    (or `evidence-forced` where no tool matches).
 19. **Agent backend (provider)** — preserve the provider and auth policy that
     `booley init` already recorded in `[agent]`. Record the row as `pre-set`
     with that table as evidence; the setup plan does not re-litigate it. A
     legacy project may omit one of these fields. In that case ask only for the
     missing choice and record it explicitly: the codebase cannot reveal which
     account the user intends to bill, and neither provider may be inferred.
-20. **Stealth mode (`[stealth]`)** — coupled to row 16 when hidden cores are
-    authored. **Disabled
-    by default during setup; enabling it requires an explicit yes.** When on, a
-    commit-msg hook redacts a banned-word list (`claude`, `anthropic`, `codex`,
-    `booley`, …) out of every commit message in the RTL repo, and can also cap
+20. **Stealth mode (`[stealth]`)** — **always a grill question**, answered by
+    the one merged row-16 git-history question, not a second prompt.
+    Interactive hidden → `enabled = true`, including config-only projects;
+    open → `enabled = false`. Preserve an existing hand-set `[stealth]` block
+    as `pre-set`, including when it differs from those interactive defaults.
+    A commit-msg hook scrubs a configured banned-word list (`claude`,
+    `anthropic`, `codex`, `booley`, …) from new commit messages; it can also cap
     the body (`max_body_lines`) or allowlist author identities
-    (`allowed_authors`). **Never evidence-forced** — no codebase signal says
-    whether the user wants their history scrubbed. Interactive: ask exactly,
-    **"Do you want stealth mode: self-contained hidden cores plus the
-    commit-message scrub?"** Recommend `no` unless row 16 chose a hidden core,
-    explain both effects, and resolve `enabled = true` only from an affirmative
-    answer or that hidden-core choice; otherwise resolve `enabled = false`.
-    It also keeps authored cores self-contained under `.booley_project/cores/`
-    and projects ignored copies into the RTL root for FuseSoC. Unattended:
-    write `enabled = false` unless row 16 requires a stealth core layout. A
-    repo that already carries a hand-set
-    `[stealth]` block is the exception: apply the prior-footprint rule, resolve
-    `pre-set`, and keep its value unchanged.
-    `booley init` creates
-    `.booley_project/`'s own inner git repo *only* while `[stealth] enabled` is
-    on. With the scrub off, a hidden-footprint project dir is versioned nowhere
-    until someone `git init`s it — flag that for Step 4's footprint work rather
-    than letting the combination pass silently.
+    (`allowed_authors`). Authored hidden cores remain self-contained under
+    `.booley_project/cores/` and are projected into ignored RTL-root copies.
+    **Unattended: write `enabled = false`** unless a hidden core is authored,
+    which requires `enabled = true`; star the choice `review` unless pre-set.
+    Nobody consented to a commit-message rewrite, so hidden config alone never
+    enables the scrub in unattended setup.
+    `booley init` creates `.booley_project/`'s own inner git repo *only* while
+    `[stealth] enabled` is on. With the scrub off, a hidden-footprint project
+    dir is versioned nowhere until someone `git init`s it — flag that for
+    Step 4's footprint work rather than letting the combination pass silently.
 23. **Tech Cell Replacement** — one Project-wide mapping shared by all enabled
     synthesis Targets, with each Target recording only the subset it reaches.
     Record the Flow-supplied physical-library family and verified Liberty/LEF
@@ -838,7 +851,9 @@ rule.
 This is the skill's most user-facing moment, so the **onboarding voice**
 (SKILL.md) is in full force: assume the user is new to Booley. Every question
 carries its recommended answer and a plain-English reason it matters, and any
-Booley term gets defined the first time it appears — a user who does not yet
+Booley term gets defined verbatim from `../GLOSSARY.md` the first time it
+appears. Ask by the template’s plain label, with row number/internal key only
+in parentheses — a user who does not yet
 speak Booley still has to make every call here.
 
 Refine the decision sheet with the user, ticket-creation style:
@@ -857,26 +872,36 @@ Refine the decision sheet with the user, ticket-creation style:
 - **After each response, recompute the frontier.** Record settled decisions;
   leave unanswered decisions open rather than silently inferring them. Settled
   roots expose their downstream questions for the next round.
-- **The mandatory rows are non-negotiable.** Rows 4 (TB flavor), 16 (git
-  footprint), 17 (specialists), 18 (parity), and 20
-  (commit-message scrub) are marked *always a grill
-  question* — none may be
-  silently defaulted, even for a clean three-question repo. Row 19 is normally
-  `pre-set` by init; if a legacy config leaves a field absent, add that missing
-  choice to the frontier. Two exceptions, both from "How a row resolves":
-  **evidence-forced** (rows 4 and 18 can be settled by the repo — then you
-  *state* them with their evidence: "all 8 test modules are cocotb, so the
-  flavor is cocotb" is a confirmation line, not a question), and **`pre-set`**
-  (the value is already hand-set on disk — confirm it in one line, don't
-  re-litigate it). Rows 16, 17, and 20 are never evidence-forced.
+- **The mandatory rows are non-negotiable.** Always asked: row 4 (unless
+  evidence-forced), merged rows 16 + 20; row 19 only when init left a field
+  unset. Hand-set values stay `pre-set`. Everything else: evidence-forced or
+  pre-set rows receive one confirmation line; defensible-default rows enter
+  the defaults block; low-confidence or no-defensible-default rows become
+  questions.
+- **The defaults block.** Present every expert row that is not evidence-forced
+  or pre-set and has a defensible default as **one confirm block**: a table
+  with plain label, proposed default, and one-line why. End with:
+  **"Accept these defaults, or name the ones to change."** A row leaves the
+  block and becomes a question when its inference confidence is `low`, there
+  is no defensible default, or its value depends on an unanswered frontier
+  question. Examples: undetected sentinels (row 5), ambiguous memory evidence
+  (row 10a), missing constraints (row 10), several native cores that could own
+  a Target (row 2), or more than ~12 Targets (row 1). Resolve dependencies
+  before presenting the block: put it in the same round as the always-asked
+  questions when independent, otherwise the next round; rows depending on
+  row 4 or row 16 wait for those answers. This preserves the frontier rule
+  against mixing dependency levels. Rows the user names to change become
+  `user-confirmed`; accepted defaults are `inferred` at stated high or medium
+  confidence. Unattended: take those defaults with confidence, without a star.
 - **Codebase first**: never ask what the repo can answer. Ask to *confirm*
   low-confidence inferences, to *choose* where evidence genuinely
   under-determines (TB flavor, the Target set / config variants, style lint,
   host-EDA-tool placement), and to
   *supply* what only the user knows (license servers, which flows they care
   about, host EDA-tool installs).
-- **Proportional depth**: a clean single-core Verilator repo needs three
-  questions; a 400K-LOC multi-core repo with firmware deserves a real session.
+- **Proportional depth**: a clean single-core Verilator repo needs two
+  or fewer questions plus one defaults block; a 400K-LOC multi-core repo with
+  firmware deserves a real session.
 
 Format every question like this:
 
@@ -888,8 +913,10 @@ Format every question like this:
 
 Stop only when the frontier is empty and no row remains silently assumed:
 every row is `evidence-forced`, `pre-set`, `user-confirmed`, or `inferred` at
-high confidence. Summarize the resulting shared understanding and ask the user
-to confirm it. Do not write the plan or move to Part D before that confirmation.
+stated high or medium confidence (including accepted from the defaults block).
+Low-confidence rows never land in that block. Summarize the resulting shared
+understanding and ask the user to confirm it. Do not write the plan or move to
+Part D before that confirmation.
 
 ## Part D — Write the plan and get approval
 
@@ -897,8 +924,14 @@ Fill `../SETUP_PLAN_TEMPLATE.md` and write it to
 `.booley_project/SETUP-PLAN.md`:
 
 - **§1 Feasibility** — the per-flow verdict table + determinant evidence.
-- **§2 Decision sheet** — the finished table, including repo-specific rows and
-  the execution-time checks list.
+- **§2 Decision sheet** — plain label first, with each Booley term defined
+  verbatim from `../GLOSSARY.md` on first use. Split the finished rows into
+  **Decisions you made** (`user-confirmed`, and unattended `review` rows),
+  **Defaults accepted** (defaults-block rows, `inferred`), and
+  **Settled by your repo or existing config** (`evidence-forced`, `pre-set`).
+  Use those three `###` headings, the same nine columns, and global numbering;
+  repo-specific rows also need a plain label, explanation, and internal key.
+  Include the execution-time checks list.
 - **§3 Approval & deviations** — the approval record; the deviation log starts
   empty and is appended by execution steps.
 
@@ -919,7 +952,7 @@ action: `approve`, `edit`, or `cancel` (default `cancel` on ambiguity). On
 place, and continue. Do not stall. The approval line records the contract:
 auto-approved, `N` rows starred `review` for the user to audit, the rest
 `evidence-forced`, `pre-set`, or `inferred`. If *every* mandatory row came back
-`review`, say
+`review` (4, 16, 20, and any missing row-19 choice), say
 so plainly in the final report — that is a plan the user has to read, not a
 setup that ran itself.
 
