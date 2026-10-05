@@ -1,4 +1,4 @@
-"""Tests for harness.console.path_backtick — raw-path pre-processor."""
+"""Tests for harness.tui.path_backtick — raw-path pre-processor."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness.console.links import LinkContext
-from booley.harness.console.path_backtick import wrap_paths_in_backticks
+from booley.harness.tui.links import LinkContext
+from booley.harness.tui.path_backtick import wrap_paths_in_backticks
 
 
 @pytest.fixture

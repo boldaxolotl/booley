@@ -11,6 +11,7 @@ from pathlib import Path
 
 from booley.runtime.worktree_paths import relative_worktree_paths, worktree_state_dir
 from booley.runtime.worktree_relocation import refresh_relative_worktree_config
+from booley.runtime.worktrees import parse_worktree_porcelain
 
 
 class WorktreeRepairError(RuntimeError):
@@ -50,8 +51,7 @@ def _text(path: Path) -> str:
 
 def _association_paths(owner: Path, checkout: Path, common: Path) -> tuple[Path, ...]:
     """Known old mount spellings plus owner-recorded primary checkout spelling."""
-    primary_line = _git(owner, "worktree", "list", "--porcelain").splitlines()[0]
-    primary = Path(primary_line.removeprefix("worktree "))
+    primary = parse_worktree_porcelain(_git(owner, "worktree", "list", "--porcelain"))[0].path
     paths = [checkout]
     with contextlib.suppress(ValueError):
         paths.append(primary / checkout.relative_to(owner))

@@ -1,4 +1,4 @@
-"""Tests for harness.console.links — click resolver + invocation."""
+"""Tests for harness.tui.links — click resolver + invocation."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.config.editor import VSCODE_EDITOR, ResolvedEditor
-from booley.harness.console.links import (
+from booley.harness.tui.links import (
     LinkContext,
     LinkTarget,
     ResolvedAction,
@@ -62,7 +62,7 @@ class TestResolveFile:
         _write(project / "rtl/fifo.sv", "old")
         _write(worktree / "rtl/fifo.sv", "new")
         with patch(
-            "booley.harness.console.links._materialize_fork_base",
+            "booley.harness.tui.links._materialize_fork_base",
             return_value=Path("/tmp/base-copy.sv"),
         ):
             action = resolve(LinkTarget(kind="file", raw="rtl/fifo.sv"), ctx)
@@ -161,7 +161,7 @@ class TestSandboxPrefixStripping:
         _write(worktree / "rtl/fifo.sv", "y")
         ctx.sandbox_mount_prefix = "/work"
         with patch(
-            "booley.harness.console.links._materialize_fork_base",
+            "booley.harness.tui.links._materialize_fork_base",
             return_value=Path("/tmp/base-copy.sv"),
         ):
             action = resolve(
@@ -234,7 +234,7 @@ class TestMaterializeForkBase:
     def test_writes_git_show_output_to_tempfile(self, ctx: LinkContext):
         proc = MagicMock(returncode=0, stdout=b"module fifo;\nendmodule\n")
         with patch(
-            "booley.harness.console.links.subprocess.run",
+            "booley.harness.tui.links.subprocess.run",
             return_value=proc,
         ):
             tmp = _materialize_fork_base("rtl/fifo.sv", ctx)
@@ -243,7 +243,7 @@ class TestMaterializeForkBase:
         assert tmp.read_bytes() == b"module fifo;\nendmodule\n"
         # Cached on second call (no second subprocess.run needed).
         with patch(
-            "booley.harness.console.links.subprocess.run",
+            "booley.harness.tui.links.subprocess.run",
             side_effect=AssertionError("should not call again"),
         ):
             tmp2 = _materialize_fork_base("rtl/fifo.sv", ctx)
@@ -252,14 +252,14 @@ class TestMaterializeForkBase:
     def test_git_show_failure_returns_none(self, ctx: LinkContext):
         proc = MagicMock(returncode=128, stdout=b"", stderr=b"unknown ref")
         with patch(
-            "booley.harness.console.links.subprocess.run",
+            "booley.harness.tui.links.subprocess.run",
             return_value=proc,
         ):
             assert _materialize_fork_base("rtl/ghost.sv", ctx) is None
 
     def test_git_missing_returns_none(self, ctx: LinkContext):
         with patch(
-            "booley.harness.console.links.subprocess.run",
+            "booley.harness.tui.links.subprocess.run",
             side_effect=FileNotFoundError("git"),
         ):
             assert _materialize_fork_base("rtl/x.sv", ctx) is None
@@ -278,7 +278,7 @@ class TestInvoke:
     def test_open_substitutes_file_placeholder(self):
         editor = VSCODE_EDITOR
         with patch(
-            "booley.harness.console.links.subprocess.Popen",
+            "booley.harness.tui.links.subprocess.Popen",
         ) as mock_popen:
             result = invoke(
                 ResolvedAction(kind="open", args=("/tmp/a.sv",)),
@@ -291,7 +291,7 @@ class TestInvoke:
     def test_open_at_line_substitutes_file_and_line(self):
         editor = VSCODE_EDITOR
         with patch(
-            "booley.harness.console.links.subprocess.Popen",
+            "booley.harness.tui.links.subprocess.Popen",
         ) as mock_popen:
             result = invoke(
                 ResolvedAction(
@@ -308,7 +308,7 @@ class TestInvoke:
     def test_diff_substitutes_left_right(self):
         editor = VSCODE_EDITOR
         with patch(
-            "booley.harness.console.links.subprocess.Popen",
+            "booley.harness.tui.links.subprocess.Popen",
         ) as mock_popen:
             result = invoke(
                 ResolvedAction(
@@ -330,7 +330,7 @@ class TestInvoke:
         )
         assert editor.diff is None
         with patch(
-            "booley.harness.console.links.subprocess.Popen",
+            "booley.harness.tui.links.subprocess.Popen",
         ) as mock_popen:
             result = invoke(
                 ResolvedAction(
@@ -355,7 +355,7 @@ class TestInvoke:
     def test_editor_not_found_returns_hint(self):
         editor = VSCODE_EDITOR
         with patch(
-            "booley.harness.console.links.subprocess.Popen",
+            "booley.harness.tui.links.subprocess.Popen",
             side_effect=FileNotFoundError("code"),
         ):
             result = invoke(
@@ -368,7 +368,7 @@ class TestInvoke:
     def test_popen_oserror_returns_hint(self):
         editor = VSCODE_EDITOR
         with patch(
-            "booley.harness.console.links.subprocess.Popen",
+            "booley.harness.tui.links.subprocess.Popen",
             side_effect=OSError("perm denied"),
         ):
             result = invoke(
