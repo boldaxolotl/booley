@@ -118,7 +118,7 @@ The buckets:
   wrapper or a pass/fail sentinel a directed TB never prints, which you author;
   or an SDC for a physical synth Target or an XDC for FPGA, which only the user
   may supply, as row 10 explains); or a mechanical conversion whose input you
-  have not actually read yet (a `.fl` filelist, a legacy EDA-tool-API `.core`).
+  have not actually read yet (a `.fl` filelist, an EDA-tool-API `.core`).
 - **Red:** out of reach today. A simulator outside the built-in matrix
   (Questa/ModelSim, VCS today), VHDL-only RTL against the built-in Verilog
   engines, encrypted RTL with no licensed simulator, or a license daemon that
@@ -164,8 +164,7 @@ leaves all of this on a blank slate:
   `.devcontainer/devcontainer.json`;
 - one generated block in `.git/info/exclude` under the header
   `# Booley (generated; local, uncommitted)`: `/.devcontainer`,
-  `/.booley_project`, `/.claude`, and `/.booley-projected-*.core`. Older init
-  runs may have repeated the header; current init consolidates it.
+  `/.booley_project`, `/.claude`, and `/.booley-projected-*.core`. Init consolidates repeated headers.
 
 Tell-tales of a **prior setup** are therefore only things init never writes:
 any actual key in `booley.toml`/`tests.toml` (a `[sandbox].image`, `[stealth]`,
@@ -206,7 +205,7 @@ the only branch that short-circuits the rest is the first.
   tracked files is the user's call, not a setup step.
   **A tracked `SETUP-REPORT.md` is not proof the port is finished.** Check its
   mtime and `git log -1 --format=%cr -- SETUP-REPORT.md`: on a maintainer
-  dogfood repo it is usually the **current** port's report, hours old, with
+  dogfood repo it is usually the **current** port's report, created hours ago, with
   sections still waiting on the step you are about to run. Either way your
   handling is identical — read it as evidence (it names the repo's traps), never
   write to it from Step 0, and never treat its existence as "setup already
@@ -531,9 +530,9 @@ separate columns (see "How a row resolves"). The standard checklist:
 2. **`.core` ownership/placement strategy & Target set** — decide this together
    with row 16's git footprint. The placement is deterministic:
    - **Open footprint + native `.core` exists:** reuse the appropriate native
-     core. Modernize the selected legacy Target in place or add the needed
+     core. Convert the selected EDA-tool-API Target in place or add the needed
      modern Target to that core; do not create a parallel Booley core. Preserve
-     unrelated legacy Targets unless the plan explicitly puts them in scope.
+     unrelated EDA-tool-API Targets unless the plan explicitly puts them in scope.
    - **Open footprint + no native `.core`:** author a normal tracked project
      core at the repo root or beside its RTL.
    - **Stealth footprint:** never edit the repo's tracked native cores. Author a
@@ -586,7 +585,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    `sim` / `lint` / `synth` / `fpga` (the Booley Flow family). The axis is not derivable from
    `.core` metadata, so the name must carry it. Reject plausible-but-wrong
    names now rather than at the Step-4 doctor NOTE: `asic_core` is wrong
-   (`asic` is a legacy word, not an axis — use `synth_core`);
+   (`asic` is not a naming axis — use `synth_core`);
    `synthesis`/`impl` are likewise not axis tokens. A vendored upstream `.core`
    keeps its upstream Target names and is exempt.
 3. **Toplevel(s)** — per intent; **flat-port wrapper needed?** (from the
@@ -787,7 +786,7 @@ separate columns (see "How a row resolves"). The standard checklist:
 19. **Agent backend (provider)** — preserve the provider and auth policy that
     `booley init` already recorded in `[agent]`. Record the row as `pre-set`
     with that table as evidence; the setup plan does not re-litigate it. A
-    legacy project may omit one of these fields. In that case ask only for the
+    Project may omit one of these fields. In that case ask only for the
     missing choice and record it explicitly: the codebase cannot reveal which
     account the user intends to bill, and neither provider may be inferred.
 20. **Stealth mode (`[stealth]`)** — **always a grill question**, answered by
@@ -973,7 +972,7 @@ Before execution begins, allocate one run-owned scratch root with
 the plan's §3 **Execution ledger**. Every setup-authored detached capture,
 exit-code sidecar, probe, and conversion belongs beneath that root and is
 registered with `booley cleanup record` before Step 7 can consider it. A
-legacy plan without the ledger remains readable but has no deletion authority.
+plan without the ledger remains readable but has no deletion authority.
 
 ## Appendix — worked example: a RISC-V CPU core's boot software
 

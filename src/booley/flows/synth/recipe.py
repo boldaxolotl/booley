@@ -35,6 +35,7 @@ from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.request import SynthRequest
 
 from .ppa_config import append_ppa_args
+from .recipe_migrations import retired_option_message
 
 __all__ = [
     "BASELINE_RECIPE_FINGERPRINT_DETAIL",
@@ -133,8 +134,7 @@ def resolve_synth_mode(
     """Resolve the Target's synthesis intent at the public configuration seam."""
     if "timing_engine" in flow_options:
         raise BoundaryError(
-            f"Target {target!r} flow_options.timing_engine is retired; replace it "
-            "with flow_options.synth_mode = physical or logical"
+            retired_option_message("timing_engine", f"Target {target!r} flow_options")
         )
     mode = (
         require_opt_str(

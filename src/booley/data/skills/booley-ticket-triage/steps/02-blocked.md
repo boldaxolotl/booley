@@ -29,7 +29,7 @@ failures, Flow and Specialist reports, and worktree status. Do not repeat that
 evidence gathering.
 
 If the dossier is missing or stale, use the manual Gather Context and Diagnosis
-fallback below. This fallback exists for old tickets and report-generation
+fallback below. This fallback exists for Tickets missing their report and report-generation
 failures; do not run a new report agent while the user waits.
 
 ## 1. Gather Context
@@ -142,14 +142,14 @@ approval of those exact edits authorizes applying them; do not ask again.
   execution against the original Ticket baseline is required.
 - **Return to draft (fresh Ticket authoring)**: this is required when
   `blocked_reason` is `acceptance-input-change-required`, or when the required
-  change is outside amendment's narrow operations. It preserves the old Ticket baseline
+  change is outside amendment's narrow operations. It preserves the prior Ticket baseline
   and worktrees for audit, archives the current run history under
   `logs/<slug>/runs/<NNN>/`, and opens a new generation-qualified authoring
   workspace from the committed destination refs. Correct the authoring inputs,
   validate the draft, and enqueue it to record a new immutable Ticket baseline.
   `unblock` and `reset` retain the original baseline and are rejected for
   this block reason.
-  A legacy v2-writer defect needs narrower recovery when diagnosis proves that
+  A mismatched authored/generated Ticket needs narrower recovery when diagnosis proves that
   only authored body whitespace was stripped by a metadata rewrite:
   - If the Ticket is still queued, restore only the known original body
     whitespace, preserving its current `machine`, `created`, and
@@ -158,8 +158,8 @@ approval of those exact edits authorizes applying them; do not ask again.
     it passes may normal Ticket execution continue.
   - If the Ticket is already blocked with `acceptance-input-change-required`,
     recreate it as a new Ticket. `unblock` is rejected for this sentinel, and
-    `return-to-draft` cannot validate the mismatched old generation.
-  - If body-only repair does not make readiness pass, stop repairing the old
+    `return-to-draft` cannot validate the mismatched prior generation.
+  - If body-only repair does not make readiness pass, stop repairing the prior
     generation and recreate the Ticket.
 - **Archive**: give up on this ticket.
 - **Skip**: leave as-is.
@@ -171,7 +171,7 @@ Notes:
 - `return-to-draft` archives `blocked.md`, human logs, and runtime evidence with
   the previous run. It strips the prior `machine`, `created`,
   `feature_branch`, `steps_completed`, and `stage` fields from the editable
-  draft; it does not mutate the archived Ticket or old basis.
+  draft; it does not mutate the archived Ticket or prior basis.
 
 ## 6. Collect Feedback
 
@@ -200,7 +200,7 @@ For an unblock retry:
   Show the preview before apply, including the zero-mandatory outcome when
   applicable. Apply only the exact proposal the Human approved. If apply
   rejects a stale digest, inspect what changed, obtain and show a fresh preview,
-  and seek approval for any changed proposal; never apply the old digest by
+  and seek approval for any changed proposal; never apply the prior digest by
   substituting a newly computed one silently. Report
   `Amended -> queued. Run ticket execution to resume.`
 - **Requested review**: Commit intended Ticket source changes, then run

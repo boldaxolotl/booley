@@ -113,7 +113,7 @@ def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
     assert positions == sorted(positions)
     assert "acceptance-input-change-required" in blocked
     assert "logs/<slug>/runs/<NNN>/" in blocked
-    assert "preserves the old Ticket baseline" in blocked
+    assert "preserves the prior Ticket baseline" in blocked
     assert "fresh Ticket authoring" in blocked
     assert "`outer_worktree` and `project_worktree`" in blocked
     assert "`booley board return-to-draft" not in blocked
@@ -332,8 +332,8 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         "Validate the resolved Ticket through §C",
         "has no schema, required headings, completeness check, or static validation pass",
         "Ambiguous, conflicting, or unresolvable applicable guidance",
-        "disregard the old scaffold's instructions about YAML activation",
-        "An untouched, comment-only legacy scaffold adds no guidance",
+        "treat uncommented Project-authored mappings as expressions of intent",
+        "A comment-only scaffold adds no guidance",
         "validation never does",
         '--document-file "$TICKET_PATH"',
     ):
@@ -788,7 +788,7 @@ def test_triage_reset_retains_baseline_and_routes_contract_changes_to_reauthorin
         "To change Target definitions or source baselines, return the Ticket to draft" in reference
     )
     assert "validate, and enqueue a new generation" in reference
-    assert "Current lifecycle commands reject unsupported legacy Tickets" in reference
+    assert "Lifecycle commands require a sealed Ticket" in reference
     assert "discards implementation state and restores all participant worktrees" in blocked
 
 

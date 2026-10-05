@@ -258,7 +258,7 @@ plain-English reason it matters.
 8. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
    approved retention mode after the report exists. It uses only the current
    run's manifest, materializes structured Feedback attachments before source
-   deletion, and treats legacy plans as inventory-only.
+   deletion, and treats plans without ownership ledgers as inventory-only.
 
 ## Setup guardrails
 
@@ -301,7 +301,7 @@ wants you to break these; it doesn't.
   the root report **instead of** an inner copy. A normal setup leaves the report
   in `.booley_project/` and never passes that flag. If you *find* a **tracked**
   `SETUP-REPORT.md`, it is the fingerprint of a port — an earlier one, or **the
-  one running right now** (on a dogfood repo it is usually hours old, with
+  one running right now** (on a dogfood repo it is usually created hours ago, with
   sections still waiting on the step you are about to run). Either way: record
   it, read it as evidence, leave it in place unless the enclosing port workflow
   explicitly owns and rerenders it, and follow the prior-footprint branch in

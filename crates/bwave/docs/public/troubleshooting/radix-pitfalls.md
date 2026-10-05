@@ -30,9 +30,8 @@ quote the whole thing to avoid the shell interpreting
 Only `%h`, `%d` and `%b` exist. Anything else — `%u`,
 `%x`, `%o` — is a hard error (exit 2). `%` cannot appear
 in a Verilog identifier, so a mistyped suffix leaves a
-pattern that matches nothing and used to be dropped from
-a multi-`-s` query in silence: a nine-signal `wave` once
-rendered two rows for exactly that reason.
+pattern that matches nothing. B-Wave rejects unsupported suffixes
+instead of silently omitting signals from a multi-`-s` query.
 
 ### Comparison literal: value in `find` / `sample` / etc
 
@@ -126,21 +125,15 @@ Verilog literals:
 ```
 
 If your JSON post-processor expects Verilog literals,
-adapt to the v0.2 contract: prefix-free strings, the
+use the JSON value contract: prefix-free strings, the
 caller decides the radix. See
 `reference/json-envelope`.
 
-### Pitfall 6: stats histogram keys (v0.2.1 change)
+### Pitfall 6: stats histogram keys
 
-In v0.1 / early v0.2 the JSON `stats` output had raw
-`value_hist` keys like `"5"` / `"FF"`. As of v0.2.1
-these are Verilog literals matching the display radix:
-`"'d5"` / `"'hFF"`. If you have older tooling that
-reads the histogram, update the key parsing. See
-`reference/json-envelope`.
-
-The Python wrapper help text in older Booley packages
-still describes the v0.1 behaviour. Disregard it.
+The JSON `stats` output uses Verilog literals matching the display radix
+for `value_hist` keys: `"'d5"` / `"'hFF"`. Parse these keys as Verilog
+literals. See `reference/json-envelope`.
 
 ## Quick rules
 

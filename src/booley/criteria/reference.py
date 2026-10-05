@@ -262,7 +262,7 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
             "cycle_count_reduce_at_least: 5%}}}`.",
             "",
             "A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when "
-            "that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, "
+            "that exact test passes. Missing, malformed, duplicate, unnamed, failed, "
             "or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing "
             "Cycle Count records remain observational.",
             "",

@@ -83,12 +83,6 @@ trace has a timescale.
 }
 ```
 
-(Note: v0.1 / early v0.2 emitted raw store values like
-`"3"` as histogram keys and a single `time_in_state` map
-in ticks. Both shapes were a regular source of confusion:
-callers either assumed Verilog literals or assumed ns.
-The current schema fixes both.)
-
 When the simulation has no clock, `total_cycles` and
 `clock_period_ns` are `null`.
 

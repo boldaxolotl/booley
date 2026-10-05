@@ -8220,3 +8220,122 @@ def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
     assert not doctor._project_declares_verible_lint(project)
     expected = "verilator" if eda_tool == "verilator" else "verible-verilog-lint"
     assert doctor._runtime_probe_binaries(project, ["lint_mixed"], flow_name="lint") == [expected]
+
+
+@pytest.mark.parametrize(
+    ("config", "item", "fix", "severity"),
+    [
+        ("[notifications]\nenabled = true\n", "[notifications]", "delete this table", "WARN"),
+        ("[mcp_tools.reviewer]\nenabled = false\n", "[mcp_tools]", "[specialists.*]", "FAIL"),
+        (
+            "[mcp_tools.submit_run_report]\nenabled = false\n",
+            "[mcp_tools]",
+            "remove protocol utility settings",
+            "FAIL",
+        ),
+        (
+            "[mcp_tools.project_check]\nenabled = false\n",
+            "[mcp_tools]",
+            "filename with '_'",
+            "FAIL",
+        ),
+        ('[tools]\nbuiltin = ["sim"]\n', "[tools]", "[flows.*]", "FAIL"),
+        ('[tools]\ncustom = ["reviewer"]\n', "[tools]", "[specialists.*]", "FAIL"),
+        ('[flows.sim]\nbackend = "docker"\n', ".backend", "delete the key", "FAIL"),
+        ('[flows.sim]\nbackend = "none"\n', ".backend", "enabled = false", "FAIL"),
+        ('[flows.sim]\nvenue = "host"\n', ".venue", "delete the key", "FAIL"),
+        (
+            '[flows.sim]\nhost_setup_commands = ["true"]\n',
+            ".host_setup_commands",
+            "delete the key",
+            "FAIL",
+        ),
+        ('[flows.sim]\ntarget = "sim_core"\n', ".target", "explicit target", "FAIL"),
+        (
+            '[flows.sim]\ndefault_target = "sim_core"\n',
+            ".default_target",
+            "explicit target",
+            "FAIL",
+        ),
+        (
+            '[flows.sim]\ncalibration_target = "sim_core"\n',
+            ".calibration_target",
+            "doctor",
+            "FAIL",
+        ),
+        (
+            '[flows.sim.selftest]\ngood = "sim_core"\n',
+            "[flows.sim.selftest]",
+            "delete the table",
+            "FAIL",
+        ),
+        (
+            '[sandbox]\npassthrough_env = ["LM_LICENSE_FILE"]\n',
+            ".passthrough_env",
+            "host License Profile",
+            "FAIL",
+        ),
+        ('[feedback]\nmode = "off"\n', "[feedback].mode", "delete [feedback].mode", "FAIL"),
+        ('[interactive]\napp = "codex"\n', "[interactive].app", "[agent].provider", "FAIL"),
+    ],
+)
+def test_doctor_renders_removed_documentation_item_with_fix(
+    tmp_path, monkeypatch, capsys, config, item, fix, severity
+):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    (project_dir / "booley.toml").write_text('[project]\nname = "unit"\n' + config)
+
+    result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    output = capsys.readouterr().out
+    assert result == (0 if severity == "WARN" else 1)
+    assert any(severity in line and item in line for line in output.splitlines())
+    assert fix in output
+
+
+@pytest.mark.parametrize("key", ["idle_timeout_seconds", "max_sessions", "egress_allowlist"])
+@pytest.mark.parametrize("table", ["interactive", "sandbox"])
+def test_doctor_renders_each_project_policy_migration(tmp_path, monkeypatch, capsys, key, table):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    value = '["example.com"]' if key == "egress_allowlist" else "600"
+    (project_dir / "booley.toml").write_text(f"[{table}]\n{key} = {value}\n")
+
+    assert doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path) == 1
+
+    output = capsys.readouterr().out
+    assert f"[{table}]" in output
+    assert key in output
+    assert "[sandbox]" in output
+    assert "config.toml" in output
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "replacement"),
+    [
+        ("timing_engine", "openroad", "synth_mode = physical or logical"),
+        ("yosys", {}, "advanced_settings_yosys"),
+        ("openroad", {}, "advanced_settings_openroad"),
+    ],
+)
+@pytest.mark.parametrize("marked", [True, False])
+def test_doctor_renders_synthesis_target_migration(
+    tmp_path, monkeypatch, capsys, key, value, replacement, marked
+):
+    import yaml
+
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    core = tmp_path / "unit.core"
+    document = yaml.safe_load(core.read_text().removeprefix("CAPI=2:\n"))
+    document["targets"]["synth_fast"]["flow_options"][key] = value
+    if not marked:
+        document["targets"]["synth_fast"]["flow_options"].pop("booley")
+    core.write_text("CAPI=2:\n" + yaml.safe_dump(document))
+
+    doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    output = capsys.readouterr().out
+    assert f"flow_options.{key} is retired" in output
+    assert replacement in output

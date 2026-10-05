@@ -22,9 +22,8 @@ correct the authoring inputs, validate, and enqueue a new generation. For an
 approved requirement relaxation within the supported operations, use amendment.
 See `steps/02-blocked.md` for those recovery paths.
 
-Old unsealed/legacy reset behavior discarded disposable worktrees and branches.
-Current lifecycle commands reject unsupported legacy Tickets: recreate them
-instead. `contract-seal`, `revise-contract`, and `reset-to` are retired commands.
+Lifecycle commands require a sealed Ticket. Recreate an unsealed Ticket from
+its authoring inputs instead of modifying generated metadata.
 
 ## Available Booley Flows and Specialists
 

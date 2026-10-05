@@ -87,7 +87,7 @@ over that severity bug with a project waiver.
   Doctor retains access. For simulation, mirror the broken staged firmware or
   vectors under `.booley_project/selftest/sim/bad-overlay/`; Doctor runs the
   same smoke test normally and with that overlay. Do not add
-  `[flows.<flow>.selftest]`; it is retired. A `bad` that FALSE-PASSES or returns
+  a Project self-test mapping. A `bad` that FALSE-PASSES or returns
   an infra error is a hard FAIL: fix the Flow or fixture.
 
 ### Heaviest synthesis and memory calibration
@@ -178,7 +178,7 @@ expires = 2026-11-01
   entry is ignored and noted; the warning becomes active again. Re-review and
   edit or replace that exact entry if the risk is still accepted, or delete it
   if the risk vanished—never append a duplicate `check`/`subject` pair. Run
-  `booley doctor --verbose` to find active waiver entries that no longer match
+  `booley doctor --verbose` to find active waiver entries that do not match
   anything, then remove them.
 
 After adding or changing a waiver, run the warning's original command again and

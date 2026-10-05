@@ -22,6 +22,8 @@ from booley.flows.synth.backends.yosys.ppa import validate_abc_recipe, validate_
 from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.request import SynthRequest
 
+from .recipe_migrations import retired_option_message
+
 _YOSYS_KEYS = {
     "abc_recipe",
     "abc_script",
@@ -131,15 +133,9 @@ def append_ppa_args(
 
 def _reject_retired_subtables(recipe: Mapping[str, Any], field_prefix: str) -> None:
     """Hard-fail old expert table names with their exact replacements."""
-    replacements = {
-        "yosys": "advanced_settings_yosys",
-        "openroad": "advanced_settings_openroad",
-    }
-    for old, new in replacements.items():
-        if old in recipe:
-            raise BoundaryError(
-                f"{field_prefix}.{old} is retired; rename it to {field_prefix}.{new}"
-            )
+    for key in ("yosys", "openroad"):
+        if key in recipe:
+            raise BoundaryError(retired_option_message(key, field_prefix))
 
 
 def _subtable(

@@ -519,8 +519,10 @@ adding new features.
 - `booley feedback preview` and `submit` are removed and `[feedback].mode` is
   retired; Doctor FAILs until you delete the key. Only `booley feedback export`
   remains. ntfy notifications are removed; delete `[notifications]`, and
-  remove `ntfy.sh` from the host egress allowlist if it was added only for
-  them. `pipeline.toml` is no longer a Git identity fallback; set `[agent.git]`
+  remove `ntfy.sh` from the host `egress_allowlist` if it was authorized only
+  for notifications. Preserve other authorized entries. Stop Project
+  containers, run `booley bootstrap` on the host, and restart them to apply
+  the policy change. `pipeline.toml` is no longer a Git identity fallback; set `[agent.git]`
   in `booley.toml`.
 - Codex default models are `gpt-6-astra` (heavy), `gpt-5.6-sol` (standard),
   and `gpt-5.6-luna` (light), all at high reasoning effort. Doctor's

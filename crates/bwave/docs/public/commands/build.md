@@ -66,11 +66,8 @@ file, not a payload.
   finalized at end-of-VCD. If the simulator crashed
   mid-write, the resulting store is incomplete and queries
   will fail to load. Re-run the simulation, then rebuild.
-- **`-o <name>.bwave` rejected (exit 2)**: the legacy
-  `.bwave` format was retired; the store is plain FST now.
-  The error reads `ERROR: the .bwave format was replaced
-  by FST; rebuild with 'bwave build <vcd> -o trace.fst'`.
-  Use a `.fst` output path.
+- **Output path rejected (exit 2)**: the store is plain FST.
+  Use a `.fst` output path, such as `bwave build <vcd> -o trace.fst`.
 - **`input VCD declares no signals` (exit 2)**: the VCD
   header carries zero `$var` declarations, so the store
   would be header-only and answer every query with

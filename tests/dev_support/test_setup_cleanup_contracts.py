@@ -35,7 +35,7 @@ def test_setup_advertises_step_seven_and_ledger_contract() -> None:
         "booley cleanup apply",
         "same-filesystem quarantine",
         "Free-text path-like prose",
-        "legacy plan",
+        "A plan without an ownership ledger has no deletion",
     ):
         assert required in cleanup
 
