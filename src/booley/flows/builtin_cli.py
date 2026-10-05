@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from booley.flows.execution_persistence import FlowExecutionAdapter
 
 
-def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
+def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=flow.name,
         description=flow.description,
@@ -29,12 +29,19 @@ def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
     )
     flow.argument_adapter.add_common_args(parser)
     flow.argument_adapter.add_args(parser)
+    if human:
+        from booley.flows.cli_selection import human_parser
+
+        return human_parser(parser, durations=True)
     return parser
 
 
 def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowRequest:
-    parser = build_parser(flow)
+    from booley.flows.cli_selection import normalize_endpoint_args, transport_invocation
+
+    parser = build_parser(flow, human=not transport_invocation())
     args = parser.parse_args(argv)
+    normalize_endpoint_args(args)
     normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)
     request = flow.request_type(**vars(args))

@@ -174,14 +174,13 @@ def test_builtin_parsers_accept_canonical_timeout(
 
 
 @pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_removed_timeout_alias_is_rejected(
+def test_human_timeout_is_converted_once(
     flow_type: type[BooleyFlow],
     _name: str,
     _default_ms: int,
 ) -> None:
-    with pytest.raises(SystemExit) as error:
-        flow_type().parse_args(["--target", "demo", "--timeout", "2500"])
-    assert error.value.code == 2
+    args = flow_type().parse_args(["--target", "demo", "--timeout", "2500"])
+    assert args.timeout_ms == 2500000
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "nan", "words"])
@@ -580,7 +579,10 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
     assert separator
     assert summary == ""
     assert json.loads(plan_text) == execution.outcome.detail
-    assert captured.err == ""
+    assert (
+        captured.err
+        == "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
+    )
     assert state_file.read_bytes() == state_before
     assert [path.relative_to(report_dir).as_posix() for path in report_dir.rglob("*")] == [
         "dry_contract",

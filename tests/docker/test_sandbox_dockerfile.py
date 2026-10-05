@@ -259,8 +259,8 @@ def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
     assert '--runtime-image "riscv=${IMAGE}"' in contract
     assert "verify_picorv32_demo.sh" in demo
     assert "-e BOOLEY_RUN_PICORV32_FLOWS=1" in demo
-    assert "python -m booley.flows.lint --work-dir /work --target lint_core" in verifier
-    assert "python -m booley.flows.sim --work-dir /work --target sim_core" in verifier
+    assert "python -m booley.flows.lint --project /work --target lint_core" in verifier
+    assert "python -m booley.flows.sim --project /work --target sim_core" in verifier
     assert "riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
 
 

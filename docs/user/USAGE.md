@@ -57,6 +57,44 @@ Command blocks go in the terminal named in the text around them. Sentences in
 Booley uses some terms with exact meanings. When one is unfamiliar, look it up
 in the glossary linked from the [context map](../../CONTEXT-MAP.md).
 
+### Selecting a Project
+
+Use `-C/--project PATH` on Project-bound commands to select a checkout or worktree,
+including a nested directory in it. Paths are relative to the caller; Booley does
+not change the process directory. With no selector, cwd discovery stays unchanged.
+An explicit canonical selector overrides `RTL_PROJECT_ROOT`.
+
+```bash
+booley -C ../other targets
+booley session -C ../other status
+booley session status --project ../other
+booley flow lint --target lint --project ../other
+```
+
+Use the selector once, at the root, command, or nested operation. It also works on
+bare `booley`, `chat`, `doctor`, `init`, `upgrade`, `cleanup`, and `feedback`.
+`auth --status` and `cheat --list` accept and ignore it without discovering a Project.
+`bootstrap`, `projects`, `eda`, and Ticket Mode `run`/`board` retain their grammar
+and do not accept the new selector. Full option names are stable; ambiguous
+abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
+
+Selection chooses the checkout, while `BOOLEY_PROJECT_DIR` chooses Project data;
+an external data override remains supported. Checkout-local data configuration and
+initialization's destination scope keep their existing precedence. A selector
+requires an existing directory; `init` accepts an uninitialized directory.
+
+Hidden `--project-root`/`-p` aliases remain only where previously supported, for one
+compatibility release, with one-line stderr notices. They retain literal path
+resolution, while the canonical selector discovers nested directories. Persisted
+Sandbox initialization specifications retain internal compatibility with the old
+`session prepare` form. `cheat --project-files` selects the Project Files section;
+legacy bare `cheat --project` still selects that section with a deprecation notice.
+
+Flows and Specialists accept `--timeout DURATION`: positive integer seconds (`90`
+or `90s`), minutes (`30m`), hours (`2h`), or descending combinations (`1h30m`).
+The hidden `--timeout-ms` alias keeps millisecond precision and prints a notice for
+one compatibility release. MCP parameters and config keys stay in milliseconds.
+
 ## First, verify your setup
 
 Run these in a **host terminal**. They check that Booley works and show what it
@@ -75,7 +113,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
 - If Booley says its version changed, type `/booley-heal` in the agent chat.
 - For a quick overview of Booley, start with `booley cheat`. It's long, so
   `booley cheat --list` shows its sections and you can print just the ones you
-  need, for example `booley cheat --board` or `booley cheat --commands --project`.
+  need, for example `booley cheat --board` or `booley cheat --commands --project-files`.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
   and syntheses.
 
@@ -624,9 +662,9 @@ Every Flow's options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), 
 
 LLM-backed sub-agents running in scoped, isolated workspaces:
 
-Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout-ms` are CLI-only controls.
+Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `--work-dir`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout-ms` takes positive milliseconds for existing model-call budgets; seconds-only providers round up. The removed `--timeout` spelling exits 2. Replace old Specialist seconds with milliseconds (multiply by 1000); old built-in Flow values already used milliseconds.
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Existing model-call budgets and minimums remain unchanged; seconds-only providers round up. Hidden `--work-dir` and `--timeout-ms` aliases retain their old units for one compatibility release and print deprecation notices on stderr. Connected agent arguments and configuration stay unchanged.
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|

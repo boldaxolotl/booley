@@ -250,9 +250,12 @@ def test_positive_milliseconds(value):
     assert error.value.code == 2
 
 
-def test_removed_spelling_is_not_an_abbreviation():
+def test_human_timeout_uses_seconds_and_preserves_no_abbreviations():
+    endpoint = ProjectSpecialist()
+    endpoint.parse_args(["--timeout", "1001"])
+    assert endpoint.args.timeout_ms == 1001000
     with pytest.raises(SystemExit) as error:
-        ProjectSpecialist().parse_args(["--timeout", "1001"])
+        endpoint.parse_args(["--time", "1001"])
     assert error.value.code == 2
 
 
@@ -333,14 +336,16 @@ def test_endpoint_help_is_allowed_on_host(tmp_path, capsys):
     assert error.value.code == 0
     output = capsys.readouterr().out
     for flag in [
-        "--work-dir",
+        "--project",
         "--report-dir",
         "--diagnostic",
         "--model",
         "--max-turns",
-        "--timeout-ms",
+        "--timeout",
     ]:
         assert flag in output
+    assert "--work-dir" not in output
+    assert "--timeout-ms" not in output
 
 
 def test_empty_registry_and_load_failure(tmp_path, monkeypatch, capsys):
@@ -419,7 +424,7 @@ def test_mutation_creator_allocates_eighty_percent_before_rounding(
 
 
 @pytest.mark.parametrize("route", ["flow", "specialist"])
-def test_top_level_removed_timeout_is_rejected(tmp_path, route):
+def test_top_level_invalid_duration_is_rejected(tmp_path, route):
     name = "lint" if route == "flow" else "reviewer"
     args = (
         ["--target", "lint"]
@@ -428,7 +433,7 @@ def test_top_level_removed_timeout_is_rejected(tmp_path, route):
     )
     handler = cli._cmd_flow if route == "flow" else cli._cmd_specialist
     with pytest.raises(SystemExit) as error:
-        handler(command([route, name, *args, "--timeout", "1001"]), tmp_path)
+        handler(command([route, name, *args, "--timeout", "1.5"]), tmp_path)
     assert error.value.code == 2
 
 

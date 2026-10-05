@@ -1006,7 +1006,7 @@ def build_devcontainer_spec(
             "booley",
             "session",
             "prepare",
-            "--project-root",
+            "--project",
             "${localWorkspaceFolder}",
         ],
         # Survive window close (ADR 0028 Decision 11): tickets may still be

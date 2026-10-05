@@ -376,9 +376,15 @@ def initialize_command(executable: str = "booley") -> list[str]:
         executable,
         "session",
         "prepare",
-        "--project-root",
+        "--project",
         "${localWorkspaceFolder}",
     ]
+
+
+def _legacy_initialize_command() -> list[str]:
+    command = initialize_command()
+    command[3] = "--project-root"
+    return command
 
 
 def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> str:
@@ -1497,7 +1503,7 @@ def _project_data_shadow_target(project: Path, source: Path) -> str | None:
 
 
 def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
-    if spec.get("initializeCommand") != initialize_command():
+    if spec.get("initializeCommand") not in (initialize_command(), _legacy_initialize_command()):
         raise RuntimeSpecError("devcontainer.json has no fixed host validation command")
     executable = _find_trusted_validator(project)
     if executable is None:
@@ -1509,7 +1515,11 @@ def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
 
 
 def _validate_initialize_command(project: Path, raw: object) -> None:
-    if not isinstance(raw, list) or len(raw) != 5 or raw[1:] != initialize_command()[1:]:
+    if (
+        not isinstance(raw, list)
+        or len(raw) != 5
+        or raw[1:] not in (initialize_command()[1:], _legacy_initialize_command()[1:])
+    ):
         raise RuntimeSpecError("devcontainer.json has no fixed host validation command")
     executable = Path(raw[0]) if isinstance(raw[0], str) else Path()
     if not _trusted_validator(executable, project):

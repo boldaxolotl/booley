@@ -1127,7 +1127,10 @@ def _endpoint_subprocess_env(
     The call context's overrides apply over the server environment, and the
     per-run *overrides* apply over both.
     """
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
     env = {**os.environ, **context.subprocess_env_overrides, **overrides}
+    env[INVOCATION_ORIGIN_ENV] = "transport"
     logs_dir = env.get("BOOLEY_LOGS_DIR", "")
     if logs_dir and not env.get("BOOLEY_RUNTIME_DIR"):
         env["BOOLEY_RUNTIME_DIR"] = str(ticket_runtime_dir(logs_dir))

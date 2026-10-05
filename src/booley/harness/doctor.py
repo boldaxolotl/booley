@@ -3368,7 +3368,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
-            "flows manually with a raised --timeout-ms. For Simulation compiler "
+            "flows manually with a raised --timeout. For Simulation compiler "
             "progress, raise [flows.sim].build_timeout_ms; for simulator or "
             "standalone-sweep progress, raise timeout_ms. Set the corresponding "
             "[flows.<flow>] knob so --deep honors the larger budget."
@@ -5970,7 +5970,10 @@ def _prepare_selftest_invocation(
 def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
     """Return a diagnostic environment with Ticket context removed."""
     env = {key: value for key, value in os.environ.items() if key not in _TICKET_CONTEXT_ENV}
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
     env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env[INVOCATION_ORIGIN_ENV] = "transport"
     return env
 
 
@@ -6685,7 +6688,10 @@ def _flow_command(
         f"booley.flows.{implementation_module(flow_name)}",
         *argv,
     ]
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
     command_env = dict.fromkeys(_TICKET_CONTEXT_ENV, "")
+    command_env[INVOCATION_ORIGIN_ENV] = "transport"
     if doctor_selftest_kind is not None:
         command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind
     return flow_runtime.command(inner, env=command_env)

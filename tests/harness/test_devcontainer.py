@@ -107,7 +107,7 @@ class TestBuildSpec:
                 "booley",
                 "session",
                 "prepare",
-                "--project-root",
+                "--project",
                 "${localWorkspaceFolder}",
             ]
 
