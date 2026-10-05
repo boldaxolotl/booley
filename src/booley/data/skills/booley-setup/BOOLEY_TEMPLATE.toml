@@ -12,8 +12,9 @@ name = "<project>"
 # email = "developer@example.com"
 
 [stealth]
-# Setup keeps commit messages verbatim unless the user explicitly opts in to
-# the banned-word scrub. Set true only when plan row 20 records that choice.
+# Setup enables this when the plan's git-footprint answer (row 16) keeps
+# Booley out of your history; row 20 records the result. Preserve hand-set
+# values and the plan's explicit exception or unattended fallback.
 enabled = false
 # ignore_native_cores = true # ask when the repository already ships .core files
 

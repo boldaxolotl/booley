@@ -262,8 +262,9 @@ A single **0 → 4** sequence:
 
 - **0 · Plan · host.** The feasibility triage (per-flow green/yellow/red across
   `sim`, `lint`, `synth`, `fpga`) plus a decision grill over
-  everything the later steps need. Writes `.booley_project/SETUP-PLAN.md` and
-  stops for your approval. **The only gate.**
+  everything the later steps need. It asks only a few questions and shows the
+  rest as defaults you can accept in one go. Writes
+  `.booley_project/SETUP-PLAN.md` and stops for your approval. **The only gate.**
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
 - **2 · Project config.** The `.core` Target(s), `tests.toml`, and `booley.toml`.
@@ -320,10 +321,13 @@ Mode session.
 
 ## Notes
 
-**Stealth mode and the commit-msg convention are opt-in.** Setup specifically
-asks whether to enable stealth mode and writes `[stealth] enabled = false`
-unless you say yes. A missing `enabled` key retains the older on-by-default
-runtime fallback for compatibility with existing projects. When enabled,
+**Setup asks whether to keep Booley out of your git history.** Yes keeps
+`.booley_project/` hidden and enables stealth mode, including its commit-message
+scrub and hidden-core projection when Booley authors cores; No uses open config
+and native cores with stealth off. Unattended setup leaves stealth off unless
+hidden authored cores require it. Existing hand-set values are preserved.
+A missing `enabled` key retains the on-by-default runtime fallback for
+compatibility with existing projects. When enabled,
 stealth mode keeps project-identifying details out of commit messages so private
 IP names don't leak into git history. The project commit-msg hook installed by
 `booley init` rejects recognized attribution footers and sanitizes other
