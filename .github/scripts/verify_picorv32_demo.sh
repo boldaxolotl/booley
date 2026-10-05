@@ -11,6 +11,6 @@ python "${source_root}/.github/scripts/picorv32_demo_contract.py" \
   --project-dir /booley-project
 
 if [[ "${BOOLEY_RUN_PICORV32_FLOWS:-0}" == "1" ]]; then
-  python -m booley.flows.lint --work-dir /work --target lint_core
-  python -m booley.flows.sim --work-dir /work --target sim_core
+  python -m booley.flows.lint --project /work --target lint_core
+  python -m booley.flows.sim --project /work --target sim_core
 fi

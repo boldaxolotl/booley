@@ -416,7 +416,8 @@ def test_doctor_parser_accepts_explicit_project_root(tmp_path):
 
     args = parser.parse_args(["doctor", "--project-root", str(tmp_path)])
 
-    assert args.project_root == str(tmp_path)
+    args = tlr._normalize_args(parser, args)
+    assert tlr._resolve_cli_selection(args) == tmp_path
 
 
 def test_project_command_rejects_source_but_feedback_is_allowed(tmp_path, capsys):
@@ -3402,7 +3403,8 @@ def test_hidden_session_prepare_accepts_explicit_workspace_root():
 
     assert args.command == "session"
     assert args.session_command == "prepare"
-    assert args.project_root == "/tmp/project"
+    assert args._cli_selection.value == "/tmp/project"
+    assert args._cli_selection.legacy
 
 
 @pytest.mark.parametrize("command", ["up", "prepare"])
@@ -3469,7 +3471,8 @@ def test_session_down_accepts_explicit_project_root(argv):
 
     assert args.command == "session"
     assert args.session_command == "down"
-    assert args.project_root == "/tmp/project"
+    assert args._cli_selection.value == "/tmp/project"
+    assert args._cli_selection.legacy
 
 
 @pytest.mark.parametrize("command", ["up", "enter", "status", "validate", "refresh"])

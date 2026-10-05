@@ -703,7 +703,7 @@ def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
     """Describe active Sessions with a copyable Project-scoped shutdown command."""
     descriptions = []
     for session in sessions:
-        argv = ["booley", "session", "down", "--project-root", session.project_root]
+        argv = ["booley", "session", "down", "--project", session.project_root]
         command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         descriptions.append(f"{session.name} (Project {session.project_root}; run `{command}`)")
     return ", ".join(descriptions)

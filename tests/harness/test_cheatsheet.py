@@ -109,7 +109,7 @@ class TestSectionsMatchCheatsheet:
             flag for slug in cheatsheet.section_slugs() for flag in cheatsheet.section_flags(slug)
         )
         assert len(set(flags)) == len(flags)
-        assert all(flag.isidentifier() for flag in flags)
+        assert all(flag.replace("-", "_").isidentifier() for flag in flags)
 
 
 # ===========================================================================
@@ -266,7 +266,7 @@ class TestCheatCommand:
         )
         assert "start with `booley cheat`" in usage
         assert "booley cheat --board" in usage
-        assert "booley cheat --commands --project" in usage
+        assert "booley cheat --commands --project-files" in usage
 
     def test_missing_cheatsheet_is_reported(self, capsys, monkeypatch):
         monkeypatch.setattr(tlr, "cheatsheet_path", lambda: Path("/nonexistent/cheat.md"))

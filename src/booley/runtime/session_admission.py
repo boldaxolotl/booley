@@ -464,7 +464,7 @@ def _refusal(
         lines.append(f"- pending editor start: Project {claim.project_root}")
     roots = sorted({item.project_root for item in live} | {claim.project_root for claim in claims})
     for root in roots:
-        argv = ["booley", "session", "down", "--project-root", root]
+        argv = ["booley", "session", "down", "--project", root]
         command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         lines.append(f"Free capacity with `{command}`.")
     lines.append(f"Or raise [sandbox].max_sessions in {host_config_path()}.")

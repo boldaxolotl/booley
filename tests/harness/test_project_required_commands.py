@@ -134,7 +134,7 @@ def test_invalid_project_selection_is_a_clean_cli_error(selection, tmp_path, mon
     target.mkdir()
     argv = ["booley", "doctor"]
     if selection == "explicit":
-        argv += ["--project-root", str(target)]
+        argv += ["--project", str(target)]
     elif selection == "stale-env":
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target / "missing"))
     else:

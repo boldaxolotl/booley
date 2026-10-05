@@ -67,7 +67,7 @@ def section_slugs() -> tuple[str, ...]:
 def section_flags(slug: str) -> tuple[str, ...]:
     """Return the primary flag plus any backward-compatible aliases."""
     section = _BY_SLUG[slug]
-    return (section.slug, *section.aliases)
+    return ("project-files" if slug == "project" else section.slug, *section.aliases)
 
 
 def split_sections(text: str) -> tuple[str, dict[str, str]]:
