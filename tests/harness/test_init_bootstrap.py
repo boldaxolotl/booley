@@ -416,8 +416,11 @@ def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
 def test_init_renders_host_table_alias_and_preserves_priority(
     tmp_path, monkeypatch, capsys, both_tables
 ):
+    config_root = tmp_path / "config"
+    config_root.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
     path = host_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     text = "[interactive]\nmax_sessions = 2\n"
     if both_tables:
         text += "[sandbox]\nmax_sessions = 7\n"
