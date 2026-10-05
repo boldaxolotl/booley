@@ -27,6 +27,10 @@ Steps 2-4 run under the acceptance publication lock and only while no
 acceptance publication is in flight, because acceptance fails when its
 destination branch moves between preparation and publication.
 
+Steps 2-4 are the generic :func:`booley.runtime.history_commit.commit_file`
+sequence; this module supplies the Ticket policy around it (repository, message,
+commit policy, destination branch check on every attempt, locking, recovery).
+
 A crash after any step is recovered by repeating the sequence: restaging is
 idempotent, an unreferenced commit is garbage, and a branch that moved is
 rebuilt on its new head (bounded). A failed commit never reopens the Ticket;
@@ -36,10 +40,10 @@ Doctor warns about any record still uncommitted.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
-import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -48,7 +52,13 @@ import yaml
 
 from booley.commit_policy.policy import identity_allowed, redact_banned, stealth_policy
 from booley.commit_policy.validation import validate_message
+from booley.runtime import history_commit
 from booley.runtime.file_lock import LockContentionError
+from booley.runtime.history_commit import (
+    BranchKeptMovingError,
+    DetachedHeadError,
+    FileCommitError,
+)
 from booley.runtime.project_repositories import resolve_inner_project_repo
 
 from .board_layout import history_document_path, history_root, history_slug
@@ -65,10 +75,7 @@ from .ticket_history import (
 if TYPE_CHECKING:
     from .io import TicketIO
 
-# A branch that moves under us this many times in one call is left for the
-# next board operation rather than retried forever.
-COMMIT_ATTEMPTS = 3
-_GIT_TIMEOUT_S = 60
+_REFLOG_MESSAGE = "booley: close Ticket"
 
 
 class HistoryCommitError(RuntimeError):
@@ -91,35 +98,29 @@ class HistoryRepository:
         return history_root(self.tickets_dir).resolve().relative_to(self.worktree).as_posix()
 
 
-def _git(
-    repository: Path, *args: str, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
+@contextmanager
+def _history_errors() -> Iterator[None]:
+    """Report a generic commit-mechanics failure as :class:`HistoryCommitError`."""
     try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=repository,
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_S,
-            check=False,
-            env=env,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise HistoryCommitError(f"git {' '.join(args)} failed in {repository}: {exc}") from exc
+        yield
+    except FileCommitError as exc:
+        raise HistoryCommitError(str(exc)) from exc
 
 
-def _require_git(repository: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    result = _git(repository, *args, env=env)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip() or "no diagnostic"
-        raise HistoryCommitError(f"git {' '.join(args)} failed in {repository}: {detail}")
-    return result.stdout.strip()
+def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    with _history_errors():
+        return history_commit.git(repository, *args)
+
+
+def _require_git(repository: Path, *args: str) -> str:
+    with _history_errors():
+        return history_commit.require_git(repository, *args)
 
 
 def _optional_git(repository: Path, *args: str) -> str | None:
     """Return stdout, or ``None`` when git reports the object or ref is absent."""
-    result = _git(repository, *args)
-    return result.stdout.strip() if result.returncode == 0 else None
+    with _history_errors():
+        return history_commit.optional_git(repository, *args)
 
 
 def _containing_repository(tickets_dir: Path) -> HistoryRepository | None:
@@ -171,33 +172,6 @@ def history_ignored(tickets_dir: Path) -> bool:
 # Inspection ----------------------------------------------------------------------
 
 
-def _checked_out_commit(repository: Path) -> str | None:
-    return _optional_git(repository, "rev-parse", "-q", "--verify", "HEAD^{commit}")
-
-
-def _branch(repository: Path) -> str:
-    """Return the checked-out branch ref; committing needs one."""
-    ref = _optional_git(repository, "symbolic-ref", "-q", "HEAD")
-    if not ref:
-        raise HistoryCommitError(
-            f"{repository} has a detached HEAD; check out a branch so Booley can "
-            "commit Ticket History"
-        )
-    return ref
-
-
-def _tree_blob(repository: Path, commit: str | None, path: str) -> str | None:
-    if commit is None:
-        return None
-    return _optional_git(repository, "rev-parse", "-q", "--verify", f"{commit}:{path}")
-
-
-def _index_blob(repository: Path, path: str) -> str | None:
-    line = _require_git(repository, "ls-files", "-s", "--", path)
-    # "<mode> <object> <stage>\t<path>"
-    return line.split()[1] if line else None
-
-
 def pending_history_commits(tickets_dir: Path) -> list[str]:
     """Return slugs of history records the checked-out commit does not contain yet."""
     records = {path.stem for path in closed_ticket_documents(tickets_dir)}
@@ -215,17 +189,19 @@ def pending_history_commits(tickets_dir: Path) -> list[str]:
         "--",
         repository.history_prefix(),
     )
-    head = _checked_out_commit(repository.worktree)
-    pending: set[str] = set()
-    for entry in raw.split("\0"):
-        # "XY <path>"; renames add a bare path element, which has no status prefix.
-        if len(entry) < 4 or entry[2] != " ":
-            continue
-        slug = history_slug(tickets_dir, repository.worktree / entry[3:])
-        if slug not in records:
-            continue
-        if _tree_blob(repository.worktree, head, repository.record_path(slug)) is None:
-            pending.add(slug)
+    with _history_errors():
+        head = history_commit.checked_out_commit(repository.worktree)
+        pending: set[str] = set()
+        for entry in raw.split("\0"):
+            # "XY <path>"; renames add a bare path element, which has no status prefix.
+            if len(entry) < 4 or entry[2] != " ":
+                continue
+            slug = history_slug(tickets_dir, repository.worktree / entry[3:])
+            if slug not in records:
+                continue
+            path = repository.record_path(slug)
+            if history_commit.tree_blob(repository.worktree, head, path) is None:
+                pending.add(slug)
     return sorted(pending)
 
 
@@ -324,63 +300,39 @@ def _commit_locked(
 ) -> None:
     worktree = repository.worktree
     path = repository.record_path(slug)
-    blob = _require_git(worktree, "hash-object", "-w", "--", str(record))
-    for _attempt in range(COMMIT_ATTEMPTS):
-        ref = _branch(worktree)
-        _require_destination(worktree, slug, ref, destination)
-        head = _checked_out_commit(worktree)
-        committed = _tree_blob(worktree, head, path)
-        if committed == blob:
-            return
-        if committed is not None:
-            raise HistoryCommitError(
-                f"{path} is already committed with other content; inspect it by hand"
-            )
-        _stage(worktree, path, blob)
-        commit = _build_commit(worktree, head, path, blob, message)
-        if _compare_and_swap(worktree, ref, commit, head):
-            return
-    raise HistoryCommitError(
-        f"branch in {worktree} kept moving; Ticket History commit for {slug!r} will be retried"
-    )
-
-
-def _build_commit(repository: Path, parent: str | None, path: str, blob: str, message: str) -> str:
-    """Return a commit of *parent*'s tree plus *blob* at *path*, via a private index."""
-    with tempfile.TemporaryDirectory(prefix="booley-history-") as scratch:
-        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
-        if parent is None:
-            _require_git(repository, "read-tree", "--empty", env=env)
-        else:
-            _require_git(repository, "read-tree", parent, env=env)
-        _require_git(
-            repository, "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", env=env
+    try:
+        history_commit.commit_file(
+            worktree,
+            path,
+            record,
+            message,
+            # Runs at the start of every attempt, as the branch may change between them.
+            check_branch=lambda ref: _require_destination(worktree, slug, ref, destination),
+            # Looked up at call time so tests can replace either step.
+            build=_build_commit,
+            swap=_compare_and_swap,
         )
-        tree = _require_git(repository, "write-tree", env=env)
-    parents = ["-p", parent] if parent is not None else []
-    return _require_git(repository, "commit-tree", tree, *parents, "-m", message)
+    except DetachedHeadError as exc:
+        raise HistoryCommitError(
+            f"{worktree} has a detached HEAD; check out a branch so Booley can "
+            "commit Ticket History"
+        ) from exc
+    except BranchKeptMovingError as exc:
+        raise HistoryCommitError(
+            f"branch in {worktree} kept moving; Ticket History commit for {slug!r} will be retried"
+        ) from exc
+    except FileCommitError as exc:
+        raise HistoryCommitError(str(exc)) from exc
+
+
+_build_commit = history_commit.build_commit
 
 
 def _compare_and_swap(repository: Path, ref: str, commit: str, expected: str | None) -> bool:
-    """Move *ref* from *expected* to *commit*; return ``False`` if it had moved."""
-    old = expected if expected is not None else "0" * len(commit)
-    result = _git(repository, "update-ref", "-m", "booley: close Ticket", ref, commit, old)
-    if result.returncode == 0:
-        return True
-    current = _optional_git(repository, "rev-parse", "-q", "--verify", ref)
-    if current == commit:
-        return True
-    if current != expected:
-        return False
-    detail = (result.stderr or result.stdout).strip() or "no diagnostic"
-    raise HistoryCommitError(f"git update-ref {ref} failed in {repository}: {detail}")
-
-
-def _stage(repository: Path, path: str, blob: str) -> None:
-    """Stage the record's blob in the user's index (only this one path)."""
-    if _index_blob(repository, path) == blob:
-        return
-    _require_git(repository, "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}")
+    """Move *ref* from *expected* to *commit* with the Ticket close reflog message."""
+    return history_commit.compare_and_swap(
+        repository, ref, commit, expected, reflog_message=_REFLOG_MESSAGE
+    )
 
 
 # Recovery ------------------------------------------------------------------------
