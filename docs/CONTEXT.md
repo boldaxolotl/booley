@@ -214,12 +214,28 @@ _Avoid_: Custom Tool, plugin, user tool, project tool
 
 ### Simulation evidence
 
+**Test**:
+A named stimulus scenario that a sim **Target**'s testbench implements and that `tests.toml` registers for that Target. Booley tells the testbench which Test to run; for a **Cocotb Target**, a Test is one cocotb test function.
+_Avoid_: test case, testcase, bench test, sequence
+
+**Test Variant**:
+A named, fixed set of run-time arguments and environment for one **Test**, declared in `tests.toml` and written `test+variant`. A Test with Variants has exactly one default Variant, which is what the bare Test name means. A Test Variant adds no build inputs.
+_Avoid_: test config, preset, profile, flavor, plusarg override, build variant
+
+**Default Seed**:
+The seed that a **Test Run** uses when no seed is named: a Booley-wide constant that a **Target** may override. Booley never relies on a simulator's own default seed; a Target that cannot apply a seed has unseeded Test Runs.
+_Avoid_: simulator default seed, random seed
+
+**Test Run**:
+One **Test Variant** simulated with one seed, written `test+variant@seed` (without `@seed` on a Target that cannot apply seeds). It is the unit that simulation evidence records and that Goals name; a multi-seed Goal (`test+variant@xN`) names N Test Runs whose seeds are drawn at random once and frozen with the Goal. Only a Test Run that exactly matches a Goal's resolved form counts toward that Goal; every other Test Run is diagnostic.
+_Avoid_: run (bare), iteration, seed run, QA Run
+
 **Simulation Campaign**:
 The durable execution record for one immutable, exact simulation workload on one **Target**. A Simulation Campaign may span multiple Simulation Flow invocations through explicit resume and records the strict aggregate outcome of all selected work. It is distinct from a [**Coverage Campaign**](../src/booley/flows/sim/CONTEXT.md), which records native RTL coverage for one Target and one Simulation Flow invocation; a coverage-collecting Simulation Campaign may contain a separate Coverage Campaign as evidence for an attempt.
 _Avoid_: Campaign, regression run, test batch, Coverage Campaign
 
 **Simulator Bundle**:
-An authenticated simulator executable and its supporting build outputs, built for a declared variant of one **Simulation Campaign**. Its scope is either shared by compatible work items in that Simulation Campaign or private to one simulation attempt; it is not a cross-campaign cache.
+An authenticated simulator executable and its supporting build outputs, built for a declared build variant of one **Simulation Campaign**. Its scope is either shared by compatible work items in that Simulation Campaign or private to one simulation attempt; it is not a cross-campaign cache.
 _Avoid_: binary cache, global build cache, simulator image
 
 **Trace Artifact**:
@@ -255,5 +271,6 @@ You will not need these unless you are reading older tickets, code, or docs; the
 - **"Design Configuration"**: Retired. The Booley-side bundle of EDA params no longer exists; design-description lives in a FuseSoC **Target**, and Booley only references it by name. Use **Target**.
 - **"Session ID"**: Never implemented. Branch names and worktree paths derive from the ticket slug, and container names from the workspace folder name; there is no stable per-Sandbox identity to refer to.
 - **"parameter override"** / **`-d`** / **`--define`**: Retired. There is no per-call build-time injection into a **Target**; declare the value in the Target, or use a different Target.
+- **"plusarg override"** / **`--plusarg`**: Never offered. A run-time argument that a run needs is declared as a **Test Variant**, so every Test Run is a declared configuration.
 - **"colon-free target names"**: Retired absolute. VLNV grammar (the FuseSoC Vendor:Library:Name:Version identifier) is permitted on Booley's surface: bare names when unambiguous, `vlnv#name` on collision.
 - **"target"**: Overloaded: a FuseSoC `.core` build **Target** vs. an EDA "target device/part" (the FPGA/ASIC the design maps to). The part is one field *inside* a Target, not a synonym for it. Always mean the FuseSoC build **Target** unqualified; say "target device" or "part" for the silicon.
