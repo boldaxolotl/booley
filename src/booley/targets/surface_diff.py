@@ -6,10 +6,13 @@ parses each side and reports which Targets, fileset declarations, parameter
 declarations, and ``tests.toml`` tables were added, modified, or deleted.  It
 applies no acceptance policy: callers decide which changes they allow.
 
-Unparseable input and invalid section shapes raise :class:`SurfaceDiffError`.
-Malformed values inside a Target body (for example a scalar ``parameters``
-entry) reach the FuseSoC helpers unchanged and may raise their own errors,
-such as ``TypeError``.  Delta objects are frozen dataclasses, but the parsed
+Syntax errors the parser reports (``yaml.YAMLError``; for ``tests.toml``,
+``tomllib.TOMLDecodeError`` and ``UnicodeDecodeError``) and invalid section shapes raise :class:`SurfaceDiffError`.  Other parser
+failures are not normalised: PyYAML raises a bare ``ValueError`` while
+constructing some scalars (for example the impossible date ``2026-13-01``),
+and that error propagates as is.  Malformed values inside a Target body (for
+example a scalar ``parameters`` entry) reach the FuseSoC helpers unchanged and
+may raise their own errors, such as ``TypeError``.  Delta objects are frozen dataclasses, but the parsed
 declaration bodies they carry are plain mutable dicts and lists.
 """
 
