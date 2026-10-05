@@ -333,8 +333,11 @@ class CoverageAnalystSpecialist(Specialist):
 
 def coverage_analyst(campaign: Path, instruction: str = "") -> CoverageAnalysisReport:
     """Analyze an exact canonical Campaign using the configured Specialist role."""
+    from booley.flows.cli_selection import invocation_context
+
     specialist = CoverageAnalystSpecialist()
-    specialist.parse_args(["--campaign", str(campaign)])
+    with invocation_context(transport=True):
+        specialist.parse_args(["--campaign", str(campaign)])
     return specialist.coverage_analyst(campaign, instruction)
 
 
@@ -369,15 +372,15 @@ def analyze_coverage_campaign(
         specialist = CoverageAnalystSpecialist()
         from booley.flows.cli_selection import invocation_context
 
-    with invocation_context(transport=True):
-        specialist.parse_args(["--work-dir", str(root), "--campaign", str(paths.campaign)])
-        return specialist._analyze_bound(
-            loaded.campaign,
-            sources,
-            instruction,
-            paths.campaign,
-            summary=loaded.summary,
-        )
+        with invocation_context(transport=True):
+            specialist.parse_args(["--work-dir", str(root), "--campaign", str(paths.campaign)])
+            return specialist._analyze_bound(
+                loaded.campaign,
+                sources,
+                instruction,
+                paths.campaign,
+                summary=loaded.summary,
+            )
 
 
 if __name__ == "__main__":

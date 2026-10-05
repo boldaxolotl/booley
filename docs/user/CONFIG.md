@@ -489,7 +489,7 @@ without a `/work/.booley_project` counterpart. Prefer the variable.
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues
 with the next test, never a Flow crash. The commands have an independent
-600-second budget; they do not consume `timeout_ms`, `--timeout-ms`, or
+600-second budget; they do not consume `timeout_ms`, `--timeout`, or
 `build_timeout_ms`. `--dry-run` previews them in their real position, and
 `booley doctor` validates the shape and notes when they're configured.
 

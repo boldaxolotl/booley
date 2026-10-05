@@ -439,8 +439,8 @@ def _install_project_options(parser: argparse.ArgumentParser) -> None:
 def _resolve_cli_selection(args: argparse.Namespace) -> Path:
     from booley.flows.cli_selection import resolve_selection
 
-    value, legacy = args._cli_selection
-    root = resolve_selection(value, legacy=legacy)
+    selection = args._cli_selection
+    root = resolve_selection(selection.value, legacy=selection.legacy)
     return root
 
 

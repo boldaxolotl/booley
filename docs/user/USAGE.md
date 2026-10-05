@@ -95,7 +95,6 @@ or `90s`), minutes (`30m`), hours (`2h`), or descending combinations (`1h30m`).
 The hidden `--timeout-ms` alias keeps millisecond precision and prints a notice for
 one compatibility release. MCP parameters and config keys stay in milliseconds.
 
-
 ## First, verify your setup
 
 Run these in a **host terminal**. They check that Booley works and show what it

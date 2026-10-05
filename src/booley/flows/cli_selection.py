@@ -26,6 +26,14 @@ class Duration:
     milliseconds: int
 
 
+@dataclass(frozen=True)
+class ProjectSelection:
+    """Caller input with an explicit canonical-discovery or literal-alias policy."""
+
+    value: str | Path
+    legacy: bool = False
+
+
 def parse_duration(value: str) -> Duration:
     """Accept positive bare seconds or descending integer h/m/s components."""
     if len(value) > 4096:
@@ -75,18 +83,30 @@ def warn_alias(option: str, replacement: str) -> None:
 class SelectionAction(argparse.Action):
     """Record one selector per parser level, without subparser default loss."""
 
-    def __call__(self, parser, namespace, values, option_string=None) -> None:
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str,
+        option_string: str | None = None,
+    ) -> None:
         if hasattr(namespace, self.dest):
             parser.error("multiple Project selectors are not supported")
         legacy = option_string not in {"-C", "--project"}
-        setattr(namespace, self.dest, (values, legacy))
+        setattr(namespace, self.dest, ProjectSelection(values, legacy))
         # Persisted prepare is a stable internal protocol.
         if legacy and "session prepare" not in parser.prog:
             warn_alias(str(option_string), "--project")
 
 
 class CheatSelectionAction(SelectionAction):
-    def __call__(self, parser, namespace, values, option_string=None) -> None:
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | None,
+        option_string: str | None = None,
+    ) -> None:
         if values is None:
             namespace.project = True
             warn_alias("--project", "--project-files")
@@ -102,10 +122,10 @@ class ProjectHelpFormatter(argparse.HelpFormatter):
             return "--project PATH"
         return super()._format_action_invocation(action)
 
-    def _format_actions_usage(self, actions, groups):
+    def _format_usage(self, usage, actions, groups, prefix):
         return (
             super()
-            ._format_actions_usage(actions, groups)
+            ._format_usage(usage, actions, groups, prefix)
             .replace("--project [PATH]", "--project PATH")
         )
 
@@ -153,7 +173,13 @@ def resolve_selection(value: str | Path, *, legacy: bool = False) -> Path:
 
 
 class EndpointProjectAction(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None) -> None:
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Path,
+        option_string: str | None = None,
+    ) -> None:
         _claim_control(parser, namespace, "project")
         legacy = option_string == "--work-dir"
         if legacy:
@@ -165,7 +191,13 @@ class EndpointProjectAction(argparse.Action):
 
 
 class TimeoutAction(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None) -> None:
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Duration | int,
+        option_string: str | None = None,
+    ) -> None:
         _claim_control(parser, namespace, "timeout")
         if option_string == "--timeout-ms":
             warn_alias("--timeout-ms", "--timeout")
@@ -250,10 +282,10 @@ def _replace_action(parser, old, action_type) -> None:
 
 def extract_project_tail(
     parser: argparse.ArgumentParser, tail: list[str]
-) -> tuple[list[str], list[tuple[str, bool]]]:
+) -> tuple[list[str], list[ProjectSelection]]:
     """Walk known option arities; never interpret opaque values or payloads."""
     result: list[str] = []
-    selections: list[tuple[str, bool]] = []
+    selections: list[ProjectSelection] = []
     index = 1 if tail and tail[0] == "--" else 0
     if index:
         result.append("--")
@@ -269,7 +301,7 @@ def extract_project_tail(
                     parser.error(f"{option} requires PATH")
                 value = tail[index]
                 index += 1
-            selections.append((value, option == "--work-dir"))
+            selections.append(ProjectSelection(value, option == "--work-dir"))
             if option == "--work-dir":
                 warn_alias(option, "--project")
             continue
