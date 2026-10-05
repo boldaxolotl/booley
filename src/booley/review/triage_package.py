@@ -82,14 +82,19 @@ class ResolvedReviewEvidence:
 
 
 class TriageContext(Protocol):
-    """Review context fields consumed by deterministic package preparation."""
+    """Review context fields consumed by deterministic package preparation.
+
+    ``slug`` and ``feature_branch`` are copied verbatim into the package
+    identity; ``log_dir`` locates Criterion evidence and the Developer report;
+    ``runtime_dir`` receives the diffs and ``briefing.json``. Optional
+    ``project_repository`` and ``inspection`` attributes are read when present.
+    """
 
     project_root: Path
     slug: str
     log_dir: Path
     runtime_dir: Path
     worktree: Path
-    ticket_path: Path
     base_sha: str
     head_sha: str
     feature_branch: str
