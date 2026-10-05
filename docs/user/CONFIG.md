@@ -2108,9 +2108,13 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   differential testing (not lowRISC's `ibex-cosim` fork that Ibex's UVM
   co-simulation needs);
 - the ratified **RISC-V International spec set** baked in for offline use at
-  `$BOOLEY_RISCV_DOCS` (`/opt/riscv-docs`): the unprivileged + privileged ISA
-  manual, the external debug spec, and the ELF psABI; **`pdftotext`** is
-  included for shell/agent text extraction.
+  `$BOOLEY_RISCV_DOCS` (`/opt/riscv-docs`): the unprivileged and privileged ISA
+  manuals (`riscv-isa-unprivileged.{pdf,html}` and
+  `riscv-isa-privileged.{pdf,html}`), the external debug spec, and the ELF psABI;
+  the ISA manuals follow the newest date-named upstream release, checked at
+  each Booley release currency audit
+  ([ADR 0071](../adr/0071-follow-date-named-riscv-isa-manual-releases.md));
+  **`pdftotext`** is included for shell/agent text extraction.
 
 Reserve about 6 GB of Docker storage for the complete RISC-V demo stack, plus
 Project artifacts and temporary upgrade/build data. The current Linux/AMD64

@@ -13,8 +13,10 @@ RISCV_DOC_FILES = (
     "INDEX.md",
     "riscv-abi.pdf",
     "riscv-debug-specification.pdf",
-    "riscv-isa-manual.html",
-    "riscv-isa-manual.pdf",
+    "riscv-isa-unprivileged.html",
+    "riscv-isa-privileged.html",
+    "riscv-isa-unprivileged.pdf",
+    "riscv-isa-privileged.pdf",
 )
 
 

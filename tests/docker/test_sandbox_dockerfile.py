@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 from tests.sidecar_image_helpers import (
     DIND_IMAGE,
@@ -383,8 +387,10 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in dockerfile
     for checksum_arg in (
         "XPACK_GCC_SHA256",
-        "ISA_MANUAL_PDF_SHA256",
-        "ISA_MANUAL_HTML_SHA256",
+        "ISA_UNPRIVILEGED_PDF_SHA256",
+        "ISA_UNPRIVILEGED_HTML_SHA256",
+        "ISA_PRIVILEGED_PDF_SHA256",
+        "ISA_PRIVILEGED_HTML_SHA256",
         "DEBUG_SPEC_SHA256",
         "PSABI_SHA256",
     ):
@@ -948,3 +954,71 @@ def test_layout_recipe_is_in_wheel_sources_and_package_data():
     assert instructions[0].keyword == "FROM"
     assert instructions[0].value == "booley-layout-parent"
     assert not any(line.keyword in {"COPY", "WORKDIR"} for line in instructions)
+
+
+def test_riscv_isa_manual_uses_date_named_release_and_complete_volumes() -> None:
+    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    assert re.search(r"^ARG ISA_MANUAL_RELEASE=\d{8}$", riscv, re.M)
+    assert "ADR 0071" in riscv
+    for volume in ("unprivileged", "privileged"):
+        assert f"- riscv-isa-{volume}.pdf / .html" in riscv
+        for extension in ("pdf", "html"):
+            assert (
+                "releases/download/${ISA_MANUAL_RELEASE}/"
+                f"riscv-{volume}-${{ISA_MANUAL_RELEASE}}.{extension}"
+            ) in riscv
+            assert f"-o /opt/riscv-docs/riscv-isa-{volume}.{extension}" in riscv
+            checksum = f"ISA_{volume.upper()}_{extension.upper()}_SHA256"
+            assert re.search(rf"^ARG {checksum}=[0-9a-f]{{64}}$", riscv, re.M)
+            assert (
+                f'echo "${{{checksum}}}  /opt/riscv-docs/riscv-isa-{volume}.{extension}"'
+                " | sha256sum -c -"
+            ) in riscv
+
+
+@pytest.mark.skipif(os.name == "nt", reason="document install requires POSIX shell and sha256sum")
+@pytest.mark.parametrize(
+    "bad_hash",
+    [
+        None,
+        "ISA_UNPRIVILEGED_PDF_SHA256",
+        "ISA_UNPRIVILEGED_HTML_SHA256",
+        "ISA_PRIVILEGED_PDF_SHA256",
+        "ISA_PRIVILEGED_HTML_SHA256",
+    ],
+)
+def test_riscv_document_install_rejects_wrong_checksums(
+    tmp_path: Path, bad_hash: str | None
+) -> None:
+    instructions = logical_instructions((_DOCKER_DIR / "Dockerfile.riscv").read_text())
+    environment = os.environ.copy()
+    for instruction in instructions:
+        if instruction.keyword == "ARG" and "=" in instruction.value:
+            name, value = instruction.value.split("=", 1)
+            environment[name] = (
+                hashlib.sha256(b"fixture").hexdigest() if name.endswith("_SHA256") else value
+            )
+    if bad_hash:
+        environment[bad_hash] = "0" * 64
+    install = next(
+        item.value
+        for item in instructions
+        if item.keyword == "RUN" and "Downloading ratified" in item.value
+    ).replace("/opt/riscv-docs", str(tmp_path / "docs"))
+    # Substitute network downloads only; execute the shipped checksum and index commands.
+    curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; printf fixture > "$1"; }; '
+    result = subprocess.run(
+        ["sh", "-c", curl + install],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode != 0) == (bad_hash is not None), result.stderr
+    assert (tmp_path / "docs" / "INDEX.md").exists() == (bad_hash is None)
+    if bad_hash is None:
+        index = (tmp_path / "docs" / "INDEX.md").read_text()
+        for volume in ("unprivileged", "privileged"):
+            assert f"riscv-isa-{volume}.pdf / .html" in index
+        assert environment["ISA_MANUAL_RELEASE"] in index

@@ -39,7 +39,7 @@ def test_riscv_image_probes_every_advertised_tool_and_document() -> None:
 
     assert len(findings) == len(eda_environment.riscv_probe_specs())
     assert all(finding.severity is eda_environment.EdaFindingSeverity.PASS for finding in findings)
-    document_call = next(call for call in calls if "riscv-isa-manual.html" in call)
+    document_call = next(call for call in calls if "riscv-isa-unprivileged.html" in call)
     assert set(eda_environment.RISCV_DOC_FILES) <= set(document_call)
 
 
