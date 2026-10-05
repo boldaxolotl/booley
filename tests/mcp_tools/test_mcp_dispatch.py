@@ -38,8 +38,14 @@ try:
 except ImportError:
     pytest.skip("mcp package not installed", allow_module_level=True)
 
+from booley.mcp.call_context import CallContext, resolve_call_context
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
+
+
+def _call_ctx() -> CallContext:
+    """Call context of an argument-free tool call in the current environment."""
+    return resolve_call_context({})
 
 
 class TestValidateWorkDir:
@@ -398,7 +404,9 @@ class TestReportFetch:
 
             monkeypatch.setattr(mcp_server, "_run_subprocess", run)
             jobs = _JobManager(_FakeLifetime())
-            task = asyncio.create_task(jobs.run_synchronous("lint", ["lint"], 60))
+            task = asyncio.create_task(
+                jobs.run_synchronous("lint", ["lint"], 60, context=_call_ctx())
+            )
             await started.wait()
             active = jobrec.list_records(session_jobs_dir())
             release.set()
@@ -417,13 +425,16 @@ class TestReportFetch:
 
         jobs = _JobManager(_FakeLifetime())
         jobs.run_synchronous = AsyncMock(return_value=(0, "ok", "", False))
+        context = _call_ctx()
 
         result = asyncio.run(
-            mcp_server._run_inline_endpoint("lint", ["lint"], 60, jobs, publish_activity=True)
+            mcp_server._run_inline_endpoint(
+                "lint", ["lint"], 60, jobs, context=context, publish_activity=True
+            )
         )
 
         assert result == (0, "ok", "", False)
-        jobs.run_synchronous.assert_awaited_once_with("lint", ["lint"], 60)
+        jobs.run_synchronous.assert_awaited_once_with("lint", ["lint"], 60, context=context)
 
     def test_administrative_inline_timeout_closes_display(self, monkeypatch):
         import asyncio
@@ -441,6 +452,7 @@ class TestReportFetch:
                 ["report"],
                 15,
                 _JobManager(_FakeLifetime()),
+                context=_call_ctx(),
                 publish_activity=False,
             )
         )
@@ -466,6 +478,7 @@ class TestReportFetch:
                     ["report"],
                     15,
                     _JobManager(_FakeLifetime()),
+                    context=_call_ctx(),
                     publish_activity=False,
                 )
             )
@@ -969,7 +982,7 @@ class TestStructuredContent:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            return await _dispatch_async_job("sim", ["c"], 60, jobs)
+            return await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
 
         import asyncio
 
@@ -1000,7 +1013,7 @@ class TestStructuredContent:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            return await _dispatch_async_job("sim", ["c"], 60, jobs)
+            return await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
 
         import asyncio
 
@@ -1024,7 +1037,7 @@ class TestStructuredContent:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            return await _dispatch_async_job("reviewer", ["c"], 60, jobs)
+            return await _dispatch_async_job("reviewer", ["c"], 60, jobs, context=_call_ctx())
 
         import asyncio
 
@@ -1099,7 +1112,7 @@ class TestAsyncJobDispatch:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            out = await _dispatch_async_job("sim", ["c"], 60, jobs)
+            out = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             return _text(out)
 
         import asyncio
@@ -1132,7 +1145,7 @@ class TestAsyncJobDispatch:
         async def scenario():
             life = _FakeLifetime()
             jobs = _JobManager(life)
-            submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs)
+            submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             # Detached: RUNNING handoff, server held busy for the background run.
             assert "RUNNING" in _text(submit_out)
             run_id = _run_id_from(_text(submit_out))
@@ -1193,6 +1206,7 @@ class TestAsyncJobDispatch:
                 ["--target", "lite"],
                 60,
                 jobs,
+                context=_call_ctx(),
             )
             assert "RUNNING" in _text(submit_out)
             run_id = _run_id_from(_text(submit_out))
@@ -1232,9 +1246,9 @@ class TestAsyncJobDispatch:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            first = await _dispatch_async_job("sim", ["c"], 60, jobs)
+            first = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             assert "RUNNING" in _text(first)
-            second = await _dispatch_async_job("fpga", ["c"], 60, jobs)
+            second = await _dispatch_async_job("fpga", ["c"], 60, jobs, context=_call_ctx())
             release.set()
             # Drain both jobs so the manager releases its lifetime holds.
             await jobs.wait(_run_id_from(_text(first)), 1.0)
@@ -1277,11 +1291,11 @@ class TestAsyncJobDispatch:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            first = await _dispatch_async_job("sim", ["c"], 60, jobs)
+            first = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             assert "RUNNING" in _text(first)
             run_id = _run_id_from(_text(first))
 
-            dup = await _dispatch_async_job("sim", ["c"], 60, jobs)
+            dup = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             text = _text(dup)
             assert "BLOCKED" not in text
             assert "attached" in text
@@ -1316,8 +1330,8 @@ class TestAsyncJobDispatch:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            first = await _dispatch_async_job("sim", ["c"], 60, jobs)
-            second = await _dispatch_async_job("sim", ["--other"], 60, jobs)
+            first = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
+            second = await _dispatch_async_job("sim", ["--other"], 60, jobs, context=_call_ctx())
             release.set()
             await jobs.wait(_run_id_from(_text(first)), 1.0)
             await jobs.wait(_run_id_from(_text(second)), 1.0)
@@ -1354,7 +1368,7 @@ class TestAsyncJobDispatch:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs)
+            submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             run_id = _run_id_from(_text(submit_out))
             # Job finishes shortly after the long-poll starts waiting.
             asyncio.get_running_loop().call_later(0.05, release.set)
@@ -1390,7 +1404,7 @@ class TestAsyncJobDispatch:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs)
+            submit_out = await _dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())
             run_id = _run_id_from(_text(submit_out))
             asyncio.get_running_loop().call_later(0.2, release.set)
             out = await _dispatch_poll({"run_id": run_id, "wait_seconds": 0}, jobs)
@@ -1690,7 +1704,7 @@ class TestAttachSurvivesRestart:
         assert mcp_server._find_attachable_job("sim", ["c"]) == "simulate-y-5"
         # Fresh manager = restarted server: no in-memory task for the job.
         jobs = _JobManager(_FakeLifetime())
-        out = asyncio.run(_dispatch_async_job("sim", ["c"], 60, jobs))
+        out = asyncio.run(_dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx()))
         text = _text(out)
         assert "BLOCKED" not in text
         assert "RUNNING" in text
@@ -1761,7 +1775,7 @@ class TestAttachSurvivesRestart:
         monkeypatch.setattr(mcp_server, "_run_subprocess", _fast)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 5.0)
         jobs = _JobManager(_FakeLifetime())
-        text = _text(asyncio.run(_dispatch_async_job("sim", ["c"], 60, jobs)))
+        text = _text(asyncio.run(_dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())))
         assert "FRESH RUN" in text  # a new run really executed
         assert "simulate-y-4" not in text  # not attached to the finished job
 
@@ -1955,7 +1969,7 @@ class TestCancel:
                 lambda _rec, _alive, **_kwargs: jobrec.STATUS_RUNNING,
             )
             jobs = _JobManager(_FakeLifetime())
-            run_id = jobs.submit("sim", ["fake-endpoint"], 600)
+            run_id = jobs.submit("sim", ["fake-endpoint"], 600, context=_call_ctx())
             await started.wait()
             out = await _dispatch_cancel({"run_id": run_id}, jobs)
             return run_id, out, jobs
@@ -1992,7 +2006,7 @@ class TestCancel:
 
             monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
             jobs = _JobManager(_FakeLifetime())
-            run_id = jobs.submit("sim", ["fake-endpoint"], 600)
+            run_id = jobs.submit("sim", ["fake-endpoint"], 600, context=_call_ctx())
             await started.wait()
             task = jobs._tasks[run_id]
             task.cancel()
@@ -2647,7 +2661,7 @@ class TestSubmitEnvStamp:
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
-            run_id = jobs.submit("sim", ["c"], 60)
+            run_id = jobs.submit("sim", ["c"], 60, context=_call_ctx())
             await jobs.wait(run_id, 5.0)
             return run_id
 
@@ -2680,7 +2694,7 @@ def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_
 
     async def scenario():
         manager = _JobManager(_FakeLifetime())
-        run_id = manager.submit("sim", ["fake"], 60)
+        run_id = manager.submit("sim", ["fake"], 60, context=_call_ctx())
         await manager._tasks[run_id]
         return run_id
 
@@ -2749,7 +2763,7 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
     }
     command = mcp_server._endpoint_command("project_probe", {}, definition, {})
     command[0] = sys.executable
-    environment = mcp_server._endpoint_subprocess_env()
+    environment = mcp_server._endpoint_subprocess_env(_call_ctx())
     source_root = Path(mcp_server.__file__).resolve().parents[2]
     environment["PYTHONPATH"] = str(source_root)
     code, _stdout, stderr, timed_out = asyncio.run(
@@ -2773,7 +2787,7 @@ def test_endpoint_environment_without_project_uses_runtime_fallback(
     monkeypatch.chdir(tmp_path)
     reset_cache()
 
-    environment = mcp_server._endpoint_subprocess_env()
+    environment = mcp_server._endpoint_subprocess_env(_call_ctx())
 
     assert environment["BOOLEY_RUNTIME_DIR"]
     assert Path(environment["PYTHONPYCACHEPREFIX"]).parts[-2:] == (
