@@ -41,7 +41,11 @@ jobs:
         run: |
           set -o pipefail
           campaign_status=0
-          timeout --signal=TERM --kill-after=30s 35m mutmut run --max-children 4 \
+          # Run through `python -m`: harness tests spawn helper processes from
+          # a temporary working directory, and a spawned child re-executes a
+          # console-script `__main__`; mutmut's CLI module then loads its
+          # configuration from that directory and the child dies.
+          timeout --signal=TERM --kill-after=30s 35m python -m mutmut run --max-children 4 \
             2>&1 | tee mutation-evidence/run.log || campaign_status=$?
           if (( campaign_status != 0 && campaign_status != 124 )); then
             exit "${campaign_status}"
@@ -101,6 +105,14 @@ jobs:
           cargo install cargo-fuzz --version 0.13.2 --locked
           pip install -e ".[test]"
 
+      # The differential suite generates its oracle VCDs with real simulators
+      # and skips each case whose simulator is absent; the zero-skip assertion
+      # below rejects such a run, so both simulators must be on PATH.
+      - name: Install differential oracle simulators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iverilog verilator
+
       - name: Record fuzz toolchain
         shell: bash
         run: |
@@ -108,6 +120,8 @@ jobs:
           rustc --version | tee fuzz-evidence/versions.txt
           cargo --version | tee -a fuzz-evidence/versions.txt
           cargo fuzz --version | tee -a fuzz-evidence/versions.txt
+          iverilog -V 2>&1 | sed -n 1p | tee -a fuzz-evidence/versions.txt
+          verilator --version | tee -a fuzz-evidence/versions.txt
 
       - name: Build B-Wave oracle target
         run: cargo build --release --locked --manifest-path crates/bwave/Cargo.toml

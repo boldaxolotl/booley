@@ -370,3 +370,46 @@ pytest_add_cli_args = ["-x", "-q", "--tb=no", "--no-header"]
 pytest_add_cli_args_test_selection = [
     "tests/harness/",
 ]
+# mutmut runs the selected tests inside `mutants/`, which it seeds with only
+# `src/`, `tests/` and `pyproject.toml`. That copied pyproject keeps
+# `[tool.booley] source_checkout = true`, so `import booley` treats `mutants/`
+# as a Booley source checkout and requires its `VERSION`; the harness tests
+# also read checkout files (docs, workflows, Sandbox Image build inputs).
+# Mirror every other tracked top-level entry so `mutants/` is a faithful
+# checkout. The B-Wave crate is listed per tracked child so local Cargo
+# `target/` build outputs are never copied.
+# tests/test_pytest_configuration.py keeps this list complete.
+also_copy = [
+    ".dockerignore",
+    ".gitattributes",
+    ".github/",
+    ".gitignore",
+    ".mergify.yml",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "CONTEXT-MAP.md",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
+    "VERSION",
+    "docs/",
+    "qa/",
+    # mutmut copies single files without creating parent directories, so each
+    # crate directory entry precedes the files that live beside it.
+    "crates/bwave/benches/",
+    "crates/bwave/dev_support/",
+    "crates/bwave/docs/",
+    "crates/bwave/schema/",
+    "crates/bwave/src/",
+    "crates/bwave/tests/",
+    "crates/bwave/vendor/",
+    "crates/bwave/CONTEXT.md",
+    "crates/bwave/Cargo.lock",
+    "crates/bwave/Cargo.toml",
+    "crates/bwave/fuzz/corpus/",
+    "crates/bwave/fuzz/fuzz_targets/",
+    "crates/bwave/fuzz/.gitignore",
+    "crates/bwave/fuzz/Cargo.lock",
+    "crates/bwave/fuzz/Cargo.toml",
+]

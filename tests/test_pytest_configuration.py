@@ -687,6 +687,100 @@ def test_scheduled_mutation_campaign_treats_its_time_budget_as_success() -> None
     assert "non-killed mutants" not in report_results
 
 
+def _deep_tests_workflow() -> dict:
+    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "deep-tests.yml"
+    return yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+
+def _named_step(job: dict, name: str) -> dict:
+    return next(step for step in job["steps"] if step.get("name") == name)
+
+
+def test_scheduled_mutation_campaign_runs_mutmut_as_a_module() -> None:
+    """Spawned test helpers must not re-execute the mutmut console script.
+
+    A spawn child re-runs a console-script ``__main__`` from the test's
+    temporary working directory, where mutmut cannot find its configuration.
+    """
+    job = _deep_tests_workflow()["jobs"]["mutation"]
+    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
+
+    assert "python -m mutmut run" in run_campaign
+    assert re.search(r"(?<!-m )\bmutmut run\b", run_campaign) is None
+
+
+def _tracked_repository_paths() -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "-z"],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    return [path for path in result.stdout.decode("utf-8").split("\0") if path]
+
+
+def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
+    """mutmut's ``mutants/`` copy stays a faithful Booley source checkout.
+
+    The copied pyproject marks ``mutants/`` as a source checkout, so importing
+    Booley there needs ``VERSION``, and harness tests read docs, workflows and
+    Sandbox Image build inputs. A tracked path that mutmut neither mutates nor
+    copies breaks the scheduled campaign before it tests a single mutant.
+    """
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    mutmut = project["tool"]["mutmut"]
+    # mutmut always copies these alongside the configured source paths.
+    copied = [*mutmut["source_paths"], "tests/", "pyproject.toml", *mutmut["also_copy"]]
+
+    def covered(path: str) -> bool:
+        return any(
+            path.startswith(entry) if entry.endswith("/") else path == entry for entry in copied
+        )
+
+    missing = [path for path in _tracked_repository_paths() if not covered(path)]
+    assert missing == []
+
+
+def test_mutation_sandbox_copy_order_and_build_output_exclusion() -> None:
+    """Every ``also_copy`` entry is copyable in order and skips Cargo outputs."""
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    also_copy: list[str] = project["tool"]["mutmut"]["also_copy"]
+    tracked = _tracked_repository_paths()
+
+    for index, entry in enumerate(also_copy):
+        # Each entry names tracked content, never an untracked build tree.
+        if entry.endswith("/"):
+            assert any(path.startswith(entry) for path in tracked), entry
+        else:
+            assert entry in tracked, entry
+        # shutil.copy2 does not create parents; an earlier directory copy must.
+        parent = Path(entry.rstrip("/")).parent.as_posix()
+        if not entry.endswith("/") and parent != ".":
+            assert any(
+                earlier.endswith("/") and earlier.startswith(f"{parent}/")
+                for earlier in also_copy[:index]
+            ), entry
+
+    build_outputs = ("crates/bwave/target/", "crates/bwave/fuzz/target/")
+    for entry in also_copy:
+        assert not any(output.startswith(entry) for output in build_outputs), entry
+
+
+def test_bwave_differential_installs_the_simulators_it_must_not_skip() -> None:
+    """The zero-skip differential gate needs Icarus and Verilator present."""
+    job = _deep_tests_workflow()["jobs"]["bwave-fuzz"]
+    names = [step.get("name") for step in job["steps"]]
+    install = _named_step(job, "Install differential oracle simulators")["run"]
+    assertion = _named_step(job, "Assert differential tests executed without skips")["run"]
+
+    assert "iverilog" in install
+    assert "verilator" in install
+    assert "--max-skips 0" in assertion
+    assert names.index("Install differential oracle simulators") < names.index(
+        "Run existing simulator oracle differential suite"
+    )
+
+
 def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     """Production-image checks overlap without sharing writable state."""
     workflow = _test_workflow()
