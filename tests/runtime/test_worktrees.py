@@ -1,5 +1,6 @@
 """The shared ``git worktree list --porcelain`` parser reports Git's records verbatim."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,9 +24,14 @@ def _git(root: Path, *args: str) -> str:
 
 @pytest.fixture
 def primary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A committed primary checkout whose name holds a space and non-ASCII text."""
+    """A committed primary checkout whose name holds a space and, on POSIX, non-ASCII text.
+
+    Git on Windows prints such a path in the console code page, which the
+    text-mode runners cannot round-trip; that is inherited behaviour, so the
+    Windows fixture stays ASCII.
+    """
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-    root = tmp_path / "pri mary-é"
+    root = tmp_path / ("pri mary" if os.name == "nt" else "pri mary-é")
     root.mkdir()
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.name", "Fixture")
