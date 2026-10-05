@@ -270,7 +270,7 @@ the compact inventory does not require raw dumps or the old build generation.
 
 `python -m booley.flows.sim.campaign_retention` deletes the evidence of one
 exact run. Nothing is ever deleted automatically. Usage is in
-[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md#cleaning-up-old-campaigns); the
+[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md#cleaning-up-completed-campaigns); the
 algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 

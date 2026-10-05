@@ -53,7 +53,7 @@ Scale depth to complexity; skip what the user already covered.
 | Scope completeness, edge cases, hidden breakage risks | Prevents scope creep; surfaces dependencies |
 | Verification strategy & coverage gaps | TB criteria and review focuses |
 | Dependencies & ordering risks | `dependencies` field |
-| New Target lifecycle: coexist, replace a runnable predecessor, or remain evidence-only | Repeat `(new)`, `(replaces old)`, or `(temp)` on each structured Criteria mention |
+| New Target lifecycle: coexist, replace a runnable predecessor, or remain evidence-only | Repeat `(new)`, `(replaces <existing Target>)`, or `(temp)` on each structured Criteria mention |
 
 ### Feature-Specific
 

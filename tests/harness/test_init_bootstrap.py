@@ -410,3 +410,35 @@ def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
     assert "Traceback" not in captured.out + captured.err
     assert intents == [Intent.CHECK]
     assert spec.read_bytes() == before
+
+
+@pytest.mark.parametrize("both_tables", [False, True])
+def test_init_renders_host_table_alias_and_preserves_priority(
+    tmp_path, monkeypatch, capsys, both_tables
+):
+    path = host_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = "[interactive]\nmax_sessions = 2\n"
+    if both_tables:
+        text += "[sandbox]\nmax_sessions = 7\n"
+    path.write_text(text)
+    monkeypatch.setattr(
+        bootstrap,
+        "host_install_error",
+        lambda _skills: "isolated fixture stops before infrastructure",
+    )
+    policies = []
+
+    def reconcile(intent, **kwargs):
+        result = bootstrap.reconcile_bootstrap(intent, **kwargs)
+        policies.append(result.policy)
+        return result
+
+    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", reconcile)
+    assert init_cmd.run_init(_args(), tmp_path) != 0
+    output = capsys.readouterr().out
+    assert "[interactive] is deprecated" in output
+    assert "[sandbox]" in output
+    assert ("Remove [interactive]" if both_tables else "replace it with") in output
+    assert policies[0].max_sessions == (7 if both_tables else 2)
+    assert path.read_text() == text

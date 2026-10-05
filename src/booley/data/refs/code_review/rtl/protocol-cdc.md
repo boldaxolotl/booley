@@ -57,4 +57,4 @@ Confidence:
 - **Multi-bit CDC** (CRITICAL): Multi-bit buses crossing clock domains without gray coding, MCP formulation, or a handshake/FIFO
 - **Reset domain crossings**: Async reset deassertion not synchronized to the destination clock domain
 - **Async external inputs**: Even in single-clock modules, external asynchronous inputs (interrupts, test pins, external status signals) require synchronization before use in sequential logic
-- **Generated clocks**: Combinational logic used to generate clock signals (clock gating without proper cells, divided clocks from counters used as clock inputs)
+- **Generated clocks**: Combinational logic generating clock signals (clock gating without proper cells, divided clocks from counters used as clock inputs)

@@ -89,7 +89,7 @@ omits a full-log path claim; the Flow continues with its normal evidence.
 
 Each invocation reserves its own directory under the Project runtime's
 `flow-console/`. Output consumes disk in proportion to observed bytes. Delete
-completed invocation directories manually when no longer needed; leave any
+completed invocation directories manually when not needed; leave any
 directory containing an `active` marker untouched. There is no automatic pruning.
 Help, validation-only, dry-run and quiet calls create no transcript.
 
@@ -507,7 +507,7 @@ unaccepted inspection, never straight to `done`, whatever `on_success` says.
 
 `booley board show <slug>` lists the candidates as offered, not needed (the
 strict verdict already passes), stale (source changed or another Campaign), or
-invalid (no longer re-derivable from the evidence), each with its coverage
+invalid (not re-derivable from the evidence), each with its coverage
 delta. Justifications are marked unverified; your decision is the authority.
 
 ```bash
@@ -607,7 +607,7 @@ Mode Booley records its candidates for
 [approval at review](#coverage-waivers-at-review). See
 [USAGE.md](USAGE.md#coverage_analyst).
 
-#### Cleaning up old Campaigns
+#### Cleaning up completed Campaigns
 
 Raw Verilator coverage databases are large. Booley never deletes evidence
 automatically; prune an exact run explicitly:

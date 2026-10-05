@@ -33,10 +33,8 @@ trace has no detected clock those forms error.
 
 ## Why bare integers are rejected in async mode
 
-Bare integers used to mean "cycles in sync, ticks in
-async". That made it easy to copy a value from a
-sync-mode invocation, paste it under `--async`, and
-silently change the meaning. v0.2 makes you spell it:
+Async mode requires explicit units to prevent an integer copied from
+a sync-mode invocation from silently changing its meaning. Use:
 `100c` if you meant cycles, `100t` if you meant ticks,
 `100ns` if you meant physical time.
 
@@ -51,9 +49,7 @@ you'll get a "no VCD timescale available" error.
 
 `--before N` and `--after N` are bounds, not tokens:
 they accept bare integers in both modes (cycle in sync,
-tick in async, per the legacy convention). Suffix
-support may be added later if needed; today they're
-plain `i64`.
+tick in async). These bounds are plain `i64` values.
 
 ## Examples
 

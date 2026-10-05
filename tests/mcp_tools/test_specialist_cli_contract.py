@@ -512,3 +512,21 @@ def invoke_mcp(tmp_path, verdict):
         on_discovery_error=lambda _error: None,
     )
     asyncio.run(application.call_tool(ProjectSpecialist.name, {"work_dir": str(tmp_path)}))
+
+
+@pytest.mark.parametrize(
+    ("alias", "replacement"), [("--work-dir", "--project"), ("--timeout-ms", "--timeout")]
+)
+def test_removed_specialist_alias_docs_keep_actionable_notices(
+    tmp_path, capsys, alias, replacement
+):
+    endpoint = ProjectSpecialist()
+    value = str(tmp_path) if alias == "--work-dir" else "1001"
+    endpoint.parse_args([alias, value])
+    if alias == "--timeout-ms":
+        assert endpoint.args.timeout_ms == 1001
+    else:
+        assert endpoint.args.work_dir == tmp_path
+    notice = capsys.readouterr().err
+    assert alias in notice
+    assert f"use {replacement} instead" in notice

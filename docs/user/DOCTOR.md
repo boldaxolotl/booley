@@ -68,8 +68,8 @@ commands read the same receipt without Docker access. Missing, untrusted, or
 stale receipts make identity unverifiable. Restart or reopen the Sandbox through
 Booley's normal startup path to restore the receipt.
 
-Missing, corrupt, unsupported, and legacy-only stamps report no qualifying deep
-run recorded. Old plain stamps with `deep: true` lack image and completeness
+Missing, corrupt, unsupported, and plain-only stamps report no qualifying deep
+run recorded. Plain stamps with `deep: true` lack image and completeness
 proof and cannot establish currency. A qualifying new run establishes evidence.
 Deep records live at `<project_dir>/runtime/doctor_deep_stamp.json`, independently
 of the existing plain stamp's configuration fingerprint and age policy.

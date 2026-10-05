@@ -224,7 +224,7 @@ conversation and the Project, then show the complete document at the approval ga
 
 | Field | Inference |
 |---|---|
-| `summary` | Concise one-line intent; used to generate the slug |
+| `summary` | Concise one-line intent; determines the slug |
 | `type` | `bugfix` for a reproduced bug, `refactor` for restructuring, `verification` for TB/coverage work, otherwise `feature` |
 | `branch` | `branch` is a branch name in the outer repository, without `refs/heads/`; human mode may infer it from `git branch --show-current` |
 | `project_destination_ref` | `project_destination_ref` is the canonical full local branch ref in the paired Project repository; omit it only for same-name inference when that inferred ref exists |
@@ -268,8 +268,7 @@ Do not author generated metadata, SHAs, `target_plan`, `ticket_format`, or a
    policy.
 
 If the current `create-file` CLI cannot accept the complete v2 document, stop
-and report that CLI mismatch; do not translate the Ticket to the retired
-`--criteria`, `--target-plan`, or mapping `--on-success` forms. Never hand-write
+and report that CLI mismatch. Preserve the complete authored document. Never hand-write
 generated Ticket Board metadata.
 
 ## §D. Criteria Catalog
@@ -310,7 +309,7 @@ default. A replacement defaults to its `(replaces <existing Target>)`
 predecessor. A `(new)` or `(temp)` Target needs an explicit existing `baseline`
 Target. Percentage thresholds require a `%` suffix. Consult the live
 threshold vocabulary through `booley cheat --criteria`; apply its parameter
-names under the v2 capability shape, not the retired lowercase Ticket syntax.
+names under the Target-keyed capability shape.
 
 Default mandatory choices: feature → LINT, SIM, RTL bugs REVIEW, TB quality
 REVIEW; bugfix → SIM; refactor → LINT, SIM, RTL bugs REVIEW; verification →
@@ -356,10 +355,9 @@ remove, or refine Criteria; select a standard Target or simulation matrix; vary 
 Ticket type or context; and adjust successful-run disposition. A file containing only the
 shipped template's explanatory text and examples adds no guidance.
 
-When reading the legacy filename, disregard the old scaffold's instructions about YAML
-activation, required headings, completeness, and full replacement. Treat uncommented
-Project-authored mappings as expressions of intent under this guidance contract. An
-untouched, comment-only legacy scaffold adds no guidance.
+When reading `ticket_creation_guidelines.md`, treat uncommented Project-authored
+mappings as expressions of intent under this guidance contract. A comment-only
+scaffold adds no guidance.
 
 Resolve the guidance against the live Project rather than requiring it to spell serialized
 Ticket values. Consult `booley cheat --criteria`, `booley targets`, and registered tests to

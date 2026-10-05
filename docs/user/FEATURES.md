@@ -194,7 +194,7 @@ Setup asks whether to keep Booley out of your git history. Yes keeps
 scrub and hidden-core projection for authored cores; No uses open config and
 native cores with stealth off. Unattended setup leaves stealth off unless
 hidden authored cores require it. Existing hand-set values are preserved.
-For compatibility with existing projects, an omitted `enabled` key still uses the older on-by-default runtime fallback.
+An omitted `enabled` key defaults to on at runtime.
 
 When enabled, a commit-msg hook rejects attribution footers and sanitizes other
 protected commit-message prose, and authored

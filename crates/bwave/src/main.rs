@@ -1410,3 +1410,81 @@ mod build_worker_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod current_help_tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    fn has_history(text: &str) -> bool {
+        let normalized = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        if [
+            "retired",
+            "deprecated",
+            "no longer",
+            "formerly",
+            "renamed from",
+            "previously",
+            "legacy",
+            "used to",
+            "was removed",
+            "were removed",
+        ]
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+        {
+            return true;
+        }
+        if normalized.split_whitespace().any(|word| {
+            matches!(
+                word.trim_matches(|c: char| !c.is_alphanumeric()),
+                "old" | "former"
+            )
+        }) {
+            return true;
+        }
+        for prefix in [
+            "since ",
+            "before ",
+            "after ",
+            "prior to ",
+            "as of ",
+            "introduced in ",
+        ] {
+            for suffix in normalized.split(prefix).skip(1) {
+                let version = suffix
+                    .strip_prefix("version ")
+                    .unwrap_or(suffix)
+                    .trim_start_matches('v')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default();
+                if version.chars().next().is_some_and(|c| c.is_ascii_digit())
+                    && version.contains('.')
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn check_help(command: &mut clap::Command) -> usize {
+        let text = command.render_long_help().to_string();
+        assert!(
+            !has_history(&text),
+            "{} help contains history: {text}",
+            command.get_name()
+        );
+        1 + command.get_subcommands_mut().map(check_help).sum::<usize>()
+    }
+
+    #[test]
+    fn visible_native_help_describes_current_version() {
+        assert!(check_help(&mut Cli::command()) >= 18);
+    }
+}

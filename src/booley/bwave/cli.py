@@ -1772,10 +1772,7 @@ usage: bwave [@ALIAS | TRACE_PATH] <subcommand> [args...] [options...]
 
 Query signal values, waveforms, and statistics from a registered trace.
 
-This wrapper targets the v0.2 subcommand surface. Legacy v0.1 flags
-(--list / --find SIG VAL / --wave / --stats / --at-time / etc.) are
-still translated transparently, but new scripts should use the
-subcommand form. Run `bwave <subcommand> --help` for authoritative
+Use the subcommand form for queries. Run `bwave <subcommand> --help` for authoritative
 per-command flags, or `bwave docs topics` for the full reference.
 
 Subcommands (pick one):
@@ -2126,7 +2123,7 @@ Quick start:
         "extra",
         nargs=argparse.REMAINDER,
         help="[@ALIAS | TRACE_PATH] [bwave args...]. "
-        "Accepts legacy --flag form or v0.2 subcommand form. "
+        "Accepts mode flags or query subcommands. "
         "Omit to use last registered trace.",
     )
     return parser

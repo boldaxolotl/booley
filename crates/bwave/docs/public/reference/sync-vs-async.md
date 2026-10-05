@@ -37,7 +37,7 @@ always @(posedge clk) state <= next_state;
 If on cycle N the FSM decides `next_state = 3`, then in
 B-Wave's sync output:
 
-- Cycle N still shows the *old* `state` value (the
+- Cycle N still shows the *pre-edge* `state` value (the
   flop hasn't captured yet at the start of the edge).
 - Cycle N+1 shows `state = 3` (post-capture).
 

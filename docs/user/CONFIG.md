@@ -37,6 +37,8 @@ Contents:
   actionable setup warnings
 - [Advanced setups](#advanced-setups): custom images and MCP tools, guides, hooks
 
+Doctor and `booley init` report retired or deprecated settings with the exact fix.
+
 ## Host configuration (`config.toml`)
 
 Optional global policy lives at `~/.config/booley/config.toml` (or beneath
@@ -56,12 +58,6 @@ limits, and invalid egress entries stop Host Bootstrap before mutation. Egress
 entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
 are rejected.
 
-The former host table `[interactive]` is deprecated but still loads when
-`[sandbox]` is absent. Init and Doctor warn with the exact `[sandbox]`
-replacement. If both tables exist, `[sandbox]` supplies the entire policy;
-`[interactive]` is ignored, with a warning, and no values are merged. Rename
-the legacy host table to `[sandbox]` and remove it when both are present.
-
 Host `config.toml [sandbox]` and Project `booley.toml [sandbox]` have different
 keys: host limits and egress belong only in the host file; Project image and
 memory settings belong only in the Project file. Init and Doctor reject
@@ -70,9 +66,7 @@ host-only keys placed in Project `[sandbox]`.
 This Sandbox Policy applies to the whole Docker daemon, across all Projects
 and both Ticket Mode and Interactive Mode. The
 timeout and admission cap cover all Booley Sandboxes, and every extra
-egress hostname becomes reachable from every Project. The former Project
-`booley.toml [interactive]` policy fields are retired; init and Doctor print a
-concrete replacement for this host file and never adopt Project values.
+egress hostname becomes reachable from every Project.
 
 `max_sessions` is checked before a start would add a live Sandbox. At the limit,
 the command refuses, lists live Projects and ages, and explains how to stop one
@@ -87,10 +81,8 @@ Project identity, Flow selection, and agent configuration live in
 
 `[project]` carries the project `name` and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
-about ticket file-existence checks rather than identity. `[notifications]`
-is retired and ignored; delete the table and see
-[Troubleshooting](TROUBLESHOOTING.md#push-notifications-stopped-arriving) for manual host egress
-cleanup. Everything else is detailed below, starting with the shared `enabled`
+about ticket file-existence checks rather than identity. Everything else is
+detailed below, starting with the shared `enabled`
 setting for Booley Flows and Specialists.
 
 ### Flow and Specialist availability: `enabled`
@@ -121,22 +113,12 @@ Specialist names, including Flow names or direct MCP endpoints placed under
 `[specialists]`. Malformed or unreadable configuration stops endpoint discovery
 and Ticket Preflight rather than enabling every capability by default.
 
-`[mcp_tools.*]` is retired and produces a migration error: rename Specialist
-sections to `[specialists.*]`. The older `[tools.*]` table must be split into
-`[flows.*]` for deterministic Flows and `[specialists.*]` for Specialists.
-Remove settings for protocol utility endpoints such as `submit_run_report`;
-they have no Project `enabled` switch and their visibility is controlled by
-execution mode and MCP server filters.
+Protocol utility endpoints such as `submit_run_report` have no Project
+`enabled` switch; execution mode and MCP server filters control their visibility.
 Custom direct `McpTool` subclasses also have no Project enable switch. To
-disable their discovery, prefix the implementation filename with `_`, for
-example rename `mcp_tools/project_check.py` to `mcp_tools/_project_check.py`.
-Custom `BooleyFlow` and `Specialist` subclasses use their respective tables.
-
-The former `backend`, `venue`, and `host_setup_commands` keys are retired and
-now produce hard migration errors. Delete them: execution location and Sandbox
-setup are no longer Project-configurable. Replace `backend = "none"` with
-`enabled = false`. Likewise, replace `[sandbox].passthrough_env` with a
-host-owned License Profile.
+disable discovery, prefix the implementation filename with `_`, for example
+rename `mcp_tools/project_check.py` to `mcp_tools/_project_check.py`. Custom
+`BooleyFlow` and `Specialist` subclasses use their respective tables.
 
 The Target selects the concrete EDA tool. For an approved commercial tool, the
 Project can request only a provisioning source; the host owns the installation,
@@ -164,8 +146,7 @@ prints the target-specific manual command. Omit `booley.doctor` to keep a Target
 available only for explicit calls. The allowed Doctor names are `sim`, `lint`,
 `synth`, and `fpga`. A `[flows.fpga]` table makes that optional axis applicable,
 so an enabled table without a marked compatible Target is a Doctor failure;
-`enabled = false` is the explicit opt-out. The former
-`target`, `default_target`, and `calibration_target` Flow keys are retired.
+`enabled = false` is the explicit opt-out.
 
 ### Commercial EDA provisioning
 
@@ -239,7 +220,7 @@ max_size = "5G"
 `enabled` must be a boolean. `max_size` accepts a positive integer followed by
 `M`, `G` (decimal megabytes/gigabytes), or `Mi`, `Gi` (binary units). Zero,
 fractional values, and suffixes outside this grammar are configuration errors.
-The selected checkout's `booley.toml` (or legacy `pipeline.toml`) owns these
+The selected checkout's `booley.toml` (or `pipeline.toml`) owns these
 settings; malformed explicit configuration fails preparation.
 
 The cache lives at `.runtime/compiler-cache/ccache` in the issued Project data
@@ -266,7 +247,7 @@ Managed `OBJCACHE`, `CCACHE_DIR`, `CCACHE_MAXSIZE`,
 `CCACHE_COMPILERCHECK=content`, and `CCACHE_BASEDIR` for the generated build
 take precedence over ambient and `tests.toml` environment values; conflicting
 explicit Target settings produce a warning. Assignments to those names,
-`USER_CPPFLAGS`, or `BOOLEY_COMPILER_CACHE_ROOT` in modern/legacy
+`USER_CPPFLAGS`, or `BOOLEY_COMPILER_CACHE_ROOT` in Flow-API/EDA-tool-API
 `make_options`, `MAKEFLAGS`, `GNUMAKEFLAGS`, `MFLAGS`, or `MAKEOVERRIDES` are rejected.
 Make `--eval`/`-E` programs mentioning these managed variables are also rejected,
 including nested `eval` and `define` forms. Unrelated Make options and job
@@ -311,8 +292,8 @@ build_timeout_ms = 3600000
 timeout_ms = 600000
 ```
 
-Elaboration Check previously used the run timeout for its Target build. It now
-uses `build_timeout_ms`, consistently with every other simulator-image build.
+Elaboration Check uses `build_timeout_ms`, consistently with every other
+simulator-image build.
 
 **Build reuse.** Ordinary Simulation and native Coverage skip the build when a
 retained simulator image of the same Target variant (plain, traced, or a
@@ -368,11 +349,10 @@ tests, space permitting), in `report.json` under `cycle_counts`, and in each
 Target's `simulation.json` as `tests[].cycles`; see
 [Flow Reference](FLOW_REFERENCE.md#where-the-evidence-lives) for where to find them.
 Native Coverage runs report null counts. Configuring `cycle_sentinels` replaces the
-built-in cycle prefix; it does not affect the pass/fail verdict. For backward
-compatibility, a count-only record remains readable when it is the only cycle
-record in the log. That legacy form and all named records remain observational
+built-in cycle prefix; it does not affect the pass/fail verdict. A count-only record is readable when it is the only
+cycle record in the log. That count-only form and all named records remain observational
 unless the Ticket declares a `cycle_count` Criterion. Gated evidence on the
-legacy path requires exactly one named record; the Simulation Campaign path
+non-Campaign path requires exactly one named record; the Simulation Campaign path
 accepts any valid count, including a count-only record. Missing or invalid
 records yield a null count.
 
@@ -421,7 +401,7 @@ the immutable Campaign/attempt identity. A templated directory is Booley-owned,
 carries an exact attempt ownership marker, and is removed after terminal
 evidence is committed. Resume removes a surviving interrupted directory only
 when that marker still matches; it refuses an unmarked, linked, or foreign
-directory. A literal directory keeps legacy pre-existing-directory semantics
+directory. A literal directory requires a pre-existing directory
 and is protected by a collision lock, so Campaign work sharing it runs one at a
 time. Unknown placeholders, formatting conversions/specifiers, and unmatched
 braces are rejected.
@@ -506,7 +486,7 @@ authenticated there. Choose `legacy-per-test` only for a hook that truly must
 write into the compile surface: it disables shared-build reuse for that work
 item and records a private build in the Campaign. Changing either build-access
 mode, hook commands, runtime inputs, or `run_cwd` changes workload identity and
-prevents an old manifest from resuming.
+prevents a prior manifest from resuming.
 
 Simulate-only by design: no ported project has ever needed a non-sim prebuild.
 For a *once-per-worktree* setup step (not per-run), use the [post-setup
@@ -649,7 +629,7 @@ top, part, parameters/defines, flow options, and the supported Vivado plus
 Edalize/FuseSoC identities. Reuse also re-hashes the routed report set and, for
 a non-OOC Target, its bitstream; a hit is reported explicitly as
 `cached: true`. A miss invokes Make with `-B`, so `Nothing to be done` cannot
-turn old reports into either a false pass or a false failure.
+turn prior reports into either a false pass or a false failure.
 
 Profiles name optimization intent, not guaranteed outcomes. FPGA area is
 represented by utilization/resource counts; this Flow does not currently
@@ -753,18 +733,11 @@ backend setting after the profile is selected. An explicit per-call profile
 starts from that clean built-in profile (it does not inherit Target-level
 advanced-setting overrides); per-call expert flags can then refine it.
 
-The former `timing_engine`, `yosys`, and `openroad` Target keys are retired and
-produce migration errors rather than aliases. Replace them with `synth_mode`,
-`advanced_settings_yosys`, and `advanced_settings_openroad` respectively.
-
-**Upgrade note:** `balanced` is the new default and intentionally replaces the
-old implicit combination (generic ABC inside `synth`, default liberty ABC,
-40% utilization). Targets that care about stable PPA must select a profile
-explicitly. `compact` retains the old default liberty mapping and 40%/0.65
-controls, but not pre-#816 physical results: every profile now uses grid-aligned
-core margins and working whole-design buffer removal. Use
-`generic_abc_before_mapping = true` only to restore the old two-ABC-pass mapping;
-establish a fresh physical baseline after upgrading.
+`balanced` is the default. Select a profile explicitly for stable PPA.
+`compact` uses default liberty mapping and 40%/0.65 controls. Every profile uses
+grid-aligned core margins and whole-design buffer removal.
+`generic_abc_before_mapping = true` enables two ABC passes; establish a fresh
+physical baseline when changing the mapping recipe.
 
 Target `flow_options.slang_options` is passed to `read_slang` verbatim.
 `--single-unit` is the
@@ -786,9 +759,8 @@ without running Pre-Sim Commands, simulator tests, Cocotb Python, or tracing.
 Its Target build uses the shared
 [`build_timeout_ms`](#simulation-build-pre-sim-and-run-timeouts) budget.
 Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
-and then sweep every RTL module from its declaring file. `--elab-only` and
-`--build-only`, optionally paired with `--standalone`, are deprecated CLI-only
-aliases. Only simulation Targets are eligible; synthesis Targets belong to
+and then sweep every RTL module from its declaring file. Only simulation
+Targets are eligible; synthesis Targets belong to
 `synth`.
 
 ```toml
@@ -868,11 +840,12 @@ that identity remains. A dead root PID therefore cannot free capacity while
 EDA descendants still run, and a failed supervisor cannot leave the holder
 permanently cancelling.
 
-Unattached and legacy callers remain process-owned for compatibility. Their
+Callers without an execution identity are process-owned. Their
 entries use the same renewable lease plus PID namespace, process start time,
 zombie state, and the existing argv/work-timeout guards where available. A
 missing work timeout or promotion stamp falls back to the finite recovery lease;
-legacy records anchor that lease at their creation stamp. An expired live owner
+records without a promotion stamp anchor that lease at their creation stamp.
+An expired live owner
 is identity-checked and its current descendant tree is cancelled before the
 slot is released. Process-owned leases cannot recover descendants that escaped
 after the owner died, so the stronger durable identity guarantee still applies
@@ -921,8 +894,7 @@ memory = "8g"   # single container memory limit, fed into the generated
 
 #### Commercial-license policy
 
-Generic license environment forwarding is retired. A supported License Profile
-is host-owned, separately granted to the exact Project root, and emits only the
+A supported License Profile is host-owned, separately granted to the exact Project root, and emits only the
 fixed Sandbox pointer required by the built-in commercial policy. Do not put
 license-server addresses, license-file paths, or environment forwarding in
 `booley.toml`.
@@ -1288,8 +1260,7 @@ known-bad source beside that dedicated core under ordinary tracked verification
 material. Booley omits Doctor self-test Targets from `booley targets`, its MCP
 equivalent, and ordinary Flow selection; Doctor can still resolve them for the
 bad case. Doctor uses the first lint Doctor Target as the good case and that
-conventional Target as the bad case. There is no
-`[flows.<flow>.selftest]` configuration table; legacy tables must be deleted.
+conventional Target as the bad case.
 
 ### Feedback (`[feedback]`)
 
@@ -1332,10 +1303,6 @@ settings used by an explicit export:
 # redact_extra = ["codename"]   # extra terms to scrub from exported feedback
 # redact_identifiers = false    # keep module/Target names (default: replace them)
 ```
-
-The former `mode` setting has been removed. Delete it from existing Projects;
-Doctor reports it as retired instead of silently accepting a setting that no
-longer controls any behavior.
 
 Ask `/booley-feedback` when you want a redacted Markdown file to inspect and
 share manually. Normal reporting never creates the export as a side effect.
@@ -1383,7 +1350,7 @@ provider = "claude"   # or "codex"
 offers `claude` and `auto` as the defaults; unattended initialization applies
 the same defaults unless flags override them (for example,
 `--provider codex --auth subscription`). Existing explicit `[agent]` values are
-preserved on re-run. An older provider-only project receives the documented
+preserved on re-run. A Project with only `provider` configured receives the documented
 `auto` policy on its next init, which is then recorded in the project config.
 
 #### Pinning what bills (`[agent] auth`)
@@ -1423,8 +1390,8 @@ settings take precedence over copied host-global `.gitconfig` values and leave
 the host checkout's Git identity unchanged. A missing or empty `name` falls back
 to `Dev`; a missing or empty `email` falls back to `dev@localhost`.
 
-Sandbox creation and startup with an updated image remove a complete legacy
-worktree identity pair matching the current settings or `Dev <dev@localhost>`;
+Sandbox creation and startup remove a complete worktree
+Git identity pair matching the current settings or `Dev <dev@localhost>`;
 unrecognized custom overrides and other Git settings are preserved. Changed
 `[agent.git]` settings require refreshing and recreating the Sandbox to update
 its immutable environment. Ticket Mode still applies identity to each Ticket's
@@ -1596,8 +1563,7 @@ Name project-owned Targets `<axis>_<subject>` using the Booley Flow axis:
 
 The axis is needed because CAPI2 has no synthesis flow: synth and FPGA Targets
 can both resolve as `generic`. A bare axis such as `lint` is fine when there is
-only one Target for it; the Elaboration Check reuses a sim Target. The old `asic_` prefix still
-runs, but `booley doctor` recommends `synth_`.
+only one Target for it; the Elaboration Check reuses a sim Target. Targets with an `asic_` prefix run; `booley doctor` recommends `synth_`.
 
 Use `default:` only when another core depends on this one; Booley does not show
 it as a selectable Target. Vendored upstream cores keep their original names.
@@ -1810,13 +1776,11 @@ like it needs.** Module-scope imports like `cocotb_test.simulator` and `pytest`
 them makes cocotb fail to import the testbench at all. Copy the project's own
 pin set (`tox.ini` / `requirements.txt`) wholesale.
 
-**Wholesale is still not always enough.** Old pin sets were written for old
-Pythons, and the sandbox runs Python 3.14:
+**Check the pinned stack against Python 3.14**, which the Sandbox runs:
 
 - **`distutils` is gone** (removed in Python 3.12). Packages of the cocotb-1.x
   era still do `from distutils.spawn import find_executable` — `cocotb-test`
-  0.2.0 does. Nobody lists `setuptools` as a dependency, because virtualenvs
-  used to ship it implicitly; you have to add it yourself. If a pinned stack
+  0.2.0 does. Nobody lists `setuptools` as a dependency, so add it explicitly. If a pinned stack
   dies on a missing `distutils`, put **`setuptools`** in the requirements file
   and rebuild.
 - **Probe the import path the testbench actually uses.** `import cocotb_test`
@@ -1829,7 +1793,7 @@ Pythons, and the sandbox runs Python 3.14:
   ```
 
 **What a pin cannot fix: the simulator pairing.** cocotb's run loop is compiled
-against the simulator, so an old cocotb with the image's current Verilator can
+against the simulator, so a cocotb build incompatible with the image's current Verilator can
 fail even after its Python dependencies import successfully. If simulation
 stalls at time zero, follow the diagnosis and recovery in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
@@ -2040,7 +2004,7 @@ What init decides, and how to steer it:
 | `[sandbox].image` naming an image Booley doesn't recognise | Skips the step entirely — you manage that image |
 
 "Hand-authored" means: the file does not carry init's generated header, *or* it
-carries one but its contents no longer match the stamped self-hash (you edited
+carries one but its contents do not match the stamped self-hash (you edited
 it), *or* it contains the line `# booley:keep`. Add `# booley:keep` to a file
 that started life generated and that you now want to own — it is the explicit
 "hands off" flag, and it works for `requirements.txt` too:
@@ -2084,12 +2048,12 @@ before commands run.
 **Changing an already-built image is a lifecycle operation, not a config
 edit.** For a headless Booley-managed Sandbox, `booley session refresh` plans
 the minimal invalid image closure, builds and verifies transaction candidates
-while the old Sandbox remains available, then pins the new immutable image ID,
+while the prior Sandbox remains available, then pins the new immutable image ID,
 recreates the Sandbox, and probes its installed Booley wheel before discarding
 the predecessor. For generated recipes, a Python-only change rebuilds only the
 final wheel overlay; compatible EDA, RISC-V, and Project-dependency substrates
 retain their exact immutable IDs. A matching manual recipe remains above the
-wheel overlay and its descendants rebuild when that wheel changes. A failed recreation or probe restores the old Sandbox. If VS
+wheel overlay and its descendants rebuild when that wheel changes. A failed recreation or probe restores the prior Sandbox. If VS
 Code owns the running Sandbox, refresh the image with
 `booley init --force` and use **Dev Containers: Rebuild Container**. Explicit
 external images remain your responsibility: rebuild or pull them, run
@@ -2130,9 +2094,8 @@ Point a project at it with the normal image selector:
 image = "booley-sandbox-riscv"
 ```
 
-**Older projects need an explicit `zicsr`.** GCC 15 moved the CSR instructions
-out of the base ISA into a `zicsr` extension, so a project defaulting to
-`-march=rv32imc` (Ibex and most cores of that vintage) fails to assemble every
+**CSR instructions require an explicit `zicsr`.** With GCC 15, a Project
+defaulting to `-march=rv32imc` fails to assemble every
 `csrr` / `csrw`. Override the ISA at the build invocation, not in the sources:
 
 ```bash

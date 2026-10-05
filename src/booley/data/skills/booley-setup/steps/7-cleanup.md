@@ -21,8 +21,8 @@ Read the §3 **Execution ledger** in `SETUP-PLAN.md`.
 - If the plan is `executing`, resume Step 7 at its recorded status and let the
   helper resume its recovery journal.
 - If the plan is `executing` or `complete` but has no ledger, run an
-  inventory-only preview. This legacy plan has no ownership authority; existing Projects are not retroactively granted
-  ownership.
+  inventory-only preview. A plan without an ownership ledger has no deletion
+  authority.
 - A full setup allocates the run root before execution with:
 
   ```console

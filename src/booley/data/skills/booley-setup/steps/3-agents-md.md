@@ -64,7 +64,7 @@ file is high leverage: do not auto-write, pad, or invent facts.
 
 ### 1. Inspect Stable Inputs
 
-- Existing canonical `<project_dir>/AGENTS.md`, if present (and any legacy
+- Existing canonical `<project_dir>/AGENTS.md`, if present (and any alternate
   `AGENTS.md` at the repo root, to migrate its content into the canonical file)
 - `README.md`
 - `CONTEXT-MAP.md`, if present, followed by the relevant context glossaries

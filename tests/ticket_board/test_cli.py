@@ -179,3 +179,15 @@ class TestMainDispatch:
         with patch.dict(HANDLERS, clear=True):
             rc = main(["board"])
         assert rc == 1
+
+
+def test_reset_to_is_hidden_but_reports_supported_reset(capsys):
+    from booley.ticket_board.cli import HANDLERS
+
+    parser = build_parser()
+    assert "reset-to" not in parser.format_help()
+    args = parser.parse_args(["reset-to", "demo", "core_loop"])
+    assert HANDLERS[args.command](None, args) == 1
+    output = capsys.readouterr().err
+    assert "reset-to" in output
+    assert "Use 'reset'" in output
