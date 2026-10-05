@@ -555,6 +555,7 @@ def test_main_renders_lifecycle_timeout_once_without_traceback(
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
     monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
     monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+    monkeypatch.setattr(tlr, "_require_command_project", lambda *_args: None)
     monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
     if command == "bootstrap":
         monkeypatch.setattr(tlr, "run_bootstrap", raise_timeout)
@@ -611,6 +612,7 @@ def test_indirect_lifecycle_timeout_reaches_main(argv, command, tmp_path, monkey
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
     monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
     monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+    monkeypatch.setattr(tlr, "_require_command_project", lambda *_args: None)
     monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
     _configure_indirect_lifecycle_timeout(command, monkeypatch, failure)
 
@@ -917,6 +919,7 @@ class TestEnforceVenue:
     @pytest.mark.parametrize("command", ["run", "chat", "board"])
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
+        monkeypatch.setattr(sys, "argv", ["booley", command])
         with _host_venue(monkeypatch), pytest.raises(SystemExit) as exc:
             tlr._enforce_runtime_location(command)
         assert exc.value.code == 2
@@ -1529,6 +1532,7 @@ class TestCmdFlow:
         monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
         monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
         monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
+        monkeypatch.setattr(tlr, "_require_command_project", lambda *_args: None)
         monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
 
         assert tlr.main() == 0
@@ -3135,6 +3139,7 @@ class TestDryRunImplications:
         show.assert_called_once_with("/venv/python")
 
     def test_main_bypasses_mutating_runtime_for_preview(self, tmp_path, monkeypatch):
+        (tmp_path / ".booley_project").mkdir()
         args = self._parse(["run", "--dry-run", "--project-root", str(tmp_path)])
         preview = MagicMock(return_value=0)
         monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
@@ -3722,6 +3727,7 @@ def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, se
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     project = tmp_path / "project"
     project.mkdir()
+    (project / ".booley_project").mkdir()
     selected, cwd = (source, project) if selected_source else (project, source)
     monkeypatch.chdir(cwd)
     suffix = {"doctor": [], "board": [], "session": ["down"], "cleanup": ["prepare"]}[command]

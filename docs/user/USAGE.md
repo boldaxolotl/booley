@@ -242,7 +242,9 @@ doesn't replace your own review.
 > review the commits, then push them yourself from a terminal outside the
 > container. (Ticket Mode always works this way.)
 
-Chat transcripts are saved in `.booley_project/.interactive_logs/`. If the
+Per-session logs of Flow and Specialist calls through Booley’s tool server
+are saved in `.booley_project/.interactive_logs/`. Chat transcripts live in
+the agent CLI’s own session storage. If the
 agent can't reach Booley (`booley` is missing from its `/mcp` list), see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
 How the connection works is in
@@ -253,8 +255,9 @@ How the connection works is in
 When a simulation with tracing fails, the agent reads the waveform on its own
 with `bwave`. When *you* want to see it, ask: *"show me the FIFO handshake
 around the failure"*. The agent opens it in a VaporView tab in VS Code, showing
-just the signals and time range that matter. The extension is installed in
-the container already.
+just the signals and time range that matter. VS Code installs the extension
+automatically when you attach to the container. If it is missing, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
 
 You can also open a view yourself:
 

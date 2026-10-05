@@ -325,3 +325,14 @@ def test_fpga_report_fields_stay_documented(tmp_path: Path) -> None:
     _assert_documented("fpga", fpga_report)
     _assert_documented("fpga", fpga_report["metrics"])
     _assert_documented("fpga", fpga_report["baseline_metrics"])
+
+
+def test_synth_help_lists_live_policy_keys():
+    from booley.audit.flow_schema import SELECTIVE_FLOW_KNOBS
+
+    policy = AsicSynthesizeFlow.description.split("[flows.synth]")[1]
+    assert not re.search(r"\btarget\b", policy, re.IGNORECASE)
+    for key in ("enabled", "timeout_ms", "expected_latches", "fail_on_timing_violation"):
+        assert key in policy
+        if key != "enabled":
+            assert "synth" in SELECTIVE_FLOW_KNOBS[key]
