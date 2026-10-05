@@ -6,8 +6,6 @@ import argparse
 from dataclasses import dataclass
 from functools import partial
 
-from booley.flows.invocation import default_timeout_ms
-
 
 @dataclass(frozen=True)
 class HelpOption:
@@ -82,7 +80,7 @@ def shared_help(flow_name: str, *, target_required: bool) -> tuple[HelpGroup, ..
                 HelpOption(
                     "timeout_ms",
                     f"When omitted, use [flows.{flow_name}].timeout_ms, "
-                    f"or {default_timeout_ms(flow_name) // 1000}s when not configured.",
+                    "or the Flow's default active-time budget when not configured.",
                 ),
             ),
         ),
