@@ -1,7 +1,7 @@
 """Contracts for README-driven Ubuntu installation and its one exemption."""
 
 import importlib.util
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -49,7 +49,9 @@ def test_duplicate_blocks_are_refused():
 def test_installed_probe_uses_resolved_launcher_interpreter(monkeypatch):
     commands = []
     monkeypatch.setattr(smoke, "user_command", commands.append)
-    smoke.installed_probe(Path("/artifacts/exact.whl"), "/home/smoke/.local/bin/booley", "claim")
+    smoke.installed_probe(
+        PurePosixPath("/artifacts/exact.whl"), "/home/smoke/.local/bin/booley", "claim"
+    )
     assert "readlink -f /home/smoke/.local/bin/booley" in commands[0]
     assert '"$(dirname "$launcher")/python"' in commands[0]
     assert '--launcher "$launcher" --operation claim' in commands[0]
@@ -91,7 +93,7 @@ def test_inside_executes_readme_and_only_exempts_full_bootstrap(monkeypatch):
             is_file=lambda: True, write_text=writes.append, chmod=lambda _mode: None
         ),
     )
-    wheel = Path("/artifacts/exact.whl")
+    wheel = PurePosixPath("/artifacts/exact.whl")
     smoke.inside(wheel, smoke.read_commands(README))
     assert commands[:3] == [
         ["apt-get", "update"],

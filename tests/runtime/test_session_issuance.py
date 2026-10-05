@@ -2459,11 +2459,13 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
 def test_pipx_symlink_resolves_to_active_persistent_venv(tmp_path, monkeypatch):
     home = tmp_path / "home"
     prefix = home / ".local/share/pipx/venvs/booley-rtl"
-    launcher = prefix / "bin/booley"
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    name = "booley.exe" if os.name == "nt" else "booley"
+    launcher = prefix / scripts / name
     launcher.parent.mkdir(parents=True)
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o755)
-    linked = home / ".local/bin/booley"
+    linked = home / ".local/bin" / name
     linked.parent.mkdir(parents=True)
     linked.symlink_to(launcher)
     project = tmp_path / "project"
