@@ -9,13 +9,14 @@ Atomic writes use .tmp -> os.replace() for crash safety.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from booley.core.boundary import BoundaryError, require_dict, require_list
 from booley.criteria.categories import CATEGORY_RTL, CATEGORY_TB
@@ -362,6 +363,38 @@ def _infer_categories(key: str) -> frozenset[str]:
     return frozenset()
 
 
+class StatePersistence(Protocol):
+    """Write one :class:`DevelopmentState` to durable storage.
+
+    Every ``DevelopmentState.save()`` goes through the strategy its state
+    holds, so an execution context can change how state is persisted without
+    touching any of the writers that call ``save()``.
+    """
+
+    def save(self, state: DevelopmentState) -> None: ...
+
+
+class AtomicStateFile:
+    """Default strategy: stamp ``last_updated`` and atomically replace the state file."""
+
+    def save(self, state: DevelopmentState) -> None:
+        """Atomically write state to disk. No-op when no file path (human mode)."""
+        if state._file_path is None:
+            return
+        state.last_updated = utc_now_rfc3339()
+        state._file_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = state._file_path.with_suffix(".tmp")
+        tmp_path.write_text(
+            json.dumps(state._to_dict(), indent=2),
+            encoding="utf-8",
+        )
+        _atomic_replace(tmp_path, state._file_path)
+        logger.debug("Saved development state for %s", state.slug)
+
+
+_DEFAULT_PERSISTENCE = AtomicStateFile()
+
+
 @dataclass
 class DevelopmentState:
     """Criteria-based development state, persisted as JSON.
@@ -395,19 +428,32 @@ class DevelopmentState:
     authorized_zero_mandatory_basis_id: str = ""
 
     _file_path: Path | None = field(default=None, repr=False)
+    # How save() persists this state; None means the default AtomicStateFile.
+    # Never serialized, compared, or deep-copied (see __deepcopy__).
+    _persistence: StatePersistence | None = field(default=None, repr=False, compare=False)
 
     # --- Persistence ---
 
     @classmethod
-    def load(cls, path: Path) -> DevelopmentState:
-        """Load from disk or return empty state."""
+    def load(cls, path: Path, persistence: StatePersistence | None = None) -> DevelopmentState:
+        """Load from disk or return empty state.
+
+        The returned state saves through *persistence*, or through the default
+        atomic file write when it is ``None``.
+        """
+        st = cls._read(path)
+        st._file_path = path
+        st._persistence = persistence
+        return st
+
+    @classmethod
+    def _read(cls, path: Path) -> DevelopmentState:
+        """Parse *path*; a missing or corrupted file yields an empty state."""
         if not path.exists():
-            st = cls()
-            st._file_path = path
-            return st
+            return cls()
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
-            st = cls(
+            return cls(
                 slug=data.get("slug", ""),
                 ticket_type=data.get("ticket_type", ""),
                 strict_criteria=data.get("strict_criteria", False),
@@ -426,27 +472,27 @@ class DevelopmentState:
                 work_dir=data.get("work_dir", ""),
                 last_updated=data.get("last_updated", ""),
             )
-            st._file_path = path
-            return st
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             logger.warning("Corrupted state file %s, starting fresh: %s", path, exc)
-            st = cls()
-            st._file_path = path
-            return st
+            return cls()
 
     def save(self) -> None:
-        """Atomically write state to disk. No-op when no file path (human mode)."""
-        if self._file_path is None:
-            return
-        self.last_updated = utc_now_rfc3339()
-        self._file_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self._file_path.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps(self._to_dict(), indent=2),
-            encoding="utf-8",
-        )
-        _atomic_replace(tmp_path, self._file_path)
-        logger.debug("Saved development state for %s", self.slug)
+        """Persist through this state's strategy (default: atomic file write)."""
+        (self._persistence or _DEFAULT_PERSISTENCE).save(self)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> DevelopmentState:
+        """Deep-copy every field except the persistence strategy, which is shared.
+
+        Shadow copies (coverage publication, the acceptance ledger) mutate a
+        copy and save it, so the copy must save the way the original would.
+        """
+        if self._persistence is not None:
+            memo[id(self._persistence)] = self._persistence
+        clone = type(self).__new__(type(self))
+        memo[id(self)] = clone
+        for name, value in vars(self).items():
+            setattr(clone, name, copy.deepcopy(value, memo))
+        return clone
 
     def _to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
