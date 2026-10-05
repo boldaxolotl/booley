@@ -101,20 +101,55 @@ supported. You need:
   (`claude`, the default) or [Codex](https://developers.openai.com/codex/cli) (`codex`)
 - Credentials for the installed agent CLI
 
+Use pipx to install the CLI in a persistent, isolated environment.
+On **Ubuntu/Debian**, first prepare pipx:
+
+<!-- booley-smoke:prepare -->
+```bash
+sudo apt-get update
+sudo apt-get install -y pipx
+pipx ensurepath
+```
+<!-- /booley-smoke:prepare -->
+
+**Reopen your terminal** before running the install block so the pipx launcher
+is on `PATH`. On Windows, install pipx with `py -m pip install --user pipx`,
+run `py -m pipx ensurepath`, and reopen the terminal first.
+
 Install your host agent CLI using the instructions linked above, then install
 Booley and prepare the host:
+
+<!-- booley-smoke:install -->
+```bash
+pipx install booley-rtl
+booley bootstrap
+```
+<!-- /booley-smoke:install -->
+
+To upgrade an existing install:
+
+<!-- booley-smoke:upgrade -->
+```bash
+pipx upgrade booley-rtl
+booley bootstrap --update
+```
+<!-- /booley-smoke:upgrade -->
+
+If you already have uv, `uv tool install booley-rtl` and
+`uv tool upgrade booley-rtl` are equivalent; follow them with
+`booley bootstrap` and `booley bootstrap --update`, respectively.
+
+**Alternative: pip user install**, only for interpreters that permit user
+installs (including Windows). Ensure the user scripts directory is on `PATH`:
 
 ```bash
 python3 -m pip install --user booley-rtl
 booley bootstrap
 ```
 
-To upgrade an existing install:
-
-```bash
-python3 -m pip install --user --upgrade booley-rtl
-booley bootstrap --update
-```
+On Windows use `py -m pip` in place of `python3 -m pip`. To upgrade this
+alternative, run `python3 -m pip install --user --upgrade booley-rtl`, then
+`booley bootstrap --update`.
 
 Seeing `externally-managed-environment`, PATH, or other install errors? See
 [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).

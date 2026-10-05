@@ -1586,6 +1586,45 @@ def test_host_policy_migration_warning_reaches_init_and_doctor(
     assert path.read_text() == text
 
 
+@pytest.mark.parametrize("update", [False, True])
+def test_cli_bootstrap_registers_persistent_wheel_venv(tmp_path, monkeypatch, update):
+    from booley.runtime import host_install, session_refresh
+    from booley.runtime.host_install import HostInstallationIdentity
+
+    source = Path(
+        "/home/user/.local/share/pipx/venvs/booley-rtl/lib/site-packages/booley/data/skills"
+    )
+    identity = HostInstallationIdentity(
+        1,
+        "/home/user/bin/booley",
+        "/usr/bin/python3",
+        str(source.parents[2]),
+        "1.2.3",
+        "abc123",
+        "f" * 64,
+    )
+    monkeypatch.setattr(host_install.sys, "prefix", "/home/user/pipx-venv")
+    monkeypatch.setattr(host_install.sys, "base_prefix", "/usr")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: source)
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, ()),
+    )
+    if update:
+        from dataclasses import replace
+
+        host_install._write_identity(
+            replace(identity, revision="old"), host_install.host_installation_path()
+        )
+    assert bootstrap_cli.run_bootstrap(SimpleNamespace(update=update)) == 0
+    assert host_install.load_host_installation() == identity
+    assert host_install.host_install_error(source) is None
+
+
 @pytest.mark.parametrize("installed", [(), ("claude",), ("codex",), ("claude", "codex")])
 def test_host_agent_cli_prerequisite(monkeypatch, tmp_path, installed):
     monkeypatch.setenv("PATH", str(tmp_path))
