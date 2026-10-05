@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import ntpath
 import os
 import re
@@ -19,9 +20,21 @@ import yaml
 REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
-def _test_workflow() -> dict:
-    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "test.yml"
+def _workflow(filename: str) -> dict:
+    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / filename
     return yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+
+def _test_workflow() -> dict:
+    return _workflow("test.yml")
+
+
+def _deep_tests_workflow() -> dict:
+    return _workflow("deep-tests.yml")
+
+
+def _named_step(job: dict, name: str) -> dict:
+    return next(step for step in job["steps"] if step.get("name") == name)
 
 
 def _suite_config(pytestconfig: pytest.Config):
@@ -672,19 +685,130 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
 
 def test_scheduled_mutation_campaign_treats_its_time_budget_as_success() -> None:
     """A bounded scheduled campaign reports incomplete mutants without failing."""
-    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "deep-tests.yml"
-    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-    steps = workflow["jobs"]["mutation"]["steps"]
-    run_campaign = next(
-        step["run"] for step in steps if step.get("name") == "Run bounded mutation campaign"
-    )
-    report_results = next(
-        step["run"] for step in steps if step.get("name") == "Record mutation results"
-    )
+    job = _deep_tests_workflow()["jobs"]["mutation"]
+    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
+    report_results = _named_step(job, "Record mutation results")["run"]
 
     assert "campaign_status" in run_campaign
     assert "!= 124" in run_campaign
     assert "non-killed mutants" not in report_results
+
+
+def test_scheduled_mutation_campaign_runs_mutmut_as_a_module() -> None:
+    """Spawned test helpers must not re-execute the mutmut console script.
+
+    A spawn child re-runs a console-script ``__main__`` from the test's
+    temporary working directory, where mutmut cannot find its configuration.
+    """
+    job = _deep_tests_workflow()["jobs"]["mutation"]
+    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
+
+    assert "python -m mutmut run" in run_campaign
+    assert re.search(r"(?<!-m )\bmutmut run\b", run_campaign) is None
+
+
+def _tracked_repository_paths() -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "-z"],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    return [path for path in result.stdout.decode("utf-8").split("\0") if path]
+
+
+def _mutmut_config() -> dict[str, list[str]]:
+    """Read setup.cfg's ``[mutmut]`` lists the way mutmut's own reader does."""
+    parser = configparser.ConfigParser()
+    parser.read(REPOSITORY_ROOT / "setup.cfg", encoding="utf-8")
+    return {
+        key: [line for line in value.split("\n") if line] for key, value in parser.items("mutmut")
+    }
+
+
+def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
+    """pyproject.toml bytes define the Sandbox base contract; mutmut stays out.
+
+    mutmut reads setup.cfg only when pyproject.toml has no ``[tool.mutmut]``
+    table, so a reintroduced table would silently shadow the real campaign
+    configuration as well as rebuild the base image on every tuning edit.
+    """
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "mutmut" not in project.get("tool", {})
+    assert _mutmut_config()["only_mutate"] == ["src/booley/harness/setup/*.py"]
+    assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
+
+
+def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
+    """mutmut's ``mutants/`` copy stays a faithful Booley source checkout.
+
+    The copied pyproject marks ``mutants/`` as a source checkout, so importing
+    Booley there needs ``VERSION``, and harness tests read docs, workflows and
+    Sandbox Image build inputs. A tracked path that mutmut neither mutates nor
+    copies breaks the scheduled campaign before it tests a single mutant.
+    """
+    mutmut = _mutmut_config()
+    # mutmut always copies these alongside the configured source paths.
+    copied = [
+        *mutmut["source_paths"],
+        "tests/",
+        "setup.cfg",
+        "pyproject.toml",
+        *mutmut["also_copy"],
+    ]
+
+    def covered(path: str) -> bool:
+        return any(
+            path.startswith(entry) if entry.endswith("/") else path == entry for entry in copied
+        )
+
+    missing = [path for path in _tracked_repository_paths() if not covered(path)]
+    assert missing == [], (
+        "mutmut would not copy these tracked paths into mutants/; add their "
+        "top-level entry to setup.cfg [mutmut] also_copy"
+    )
+
+
+def test_mutation_sandbox_copy_order_and_build_output_exclusion() -> None:
+    """Every ``also_copy`` entry is copyable in order and skips Cargo outputs."""
+    also_copy = _mutmut_config()["also_copy"]
+    tracked = _tracked_repository_paths()
+
+    for index, entry in enumerate(also_copy):
+        # Each entry names tracked content, never an untracked build tree.
+        if entry.endswith("/"):
+            assert any(path.startswith(entry) for path in tracked), entry
+        else:
+            assert entry in tracked, entry
+        # shutil.copy2 does not create parents; an earlier directory copy must.
+        parent = Path(entry.rstrip("/")).parent.as_posix()
+        if not entry.endswith("/") and parent != ".":
+            assert any(
+                earlier.endswith("/") and earlier.startswith(f"{parent}/")
+                for earlier in also_copy[:index]
+            ), entry
+
+    build_outputs = ("crates/bwave/target/", "crates/bwave/fuzz/target/")
+    for entry in also_copy:
+        assert not any(output.startswith(entry) for output in build_outputs), entry
+
+
+def test_bwave_differential_installs_the_simulators_it_must_not_skip() -> None:
+    """The zero-skip differential gate needs Icarus and Verilator present."""
+    job = _deep_tests_workflow()["jobs"]["bwave-fuzz"]
+    names = [step.get("name") for step in job["steps"]]
+    install = _named_step(job, "Install differential oracle simulators")["run"]
+    assertion = _named_step(job, "Assert differential tests executed without skips")["run"]
+
+    assert "iverilog" in install
+    assert "verilator" in install
+    # The Verilator oracle compiles its model with g++ directly.
+    assert "g++" in install
+    assert "--max-skips 0" in assertion
+    assert names.index("Install differential oracle simulators") < names.index(
+        "Run existing simulator oracle differential suite"
+    )
 
 
 def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
