@@ -52,8 +52,6 @@ from mcp.types import (
 )
 from mcp.types import Tool as McpSdkTool
 
-from booley.ticket_board.paths import session_jobs_dir
-
 if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
@@ -75,6 +73,12 @@ from booley.mcp.application import (
     McpDispatchResult,
     McpToolDefinition,
     UnknownMcpToolError,
+)
+from booley.mcp.call_context import (
+    CallContext,
+    container_jobs_root,
+    resolve_call_context,
+    resolve_work_dir,
 )
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
@@ -418,7 +422,8 @@ def _reconcile_orphaned_jobs() -> None:
 
     if not should_run_outer_bookkeeping():
         return
-    for rec in jobrec.list_records(root=session_jobs_dir()):
+    jobs_root = container_jobs_root()
+    for rec in jobrec.list_records(root=jobs_root):
         if rec.status != jobrec.STATUS_RUNNING:
             continue
         if jobrec.derive_status(rec, is_pid_alive) == jobrec.STATUS_RUNNING:
@@ -436,7 +441,7 @@ def _reconcile_orphaned_jobs() -> None:
             if rec.exit_code is None:
                 rec.exit_code = 2
         repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
-        jobrec.write_record(rec, root=session_jobs_dir())
+        jobrec.write_record(rec, root=jobs_root)
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 
 
@@ -1114,10 +1119,14 @@ async def _wait_with_queue_credit(
 
 
 def _endpoint_subprocess_env(
-    *, pytest_scope: str = "endpoint", **overrides: str
+    context: CallContext, *, pytest_scope: str = "endpoint", **overrides: str
 ) -> dict[str, str]:
-    """Return the child environment after MCP composes runtime persistence."""
-    env = {**os.environ, **overrides}
+    """Return the child environment after MCP composes runtime persistence.
+
+    The call context's overrides apply over the server environment, and the
+    per-run *overrides* apply over both.
+    """
+    env = {**os.environ, **context.subprocess_env_overrides, **overrides}
     logs_dir = env.get("BOOLEY_LOGS_DIR", "")
     if logs_dir and not env.get("BOOLEY_RUNTIME_DIR"):
         env["BOOLEY_RUNTIME_DIR"] = str(ticket_runtime_dir(logs_dir))
@@ -2326,7 +2335,7 @@ def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
         return [TextContent(type="text", text=work_dir_error)]
-    project_root = Path(str(arguments.get("work_dir") or Path.cwd()))
+    project_root = resolve_work_dir(arguments)
 
     try:
         surface = target_surface.collect_surface(project_root)
@@ -2486,6 +2495,15 @@ def _requested_poll_wait_seconds(arguments: dict[str, Any]) -> float:
     return float(min(max(seconds, 0), _POLL_WAIT_SECONDS_MAX))
 
 
+def _locate_job(run_id: str) -> jobrec.JobRecord | None:
+    """Return *run_id*'s durable record from the container-wide jobs root, or None.
+
+    Every by-run-id job read outside the manager's own runs goes through here.
+    The root (``container_jobs_root``) is read at call time.
+    """
+    return jobrec.read_record(run_id, root=container_jobs_root())
+
+
 def _job_phase(run_id: str) -> str:
     """Admission phase of a detached job: "RUNNING" or "QUEUED (position N)".
 
@@ -2494,7 +2512,7 @@ def _job_phase(run_id: str) -> str:
     is 1-based for humans. Falls back to RUNNING when the store or claim is
     unreadable — over-claiming "queued" would stall agents that should poll.
     """
-    rec = jobrec.read_record(run_id, root=session_jobs_dir())
+    rec = _locate_job(run_id)
     root = job_slots.slots_dir()
     if rec is None or rec.pid is None or root is None:
         return "RUNNING"
@@ -2558,7 +2576,7 @@ def _format_job_running_poll(run_id: str) -> str:
 
 def _running_progress(run_id: str) -> dict[str, Any] | None:
     """Return only this live job's run-scoped nonterminal checkpoint."""
-    rec = jobrec.read_record(run_id, root=session_jobs_dir())
+    rec = _locate_job(run_id)
     if rec is None:
         return None
     progress = _progress_for_run_id(rec.endpoint, rec.run_id)
@@ -2683,12 +2701,26 @@ class _JobManager:
 
     def __init__(self, lifetime: _McpLifetime) -> None:
         self._lifetime = lifetime
-        self._jobs_root = session_jobs_dir()
+        # run_id -> jobs root from the call context that started the job. A
+        # job keeps writing there even if the server environment changes.
+        self._job_roots: dict[str, Path | None] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_requested: set[str] = set()
         # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
         self._results: dict[str, tuple[int, str, str, bool]] = {}
         self._counter = 0
+
+    def _record_root(self, run_id: str) -> Path | None:
+        """Root for *run_id*'s record writes: pinned at start, else the container root."""
+        if run_id in self._job_roots:
+            return self._job_roots[run_id]
+        return container_jobs_root()
+
+    def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
+        """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
+        if run_id in self._job_roots:
+            return jobrec.read_record(run_id, root=self._job_roots[run_id])
+        return _locate_job(run_id)
 
     def _next_run_id(self, endpoint: str) -> str:
         self._counter += 1
@@ -2716,7 +2748,7 @@ class _JobManager:
 
     def _stamp_pid(self, rec: jobrec.JobRecord, pid: int) -> None:
         rec.pid = pid
-        jobrec.write_record(rec, root=self._jobs_root)
+        jobrec.write_record(rec, root=self._record_root(rec.run_id))
 
     def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
         if rec.pid is None:
@@ -2732,7 +2764,7 @@ class _JobManager:
 
     def _stamp_run_started(self, rec: jobrec.JobRecord) -> None:
         rec.run_started_at = utc_now_rfc3339()
-        jobrec.write_record(rec, root=self._jobs_root)
+        jobrec.write_record(rec, root=self._record_root(rec.run_id))
 
     def _record_terminal(
         self,
@@ -2744,11 +2776,16 @@ class _JobManager:
         repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
-        jobrec.write_record(rec, root=self._jobs_root)
+        jobrec.write_record(rec, root=self._record_root(rec.run_id))
 
     @staticmethod
     def _display_identity(rec: jobrec.JobRecord) -> DisplayIdentity:
         return DisplayIdentity(rec.run_id, rec.display_scope)
+
+    def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
+        """Drop a finished inline run's record and its pinned root."""
+        jobrec.delete_record(rec.run_id, root=self._record_root(rec.run_id))
+        self._job_roots.pop(rec.run_id, None)
 
     def _abort_synchronous(self, rec: jobrec.JobRecord) -> None:
         self._record_terminal(rec, 2, timed_out=False)
@@ -2758,22 +2795,31 @@ class _JobManager:
             identity=self._display_identity(rec),
             outcome="aborted",
         )
-        jobrec.delete_record(rec.run_id, root=self._jobs_root)
+        self._forget_synchronous(rec)
 
-    def submit(self, name: str, cmd: list[str], timeout: int) -> str:
+    def submit(
+        self,
+        name: str,
+        cmd: list[str],
+        timeout: int,
+        *,
+        context: CallContext,
+    ) -> str:
         """Spawn *cmd* as a detached background job and return its run_id.
 
         Always spawns: admission (queue or run) is the child's own slot-store
-        claim, not this server's decision.
+        claim, not this server's decision. The record lives under the call
+        context's jobs root.
         """
         run_id = self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
-        jobrec.write_record(rec, root=self._jobs_root)
+        self._job_roots[run_id] = context.jobs_root
+        jobrec.write_record(rec, root=self._record_root(rec.run_id))
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold
         # the lifetime busy independently or the server idle-exits mid-run.
         self._lifetime.mark_mcp_endpoint_start()
         self._tasks[run_id] = asyncio.create_task(
-            self._run_and_record(run_id, name, cmd, timeout, rec),
+            self._run_and_record(run_id, name, cmd, timeout, rec, context),
         )
         return run_id
 
@@ -2782,16 +2828,20 @@ class _JobManager:
         name: str,
         cmd: list[str],
         timeout: int,
+        *,
+        context: CallContext,
     ) -> tuple[int, str, str, bool]:
         """Run an inline endpoint while publishing bounded status state."""
         rec = self._new_record(uuid.uuid4().hex, name, cmd, timeout)
-        jobrec.write_record(rec, root=self._jobs_root)
+        self._job_roots[rec.run_id] = context.jobs_root
+        jobrec.write_record(rec, root=self._record_root(rec.run_id))
         try:
             result = await _run_subprocess(
                 cmd,
                 timeout=timeout,
                 on_spawn=lambda pid: self._stamp_pid(rec, pid),
                 env=_endpoint_subprocess_env(
+                    context,
                     pytest_scope=name,
                     BOOLEY_RUN_ID=rec.run_id,
                     BOOLEY_DISPLAY_INVOCATION_ID=rec.run_id,
@@ -2814,7 +2864,7 @@ class _JobManager:
                 identity=self._display_identity(rec),
             )
         self._record_terminal(rec, exit_code, timed_out=timed_out)
-        jobrec.delete_record(rec.run_id, root=self._jobs_root)
+        self._forget_synchronous(rec)
         return result
 
     async def _run_and_record(
@@ -2824,6 +2874,7 @@ class _JobManager:
         cmd: list[str],
         timeout: int,
         rec: jobrec.JobRecord,
+        context: CallContext,
     ) -> None:
         """Run the subprocess to completion and persist the terminal outcome."""
         try:
@@ -2836,6 +2887,7 @@ class _JobManager:
                 # carries the real watchdog budget to the child's slot claim
                 # so the holder-deadline reap has a sound anchor.
                 env=_endpoint_subprocess_env(
+                    context,
                     pytest_scope=name,
                     BOOLEY_RUN_ID=run_id,
                     BOOLEY_SLOT_TIMEOUT_S=str(timeout),
@@ -2874,7 +2926,7 @@ class _JobManager:
             f"CANCELLED: job {rec.run_id} was stopped by request.",
             False,
         )
-        jobrec.write_record(rec, root=self._jobs_root)
+        jobrec.write_record(rec, root=self._record_root(rec.run_id))
         _write_synthetic_endpoint_end(
             rec.endpoint,
             0,
@@ -2931,7 +2983,7 @@ class _JobManager:
         process tree before recording the outcome. Adopted jobs retain RUNNING
         state until termination and fresh-report reconciliation complete.
         """
-        rec = jobrec.read_record(run_id, root=self._jobs_root)
+        rec = self._read_run(run_id)
         if rec is None:
             return None
 
@@ -2944,7 +2996,7 @@ class _JobManager:
             await self._cancel_tracked_task(run_id, task)
         else:
             await self._cancel_adopted_job(rec)
-        final = jobrec.read_record(run_id, root=self._jobs_root)
+        final = self._read_run(run_id)
         if final is None or final.status != jobrec.STATUS_CANCELLED:
             return "finished"
         return "queued" if was_queued else "running"
@@ -2969,7 +3021,7 @@ class _JobManager:
         run_id: str,
     ) -> tuple[int, str, str, dict[str, Any] | None, bool]:
         """Resolve one terminal Job into authoritative rendering inputs."""
-        rec = jobrec.read_record(run_id, root=self._jobs_root)
+        rec = self._read_run(run_id)
         report, report_fresh = _job_report(rec)
         finished = self._results.get(run_id)
         if finished is not None:
@@ -3041,7 +3093,7 @@ async def _poll_from_disk(
     """
     deadline = time.monotonic() + max(0.0, wait_seconds)
     while True:
-        rec = jobrec.read_record(run_id, root=session_jobs_dir())
+        rec = _locate_job(run_id)
         if rec is None:
             return _error_result(
                 f"Unknown run_id {run_id!r}. It may belong to a different project "
@@ -3165,7 +3217,7 @@ async def _dispatch_cancel(
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
         return [TextContent(type="text", text="Provide the 'run_id' of a queued job.")]
-    rec = jobrec.read_record(run_id, root=session_jobs_dir())
+    rec = _locate_job(run_id)
     if rec is None:
         return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
 
@@ -3207,6 +3259,8 @@ async def _dispatch_async_job(
     cmd: list[str],
     mcp_tool_timeout: int,
     jobs: _JobManager,
+    *,
+    context: CallContext,
 ) -> McpToolContent:
     """Submit a heavy endpoint as a background job; wait inline, else hand back a run_id.
 
@@ -3226,7 +3280,7 @@ async def _dispatch_async_job(
     attach = _find_attachable_job(name, cmd)
     if attach is not None:
         return await _attach_to_job(name, attach, jobs)
-    run_id = jobs.submit(name, cmd, mcp_tool_timeout)
+    run_id = jobs.submit(name, cmd, mcp_tool_timeout, context=context)
     finished = await jobs.wait(run_id, _job_inline_wait_seconds())
     if finished:
         return jobs.result_content(run_id)
@@ -3267,7 +3321,7 @@ def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
     """
     wanted = _strip_transcript_dir(cmd)
     newest: jobrec.JobRecord | None = None
-    for rec in jobrec.list_records(root=session_jobs_dir()):
+    for rec in jobrec.list_records(root=container_jobs_root()):
         if rec.endpoint != name or _strip_transcript_dir(rec.argv) != wanted:
             continue
         if rec.status != jobrec.STATUS_RUNNING:
@@ -3365,18 +3419,20 @@ async def _run_inline_endpoint(
     timeout: int,
     jobs: _JobManager,
     *,
+    context: CallContext,
     publish_activity: bool,
     invocation_id: str | None = None,
 ) -> tuple[int, str, str, bool]:
     """Run inline work, recording only user-visible endpoint activity."""
     if publish_activity:
-        return await jobs.run_synchronous(name, cmd, timeout)
+        return await jobs.run_synchronous(name, cmd, timeout, context=context)
     identity = DisplayIdentity.current(invocation_id or uuid.uuid4().hex)
     try:
         result = await _run_subprocess(
             cmd,
             timeout=timeout,
             env=_endpoint_subprocess_env(
+                context,
                 pytest_scope=name,
                 BOOLEY_DISPLAY_INVOCATION_ID=identity.invocation_id,
             ),
@@ -3406,17 +3462,20 @@ async def _dispatch_booley_mcp_tool(
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
         return _error_result(work_dir_error)
+    context = resolve_call_context(arguments)
 
     cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts)
 
     try:
-        mcp_tool_timeout = _mcp_tool_timeout_seconds(name, arguments, mcp_tool_def)
+        mcp_tool_timeout = _mcp_tool_timeout_seconds(
+            name, arguments, mcp_tool_def, context=context
+        )
     except ValueError as exc:
         return _error_result(f"ERROR: invalid Flow timeout: {exc}")
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
     if name in _ASYNC_JOB_MCP_TOOLS:
-        return await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs)
+        return await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs, context=context)
 
     report_attempt = uuid.uuid4().hex if name == "submit_run_report" else None
     exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
@@ -3424,6 +3483,7 @@ async def _dispatch_booley_mcp_tool(
         cmd,
         mcp_tool_timeout,
         jobs,
+        context=context,
         publish_activity=bool(mcp_tool_def.get("is_flow") or mcp_tool_def.get("is_specialist")),
         invocation_id=report_attempt,
     )
@@ -3511,15 +3571,18 @@ def _committed_submission_report(report, submission_id, exit_code):
     return committed, diagnosis
 
 
-def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> int:
+def _sim_mcp_tool_timeout_seconds(
+    arguments: dict[str, Any],
+    default: int,
+    context: CallContext,
+) -> int:
     """Whole-invocation Simulation watchdog with mode-aware stage budgets."""
     from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
     from booley.flows.sim.config import resolve_sim_build_timeout_ms
     from booley.flows.sim.flow import _resolve_sim_campaign_work_units, _resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
-    work_dir_raw = arguments.get("work_dir")
-    work_dir = Path(work_dir_raw) if work_dir_raw else Path.cwd()
+    work_dir = context.work_dir
     requested = requested_timeout_ms(arguments)
     if requested is None:
         timeout_ms = _resolve_sim_timeout_ms(work_dir)
@@ -3548,6 +3611,7 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         work_units=work_units,
         run_s=run_s,
         build_s=build_s,
+        state_path=context.state_path,
     )
     return max(default, planned_s)
 
@@ -3560,6 +3624,7 @@ def _sim_planned_timeout_seconds(
     work_units: int,
     run_s: int,
     build_s: int,
+    state_path: Path | None,
 ) -> int:
     """Sum child stage limits plus finalization slack for one Simulation call."""
     from booley.flows.base import DEFAULT_TIMEOUT_S
@@ -3573,7 +3638,7 @@ def _sim_planned_timeout_seconds(
         runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + _TRACE_CLEANUP_MARGIN_S)
         targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
         return runs_s + targets_s + 30
-    baseline_scale = 2 if _ticket_baseline_required("cycle_count_") else 1
+    baseline_scale = 2 if _ticket_baseline_required("cycle_count_", state_path) else 1
     run_units = work_units * baseline_scale
     build_units = target_count * baseline_scale
     planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
@@ -3592,18 +3657,20 @@ def _implementation_budget_plan(
     name: str,
     arguments: dict[str, Any],
     default: int,
+    context: CallContext,
 ) -> BudgetPlan:
     """Plan the pre-spawn watchdog for synthesis or FPGA implementation."""
     from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
 
-    work_dir_raw = arguments.get("work_dir")
     timeout_ms = resolve_timeout_ms(
         name,
-        Path(work_dir_raw) if work_dir_raw else None,
+        context.explicit_work_dir,
         requested_timeout_ms(arguments),
     )
     criterion_prefix = "synthesis_ok_" if name == "synth" else "fpga_impl_ok_"
-    has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(criterion_prefix)
+    has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(
+        criterion_prefix, context.state_path
+    )
     work_units = _target_count(arguments) * (2 if has_baseline else 1)
     return BudgetPlan(
         timeout_ms=timeout_ms,
@@ -3614,14 +3681,17 @@ def _implementation_budget_plan(
     )
 
 
-def _lint_budget_plan(arguments: dict[str, Any], default: int) -> BudgetPlan:
+def _lint_budget_plan(
+    arguments: dict[str, Any],
+    default: int,
+    context: CallContext,
+) -> BudgetPlan:
     """Plan one active timeout budget for every selected lint Target."""
     from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
 
-    work_dir_raw = arguments.get("work_dir")
     timeout_ms = resolve_timeout_ms(
         "lint",
-        Path(work_dir_raw) if work_dir_raw else None,
+        context.explicit_work_dir,
         requested_timeout_ms(arguments),
     )
     work_units = _target_count(arguments)
@@ -3638,38 +3708,42 @@ def _mcp_tool_timeout_seconds(
     name: str,
     arguments: dict[str, Any],
     mcp_tool_def: dict[str, Any],
+    *,
+    context: CallContext | None = None,
 ) -> int:
     """Outer MCP kill budget for a endpoint subprocess.
 
     For simulate, the user-facing ``timeout`` argument is the simulator
     budget in milliseconds. The Flow still needs time after that to
     close FIFO trace writers, reap bwave, and write reports, so the MCP
-    watchdog must be larger than the sim budget.
+    watchdog must be larger than the sim budget. Dispatch passes the call's
+    resolved *context*; without one it is resolved from *arguments*.
     """
     from booley.targets.flow_names import canonical
 
+    if context is None:
+        context = resolve_call_context(arguments)
     name = canonical(name)
     default = int(mcp_tool_def.get("default_timeout") or 600)
     if name in {"synth", "fpga"}:
-        return _implementation_budget_plan(name, arguments, default).outer_timeout_s
+        return _implementation_budget_plan(name, arguments, default, context).outer_timeout_s
 
     if name == "lint":
-        return _lint_budget_plan(arguments, default).outer_timeout_s
+        return _lint_budget_plan(arguments, default, context).outer_timeout_s
 
     if name != "sim":
         return default
-    return _sim_mcp_tool_timeout_seconds(arguments, default)
+    return _sim_mcp_tool_timeout_seconds(arguments, default, context)
 
 
-def _ticket_baseline_required(criterion_prefix: str) -> bool:
-    """Whether persisted criteria will auto-enable an implementation baseline."""
+def _ticket_baseline_required(criterion_prefix: str, state_path: Path | None) -> bool:
+    """Whether criteria persisted at *state_path* will auto-enable an implementation baseline."""
     from booley.evidence.fields import BASELINE_REF_PARAM
 
-    state_path = os.environ.get("BOOLEY_STATE_FILE")
-    if not state_path:
+    if state_path is None:
         return False
     try:
-        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     criteria = state.get("criteria") if isinstance(state, dict) else None

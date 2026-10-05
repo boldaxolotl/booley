@@ -894,12 +894,13 @@ class TestJobManagerResultText:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         manager = object.__new__(self.mcp_server._JobManager)
-        manager._jobs_root = tmp_path
+        manager._job_roots = {"run-1": tmp_path}
         manager._results = {"run-1": (1, "", "RESULT: FAIL\n", False)}
+        read_roots: list[Path] = []
         monkeypatch.setattr(
             self.mcp_server.jobrec,
             "read_record",
-            lambda _run_id, root: SimpleNamespace(),
+            lambda _run_id, root: read_roots.append(root) or SimpleNamespace(),
         )
         monkeypatch.setattr(
             self.mcp_server,
@@ -911,6 +912,7 @@ class TestJobManagerResultText:
 
         assert result.count("RESULT: FAIL") == 1
         assert "report_text:" not in result
+        assert read_roots == [tmp_path]
 
 
 # ---------------------------------------------------------------------------
