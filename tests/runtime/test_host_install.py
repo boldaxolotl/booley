@@ -106,9 +106,7 @@ def test_host_install_error_reports_invalid_state(tmp_path: Path) -> None:
     state.write_text("{", encoding="utf-8")
     source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
 
-    error = host_install.host_install_error(
-        source, prefix=Path("/usr"), base_prefix=Path("/usr"), path=state
-    )
+    error = host_install.host_install_error(source, path=state)
 
     assert error is not None
     assert "cannot read host installation identity" in error
@@ -121,28 +119,64 @@ def test_accepts_recorded_base_interpreter_wheel(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
     source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
 
-    assert (
-        host_install.host_install_error(
-            source, prefix=Path("/usr"), base_prefix=Path("/usr"), path=state
-        )
-        is None
-    )
+    assert host_install.host_install_error(source, path=state) is None
 
 
-def test_rejects_virtual_environment_wheel() -> None:
-    source = Path("/project/.venv/lib/python3.14/site-packages/booley/data/skills")
-    error = host_install.host_install_error(
-        source, prefix=Path("/project/.venv"), base_prefix=Path("/usr")
-    )
-    assert error is not None
-    assert "virtual environment" in error
+@pytest.mark.parametrize(
+    "root", ["/home/user/.local/share/pipx/venvs/booley-rtl", "/work/Booley/.venv"]
+)
+def test_persistent_wheel_venv_claims_and_retains_authority(tmp_path, monkeypatch, root):
+    monkeypatch.setattr(sys, "prefix", root)
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    identity = _identity(root + "/lib/python3.14/site-packages")
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
+    source = Path(identity.distribution_root) / "booley/data/skills"
+    state = tmp_path / "host-installation.json"
+    assert host_install.register_host_installation(source, path=state) == identity
+    original = state.read_bytes()
+    assert host_install.register_host_installation(source, path=state) == identity
+    assert state.read_bytes() == original
+    assert host_install.host_install_error(source, path=state) is None
 
 
-def test_rejects_source_checkout() -> None:
+@pytest.mark.parametrize("component", [".worktrees", ".runtime", "qa-runs"])
+def test_isolated_wheel_in_ephemeral_component_is_ineligible(monkeypatch, component):
+    monkeypatch.setattr(sys, "prefix", "/home/user/venv")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    source = Path("/work") / component / "lib/site-packages/booley/data/skills"
+    assert "ephemeral workspace state" in host_install.host_install_error(source)
+    with pytest.raises(HostInstallationError, match="ephemeral workspace state"):
+        host_install.register_host_installation(source)
+
+
+@pytest.mark.parametrize(
+    "target", ["src/booley/data/skills", ".runtime/site-packages/booley/data/skills"]
+)
+def test_symlink_cannot_disguise_ineligible_resource(tmp_path, monkeypatch, target):
+    monkeypatch.setattr(sys, "prefix", "/home/user/venv")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    monkeypatch.setattr(host_install.tempfile, "gettempdir", lambda: "/unrelated-temp")
+    actual = tmp_path / target
+    actual.mkdir(parents=True)
+    link = tmp_path / "site-packages/booley/data/skills"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(actual, target_is_directory=True)
+    error = host_install.host_install_error(link)
+    assert "not from an installed wheel" in error or "ephemeral workspace state" in error
+
+
+def test_rejects_source_checkout(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "prefix", "/work/Booley/.venv")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
     source = Path("/work/Booley/src/booley/data/skills")
-    error = host_install.host_install_error(source, prefix=Path("/usr"), base_prefix=Path("/usr"))
+    error = host_install.host_install_error(
+        source,
+    )
     assert error is not None
     assert "not from an installed wheel" in error
+
+    with pytest.raises(HostInstallationError, match="not from an installed wheel"):
+        host_install.register_host_installation(source)
 
 
 def test_rejects_qa_runtime_even_when_it_contains_site_packages() -> None:
@@ -150,15 +184,21 @@ def test_rejects_qa_runtime_even_when_it_contains_site_packages() -> None:
         "/work/Booley/.runtime/qa-runs/run/operator-venv/"
         "lib/python3.14/site-packages/booley/data/skills"
     )
-    error = host_install.host_install_error(source, prefix=Path("/usr"), base_prefix=Path("/usr"))
+    error = host_install.host_install_error(
+        source,
+    )
     assert error is not None
     assert "ephemeral workspace state" in error
 
 
 def test_rejects_arbitrary_temporary_qa_path(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "prefix", "/tmp/booley-qa/venv")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
     monkeypatch.setattr(host_install.tempfile, "gettempdir", lambda: "/tmp/booley-qa")
     source = Path("/tmp/booley-qa/run/lib/python3.14/site-packages/booley/data/skills")
-    error = host_install.host_install_error(source, prefix=Path("/usr"), base_prefix=Path("/usr"))
+    error = host_install.host_install_error(
+        source,
+    )
     assert error is not None
     assert "temporary filesystem state" in error
 
@@ -174,8 +214,6 @@ def test_unrecorded_installed_wheel_directs_user_to_bootstrap(tmp_path: Path) ->
     source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
     error = host_install.host_install_error(
         source,
-        prefix=Path("/usr"),
-        base_prefix=Path("/usr"),
         path=tmp_path / "missing.json",
     )
     assert error is not None
@@ -192,8 +230,6 @@ def test_mismatched_recorded_identity_is_rejected(tmp_path: Path, monkeypatch) -
     )
     error = host_install.host_install_error(
         Path("/other/site-packages/booley/data/skills"),
-        prefix=Path("/usr"),
-        base_prefix=Path("/usr"),
         path=state,
     )
     assert error is not None
@@ -225,3 +261,39 @@ def test_registration_is_atomic_and_refuses_implicit_update(tmp_path: Path, monk
         == replacement
     )
     assert host_install.load_host_installation(state) == replacement
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "executable",
+        "interpreter",
+        "distribution_root",
+        "version",
+        "revision",
+        "payload_fingerprint",
+    ],
+)
+def test_each_identity_difference_requires_explicit_update(tmp_path, monkeypatch, field):
+    source = Path("/home/user/venv/lib/site-packages/booley/data/skills")
+    monkeypatch.setattr(sys, "prefix", "/home/user/venv")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    state = tmp_path / "identity.json"
+    original = _identity()
+    candidate = replace(original, **{field: "different"})
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: original)
+    host_install.register_host_installation(source, path=state)
+    recorded = state.read_bytes()
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
+    assert "--update" in host_install.host_install_error(source, path=state)
+    with pytest.raises(HostInstallationError, match="--update"):
+        host_install.register_host_installation(source, path=state)
+    assert state.read_bytes() == recorded
+    assert host_install.register_host_installation(source, path=state, update=True) == candidate
+    assert host_install.host_install_error(source, path=state) is None
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: original)
+    assert "--update" in host_install.host_install_error(source, path=state)
+
+    with pytest.raises(HostInstallationError, match="--update"):
+        host_install.register_host_installation(source, path=state)
+    assert host_install.load_host_installation(state) == candidate

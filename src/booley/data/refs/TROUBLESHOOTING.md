@@ -181,24 +181,31 @@ itself is fine and still queryable.
 ## Installation fails with `externally-managed-environment`
 
 Recent distributions ship Python as an *externally managed* environment
-(PEP 668), where that interpreter refuses package installation. Install a
-separate base Python distribution, ensure its user scripts directory is on
-`PATH`, and use that interpreter's `python -m pip install --user booley-rtl`.
-Do not install the host CLI through a virtual-environment launcher: candidate
-and development environments are deliberately unable to mutate host-owned
-state.
+(PEP 668), where system Python refuses user package installation. Follow the
+README's Ubuntu/Debian pipx preparation, run `pipx ensurepath`, reopen your
+terminal, then run `pipx install booley-rtl` and `booley bootstrap`.
+If you already have uv, use `uv tool install booley-rtl` instead.
+These persistent isolated wheel installs can own host state. Source/editable
+checkouts and temporary or ephemeral installs remain ineligible.
 
 ## The wrong `booley` runs (stale install shadowing)
 
-`booley init` and `booley session ...` are host commands that shell out to
-Docker, so whichever environment you install into has to be the one your shell
-resolves `booley` from. If `booley --version` and `pip show booley-rtl`
-**disagree**, an older install is shadowing this one on `PATH`.
+Host commands use the canonical installed Booley launcher. Compare
+`booley --version` with `pipx list` or `uv tool list` for tool-managed installs;
+use the intended interpreter's `python -m pip show booley-rtl` for pip installs.
+An older launcher earlier on `PATH` can shadow the intended installation.
 
-Run `command -v -a booley` (or `where.exe booley` on Windows) and remove or
+Run `type -a booley` (or `where.exe booley` on Windows) and remove or
 upgrade older user or system installations that appear before the one you
-intend to use. Then run `booley bootstrap`, or `booley bootstrap --update`
-after an intentional upgrade.
+intend to use. Restore the canonical installed Booley launcher, run
+`pipx ensurepath` for pipx, and reopen the terminal. Then run
+`booley bootstrap`, or `booley bootstrap --update` after an intentional upgrade.
+The identity record refuses other installations until that explicit update.
+
+After a distro Python upgrade, repair pipx environments with
+`pipx reinstall-all`. Once the intended launcher works, run
+`booley bootstrap --update`: interpreter or distribution identity may have
+changed even if the package version did not.
 
 ## Windows first-run problems
 
@@ -285,8 +292,9 @@ experiment, not a setup requirement.
   install normally places `booley.exe` under the user scripts directory rather
   than the interpreter's system `Scripts` directory. Current Booley releases
   inspect both trusted locations even when the user scripts directory is not on
-  `PATH`. If the error remains, reinstall with the canonical base interpreter
-  or add the scripts directory reported by Python to `PATH`, open a new
+  `PATH`. If the error remains, restore the canonical installed Booley launcher
+  (check `pipx list` or `uv tool list` for isolated installs), or add its scripts
+  directory to `PATH`, open a new
   terminal, and rerun init.
 
 - **The first sandbox image build takes over an hour.** First builds compile
