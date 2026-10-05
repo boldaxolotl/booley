@@ -1587,10 +1587,14 @@ def test_host_policy_migration_warning_reaches_init_and_doctor(
 
 
 @pytest.mark.parametrize("installed", [(), ("claude",), ("codex",), ("claude", "codex")])
-def test_host_agent_cli_prerequisite(monkeypatch, installed):
-    monkeypatch.setattr(
-        bootstrap.shutil, "which", lambda name: f"/bin/{name}" if name in installed else None
-    )
+def test_host_agent_cli_prerequisite(monkeypatch, tmp_path, installed):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATHEXT", ".EXE")
+    monkeypatch.chdir(tmp_path)
+    for name in installed:
+        executable = tmp_path / (f"{name}.exe" if os.name == "nt" else name)
+        executable.write_text("CLI presence fixture")
+        executable.chmod(0o755)
     monkeypatch.setattr(bootstrap, "_git_finding", lambda: _current("git"))
     monkeypatch.setattr(bootstrap, "_tool_finding", lambda name, _arg: _current(name))
     monkeypatch.setattr(bootstrap, "_docker_daemon_error", lambda: None)
