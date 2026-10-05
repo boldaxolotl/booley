@@ -46,10 +46,10 @@ PPA_HELP = HelpOption(
 class FlowHelpFormatter(argparse.HelpFormatter):
     """Combine only declared boolean pairs in the help body, preserving usage."""
 
-    def __init__(self, prog: str, *, pairs: tuple[tuple[str, str], ...], **kwargs) -> None:
+    def __init__(self, prog: str, *, pairs: tuple[tuple[str, str], ...], **kwargs: int) -> None:
         super().__init__(prog, **kwargs)
-        self.pairs = dict(pairs)
-        self.negative_options = {negative for _, negative in pairs}
+        self.pairs: dict[str, str] = dict(pairs)
+        self.negative_options: set[str] = {negative for _, negative in pairs}
 
     def add_arguments(self, actions: list[argparse.Action]) -> None:
         super().add_arguments(

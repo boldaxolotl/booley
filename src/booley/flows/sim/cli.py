@@ -33,7 +33,7 @@ class SimArguments(BuiltinArguments):
                 ),
                 HelpOption(
                     "no_waivers",
-                    "When omitted, approved waivers apply on new coverage Campaigns; resume restores the manifest's raw-coverage/waiver policy and rejects this flag.",
+                    "When omitted, approved waivers apply on new coverage-collecting Simulation Campaigns; resume restores the manifest's raw-coverage/waiver policy and rejects this flag.",
                 ),
                 HelpOption(
                     "mode",

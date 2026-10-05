@@ -562,7 +562,9 @@ def test_human_flow_progress_flags_preserve_project_and_duration_vocabulary(
     assert capsys.readouterr().err == ""
 
 
-def test_canonical_synth_help_uses_initialized_project(projects, monkeypatch, capsys):
+def test_canonical_synth_help_uses_initialized_project(
+    projects: list[Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     from booley.flows.synth.flow import AsicSynthesizeFlow
 
     monkeypatch.setattr("sys.argv", ["booley", "flow", "synth", "--help"])

@@ -22,7 +22,7 @@ from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
 
 
-def builtin_types():
+def builtin_types() -> list[type[BuiltinFlow]]:
     discovered = [info for info in discover_mcp_tools() if info.kind == "flow"]
     assert discovered
     result = []
@@ -57,7 +57,7 @@ HIDDEN = {"--work-dir", "--timeout-ms", "--elab-only", "--build-only", "--standa
 
 @pytest.mark.parametrize("flow_type", FLOWS)
 @pytest.mark.parametrize("cli", [False, True])
-def test_complete_grouped_help(flow_type, cli):
+def test_complete_grouped_help(flow_type: type[BuiltinFlow], cli: bool) -> None:
     flow = flow_type()
     with invocation_context():
         parser = build_cli_parser(flow) if cli else build_parser(flow, human=True)
@@ -98,7 +98,7 @@ def test_complete_grouped_help(flow_type, cli):
 
 
 @pytest.mark.parametrize("width", [46, 100])
-def test_pair_rendering(width):
+def test_pair_rendering(width: int) -> None:
     flow = next(cls() for cls in FLOWS if cls.name == "synth")
     parser = build_parser(flow, human=True)
     pairs = tuple((f"--{name}", f"--no-{name}") for name in PAIRS)
@@ -119,7 +119,9 @@ def test_pair_rendering(width):
     "suffix,expected",
     [([], None), ([True], True), ([False], False), ([True, False], False), ([False, True], True)],
 )
-def test_pair_parsing_and_typed_normalization(human, name, suffix, expected):
+def test_pair_parsing_and_typed_normalization(
+    human: bool, name: str, suffix: list[bool], expected: bool | None
+) -> None:
     flow = next(cls() for cls in FLOWS if cls.name == "synth")
     parser = build_parser(flow, human=human)
     flags = [f"--{'' if value else 'no-'}{name}" for value in suffix]
@@ -134,7 +136,7 @@ def test_pair_parsing_and_typed_normalization(human, name, suffix, expected):
 
 @pytest.mark.parametrize("flow_type", FLOWS)
 @pytest.mark.parametrize("human_first", [False, True])
-def test_projection_isolation(flow_type, human_first):
+def test_projection_isolation(flow_type: type[BuiltinFlow], human_first: bool) -> None:
     flow = flow_type()
     expected = json.loads((Path(__file__).parent / "fixtures/builtin_schemas.json").read_text())[
         flow.name
@@ -155,7 +157,7 @@ def test_projection_isolation(flow_type, human_first):
     assert transport.parse_args(["--target", "example", "-q"])._console_quiet
 
 
-def test_resume_and_required_target_guidance():
+def test_resume_and_required_target_guidance() -> None:
     for cls in FLOWS:
         parser = build_parser(cls(), human=True)
         actions = parser._option_string_actions
@@ -171,7 +173,7 @@ def test_resume_and_required_target_guidance():
                 parser.parse_args([])
 
 
-def test_module_help_outside_project(tmp_path):
+def test_module_help_outside_project(tmp_path: Path) -> None:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -195,7 +197,9 @@ def test_module_help_outside_project(tmp_path):
 @pytest.mark.parametrize("name", PAIRS[1:])
 @pytest.mark.parametrize("configured", [False, True])
 @pytest.mark.parametrize("explicit", [None, False, True])
-def test_expert_pairs_defer_and_override_configuration(name, configured, explicit):
+def test_expert_pairs_defer_and_override_configuration(
+    name: str, configured: bool, explicit: bool | None
+) -> None:
     from booley.flows.synth.mode import SynthMode
     from booley.flows.synth.ppa_config import append_ppa_args
     from booley.flows.synth.request import SynthRequest
