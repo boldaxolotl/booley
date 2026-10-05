@@ -482,7 +482,7 @@ def test_cocotb_production_probe_requires_both_simulation_flows(target: str) -> 
         "bwave-smoke",
         "Run cocotb Icarus/Verilator production-image flows",
     )
-    command = f"python3 -m booley.flows.sim --work-dir /validation-tmp/project --target {target}"
+    command = f"python3 -m booley.flows.sim --project /validation-tmp/project --target {target}"
     step["run"] = str(step["run"]).replace(command, "true")
 
     assert f"missing {target} Simulation" in _errors(sources, "Cocotb")

@@ -2454,3 +2454,73 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         monkeypatch.setenv(key, value)
     with pytest.raises(WaiverDecisionError, match="approve waivers as yourself"):
         approver_identity(project)
+
+
+@pytest.mark.parametrize("flag", ["--project", "--project-root"])
+def test_initialize_validator_accepts_only_approved_complete_forms(
+    tmp_path, monkeypatch, trusted_validator, flag
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    command = runtime_spec.initialize_command(str(trusted_validator))
+    command[3] = flag
+    runtime_spec._validate_initialize_command(project, command)
+    for altered in (
+        [*command, "extra"],
+        [*command[:4], "/untrusted/workspace"],
+        ["relative-booley", *command[1:]],
+        [command[0], "session", "up", *command[3:]],
+    ):
+        with pytest.raises(runtime_spec.RuntimeSpecError):
+            runtime_spec._validate_initialize_command(project, altered)
+
+
+@pytest.mark.parametrize("flag", ["--project", "--project-root"])
+def test_pinning_migrates_approved_initialize_forms(tmp_path, monkeypatch, flag):
+    project = tmp_path / "project"
+    command = runtime_spec.initialize_command()
+    command[3] = flag
+    executable = tmp_path / "trusted/bin/booley"
+    monkeypatch.setattr(runtime_spec, "_find_trusted_validator", lambda _project: executable)
+    spec = {"initializeCommand": command}
+    runtime_spec._pin_initialize_command(project, spec)
+    assert spec["initializeCommand"] == runtime_spec.initialize_command(str(executable))
+    assert spec["initializeCommand"][3] == "--project"
+
+
+def test_previously_issued_legacy_prepare_survives_full_validation(
+    tmp_path, monkeypatch, trusted_validator
+):
+    """Model an old issuer, then authenticate its unchanged sealed document."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    original_pin = runtime_spec._pin_initialize_command
+
+    def old_issuer_pin(root, spec):
+        original_pin(root, spec)
+        spec["initializeCommand"][3] = "--project-root"
+
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    with monkeypatch.context() as old_issuer:
+        old_issuer.setattr(runtime_spec, "_pin_initialize_command", old_issuer_pin)
+        runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    stamp = runtime_spec.issue(project, spec, path)
+    assert spec["initializeCommand"] == [
+        str(trusted_validator),
+        "session",
+        "prepare",
+        "--project-root",
+        "${localWorkspaceFolder}",
+    ]
+    assert runtime_spec.authenticate(project, spec, path) == stamp
+    assert runtime_spec.validate(project, spec, path) == stamp
+    assert runtime_spec.load_issued_snapshot(project) == stamp

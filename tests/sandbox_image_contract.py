@@ -677,7 +677,7 @@ def _cocotb_smoke_evidence(command: tuple[str, ...]) -> tuple[str, list[str]]:
             "python3",
             "-m",
             "booley.flows.sim",
-            "--work-dir",
+            "--project",
             "/validation-tmp/project",
             "--target",
             target,

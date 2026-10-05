@@ -15,6 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
+_WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
+
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
@@ -1331,7 +1333,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
 
     def before_executor(plan):
         witnessed.append(capsys.readouterr().err)
-        assert witnessed == [f"campaign manifest: {manifest.resolve()}\n"]
+        assert witnessed == [_WORK_DIR_NOTICE + f"campaign manifest: {manifest.resolve()}\n"]
         assert manifest.is_file()
         if mode == "failure":
             raise RuntimeError("resume executor unavailable")

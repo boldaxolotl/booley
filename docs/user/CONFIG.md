@@ -294,14 +294,14 @@ image authorization still applies independently.
 `[flows.sim].build_timeout_ms` is a positive-integer budget for each
 simulator-image build. It defaults to `3600000` (one hour) and applies to
 ordinary Simulation, native Coverage, and Elaboration Check builds.
-`[flows.sim].timeout_ms` and the per-call `--timeout-ms` override instead bound
+`[flows.sim].timeout_ms` and the per-call `--timeout` override instead bound
 simulator execution, or the standalone module sweep in
 `elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
 budget.
 
 A simulation run that exceeds its run budget gets a `timeout` verdict, exits
 `1`, and fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock;
-raise `--timeout-ms` or `[flows.sim].timeout_ms` if the test legitimately needs
+raise `--timeout` or `[flows.sim].timeout_ms` if the test legitimately needs
 longer. Build, Elaboration Check, and Pre-Sim Command timeouts are infrastructure
 errors and exit `2`.
 
@@ -489,7 +489,7 @@ without a `/work/.booley_project` counterpart. Prefer the variable.
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues
 with the next test, never a Flow crash. The commands have an independent
-600-second budget; they do not consume `timeout_ms`, `--timeout-ms`, or
+600-second budget; they do not consume `timeout_ms`, `--timeout`, or
 `build_timeout_ms`. `--dry-run` previews them in their real position, and
 `booley doctor` validates the shape and notes when they're configured.
 

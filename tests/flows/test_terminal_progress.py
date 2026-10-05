@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.flows.builtin_cli import build_cli_parser, build_parser, execute_cli, parse_request
+from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
 from booley.flows.observed_process import communicate_observed
@@ -385,13 +386,16 @@ def test_cli_flags_do_not_change_shared_schema(flow_type):
     ]
 
 
-@pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "ticket", "dry-run"])
+@pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "ticket", "transport", "dry-run"])
 def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode):
     from booley.flows.flow_session import FlowSession
 
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
     if mode == "runtime":
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
+    if mode == "transport":
+        monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
     args = ["--target", "demo", "--work-dir", str(tmp_path)]
     if mode == "quiet":
         args.append("-q")

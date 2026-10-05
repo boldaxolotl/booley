@@ -109,7 +109,22 @@ def add_common_args(
 def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments, filling ticket context from env vars."""
     endpoint._raw_argv = argv if argv is not None else sys.argv[1:]
-    endpoint._args = endpoint._parser.parse_args(argv)
+    from booley.flows.cli_selection import (
+        human_parser,
+        normalize_endpoint_args,
+        transport_invocation,
+    )
+    from booley.specialists.specialist import Specialist
+
+    parser = (
+        endpoint._parser
+        if transport_invocation()
+        else human_parser(endpoint._parser, durations=isinstance(endpoint, Specialist))
+    )
+    if not transport_invocation():
+        _reject_unsupported_selector(parser, argv)
+    endpoint._args = parser.parse_args(argv)
+    normalize_endpoint_args(endpoint._args)
     normalize_target_arg(endpoint._args)
     if hasattr(endpoint._args, "steer") and isinstance(endpoint._args.steer, list):
         if len(endpoint._args.steer) == 0:
@@ -118,6 +133,21 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
             endpoint._args.steer = endpoint._args.steer[0]
     apply_environment(endpoint._args, endpoint.endpoint_kind)
     return endpoint._args
+
+
+def _reject_unsupported_selector(parser, argv: list[str] | None) -> None:
+    """Explain canonical option collisions without renaming plugin controls."""
+    for token in argv if argv is not None else sys.argv[1:]:
+        if token == "--":
+            break
+        option = token.split("=", 1)[0]
+        if token.startswith("-C"):
+            option = "-C"
+        if option in {"-C", "--project"} and option not in parser._option_string_actions:
+            parser.error(
+                "canonical module Project selection is unavailable for this extension; "
+                "use outer booley flow -C PATH NAME selection with the common entrypoint"
+            )
 
 
 def normalize_target_arg(args: argparse.Namespace) -> None:

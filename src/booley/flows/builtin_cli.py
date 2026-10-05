@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from booley.flows.execution_persistence import FlowExecutionAdapter
 
 
-def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
+def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=flow.name,
         description=flow.description,
@@ -30,12 +30,18 @@ def build_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
     )
     flow.argument_adapter.add_common_args(parser)
     flow.argument_adapter.add_args(parser)
+    if human:
+        from booley.flows.cli_selection import human_parser
+
+        return human_parser(parser, durations=True)
     return parser
 
 
 def build_cli_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
     """Layer human presentation onto a fresh parser, outside the MCP schema."""
-    parser = build_parser(flow)
+    from booley.flows.cli_selection import transport_invocation
+
+    parser = build_parser(flow, human=not transport_invocation())
     parser.add_argument(
         "-q",
         "--quiet",
@@ -47,9 +53,12 @@ def build_cli_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
 
 
 def _parse_cli(flow: BuiltinFlow, argv: list[str] | None):
+    from booley.flows.cli_selection import normalize_endpoint_args
+
     parser = build_cli_parser(flow)
     args = parser.parse_args(argv)
     quiet = vars(args).pop("_console_quiet")
+    normalize_endpoint_args(args)
     normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)
     request = flow.request_type(**vars(args))
@@ -67,6 +76,7 @@ def execute_cli(
     *,
     adapter: FlowExecutionAdapter | None = None,
 ) -> ExecutionResult:
+    from booley.flows.cli_selection import transport_invocation
     from booley.flows.execution_persistence import StandaloneFlowExecution
     from booley.flows.flow_session import FlowSession
 
@@ -77,6 +87,7 @@ def execute_cli(
     flow.context._console_publication_requested = True
     if (
         quiet
+        or transport_invocation()
         or os.environ.get("BOOLEY_RUNTIME_DIR")
         or not isinstance(flow.context.execution_adapter, StandaloneFlowExecution)
         or getattr(request, "dry_run", False)

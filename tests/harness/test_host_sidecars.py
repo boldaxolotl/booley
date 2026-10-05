@@ -278,7 +278,7 @@ def test_active_session_blocker_names_project_and_scoped_shutdown_command(
 
     detail = str(raised.value)
     assert project in detail
-    assert "booley session down --project-root" in detail
+    assert "booley session down --project" in detail
     assert docker.calls == []
 
 

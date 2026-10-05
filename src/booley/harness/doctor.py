@@ -489,7 +489,11 @@ class _Reporter:
 
     def pass_(self, msg: str) -> None:
         assert self.findings is not None
-        self.findings.append(DoctorFinding("pass", str(msg)))
+        self.findings.append(
+            DoctorFinding(
+                "pass", str(msg), check_id=msg.check_id if isinstance(msg, DoctorWarning) else None
+            )
+        )
         if not self.concise:
             ok(f"PASS  {msg}")
         self.counts["pass"] += 1
@@ -1589,7 +1593,7 @@ def _check_runtime_location(
     from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
-        _check_host_agent_session(_pass, _warn)
+        _check_host_agent_session(_pass)
         _check_image_bakes_runtime_marker(
             docker_exe,
             sandbox_image,
@@ -1609,33 +1613,22 @@ def _check_runtime_location(
     _check_slot_store_writable(_pass, _fail)
 
 
-def _check_host_agent_session(_pass: Check, _warn: Check) -> None:
-    """Name the one runtime-location mistake that is otherwise completely silent.
-
-    MCP registration happens container-side (``booley.harness.incontainer_register``,
-    run from the devcontainer's postCreate/postStart hooks). An agent started
-    from a *host* shell therefore has no ``booley`` MCP server at all: no
-    ``booley_status``, no Booley Flows, no error either — the MCP tools are not
-    there. Meanwhile the project's guidance file still tells it to call them,
-    so the agent reads the absence as a transient outage and improvises raw
-    EDA commands that bypass Booley's reports and ticket state entirely.
-    """
-    _warn = _warning_sink(_warn, "session.agent-on-host")
-
+def _check_host_agent_session(_pass: Check) -> None:
+    """Host agents are expected for Project Setup; explain the Sandbox boundary."""
     from booley.runtime import runtime_context
 
     app = runtime_context.agent_session_app()
     if app is None:
-        _pass("host shell — Booley Flows live in the Sandbox (ADR 0028)")
-        return
-    _warn(
-        f"{app} is running on the HOST: the Booley MCP server is registered only inside "
-        "the Sandbox, so booley_status and the Booley Flows (sim, lint, "
-        "synth) do not exist in this agent session",
-        'reopen the project in the devcontainer ("Reopen in Container", or '
-        "`booley session up && booley session enter`); for a one-off toolchain command "
-        "on the host, use `booley shell -- <cmd>`",
-    )
+        message = "host shell — Booley Flows live in the Sandbox (ADR 0028)"
+    else:
+        message = (
+            f"{app} is running on the HOST, as expected for host-side Project Setup. "
+            "The Booley MCP server, booley_status, and Booley Flows (sim, lint, synth) "
+            "exist only inside the Sandbox. For Interactive work, reopen the project "
+            'in the devcontainer ("Reopen in Container"), or use '
+            "`booley session up && booley session enter`"
+        )
+    _pass(warning("session.agent-on-host", message))
 
 
 def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
@@ -3375,7 +3368,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
-            "flows manually with a raised --timeout-ms. For Simulation compiler "
+            "flows manually with a raised --timeout. For Simulation compiler "
             "progress, raise [flows.sim].build_timeout_ms; for simulator or "
             "standalone-sweep progress, raise timeout_ms. Set the corresponding "
             "[flows.<flow>] knob so --deep honors the larger budget."
@@ -5977,7 +5970,10 @@ def _prepare_selftest_invocation(
 def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
     """Return a diagnostic environment with Ticket context removed."""
     env = {key: value for key, value in os.environ.items() if key not in _TICKET_CONTEXT_ENV}
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
     env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env[INVOCATION_ORIGIN_ENV] = "transport"
     return env
 
 
@@ -6692,7 +6688,10 @@ def _flow_command(
         f"booley.flows.{implementation_module(flow_name)}",
         *argv,
     ]
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
     command_env = dict.fromkeys(_TICKET_CONTEXT_ENV, "")
+    command_env[INVOCATION_ORIGIN_ENV] = "transport"
     if doctor_selftest_kind is not None:
         command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind
     return flow_runtime.command(inner, env=command_env)

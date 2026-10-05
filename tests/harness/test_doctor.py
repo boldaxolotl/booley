@@ -1734,6 +1734,10 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
 
     assert f"{selftest_overlay.INTERNAL_KIND_ENV}=bad" in cmd
 
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
+    assert f"{INVOCATION_ORIGIN_ENV}=transport" in cmd
+
 
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
     project_dir = _write_project(tmp_path)
@@ -5628,7 +5632,7 @@ class TestVenueCheck:
 
 
 class TestHostAgentSession:
-    """An agent on the host gets no Booley Flows and no error — Doctor must say so.
+    """An agent on the host gets no Booley Flows and no error — Doctor explains the boundary without warning.
 
     MCP registration is container-side (booley.harness.incontainer_register runs from
     the devcontainer hooks), so a host-launched agent has no `booley` MCP
@@ -5638,20 +5642,38 @@ class TestHostAgentSession:
     def test_plain_host_shell_passes_quietly(self, monkeypatch):
         _set_venue(monkeypatch, False)
         rec = _Rec()
-        doctor._check_host_agent_session(rec.p, rec.w)
+        doctor._check_host_agent_session(rec.p)
         assert rec.kinds() == {"pass"}
         assert "Sandbox" in rec.events[0][1]
 
     @pytest.mark.parametrize("app", ["claude", "codex"])
-    def test_agent_on_host_warns_and_names_the_way_in(self, monkeypatch, app):
+    def test_agent_on_host_passes_and_names_the_way_in(self, monkeypatch, app):
         _set_venue(monkeypatch, False)
         _set_agent_session(monkeypatch, app)
         rec = _Rec()
-        doctor._check_host_agent_session(rec.p, rec.w)
-        assert rec.kinds() == {"warn"}
-        warn = rec.events[0][1]
-        assert app in warn
-        assert "booley_status" in warn  # the specific MCP tool the guidance mandates
+        doctor._check_host_agent_session(rec.p)
+        assert rec.kinds() == {"pass"}
+        message = rec.events[0][1]
+        assert app in message
+        assert "Project Setup" in message
+        assert "booley_status" in message
+        assert "booley session up && booley session enter" in message
+        assert message.check_id == "session.agent-on-host"
+
+    @pytest.mark.parametrize("app", [None, "claude", "codex"])
+    def test_plain_doctor_host_check_preserves_pass_identity(self, monkeypatch, app):
+        _set_venue(monkeypatch, False)
+        if app is not None:
+            _set_agent_session(monkeypatch, app)
+        reporter = doctor._Reporter.create()
+        doctor._check_runtime_location(
+            None, "booley-sandbox", reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_
+        )
+        result = reporter.result(0)
+        assert result.counts["warn"] == 0
+        finding = next(f for f in result.findings if f.check_id == "session.agent-on-host")
+        assert finding.severity == "pass"
+        assert "Sandbox" in finding.message
 
     def test_agent_inside_container_does_not_warn(self, tmp_path, monkeypatch):
         """In the Sandbox the MCP tools do exist — no note either way."""

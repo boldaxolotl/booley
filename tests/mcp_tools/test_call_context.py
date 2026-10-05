@@ -241,6 +241,7 @@ class TestServerConsumers:
             subprocess_env_overrides=MappingProxyType(
                 {"BOOLEY_R1_PROBE": "context", "BOOLEY_R1_ONLY": "context"}
             ),
+            ticket_file=base.ticket_file,
         )
 
         plain = mcp_server._endpoint_subprocess_env(base)
@@ -250,6 +251,10 @@ class TestServerConsumers:
         assert "BOOLEY_R1_ONLY" not in plain
         assert layered["BOOLEY_R1_PROBE"] == "context"
         assert layered["BOOLEY_R1_ONLY"] == "run"
+        from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
+        assert plain[INVOCATION_ORIGIN_ENV] == "transport"
+        assert layered[INVOCATION_ORIGIN_ENV] == "transport"
 
 
 @pytest.fixture
