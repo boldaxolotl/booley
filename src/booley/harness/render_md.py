@@ -18,7 +18,7 @@ from .colors import accent, bold, bold_accent, dim, len_visible
 if TYPE_CHECKING:
     from rich.text import Text
 
-    from .console.links import LinkContext
+    from .tui.links import LinkContext
 
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _ITALIC_RE = re.compile(r"\*([^*]+)\*")
@@ -172,7 +172,7 @@ def _append_backtick_span(
 
 def _make_link_target(*, kind: str, raw: str, line: int | None):
     """Build a LinkTarget. Late-imported to keep render_md import-light."""
-    from .console.links import LinkTarget
+    from .tui.links import LinkTarget
 
     return LinkTarget(kind=kind, raw=raw, line=line)  # type: ignore[arg-type]
 
