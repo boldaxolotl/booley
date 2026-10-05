@@ -181,11 +181,18 @@ the base Sandbox Image, and global sidecars. Project Initialization walks throug
 7. Post-setup advisories
 
 Machine-global integrations are owned by the one canonical host-installed
-Booley wheel. A source checkout, worktree, QA runtime, or virtual environment
-may exercise candidate code in isolation, but it cannot deploy or retarget the
-global skills under `~/.agents` or `~/.claude`. Run the `booley` installed for
-the base host interpreter when Host Bootstrap reports this policy violation.
-The recorded identity is machine-maintained state in
+Booley wheel. The first eligible wheel to run Host Bootstrap becomes canonical,
+including pipx, uv tool, or an ordinary persistent venv. A source checkout,
+worktree, QA runtime, or editable development install cannot deploy or retarget
+the global skills under `~/.agents` or `~/.claude`; temporary and ephemeral
+installed-wheel locations are also refused. A wheel in a persistent venv next
+to a checkout remains eligible: the guard checks the resolved package path,
+not the purpose of every environment or comprehensive wheel provenance.
+
+The recorded executable, interpreter, distribution root, version, revision,
+and payload fingerprint must match for later host commands. An intentional
+upgrade or switch requires `booley bootstrap --update` from the intended
+installed launcher. The recorded identity is machine-maintained state in
 `~/.config/booley/host-installation.json`; it is intentionally separate from
 the user-authored host policy in `config.toml`.
 

@@ -13,6 +13,13 @@ From this release on, Booley's development focuses on quality: finding as many
 bugs as possible and making the existing workflows easier to use, rather than
 adding new features.
 
+### Installation
+
+- Persistent pipx, uv tool, and ordinary wheel venv installs can become the
+  canonical host installation. The README now leads with pipx on PEP 668
+  distributions. Other identities still require `booley bootstrap --update`;
+  source/editable, temporary, and ephemeral installs remain ineligible.
+
 ### Major features
 
 - **Coverage support.** `booley flow sim --coverage` (alias `--cov`, MCP

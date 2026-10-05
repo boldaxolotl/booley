@@ -2454,3 +2454,30 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         monkeypatch.setenv(key, value)
     with pytest.raises(WaiverDecisionError, match="approve waivers as yourself"):
         approver_identity(project)
+
+
+def test_pipx_symlink_resolves_to_active_persistent_venv(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    prefix = home / ".local/share/pipx/venvs/booley-rtl"
+    launcher = prefix / "bin/booley"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o755)
+    linked = home / ".local/bin/booley"
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to(launcher)
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(runtime_spec.sys, "prefix", str(prefix))
+    monkeypatch.setattr(runtime_spec.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(linked)])
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    assert runtime_spec._find_trusted_validator(project) == launcher.resolve()
+
+
+def test_missing_launcher_repair_names_canonical_installed_launcher(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_spec, "_find_trusted_validator", lambda _project: None)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="canonical installed Booley launcher"):
+        runtime_spec._pin_initialize_command(
+            tmp_path, {"initializeCommand": runtime_spec.initialize_command()}
+        )

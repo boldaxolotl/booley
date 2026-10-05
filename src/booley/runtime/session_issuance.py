@@ -1502,8 +1502,8 @@ def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
     executable = _find_trusted_validator(project)
     if executable is None:
         raise RuntimeSpecError(
-            "cannot resolve the trusted host Booley executable; reinstall Booley with "
-            "the canonical base Python or add its scripts directory to PATH"
+            "cannot resolve the trusted host Booley executable; restore the "
+            "canonical installed Booley launcher or add its scripts directory to PATH"
         )
     spec["initializeCommand"] = initialize_command(str(executable))
 

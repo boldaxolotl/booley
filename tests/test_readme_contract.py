@@ -26,7 +26,18 @@ def test_integrated_development_environment_features_lead_with_one_window():
 
 
 def test_install_alternative_is_not_padded():
-    assert "python3 -m pip install --user booley-rtl" in README
+    section = README.split("**Alternative: pip user install**", 1)[1]
+    assert "only for interpreters that permit user" in section
+    assert "python3 -m pip install --user booley-rtl" in section
+
+
+def test_primary_pipx_install_and_upgrade_are_pinned():
+    assert "pipx install booley-rtl\nbooley bootstrap\n" in README
+    assert "pipx upgrade booley-rtl\nbooley bootstrap --update\n" in README
+    assert README.index("**Reopen your terminal**") < README.index("pipx install booley-rtl")
+    assert "py -m pip install --user pipx" in README
+    assert "uv tool install booley-rtl" in README
+    assert "uv tool upgrade booley-rtl" in README
 
 
 def test_try_the_demo_leads_with_the_demo_readme_link():

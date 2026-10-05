@@ -749,7 +749,7 @@ def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
     assert "python -m build --wheel --outdir dist/" in wheel
     assert 'root="${RUNNER_TEMP}/release-host-doctor"' in prepare
     assert 'mkdir -p "${root}/home" "${root}/evidence" "${root}/project"' in prepare
-    # Bootstrap refuses venvs, so the host runs the wheel from the base interpreter.
+    # This release smoke retains its base-interpreter wheel installation.
     assert (
         'PYTHONUSERBASE="${root}/home/.local" python -m pip install --user dist/booley_rtl-*.whl'
     ) in prepare
