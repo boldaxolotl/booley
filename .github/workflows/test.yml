@@ -1325,8 +1325,8 @@ jobs:
               booley-test bash -c "cp -a /work/tests/fixtures/cocotb_counter /validation-tmp/project &&
               cd /validation-tmp/project &&
               test \"\$(cocotb-config --version)\" = 2.1.0 &&
-              python3 -m booley.flows.sim --work-dir /validation-tmp/project --target sim_icarus &&
-              python3 -m booley.flows.sim --work-dir /validation-tmp/project --target sim_verilator"
+              python3 -m booley.flows.sim --project /validation-tmp/project --target sim_icarus &&
+              python3 -m booley.flows.sim --project /validation-tmp/project --target sim_verilator"
 
           - name: Run Ticket Mode production-image smoke
             env:

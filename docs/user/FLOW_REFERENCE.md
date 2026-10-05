@@ -44,11 +44,11 @@ is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 | Option | Effect |
 |---|---|
 | `--target <name,...>` | Targets to run (see above). |
-| `--work-dir <path>` | Project or worktree root. Defaults to the current directory. |
+| `-C/--project PATH` | Select the Project checkout or worktree; nested paths discover their owning checkout. Omission preserves cwd discovery. |
 | `--report-dir <path>` | Write reports here instead of the default report root. |
 | `--diagnostic` | Run without recording Ticket Criteria. A strict Ticket requires it for Flow/Target pairs outside its baseline. |
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
-| `--timeout-ms <ms>` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. Simulation builds instead use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use an independent fixed budget; see [Simulation timeouts](CONFIG.md#simulation-build-pre-sim-and-run-timeouts). |
+| `--timeout DURATION` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. Simulation builds instead use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use an independent fixed budget; see [Simulation timeouts](CONFIG.md#simulation-build-pre-sim-and-run-timeouts). |
 
 ## Running a Specialist
 
@@ -57,7 +57,7 @@ Inside the Sandbox, use the public route or the supported Python module entry:
 ```bash
 booley specialist
 booley specialist reviewer --help
-booley specialist reviewer --category rtl --focus bugs --scope rtl --timeout-ms 1800000
+booley specialist reviewer --category rtl --focus bugs --scope rtl --timeout 30m
 booley specialist coverage_analyst --campaign reports/sim/12/targets/sim_soc/coverage.json
 python -m booley.specialists.reviewer --category rtl --focus bugs --scope rtl
 ```
@@ -67,21 +67,38 @@ forwards arguments unchanged. Listings include enabled Project Specialists and
 exclude hidden endpoints. Host listing and help work; execution requires the
 Sandbox, for example `booley session enter -- booley specialist reviewer ...`.
 
-Specialists share `--work-dir`, `--report-dir`, `--diagnostic`, and `--target`
+Specialists share `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target`
 where supported. Reports default to `mcp-tool-reports/` under resolved Project
 data, or the runtime directory when supplied; an explicit flag takes precedence.
 `--model` selects a tier subject to the Specialist floor and configured role pin;
-`--max-turns` accepts a positive integer. These and `--timeout-ms` are CLI-only:
+`--max-turns` accepts a positive integer. These and `--timeout` are CLI-only:
 MCP rejects `model`, `max_turns`, `timeout`, and `timeout_ms` for Specialists.
 
-`--timeout-ms` is a positive integer model-call budget, not a whole-invocation
-deadline. Existing defaults and minimums remain unchanged. Seconds-only providers
-round up with `(timeout_ms + 999) // 1000`, adding at most 999 ms. Flow budgets
-retain their existing work-unit scope. The removed `--timeout` spelling exits 2,
-including module entries: replace old Flow `--timeout N` with `--timeout-ms N`,
-and old Specialist seconds with `--timeout-ms (N * 1000)`. Custom Flow-owned and
-internal Simulation backend flags keep their own contracts. Saved Ticket commands
-and historical evidence are not automatically rewritten.
+`--timeout DURATION` is a model-call budget, not a whole-invocation deadline.
+Use positive integer seconds (`90` or `90s`), minutes (`30m`), hours (`2h`),
+or descending combinations (`1h30m`, `1m30s`). Fractional values, signs,
+whitespace, millisecond suffixes, repeated units and zero totals are rejected.
+Existing defaults and minimums remain unchanged. Seconds-only providers round
+up with `(timeout_ms + 999) // 1000`. Flow budgets retain their work-unit scope.
+Hidden `--timeout-ms` retains positive integer milliseconds, including 1 ms,
+for one compatibility release; it prints a deprecation notice on stderr.
+MCP parameters and `booley.toml` milliseconds remain unchanged.
+
+Project selection works before or after the endpoint name for built-ins and
+visible Specialists: `booley flow -C ../other lint --target lint`, or
+`booley flow lint --target lint -C ../other`. A leading `--` separates the
+main CLI from the endpoint options; a subsequent `--` starts an opaque payload.
+Unknown endpoint arguments stop selector extraction. Custom endpoints use outer
+selection (`booley flow -C ../other custom`); inherited common parsers support
+it. Overrides that bypass the common entrypoint reject explicit outer selection.
+Plugin-owned options, including `--timeout short|long`, keep their contracts.
+
+Hidden `--work-dir` remains a literal path alias for one compatibility release,
+with a stderr notice. Canonical selection discovers nested checkout paths and
+ignores `RTL_PROJECT_ROOT`; the alias preserves literal resolution. Never mix
+selectors or timeout flags, even if their values agree. Module entrypoints expose
+the same canonical options for Booley-owned endpoints. Saved Ticket commands,
+internal Simulation backend protocols and historical evidence keep their contracts.
 
 ## Reading results
 
@@ -96,7 +113,7 @@ Every built-in Flow uses the same exit codes:
 
 A simulation run that exceeds its run budget gets a `timeout` verdict and exits
 `1`; it fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock, or
-raise `--timeout-ms` or `[flows.sim].timeout_ms` if the test legitimately needs
+raise `--timeout` or `[flows.sim].timeout_ms` if the test legitimately needs
 longer. Build, Elaboration Check, and Pre-Sim Command timeouts instead exit `2`.
 
 The CLI prints a final verdict card: stdout on success, stderr on failure.
@@ -227,7 +244,7 @@ RTL module on its own and can satisfy `elaborate_standalone`.
 
 The Target build in either mode uses the shared
 [`build_timeout_ms`](CONFIG.md#simulation-build-pre-sim-and-run-timeouts)
-budget rather than `--timeout-ms`.
+budget rather than `--timeout`.
 
 Within a Ticket, a successful build satisfies `elab_pass_<target>`, whether it
 comes from `--mode elab-only` or from the build step of a normal run. It is

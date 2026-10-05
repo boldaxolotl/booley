@@ -110,7 +110,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
     assert "max_sessions=1" in message
     assert f"Project {other}" in message
     assert "age 2h" in message
-    assert "booley session down --project-root" in message
+    assert "booley session down --project" in message
     assert "existing" in message
 
 

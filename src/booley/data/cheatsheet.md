@@ -100,9 +100,9 @@ Key Flow-specific controls:
 <!-- BEGIN GENERATED: specialists -->
 LLM-backed sub-agents running in scoped, isolated workspaces:
 
-Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout-ms` are CLI-only controls.
+Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `--work-dir`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout-ms` takes positive milliseconds for existing model-call budgets; seconds-only providers round up. The removed `--timeout` spelling exits 2. Replace old Specialist seconds with milliseconds (multiply by 1000); old built-in Flow values already used milliseconds.
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Existing model-call budgets and minimums remain unchanged; seconds-only providers round up. Hidden `--work-dir` and `--timeout-ms` aliases retain their old units for one compatibility release and print deprecation notices on stderr. Connected agent arguments and configuration stay unchanged.
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|

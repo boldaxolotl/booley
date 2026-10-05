@@ -1734,6 +1734,10 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
 
     assert f"{selftest_overlay.INTERNAL_KIND_ENV}=bad" in cmd
 
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+
+    assert f"{INVOCATION_ORIGIN_ENV}=transport" in cmd
+
 
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
     project_dir = _write_project(tmp_path)

@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+_WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
+
 from booley.flows import endpoint_session
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.endpoint_session import PreparedExecution
@@ -881,7 +883,7 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
     monkeypatch.setattr(flow, "_resume_campaign_plan", lambda *_args, **_kwargs: plan)
 
     def resume_executor(_coverage):
-        assert capsys.readouterr().err == f"campaign manifest: {seen[0]}\n"
+        assert capsys.readouterr().err == _WORK_DIR_NOTICE + f"campaign manifest: {seen[0]}\n"
         return OrdinaryHdlSerialExecutor(
             invoke=lambda *_args, **_kwargs: None, execution_factory=factory
         )
@@ -928,7 +930,12 @@ def test_cli_manifest_is_flushed_before_execution(
 
     def execution(*_args):
         assert stream.pending == ""
-        manifest = Path(stream.getvalue().strip().removeprefix("campaign manifest: "))
+        manifest = Path(
+            stream.getvalue()
+            .removeprefix(_WORK_DIR_NOTICE)
+            .strip()
+            .removeprefix("campaign manifest: ")
+        )
         assert manifest.is_absolute() and manifest.is_file()
         return NativeExecution()
 
