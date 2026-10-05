@@ -357,16 +357,3 @@ strict = [
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
 ]
-
-# ---------------------------------------------------------------------------
-# Mutmut
-# ---------------------------------------------------------------------------
-[tool.mutmut]
-# The historical `harness/stages` package was renamed to `harness/setup`;
-# keeping the stale path made the configured campaign exercise zero files.
-source_paths = ["src/"]
-only_mutate = ["src/booley/harness/setup/*.py"]
-pytest_add_cli_args = ["-x", "-q", "--tb=no", "--no-header"]
-pytest_add_cli_args_test_selection = [
-    "tests/harness/",
-]
