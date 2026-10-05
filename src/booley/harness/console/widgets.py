@@ -35,7 +35,7 @@ from .criteria_format import (  # noqa: F401 — re-exported for backward compat
 if TYPE_CHECKING:
     from booley.config.editor import ResolvedEditor
 
-    from .links import LinkContext
+    from ..tui.links import LinkContext
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ class MainPane(VerticalScroll):
         if self._link_ctx is None:
             return Text(line, style=base_style) if base_style else Text(line)
         from ..render_md import inline_rich
-        from .path_backtick import wrap_paths_in_backticks
+        from ..tui.path_backtick import wrap_paths_in_backticks
 
         wrapped = wrap_paths_in_backticks(line, self._link_ctx)
         out = inline_rich(wrapped, self._link_ctx)
@@ -361,7 +361,7 @@ class MainPane(VerticalScroll):
         target = meta.get("booley_target")
         if target is None:
             return
-        from . import links
+        from ..tui import links
 
         action = links.resolve(target, self._link_ctx)
         result = links.invoke(action, self._editor)

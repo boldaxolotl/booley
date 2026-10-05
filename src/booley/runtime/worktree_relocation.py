@@ -11,6 +11,7 @@ from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     submodule_paths,
 )
+from booley.runtime.worktrees import parse_worktree_porcelain
 
 _TIMEOUT_S = 30
 
@@ -249,15 +250,14 @@ def _validate_destination(destination: Path) -> None:
 
 
 def _registered_worktrees(repository: Path) -> dict[Path, str]:
+    """Map each resolved worktree path that has a branch checked out to its ref."""
     paths: dict[Path, str] = {}
-    current: Path | None = None
-    for line in [*_git(repository, "worktree", "list", "--porcelain").splitlines(), ""]:
-        if line.startswith("worktree "):
-            current = Path(line.removeprefix("worktree ")).resolve()
-        elif line.startswith("branch ") and current is not None:
-            paths[current] = line.removeprefix("branch ")
-        elif not line:
-            current = None
+    for entry in parse_worktree_porcelain(_git(repository, "worktree", "list", "--porcelain")):
+        # Resolve every record, branch or not: the pre-parser code did, so a
+        # record whose path cannot be resolved still raises here.
+        resolved = entry.path.resolve()
+        if entry.branch is not None:
+            paths[resolved] = entry.branch
     return paths
 
 

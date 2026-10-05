@@ -116,7 +116,7 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
     }
     allowed_detached_spawns = allowed_calls | {
         _SOURCE_ROOT / "harness" / "auto_doctor.py",
-        _SOURCE_ROOT / "harness" / "console" / "links.py",
+        _SOURCE_ROOT / "harness" / "tui" / "links.py",
         _SOURCE_ROOT / "runtime" / "incontainer_setup.py",
     }
     offenders = []

@@ -442,7 +442,7 @@ def _refresh_link_ctx_post_setup(ctx) -> None:
     if link_ctx is None or ctx.worktree_path is None:
         return
     try:
-        from .console.links import resolve_fork_base_sha
+        from .tui.links import resolve_fork_base_sha
 
         sha = resolve_fork_base_sha(ctx.worktree_path, ctx.branch)
         link_ctx.attach_worktree(ctx.worktree_path, sha)
@@ -462,8 +462,8 @@ def _attach_click_links(app, ctx, project_root: Path) -> None:
     try:
         from booley.config.settings import VSCODE_EDITOR, resolve_editor
 
-        from .console.links import build_link_context
         from .console.widgets import MainPane
+        from .tui.links import build_link_context
 
         editor = resolve_editor() or VSCODE_EDITOR
 

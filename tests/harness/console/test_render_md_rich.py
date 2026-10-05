@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness.console.links import LinkContext, LinkTarget
 from booley.harness.render_md import inline_rich
+from booley.harness.tui.links import LinkContext, LinkTarget
 
 
 @pytest.fixture

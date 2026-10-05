@@ -12,13 +12,13 @@ from textual.widgets import Static
 from booley.config.editor import ResolvedEditor
 from booley.harness.console.app import ConsolePhase, _strip_region_for_mark
 from booley.harness.console.events import AgentThinking, CriteriaChanged
-from booley.harness.console.links import (
+from booley.harness.console.widgets import BottomStrip, MainPane, StatusBar, TicketHeader, TopStrip
+from booley.harness.tui.links import (
     InvokeResult,
     LinkContext,
     LinkTarget,
     ResolvedAction,
 )
-from booley.harness.console.widgets import BottomStrip, MainPane, StatusBar, TicketHeader, TopStrip
 
 from .console_scenario import ConsoleScenario, ConsoleTestApp
 
@@ -360,9 +360,9 @@ async def test_click_routes_to_editor_and_hint_restores_live_counters(tmp_path) 
         event = _click_event(target)
         action = ResolvedAction(kind="open_at_line", args=(str(tmp_path / "rtl/top.sv"),), line=7)
         with (
-            patch("booley.harness.console.links.resolve", return_value=action) as resolve,
+            patch("booley.harness.tui.links.resolve", return_value=action) as resolve,
             patch(
-                "booley.harness.console.links.invoke",
+                "booley.harness.tui.links.invoke",
                 return_value=InvokeResult(ok=False, hint="editor not found: missing-editor"),
             ) as invoke,
         ):
