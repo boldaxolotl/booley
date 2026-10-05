@@ -1,6 +1,8 @@
 """Commit one file's content onto the checked-out branch without disturbing other work.
 
-The sequence is recovered from Git state alone and is safe to repeat:
+:func:`commit_file` has two modes.
+
+**Unpinned** (``expected_head=None``) commits onto whatever the branch points at:
 
 1. hash the source file into the object database;
 2. on each attempt, read the checked-out branch and its head; a head that
@@ -13,20 +15,50 @@ The sequence is recovered from Git state alone and is safe to repeat:
 5. compare-and-swap the branch from the head the commit was built on; a branch
    that moved is rebuilt on its new head, at most :data:`COMMIT_ATTEMPTS` times.
 
-A caller that validated a specific head passes it as ``expected_head``: the
-commit then lands only directly on that head. An attempt whose head differs is
-refused before anything is staged or committed, and a branch that moves during
-the attempt is refused rather than rebuilt (the file then stays staged in the
-user's index, as after any interrupted attempt; no ref moves).
+Idempotent in the sense that repeating the call after a success (or after a
+crash at any step) commits nothing new while the checked-out head still holds
+the same blob at the path, wherever the branch has moved since.
+
+**Pinned** (``expected_head=<commit>``) commits only directly onto a head the
+caller validated. ``expected_head`` must be the full lowercase hex ID of an
+existing commit, in the repository's object format; anything else (an
+abbreviation, a revision expression such as ``HEAD``, a missing object, a
+non-commit) raises :class:`InvalidExpectedHeadError` before Git writes
+anything. An unborn branch is refused with :class:`HeadMismatchError`. After
+the branch read and ``check_branch``:
+
+* head == ``expected_head``: return it when it already holds the blob at the
+  path; otherwise commit onto it (replacing any other content at the path),
+  with no retry: a lost compare-and-swap raises :class:`HeadMismatchError`;
+* head != ``expected_head``: return the head only when it is this call's own
+  earlier result: a commit whose single parent is ``expected_head`` and whose
+  tree differs from it at exactly the path, which holds the blob with mode
+  100644. Anything else raises :class:`HeadMismatchError`.
+
+Idempotent in the sense that repeating the call after a success (or after a
+crash at any step) returns the same commit while the branch still points at
+``expected_head`` or at that one-path child; once anything else lands, the
+repeat is refused. A refusal never changes the user's index or any ref (a
+lost compare-and-swap can leave an unreferenced commit object behind). Pinned
+mode stages the path in the user's index only after its commit is on the
+branch (or recognised there, so a crash between the two heals on repeat), and
+only when the user's index entry for the path still equals ``expected_head``'s
+(both absent counts); a user who staged something else there keeps it.
+
+Neither mode can exclude manual Git use: a lock held by Booley does not stop a
+user. In particular, a user who checks out a sibling branch at the same commit
+between the branch read and the head read makes the commit land on the branch
+read first (its parent is still the validated commit). Callers that need more
+bind the branch with ``check_branch`` and re-verify after the call returns.
 
 Callers own policy: which repository and path, the commit message, and any
-per-attempt branch check (``check_branch``). This module knows nothing about
-the records it commits.
+per-attempt branch check. This module knows nothing about the files it commits.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -37,6 +69,9 @@ from pathlib import Path
 COMMIT_ATTEMPTS = 3
 _GIT_TIMEOUT_S = 60
 _DEFAULT_REFLOG_MESSAGE = "booley: commit file"
+_FILE_MODE = "100644"
+_OID_LENGTHS = {"sha1": 40, "sha256": 64}
+_LOWER_HEX = re.compile(r"[0-9a-f]+")
 
 BuildCommit = Callable[[Path, "str | None", str, str, str], str]
 """``(repository, parent, path, blob, message) -> commit``; see :func:`build_commit`."""
@@ -58,22 +93,25 @@ class DetachedHeadError(FileCommitError):
 
 
 class BranchKeptMovingError(FileCommitError):
-    """The branch moved under every attempt; the caller retries later."""
+    """The branch moved under every attempt (unpinned mode)."""
 
     def __init__(self, repository: Path) -> None:
-        super().__init__(f"branch in {repository} kept moving; the commit will be retried")
+        super().__init__(
+            f"branch in {repository} kept moving for {COMMIT_ATTEMPTS} attempts; "
+            "nothing was published"
+        )
         self.repository = repository
+
+
+class InvalidExpectedHeadError(FileCommitError):
+    """``expected_head`` is not the full ID of an existing commit (pinned mode)."""
 
 
 class HeadMismatchError(FileCommitError):
-    """The checked-out head is not the head the caller validated."""
+    """The branch is not on, or moved away from, the head the caller validated."""
 
-    def __init__(self, repository: Path, expected: str, actual: str | None) -> None:
-        super().__init__(
-            f"{repository} has {actual or 'no commit'} checked out, not the validated "
-            f"head {expected}; nothing was committed"
-        )
-        self.repository = repository
+    def __init__(self, message: str, *, expected: str, actual: str | None) -> None:
+        super().__init__(message)
         self.expected = expected
         self.actual = actual
 
@@ -114,6 +152,15 @@ def optional_git(repository: Path, *args: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _literal_git(repository: Path, *args: str) -> str:
+    """Return raw stdout of a command whose paths must match literally (no pathspec magic)."""
+    result = git(repository, *args, env={**os.environ, "GIT_LITERAL_PATHSPECS": "1"})
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "no diagnostic"
+        raise FileCommitError(f"git {' '.join(args)} failed in {repository}: {detail}")
+    return result.stdout
+
+
 # Inspection ----------------------------------------------------------------------
 
 
@@ -122,7 +169,7 @@ def checked_out_commit(repository: Path) -> str | None:
     return optional_git(repository, "rev-parse", "-q", "--verify", "HEAD^{commit}")
 
 
-def checked_out_branch(repository: Path) -> str:
+def _checked_out_branch(repository: Path) -> str:
     """Return the checked-out branch ref; committing needs one."""
     ref = optional_git(repository, "symbolic-ref", "-q", "HEAD")
     if not ref:
@@ -143,7 +190,7 @@ def _index_blob(repository: Path, path: str) -> str | None:
     return line.split()[1] if line else None
 
 
-# Commit --------------------------------------------------------------------------
+# Commit steps ---------------------------------------------------------------------
 
 
 def build_commit(repository: Path, parent: str | None, path: str, blob: str, message: str) -> str:
@@ -184,11 +231,14 @@ def compare_and_swap(
     raise FileCommitError(f"git update-ref {ref} failed in {repository}: {detail}")
 
 
-def stage(repository: Path, path: str, blob: str) -> None:
+def _stage(repository: Path, path: str, blob: str) -> None:
     """Stage *blob* at *path* in the user's index (only this one path)."""
     if _index_blob(repository, path) == blob:
         return
     require_git(repository, "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}")
+
+
+# Entry point ----------------------------------------------------------------------
 
 
 def commit_file(
@@ -204,39 +254,165 @@ def commit_file(
 ) -> str:
     """Commit *source*'s content at *relative_path*; return the commit holding it.
 
-    *relative_path* is the repository-relative POSIX path. Idempotent: a head
-    that already holds the same content is returned unchanged.
+    *relative_path* is the repository-relative POSIX path. See the module
+    docstring for the unpinned and pinned (*expected_head*) contracts.
+    *check_branch* runs with the checked-out branch ref at the start of every
+    attempt, before anything is staged or built; whatever it raises propagates.
 
-    *expected_head*, when given, is the only head the commit may land on (see
-    the module docstring). *check_branch* runs with the checked-out branch ref
-    at the start of every attempt, before anything is staged; whatever it
-    raises propagates. *build* and *swap* replace :func:`build_commit` and
-    :func:`compare_and_swap` (for example to set the reflog message).
+    *build* and *swap* are injection seams replacing :func:`build_commit` and
+    :func:`compare_and_swap`: for fault injection in tests, and for a caller
+    that needs its own reflog message. They must keep those functions'
+    contracts.
 
     Raises :class:`FileCommitError` (or a subclass) when the file cannot be
     committed now.
     """
+    if expected_head is None:
+        return _commit_unpinned(
+            repository, relative_path, source, message, check_branch, build, swap
+        )
+    _validate_expected_head(repository, expected_head)
+    blob = require_git(repository, "hash-object", "-w", "--", str(source))
+    pinned = _Pinned(repository, relative_path, blob, expected_head)
+    return pinned.commit(message, check_branch, build, swap)
+
+
+def _commit_unpinned(
+    repository: Path,
+    path: str,
+    source: Path,
+    message: str,
+    check_branch: Callable[[str], None] | None,
+    build: BuildCommit,
+    swap: SwapBranch,
+) -> str:
     blob = require_git(repository, "hash-object", "-w", "--", str(source))
     for _attempt in range(COMMIT_ATTEMPTS):
-        ref = checked_out_branch(repository)
+        ref = _checked_out_branch(repository)
         if check_branch is not None:
             check_branch(ref)
         head = checked_out_commit(repository)
-        if expected_head is not None and head != expected_head:
-            raise HeadMismatchError(repository, expected_head, head)
-        committed = tree_blob(repository, head, relative_path)
+        committed = tree_blob(repository, head, path)
         if committed == blob:
             assert head is not None  # a blob was found in it
             return head
         if committed is not None:
             raise FileCommitError(
-                f"{relative_path} is already committed with other content; inspect it by hand"
+                f"{path} is already committed with other content; inspect it by hand"
             )
-        stage(repository, relative_path, blob)
-        commit = build(repository, head, relative_path, blob, message)
+        _stage(repository, path, blob)
+        commit = build(repository, head, path, blob, message)
         if swap(repository, ref, commit, head):
             return commit
-        if expected_head is not None:
-            # Never rebuild onto a head the caller did not validate.
-            raise HeadMismatchError(repository, expected_head, checked_out_commit(repository))
     raise BranchKeptMovingError(repository)
+
+
+# Pinned mode -----------------------------------------------------------------------
+
+
+def _validate_expected_head(repository: Path, expected_head: str) -> None:
+    """Refuse anything but the full canonical ID of an existing commit; reads only."""
+    object_format = require_git(repository, "rev-parse", "--show-object-format")
+    length = _OID_LENGTHS.get(object_format)
+    if length is None:
+        raise InvalidExpectedHeadError(f"unsupported object format {object_format!r}")
+    if len(expected_head) != length or not _LOWER_HEX.fullmatch(expected_head):
+        raise InvalidExpectedHeadError(
+            f"expected_head {expected_head!r} is not a full lowercase {object_format} commit ID"
+        )
+    kind = optional_git(repository, "cat-file", "-t", expected_head)
+    if kind != "commit":
+        raise InvalidExpectedHeadError(
+            f"expected_head {expected_head} names {kind or 'no object'} in {repository}, "
+            "not a commit"
+        )
+
+
+class _Pinned:
+    """One pinned commit of *blob* at *path* directly onto *expected*."""
+
+    def __init__(self, repository: Path, path: str, blob: str, expected: str) -> None:
+        self.repository = repository
+        self.path = path
+        self.blob = blob
+        self.expected = expected
+
+    def commit(
+        self,
+        message: str,
+        check_branch: Callable[[str], None] | None,
+        build: BuildCommit,
+        swap: SwapBranch,
+    ) -> str:
+        ref = _checked_out_branch(self.repository)
+        if check_branch is not None:
+            check_branch(ref)
+        head = checked_out_commit(self.repository)
+        if head != self.expected:
+            if head is None or not self._is_own_child(head):
+                raise self._mismatch(
+                    f"{self.repository} has {ref} at {head or 'no commit (unborn)'}, "
+                    f"not at the validated head {self.expected} or the commit of "
+                    f"{self.path} onto it; no ref was moved",
+                    head,
+                )
+            self._stage_published()
+            return head
+        head = self.expected  # equal; narrows the type for the steps below
+        if tree_blob(self.repository, head, self.path) == self.blob:
+            return head
+        commit = build(self.repository, head, self.path, self.blob, message)
+        if not swap(self.repository, ref, commit, head):
+            current = optional_git(self.repository, "rev-parse", "-q", "--verify", ref)
+            raise self._mismatch(
+                f"{ref} in {self.repository} moved from the validated head {self.expected} "
+                f"to {current or 'nothing'} during the commit; no ref was moved",
+                current,
+            )
+        self._stage_published()
+        return commit
+
+    def _mismatch(self, message: str, actual: str | None) -> HeadMismatchError:
+        return HeadMismatchError(message, expected=self.expected, actual=actual)
+
+    def _is_own_child(self, head: str) -> bool:
+        """Whether *head* is exactly *expected* plus the blob at the path (mode 100644)."""
+        parents = require_git(self.repository, "rev-list", "--parents", "-n", "1", head).split()
+        if parents[1:] != [self.expected]:
+            return False
+        changed = _literal_git(
+            self.repository, "diff-tree", "-r", "--no-renames", "--name-only", "-z",
+            self.expected, head,
+        )  # fmt: skip
+        if changed != f"{self.path}\0":
+            return False
+        return self._tree_entry(head) == f"{_FILE_MODE} blob {self.blob}\t{self.path}\0"
+
+    def _tree_entry(self, commit: str) -> str:
+        """Return the raw ``ls-tree -z`` entry for the path in *commit* (``""`` if absent)."""
+        return _literal_git(self.repository, "ls-tree", "-z", commit, "--", self.path)
+
+    def _stage_published(self) -> None:
+        """Stage the published blob unless the user staged something else at the path."""
+        raw = _literal_git(self.repository, "ls-files", "-s", "-z", "--", self.path)
+        published = f"{_FILE_MODE} {self.blob} 0\t{self.path}\0"
+        if raw == published:
+            return
+        if raw != _as_index_entry(self._tree_entry(self.expected)):
+            return  # the user's own staging at the path wins
+        require_git(
+            self.repository,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"{_FILE_MODE},{self.blob},{self.path}",
+        )
+
+
+def _as_index_entry(tree_entry: str) -> str:
+    """Turn ``<mode> <type> <oid>\\t<path>\\0`` into ``<mode> <oid> 0\\t<path>\\0``."""
+    if not tree_entry:
+        return ""
+    header, _tab, rest = tree_entry.partition("\t")
+    mode, _kind, oid = header.split(" ")
+    return f"{mode} {oid} 0\t{rest}"
