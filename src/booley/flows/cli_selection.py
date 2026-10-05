@@ -95,8 +95,7 @@ class SelectionAction(argparse.Action):
             parser.error("multiple Project selectors are not supported")
         legacy = option_string not in {"-C", "--project"}
         setattr(namespace, self.dest, ProjectSelection(values, legacy))
-        # Persisted prepare is a stable internal protocol.
-        if legacy and "session prepare" not in parser.prog:
+        if legacy:
             warn_alias(str(option_string), "--project")
 
 

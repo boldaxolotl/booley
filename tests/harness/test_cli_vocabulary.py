@@ -40,7 +40,7 @@ def projects(tmp_path, monkeypatch):
     for name in ("a", "b"):
         root = tmp_path / name
         root.mkdir()
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
         (root / ".booley_project").mkdir()
         (root / "rtl").mkdir()
         roots.append(root)
@@ -240,6 +240,16 @@ def test_cheat_bare_alias_and_selection(projects, capsys):
     args = command(["cheat", "--project=../b", "--project-files"])
     assert args.project
     assert cli._resolve_cli_selection(args) == projects[1]
+
+
+def test_session_prepare_legacy_selector_notice(projects, capsys):
+    args = command(["session", "prepare", "--project-root", str(projects[1])])
+    assert cli._resolve_cli_selection(args) == projects[1]
+    assert capsys.readouterr().err.count("--project-root is deprecated") == 1
+    with invocation_context(transport=True):
+        args = command(["session", "prepare", "--project-root", str(projects[1])])
+    assert cli._resolve_cli_selection(args) == projects[1]
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
