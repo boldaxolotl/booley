@@ -1,10 +1,12 @@
-"""Pin baseline refs and freeze recorded Target recipes for relative Criteria.
+"""Pin baseline refs for relative Criteria and freeze implementation Target recipes.
 
 A relative Criterion (for example "cycle count reduces by at least 5%" or "LUT
 count grows by at most 10") compares the candidate checkout against a baseline
 revision. Before any work starts, the caller pins that baseline revision into
-the Criterion's params and freezes the normalized recipe of each implementation
-Target, so later evidence can prove it measured the same recipe.
+the Criterion's params. It also freezes the normalized recipe of every
+implementation Target, relative or absolute (from the baseline checkout for
+relative Criteria, from the candidate checkout otherwise), so later evidence
+can prove it measured the same recipe.
 
 This module owns that policy independently of who calls it. Ticket intake uses
 it today; any other entry point that knows a checkout, a baseline revision, and
@@ -15,8 +17,12 @@ this Flow-neutral module may not select a concrete Flow implementation
 (source-dependency contract rule D9), so the caller supplies the synthesis or
 FPGA snapshot function.
 
-Heavy collaborators (Target catalog, FuseSoC registry, baseline worktrees) are
-imported lazily, at call time, to keep import of this module cheap.
+Collaborators (Target catalog, FuseSoC registry, baseline worktrees, evidence
+fields) are imported inside the functions, as they were when this logic lived
+in Ticket intake. ``baseline_worktree`` is bound by name at call time, so a
+patched ``booley.flows.baseline_worktree.baseline_worktree`` stays effective;
+the deferred imports also keep importing this module from intake from loading
+any module intake did not already load at import time.
 """
 
 from __future__ import annotations
@@ -51,7 +57,9 @@ class PinContext(Protocol):
 
     @property
     def work_dir(self) -> Path:
-        """Candidate checkout whose Targets are resolved for absolute Criteria."""
+        """Candidate checkout: resolves Targets for absolute Criteria, and is the
+        repository the temporary baseline worktree is created from for relative ones.
+        """
         ...
 
     @property

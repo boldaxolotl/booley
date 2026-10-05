@@ -769,15 +769,24 @@ class _TicketPinContext:
 def _raise_ticket_fatal(error: BaselinePinError, slug: str) -> NoReturn:
     """Re-raise a neutral pinning error as the Ticket's ``FatalError``.
 
-    Called outside the ``except`` block, then copies the neutral error's
-    chain so the ``FatalError`` carries exactly the cause and context it had
-    when intake raised it directly (``from exc`` / ``from None`` / plain).
+    The ``FatalError`` gets the neutral error's message, the Ticket ``slug``,
+    the same ``__cause__`` and ``__suppress_context__`` as intake produced
+    when it raised ``FatalError`` itself (``from exc`` / ``from None`` /
+    plain), and the neutral error's frames, so a formatted traceback still
+    shows the raise site inside :mod:`booley.flows.baseline_pins`.
+
+    ``__context__`` is copied too, but Python's ``raise`` replaces it whenever
+    an exception is being handled at the raise site. Called outside any
+    handler (the intake path), it matches the direct raise. Called while an
+    outer ``except`` block is active, it becomes that outer exception; this
+    only differs from a direct raise for the ``from`` forms, where
+    ``__suppress_context__`` keeps it out of the formatted traceback.
     """
     fatal = FatalError(str(error), slug=slug)
     fatal.__cause__ = error.__cause__
     fatal.__context__ = error.__context__
     fatal.__suppress_context__ = error.__suppress_context__
-    raise fatal
+    raise fatal.with_traceback(error.__traceback__)
 
 
 def _freeze_synthesis_recipe_fingerprints(

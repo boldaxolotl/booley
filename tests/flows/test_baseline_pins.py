@@ -1,8 +1,8 @@
 """Flow-neutral baseline pinning and recipe freezing, driven by a plain context.
 
-Ticket-specific translation (``FatalError`` with a slug) is covered by
-``tests/harness/test_setup_intake.py``; these tests prove the seam works for
-any caller that only knows a checkout, a baseline revision, and a scratch dir.
+These tests prove the seam works for any caller that only knows a checkout, a
+baseline revision, and a scratch dir. Ticket-specific translation into
+``FatalError`` is covered by ``tests/harness/test_intake_baseline_pin_errors.py``.
 """
 
 from __future__ import annotations
@@ -17,12 +17,14 @@ from typing import Any
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.fields import (
     BASELINE_REF_PARAM,
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_PARAM,
 )
+from booley.evidence.recipe import recipe_snapshot_fingerprint
 from booley.flows import baseline_worktree as baseline_module
 from booley.flows.baseline_pins import (
     BaselinePinError,
@@ -31,7 +33,11 @@ from booley.flows.baseline_pins import (
 )
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetResolutionError, UnknownTargetError
+from booley.targets.domain import (
+    AmbiguousTargetError,
+    TargetResolutionError,
+    UnknownTargetError,
+)
 
 _SHA = "b" * 40
 _PREFIX = "synthesis_ok_"
@@ -50,11 +56,15 @@ def _context(tmp_path: Path, base_sha: str = _SHA) -> _PlainContext:
     return _PlainContext(tmp_path / "checkout", base_sha, tmp_path / "freeze")
 
 
-def _freeze(ctx: _PlainContext, params: dict[str, dict[str, Any]]) -> None:
+def _freeze(
+    ctx: _PlainContext,
+    params: dict[str, dict[str, Any]],
+    expanded: dict[str, bool] | None = None,
+) -> None:
     """Freeze the synthesis-like family with a trivial injected snapshot builder."""
     freeze_recipe_family(
         ctx,
-        dict.fromkeys(params, True),
+        dict.fromkeys(params, True) if expanded is None else expanded,
         params,
         prefix=_PREFIX,
         flow_label="Synthesis",
@@ -71,6 +81,8 @@ def catalog(monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     known: dict[str, Path] = {}
 
     def select(root: Path, target: str) -> SimpleNamespace:
+        if target == "ambiguous":
+            raise AmbiguousTargetError("two Targets match 'ambiguous'")
         if target not in {"present", "before"}:
             raise UnknownTargetError(target)
         known[target] = Path(root)
@@ -168,7 +180,9 @@ def test_relative_recipe_freezes_baseline_target_in_baseline_checkout(
         "target": "sel_before",
         "root": str(tmp_path / "baseline"),
     }
-    assert frozen[RECIPE_FINGERPRINT_PARAM]
+    assert frozen[RECIPE_FINGERPRINT_PARAM] == recipe_snapshot_fingerprint(
+        frozen[RECIPE_SNAPSHOT_PARAM]
+    )
     assert not stale.parent.exists()
 
 
@@ -286,13 +300,21 @@ def test_baseline_materialization_failure_chains_cause(
     assert caught.value.__cause__ is failure
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TargetResolutionError("fusesoc setup failed"),
+        BoundaryError("fusesoc setup failed"),
+        OSError("fusesoc setup failed"),
+    ],
+    ids=["resolution", "boundary", "os"],
+)
 def test_unresolvable_target_chains_cause(
     tmp_path: Path,
     catalog: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
 ) -> None:
-    failure = TargetResolutionError("fusesoc setup failed")
-
     def fail(_handle: object, *, build_root: Path) -> None:
         raise failure
 
@@ -306,3 +328,137 @@ def test_unresolvable_target_chains_cause(
         "Cannot freeze synthesis recipe for Target 'present': fusesoc setup failed"
     )
     assert caught.value.__cause__ is failure
+
+
+def test_target_selection_failure_chains_cause(
+    tmp_path: Path,
+    catalog: dict[str, Path],
+) -> None:
+    params = {f"{_PREFIX}x": {"target": "ambiguous"}}
+
+    with pytest.raises(BaselinePinError) as caught:
+        _freeze(_context(tmp_path, base_sha=""), params)
+
+    assert str(caught.value) == (
+        "Cannot freeze synthesis recipe for Target 'ambiguous': two Targets match 'ambiguous'"
+    )
+    assert isinstance(caught.value.__cause__, AmbiguousTargetError)
+    assert caught.value.__suppress_context__ is True
+
+
+# --- Mixed families, precedence, partial mutation ---------------------------
+
+
+def _expected_snapshot(selector: str, root: Path) -> dict[str, str]:
+    return {"target": selector, "root": str(root)}
+
+
+def test_mixed_family_freezes_relative_and_absolute_criteria(
+    tmp_path: Path,
+    catalog: dict[str, Path],
+    baseline_checkouts: list[tuple[Path, str]],
+) -> None:
+    ctx = _context(tmp_path)
+    relative, absolute = f"{_PREFIX}rel", f"{_PREFIX}abs"
+    params = {
+        relative: {
+            "target": "present",
+            "area_increase_at_most": 1,
+            BASELINE_TARGET_PARAM: "before",
+        },
+        absolute: {"target": "present"},
+    }
+    expanded = {relative: True, "lint_clean": True, absolute: False}
+
+    _freeze(ctx, params, expanded)
+
+    relative_snapshot = _expected_snapshot("sel_before", tmp_path / "baseline")
+    absolute_snapshot = _expected_snapshot("sel_present", ctx.work_dir)
+    assert params == {
+        relative: {
+            "target": "present",
+            "area_increase_at_most": 1,
+            BASELINE_TARGET_PARAM: "before",
+            BASELINE_REF_PARAM: _SHA,
+            RECIPE_FINGERPRINT_PARAM: recipe_snapshot_fingerprint(relative_snapshot),
+            RECIPE_SNAPSHOT_PARAM: relative_snapshot,
+        },
+        absolute: {
+            "target": "present",
+            RECIPE_FINGERPRINT_PARAM: recipe_snapshot_fingerprint(absolute_snapshot),
+            RECIPE_SNAPSHOT_PARAM: absolute_snapshot,
+        },
+    }
+    assert list(params[relative])[-3:] == [
+        BASELINE_REF_PARAM,
+        RECIPE_FINGERPRINT_PARAM,
+        RECIPE_SNAPSHOT_PARAM,
+    ]
+    # One baseline checkout serves the whole family.
+    assert baseline_checkouts == [(ctx.work_dir, _SHA)]
+
+
+def test_expanded_key_missing_from_params_fails_after_partial_pinning(
+    tmp_path: Path,
+    catalog: dict[str, Path],
+    baseline_checkouts: list[tuple[Path, str]],
+) -> None:
+    relative, missing = f"{_PREFIX}rel", f"{_PREFIX}missing"
+    params: dict[str, dict[str, Any]] = {
+        relative: {"target": "present", "area_increase_at_most": 1}
+    }
+
+    with pytest.raises(BaselinePinError, match=f"^Synthesis criterion {missing!r} has no Target$"):
+        _freeze(_context(tmp_path), params, {relative: True, missing: True})
+
+    # Validation runs before any checkout or snapshot; earlier keys are pinned.
+    assert params == {
+        relative: {"target": "present", "area_increase_at_most": 1, BASELINE_REF_PARAM: _SHA},
+        missing: {},
+    }
+    assert baseline_checkouts == []
+    assert catalog == {}
+
+
+def test_missing_base_sha_is_reported_before_invalid_baseline_metadata(
+    tmp_path: Path,
+    catalog: dict[str, Path],
+) -> None:
+    params = {
+        f"{_PREFIX}x": {"target": "present", "area_increase_at_most": 1, BASELINE_TARGET_PARAM: 7}
+    }
+
+    with pytest.raises(BaselinePinError, match=r"no base_sha$"):
+        _freeze(_context(tmp_path, base_sha=""), params)
+
+
+def test_expanded_order_decides_which_criterion_error_wins(
+    tmp_path: Path,
+    catalog: dict[str, Path],
+) -> None:
+    no_target, bad_meta = f"{_PREFIX}a", f"{_PREFIX}b"
+    params = {
+        no_target: {},
+        bad_meta: {"target": "present", "area_increase_at_most": 1, BASELINE_TARGET_PARAM: ""},
+    }
+
+    with pytest.raises(BaselinePinError, match=r"invalid baseline Target metadata$"):
+        _freeze(_context(tmp_path), params, {bad_meta: True, no_target: True})
+
+
+def test_validation_error_precedes_missing_baseline_target(
+    tmp_path: Path,
+    catalog: dict[str, Path],
+    baseline_checkouts: list[tuple[Path, str]],
+) -> None:
+    unknown, no_target = f"{_PREFIX}a", f"{_PREFIX}b"
+    params: dict[str, dict[str, Any]] = {
+        unknown: {"target": "future", "area_increase_at_most": 1},
+        no_target: {},
+    }
+
+    with pytest.raises(BaselinePinError, match=r"has no Target$"):
+        _freeze(_context(tmp_path), params)
+
+    assert baseline_checkouts == []
+    assert catalog == {}
