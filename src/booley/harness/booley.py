@@ -80,6 +80,7 @@ from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
 from booley.ticket_board.board_layout import documents_in_state, locate_document
 from booley.ticket_board.cli import add_all_tickets_flag
 from booley.ticket_board.cli_handlers import reject_all_outside_listing, show_board_view
+from booley.ticket_board.cli_migrations import TicketArgumentParser
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.legacy_layout import LegacyBoardLayoutError, require_current_layout
@@ -519,7 +520,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with subcommands + legacy flags."""
-    parser = argparse.ArgumentParser(
+    parser = TicketArgumentParser(
         prog="booley",
         description="Booley — RTL development harness.",
         epilog=(

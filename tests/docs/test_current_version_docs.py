@@ -10,6 +10,7 @@ scope. New package directories therefore enter the gate automatically.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,10 +28,13 @@ from booley.mcp.registry import discover_mcp_tools
 from booley.ticket_board.cli import build_parser as ticket_parser
 
 ROOT = Path(__file__).resolve().parents[2]
+HISTORY_POLICY = json.loads(
+    (Path(__file__).with_name("current_version_history_policy.json")).read_text()
+)
+_HISTORY_PHRASES = "|".join(re.escape(phrase) for phrase in HISTORY_POLICY["phrases"])
+_VERSION_PREFIXES = "|".join(re.escape(prefix) for prefix in HISTORY_POLICY["version_prefixes"])
 HISTORY = re.compile(
-    r"\b(?:retired|deprecated|no longer|former(?:ly)?|renamed from|previously|"
-    r"used to|legacy|old|(?:was|were|has been|have been) removed|"
-    r"(?:since|before|after|prior to|as of|introduced in) (?:version |v)?\d+\.\d+)\b",
+    rf"\b(?:{_HISTORY_PHRASES})\b|\b(?:{_VERSION_PREFIXES}) (?:version |v)?[0-9]+\.[0-9]+",
     re.IGNORECASE,
 )
 PACKAGE_IMPLEMENTATION_DIRS = {"docker", "edalize", "licenses", "__pycache__"}
@@ -346,3 +350,8 @@ def test_manifest_omits_binary_assets(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True)
     path.write_bytes(b"\x89PNG\0")
     assert path not in document_paths(tmp_path)
+
+
+@pytest.mark.parametrize("fixture", HISTORY_POLICY["fixtures"], ids=lambda item: item["text"])
+def test_shared_history_policy_fixtures(fixture: dict) -> None:
+    assert bool(history_failures({"example.md": fixture["text"]})) is fixture["history"]

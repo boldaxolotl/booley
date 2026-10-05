@@ -1415,76 +1415,109 @@ mod build_worker_tests {
 mod current_help_tests {
     use super::Cli;
     use clap::CommandFactory;
+    use serde::Deserialize;
 
-    fn has_history(text: &str) -> bool {
-        let normalized = text
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase();
-        if [
-            "retired",
-            "deprecated",
-            "no longer",
-            "formerly",
-            "renamed from",
-            "previously",
-            "legacy",
-            "used to",
-            "was removed",
-            "were removed",
-        ]
-        .iter()
-        .any(|phrase| normalized.contains(phrase))
-        {
-            return true;
-        }
-        if normalized.split_whitespace().any(|word| {
-            matches!(
-                word.trim_matches(|c: char| !c.is_alphanumeric()),
-                "old" | "former"
-            )
-        }) {
-            return true;
-        }
-        for prefix in [
-            "since ",
-            "before ",
-            "after ",
-            "prior to ",
-            "as of ",
-            "introduced in ",
-        ] {
-            for suffix in normalized.split(prefix).skip(1) {
-                let version = suffix
-                    .strip_prefix("version ")
-                    .unwrap_or(suffix)
-                    .trim_start_matches('v')
-                    .split_whitespace()
+    #[derive(Deserialize)]
+    struct Policy {
+        phrases: Vec<String>,
+        version_prefixes: Vec<String>,
+        fixtures: Vec<Fixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct Fixture {
+        text: String,
+        history: bool,
+    }
+
+    fn policy() -> Policy {
+        serde_json::from_str(include_str!(
+            "../../../tests/docs/current_version_history_policy.json"
+        ))
+        .expect("shared wording policy must be valid")
+    }
+
+    fn word_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    fn has_phrase(text: &str, phrase: &str) -> bool {
+        text.match_indices(phrase).any(|(index, _)| {
+            text[..index]
+                .chars()
+                .next_back()
+                .map_or(true, |c| !word_char(c))
+                && text[index + phrase.len()..]
+                    .chars()
                     .next()
-                    .unwrap_or_default();
-                if version.chars().next().is_some_and(|c| c.is_ascii_digit())
-                    && version.contains('.')
-                {
-                    return true;
+                    .map_or(true, |c| !word_char(c))
+        })
+    }
+
+    fn has_version(text: &str, prefixes: &[String]) -> bool {
+        for prefix in prefixes {
+            for (index, _) in text.match_indices(&format!("{prefix} ")) {
+                if text[..index].chars().next_back().is_some_and(word_char) {
+                    continue;
+                }
+                let suffix = &text[index + prefix.len() + 1..];
+                let version = suffix.strip_prefix("version ").unwrap_or(suffix);
+                let version = version.strip_prefix('v').unwrap_or(version);
+                if let Some((major, rest)) = version.split_once('.') {
+                    let minor: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if !major.is_empty()
+                        && major.chars().all(|c| c.is_ascii_digit())
+                        && !minor.is_empty()
+                    {
+                        return true;
+                    }
                 }
             }
         }
         false
     }
 
-    fn check_help(command: &mut clap::Command) -> usize {
+    fn has_history(text: &str, policy: &Policy) -> bool {
+        let normalized = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        policy
+            .phrases
+            .iter()
+            .any(|phrase| has_phrase(&normalized, phrase))
+            || has_version(&normalized, &policy.version_prefixes)
+    }
+
+    fn check_help(command: &mut clap::Command, policy: &Policy) -> usize {
         let text = command.render_long_help().to_string();
         assert!(
-            !has_history(&text),
+            !has_history(&text, policy),
             "{} help contains history: {text}",
             command.get_name()
         );
-        1 + command.get_subcommands_mut().map(check_help).sum::<usize>()
+        1 + command
+            .get_subcommands_mut()
+            .map(|child| check_help(child, policy))
+            .sum::<usize>()
     }
 
     #[test]
     fn visible_native_help_describes_current_version() {
-        assert!(check_help(&mut Cli::command()) >= 18);
+        assert!(check_help(&mut Cli::command(), &policy()) >= 18);
+    }
+
+    #[test]
+    fn shared_wording_fixtures_match_native_guard() {
+        let policy = policy();
+        for fixture in &policy.fixtures {
+            assert_eq!(
+                has_history(&fixture.text, &policy),
+                fixture.history,
+                "{}",
+                fixture.text
+            );
+        }
     }
 }

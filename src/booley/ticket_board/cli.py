@@ -45,6 +45,7 @@ from .cli_handlers import (
     _cmd_validate_ticket,
     show_board_view,
 )
+from .cli_migrations import TicketArgumentParser
 from .helpers import (
     detect_tickets_dir,
     ensure_utf8_output,
@@ -384,7 +385,7 @@ def _add_reporting_subcommands(sub: argparse._SubParsersAction) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser with all ticket_board subcommands."""
-    parser = argparse.ArgumentParser(
+    parser = TicketArgumentParser(
         prog="ticket_board",
         description="Ticket board CLI -- mechanical operations for the ticket system.",
     )

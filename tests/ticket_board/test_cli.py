@@ -191,3 +191,36 @@ def test_reset_to_is_hidden_but_reports_supported_reset(capsys):
     output = capsys.readouterr().err
     assert "reset-to" in output
     assert "Use 'reset'" in output
+
+
+@pytest.mark.parametrize("command", ["contract-seal", "revise-contract"])
+@pytest.mark.parametrize("surface", ["module", "public"])
+def test_rejected_contract_command_reports_reauthoring_fix(capsys, command, surface):
+    from booley.harness.booley import _build_parser
+
+    parser = build_parser() if surface == "module" else _build_parser()
+    args = [command, "example"] if surface == "module" else ["board", command, "example"]
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(args)
+    assert error.value.code == 2
+    output = capsys.readouterr().err
+    assert f"{command} is unsupported" in output
+    assert "Recreate an unsealed Ticket" in output
+    assert "return-to-draft <slug>" in output
+    assert "validate-ticket <draft-path>" in output
+    assert "enqueue <slug>" in output
+    assert "Do not edit generated metadata" in output
+    assert command not in parser.format_help()
+
+
+def test_contract_command_text_in_an_option_value_keeps_generic_error(capsys):
+    from booley.ticket_board.cli_migrations import TicketArgumentParser
+
+    parser = TicketArgumentParser()
+    parser.add_argument("--mode", choices=["safe"])
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["--mode", "contract-seal"])
+    assert error.value.code == 2
+    output = capsys.readouterr().err
+    assert "invalid choice" in output
+    assert "Recreate" not in output
