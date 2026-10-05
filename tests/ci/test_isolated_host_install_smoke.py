@@ -80,7 +80,7 @@ def test_container_mounts_only_fixture_inputs_and_bootstraps_distro_python(tmp_p
     assert bounds["timeout"] == 1200
 
 
-def test_inside_executes_readme_and_only_exempts_full_bootstrap(monkeypatch):
+def test_inside_executes_readme_and_only_exempts_full_bootstrap(tmp_path, monkeypatch):
     # Replace only fixture filesystem preparation and external operations.
     commands, probes, writes = [], [], []
     monkeypatch.setattr(smoke, "run", commands.append)
@@ -93,14 +93,14 @@ def test_inside_executes_readme_and_only_exempts_full_bootstrap(monkeypatch):
             is_file=lambda: True, write_text=writes.append, chmod=lambda _mode: None
         ),
     )
-    wheel = PurePosixPath("/artifacts/exact.whl")
+    wheel = tmp_path / "exact.whl"
     smoke.inside(wheel, smoke.read_commands(README))
     assert commands[:3] == [
         ["apt-get", "update"],
         ["apt-get", "install", "-y", "sudo"],
         ["useradd", "--create-home", "--shell", "/bin/bash", "smoke"],
     ]
-    assert "booley-rtl @ file:///artifacts/exact.whl\n" in writes
+    assert f"booley-rtl @ {wheel.as_uri()}\n" in writes
     assert all(command in commands for command in smoke.COMMANDS["prepare"])
     assert "pipx install booley-rtl" in commands
     assert smoke.BOOTSTRAP_EXEMPTION == "booley bootstrap"
