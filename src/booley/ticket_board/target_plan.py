@@ -57,7 +57,8 @@ class TargetPlanAnalysis:
     authored_parameters: tuple[str, ...] = ()
 
 
-# Delta types moved to ``booley.targets.surface_diff``; these names stay for callers.
+# Delta types moved to ``booley.targets.surface_diff``; these private names stay
+# for the existing Target Plan tests.
 _TargetDefinition = TargetDefinition
 _ChangeSet = ChangeSet
 _SurfaceDelta = SurfaceDelta
@@ -111,69 +112,73 @@ def _validate_shared_core_content(surface: TargetSurfaceFile) -> None:
         )
 
 
-def _validate_fileset_changes(surface: TargetSurfaceFile) -> None:
-    """Reject fileset edits before the full description resolves Target references."""
-    with _surface_errors():
-        surface_diff.core_targets(surface.baseline, path=surface.path)
-        surface_diff.core_targets(surface.current, path=surface.path)
-        before = surface_diff.core_filesets(surface.baseline, path=surface.path)
-        after = surface_diff.core_filesets(surface.current, path=surface.path)
-    _added, modified, deleted = surface_diff.changed_rows(before, after)
+def _parameter_delta(surface: TargetSurfaceFile) -> ChangeSet[ParameterDefinition]:
+    before_bodies = surface_diff.core_parameters(surface.baseline, path=surface.path)
+    after_bodies = surface_diff.core_parameters(surface.current, path=surface.path)
+    rows = surface_diff.changed_rows(before_bodies, after_bodies)
+    _added, modified, deleted = rows
     if modified or deleted:
         changed = ", ".join(sorted((*modified, *deleted)))
-        raise TargetPlanValidationError(
-            f"Ticket creation cannot modify or delete existing filesets in "
-            f"{surface.path}: {changed}"
-        )
-
-
-def _validate_parameter_changes(
-    surface: TargetSurfaceFile, parameters: ChangeSet[ParameterDefinition]
-) -> None:
-    if parameters.modified or parameters.deleted:
-        changed = ", ".join(
-            sorted(item.name for item in (*parameters.modified, *parameters.deleted))
-        )
         raise TargetPlanValidationError(
             f"Ticket creation cannot modify or delete existing parameters in "
             f"{surface.path}: {changed}"
         )
+    before = surface_diff.parameter_definitions(surface.baseline, path=surface.path)
+    after = surface_diff.parameter_definitions(surface.current, path=surface.path)
+    return surface_diff.change_set(before, after, rows)
 
 
 def _core_surface_delta(surface: TargetSurfaceFile) -> SurfaceDelta:
+    # Each step mirrors one step of ``surface_diff.diff_core_surface`` with Ticket
+    # policy between them, so the first failing check is the one Ticket Mode reports.
     _validate_new_core(surface.baseline, surface.current, Path(surface.path))
     _validate_shared_core_content(surface)
-    _validate_fileset_changes(surface)
     with _surface_errors():
-        delta = surface_diff.diff_core_surface(surface)
-    _validate_parameter_changes(surface, delta.parameters)
-    if not delta.targets.modified and not delta.targets.deleted:
+        before = surface_diff.core_targets(surface.baseline, path=surface.path)
+        after = surface_diff.core_targets(surface.current, path=surface.path)
+        targets = surface_diff.change_set(before, after, surface_diff.changed_rows(before, after))
+        fileset_rows = surface_diff.changed_rows(
+            surface_diff.core_filesets(surface.baseline, path=surface.path),
+            surface_diff.core_filesets(surface.current, path=surface.path),
+        )
+        if fileset_rows[1] or fileset_rows[2]:
+            changed = ", ".join(sorted((*fileset_rows[1], *fileset_rows[2])))
+            raise TargetPlanValidationError(
+                f"Ticket creation cannot modify or delete existing filesets in "
+                f"{surface.path}: {changed}"
+            )
+        filesets = surface_diff.change_set(
+            surface_diff.fileset_definitions(surface.baseline, path=surface.path),
+            surface_diff.fileset_definitions(surface.current, path=surface.path),
+            fileset_rows,
+        )
+        parameters = _parameter_delta(surface)
+    if not targets.modified and not targets.deleted:
         _validate_core_source_boundary(
             surface,
-            tuple(item.name for item in delta.targets.added),
-            tuple(item.name for item in delta.filesets.added),
-            tuple(item.name for item in delta.parameters.added),
+            tuple(item.name for item in targets.added),
+            tuple(item.name for item in filesets.added),
+            tuple(item.name for item in parameters.added),
         )
-    return delta
+    return SurfaceDelta(targets=targets, filesets=filesets, parameters=parameters)
 
 
 def _tests_surface_delta(surface: TargetSurfaceFile) -> SurfaceDelta:
-    with _surface_errors():
-        delta = surface_diff.diff_tests_surface(surface)
-    tables = delta.test_tables
-    current = {change.name: change.after for change in delta.test_table_changes}
+    before = _table_mapping(surface.baseline, path=surface.path)
+    after = _table_mapping(surface.current, path=surface.path)
+    added, modified, deleted = surface_diff.changed_rows(before, after)
     invalid = [
         key
-        for key in (*tables.added, *tables.modified)
-        if key != TEST_LISTS_TABLE and not isinstance(current[key], Mapping)
+        for key in (*added, *modified)
+        if key != TEST_LISTS_TABLE and not isinstance(after[key], Mapping)
     ]
     if invalid:
         raise TargetPlanValidationError(
             "tests.toml Target entries must be tables: " + ", ".join(invalid)
         )
-    if not tables.modified and not tables.deleted:
-        _validate_tests_source_boundary(surface, tables.added)
-    return delta
+    if not modified and not deleted:
+        _validate_tests_source_boundary(surface, added)
+    return SurfaceDelta(test_tables=ChangeSet(added, modified, deleted))
 
 
 def _validate_core_source_boundary(

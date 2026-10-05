@@ -9,9 +9,9 @@ from booley.targets.surface_diff import (
     SurfaceDelta,
     SurfaceDiffError,
     TargetSurfaceFile,
-    canonical_target_declaration,
-    diff_surface,
-    diff_surfaces,
+    diff_core_surface,
+    diff_tests_surface,
+    merge_deltas,
 )
 
 _VLNV = "acme:lib:toy:1.0"
@@ -42,7 +42,7 @@ targets:
 
 
 def _core_delta(current: str | None, baseline: str | None = _BASELINE) -> SurfaceDelta:
-    return diff_surface(
+    return diff_core_surface(
         TargetSurfaceFile(
             "toy.core",
             baseline.encode() if baseline is not None else None,
@@ -51,15 +51,14 @@ def _core_delta(current: str | None, baseline: str | None = _BASELINE) -> Surfac
     )
 
 
-def _only_change(delta: SurfaceDelta, target: str):
-    assert [change.canonical for change in delta.target_changes] == [f"{_VLNV}#{target}"]
-    return delta.target_changes[0]
+def _tests_delta(baseline: bytes | None, current: bytes | None) -> SurfaceDelta:
+    return diff_tests_surface(TargetSurfaceFile(".booley_project/tests.toml", baseline, current))
 
 
 def test_unchanged_surface_yields_an_empty_delta() -> None:
     assert _core_delta(_BASELINE) == SurfaceDelta()
     tests = b"[sim_smoke]\nmodule = 'test_toy'\n"
-    assert diff_surface(TargetSurfaceFile("tests.toml", tests, tests)) == SurfaceDelta()
+    assert _tests_delta(tests, tests) == SurfaceDelta()
 
 
 def test_whitespace_and_comment_edits_are_not_changes() -> None:
@@ -72,98 +71,55 @@ def test_target_added() -> None:
 
     assert [item.canonical for item in delta.targets.added] == [f"{_VLNV}#lint_tb"]
     assert delta.targets.modified == delta.targets.deleted == ()
-    assert delta.target_changes == ()
-    assert delta.filesets.added == delta.filesets.modified == ()
+    assert delta.filesets == ChangeSet()
 
 
-def test_target_removed() -> None:
-    current = _BASELINE.split("  lint_rtl:\n", 1)[0]
-
-    delta = _core_delta(current)
+def test_target_deleted() -> None:
+    delta = _core_delta(_BASELINE.split("  lint_rtl:\n", 1)[0])
 
     assert [item.canonical for item in delta.targets.deleted] == [f"{_VLNV}#lint_rtl"]
     assert delta.targets.deleted[0].body["toplevel"] == "toy"
     assert delta.targets.added == delta.targets.modified == ()
-    assert delta.target_changes == ()
 
 
-def test_parameter_value_change() -> None:
+def test_target_modified_carries_current_body() -> None:
     delta = _core_delta(_BASELINE.replace("[WIDTH=8]", "[WIDTH=16]"))
 
     assert [item.canonical for item in delta.targets.modified] == [f"{_VLNV}#sim_smoke"]
-    change = _only_change(delta, "sim_smoke")
-    assert change.changed_fields == ("parameters",)
-    assert [(p.name, p.paramtype, p.before, p.after) for p in change.parameters] == [
-        ("WIDTH", "vlogparam", ("WIDTH=8",), ("WIDTH=16",))
-    ]
-    assert change.toplevel is None
-    assert change.filesets_added == change.filesets_removed == ()
+    assert delta.targets.modified[0].body["parameters"] == ["WIDTH=16"]
 
 
-def test_define_selection_change() -> None:
-    delta = _core_delta(_BASELINE.replace("[WIDTH=8]", "[WIDTH=8, TRACE]"))
-
-    change = _only_change(delta, "sim_smoke")
-    assert [(p.name, p.paramtype, p.before, p.after) for p in change.parameters] == [
-        ("TRACE", "vlogdefine", (), ("TRACE",))
-    ]
-
-
-def test_toplevel_change() -> None:
-    delta = _core_delta(_BASELINE.replace("toplevel: toy\n", "toplevel: toy_wrapper\n"))
-
-    change = _only_change(delta, "lint_rtl")
-    assert change.changed_fields == ("toplevel",)
-    assert change.toplevel is not None
-    assert (change.toplevel.before, change.toplevel.after) == ("toy", "toy_wrapper")
-
-
-def test_fileset_membership_change() -> None:
-    delta = _core_delta(_BASELINE.replace("filesets: [rtl]\n", "filesets: [rtl, tb]\n"))
-
-    change = _only_change(delta, "lint_rtl")
-    assert change.changed_fields == ("filesets",)
-    assert change.filesets_added == ("tb",)
-    assert change.filesets_removed == ()
-    assert delta.filesets == ChangeSet()
-
-
-def test_referenced_fileset_definition_change() -> None:
-    delta = _core_delta(_BASELINE.replace("files: [tb.sv]", "files: [tb.sv, tb_pkg.sv]"))
-
-    # The Target bodies are unchanged, so only the input description names them.
-    assert delta.targets == ChangeSet()
-    assert [item.name for item in delta.filesets.modified] == ["tb"]
-    change = _only_change(delta, "sim_smoke")
-    assert change.changed_fields == ()
-    assert [
-        (item.before.body["files"], item.after.body["files"])
-        for item in change.fileset_definitions
-    ] == [(["tb.sv"], ["tb.sv", "tb_pkg.sv"])]
-
-
-def test_referenced_parameter_definition_change() -> None:
-    delta = _core_delta(_BASELINE.replace("default: 8", "default: 32"))
-
-    assert [item.name for item in delta.parameters.modified] == ["WIDTH"]
-    change = _only_change(delta, "sim_smoke")
-    assert [
-        (item.before.body["default"], item.after.body["default"])
-        for item in change.parameter_definitions
-    ] == [(8, 32)]
-
-
-def test_deleted_fileset_and_parameter_declarations_are_described() -> None:
-    current = _BASELINE.replace(
-        "  tb:\n    files: [tb.sv]\n    file_type: systemVerilogSource\n", ""
-    ).replace("  TRACE: {datatype: bool, paramtype: vlogdefine}\n", "")
-    current = current.replace("filesets: [rtl, tb]", "filesets: [rtl]")
+def test_fileset_added_modified_and_deleted() -> None:
+    current = (
+        _BASELINE.replace("files: [tb.sv]", "files: [tb.sv, tb_pkg.sv]")
+        .replace("  rtl:\n    files: [toy.sv]\n", "  gates:\n    files: [toy_gates.v]\n")
+        .replace("[rtl, tb]", "[gates, tb]")
+        .replace("filesets: [rtl]\n", "filesets: [gates]\n")
+    )
 
     delta = _core_delta(current)
 
-    assert [item.key for item in delta.filesets.deleted] == ["toy.core#tb"]
+    assert [item.key for item in delta.filesets.added] == ["toy.core#gates"]
+    assert delta.filesets.added[0].referenced_by == (f"{_VLNV}#lint_rtl", f"{_VLNV}#sim_smoke")
+    assert [item.body["files"] for item in delta.filesets.modified] == [["tb.sv", "tb_pkg.sv"]]
+    assert [item.name for item in delta.filesets.deleted] == ["rtl"]
+
+
+def test_parameter_added_modified_and_deleted() -> None:
+    current = (
+        _BASELINE.replace("default: 8", "default: 32")
+        .replace(
+            "  TRACE: {datatype: bool, paramtype: vlogdefine}\n", "  DEPTH: {datatype: int}\n"
+        )
+        .replace("[WIDTH=8]", "[WIDTH=8, DEPTH=4]")
+    )
+
+    delta = _core_delta(current)
+
+    assert [item.name for item in delta.parameters.added] == ["DEPTH"]
+    assert delta.parameters.added[0].referenced_by == (f"{_VLNV}#sim_smoke",)
+    assert [item.body["default"] for item in delta.parameters.modified] == [32]
     assert [item.key for item in delta.parameters.deleted] == ["toy.core#TRACE"]
-    assert _only_change(delta, "sim_smoke").filesets_removed == ("tb",)
 
 
 def test_new_core_file_has_no_baseline() -> None:
@@ -180,28 +136,16 @@ def test_deleted_core_file_has_no_current() -> None:
 
     assert [item.name for item in delta.targets.deleted] == ["lint_rtl", "sim_smoke"]
     assert [item.name for item in delta.filesets.deleted] == ["rtl", "tb"]
-    assert delta.targets.added == delta.target_changes == ()
+    assert [item.name for item in delta.parameters.deleted] == ["TRACE", "WIDTH"]
 
 
-def _tests_delta(baseline: bytes | None, current: bytes | None) -> SurfaceDelta:
-    return diff_surface(TargetSurfaceFile(".booley_project/tests.toml", baseline, current))
-
-
-def test_tests_toml_entries_added_modified_and_removed() -> None:
+def test_tests_toml_tables_added_modified_and_deleted() -> None:
     baseline = b"[sim_smoke]\nmodule = 'old'\n\n[sim_gone]\nmodule = 'gone'\n"
     current = b"[sim_smoke]\nmodule = 'new'\n\n['acme:lib:toy:1.0#sim_new']\nmodule = 'n'\n"
 
-    delta = _tests_delta(baseline, current)
-
-    assert delta.test_tables == ChangeSet(
+    assert _tests_delta(baseline, current).test_tables == ChangeSet(
         added=("acme:lib:toy:1.0#sim_new",), modified=("sim_smoke",), deleted=("sim_gone",)
     )
-    smoke = delta.test_changes_for(f"{_VLNV}#sim_smoke")
-    assert [(row.before, row.after) for row in smoke] == [({"module": "old"}, {"module": "new"})]
-    assert [row.after for row in delta.test_changes_for(f"{_VLNV}#sim_new")] == [{"module": "n"}]
-    assert [row.before for row in delta.test_changes_for(f"{_VLNV}#sim_gone")] == [
-        {"module": "gone"}
-    ]
 
 
 def test_new_and_deleted_tests_toml_files() -> None:
@@ -211,94 +155,45 @@ def test_new_and_deleted_tests_toml_files() -> None:
     assert _tests_delta(content, None).test_tables == ChangeSet(deleted=("sim_smoke",))
 
 
-def test_surfaces_merge_and_other_files_are_ignored() -> None:
-    delta = diff_surfaces(
+def test_merged_deltas_are_sorted_across_files() -> None:
+    other = _BASELINE.replace("acme:lib:toy:1.0", "acme:lib:aaa:1.0")
+    delta = merge_deltas(
         (
-            TargetSurfaceFile(
-                "toy.core", _BASELINE.encode(), b"CAPI=2:\nname: acme:lib:toy:1.0\n"
-            ),
-            TargetSurfaceFile("tests.toml", None, b"[lint_rtl]\nmodule = 'x'\n"),
-            TargetSurfaceFile("README.md", b"old", b"new"),
+            _core_delta(None),
+            diff_core_surface(TargetSurfaceFile("aaa.core", None, other.encode())),
+            _tests_delta(None, b"[b]\nx = 1\n\n[a]\nx = 1\n"),
         )
     )
 
-    assert [item.name for item in delta.targets.deleted] == ["lint_rtl", "sim_smoke"]
-    assert delta.test_tables.added == ("lint_rtl",)
+    assert [item.canonical for item in delta.targets.deleted] == [
+        f"{_VLNV}#lint_rtl",
+        f"{_VLNV}#sim_smoke",
+    ]
+    assert [item.key for item in delta.filesets.added] == ["aaa.core#rtl", "aaa.core#tb"]
+    assert delta.test_tables.added == ("a", "b")
 
 
 @pytest.mark.parametrize(
-    ("path", "content", "message"),
+    ("content", "message"),
     [
-        ("bad.core", b"targets: [", r"cannot parse \.core bad\.core"),
-        ("bad.core", b"- a list\n", r"\.core bad\.core is not a mapping"),
-        ("bad.core", b"targets: {}\n", "has no valid name"),
-        ("bad.core", b"name: a:b:c:1\ntargets: []\n", "mapping-valued targets"),
-        ("bad.core", b"name: a:b:c:1\nfilesets: []\n", "mapping-valued filesets"),
-        ("bad.core", b"name: a:b:c:1\ntargets: {t: {filesets: [x]}}\n", "undefined fileset"),
-        ("tests.toml", b"[broken", r"cannot parse tests\.toml"),
-        ("tests.toml", b"\xff", r"cannot parse tests\.toml"),
+        (b"targets: [", r"cannot parse \.core bad\.core"),
+        (b"- a list\n", r"\.core bad\.core is not a mapping"),
+        (b"targets: {}\n", "has no valid name"),
+        (b"name: a:b:c:1\ntargets: []\n", "mapping-valued targets"),
+        (b"name: a:b:c:1\ntargets: {1: {}}\n", "non-string Target name"),
+        (b"name: a:b:c:1\nfilesets: []\n", "mapping-valued filesets"),
+        (b"name: a:b:c:1\nparameters: 5\n", "mapping-valued parameters"),
+        (b"name: a:b:c:1\ntargets: {t: {filesets: [x]}}\n", "undefined fileset"),
     ],
 )
-def test_unparseable_or_invalid_input_raises(path: str, content: bytes, message: str) -> None:
-    with pytest.raises(SurfaceDiffError, match=message):
-        diff_surface(TargetSurfaceFile(path, None, content))
-    with pytest.raises(SurfaceDiffError, match=message):
-        diff_surface(TargetSurfaceFile(path, content, None))
+def test_unparseable_or_invalid_core_raises(content: bytes, message: str) -> None:
+    for baseline, current in ((None, content), (content, None)):
+        with pytest.raises(SurfaceDiffError, match=message):
+            diff_core_surface(TargetSurfaceFile("bad.core", baseline, current))
 
 
-_REORDERED = """\
-CAPI=2:
-name: acme:lib:toy:1.0
-targets:
-  lint_rtl: {toplevel: toy, filesets: [rtl], flow: lint}
-  sim_smoke:
-    toplevel:   tb_toy   # same value
-    parameters: [WIDTH=8]
-    filesets: [rtl, tb]
-    flow: sim
-parameters:
-  TRACE: {paramtype: vlogdefine, datatype: bool}
-  WIDTH: {default: 8, paramtype: vlogparam, datatype: int}
-filesets:
-  tb: {file_type: systemVerilogSource, files: [tb.sv]}
-  rtl: {file_type: systemVerilogSource, files: [toy.sv]}
-"""
-
-
-def _declaration(core: str, target: str = "sim_smoke", tests: bytes | None = None) -> str:
-    return canonical_target_declaration(core.encode(), path="toy.core", target=target, tests=tests)
-
-
-def test_canonical_declaration_ignores_key_order_and_whitespace() -> None:
-    tests = b"[sim_smoke]\nmodule = 'm'\nseed = 1\n"
-    reordered_tests = b"\n[sim_smoke]\nseed   = 1\nmodule = 'm'\n"
-
-    assert _declaration(_BASELINE, tests=tests) == _declaration(_REORDERED, tests=reordered_tests)
-    assert _declaration(_BASELINE) == _declaration(_REORDERED, f"{_VLNV}#sim_smoke")
-
-
-@pytest.mark.parametrize(
-    ("edit", "tests"),
-    [
-        (lambda text: text.replace("[WIDTH=8]", "[WIDTH=9]"), None),
-        (lambda text: text.replace("toplevel: tb_toy", "toplevel: tb_other"), None),
-        (lambda text: text.replace("files: [tb.sv]", "files: [tb2.sv]"), None),
-        (lambda text: text.replace("default: 8", "default: 4"), None),
-        (lambda text: text, b"[sim_smoke]\nmodule = 'm'\n"),
-    ],
-)
-def test_canonical_declaration_tracks_semantic_edits(edit, tests: bytes | None) -> None:
-    assert _declaration(edit(_BASELINE), tests=tests) != _declaration(_BASELINE)
-
-
-def test_canonical_declaration_excludes_unselected_inputs() -> None:
-    edited = _BASELINE.replace("files: [tb.sv]", "files: [tb2.sv]").replace(
-        "  sim_smoke:\n", "  sim_smoke:\n    description: unrelated to lint\n"
-    )
-
-    assert _declaration(edited, "lint_rtl") == _declaration(_BASELINE, "lint_rtl")
-
-
-def test_canonical_declaration_rejects_an_unknown_target() -> None:
-    with pytest.raises(SurfaceDiffError, match="does not declare Target 'missing'"):
-        _declaration(_BASELINE, "missing")
+@pytest.mark.parametrize("content", [b"[broken", b"\xff"])
+def test_unparseable_tests_toml_raises(content: bytes) -> None:
+    for baseline, current in ((None, content), (content, None)):
+        with pytest.raises(SurfaceDiffError, match=r"cannot parse tests\.toml"):
+            diff_tests_surface(TargetSurfaceFile("tests.toml", baseline, current))
