@@ -194,7 +194,8 @@ def test_detached_endpoint_inventory():
         ["upgrade", "status", "-C", "../b"],
     ],
 )
-def test_project_positions(projects, argv):
+def test_project_positions(projects, argv, monkeypatch):
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
     args = command(argv)
     assert cli._resolve_cli_selection(args) == projects[1]
 
