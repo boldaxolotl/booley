@@ -367,6 +367,9 @@ def analyze_coverage_campaign(
         )
         loaded = read_coverage_campaign(paths.campaign)
         specialist = CoverageAnalystSpecialist()
+        from booley.flows.cli_selection import invocation_context
+
+    with invocation_context(transport=True):
         specialist.parse_args(["--work-dir", str(root), "--campaign", str(paths.campaign)])
         return specialist._analyze_bound(
             loaded.campaign,

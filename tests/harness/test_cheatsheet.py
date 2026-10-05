@@ -109,7 +109,7 @@ class TestSectionsMatchCheatsheet:
             flag for slug in cheatsheet.section_slugs() for flag in cheatsheet.section_flags(slug)
         )
         assert len(set(flags)) == len(flags)
-        assert all(flag.isidentifier() for flag in flags)
+        assert all(flag.replace("-", "_").isidentifier() for flag in flags)
 
 
 # ===========================================================================

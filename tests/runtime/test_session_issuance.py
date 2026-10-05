@@ -2454,3 +2454,35 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         monkeypatch.setenv(key, value)
     with pytest.raises(WaiverDecisionError, match="approve waivers as yourself"):
         approver_identity(project)
+
+
+@pytest.mark.parametrize("flag", ["--project", "--project-root"])
+def test_initialize_validator_accepts_only_approved_complete_forms(
+    tmp_path, monkeypatch, trusted_validator, flag
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    command = runtime_spec.initialize_command(str(trusted_validator))
+    command[3] = flag
+    runtime_spec._validate_initialize_command(project, command)
+    for altered in (
+        [*command, "extra"],
+        [*command[:4], "/untrusted/workspace"],
+        ["relative-booley", *command[1:]],
+        [command[0], "session", "up", *command[3:]],
+    ):
+        with pytest.raises(runtime_spec.RuntimeSpecError):
+            runtime_spec._validate_initialize_command(project, altered)
+
+
+@pytest.mark.parametrize("flag", ["--project", "--project-root"])
+def test_pinning_migrates_approved_initialize_forms(tmp_path, monkeypatch, flag):
+    project = tmp_path / "project"
+    command = runtime_spec.initialize_command()
+    command[3] = flag
+    executable = tmp_path / "trusted/bin/booley"
+    monkeypatch.setattr(runtime_spec, "_find_trusted_validator", lambda _project: executable)
+    spec = {"initializeCommand": command}
+    runtime_spec._pin_initialize_command(project, spec)
+    assert spec["initializeCommand"] == runtime_spec.initialize_command(str(executable))
+    assert spec["initializeCommand"][3] == "--project"

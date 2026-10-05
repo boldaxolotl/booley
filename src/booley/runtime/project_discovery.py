@@ -109,11 +109,13 @@ def _owning_checkouts(candidates: list[Path], data: Path) -> set[Path]:
     }
 
 
-def discover_project_root(start: Path | None = None, *, required: bool = False) -> Path | None:
+def discover_project_root(
+    start: Path | None = None, *, required: bool = False, explicit_selection: bool = False
+) -> Path | None:
     """Resolve explicit selection or an independently proven owning checkout."""
     current, checkouts = _checkout_candidates(start)
     data = _data_root(current, checkouts)
-    env = os.environ.get("RTL_PROJECT_ROOT")
+    env = None if explicit_selection else os.environ.get("RTL_PROJECT_ROOT")
     explicit = Path(env).resolve() if env else None
     if explicit is not None:
         _selected, explicit_checkouts = _checkout_candidates(Path(env))

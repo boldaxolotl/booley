@@ -1,0 +1,133 @@
+{
+  "coverage_analyst": {
+    "additionalProperties": false,
+    "properties": {
+      "campaign": {
+        "description": "Exact canonical coverage.json path",
+        "type": "string"
+      },
+      "diagnostic": {
+        "default": false,
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline.",
+        "type": "boolean"
+      },
+      "instruction": {
+        "default": "",
+        "description": "Freeform instruction for the agent (e.g. distilled plan)",
+        "type": "string"
+      },
+      "work_dir": {
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "campaign"
+    ],
+    "type": "object"
+  },
+  "mutation_tester": {
+    "additionalProperties": false,
+    "properties": {
+      "count": {
+        "description": "Number of mutations: integer or 'auto' (default: 10)",
+        "type": "string"
+      },
+      "diagnostic": {
+        "default": false,
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline.",
+        "type": "boolean"
+      },
+      "dry_run": {
+        "default": false,
+        "description": "Validate inputs and preview planned work without invoking agents or EDA tools",
+        "type": "boolean"
+      },
+      "min_detected": {
+        "description": "Pass threshold: minimum mutations that must be killed (default: all of --count, i.e. all-or-nothing). Lower it to accept a partial mutation score.",
+        "type": "integer"
+      },
+      "regen_lock": {
+        "default": false,
+        "description": "Wipe the mutation lock dir and re-run the creator agent from scratch.",
+        "type": "boolean"
+      },
+      "scope": {
+        "description": "Comma-separated RTL files eligible for mutation",
+        "type": "string"
+      },
+      "steer": {
+        "description": "Developer Agent context for mutation targeting. Repeatable; over MCP pass an array of strings, not a bare string.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string.",
+        "type": "string"
+      },
+      "work_dir": {
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "target",
+      "scope"
+    ],
+    "type": "object"
+  },
+  "reviewer": {
+    "additionalProperties": false,
+    "properties": {
+      "category": {
+        "description": "Review category: rtl or tb",
+        "enum": [
+          "rtl",
+          "tb"
+        ],
+        "type": "string"
+      },
+      "diagnostic": {
+        "default": false,
+        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline.",
+        "type": "boolean"
+      },
+      "dry_run": {
+        "default": false,
+        "description": "Validate inputs and preview planned work without invoking agents or EDA tools",
+        "type": "boolean"
+      },
+      "focus": {
+        "description": "Review focus category. RTL: bugs, code_style, optimization, protocol, security, spec. TB: quality.",
+        "type": "string"
+      },
+      "scope": {
+        "description": "Comma-separated file paths to review",
+        "type": "string"
+      },
+      "spec": {
+        "description": "Path to the specification the review checks. Ticket Mode resolves its sealed ticket and linked spec automatically.",
+        "type": "string"
+      },
+      "steer": {
+        "description": "Developer Agent context and steering instructions. Repeatable; over MCP pass an array of strings, not a bare string.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "work_dir": {
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "scope",
+      "category",
+      "focus"
+    ],
+    "type": "object"
+  }
+}

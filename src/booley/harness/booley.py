@@ -406,6 +406,116 @@ def _version_string() -> str:
     return f"booley {__version__}" + (f" ({commit})" if commit else "")
 
 
+def _install_project_options(parser: argparse.ArgumentParser) -> None:
+    """Install shared controls using the command ownership catalog."""
+    from booley.flows.cli_selection import SelectionAction, add_project_option
+
+    def install(node, route):
+        dest = "_cli_project_" + "_".join(route or ("root",))
+        if route:
+            for action in node._actions:
+                if "--project-root" in action.option_strings:
+                    # Recreate the alias, rather than sharing mutable parent actions.
+                    from booley.flows.cli_selection import _replace_action
+
+                    _replace_action(node, action, SelectionAction)
+                    replacement = node._option_string_actions["--project-root"]
+                    replacement.dest = dest
+                    replacement.default = argparse.SUPPRESS
+        add_project_option(node, dest, cheat=route == ("cheat",))
+        for action in node._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, child in action.choices.items():
+                    if not route and (
+                        name in {"run", "board"}
+                        or COMMAND_PROJECT_BINDINGS[name] is ProjectBinding.INDEPENDENT
+                    ):
+                        continue
+                    install(child, (*route, name))
+
+    install(parser, ())
+
+
+def _resolve_cli_selection(args: argparse.Namespace) -> Path:
+    from booley.flows.cli_selection import resolve_selection
+
+    value, legacy = args._cli_selection
+    root = resolve_selection(value, legacy=legacy)
+    return root
+
+
+def _extract_endpoint_selection(parser, args) -> None:
+    """Extract shared selectors while walking known built-in option arities.
+
+    Stop at the first opaque argument: its value can legally be an option name.
+    A leading separator belongs to the main CLI; the next belongs to the payload.
+    """
+    if args.command not in {"flow", "specialist"} or not args.endpoint_name:
+        return
+    tail = args.endpoint_args
+    if not any(
+        token.split("=", 1)[0] in {"--project", "--work-dir", "-C"} or token.startswith("-C")
+        for token in tail
+    ):
+        return
+    from booley.mcp.registry import discover_mcp_tools
+    from booley.targets.flow_names import canonical
+
+    name = canonical(args.endpoint_name) if args.command == "flow" else args.endpoint_name
+    info = next(
+        (item for item in discover_mcp_tools() if item.name == name and item.kind == args.command),
+        None,
+    )
+    if info is None:
+        return
+    from booley.flows.base import BuiltinFlow
+    from booley.flows.builtin_cli import build_parser
+    from booley.flows.cli_selection import extract_project_tail, human_parser
+
+    endpoint_cls = _load_mcp_tool_class(info)
+    if endpoint_cls is None:
+        return
+    endpoint = endpoint_cls()
+    endpoint_parser = (
+        build_parser(endpoint, human=True)
+        if isinstance(endpoint, BuiltinFlow)
+        else human_parser(endpoint._parser, durations=True)
+    )
+    args.endpoint_args, selections = extract_project_tail(
+        endpoint_parser, list(args.endpoint_args)
+    )
+    if len(selections) + int(hasattr(args, "_cli_selection")) > 1:
+        parser.error("multiple Project selectors are not supported")
+    if selections:
+        args._cli_selection = selections[0]
+
+
+def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
+    from booley.flows.base import BuiltinFlow
+    from booley.flows.cli_selection import invocation_context
+    from booley.flows.endpoint_context import EndpointContext
+
+    selected = getattr(args, "_cli_endpoint_project", None)
+    supported = isinstance(endpoint, BuiltinFlow) or (
+        isinstance(endpoint, EndpointContext)
+        and type(endpoint).main is EndpointContext.main
+        and type(endpoint).parse_args is EndpointContext.parse_args
+        and type(endpoint).execute_cli is EndpointContext.execute_cli
+        and type(endpoint)._prepare_cli_execution is EndpointContext._prepare_cli_execution
+        and "--work-dir" in endpoint._parser._option_string_actions
+        and endpoint._parser._option_string_actions["--work-dir"].dest == "work_dir"
+    )
+    if selected is not None and not supported:
+        print(
+            "ERROR: endpoint overrides the shared CLI entrypoint; implement the common parser "
+            "to support outer --project selection.",
+            file=sys.stderr,
+        )
+        return 2
+    with invocation_context(selected):
+        return endpoint.main(argv, **kwargs)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with subcommands + legacy flags."""
     parser = argparse.ArgumentParser(
@@ -485,6 +595,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--doctor", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--slug", "-s", type=str, default="", help=argparse.SUPPRESS)
 
+    _install_project_options(parser)
     _decorate_command_help(sub)
 
     return parser
@@ -722,7 +833,11 @@ def _hide_legacy_board_commands(board_sub) -> None:
 
 def _add_cheat_subparser(sub) -> None:
     """Add the `cheat` subparser: one `--<section>` flag per cheatsheet section."""
-    cheat_p = sub.add_parser("cheat", help="Print quick-reference cheatsheet")
+    from booley.flows.cli_selection import ProjectHelpFormatter
+
+    cheat_p = sub.add_parser(
+        "cheat", help="Print quick-reference cheatsheet", formatter_class=ProjectHelpFormatter
+    )
     # None given prints the whole sheet. Callers that need a single table (a
     # skill authoring criteria, a user chasing one command) skip the rest.
     cheat_sections = cheat_p.add_argument_group(
@@ -1076,6 +1191,20 @@ _RUN_DEFAULTS = {
 }
 
 
+def _normalize_project_options(parser, args) -> None:
+    from booley.flows.cli_selection import collect_project_selection
+
+    collect_project_selection(parser, args)
+    if args.command == "cleanup" and not hasattr(args, "project_root"):
+        args.project_root = ""
+    if hasattr(args, "_cli_selection") and (
+        args.command in {"run", "board"}
+        or COMMAND_PROJECT_BINDINGS[args.command] is ProjectBinding.INDEPENDENT
+    ):
+        parser.error(f"--project is unsupported for {args.command}")
+    _extract_endpoint_selection(parser, args)
+
+
 def _normalize_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> argparse.Namespace:
@@ -1093,6 +1222,7 @@ def _normalize_args(
         else:
             args.command = "chat"
 
+    _normalize_project_options(parser, args)
     _validate_doctor_args(parser, args)
 
     if args.command == "run":
@@ -1173,7 +1303,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
             aliases = cheatsheet.section_flags(slug)[1:]
             alias_names = ", ".join(f"--{name}" for name in aliases)
             alias_note = f" (alias: {alias_names})" if aliases else ""
-            print(f"  --{slug:<14}{cheatsheet.section_help(slug)}{alias_note}")
+            print(
+                f"  --{cheatsheet.section_flags(slug)[0]:<14}{cheatsheet.section_help(slug)}{alias_note}"
+            )
         return 0
 
     cs = cheatsheet_path()
@@ -1994,10 +2126,10 @@ def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
 
         adapter = TicketBoardFlowExecution()
         if isinstance(endpoint, BuiltinFlow):
-            return endpoint.main(argv, adapter=adapter)
+            return _invoke_endpoint(endpoint, argv, args, adapter=adapter)
         if isinstance(endpoint, FlowMechanics):
             endpoint.configure_flow_execution(adapter)
-    return endpoint.main(argv)
+    return _invoke_endpoint(endpoint, argv, args)
 
 
 def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
@@ -2779,7 +2911,9 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
         return None
     try:
         root = (
-            Path(args.project_root).resolve()
+            _resolve_cli_selection(args)
+            if hasattr(args, "_cli_selection")
+            else Path(args.project_root).resolve()
             if getattr(args, "project_root", None)
             else find_project_root()
         )
@@ -2795,7 +2929,9 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
         SourceCheckoutProjectError,
         FileNotFoundError,
         PermissionError,
-    ):
+    ) as exc:
+        if hasattr(args, "_cli_selection"):
+            raise ProjectRootDiscoveryError(str(exc)) from exc
         return None
 
 
@@ -2824,7 +2960,9 @@ def _dispatch_main() -> int:
         project_root = _optional_project_root(args)
     else:
         project_root = (
-            Path(args.project_root).resolve()
+            _resolve_cli_selection(args)
+            if hasattr(args, "_cli_selection")
+            else Path(args.project_root).resolve()
             if getattr(args, "project_root", None)
             else _command_project_root(command)
         )
@@ -2839,6 +2977,8 @@ def _dispatch_main() -> int:
     if runtime_context.ensure_proxy_env():
         logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
 
+    if hasattr(args, "_cli_selection") and command in {"flow", "specialist"}:
+        args._cli_endpoint_project = project_root
     early = _handle_early_exits(args, project_root)
     if early is not None:
         return early
