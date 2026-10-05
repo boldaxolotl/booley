@@ -203,7 +203,23 @@ def _prerequisite_findings() -> tuple[BootstrapFinding, ...]:
         daemon_error = _docker_daemon_error()
         if daemon_error:
             docker = BootstrapFinding("docker", BootstrapState.ERROR, daemon_error)
-    return git, docker, _vscode_finding()
+    return git, docker, _vscode_finding(), _host_agent_cli_finding()
+
+
+def _host_agent_cli_finding() -> BootstrapFinding:
+    """Project Setup requires an agent CLI on the host PATH."""
+    installed = tuple(name for name in ("claude", "codex") if shutil.which(name))
+    if installed:
+        return BootstrapFinding(
+            "host-agent-cli", BootstrapState.CURRENT, "on PATH: " + ", ".join(installed)
+        )
+    return BootstrapFinding(
+        "host-agent-cli",
+        BootstrapState.WARNING,
+        "Project Setup requires Claude Code (claude) or Codex (codex) on the host PATH. "
+        "Install Claude Code: https://code.claude.com/docs/en/setup or "
+        "Codex: https://developers.openai.com/codex/cli, then rerun `booley bootstrap`.",
+    )
 
 
 def _git_finding() -> BootstrapFinding:

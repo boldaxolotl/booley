@@ -80,6 +80,7 @@ from booley.mcp.call_context import (
     resolve_call_context,
     resolve_work_dir,
 )
+from booley.mcp.flow_execution_selection import select_flow_execution
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
@@ -3395,6 +3396,7 @@ def _endpoint_command(
     arguments: dict[str, Any],
     definition: dict[str, Any],
     call_counts: dict[str, int],
+    context: CallContext,
 ) -> list[str]:
     """Build the canonical subprocess command for one endpoint definition."""
     argv = _params_to_argv(arguments)
@@ -3402,8 +3404,9 @@ def _endpoint_command(
         transcript_dir = _resolve_transcript_dir(name, call_counts)
         argv.extend(["--transcript-dir", str(transcript_dir)])
     module = definition["module"]
-    if definition.get("is_flow") and os.environ.get("BOOLEY_TICKET_FILE"):
-        cmd = ["python", "-m", "booley.ticket_board.flow_runner"]
+    runner = select_flow_execution(context.ticket_file).flow_runner_module
+    if definition.get("is_flow") and runner is not None:
+        cmd = ["python", "-m", runner]
         if definition.get("is_custom") and definition.get("custom_path"):
             cmd.extend(["--custom-path", definition["custom_path"]])
         return [*cmd, name, *argv]
@@ -3464,7 +3467,7 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(work_dir_error)
     context = resolve_call_context(arguments)
 
-    cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts)
+    cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts, context)
 
     try:
         mcp_tool_timeout = _mcp_tool_timeout_seconds(

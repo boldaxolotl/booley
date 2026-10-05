@@ -32,6 +32,7 @@ from booley.flows.execution_persistence import (
     AcceptanceRecorder,
     FlowExecutionAdapter,
     StandaloneFlowExecution,
+    state_persistence_for,
 )
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity
@@ -150,12 +151,15 @@ class EndpointState(ABC):
         """Load development state from disk.
 
         When state_file is None (human mode), returns an empty in-memory state.
+        Either way the state saves through the strategy the recorder supplies.
         """
         sf = self.args.state_file
+        persistence = state_persistence_for(self._acceptance_recorder)
         if sf is None:
-            self._state = DevelopmentState()  # no file path => save() is a no-op
+            # No file path => the default strategy's save() is a no-op.
+            self._state = DevelopmentState.in_memory(persistence)
         else:
-            self._state = DevelopmentState.load(sf)
+            self._state = DevelopmentState.load(sf, persistence)
         return self._state
 
     @property
