@@ -32,13 +32,17 @@ The grill covers:
 - simulator (Verilator / Icarus) and testbench style (SystemVerilog / cocotb);
 - lint EDA tool (Verilator / Verible);
 - whether they want `AGENTS.md`;
-- the git footprint (row 16) — a repo born with Booley usually wants
-  `.booley_project/` committed, but ask rather than assume;
-- stealth mode (row 20) — its hidden-core projection is required only for a
-  hidden authored core, while an open scaffold may still opt into its history
-  scrub. In the same batched message ask exactly: **"Do you want stealth mode:
-  self-contained hidden cores plus the commit-message scrub?"** Recommend
-  disabled for an open scaffold and enable it only from an explicit yes.
+- one merged git-history question (rows 16 + 20), asked exactly:
+  **"Keep Booley out of your git history?"** Recommend No/open for a repo born
+  with Booley: commit `.booley_project/`, use native cores, row 20 =
+  `enabled = false`. Explain that Yes/hidden keeps `.booley_project/` untracked
+  and enables stealth mode (`enabled = true`), including the commit-message
+  scrub and hidden-core projection when Booley authors cores. Record both rows
+  `user-confirmed` from this single answer; preserve hand-set `[stealth]` as
+  `pre-set`. Use `../GLOSSARY.md` definitions verbatim on first use. Follow
+  Step 0 row 16 for volunteered scrub exceptions, explicit hybrid requests,
+  and the dependent ignore-native-cores question; unattended setup uses
+  Step 0's unchanged fallback and review stars.
 
 When the frontier is empty, summarize the shared understanding and ask the user
 to confirm it. Do not write config or scaffold the project before confirmation.

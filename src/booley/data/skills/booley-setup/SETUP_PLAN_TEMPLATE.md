@@ -30,42 +30,50 @@
 
 ## 2. Decision sheet
 
-| # | Decision | Value | Resolution | Confidence | Evidence / why | Open question |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | Flows: enabled + Target per flow | | | | | |
-| 2 | `.core` ownership/placement strategy & target names (must agree with row 16) | | | | | |
-| 3 | Toplevel(s); flat-port wrapper? | | | | | |
-| 4 | Testbench flavor (sv/cocotb/mixed) | | | | | |
-| 5 | Pass/fail/timeout/input-error sentinels (fail wins ties) | | | | | |
-| 6 | Test list + smoke test (provisional until timed) | | | | | |
-| 7 | Sandbox image | | | | | |
-| 8 | Data files / built artifacts | | | | | |
-| 9 | Vendored-core quarantine | | | | | |
-| 10 | Constraints (SDC/XDC): upstream path or user-supplied file; never agent-authored (a missing file blocks the Target) | | | | | |
-| 10a | Memory implementation: every synthesis-reachable candidate, evidence, disposition, replacement seam, timing shape, and confidence | | | | | |
-| 11 | Style lint opt-in | | | | | |
-| 12 | Elaboration Check / standalone need | | | | | |
-| 13 | Timeouts, heaviest synth calibration Target, & memory reservation | | | | | |
-| 14 | Commercial EDA provisioning and grant | | | | | |
-| 15 | AGENTS.md (wanted? merge fate; gotchas) | | | | | |
-| 16 | Git footprint: stealth `.booley_project/` or open native cores; ignore repository-native `.core` files? | | | | | |
-| 17 | Specialists explicitly disabled from the start (reviewer, …) | | | | | |
-| 18 | Parity check (optional): native EDA-tool match per phase → tier, else `none` | | | | | |
-| 19 | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a legacy missing field | | | | | |
-| 20 | `[stealth]`: history scrub plus hidden-core projection; required by row 16 when hidden cores are authored | | | | | |
-| 21 | Setup artifact retention: `minimal` (recommended) or `diagnostic` | | | | | |
-| 22 | Flow-cache disposition: `preserve` (recommended) or `evict-setup-touched` | | | | | |
-| 23 | Tech Cell Replacement: one Project-wide mapping shared by enabled synthesis Targets; `evidence-forced: not applicable` when synthesis is disabled | | | | | |
+| # | Decision | What it decides | Internal key | Value | Resolution | Confidence | Evidence / why | Open question |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Which jobs should Booley run for you (simulate, lint, synthesize, FPGA build)? | Select the Booley Flows and a build Target for each job so only intended work runs. | Flows: enabled + Target per flow |  |  |  |  |  |
+| 2 | Where do Booley's build descriptions (`.core` files) live, and what are the build configurations called? | Choose who owns each build description and its Target names; placement follows the git-history choice. | `.core` ownership/placement strategy & target names (must agree with row 16) |  |  |  |  |  |
+| 3 | Which module is the top of the design? Does it need a flat-port wrapper? | Select the entry module for each job and adapt interface ports when the simulator needs flat signals. | Toplevel(s); flat-port wrapper? |  |  |  |  |  |
+| 4 | Are your testbenches SystemVerilog, cocotb (Python), or both? | Choose how tests run and how their results are read; this controls the build and test layout. | Testbench flavor (sv/cocotb/mixed) |  |  |  |  |  |
+| 5 | Which log lines mean pass, fail, timeout, or bad input? | Recognize test outcomes without false passes; failure wins ties, and cocotb uses its result file. | Pass/fail/timeout/input-error sentinels (fail wins ties) |  |  |  |  |  |
+| 6 | Which tests exist, and which quick one proves the setup works? | Register the test list and a provisional smoke test, then measure the fastest useful check. | Test list + smoke test (provisional until timed) |  |  |  |  |  |
+| 7 | Which container image holds your tools? | Select the Sandbox image containing the EDA tools and dependencies needed to build and run the design. | Sandbox image |  |  |  |  |  |
+| 8 | Which data files or prebuilt artifacts do tests need? | Make vectors and firmware available reproducibly so missing inputs cannot masquerade as a design failure. | Data files / built artifacts |  |  |  |  |  |
+| 9 | Which third-party code should Booley leave untouched? | Use vendored-core quarantine to keep upstream cores read-only while integrating your own design. | Vendored-core quarantine |  |  |  |  |  |
+| 10 | Where do your timing constraints (SDC/XDC) come from? | Reuse an upstream or user-supplied constraint file; a missing file blocks the affected build. | Constraints (SDC/XDC): upstream path or user-supplied file; never agent-authored (a missing file blocks the Target) |  |  |  |  |  |
+| 10a | How should memories be handled in synthesis? | Classify every reachable memory and its implementation, replacement seam, timing behavior, and evidence before synthesis. | Memory implementation: every synthesis-reachable candidate, evidence, disposition, replacement seam, timing shape, and confidence |  |  |  |  |  |
+| 11 | Do you also want a code-style lint? | Reuse the repo’s own style rules when available; otherwise keep optional style checking off. | Style lint opt-in |  |  |  |  |  |
+| 12 | Should a quick compile-only check (Elaboration Check) run? | Choose whether to sweep standalone modules as well as compiling the normal simulation build. | Elaboration Check / standalone need |  |  |  |  |  |
+| 13 | How long can jobs run, and how much memory does the heaviest synthesis need? | Set time limits and plan measurements over the synthesis matrix so large jobs have enough memory. | Timeouts, heaviest synth calibration Target, & memory reservation |  |  |  |  |  |
+| 14 | Which licensed commercial tools may Booley use, and with whose license approval? | Record the approved installation, License Profile, and Project Grant so licensed EDA use has explicit authority. | Commercial EDA provisioning and grant |  |  |  |  |  |
+| 15 | Do you want an `AGENTS.md` guide for AI agents working on this repo? | Decide whether to create or merge agent guidance and which documented project gotchas it should retain. | AGENTS.md (wanted? merge fate; gotchas) |  |  |  |  |  |
+| 16 | Keep Booley out of your git history? | Hidden keeps `.booley_project/` untracked and enables stealth mode; open commits the config and uses native cores. | Git footprint: stealth `.booley_project/` or open native cores; ignore repository-native `.core` files? |  |  |  |  |  |
+| 17 | Turn off any Specialist (AI reviewer, mutation tester) from the start? | Keep optional AI helpers available by default, or record the ones you deliberately disable. | Specialists explicitly disabled from the start (reviewer, …) |  |  |  |  |  |
+| 18 | Cross-check Booley's results against your existing scripts (parity check)? | Compare results after setup only when both paths use the same EDA tool; propose sim for an identical runnable script, otherwise none. | Parity check (optional): native EDA-tool match per phase → tier, else `none` |  |  |  |  |  |
+| 19 | Which AI provider and account does Booley use? | Preserve the provider and authentication selected during initialization; ask only for missing fields. | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a legacy missing field |  |  |  |  |  |
+| 20 | Scrub AI/tool names out of commit messages (stealth)? | Record the git-history answer’s commit-message scrub and hidden-core projection policy; existing explicit config wins. | `[stealth]`: history scrub plus hidden-core projection; required by row 16 when hidden cores are authored |  |  |  |  |  |
+| 21 | Keep setup's scratch evidence, or clean it up? | Preserve durable configuration and reports; minimal removes only current-run scratch, while diagnostic keeps raw evidence. | Setup artifact retention: `minimal` (recommended) or `diagnostic` |  |  |  |  |  |
+| 22 | Keep or clear the build cache (flow cache) after setup? | Preserve reusable build products by default; explicit eviction of setup-touched cache costs a rebuild. | Flow-cache disposition: `preserve` (recommended) or `evict-setup-touched` |  |  |  |  |  |
+| 23 | Swap generic cells for your foundry library's cells (Tech Cell Replacement)? | Record one shared mapping and evidence for all synthesis builds; not applicable when synthesis is disabled. | Tech Cell Replacement: one Project-wide mapping shared by enabled synthesis Targets; `evidence-forced: not applicable` when synthesis is disabled |  |  |  |  |  |
 
 <!-- Repo-specific rows: continue numbering from 24 (git submodules, generator
      steps, env-var-parameterized TBs, scope exclusions such as a VHDL twin, …).
-     The standard list is the floor, not the ceiling.
+     The standard list is the floor, not the ceiling. Each added row also needs
+     a plain label, an explanation, and an internal key.
      Resolution column: `evidence-forced` (the repo determines it — no star, no
      question), `pre-set` (already hand-set on disk; kept verbatim, not starred),
      `user-confirmed`, `inferred`, or `review` (user judgment, or a
      low-confidence inference — starred for the user to audit).
      Confidence column: high/medium/low for `inferred` rows; `—` otherwise.
-     Rows 16/17/19/20 are never evidence-forced. A row covering several
+     Rows 16/17/19/20 are never evidence-forced. Rows 17 and 18 are
+     defaults-block rows, not grill rows; 16+20 are asked as one question.
+     When filling §2, split the canonical table into three sub-tables with the
+     same columns and global numbering: ### Decisions you made
+     (user-confirmed, and unattended review rows), ### Defaults accepted
+     (defaults-block rows, inferred), and
+     ### Settled by your repo or existing config (evidence-forced, pre-set).
+     A row covering several
      independent items (row 1's four flows) resolves per item or splits. -->
 
 ### Tech Cell Replacement

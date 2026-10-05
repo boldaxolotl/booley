@@ -1,5 +1,10 @@
 """Regression contracts for shipped ticket workflow skills."""
 
+import re
+from pathlib import Path
+
+import pytest
+
 from booley.runtime.paths import skills_dir
 
 
@@ -574,17 +579,17 @@ def test_heal_preserves_scope_and_routes_exceptional_findings():
         assert required in skill
 
 
-def test_setup_makes_stealth_an_explicit_opt_in():
+def test_setup_asks_one_git_history_question():
     plan = _skill_text("booley-setup", "steps/0-plan.md")
     project_config = _skill_text("booley-setup", "steps/2-project-config.md")
     greenfield = _skill_text("booley-setup", "steps/new-greenfield.md")
     template = _skill_text("booley-setup", "BOOLEY_TEMPLATE.toml")
 
-    prompt = "Do you want stealth mode: self-contained hidden cores plus the commit-message scrub?"
+    prompt = "Keep Booley out of your git history?"
     compact_plan = " ".join(plan.split())
     assert prompt in compact_plan
     assert prompt in " ".join(greenfield.split())
-    assert "Unattended: write `enabled = false`" in compact_plan
+    assert "Unattended: write `enabled = false`" in compact_plan.replace("*", "")
     assert "Do not omit the block" in project_config
     ignore_prompt = (
         "Should Booley ignore the repository's existing `.core` files and use only the "
@@ -647,7 +652,9 @@ def test_setup_plans_one_project_wide_tech_cell_replacement():
 
     assert "one Project-wide **Tech Cell Replacement** mapping" in plan
     assert "per-Target coverage matrix" in plan
-    assert "| 23 | Tech Cell Replacement" in template
+    assert _decision_rows(_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md"))["23"][
+        3
+    ].startswith("Tech Cell Replacement:")
     assert "continue numbering from 24" in template
     assert "evidence-forced: not applicable" in template
     assert (
@@ -814,3 +821,176 @@ def test_triage_decides_waiver_candidates_one_at_a_time():
     assert template.index("#### Waiver Candidates") < template.index(
         "#### Review findings and dispositions"
     )
+
+
+_SETUP_TERMS = (
+    "stealth",
+    "Specialist",
+    "Target",
+    "Flow",
+    "Elaboration Check",
+    "parity check",
+    "Tech Cell Replacement",
+    "flow cache",
+    "vendored-core quarantine",
+    "Sandbox",
+    "Doctor",
+    "VLNV",
+    "hidden-core projection",
+    "commit-message scrub",
+    ".core",
+    "Project Grant",
+    "grant",
+    "License Profile",
+)
+_REQUIRED_SETUP_TERMS = {
+    "stealth",
+    "specialist",
+    "target",
+    "flow",
+    "elaboration check",
+    "parity check",
+    "tech cell replacement",
+    "flow cache",
+    "vendored-core quarantine",
+}
+
+
+def _decision_rows(template: str) -> dict[str, list[str]]:
+    section = template.split("## 2. Decision sheet", 1)[1]
+    table = section.split("<!--", 1)[0]
+    rows = {}
+    for line in table.splitlines():
+        if not line.startswith("| "):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if re.fullmatch(r"\d+a?", cells[0]):
+            assert cells[0] not in rows, f"duplicate decision row {cells[0]}"
+            rows[cells[0]] = cells
+    return rows
+
+
+def _glossary_terms() -> set[str]:
+    terms = set()
+    for line in _skill_text("booley-setup", "GLOSSARY.md").splitlines():
+        if line.startswith("## "):
+            terms.add(line[3:].strip("`").casefold())
+        elif line.startswith("Aliases:"):
+            terms.update(alias.strip().strip("`").casefold() for alias in line[8:].split(","))
+    return terms
+
+
+def _assert_terms_defined(text: str, terms: set[str]) -> None:
+    for term in _SETUP_TERMS:
+        if re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text, re.IGNORECASE):
+            assert term.casefold() in terms, f"undefined setup term: {term}"
+
+
+def _setup_row_sections() -> dict[str, str]:
+    plan = _skill_text("booley-setup", "steps/0-plan.md")
+    part_b = plan.split("## Part B", 1)[1].split("## Part C", 1)[0]
+    chunks = re.split(r"^(\d+a?)\. \*\*", part_b, flags=re.MULTILINE)
+    return {chunks[i]: " ".join(chunks[i + 1].split()) for i in range(1, len(chunks), 2)}
+
+
+def test_setup_plan_rows_have_plain_label_and_explanation():
+    template = _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
+    rows = _decision_rows(template)
+    assert set(rows) == {*(str(i) for i in range(1, 24)), "10a"}
+    for row in rows.values():
+        assert len(row) == 9
+        assert all(row[1:4]), f"missing label, explanation, or internal key: {row}"
+    for heading in (
+        "### Decisions you made",
+        "### Defaults accepted",
+        "### Settled by your repo or existing config",
+    ):
+        assert heading in template
+
+
+def test_setup_plan_plain_text_terms_are_in_glossary():
+    terms = _glossary_terms()
+    assert terms >= _REQUIRED_SETUP_TERMS
+    rows = _decision_rows(_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md"))
+    for row in rows.values():
+        _assert_terms_defined(" ".join(row[1:4]), terms)
+    # A synthetic row must fail when a visible term loses its glossary entry.
+    for term in _SETUP_TERMS:
+        with pytest.raises(AssertionError, match="undefined setup term"):
+            _assert_terms_defined(f"Choose {term} for this build", terms - {term.casefold()})
+
+
+def test_setup_grill_mandatory_set():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    assert (
+        '"Mandatory grill row" means row 4 (unless evidence-forced), merged rows 16 + 20, '
+        "and row 19 only when init left a field unset"
+    ) in plan
+    assert "Keep Booley out of your git history?" in plan
+    sections = _setup_row_sections()
+    for row in ("17", "18"):
+        assert "defaults block" in sections[row]
+        for obsolete in ("grill question", "always a grill", "Interactive: ask"):
+            assert obsolete not in sections[row]
+    for row in ("4", "16", "20"):
+        assert "always a grill question" in sections[row].lower()
+    review = plan.split("- **`review`**", 1)[1].split("Row 17", 1)[0]
+    mandatory = plan.split("- **The mandatory rows", 1)[1].split("- **The defaults block", 1)[0]
+    for bullet in (review, mandatory):
+        assert not re.search(r"\b(?:17|18)\b", bullet)
+    for path in (skills_dir() / "booley-setup").rglob("*.md"):
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        for obsolete in ("17 (specialists)", "18 (parity)", "Rows 16, 17, and 20"):
+            assert obsolete not in text, path
+
+
+def test_setup_grill_defaults_block():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    for required in (
+        "one confirm block",
+        "Accept these defaults, or name the ones to change",
+        "confidence is `low`",
+        "no defensible default",
+        "unanswered frontier question",
+        "same round",
+        "otherwise the next round",
+        "row 4 or row 16 wait",
+        "accepted defaults are `inferred`",
+        "high or medium confidence",
+    ):
+        assert required in plan
+    for row in ("17", "18"):
+        assert "no star" in _setup_row_sections()[row]
+
+
+def test_setup_glossary_shipped_and_referenced():
+    assert (skills_dir() / "booley-setup" / "GLOSSARY.md").is_file()
+    for relative in ("SKILL.md", "steps/0-plan.md", "steps/new-greenfield.md"):
+        text = _compact_skill_text("booley-setup", relative)
+        assert "GLOSSARY.md" in text
+        assert "verbatim" in text
+
+
+def test_setup_hidden_footprint_enables_stealth():
+    sections = _setup_row_sections()
+    hidden = sections["16"]
+    assert "Row 16 = `hidden`, row 20 = `enabled = true`" in hidden
+    assert "including for hidden config-only projects" in hidden
+    assert "both are `user-confirmed` from this one answer" in hidden
+    assert "only if the user volunteers" in hidden
+    assert "Existing hand-set `[stealth]` wins" in hidden
+    assert "Unattended: write `enabled = false`" in sections["20"].replace("*", "")
+    assert "hidden config alone never enables the scrub" in sections["20"]
+    for path in (skills_dir() / "booley-setup").rglob("*"):
+        if path.is_file():
+            text = " ".join(path.read_text(encoding="utf-8").split())
+            assert "Recommend `no` unless row 16" not in text
+            assert "hidden config-only project may leave stealth off" not in text
+
+
+def test_context_defines_setup_glossary_terms():
+    context = (Path(__file__).resolve().parents[2] / "docs" / "CONTEXT.md").read_text(
+        encoding="utf-8"
+    )
+    for term in ("Stealth Mode", "Parity Check", "Flow Cache", "Vendored-Core Quarantine"):
+        assert context.count(f"**{term}**:") == 1
