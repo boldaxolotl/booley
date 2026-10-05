@@ -64,6 +64,7 @@ from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks as _managed_step_project_git_hooks,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.worktrees import list_worktrees
 
 
 def _step_git_hooks(ctx: InitContext) -> None:
@@ -548,18 +549,9 @@ def _repair_recorded_ticket(root, tio, slug, directory, linked) -> set[Path]:
     with tio._ticket_lock(slug, review_operation=True):
         basis = tio._load_basis_unlocked(slug)
         outer = basis.participant("outer")
-        listing = subprocess.run(
-            ["git", "-C", str(root), "worktree", "list", "--porcelain"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        ).stdout
-        candidate = None
-        for line in listing.splitlines():
-            if line.startswith("worktree "):
-                candidate = directory / Path(line.removeprefix("worktree ")).name
-            elif line == f"branch {outer.ticket_ref}" and candidate in linked:
+        for entry in list_worktrees(root):
+            candidate = directory / entry.path.name
+            if entry.branch == outer.ticket_ref and candidate in linked:
                 project = next((row for row in basis.participants if row.role == "project"), None)
                 repair_ticket_workspace(
                     root,
