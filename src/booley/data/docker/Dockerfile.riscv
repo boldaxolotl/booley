@@ -143,29 +143,40 @@ RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
 # ratified releases; it is NOT every document RVI has ever published (that set
 # is unbounded and lives across dozens of extension repos), but it is the
 # canonical reference for ISA/privileged/debug/ABI questions.
-#   riscv-spec.{pdf,html}          — unprivileged + privileged ISA manual
+# ISA channel: newest date-named release, refreshed at each Booley release
+# currency audit (ADR 0071); per-merge snapshots are not the channel.
+#   riscv-isa-unprivileged.{pdf,html} — unprivileged ISA manual
+#   riscv-isa-privileged.{pdf,html}   — privileged ISA manual
 #   riscv-debug-specification.pdf  — external debug support
 #   riscv-abi.pdf                  — ELF psABI / calling convention
 # ---------------------------------------------------------------------------
-ARG ISA_MANUAL_RELEASE=riscv-isa-release-60d323c-2026-07-06
+ARG ISA_MANUAL_RELEASE=20250508
 ARG DEBUG_SPEC_RELEASE=1.0
 ARG PSABI_RELEASE=v1.0
-ARG ISA_MANUAL_PDF_SHA256=5aae3568f952a4e2f10dab7a204ec7a43b13a1c068be2d9aa7995f418e941d03
-ARG ISA_MANUAL_HTML_SHA256=41c79800bd7b97fcdeaf564d4a6f8689e895dcd932eecc4207dc582d3e1503ad
+ARG ISA_UNPRIVILEGED_PDF_SHA256=cef2e63c08c6f82cf7acc9056a589954f5b1adf6f7dccaa38cd75278b093e984
+ARG ISA_UNPRIVILEGED_HTML_SHA256=3cd7425244ec9c23822d81cc740ea649395c148d06bf57bb9c09b7855cbfaa44
+ARG ISA_PRIVILEGED_PDF_SHA256=d0228bbecc76943aaa5685e381e0263a8c750d18b1b0c452b086b0ddd15a4955
+ARG ISA_PRIVILEGED_HTML_SHA256=d9d45fb094478c9df43583660ed132733ad5320ea1dca70a83fe3085b211a1fe
 ARG DEBUG_SPEC_SHA256=ce2787b25233a6109c9bc767b2bc497798148b721390f72fb9b48ff0ed986fc8
 ARG PSABI_SHA256=a8d06bdcaa82a6a4567a1904dc27ef1ca1043ebaa1f523558c927a9d72bc23d9
 RUN echo ">>> Downloading ratified RISC-V International specifications..." \
     && mkdir -p /opt/riscv-docs \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-spec.pdf" \
-        -o /opt/riscv-docs/riscv-isa-manual.pdf \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-spec.html" \
-        -o /opt/riscv-docs/riscv-isa-manual.html \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.pdf" \
+        -o /opt/riscv-docs/riscv-isa-unprivileged.pdf \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.html" \
+        -o /opt/riscv-docs/riscv-isa-unprivileged.html \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.pdf" \
+        -o /opt/riscv-docs/riscv-isa-privileged.pdf \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.html" \
+        -o /opt/riscv-docs/riscv-isa-privileged.html \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-debug-spec/releases/download/${DEBUG_SPEC_RELEASE}/riscv-debug-specification.pdf" \
         -o /opt/riscv-docs/riscv-debug-specification.pdf \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases/download/${PSABI_RELEASE}/riscv-abi.pdf" \
         -o /opt/riscv-docs/riscv-abi.pdf \
-    && echo "${ISA_MANUAL_PDF_SHA256}  /opt/riscv-docs/riscv-isa-manual.pdf" | sha256sum -c - \
-    && echo "${ISA_MANUAL_HTML_SHA256}  /opt/riscv-docs/riscv-isa-manual.html" | sha256sum -c - \
+    && echo "${ISA_UNPRIVILEGED_PDF_SHA256}  /opt/riscv-docs/riscv-isa-unprivileged.pdf" | sha256sum -c - \
+    && echo "${ISA_UNPRIVILEGED_HTML_SHA256}  /opt/riscv-docs/riscv-isa-unprivileged.html" | sha256sum -c - \
+    && echo "${ISA_PRIVILEGED_PDF_SHA256}  /opt/riscv-docs/riscv-isa-privileged.pdf" | sha256sum -c - \
+    && echo "${ISA_PRIVILEGED_HTML_SHA256}  /opt/riscv-docs/riscv-isa-privileged.html" | sha256sum -c - \
     && echo "${DEBUG_SPEC_SHA256}  /opt/riscv-docs/riscv-debug-specification.pdf" | sha256sum -c - \
     && echo "${PSABI_SHA256}  /opt/riscv-docs/riscv-abi.pdf" | sha256sum -c - \
     && printf '%s\n' \
@@ -173,7 +184,8 @@ RUN echo ">>> Downloading ratified RISC-V International specifications..." \
         '' \
         'Ratified reference set baked into the booley-sandbox-riscv image.' \
         '' \
-        "- riscv-isa-manual.pdf / .html — unprivileged + privileged ISA manual (${ISA_MANUAL_RELEASE})" \
+        "- riscv-isa-unprivileged.pdf / .html — unprivileged ISA manual (${ISA_MANUAL_RELEASE})" \
+        "- riscv-isa-privileged.pdf / .html — privileged ISA manual (${ISA_MANUAL_RELEASE})" \
         "- riscv-debug-specification.pdf — external debug support (${DEBUG_SPEC_RELEASE})" \
         "- riscv-abi.pdf — ELF psABI / calling convention (${PSABI_RELEASE})" \
         '' \

@@ -151,6 +151,11 @@ adding new features.
 
 ### Quality of life
 
+- The RISC-V Sandbox Image now includes separate unprivileged and privileged
+  ISA manuals from the date-named upstream release `20250508`. Offline names
+  are `riscv-isa-unprivileged.{pdf,html}` and `riscv-isa-privileged.{pdf,html}`;
+  custom references to `riscv-isa-manual.{pdf,html}` must select a volume.
+
 - "Sandbox" replaces "Session Runtime" in output, diagnostics, and docs.
   `booley cheat --sandbox` is the main flag; `--runtime` remains an alias.
 - The Ticket Mode Console shows readable Criterion labels, configured

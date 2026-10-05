@@ -2261,15 +2261,23 @@ class TestRiscvImageChecks:
     def test_checks_every_advertised_offline_document(self, monkeypatch):
         calls, passes, failures = self._run(monkeypatch)
 
-        docs_call = next(call for call in calls if "riscv-isa-manual.html" in call)
+        docs_call = next(call for call in calls if "riscv-isa-unprivileged.html" in call)
         assert set(doctor._RISCV_DOC_FILES) <= set(docs_call)
         assert "RISC-V offline specs complete at $BOOLEY_RISCV_DOCS" in passes
         assert failures == []
 
-    def test_incomplete_offline_document_set_fails(self, monkeypatch):
-        _calls, passes, failures = self._run(
-            monkeypatch, failed_doc="riscv-debug-specification.pdf"
-        )
+    @pytest.mark.parametrize(
+        "missing_doc",
+        [
+            "riscv-isa-unprivileged.pdf",
+            "riscv-isa-unprivileged.html",
+            "riscv-isa-privileged.pdf",
+            "riscv-isa-privileged.html",
+            "riscv-debug-specification.pdf",
+        ],
+    )
+    def test_incomplete_offline_document_set_fails(self, monkeypatch, missing_doc):
+        _calls, passes, failures = self._run(monkeypatch, failed_doc=missing_doc)
 
         assert "RISC-V offline specs complete at $BOOLEY_RISCV_DOCS" not in passes
         assert failures == [
