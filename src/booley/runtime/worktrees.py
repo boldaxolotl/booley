@@ -12,9 +12,12 @@ Porcelain format (``git help worktree``): one record per worktree, each a
 ``prunable [<reason>]``), records separated by a blank line. The first record
 is the primary worktree.
 
-Paths are taken verbatim from the ``worktree`` line: without ``-z`` Git
-C-quotes paths that contain special characters, and this parser deliberately
-does not unquote them, so callers see exactly what Git printed.
+Paths are taken verbatim from the ``worktree`` line to the end of that
+line. Git prints paths raw in this line-based format (only ``locked`` and
+``prunable`` reasons are C-quoted), so a path containing a newline cannot
+be represented faithfully; that is the format's limitation, and callers that
+need such paths use the ``-z`` form with their own parser. Reasons are kept
+exactly as Git printed them, quoted or not.
 """
 
 from __future__ import annotations
@@ -35,8 +38,10 @@ _REASON_FIELDS = frozenset({"locked", "prunable"})  # keyword with optional reas
 class WorktreeEntry:
     """One registered worktree as Git reported it.
 
-    ``locked`` and ``prunable`` are ``None`` when the attribute is absent and
-    the (possibly empty) reason text when present.
+    ``path`` is the ``worktree`` line's text as Git printed it, not resolved
+    and not unquoted. ``locked`` and ``prunable`` are ``None`` when the
+    attribute is absent and the (possibly empty, possibly C-quoted) reason
+    text when present.
     """
 
     path: Path
@@ -53,9 +58,10 @@ def parse_worktree_porcelain(text: str) -> tuple[WorktreeEntry, ...]:
 
     A ``worktree`` line starts a new record; a blank line ends the current
     one; a missing final blank line is accepted. Attribute lines outside a
-    record and unknown attribute lines are ignored, as are repeated
-    attributes except that the last value wins. Lines are split with
-    :meth:`str.splitlines`, so CRLF line endings are accepted.
+    record, unknown attribute lines, and ``HEAD``/``branch`` lines without a
+    value are ignored; when an attribute repeats within a record the last
+    value wins. Lines are split with :meth:`str.splitlines`, so CRLF line
+    endings are accepted.
     """
     entries: list[WorktreeEntry] = []
     current: WorktreeEntry | None = None
@@ -79,8 +85,8 @@ def list_worktrees(repository: Path) -> tuple[WorktreeEntry, ...]:
     """Run ``git -C <repository> worktree list --porcelain`` and parse it.
 
     Git failures propagate unchanged: :class:`subprocess.CalledProcessError`
-    for a non-zero exit, :class:`subprocess.TimeoutExpired` after 30 seconds,
-    and :class:`OSError` when Git cannot be started.
+    for a non-zero exit, :class:`subprocess.TimeoutExpired` after
+    ``_LIST_TIMEOUT_S`` seconds, and :class:`OSError` when Git cannot be started.
     """
     listing = subprocess.run(
         ["git", "-C", str(repository), "worktree", "list", "--porcelain"],

@@ -253,7 +253,9 @@ def _registered_worktrees(repository: Path) -> dict[Path, str]:
     """Map each resolved worktree path that has a branch checked out to its ref."""
     paths: dict[Path, str] = {}
     for entry in parse_worktree_porcelain(_git(repository, "worktree", "list", "--porcelain")):
-        resolved = entry.path.resolve()  # every record is resolved, branch or not
+        # Resolve every record, branch or not: the pre-parser code did, so a
+        # record whose path cannot be resolved still raises here.
+        resolved = entry.path.resolve()
         if entry.branch is not None:
             paths[resolved] = entry.branch
     return paths

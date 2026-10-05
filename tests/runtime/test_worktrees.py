@@ -94,6 +94,39 @@ def test_real_listing_reports_bare_primary(tmp_path: Path, monkeypatch: pytest.M
     assert (entry.head, entry.branch, entry.detached) == (None, None, False)
 
 
+@pytest.mark.skipif(
+    shutil.which("git") is None or Path("/").anchor != "/", reason="POSIX-only path"
+)
+def test_real_listing_prints_quote_and_backslash_in_path_raw(primary: Path):
+    linked = primary.parent / 'quo"te\\back'
+    _git(primary, "worktree", "add", "-q", "--detach", str(linked))
+
+    paths = [
+        entry.path
+        for entry in parse_worktree_porcelain(_git(primary, "worktree", "list", "--porcelain"))
+    ]
+
+    assert linked.resolve() in [path.resolve() for path in paths]
+
+
+def test_list_worktrees_propagates_timeout_and_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(subprocess.TimeoutExpired):
+        list_worktrees(tmp_path)
+
+    def missing(*args, **kwargs):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    with pytest.raises(OSError, match="git not found"):
+        list_worktrees(tmp_path)
+
+
 def test_list_worktrees_propagates_git_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     with pytest.raises(subprocess.CalledProcessError):
@@ -114,7 +147,8 @@ def test_missing_final_blank_line_and_crlf_are_accepted():
     )
 
 
-def test_paths_are_verbatim_including_spaces_non_ascii_and_c_quotes():
+def test_line_text_is_kept_verbatim_even_when_it_looks_quoted():
+    """The parser never unquotes: quoted-looking text is synthetic, not Git output."""
     text = (
         "worktree /x/trailing  \n\n"
         "worktree /x/ré po\n\n"

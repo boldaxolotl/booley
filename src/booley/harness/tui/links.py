@@ -1,4 +1,4 @@
-"""Click resolver layer for Console clickable file links.
+"""Click resolver layer for clickable file links in terminal UIs.
 
 One module owns the "what does this clickable token actually do" question.
 Widget click handlers build a :class:`LinkTarget`, call :func:`resolve`
@@ -49,9 +49,10 @@ def build_link_context(
 ) -> LinkContext:
     """Construct a :class:`LinkContext` from the harness run inputs.
 
-    Reads RTL/TB source dirs from booley.toml (via shared_infra) and
-    wires :func:`ticket_board.find_ticket_file` so the resolver can
-    look up ticket-slug targets without importing the board layer.
+    Reads RTL/TB source dirs from booley.toml (via shared_infra) and, when
+    the ticket board imports, wires :func:`ticket_board.find_ticket_file`
+    so the resolver can look up ticket-slug targets. The board is imported
+    lazily here and nowhere else in this module.
     """
     rtl_dirs: tuple[str, ...] = ()
     tb_dirs: tuple[str, ...] = ()
