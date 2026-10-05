@@ -97,9 +97,12 @@ supported. You need:
 - [Docker](https://www.docker.com/), with about **4 GB** free for the image
   (**6 GB** with the RISC-V toolchain) plus room for build artifacts
 - [VS Code](https://code.visualstudio.com/)
-- Credentials for Claude (the default) or Codex
+- A host agent CLI on PATH for Project Setup: [Claude Code](https://code.claude.com/docs/en/setup)
+  (`claude`, the default) or [Codex](https://developers.openai.com/codex/cli) (`codex`)
+- Credentials for the installed agent CLI
 
-Install the CLI and prepare the host:
+Install your host agent CLI using the instructions linked above, then install
+Booley and prepare the host:
 
 ```bash
 python3 -m pip install --user booley-rtl

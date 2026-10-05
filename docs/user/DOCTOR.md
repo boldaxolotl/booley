@@ -6,6 +6,11 @@ verify the design. A design failure that the machinery executes and interprets
 correctly is compatible with healthy machinery. Doctor's existing verdict rules
 still apply; deep currency reporting does not change their classification.
 
+A host agent session is expected during Project Setup. `session.agent-on-host`
+is a PASS-level reminder that the Booley MCP server and Booley Flows live only
+in the Sandbox. For Interactive work, reopen in the devcontainer or use
+`booley session up && booley session enter`. This reminder needs no waiver.
+
 Use plain `booley doctor` for ongoing work. It checks current setup and reports
 one informational line about prior deep validation. Run `booley doctor --deep`
 inside the Sandbox during initial Project Setup, after a Booley version change,
