@@ -184,11 +184,18 @@ the base Sandbox Image, and global sidecars. Project Initialization walks throug
 7. Post-setup advisories
 
 Machine-global integrations are owned by the one canonical host-installed
-Booley wheel. A source checkout, worktree, QA runtime, or virtual environment
-may exercise candidate code in isolation, but it cannot deploy or retarget the
-global skills under `~/.agents` or `~/.claude`. Run the `booley` installed for
-the base host interpreter when Host Bootstrap reports this policy violation.
-The recorded identity is machine-maintained state in
+Booley wheel. The first eligible wheel to run Host Bootstrap becomes canonical,
+including pipx, uv tool, or an ordinary persistent venv. A source checkout,
+worktree, QA runtime, or editable development install cannot deploy or retarget
+the global skills under `~/.agents` or `~/.claude`; temporary and ephemeral
+installed-wheel locations are also refused. A wheel in a persistent venv next
+to a checkout remains eligible: the guard checks the resolved package path,
+not the purpose of every environment or comprehensive wheel provenance.
+
+The recorded executable, interpreter, distribution root, version, revision,
+and payload fingerprint must match for later host commands. An intentional
+upgrade or switch requires `booley bootstrap --update` from the intended
+installed launcher. The recorded identity is machine-maintained state in
 `~/.config/booley/host-installation.json`; it is intentionally separate from
 the user-authored host policy in `config.toml`.
 
@@ -263,8 +270,9 @@ Steps **5–7**:
 
 - **0 · Plan · host.** The feasibility triage (per-flow green/yellow/red across
   `sim`, `lint`, `synth`, `fpga`) plus a decision grill over
-  everything the later steps need. Writes `.booley_project/SETUP-PLAN.md` and
-  stops for your approval. **The only approval gate.**
+  everything the later steps need. It asks only a few questions and shows the
+  rest as defaults you can accept in one go. Writes
+  `.booley_project/SETUP-PLAN.md` and stops for your approval. **The only approval gate.**
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
 - **2 · Project config.** The `.core` Target(s), `tests.toml`, and `booley.toml`.
@@ -326,10 +334,13 @@ Mode session.
 
 ## Notes
 
-**Stealth mode and the commit-msg convention are opt-in.** Setup specifically
-asks whether to enable stealth mode and writes `[stealth] enabled = false`
-unless you say yes. A missing `enabled` key retains the older on-by-default
-runtime fallback for compatibility with existing projects. When enabled,
+**Setup asks whether to keep Booley out of your git history.** Yes keeps
+`.booley_project/` hidden and enables stealth mode, including its commit-message
+scrub and hidden-core projection when Booley authors cores; No uses open config
+and native cores with stealth off. Unattended setup leaves stealth off unless
+hidden authored cores require it. Existing hand-set values are preserved.
+A missing `enabled` key retains the on-by-default runtime fallback for
+compatibility with existing projects. When enabled,
 stealth mode keeps project-identifying details out of commit messages so private
 IP names don't leak into git history. The project commit-msg hook installed by
 `booley init` rejects recognized attribution footers and sanitizes other

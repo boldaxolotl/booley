@@ -189,7 +189,12 @@ Stealth Mode is Project policy for protecting a downstream design's private
 identifiers. It never applies to a Booley source checkout, which is not a
 Project and must not contain `.booley_project/` or receive Project Git hooks.
 
-Stealth mode is opt-in during setup: setup asks specifically whether you want to enable the commit-message scrub and writes `[stealth] enabled = false` unless you say yes. For compatibility with existing projects, an omitted `enabled` key still uses the older on-by-default runtime fallback.
+Setup asks whether to keep Booley out of your git history. Yes keeps
+`.booley_project/` hidden and enables stealth mode, including the commit-message
+scrub and hidden-core projection for authored cores; No uses open config and
+native cores with stealth off. Unattended setup leaves stealth off unless
+hidden authored cores require it. Existing hand-set values are preserved.
+For compatibility with existing projects, an omitted `enabled` key still uses the older on-by-default runtime fallback.
 
 When enabled, a commit-msg hook rejects attribution footers and sanitizes other
 protected commit-message prose, and authored

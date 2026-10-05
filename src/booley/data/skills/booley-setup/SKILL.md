@@ -59,7 +59,8 @@ refers to its parts:
 - **§1 Feasibility** — the per-flow verdict table plus determinant evidence.
 - **§2 Decision sheet** — numbered decision rows (row 7 is the sandbox image,
   row 16 the git footprint, row 20 the commit-message scrub, …), each with
-  value, **resolution mode**, confidence, and evidence (resolution and
+  a plain-English label, explanation, internal key, value, **resolution mode**,
+  confidence, and evidence (resolution and
   confidence are separate columns — see `steps/0-plan.md`, "How a row
   resolves") — followed by the **execution-time checks** list: planned
   verifications that need the sandbox, run by Steps 2–4 as they are reached.
@@ -99,9 +100,12 @@ devcontainer entered via **Reopen in Container** in VS Code, or
 `booley session up` headlessly. There, each step edits files in the
 worktree and runs the `booley` CLI in a container terminal; the sandbox
 toolchain ships in the container, so EDA-tool probes and smoke checks run directly
-(`verilator --version`, or `booley flow <name> …` — runs any Booley Flow, passing
+(`verilator --version`, or `booley flow <name> --quiet …` — runs any Booley Flow, passing
 the rest of the line to it verbatim). `booley run`, `booley board`, and
-`booley doctor` are container commands here.
+`booley doctor` are container commands here. Use `--quiet` for captured Flow
+reproduction output: direct shell calls otherwise add live stderr progress and
+an observation transcript. Human live-output options are documented in
+`docs/user/FLOW_REFERENCE.md` → “Live progress and logs”.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
 refuses in-container; the workflow CLI (`booley run`/`board`, `bwave`) refuses
@@ -212,7 +216,7 @@ Every step that surfaces something to the user — the plan and its grill
 (Step 0), the config draft (Step 2), the doctor findings (Step 4) — is
 **first-run onboarding: assume the reader is new to Booley.** Lead with a
 concise plain-English explanation before the artifact, define each Booley term
-the first time it appears instead of assuming fluency, and name the evidence
+from `GLOSSARY.md` verbatim the first time it appears, and name the evidence
 behind every decision. This is a communication rule, not a decision rule: it
 changes how legibly a step explains itself, never *what* it does. Step 0's
 grill leans hardest on it — a user who does not yet speak Booley still has to

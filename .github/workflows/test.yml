@@ -638,6 +638,14 @@ jobs:
           python -m build
           twine check dist/*
 
+      - name: Verify README isolated host install on Ubuntu 26.04
+        shell: bash
+        run: |
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          python .github/scripts/isolated_host_install_smoke.py \
+            --readme README.md --wheel "${wheels[0]}"
+
       - name: Reject redistributed native and Nangate payloads
         run: bash .github/scripts/validate_distribution_payloads.sh dist
 

@@ -5018,6 +5018,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _run_one_elab_only(self, target: str) -> ElabOnlyTargetResult:
         """Run one canonical untraced Simulation build and archive its output."""
+        from booley.flows.terminal_progress import announce_unit
+
+        announce_unit("configure elaboration-only", target=target)
         started = time.monotonic()
         handle = self._target_handle(target)
         try:
@@ -5097,6 +5100,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "-c",
             simulation_build_script(prepared, token),
         ]
+        from booley.flows.terminal_progress import announce_unit
+
+        announce_unit("elaboration-only build", target=target)
         timeout_s = max(1, self._effective_build_timeout_ms() // 1000)
         proc = self._execute_boundary(command, timeout=timeout_s)
         outcome = classify_build_outcome(proc, token, timeout_s=timeout_s)

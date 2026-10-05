@@ -508,6 +508,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
         of the Runtime's absolute workspace path. Raises on any setup failure
         so the caller records it as a Flow error.
         """
+        from booley.flows.terminal_progress import announce_unit
+
+        announce_unit("configure", target=target.selector)
         build_root = work_root_for(self.args.work_dir, "lint", target.selector)
         resolved = fusesoc_registry.resolve_target_handle(
             target,
@@ -696,6 +699,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
         cmd = prepared.command
         family = _lint_eda_tool_family(prepared.resolved.configured_eda_tool)
         start = time.monotonic()
+        from booley.flows.terminal_progress import announce_unit
+
+        announce_unit("checking", target=selector)
         proc = self._execute_boundary(cmd)
         result.duration_s = time.monotonic() - start
         result.returncode = proc.returncode

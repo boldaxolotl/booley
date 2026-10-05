@@ -628,10 +628,12 @@ Per-Target test lists plus an optional run-time selector.
 
 What goes here:
 
-- **Stealth mode — always write what rows 16 and 20 settled.** Setup's default is the
-  explicit `[stealth] enabled = false`; write `enabled = true` only when the
-  user opted in or chose hidden authored cores. Do not omit the block: Booley's runtime fallback
-  for a missing key is on, so omission would reverse setup's disabled default.
+- **Stealth mode — always write what rows 16 and 20 settled.** Step 0 row 16
+  owns the merged git-history policy. Write the plan's `[stealth]` values
+  exactly, including hand-set values, volunteered exceptions, and unattended
+  fallbacks.
+  Do not omit the block: Booley's runtime fallback for a missing key is on,
+  so omission would reverse an explicit disabled choice.
   If row 16 explicitly chose to exclude repository-native `.core` files, also
   write `ignore_native_cores = true`; otherwise omit it (default false). This
   switch is valid only with `enabled = true`.
@@ -760,11 +762,11 @@ Before writing:
   audits). For a changed Target, use the focused `fusesoc run --setup` command
   above during iteration; Step 4 owns the final deep gate.
 - Where practical, run each Booley Flow in the sandbox against a resolved Target
-  (`booley flow <name> …`) and prove the fail path with a deliberate
+  (`booley flow <name> --quiet …`) and prove the fail path with a deliberate
   mutation — a passing-only check is not evidence the Flow can detect a
   regression. Step 4 (Doctor) formalizes this as the convention-discovered
   per-Flow fail-path self-test.
-  **These runs are minutes long and announce nothing when they end** — start
+  **These quiet runs can take minutes** — start
   them detached and poll them per SKILL.md → "Waiting on long runs". Never park
   "standing by" mid-run. This is also where the plan's smoke pin gets its real
   numbers: time every candidate Target, re-pin the smoke to the measured

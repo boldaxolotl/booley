@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,8 +101,8 @@ class BoundedCampaignScheduler:
     @staticmethod
     def _thread(target, args, suffix: str) -> threading.Thread:
         return threading.Thread(
-            target=target,
-            args=args,
+            target=copy_context().run,
+            args=(target, *args),
             name=f"booley-campaign-{suffix}",
             daemon=True,
         )
