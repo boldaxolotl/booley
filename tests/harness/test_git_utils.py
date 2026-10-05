@@ -24,6 +24,7 @@ from booley.runtime.git import (
     commit_scope,
     git_excludes_pending,
     git_run,
+    is_linked_worktree,
 )
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,32 @@ class TestGitRun:
         _init_repo(tmp_path)
         result = git_run(tmp_path, ["log", "--oneline", "nonexistent-ref-999"])
         assert result.returncode != 0
+
+
+# ===========================================================================
+# is_linked_worktree
+# ===========================================================================
+
+
+class TestIsLinkedWorktree:
+    def test_linked_worktree_root_is_detected(self, tmp_path: Path):
+        repo = _init_repo(tmp_path / "repo")
+        wt = _make_worktree(repo, tmp_path / "wt")
+        assert is_linked_worktree(wt)
+
+    def test_main_checkout_is_not_linked(self, tmp_path: Path):
+        # .git is the repository directory, not a pointer file.
+        repo = _init_repo(tmp_path / "repo")
+        assert not is_linked_worktree(repo)
+
+    def test_subdirectory_of_linked_worktree_is_not_a_root(self, tmp_path: Path):
+        repo = _init_repo(tmp_path / "repo")
+        wt = _make_worktree(repo, tmp_path / "wt")
+        (wt / "rtl").mkdir()
+        assert not is_linked_worktree(wt / "rtl")
+
+    def test_plain_directory_is_not_linked(self, tmp_path: Path):
+        assert not is_linked_worktree(tmp_path)
 
 
 # ===========================================================================

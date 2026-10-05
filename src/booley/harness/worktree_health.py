@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime.git import is_linked_worktree
+
 
 @dataclass(frozen=True)
 class WorktreeHealth:
@@ -51,7 +53,7 @@ def _gitdir_pointer_error(worktree_path: Path, git_entry: Path) -> str:
     """Validate a linked-worktree .git file points at an existing gitdir."""
     if git_entry.is_dir():
         return ""
-    if not git_entry.is_file():
+    if not is_linked_worktree(worktree_path):
         return f"worktree .git entry is not a file or directory: {git_entry}"
 
     try:

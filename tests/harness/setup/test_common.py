@@ -211,12 +211,12 @@ class TestWriteKnobs:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley.harness.setup import common
+        from booley.runtime import guarded_write as guarded_write_module
 
         content = f"{MARKER}\nbody\n"
         target = tmp_path / "hook"
         target.write_text(content, encoding="utf-8")
-        monkeypatch.setattr(common.os, "name", "nt")
+        monkeypatch.setattr(guarded_write_module.os, "name", "nt")
 
         outcome = guarded_write(
             target,

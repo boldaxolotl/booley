@@ -81,6 +81,7 @@ from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.git import is_linked_worktree
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
     DEFAULT_HTTP_PORT,
@@ -3325,7 +3326,7 @@ def _validate_work_dir(value: Any) -> str | None:
             f"ERROR: work_dir {value!r} does not exist. Create a worktree "
             "first (worktree_create.sh puts it under .booley_project/worktrees/)."
         )
-    if not (resolved / ".git").is_file():
+    if not is_linked_worktree(resolved):
         return (
             f"ERROR: work_dir {value!r} is not the root of a linked git "
             "worktree (no .git pointer file). Pass the worktree root created "
