@@ -12,35 +12,11 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from booley.runtime.pipe import windows_pipe_readable
 from booley.runtime.platform_paths import kill_process_tree
 
 if TYPE_CHECKING:
     from booley.flows.terminal_progress import TerminalProgress
-
-
-def _windows_pipe_ready(fd: int) -> bool:
-    """Poll anonymous pipes without the Python 3.12 nonblocking prerequisite."""
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    available = wintypes.DWORD()
-    peek = ctypes.WinDLL("kernel32", use_last_error=True).PeekNamedPipe
-    peek.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        ctypes.POINTER(wintypes.DWORD),
-        wintypes.LPVOID,
-    ]
-    peek.restype = wintypes.BOOL
-    if not peek(msvcrt.get_osfhandle(fd), None, 0, None, ctypes.byref(available), None):
-        error = ctypes.get_last_error()
-        if error == 109:  # ERROR_BROKEN_PIPE: let os.read consume EOF.
-            return True
-        raise ctypes.WinError(error)
-    return available.value > 0
 
 
 class _Capture:
@@ -60,7 +36,7 @@ class _Capture:
             if not ready:
                 return None
             return os.read(self.pipe.fileno(), 65536)
-        if not _windows_pipe_ready(self.pipe.fileno()):
+        if not windows_pipe_readable(self.pipe.fileno()):
             self.stop.wait(0.02)
             return None
         return os.read(self.pipe.fileno(), 65536)

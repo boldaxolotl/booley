@@ -43,6 +43,8 @@ def test_platform_lock_apis_stay_in_core_lock_module_or_fifo_domain() -> None:
         _SOURCE_ROOT / "core" / "file_lock.py",
         # Windows descriptor-to-handle conversion is not a file-lock policy.
         _SOURCE_ROOT / "runtime" / "regular_file.py",
+        # Anonymous pipe readiness needs descriptor-to-handle conversion, not locking.
+        _SOURCE_ROOT / "runtime" / "pipe.py",
         # FIFO flag manipulation is not a file-lock policy.
         _SOURCE_ROOT / "bwave" / "waveform_store.py",
     }

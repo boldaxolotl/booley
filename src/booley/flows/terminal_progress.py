@@ -355,9 +355,10 @@ class TerminalProgress:
         ):
             return
         if self.flow == "fpga" and source.endswith("runme.log"):
-            if "/synth_1/" in source:
+            normalized_source = source.replace("\\", "/")
+            if "/synth_1/" in normalized_source:
                 self._vivado_stage("synthesis")
-            elif "/impl_1/" in source:
+            elif "/impl_1/" in normalized_source:
                 self._vivado_stage("implementation")
         if self.flow == "fpga" and re.match(
             r"^(?:Starting|Running) (?:report_timing|report_utilization)", clean

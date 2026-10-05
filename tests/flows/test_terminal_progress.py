@@ -777,8 +777,8 @@ def test_agent_console_and_display_bytes_match_existing_transport(
     from booley.flows.flow_session import FlowSession
 
     def write_event(event):
-        with path.open("ab") as stream:
-            stream.write(_serialize_display_event(event).encode("utf-8"))
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(_serialize_display_event(event))
 
     if mode == "runtime":
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
@@ -869,3 +869,18 @@ def test_coalesced_tail_keeps_stage_markers_inside_short_line_flood(tmp_path):
     sink.end_command()
     assert sink.stage == "candidate: yosys"
     assert list(sink.tail) == ["tail"] * 6
+
+
+@pytest.mark.parametrize("separator", ["/", "\\"])
+@pytest.mark.parametrize(
+    "directory,stage", [("synth_1", "synthesis"), ("impl_1", "implementation")]
+)
+def test_vivado_stage_identification_accepts_native_path_separators(
+    tmp_path, separator, directory, stage
+):
+    sink = observer(tmp_path, flow="fpga")
+    sink.stage_changed("candidate: Vivado running")
+    source = separator.join(["build", "demo.runs", directory, "runme.log"])
+    sink.observe(source, b"fresh Vivado output\n")
+    sink.end_command()
+    assert sink.stage == "candidate: " + stage
