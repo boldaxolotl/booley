@@ -7,278 +7,521 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
-## Unreleased
+## 0.3.0 - 05 OCT 2026
 
-### Interface changes
+From this release on, Booley's development focuses on quality: finding as many
+bugs as possible and making the existing workflows easier to use, rather than
+adding new features.
 
-- Host `config.toml` uses `[sandbox]` and `SandboxHostPolicy` for the policy
-  shared by Ticket Mode and Interactive Mode. Legacy `[interactive]` host files
-  still load with a migration warning; when both tables exist, `[sandbox]`
-  supplies the entire policy without merging. Rename the legacy table while
-  preserving all settings. Host-only keys in Project `booley.toml [sandbox]`
-  are rejected with migration guidance.
-  ([#976](https://github.com/boldaxolotl/Booley/issues/976))
+### Major features
 
-- `sim --coverage` now applies approved coverage waivers without a Coverage
-  Criterion too: waived points are reported `waived`, counted in `waived_points`,
-  and left out of the eligible points and percentages; evaluation stays
-  `not_requested`. Invalid or unmatched approvals, including a configured but
-  missing directory, now block such runs with exit 2 instead of being ignored;
-  fix them or pass `--no-waivers` for raw numbers.
-  ([#993](https://github.com/boldaxolotl/Booley/issues/993))
-- Add `booley specialist <name> [args...]` for visible registered Specialists,
-  with listing and help on the host and execution inside the Sandbox.
-- Specialist MCP calls now reject `model` and `max_turns`; these remain CLI-only.
-  Built-in Flows and inherited Specialist parsers remove `--timeout` entirely.
-  Use `--timeout-ms N` for an old Flow millisecond value; multiply old Specialist
-  seconds by 1000. Project Specialists must read `args.timeout_ms` and use
-  `self.timeout_seconds()` for seconds-based provider calls. Class timeout
-  defaults and minimums remain seconds. Saved commands are not rewritten.
+- **Coverage support.** `booley flow sim --coverage` (alias `--cov`, MCP
+  `coverage: true`) collects native Verilator line, branch, expression, toggle,
+  and `cover_property` coverage. Coverage never changes a Simulation verdict;
+  run headlines report simulation, collection, and evaluation separately.
+  - Each run writes a Coverage Campaign under
+    `sim/<N>/targets/<target>/coverage.json`, with a compressed points file and
+    per-source-file rollups. Collection that is incomplete or uses an
+    incompatible collector publishes no scores. RTL files with no coverage
+    points get advisory source-gap findings.
+  - A Ticket can require coverage with a `COVERAGE` Criterion that sets
+    per-metric `min_pct` on Verilator Targets. Ticket validation rejects
+    `COVERAGE` on other simulators before queueing. A missed threshold
+    reports `criterion_met: false` and exits 0. Tests come from `--test`,
+    `--tests-file`, or the registered suite, not from the Criterion.
+  - `.core` files configure coverage under `flow_options.booley.coverage`
+    (`reset_included`, `custom_main_hooks`). Booley validates the recipe before
+    any build.
+  - Approved waivers live in the `[coverage.waivers]` approval directory, can
+    reference formal proof artifacts, and are protected Ticket acceptance
+    inputs. Every coverage run applies them. Waived points are reported as
+    `waived` and left out of the percentages. `--no-waivers` (MCP
+    `no_waivers`) reports raw numbers.
+  - The Coverage Analyst Specialist is now read-only. It takes one
+    `--campaign <coverage.json>`, queries the evidence through a private tool,
+    separates observed facts from hypotheses, and screens Waiver Candidates. In
+    Ticket Mode, a Ticket that meets its mandatory coverage only with Waiver
+    Candidates goes to `review`.
+    `booley board approve <slug> --accept-waivers ID,... --reject-waivers ID,...`
+    requires a decision for each candidate and publishes the accepted
+    waivers with the Ticket's merge.
+  - `python -m booley.flows.sim.campaign_retention` prunes old Campaigns
+    (`--invocation N --native-target T`, or `--full`, with
+    `--include-dependents`). It refuses to remove active or
+    unauthenticated files.
+- **QA workflows.** Public QA is now a set of timeboxed Markdown bug-hunt
+  missions under `qa/missions/` (picorv32, taxi, uart, and coverage). They
+  include an independent UART hardware evaluator and a shared coverage
+  fixture project. A run records `findings.md` and `log.md` and works around
+  failures so later areas still get tested. `qa/SMOKE.md` holds a ten-item
+  release smoke list. Three maintainer skills support the missions:
+  `booley-qa-run` runs a mission, `booley-qa-triage` walks findings one cluster
+  at a time and logs decisions to `triage.md`, and `booley-add-to-qa` adds new
+  coverage. As a maintainer-only exception to Bootstrap's source-checkout
+  rule, `booley bootstrap --with-qa-skills` run from a clean source checkout
+  installs them on the host, and `--without-qa-skills` removes only the
+  managed links. They are not shipped in
+  release wheels or mounted into the Sandbox.
 
-### EDA updates
+### Regular features
 
-- Upgrade the digest-pinned OpenROAD binary and Corresponding Source to 26Q4,
-  including its OpenSTA revision and EDA builder image. A matched PicoRV32
-  comparison reports a 0.068% area increase and 0.183 ns less setup slack;
-  see [validation evidence](https://github.com/boldaxolotl/booley/blob/main/docs/internals/validation/1064-openroad-26q4.md).
-  ([#1064](https://github.com/boldaxolotl/booley/issues/1064))
-
-### New features
-
-- Simulation now has a positive-integer `[flows.sim].build_timeout_ms` setting,
-  defaulting to one hour, used consistently by ordinary, Coverage, and
-  Elaboration Check simulator-image builds. Simulator execution and Pre-Sim
-  Commands retain their separate budgets.
-
-- Maintainers can persistently opt the three repository-owned QA skills into
-  Host Bootstrap with `booley bootstrap --with-qa-skills` and safely remove
-  only managed QA links with `--without-qa-skills`. Optional-source failures
-  warn without blocking product Bootstrap or Project Initialization, and QA
-  skills remain outside release wheels and Sandbox host-skill mounts.
-
-- `booley board show` and generated review packages now compare recorded
-  Criterion and Reviewer-receipt evidence with the live Ticket worktree. They
-  show changed source categories, hold on stale mandatory evidence, and leave
-  the recorded runtime state unchanged.
-- Simulation now records each exact Target workload as a durable Simulation
-  Campaign. Immutable manifests, authenticated shared Simulator Bundles,
-  isolated append-only attempts, strict resume, and bounded Project-local
-  scheduling make completed work reusable without treating mutable reports as
-  authority. Cocotb retries as one disclosed batch; native coverage is one
-  aggregate that resume finishes only after its collection completed; an
-  unfinished collection is refused.
-- `sim --resume-from <manifest.json>` resumes only the named Campaign. Dry-run
-  previews completed, interrupted, pending, and mismatched work without
-  admission or mutation. Structured CLI/MCP results retain bounded manifest,
-  summary, simulation, coverage, and independent observation pointers.
-
-- `sim --coverage --no-waivers` (MCP `no_waivers`) reports raw coverage without
-  approved waivers; with a Coverage Criterion it requires `--diagnostic` and
-  records no Criteria. The choice is frozen for `--resume-from` in a
-  `booley.simulation-campaign-manifest/v2` manifest; default runs still write
-  v1. ([#992](https://github.com/boldaxolotl/Booley/issues/992))
+- Each Simulation now records its exact Target workload as a durable
+  Simulation Campaign with an immutable manifest, shared authenticated
+  simulator builds, and isolated attempts.
+  `sim --resume-from <campaign/manifest.json>` finishes only the named
+  Campaign; with `--dry-run` it previews completed, interrupted, pending, and
+  mismatched work. Campaign reports use relative, digest-bound references, so
+  a reports root can be moved or copied. The CLI prints the
+  `campaign manifest:` path before simulator work starts, and each verdict card
+  repeats the manifest and report paths. Resume refusals and previews name the
+  changed sources, runtime inputs, suite, and parameters; `--verbose` lists
+  every mismatch.
+- Simulation reuses a simulator build when a Target variant (plain, traced, or
+  coverage) was already built from identical inputs, so a firmware-only
+  iteration skips the Verilate step. Booley re-hashes every file Verilator and
+  the C++ compiler read before reusing a build; any change to RTL, includes,
+  flags, DPI sources, or the toolchain rebuilds. Pre-Sim Commands that write
+  only run-time inputs, such as firmware in `$BOOLEY_RUN_CWD`, keep reuse.
+  Each result records a `cache_decision`. Cocotb Targets always build fresh.
+- Tickets use document format v2: they declare `CRITERIA_MANDATORY` and
+  `CRITERIA_OPTIONAL` with uppercase Flow keys (`LINT`, `SIM`, `SYNTH`,
+  `REVIEW`, `CYCLE_COUNT`, ...). Target annotations `(new)`, `(temp)`, and
+  `(replaces X)` replace `target_plan`. `on_success` is a list such as
+  `[triage_report, review, merge, cleanup]`; leaving out `review` goes straight
+  to done unless a human decision is pending: open findings from a `_done`
+  REVIEW Criterion, or Waiver Candidates. Tickets that
+  add Targets may also add new FuseSoC filesets and parameters used only by
+  those Targets.
+- `booley board show`, `review` (`--request --reason` asks for human review),
+  `validate`, and `approve` replace the older review commands. `approve`
+  publishes acceptance and finishes merge and cleanup without a report agent.
+  `board show` and review packages compare recorded evidence with the live
+  worktree and hold on stale mandatory evidence. Blocked Tickets can be amended
+  after human approval with
+  `python -m booley.ticket_board amend <slug> --changes-file F --preview`, then
+  `--apply --expected-preview <digest>`.
+- Live Tickets sit at `tickets/board/<slug>.md` with their state in an ignored
+  `tickets/state/<slug>.json`. Done and archived Tickets close into the tracked
+  `tickets/history/`, and Booley commits each history record.
+  `booley board --all` includes closed Tickets. `booley board archive <slug>`
+  abandons a live Ticket.
+- `booley specialist <name> [args...]` runs a registered Specialist inside
+  the Sandbox; listing and help work on the host.
+- The Sandbox runs Ubuntu 26.04 with Python 3.14 (glibc 2.43, GCC 15).
+  OpenROAD moves to 26Q4, from upstream's 26.04 build. Host-provisioned Vivado
+  2025.2 runs on the new base.
+- The RISC-V Sandbox Image moves Spike to upstream master `609dbe0b`, which
+  adds `--wfi-as-nop` and fixes debug-module, trigger, and CSR behavior.
+  Booley now refreshes Spike once per release from the newest master commit
+  that passes upstream's Debug Quick Test.
+- Sandbox Images are built in layers: a runtime base, a standard or RISC-V
+  substrate, an optional Project layer, and a wheel overlay. Host Bootstrap
+  builds the shared layers; Project Initialization builds only the Project's
+  private ones. `booley session refresh` rebuilds only the invalid layers (a
+  Booley-only upgrade rebuilds just the overlay) and checks the new image
+  before parking the old Sandbox. RISC-V Projects with `pip_requirements` no
+  longer need a hand-written Dockerfile.
+- A persistent Project-scoped Verilator compiler cache
+  (`[flows.sim.compiler_cache]`, on by default, 5 GB) is shared by Ticket
+  worktrees and recreated Sandboxes. Verilator builds also get an automatic
+  `-j` sized from available CPUs and memory; an authored `-j` wins.
+- `[flows.sim].build_timeout_ms` (default one hour) bounds every
+  simulator-image build, separately from simulation and Pre-Sim Command
+  budgets.
+- FPGA `ppa_profile` (`compact`, `balanced`, `max_frequency`) selects
+  characterized Vivado 2025.2 strategies per call or per Target.
+- `bwave gui --group 'NAME=GLOB'` creates collapsible VaporView groups.
+  Selectors accept `%b`/`%h`/`%d` radix and `@red`/`@blue`/`@green` color
+  suffixes.
+- With Git 2.48 or newer on both the host and the Sandbox, and a Sandbox
+  recreated after the upgrade, Ticket worktrees use relative links, so host
+  `git status` and `git worktree list` work.
+- `booley projects forget` releases the forgotten Project's Sandbox Image
+  keeper tag when no container uses it. `booley projects prune-keepers`
+  previews keepers left by earlier forgets, and `--confirm <digest>` releases
+  exactly that preview.
+- Stealth Mode can exempt a trusted upstream's pristine history from the push
+  guard: set `[stealth] upstream_repository` and the full `upstream_base`
+  commit ID. The guard checks that the base is reachable from the upstream's
+  advertised branches or tags, then still checks every later local commit.
+- `booley cleanup` previews and applies cleanup of setup scratch files that
+  the setup manifest owns; `booley-setup` uses it as Step 7.
+- Doctor and session startup report whether a deep Doctor run is current for
+  the running Booley version and Sandbox Image (`docs/user/DOCTOR.md`).
 
 ### Quality of life
 
-- The `bwave` MCP tool description now steers agents to investigate with
-  B-Wave, not just confirm fixes. When a report doesn't localize a failure, or
-  a reproducer unexpectedly passes, agents rerun `sim` with `trace: true`,
-  trace the wrong value backwards to the first divergent signal, check that the
-  suspected trigger actually occurred, and confirm the mechanism before editing
-  RTL. This applies in Interactive Mode and Ticket Mode alike.
-- Updated the egress proxy, FlexNet relay, and reaper sidecars to Python
-  3.14.8, which fixes ssl and asyncio hostname validation and ships libexpat
-  2.8.5.
-  ([#1067](https://github.com/boldaxolotl/Booley/issues/1067))
-- The RISC-V image moves Spike to upstream master `609dbe0b` (2026-10-02).
-  Its 47 new non-merge upstream commits are mostly fixes to the debug module,
-  triggers, and CSR behavior, plus a new `--wfi-as-nop` option. ADR 0069
-  records how Booley selects, refreshes, and accepts Spike snapshots.
-  ([#1066](https://github.com/boldaxolotl/Booley/issues/1066))
-
-### Upgrade notes
-
-- Local RISC-V Sandbox Images rebuild once after this upgrade. `Dockerfile.riscv`
-  now builds the RISC-V toolchain, Spike, and the offline specifications in a
-  separate stage on plain Ubuntu and copies them into the image; the installed
-  tools and their versions are unchanged. ADR 0070 explains why.
-  ([#568](https://github.com/boldaxolotl/Booley/issues/568))
-
-- The Project `AGENTS.md` template now limits Doctor during task work: Flows
-  plus at most plain `booley doctor`, with `booley doctor --deep` reserved for
-  Project Setup, `/booley-heal`, and Booley version changes. Existing Projects
-  keep the old bullet ("Keep `booley doctor` green ... fix every finding ...")
-  until it is replaced. During the upgrade review, replace that bullet in
-  `<project_dir>/AGENTS.md` (and any tracked root copy) with the "Doctor during
-  task work" bullet from the packaged `booley-setup/AGENTS_TEMPLATE.md`.
-
-- `--timeout-ms` and `[flows.sim].timeout_ms` no longer lengthen an Elaboration
-  Check Target build. Projects whose simulator-image builds need more than one
-  hour must set `[flows.sim].build_timeout_ms` explicitly.
-
-- The Ticket Board now keeps each live Ticket at `tickets/board/<slug>.md`
-  with its status in an ignored `tickets/state/<slug>.json`, and moves done
-  and archived Tickets into the tracked `tickets/history/`. Boards made by
-  earlier versions need a one-time manual migration: until then `booley
-  doctor` FAILs and `booley board` and `booley run` refuse to start, both when
-  Tickets remain in the old `board/<status>/` folders and when Git still
-  tracks files under `tickets/board/` or `tickets/state/`. Follow
-  [the Troubleshooting entry](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
-- `booley board` now lists live Tickets only. Add `--all` (also accepted by
-  `python -m booley.ticket_board board|show|read-board`) to include done and
-  archived Tickets, dated by when they closed. `booley board show <slug>`
-  also finds a Closed Ticket.
-- `booley board archive <slug>` now abandons one live Ticket: it releases the
-  Ticket's worktrees and refs, keeps its logs, and closes it into
-  `tickets/history/` with outcome archived. Bare `booley board archive` no
-  longer sweeps done Tickets (they close by themselves); it only resumes an
-  archive a crash interrupted. `--force` and `--keep-logs` have no effect and
-  will be removed. Moving a Ticket to `archived` directly is refused; use
-  `archive` instead. Closed Tickets cannot be reopened, and their slugs cannot
-  be reused.
-- Booley commits each history record to the repository that tracks
-  `tickets/history/` (`chore(<slug>): close Ticket (<outcome>)`). In the
-  Project's own repository the `[stealth]` policy redacts banned phrases from
-  that message, so with the default word list it reads
-  `chore(<slug>): close redacted (<outcome>)`. When the commit cannot be made (for example a detached HEAD, or the Ticket's
-  `project_destination_ref` is not checked out), the Ticket still closes, and
-  the commit is retried on the next Ticket Board command. Doctor WARNs about
-  uncommitted records.
-- Doctor no longer crashes when no container runtime is installed; it skips
-  its container checks instead.
-- Doctor's `interactive.logs-gitignore` warning is now `project.gitignore`
-  and checks every ignore pattern `booley init` writes. Waivers on the old id
-  no longer match; re-waive under the new one.
-- REVIEW category/focus declarations now require exactly one scalar `done` or
-  `clean` outcome. Lists and mandatory/optional pairs are invalid, including in
-  already-published Tickets. `booley board check-ready <slug>` is equivalent to
-  `booley run --ticket <slug> --check-ready` for detecting the invalid grammar.
-- Projects that placed formal proof artifacts at `<anchor>/proofs/...` as a
-  workaround must move them beneath
-  `<anchor>/<approval-directory>/proofs/...`. Keep the authored proof reference
-  unchanged because it is relative to the configured approval directory.
-- Existing Projects should rerun `booley init` before their first direct Flow
-  invocation after upgrading. Initialization appends the new `flow-reports/`
-  ignore rule without replacing user-authored `.gitignore` content.
-- Simulation selection is deliberately exact: repeat CLI `--test <name>` or
-  use CLI-only `--tests-file <path>`. The per-run CLI `--skip` option is
-  removed; configured `tests.toml` skips affect only an unfiltered run. MCP
-  callers must migrate `test` from a scalar string to a nonempty unique array.
-- Scripts must save the printed `campaign/manifest.json` path and pass that
-  exact file to `--resume-from`; Booley does not infer a latest Campaign.
-  Resume conflicts with Target, test, explicit mode, coverage, trace, and
-  `--no-waivers` selection because those values come from the immutable manifest.
-- The default `pre_sim_build_access = "immutable"` shares authenticated build
-  outputs without exposing the build path to Pre-Sim Commands. Select
-  `"legacy-per-test"` only when a hook must modify a private compile surface.
-  `run_cwd` supports `{campaign}`, `{target}`, `{test}`, and `{attempt}` for
-  Booley-owned isolated attempt directories.
-- Existing Simulation Campaign schema versions are immutable. Unsupported or
-  corrupt manifests fail closed and must be rerun or restored byte-for-byte;
-  upgrades never rewrite retained authority in place.
+- "Sandbox" replaces "Session Runtime" in output, diagnostics, and docs.
+  `booley cheat --sandbox` is the main flag; `--runtime` remains an alias.
+- The Ticket Mode Console shows readable Criterion labels, configured
+  requirements against observed evidence, short Target scope labels, the
+  observed test scope, and each Developer Agent B-Wave query.
+- Review briefings show readable Criterion labels and a Coverage section.
+- `--target` can be repeated or comma-separated on every built-in and Custom
+  Flow. Previously only the last value was kept.
+- The direct Flow CLI always prints its final verdict, including inside the
+  Sandbox, where it used to print nothing. Bare `booley flow` lists Flows and
+  exits 0.
+- Deduplicated lint warnings list the Targets and EDA tools that produced
+  them.
+- Simulation build timeouts and out-of-memory kills are reported reason-first,
+  naming the limit and the setting to change.
+- `booley-ticket-create` agent mode accepts `--input-file <path>` and reports
+  progress milestones.
+- `booley board reset` confirms the slug, the queued state, and whether
+  baseline worktrees were restored.
+- `bwave gui` and Doctor tell apart an installed, missing, and unknown
+  VaporView extension and give install guidance, including offline VSIX
+  installation.
+- `booley-ticket-triage` opens diffs only for human-authored sources and skips
+  compiled outputs such as `.hex` and `.mem`.
+- The packaged `booley-feedback` skill ends with a sanitized offline report,
+  manual GitHub and email submission options, and a verified workaround or
+  an explicit blocker.
+- Sandbox rebuilds reuse a matching local runtime base image instead of
+  rebuilding it.
+- README, `USAGE.md`, and `FLOW_REFERENCE.md` were rewritten as shorter,
+  task-focused guides.
+- The `bwave` MCP tool description steers agents to investigate with traces,
+  not only confirm fixes: rerun `sim` with `trace: true`, follow the wrong
+  value back to the first divergent signal, and confirm the mechanism before
+  editing RTL.
+- Simulation verdict cards show `cycles=N` for tests that record a Cycle
+  Count, and `report.json` lists them under `cycle_counts`.
+- A simulation run timeout suggests raising `--timeout-ms` or
+  `[flows.sim].timeout_ms`.
+- After an EDA grant revoke or `booley projects forget`, Sandbox commands say
+  the Sandbox issuance was withdrawn and to run `booley init --seed`, instead
+  of reporting a missing or corrupt spec stamp.
+- The `booley-setup` skill never writes or guesses SDC or XDC timing
+  constraints. It uses the file the repository ships or one you supply; until
+  one exists, that synthesis or FPGA Target stays unconfigured.
 
 ### Bug fixes
 
-- License relay startup now waits for the relay's full Docker health-check
-  window (about 70 seconds instead of 12), so a slow or busy host no longer
-  tears down a relay that would have become healthy. A relay that exits, or
-  that Docker marks unhealthy, now fails at once instead of waiting out the
-  budget. The error now gives the container state and the last lines of the
-  relay log.
-  ([#1067](https://github.com/boldaxolotl/Booley/issues/1067))
+- Missing EDA tools, missing inputs, timeouts, and abnormal termination in
+  lint, synthesis, FPGA, and simulation are infrastructure errors (exit 2), not
+  design failures. Reports add `termination` and `failure_kind`. Unexpected
+  Flow and Specialist exceptions exit 2 with a one-line diagnosis and a saved
+  traceback. Synthesis reports a design FAIL only on positive RTL evidence;
+  other tool failures, such as an sv2v usage error, are errors that name the
+  stage and its first diagnostic. A Vivado run that exits 0 without starting
+  Tcl or producing fresh route evidence is an infrastructure error. Simulation
+  guard aborts and failed builds keep a machine-readable aborted result.
+- Simulation, lint, and Mutation Tester use the EDA tool FuseSoC actually
+  configured. A missing or unknown tool no longer silently falls back to
+  Verilator, which had built some Icarus Targets with Verilator. Lint Targets
+  accept `verilator`, `verible`, or Edalize's `veriblelint`, and
+  `booley targets --for lint` and Doctor leave out Targets whose lint tool is
+  missing or unsupported.
+- A source edit that keeps the same size and modification time no longer
+  reuses a stale simulator build.
+- Traced Icarus runs with projected cores no longer abort before simulation.
+  A passing simulation whose requested trace is missing reports
+  `inconclusive`, with the reason; Doctor WARNs `sim.trace-dump-undeclared`
+  when a Verilator dump name is not covered by `trace_files`.
+- Target-declared `file_type: user` and `copyto` inputs are available in the
+  simulation run directory for Icarus, Verilator, and Cocotb.
+- `progress.json` always ends in a terminal phase after failure or
+  cancellation.
+- Evidence links in reports, MCP results, and Criteria point to numbered,
+  immutable per-run copies instead of mutable "latest" files.
+- Logs use UTC RFC 3339 timestamps, fixing a double timezone shift.
+- Cocotb, Pre-Sim Commands, Custom Flows, and MCP children no longer write
+  `__pycache__` or `.pytest_cache` into the RTL checkout.
+- Synthesis counts every latch, including stat rows with an area column and
+  Liberty-mapped latch cells. Unexpected latches are a design FAIL naming the
+  counts and cell types; declare intentional ones with
+  `[flows.synth].expected_latches`, and those designs now complete physical
+  synthesis. A missing, stale, or empty Yosys log blocks completion. Clean
+  Liberty-mapped synthesis no longer gets false Yosys and OpenROAD advisories.
+- Synth and FPGA recipe identity uses the constraint VLNV and content digest,
+  so identical SDC/XDC files in another worktree no longer fail comparisons.
+- A named-test `SIM` Criterion is satisfied by a passing run of that test; `all`
+  still needs the whole suite.
+- Each `COVERAGE` Criterion takes its verdict from its own metric, so an unmet
+  optional metric no longer fails mandatory metrics on the same Target.
+- Ticket intake, readiness, and execution validate the same prepared checkout,
+  so valid Tickets are no longer rejected at publish or enqueue, and
+  generated ignored inputs are no longer reported as protected-input drift.
+- `booley board create` works again; it previously always failed.
+- `booley board approve` completes a Ticket that `booley run` accepted and
+  handed to review, ending a loop where approve and review pointed at each
+  other.
+- A commit after review acceptance is reported as stale acceptance, with the
+  frozen and live heads and the recovery commands, instead of as corruption.
+- Tickets whose authored content drifted are reported, and `return-to-draft`
+  carries the current content into a fresh draft. Basis Refresh no longer
+  corrupts v2 Ticket bodies.
+- `booley run` prints one machine-readable result for every Ticket ending:
+  done returns success, blocked and failed return nonzero.
+- Ticket completion succeeds with unrelated untracked Project files present and
+  maps Ticket Board paths across bind-mount aliases.
+- Smaller Ticket fixes: a queued Ticket with a missing workspace restarts on
+  its generation branch; enqueue inside the Sandbox handles both Project
+  mount paths; Reviewer receipts no longer go stale without
+  `answered_questions.md`; the paired-layout Reviewer loads the control
+  Project's Board; generated core projections and paired Basis checkouts no
+  longer fail drift or pristine checks; a fresh blocked dossier is no longer
+  rejected as stale; acceptance or report-publication failures return a
+  structured exit-2 report; a dead CLI Flow releases its job slot.
+- A Developer Agent's declared blocked reason stays the primary reason, also
+  on Tickets with no mandatory Criteria; later guard findings are recorded as
+  secondary. A failed run-report submission no longer counts as submitted.
+- A `_done` REVIEW Criterion with open findings no longer blocks the Ticket as
+  an unmeetable gate. The review completes and the Ticket waits for
+  `booley board approve` with the findings visible, even when `on_success`
+  has no `review`.
+- The Reviewer honors valid explicit dispositions and no longer drops findings
+  by phrase matching; `rtl/code_style` reviews include the packaged RTL style
+  guide.
+- One malformed acceptance journal no longer aborts the whole Ticket Board
+  scan.
+- The Ticket Mode Console keeps showing jobs after a cancelled or duplicated
+  run. Console and worker crashes save full tracebacks, and auto-retry prints
+  the command to resume.
+- `max_sessions` in the host `config.toml` refuses new Sandboxes at the cap
+  (exit 2) instead of the reaper stopping active ones. The idle reaper no
+  longer stops a Sandbox while a supervised run is active.
+- Host Bootstrap, Project Initialization, and Sandbox commands wait a bounded
+  time for the shared Docker lifecycle lock, then exit 2 with one clean error.
+- Drift and mismatch diagnostics name each differing field with its recorded and
+  current values. Another Project rebuilding a shared image from the same
+  sources no longer triggers false stale-image warnings.
+- `booley init` creates a standalone Project-data repository on the outer
+  repository's current branch instead of Git's default branch, reports unsafe
+  line-ending repairs as errors, and `--check-only` reports exactly what it
+  would reconcile. On Windows it now normalizes guidance files behind
+  Booley's own hardlinks instead of refusing.
+- Bootstrap and Init remove obsolete Booley image tags after verifying their
+  replacements.
+- Unsafe private-directory permissions are reported with the path and a
+  `chmod 700` fix instead of a crash.
+- `booley doctor --deep` grades its simulation self-test correctly, cleans up
+  after itself, and prints a `RUN` line with the timeout before each long
+  check. Doctor no longer crashes without a container runtime.
+- Windows and Docker Desktop: no more WinError 5 crashes in the auth heartbeat
+  and line-ending cleanup, WSL2 mounts are accepted, `session refresh` rollback
+  tolerates a changed egress network, and atomic record writes retry
+  transient sharing violations.
+- The in-container MCP server always starts in Interactive Mode.
+- A Codex usage cap, workspace spend cap, or depleted credits now fails the
+  call instead of being reported as success when progress output came first.
+  Queue the blocked Ticket again after resolving the cap.
+- `[agent.git]` identity applies to Interactive Mode commits through
+  Sandbox-only Git settings and leaves the host checkout's identity alone.
+  Approve coverage waivers on the host with your own identity; the Sandbox
+  refuses.
+- B-Wave no longer rewrites `trace_status.json` during discovery, and a broken
+  cached FST no longer blocks VCD conversion. The native B-Wave binary's hard
+  link survives Docker's containerd image store. The VaporView patch applies
+  when the extension is installed after the container starts.
+- Review packages accept Reviewer findings with advisory, deferred,
+  out-of-scope, or superseded dispositions instead of rejecting them, and
+  reports show the Reviewer's original label next to the package disposition.
+- `validate-ticket` prepares published Tickets with the Project's post-setup
+  hook before checking Target inputs, so hook-generated inputs such as
+  firmware images no longer fail validation.
+- Commands run from a Stealth Project's data directory (`/booley-project` or
+  `/work/.booley_project`) act on the owning Project checkout instead of
+  treating the data repository as the Project; discovery, automatic Doctor,
+  and report path hints treat both paths as one directory. A Git failure
+  during an ancestry check exits 2 with "cannot verify ancestry" instead of a
+  false "no longer descends" error or a crash.
+- `booley eda …` with an explicit Project path, `booley auth status`, and
+  `booley cheat` work from inside the Booley source checkout.
+- `--baseline` synthesis, FPGA, and simulation runs work when
+  `.booley_project` is a standalone Git repository.
+- With Stealth on, `booley init` keeps its line-ending default in the
+  repository's local `info/attributes` instead of leaving an untracked root
+  `.gitattributes` in the upstream checkout.
+- Stealth Mode catches protected terms inside filenames and identifiers and
+  redacts only the matched span. Ordinary words such as `generated`, `docker`,
+  and `agent` are no longer redacted from commit messages.
+- A simulation that overruns `max_rundir_bytes` and exits before the next
+  watchdog poll is a disk-budget abort, not a pass.
+- Flow and Specialist reports set `criterion_key` and `criterion_met` only
+  when the run maps to exactly one evaluated Criterion, and JSON null
+  otherwise. A passing standalone synthesis or lint run used to report
+  `criterion_met: false`.
+- B-Wave: `stats` and `stuck` include the reset phase with `--with-reset`,
+  count the value held at the window start, and no longer report zero-length
+  values; `find` and `distance` match the `change` keyword on buses; exact
+  alias selections are kept; `distance --stats` reports the median; limits
+  and time windows apply as documented, and truncation is reported.
+- Codex runs no longer start with an "Under-development features enabled"
+  error item; Booley suppresses that warning unless you set it yourself.
+- FlexNet license relay startup waits for the relay's full Docker
+  health-check window (about 70 seconds instead of 12), fails at once if the
+  relay exits or turns unhealthy, and reports the container state and the
+  last relay log lines.
+- Plain Doctor starts Vivado in batch Tcl mode inside the Sandbox (about 30
+  seconds) instead of only finding `vivado` on PATH, so a Vivado that cannot
+  initialize fails Doctor. `booley doctor --deep` no longer tells you to run
+  `booley doctor --deep`.
 
-- Synthesis reports now count Liberty-mapped latch cells in logical and
-  physical mode. Undeclared or excess mapped latches fail synthesis; declare
-  intentional latches with `[flows.synth].expected_latches`. Missing, stale,
-  or empty Yosys logs now block completion because they provide the cell
-  mapping evidence. ([#1079](https://github.com/boldaxolotl/Booley/issues/1079))
+### Internal work
 
-- `booley doctor --deep` now prints a flushed `RUN` line before each long
-  check (the agent-backed developer probe, every deep Flow smoke, every
-  self-test case, and `.core` resolution) with its timeout, so redirected
-  output shows progress. The summary adds a line with the agent-backed checks'
-  token count and cost, and the probe's notice no longer calls itself a
-  Specialist analysis.
+- Architecture separation campaign: Config, EDA, Runtime, Flows, Criteria,
+  Ticket Board, Feedback, and commit policy now have enforced dependency rules,
+  with no intended behavior change.
+- The QA scenario format (YAML scenarios, sealed run records, and
+  Qualification) was designed and then replaced by the mission-based QA
+  workflows before release.
+- CI: Windows test sharding, a separate coverage job, candidate-image gates
+  for Verilator 5.052 and coverage, the encrypted confidential-content guard,
+  the Mergify queue with a PR watcher, and the Agent Readiness Check. RISC-V
+  image-build timing is measured in controlled baseline, warm, and cold arms
+  on the same Docker image store, so their timings are comparable. The RISC-V
+  toolchain, Spike, and offline specifications build in a separate keyed
+  stage that CI reuses from a published image.
+- The runtime base image embeds a deterministic package inventory.
+- Toolchain refresh: Yosys v0.69, OpenROAD 26Q4, Verible v0.0-4296, Node.js
+  24.21.0, Claude Code 2.1.285, Codex 0.160.0, Rust 1.99.0, Docker CLI
+  29.8.2, a refreshed Ubuntu 26.04 base, and Python 3.14.8 sidecars (egress
+  proxy, FlexNet relay, reaper), which fixes ssl and asyncio hostname
+  validation.
+- Goal Mode, a planned replacement for Ticket Mode, and the Booley Dashboard
+  were designed (ADRs 0067 and 0068); neither ships in this release.
 
-- `python -m booley.ticket_board validate-logs <slug>` now renders its normal
-  Markdown and machine-readable JSON diagnostics for executable Tickets with
-  runtime snapshots instead of raising `AttributeError`.
-  ([#849](https://github.com/boldaxolotl/Booley/issues/849))
-- Clean liberty-mapped synthesis no longer receives false no-driver, ABC
-  multi-output, `IFP-0028`, `GPL-0302`, or `STA-0349` advisories from Booley's
-  generated Yosys and OpenROAD scripts. OpenROAD now removes every eligible
-  buffer, including hand-instantiated buffers without fixed or `dont_touch`
-  protection. Grid-aligned floorplan margins and whole-design buffer removal
-  can change PPA for every physical profile; the balanced and max-frequency
-  profiles additionally use 0.80 placement density, moving the PicoRV32
-  reference area from 23,516 to 23,531 um². Custom Liberty files must be
-  accepted by Yosys `read_liberty -lib` and provide usable pin directions.
-  Synthesis recipe schema 3 invalidates schema-2 fingerprints frozen at Ticket
-  intake. Affected baseline-comparison Tickets report incomplete recipe evidence;
-  run `booley board reset <slug> --reason "refresh synthesis recipe schema 3"`,
-  which archives prior runtime progress, then rerun the Ticket to freeze the new
-  fingerprint. ([#816](https://github.com/boldaxolotl/Booley/issues/816))
-- Invalid Coverage Campaign rejections now name a bounded, control-safe prefix
-  of finding codes and locations, including the specific rollup field when it
-  can be determined, while still rejecting before a Coverage Analyst model
-  call. ([#799](https://github.com/boldaxolotl/Booley/issues/799))
-- Custom-main coverage now retains failed native-write hook evidence and reports
-  the write failure instead of a missing or incompatible database. A write
-  before the start hook is reported as an ordering violation rather than as a
-  later duplicate. ([#795](https://github.com/boldaxolotl/Booley/issues/795))
-- Host Bootstrap, Project Initialization, Sandbox lifecycle, and Sandbox
-  Issuance mutations now wait for the shared host Docker lifecycle lock for a
-  bounded interval, reporting busy owners while they wait. They continue when
-  the holder releases the lock and otherwise exit with one clean `ERROR:`
-  message and status 2 instead of failing immediately or printing a traceback.
-  ([#785](https://github.com/boldaxolotl/Booley/issues/785))
-- Mismatch and drift diagnostics now name every safe field that differs and
-  show its recorded-to-current value transition, including canonical host
-  wheel, Doctor, Host Bootstrap, Sandbox, Ticket Board, and EDA records.
-  ([#779](https://github.com/boldaxolotl/Booley/issues/779))
-- A commit after review acceptance is now reported as stale acceptance, with
-  the frozen and live heads and the real exits (restore the accepted heads or
-  reset), instead of as a corrupt review binding. `board show` renders the
-  frozen briefing with a stale marker instead of failing. ([#775](https://github.com/boldaxolotl/Booley/issues/775))
-- Native-coverage Simulation now runs Pre-Sim Commands before every selected
-  test process, including one-test Cocotb batches. It rejects stale staged
-  inputs and hook mutations of authenticated compile, simulator, and coverage
-  artifacts, while preserving attributed failures in CLI, MCP, and durable
-  Simulation Campaign reports. (#723)
-- Approved Waiver Sets now load referenced non-TOML formal proof artifacts from
-  the configured approval directory without parsing them as approval documents.
-  Unreferenced artifacts still invalidate the set, and lowercase `*.toml` remains
-  reserved for approval documents.
-- `booley run` now emits one machine-readable result for every normal Ticket
-  ending. Direct-to-done Tickets correctly return success, while `blocked` and
-  `failed` results return a nonzero status and identify their disposition.
-- Direct built-in and Custom Flows now keep their default reports under resolved
-  Project data. Plain Simulation, native coverage, and resume share one report
-  root and invocation-number sequence, and no default `flow-reports/` directory
-  leaks into the RTL checkout.
-- Specialist MCP tools now expose bounded `model` and `max_turns` controls,
-  reject undeclared and infrastructure-only arguments before any side effect,
-  and report nonzero Specialist or Flow exits as MCP errors. (#734)
-- B-Wave directory discovery no longer rewrites a Simulation run's
-  `trace_status.json`. Conversion failures are reported directly while the
-  original attempt record remains byte-for-byte intact.
-- B-Wave ignores structurally invalid cached FST files during discovery, so a
-  newer partial cache can no longer prevent conversion of an available VCD.
-- Public QA is now a set of timeboxed bug-hunt missions (picorv32, taxi, uart,
-  and coverage) written as Markdown. Runs record `findings.md` and `log.md` and
-  work around failures instead of blocking later areas. Scenario YAML, sealed
-  run records, Qualification, and the QA helper scripts are removed; a ten-item
-  release smoke list replaces Qualification.
+### Upgrade notes
+
+- Run `booley bootstrap --update` after upgrading Booley, then `booley init`
+  and `booley session refresh` in each Project. The Sandbox moves to Ubuntu
+  26.04 and Python 3.14, so Project-derived images and pip installs must work
+  there. Until it is refreshed, an older Sandbox builds without the compiler
+  cache and prints a warning. Host Bootstrap owns the shared runtime base:
+  `booley init` no longer builds it and asks for `booley bootstrap --update`
+  when it is missing or stale. Each Project gets a private Sandbox Image
+  (`<project>-booley-sandbox-<digest>`). A hand-written
+  `.booley_project/docker/Dockerfile` whose `FROM` matches the selected image
+  is built on top of Booley's image; a mismatched `FROM` is reported and left
+  unused. Host Bootstrap checks free disk for the whole build sequence before
+  starting: about 40 GiB for the standard image, 47 GiB for RISC-V.
+  `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1` skips the check.
+- Booley records one canonical host installation and refuses to manage global
+  skills from virtual environments or source checkouts. Install with
+  `python3 -m pip install --user booley-rtl` rather than pipx, then run
+  `booley bootstrap`.
+- Rerun `booley init` before the first direct Flow after upgrading. It adds
+  the `flow-reports/`, `/logs/`, and `/.baseline-wt-*/` ignore rules, sets the
+  relative-worktree policy, and replaces the hook files in
+  `.booley_project/hooks/` with
+  `.booley_project/.managed/project-git-hooks.pyz`.
+  `booley init` and the next Ticket activation repair existing worktree links
+  once they prove which repository and Ticket own them; repair waits while an
+  older Sandbox is still running.
+- Rename `[interactive]` to `[sandbox]` in the host `config.toml`, keeping
+  every setting. A legacy `[interactive]` table still loads with a migration
+  warning; when both tables exist, `[sandbox]` supplies the whole policy
+  without merging. Host-only keys (`idle_timeout_seconds`, `max_sessions`,
+  `egress_allowlist`) in a Project's `booley.toml [sandbox]` are rejected with
+  migration guidance.
+- Ticket Boards from earlier versions need a one-time manual migration. Until
+  then Doctor FAILs and `booley board` and `booley run` refuse to start. Follow
+  [the Troubleshooting entry](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
+  `booley board` lists live Tickets only; add `--all` for closed ones. Bare
+  `booley board archive` only resumes an interrupted archive. `--force` and
+  `--keep-logs` have no effect. Closed Tickets cannot be reopened, and their
+  slugs cannot be reused. When the history commit cannot be made, the Ticket
+  still closes and the commit is retried later. In the Project repository,
+  Stealth Mode redacts banned phrases from that commit message.
+- Old-format Tickets and Tickets carrying an `acceptance_basis` are rejected,
+  so recreate draft and queued Tickets in the v2 format; the Ticket's
+  `machine` frontmatter is now the only acceptance record. `REVIEW`
+  declarations need exactly one scalar `done` or `clean` outcome.
+  `booley board check-ready <slug>` finds invalid Tickets. `request-review`,
+  `refresh-review`, `prepare-review`, `review-briefing`, `blocked-briefing`,
+  and `finalize-review` are deprecated aliases. `board move` can no longer
+  enter `review` or `done`.
+- Ticket execution always uses the full-screen Console. `--no-console`,
+  `-L`, and `BOOLEY_CONSOLE` are removed, and a Console startup failure exits
+  1.
+- `submit_run_report` requires `file_justifications` for every path in the
+  final diff. Edits outside the planned scope are no longer refused; they are
+  shown as scope deviations for review. Update Project-local agents and prompts.
+- Simulation test selection is exact: repeat `--test <name>` or pass
+  `--tests-file <path>`. The per-run `--skip` option is removed; `tests.toml`
+  skips apply only to unfiltered runs. MCP `test` is now a nonempty array.
+  Save the printed `campaign/manifest.json` path to pass to `--resume-from`;
+  Booley does not pick the latest Campaign, and the manifest fixes Target,
+  tests, mode, coverage, trace, and waiver choices. Unsupported or corrupt
+  manifests fail closed.
+- The default `pre_sim_build_access = "immutable"` hides the build path from
+  Pre-Sim Commands; select `"legacy-per-test"` only when a hook must modify
+  the private compile surface. Pre-Sim Commands have their own fixed
+  10-minute budget. `--timeout-ms` and `[flows.sim].timeout_ms` no longer
+  lengthen simulator-image builds; set `build_timeout_ms` if builds need more
+  than an hour. A literal `run_cwd` must exist and be tracked before the build
+  (Doctor WARNs `sim.run-cwd-missing` and `sim.run-cwd-untracked`).
+  `run_cwd` accepts `{campaign}`, `{target}`, `{test}`, and `{attempt}`.
+  Setting `OBJCACHE`, `CCACHE_*`, or other managed Make variables in
+  `make_options` or `MAKEFLAGS` is rejected. A Target whose FuseSoC tool is
+  missing, unknown, or different from its declared family now fails before
+  the build.
+- Per-Target `sim_<target>.json`, `coverage_report.json`, and mutable
+  `coverage_waivers.json` are gone; read
+  `sim/<N>/targets/<target>/{coverage.json,simulation.json}`. Coverage
+  Campaigns from before schema v3 are rejected and must be recollected.
+  `coverage_analyst` takes `--campaign <coverage.json>`. Formal proof artifacts
+  placed at `<anchor>/proofs/...` must move to
+  `<anchor>/<approval-directory>/proofs/...`; keep the authored proof
+  reference. Invalid or unmatched waiver approvals block coverage runs with
+  exit 2; fix them or pass `--no-waivers`. With a Coverage Criterion,
+  `--no-waivers` requires `--diagnostic`.
+- Synthesis fails on any Yosys combinational-loop warning, including
+  intermediate `check` passes. The Reviewer no longer discards in-scope
+  findings, so some `REVIEW` Criteria that passed may now be unmet.
+- Synthesis recipe schema 3 and OpenROAD 26Q4 change PPA for every physical
+  profile and invalidate fingerprints frozen at Ticket intake. Run
+  `booley board reset <slug> --reason "refresh synthesis recipe schema 3"` and
+  rerun affected baseline-comparison Tickets. Custom Liberty files must be
+  accepted by Yosys `read_liberty -lib`. FPGA recipe schema 2 and Vivado cache
+  schema 3 invalidate earlier cached FPGA results.
+- Specialist MCP calls reject `model`, `max_turns`, and timeouts; use the CLI.
+  `--timeout` is replaced by `--timeout-ms`: multiply old Specialist seconds
+  by 1000. Project Specialists read `args.timeout_ms` and use
+  `self.timeout_seconds()`.
+- Rename Specialist sections in `booley.toml` from `[mcp_tools.<name>]` to
+  `[specialists.<name>]`; `[mcp_tools]` and the older `[tools]` table now
+  produce migration errors. Delete settings for protocol endpoints such as
+  `submit_run_report`. To hide a custom `McpTool`, prefix its filename with
+  `_`.
+- Explicit lint Targets must name `verilator`, `verible`, or `veriblelint` in
+  `flow_options.tool`; `default_tool` alone is rejected.
+- Stealth Mode's built-in vocabulary is now `claude`, `anthropic`, `copilot`,
+  `codex`, `openai`, `chatgpt`, `gemini`, `booley`, `cursor`, `ticket`, `gpt`,
+  `llm`, and `co-authored-by`, and these terms now match inside identifiers,
+  so pushes that passed before may be blocked. Add literal terms with the new
+  `[stealth] banned_substrings`. The push guard checks imported upstream
+  history unless `upstream_repository` and `upstream_base` are set. Run
+  Project Setup or `booley doctor` to refresh the installed Git hooks.
+- Scripts reading a Flow report's `criterion_met` must handle JSON null; the
+  simulation report schema is now `booley.simulation-report/v3`.
+- B-Wave query output defaults to 2,000 rows (was 5,000) and `list` to 400,
+  and explicit limits above 10,000 are capped with a notice. `--format json`
+  on a command without JSON output, and `distance -s`, exit 2 instead of being
+  ignored.
+- `booley feedback preview` and `submit` are removed and `[feedback].mode` is
+  retired; Doctor FAILs until you delete the key. Only `booley feedback export`
+  remains. ntfy notifications are removed; delete `[notifications]`, and
+  remove `ntfy.sh` from the host egress allowlist if it was added only for
+  them. `pipeline.toml` is no longer a Git identity fallback; set `[agent.git]`
+  in `booley.toml`.
+- Codex default models are `gpt-6-astra` (heavy), `gpt-5.6-sol` (standard),
+  and `gpt-5.6-luna` (light), all at high reasoning effort. Doctor's
+  `interactive.logs-gitignore` check is now `project.gitignore`; re-waive it
+  under the new id. Stealth Mode's commit hook rejects attribution footers
+  instead of silently removing them.
+- During the upgrade review, replace the "Keep `booley doctor` green" bullet in
+  `<project_dir>/AGENTS.md` (and any tracked root copy) with the "Doctor during
+  task work" bullet from the packaged `booley-setup/AGENTS_TEMPLATE.md`, and
+  refresh its Specialists bullet to list `coverage_analyst`.
 
 ## 0.2.15 - 08 SEP 2026
 
 ### New features
 
-- Public QA Scenario Runs now seal versioned Check Results, free-form
-  Observations, evidence, and cleanup state without deciding Findings or verdicts.
-  The explicitly invoked `booley-qa-triage` skill gives the Human Maintainer an
-  exhaustive causal-case review and deterministically projects Findings, QA
-  Changes, Scenario Run Outcomes, and final Qualification.
 - Every built-in Flow now returns the same versioned `FlowPlan` from a dry run.
   The plan records each Target or baseline work unit, timeout, resolved inputs,
   recipe, command, expected artifacts, and planning errors without running EDA
@@ -294,12 +537,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Quality of life
 
-- Host Bootstrap now registers the first eligible installed wheel automatically.
-  Run `booley bootstrap` after installation and `booley bootstrap --update`
-  after upgrading Booley (`--upgrade` is an alias); the former adoption and
-  installation-upgrade flags have been removed.
-- Ticket Mode's Console now shows each direct Developer Agent B-Wave query,
-  including its subcommand, duration, and success or failure.
 - Built-in Flow timeouts now use one positive `timeout_ms` contract across
   configuration, CLI, and MCP calls. Each work unit gets the full active-time
   budget; time waiting for a job slot is excluded.
@@ -317,10 +554,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
-- Simulation makes Target-declared `file_type: user` / `copyto` inputs available
-  in the configured run directory for Icarus, Verilator, and Cocotb runs. A
-  testbench can now open its declared firmware or vectors by the authored
-  relative path without a Project-root copy or symlink.
 - Doctor keeps its known-good and known-bad Simulation overlays in separate,
   freshly reset build variants. Stale timestamps or a cached good executable
   can no longer make the deliberate failure probe pass.
@@ -340,10 +573,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
-- Existing version-1 Public QA run records remain historical evidence and cannot
-  be triaged in place. New runs use the version-2 record contract and a separate
-  triage artifact root; the standalone qualification guide has been removed
-  because Qualification is now the final triage step.
 - Replace `--timeout` with `--timeout-ms`. The old CLI spelling remains a
   deprecated alias for one compatibility window. Configuration and MCP calls
   use `timeout_ms`.
