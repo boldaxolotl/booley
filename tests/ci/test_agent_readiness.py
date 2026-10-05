@@ -10,6 +10,7 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -345,6 +346,10 @@ def offline_bootstrap(monkeypatch, tmp_path):
     return _bootstrap_module()
 
 
+# Real venv + offline pip install. No Windows CI duration observed yet: these
+# take 2-5 s on Linux; the budget assumes a Windows venv build is ~10x slower
+# (tests/timeout_headroom.py sizing rule).
+@pytest.mark.timeout(240)
 def test_published_environment_console_scripts_run(offline_bootstrap, tmp_path):
     """Regression: launchers once named a deleted staging interpreter (exit 127)."""
     environment = tmp_path / "agent-tools" / "fingerprint"
@@ -358,6 +363,7 @@ def test_published_environment_console_scripts_run(offline_bootstrap, tmp_path):
     assert sorted(path.name for path in environment.parent.iterdir()) == ["fingerprint"]
 
 
+@pytest.mark.timeout(240)  # Two real venv builds; see the budget note above.
 def test_relocated_environment_is_rejected_and_rebuilt(offline_bootstrap, tmp_path):
     """An environment renamed into place by the old bootstrap self-heals."""
     tools = tmp_path / "agent-tools"
@@ -365,7 +371,8 @@ def test_relocated_environment_is_rejected_and_rebuilt(offline_bootstrap, tmp_pa
     environment = tools / "fingerprint"
     offline_bootstrap._build(staging, Path(__file__).parents[2], "fingerprint", {})
     staging.replace(environment)
-    assert _run_console_script(environment).returncode == 127
+    # POSIX exits 127; a Windows .exe launcher reports its own non-zero code.
+    assert _run_console_script(environment).returncode != 0
 
     assert not offline_bootstrap._valid_receipt(environment, "fingerprint", {})
     valid, reason = readiness.validate_environment(
@@ -379,6 +386,140 @@ def test_relocated_environment_is_rejected_and_rebuilt(offline_bootstrap, tmp_pa
     assert readiness.validate_environment(
         environment, "fingerprint", readiness.venv_python(environment)
     )[0]
+
+
+def test_failed_rebuild_keeps_backup_when_partial_tree_survives(monkeypatch, tmp_path):
+    module = _bootstrap_module()
+    destination = tmp_path / "environment"
+    destination.mkdir()
+    (destination / "previous").write_text("previous", encoding="utf-8")
+    build_error = RuntimeError("pip failed")
+
+    def build(environment, *_args):
+        environment.mkdir()
+        (environment / "removable").write_text("x", encoding="utf-8")
+        (environment / "locked").write_text("x", encoding="utf-8")
+        raise build_error
+
+    def rmtree_leaving_residue(path, ignore_errors=False):
+        (Path(path) / "removable").unlink()
+        if not ignore_errors:
+            raise PermissionError(13, "in use", str(Path(path) / "locked"))
+
+    monkeypatch.setattr(module, "_build", build)
+    monkeypatch.setattr(module.shutil, "rmtree", rmtree_leaving_residue)
+    with pytest.raises(RuntimeError) as raised:
+        module._rebuild(destination, tmp_path, "fingerprint", {})
+
+    (backup,) = tmp_path.glob(".environment.backup-*")
+    assert raised.value.__cause__ is build_error
+    assert str(destination) in str(raised.value)
+    assert str(backup) in str(raised.value)
+    assert (backup / "previous").read_text(encoding="utf-8") == "previous"
+    assert sorted(path.name for path in destination.iterdir()) == ["locked"]
+
+
+def test_orphan_sweep_removes_only_this_environments_set_aside_trees(tmp_path):
+    module = _bootstrap_module()
+    token = "0123456789abcdef" * 2
+    orphans = [f".fp.backup-{token}", f".fp.staging-4242-{token}"]
+    survivors = [
+        "fp",
+        ".fp.lock",
+        ".fp.backup-short",
+        f".fp.backup-{token}x",
+        f".fp2.backup-{token}",
+        f".fpx.staging-1-{token}",
+        f"fp.backup-{token}",
+    ]
+    for name in orphans + survivors:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "content").write_text("x", encoding="utf-8")
+
+    module._sweep_orphans(tmp_path / "fp")
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(survivors)
+
+
+def test_lock_waiter_outlasts_a_live_owners_normal_build(monkeypatch, tmp_path):
+    """A second bootstrapper waits for a full build instead of failing at 60 s."""
+    module = _bootstrap_module()
+    worst_build = (
+        module.VENV_TIMEOUT_SECONDS + module.PIP_TIMEOUT_SECONDS + 3 * module.PROBE_TIMEOUT_SECONDS
+    )
+    assert worst_build < module.LOCK_WAIT_SECONDS
+    lock = tmp_path / ".fp.lock"
+    # The current PID is always treated as a live owner.
+    lock.write_text(json.dumps({"pid": os.getpid(), "created": 0}), encoding="utf-8")
+    clock = {"now": 0.0}
+
+    def sleep(seconds):
+        clock["now"] += max(seconds, 10.0)
+        if clock["now"] >= worst_build - 10:
+            lock.unlink(missing_ok=True)
+
+    monkeypatch.setattr(
+        module,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock["now"], sleep=sleep, time=lambda: 0.0),
+    )
+    module._acquire(lock)
+
+    assert clock["now"] >= worst_build - 10
+    assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+
+def test_lock_waiter_reclaims_a_dead_owners_lock(tmp_path):
+    module = _bootstrap_module()
+    lock = tmp_path / ".fp.lock"
+    dead = subprocess.run(
+        (sys.executable, "-c", "import os; print(os.getpid())"),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    lock.write_text(json.dumps({"pid": int(dead.stdout), "created": 0}), encoding="utf-8")
+
+    module._acquire(lock)
+
+    assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+
+def _fake_environment(root: Path, launcher_body: str) -> Path:
+    """Create a venv-shaped tree whose ``pip`` launcher is a POSIX shell script."""
+    launcher = readiness.venv_python(root).with_name("pip")
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n" + launcher_body, encoding="utf-8")
+    launcher.chmod(0o755)
+    return launcher
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shell-script launchers are POSIX-only")
+def test_console_script_problem_names_launcher_and_cause(tmp_path):
+    healthy = tmp_path / "healthy"
+    _fake_environment(healthy, "echo pip 1.0\n")
+    assert readiness.console_script_problem(healthy) is None
+
+    failing = tmp_path / "failing"
+    launcher = _fake_environment(
+        failing, "echo noise >&2\necho 'interpreter gone' >&2\nexit 127\n"
+    )
+    problem = readiness.console_script_problem(failing)
+    assert problem == f"launcher {launcher} exited 127: noise | interpreter gone"
+
+    slow = tmp_path / "slow"
+    launcher = _fake_environment(slow, "exec sleep 30\n")
+    assert readiness.console_script_problem(slow, timeout=0.2) == (
+        f"launcher {launcher} did not finish within 0.2 s"
+    )
+
+
+def test_console_script_problem_reports_a_missing_launcher(tmp_path):
+    problem = readiness.console_script_problem(tmp_path)
+    assert problem is not None
+    assert problem.startswith(f"launcher {readiness.venv_python(tmp_path).parent}")
+    assert "could not start" in problem
 
 
 def test_partial_lock_metadata_is_not_deleted_while_fresh(tmp_path):
@@ -592,7 +733,7 @@ def test_validate_environment_rejects_each_stale_condition(monkeypatch, tmp_path
     monkeypatch.setattr(
         readiness, "_run_child", lambda *_args: subprocess.CompletedProcess([], 0, "", "")
     )
-    monkeypatch.setattr(readiness, "console_scripts_runnable", lambda _venv: True)
+    monkeypatch.setattr(readiness, "console_script_problem", lambda _venv: None)
     assert readiness.validate_environment(tmp_path, "fp", python)[0]
     for installed in (None, {}, {"ruff": "bad"}):
         monkeypatch.setattr(
