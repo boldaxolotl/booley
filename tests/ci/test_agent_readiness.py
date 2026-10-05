@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -256,19 +257,128 @@ def test_readiness_rejects_nonobject_receipts(tmp_path):
     assert "receipt" in reason
 
 
-def test_invalid_environment_is_replaced_by_complete_staging(tmp_path):
+def test_invalid_environment_is_rebuilt_in_place(monkeypatch, tmp_path):
     module = _bootstrap_module()
     destination = tmp_path / "environment"
-    staging = tmp_path / "staging"
     destination.mkdir()
-    staging.mkdir()
     (destination / "stale").write_text("stale", encoding="utf-8")
-    (staging / "ready").write_text("ready", encoding="utf-8")
+    built_at = []
 
-    module._publish(staging, destination)
+    def build(environment, *_args):
+        built_at.append(environment)
+        environment.mkdir()
+        (environment / "ready").write_text("ready", encoding="utf-8")
 
+    monkeypatch.setattr(module, "_build", build)
+    module._rebuild(destination, tmp_path, "fingerprint", {})
+
+    assert built_at == [destination]
     assert (destination / "ready").read_text(encoding="utf-8") == "ready"
     assert not (destination / "stale").exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["environment"]
+
+
+def test_failed_rebuild_restores_the_previous_environment(monkeypatch, tmp_path):
+    module = _bootstrap_module()
+    destination = tmp_path / "environment"
+    destination.mkdir()
+    (destination / "previous").write_text("previous", encoding="utf-8")
+
+    def build(environment, *_args):
+        environment.mkdir()
+        (environment / "partial").write_text("partial", encoding="utf-8")
+        raise RuntimeError("pip failed")
+
+    monkeypatch.setattr(module, "_build", build)
+    with pytest.raises(RuntimeError, match="pip failed"):
+        module._rebuild(destination, tmp_path, "fingerprint", {})
+
+    assert (destination / "previous").read_text(encoding="utf-8") == "previous"
+    assert not (destination / "partial").exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["environment"]
+
+
+def _console_script_wheel(directory: Path) -> Path:
+    """Write an offline wheel whose only content is a ``demo-tool`` console script."""
+    wheel = directory / "demo_tool-1.0-py3-none-any.whl"
+    files = {
+        "demo_tool.py": "def main():\n    print('demo-tool ran')\n",
+        "demo_tool-1.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: demo-tool\nVersion: 1.0\n",
+        "demo_tool-1.0.dist-info/WHEEL": (
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+        "demo_tool-1.0.dist-info/entry_points.txt": "[console_scripts]\ndemo-tool = demo_tool:main\n",
+    }
+    record = "".join(f"{name},,\n" for name in files) + "demo_tool-1.0.dist-info/RECORD,,\n"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, text in files.items():
+            archive.writestr(name, text)
+        archive.writestr("demo_tool-1.0.dist-info/RECORD", record)
+    return wheel
+
+
+def _run_console_script(environment: Path) -> subprocess.CompletedProcess[str]:
+    """Start ``demo-tool`` through its installed launcher, as PATH lookups do.
+
+    A dangling direct shebang makes ``execve`` itself fail with ENOENT, while a
+    ``/bin/sh`` trampoline (used for long paths) exits 127; both map to 127.
+    """
+    name = "demo-tool.exe" if sys.platform == "win32" else "demo-tool"
+    launcher = str(readiness.venv_python(environment).with_name(name))
+    try:
+        return subprocess.run((launcher,), capture_output=True, text=True, check=False, timeout=60)
+    except OSError as error:
+        return subprocess.CompletedProcess((launcher,), 127, "", str(error))
+
+
+@pytest.fixture
+def offline_bootstrap(monkeypatch, tmp_path):
+    """Make the bootstrap install one offline console-script wheel and no pins."""
+    pytest.importorskip("ensurepip")
+    wheel = _console_script_wheel(tmp_path)
+    monkeypatch.setattr(readiness, "PINNED_RUNNERS", {})
+    monkeypatch.setattr(
+        readiness,
+        "dependency_argv",
+        lambda _root: ("install", "--no-index", "--disable-pip-version-check", str(wheel)),
+    )
+    return _bootstrap_module()
+
+
+def test_published_environment_console_scripts_run(offline_bootstrap, tmp_path):
+    """Regression: launchers once named a deleted staging interpreter (exit 127)."""
+    environment = tmp_path / "agent-tools" / "fingerprint"
+
+    argv = ["--environment", str(environment), "--fingerprint", "fingerprint"]
+    assert offline_bootstrap.main(argv) == 0
+
+    result = _run_console_script(environment)
+    assert (result.returncode, result.stdout.strip()) == (0, "demo-tool ran"), result.stderr
+    assert offline_bootstrap._valid_receipt(environment, "fingerprint", {})
+    assert sorted(path.name for path in environment.parent.iterdir()) == ["fingerprint"]
+
+
+def test_relocated_environment_is_rejected_and_rebuilt(offline_bootstrap, tmp_path):
+    """An environment renamed into place by the old bootstrap self-heals."""
+    tools = tmp_path / "agent-tools"
+    staging = tools / ".fingerprint.staging-old"
+    environment = tools / "fingerprint"
+    offline_bootstrap._build(staging, Path(__file__).parents[2], "fingerprint", {})
+    staging.replace(environment)
+    assert _run_console_script(environment).returncode == 127
+
+    assert not offline_bootstrap._valid_receipt(environment, "fingerprint", {})
+    valid, reason = readiness.validate_environment(
+        environment, "fingerprint", readiness.venv_python(environment)
+    )
+    assert (valid, reason) == (False, "shared tools environment console scripts cannot start")
+
+    argv = ["--environment", str(environment), "--fingerprint", "fingerprint"]
+    assert offline_bootstrap.main(argv) == 0
+    assert _run_console_script(environment).returncode == 0
+    assert readiness.validate_environment(
+        environment, "fingerprint", readiness.venv_python(environment)
+    )[0]
 
 
 def test_partial_lock_metadata_is_not_deleted_while_fresh(tmp_path):
@@ -482,6 +592,7 @@ def test_validate_environment_rejects_each_stale_condition(monkeypatch, tmp_path
     monkeypatch.setattr(
         readiness, "_run_child", lambda *_args: subprocess.CompletedProcess([], 0, "", "")
     )
+    monkeypatch.setattr(readiness, "console_scripts_runnable", lambda _venv: True)
     assert readiness.validate_environment(tmp_path, "fp", python)[0]
     for installed in (None, {}, {"ruff": "bad"}):
         monkeypatch.setattr(

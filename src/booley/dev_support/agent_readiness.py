@@ -598,6 +598,18 @@ def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
+def console_scripts_runnable(venv: Path) -> bool:
+    """Return whether the environment's console-script launchers can start.
+
+    pip bakes the interpreter's absolute path into each launcher (a POSIX
+    shebang or a Windows ``.exe`` stub), so an environment moved after
+    installation keeps a working ``python`` while ``fusesoc`` and friends exit
+    127. Running ``pip``'s launcher proves that path on every platform.
+    """
+    launcher = venv_python(venv).with_name("pip.exe" if sys.platform == "win32" else "pip")
+    return _successful(_run_process((str(launcher), "--version"), venv, timeout=10))
+
+
 def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bool, str]:
     receipt_path = root / "receipt.json"
     try:
@@ -613,13 +625,22 @@ def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bo
         return False, "shared tools environment receipt or interpreter is stale"
     if not _runner_versions(receipt.get("installed", {})):
         return False, "shared tools environment has mismatched Ruff/Pytest runner pins"
-    actual = _installed_versions(python)
-    if actual is None or actual != receipt.get("installed", {}):
-        return False, "shared tools environment distribution set differs from its receipt"
-    pip_check = _run_child(python, ("-m", "pip", "check"), root)
-    if not _successful(pip_check):
-        return False, "shared tools environment failed pip check"
+    problem = _runtime_problem(root, python, receipt.get("installed", {}))
+    if problem is not None:
+        return False, problem
     return True, "shared tools environment matches the repository fingerprint"
+
+
+def _runtime_problem(root: Path, python: Path, recorded: Any) -> str | None:
+    """Probe the live environment against its receipt; return the first defect."""
+    actual = _installed_versions(python)
+    if actual is None or actual != recorded:
+        return "shared tools environment distribution set differs from its receipt"
+    if not _successful(_run_child(python, ("-m", "pip", "check"), root)):
+        return "shared tools environment failed pip check"
+    if not console_scripts_runnable(root):
+        return "shared tools environment console scripts cannot start"
+    return None
 
 
 def _runner_versions(installed: Any) -> bool:
