@@ -7,11 +7,7 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
-## 0.3.0 - 05 OCT 2026
-
-From this release on, Booley's development focuses on quality: finding as many
-bugs as possible and making the existing workflows easier to use, rather than
-adding new features.
+## 0.3.1 - 05 OCT 2026
 
 ### Installation
 
@@ -19,6 +15,12 @@ adding new features.
   canonical host installation. The README now leads with pipx on PEP 668
   distributions. Other identities still require `booley bootstrap --update`;
   source/editable, temporary, and ephemeral installs remain ineligible.
+
+## 0.3.0 - 05 OCT 2026
+
+From this release on, Booley's development focuses on quality: finding as many
+bugs as possible and making the existing workflows easier to use, rather than
+adding new features.
 
 ### Major features
 

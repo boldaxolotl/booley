@@ -2,7 +2,10 @@
 
 This guide connects an installed Booley CLI to a specific RTL project. It
 assumes you have completed the [README installation](../../README.md#installation)
-and that `booley --version` works.
+and that `booley --version` works. Project Setup also requires a host agent CLI
+on PATH: [Claude Code](https://code.claude.com/docs/en/setup) (`claude`) or
+[Codex](https://developers.openai.com/codex/cli) (`codex`), signed in with your
+chosen credentials. `booley bootstrap` checks for this host prerequisite.
 
 The lifecycle has three parts: **Host Bootstrap** prepares reusable machine
 resources, **Project Initialization** makes this codebase a Booley Project, and

@@ -59,7 +59,10 @@ if [ -n "$wheel" ]; then
     rm -rf -- "$wheel_env"
 fi
 ```
-Host Bootstrap refuses disposable/virtualenv installs; follow
+Host Bootstrap refuses the disposable environment above because its package
+is under the system temporary directory. Persistent installed-wheel venvs can
+become canonical; source/editable installs and named ephemeral workspace paths
+remain ineligible. Follow
 [canonical host installation policy](../user/SETUP.md) and
 [host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment)
 to intentionally use this wheel on the host.

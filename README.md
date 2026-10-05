@@ -97,7 +97,9 @@ supported. You need:
 - [Docker](https://www.docker.com/), with about **4 GB** free for the image
   (**6 GB** with the RISC-V toolchain) plus room for build artifacts
 - [VS Code](https://code.visualstudio.com/)
-- Credentials for Claude (the default) or Codex
+- A host agent CLI on PATH for Project Setup: [Claude Code](https://code.claude.com/docs/en/setup)
+  (`claude`, the default) or [Codex](https://developers.openai.com/codex/cli) (`codex`)
+- Credentials for the installed agent CLI
 
 Use pipx to install the CLI in a persistent, isolated environment.
 On **Ubuntu/Debian**, first prepare pipx:
@@ -114,7 +116,8 @@ pipx ensurepath
 is on `PATH`. On Windows, install pipx with `py -m pip install --user pipx`,
 run `py -m pipx ensurepath`, and reopen the terminal first.
 
-Install the CLI and prepare the host:
+Install your host agent CLI using the instructions linked above, then install
+Booley and prepare the host:
 
 <!-- booley-smoke:install -->
 ```bash

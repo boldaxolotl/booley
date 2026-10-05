@@ -67,3 +67,10 @@ def test_ticket_example_converts_through_the_real_ticket_boundary():
     assert conversion.document is not None
     capabilities = {row.capability for row in conversion.document.spec.criteria}
     assert capabilities == {"LINT", "SIM", "COVERAGE", "REVIEW", "SYNTH"}
+
+
+def test_installation_names_host_agent_cli_prerequisite():
+    section = README.split("## Installation", 1)[1].split("\n## ", 1)[0]
+    assert "host agent CLI on PATH for Project Setup" in section
+    assert "[Claude Code](https://code.claude.com/docs/en/setup)" in section
+    assert "[Codex](https://developers.openai.com/codex/cli)" in section

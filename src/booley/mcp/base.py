@@ -44,6 +44,7 @@ from .diff_classify import (
 from .events import (
     _specialist_thinking_event,  # noqa: F401 — re-exported for specialist.py
 )
+from .flow_execution_selection import configured_ticket_file, select_flow_execution
 from .run_lock import (
     _as_pid,  # noqa: F401 — re-exported for booley.dev_support.base importers/tests
     _scan_endpoint_events,  # noqa: F401 — re-exported for booley.dev_support.base importers/tests
@@ -85,9 +86,8 @@ class McpTool(EndpointContext):
 
     def __init__(self) -> None:
         super().__init__()
-        from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
-
-        self._acceptance_recorder = TicketAcceptanceRecorder()
+        selection = select_flow_execution(configured_ticket_file())
+        self._acceptance_recorder = selection.acceptance_recorder()
 
     def _adapt_outcome(self, outcome: EndpointOutcome) -> McpToolResult:
         return _as_mcp_tool_result(outcome)
