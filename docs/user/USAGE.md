@@ -113,7 +113,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
 - If Booley says its version changed, type `/booley-heal` in the agent chat.
 - For a quick overview of Booley, start with `booley cheat`. It's long, so
   `booley cheat --list` shows its sections and you can print just the ones you
-  need, for example `booley cheat --board` or `booley cheat --commands --project`.
+  need, for example `booley cheat --board` or `booley cheat --commands --project-files`.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
   and syntheses.
 

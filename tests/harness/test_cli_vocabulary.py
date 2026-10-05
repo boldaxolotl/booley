@@ -103,6 +103,7 @@ def walk(parser, route=()):
 
 def assert_controls(parser, *, timeout=False):
     controls = parser._option_string_actions
+    assert not {"--directory", "--time-limit"} & controls.keys()
     assert {"-C", "--project"} <= controls.keys()
     for option in ("--project-root", "--work-dir", "--timeout-ms"):
         if option in controls:
@@ -142,7 +143,29 @@ def test_recursive_command_inventory():
             assert "--project" not in parser._option_string_actions
         else:
             assert_controls(parser)
-    assert ("session", "prepare") in {route for route, _ in routes}
+    # New nested routes require an explicit ownership/compatibility decision.
+    nested = {
+        "session": {"up", "enter", "down", "status", "validate", "prepare", "refresh"},
+        "cleanup": {"prepare", "record", "preview", "apply"},
+        "upgrade": {"status", "acknowledge"},
+        "feedback": {
+            "add",
+            "friction",
+            "say",
+            "win",
+            "triage",
+            "filed",
+            "list",
+            "report",
+            "export",
+            "redact",
+        },
+    }
+    actual = {route for route, _ in routes if len(route) > 1 and route[0] in nested}
+    expected = {
+        (owner, operation) for owner, operations in nested.items() for operation in operations
+    }
+    assert actual == expected
 
 
 def test_detached_endpoint_inventory():
@@ -471,3 +494,10 @@ def test_colliding_plugin_cannot_override_outer_checkout(projects):
         with pytest.raises(SystemExit):
             projected.parse_args(["--work-dir", str(projects[0])])
         assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
+
+
+def test_bare_cheat_alias_warns_once_per_invocation(capsys):
+    args = command(["cheat", "--project", "--project"])
+    assert args.project
+    assert capsys.readouterr().err.count("is deprecated") == 1
+    assert not any(key.startswith("_cli_") for key in vars(args))

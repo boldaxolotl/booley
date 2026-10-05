@@ -109,7 +109,9 @@ class CheatSelectionAction(SelectionAction):
     ) -> None:
         if values is None:
             namespace.project = True
-            warn_alias("--project", "--project-files")
+            if not getattr(namespace, "_cli_cheat_project_notice", False):
+                warn_alias("--project", "--project-files")
+                namespace._cli_cheat_project_notice = True
         else:
             super().__call__(parser, namespace, values, option_string)
 
@@ -151,6 +153,7 @@ def add_project_option(parser: argparse.ArgumentParser, dest: str, *, cheat: boo
 
 
 def collect_project_selection(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    vars(args).pop("_cli_cheat_project_notice", None)
     choices = [vars(args).pop(key) for key in list(vars(args)) if key.startswith("_cli_project_")]
     if len(choices) > 1:
         parser.error("multiple Project selectors are not supported")
@@ -301,6 +304,8 @@ def extract_project_tail(
                     parser.error(f"{option} requires PATH")
                 value = tail[index]
                 index += 1
+            if selections:
+                parser.error("multiple Project selectors are not supported")
             selections.append(ProjectSelection(value, option == "--work-dir"))
             if option == "--work-dir":
                 warn_alias(option, "--project")
