@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Create one fingerprinted, tools-only environment atomically."""
+"""Create one fingerprinted, tools-only environment at its final path.
+
+A virtual environment is not relocatable: pip bakes the interpreter's absolute
+path into every console-script launcher (POSIX shebangs and Windows ``.exe``
+launchers alike) and ``venv`` bakes it into the activation scripts. The
+environment is therefore built in place at its final path, never renamed into
+it. ``receipt.json`` is the publication marker: it is written atomically, last,
+and only after every probe passes, so readers never accept a partial build.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +15,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +29,18 @@ LOCK_STALE_AFTER_SECONDS = 5
 VENV_TIMEOUT_SECONDS = 120
 PIP_TIMEOUT_SECONDS = 900
 PROBE_TIMEOUT_SECONDS = 60
+# A live lock owner may legitimately hold the lock for its whole run: the
+# re-validation probes (installed set, pip check, launcher), the venv and pip
+# install steps, and the build's own three probes. Waiters must outlast that;
+# a crashed owner is still reclaimed promptly through the PID check in _stale.
+_PROBES_PER_LOCKED_RUN = 6
+LOCK_WAIT_MARGIN_SECONDS = 120
+LOCK_WAIT_SECONDS = (
+    VENV_TIMEOUT_SECONDS
+    + PIP_TIMEOUT_SECONDS
+    + _PROBES_PER_LOCKED_RUN * PROBE_TIMEOUT_SECONDS
+    + LOCK_WAIT_MARGIN_SECONDS
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,20 +54,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.environment.exists() and _valid_receipt(args.environment, args.fingerprint, pins):
         return 0
     lock = args.environment.with_name(f".{args.environment.name}.lock")
-    staging = args.environment.with_name(
-        f".{args.environment.name}.staging-{os.getpid()}-{uuid.uuid4().hex}"
-    )
     acquired = False
     try:
         _acquire(lock)
         acquired = True
+        _sweep_orphans(args.environment)
         if args.environment.exists() and _valid_receipt(args.environment, args.fingerprint, pins):
             return 0
-        _build(staging, root, args.fingerprint, pins)
-        _publish(staging, args.environment)
+        _rebuild(args.environment, root, args.fingerprint, pins)
         return 0
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
         if acquired:
             with contextlib.suppress(FileNotFoundError):
                 lock.unlink()
@@ -54,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _acquire(lock: Path) -> None:
     """Acquire a bounded lock and recover only dead owners."""
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
     while True:
         try:
             lock.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +93,9 @@ def _acquire(lock: Path) -> None:
 
 
 def _stale(lock: Path) -> bool:
+    # Not os.kill(pid, 0): on Windows signal 0 is CTRL_C_EVENT, not a probe.
+    from booley.runtime.pid import is_pid_alive
+
     try:
         payload = json.loads(lock.read_text(encoding="utf-8"))
         pid = int(payload["pid"])
@@ -84,15 +104,7 @@ def _stale(lock: Path) -> bool:
             return time.time() - lock.stat().st_mtime > LOCK_STALE_AFTER_SECONDS
         except OSError:
             return False
-    if pid == os.getpid():
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    return False
+    return pid != os.getpid() and not is_pid_alive(pid)
 
 
 def _runner_pins(root: Path) -> dict[str, str]:
@@ -102,17 +114,92 @@ def _runner_pins(root: Path) -> dict[str, str]:
     return PINNED_RUNNERS
 
 
-def _build(staging: Path, root: Path, fingerprint: str, pins: dict[str, str]) -> None:
+def _rebuild(environment: Path, root: Path, fingerprint: str, pins: dict[str, str]) -> None:
+    """Rebuild in place, restoring the previous tree if the build fails.
+
+    The caller holds the lock. Any existing tree failed validation, so it is
+    set aside rather than reused; it stays recoverable until the new build has
+    published its receipt.
+    """
+    backup = None
+    if environment.exists() or environment.is_symlink():
+        backup = environment.with_name(f".{environment.name}.backup-{uuid.uuid4().hex}")
+        environment.replace(backup)
+    try:
+        _build(environment, root, fingerprint, pins)
+    except BaseException as error:
+        _restore_previous(environment, backup, error)
+        raise
+    if backup is not None:
+        _discard(backup)
+
+
+def _restore_previous(environment: Path, backup: Path | None, error: BaseException) -> None:
+    """Remove a failed build and put the previous tree back.
+
+    If the partial tree cannot be removed, the previous tree stays intact under
+    its backup name and the raised error names both paths, chained from the
+    build failure so that cause is never masked.
+    """
+    try:
+        _discard(environment, strict=True)
+        if backup is not None:
+            backup.replace(environment)
+    except OSError as cleanup_error:
+        kept = (
+            f"; the previous environment is kept at {backup} until the next bootstrap run"
+            if backup is not None
+            else ""
+        )
+        raise RuntimeError(
+            f"agent-tools build failed and its partial tree {environment} "
+            f"could not be removed ({cleanup_error}){kept}"
+        ) from error
+
+
+def _sweep_orphans(environment: Path) -> None:
+    """Remove set-aside trees that only a dead lock owner could have left.
+
+    The caller holds the lock, so no live bootstrap owns a backup or a staging
+    tree (the latter left by versions that built outside the final path).
+    Only this environment's exact sibling name patterns are touched.
+    """
+    name = re.escape(environment.name)
+    orphan = re.compile(rf"\.{name}\.(?:backup-[0-9a-f]{{32}}|staging-\d+-[0-9a-f]{{32}})")
+    for sibling in environment.parent.iterdir():
+        if orphan.fullmatch(sibling.name):
+            _discard(sibling)
+
+
+def _discard(path: Path, *, strict: bool = False) -> None:
+    """Remove a directory tree, or a symlink without following it.
+
+    Best effort unless *strict*, in which case any failure other than the path
+    already being gone raises.
+    """
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, ignore_errors=not strict)
+        return
+    with contextlib.suppress(FileNotFoundError if strict else OSError):
+        path.unlink()
+
+
+def _build(environment: Path, root: Path, fingerprint: str, pins: dict[str, str]) -> None:
+    """Create the environment at its final path and publish its receipt last."""
     sys.path.insert(0, str(root / "src"))
-    from booley.dev_support.agent_readiness import dependency_argv, venv_python
+    from booley.dev_support.agent_readiness import (
+        console_script_problem,
+        dependency_argv,
+        venv_python,
+    )
 
     subprocess.run(
-        (sys.executable, "-B", "-m", "venv", str(staging)),
+        (sys.executable, "-B", "-m", "venv", str(environment)),
         cwd=root,
         check=True,
         timeout=VENV_TIMEOUT_SECONDS,
     )
-    python = venv_python(staging)
+    python = venv_python(environment)
     subprocess.run(
         (str(python), "-B", "-m", "pip", *dependency_argv(root)),
         cwd=root,
@@ -128,6 +215,9 @@ def _build(staging: Path, root: Path, fingerprint: str, pins: dict[str, str]) ->
     installed = _installed(python, root)
     if any(installed.get(name) != version for name, version in pins.items()):
         raise RuntimeError("bootstrap did not install the exact runner pins")
+    problem = console_script_problem(environment, PROBE_TIMEOUT_SECONDS)
+    if problem is not None:
+        raise RuntimeError(f"bootstrap produced console scripts that cannot start: {problem}")
     receipt = {
         "schema_version": 1,
         "fingerprint": fingerprint,
@@ -135,9 +225,12 @@ def _build(staging: Path, root: Path, fingerprint: str, pins: dict[str, str]) ->
         "platform": sys.platform,
         "installed": installed,
     }
-    (staging / "receipt.json").write_text(
+    # Write-then-rename keeps the publication marker all-or-nothing.
+    pending = environment / f".receipt.json.{uuid.uuid4().hex}"
+    pending.write_text(
         json.dumps(receipt, sort_keys=True, separators=(",", ":")), encoding="utf-8"
     )
+    pending.replace(environment / "receipt.json")
 
 
 def _installed(python: Path, root: Path) -> dict[str, str]:
@@ -157,6 +250,14 @@ def _installed(python: Path, root: Path) -> dict[str, str]:
 
 
 def _valid_receipt(root: Path, fingerprint: str, pins: dict[str, str]) -> bool:
+    """Accept an environment only if its receipt, packages, and launchers hold.
+
+    The launcher probe also rejects environments published by older versions
+    of this script, which renamed a finished staging tree into place and so
+    left every console script pointing at a deleted interpreter.
+    """
+    from booley.dev_support.agent_readiness import console_script_problem
+
     try:
         payload = json.loads((root / "receipt.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -181,28 +282,10 @@ def _valid_receipt(root: Path, fingerprint: str, pins: dict[str, str]) -> bool:
                 timeout=PROBE_TIMEOUT_SECONDS,
             ).returncode
             == 0
+            and console_script_problem(root, PROBE_TIMEOUT_SECONDS) is None
         )
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         return False
-
-
-def _publish(staging: Path, destination: Path) -> None:
-    """Publish a complete environment while retaining a recoverable fallback."""
-    if not destination.exists():
-        staging.replace(destination)
-        return
-    backup = destination.with_name(f".{destination.name}.backup-{uuid.uuid4().hex}")
-    destination.replace(backup)
-    try:
-        staging.replace(destination)
-    except BaseException:
-        backup.replace(destination)
-        raise
-    if backup.is_dir() and not backup.is_symlink():
-        shutil.rmtree(backup, ignore_errors=True)
-    else:
-        with contextlib.suppress(FileNotFoundError):
-            backup.unlink()
 
 
 if __name__ == "__main__":
