@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
-from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -33,6 +33,24 @@ class AcceptanceRecorder(Protocol):
         acceptance_facts: Mapping[str, Any],
         ticket_identity: Mapping[str, Any],
     ) -> object | None: ...
+
+
+@runtime_checkable
+class StatePersistenceSource(Protocol):
+    """Optional recorder capability: choose how the execution's state is saved.
+
+    A recorder that does not implement it leaves its state on the default
+    atomic file write, as every recorder does today.
+    """
+
+    def state_persistence(self) -> StatePersistence: ...
+
+
+def state_persistence_for(recorder: AcceptanceRecorder) -> StatePersistence | None:
+    """Strategy *recorder* supplies for its state, or ``None`` for the default."""
+    if isinstance(recorder, StatePersistenceSource):
+        return recorder.state_persistence()
+    return None
 
 
 class AcceptanceRecordingError(RuntimeError):

@@ -10,6 +10,7 @@ subprocess environment) without touching every reader.
 Today every value equals the scattered read it replaced: the explicit
 ``work_dir`` or the server's cwd, the container-wide jobs root, and the server
 process's own ``BOOLEY_*`` variables. ``subprocess_env_overrides`` is empty.
+``ticket_file`` feeds :func:`~booley.mcp.flow_execution_selection.select_flow_execution`.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+
+from booley.mcp.flow_execution_selection import configured_ticket_file
 
 # The MCP server reaches session_jobs_dir only through this module; a later
 # Step 0 change moves it to a neutral runtime module.
@@ -36,7 +39,8 @@ class CallContext:
     ``state_path``, ``logs_dir``, and ``runtime_dir`` are ``None`` when the
     server environment leaves them unset, exactly as the reads they replaced
     returned nothing. ``runtime_dir`` is the explicit ``BOOLEY_RUNTIME_DIR``
-    value, not the logs-derived fallback.
+    value, not the logs-derived fallback. ``ticket_file`` is the server's
+    ``BOOLEY_TICKET_FILE``, or ``None`` when unset or empty.
     """
 
     explicit_work_dir: Path | None
@@ -45,6 +49,7 @@ class CallContext:
     logs_dir: Path | None
     runtime_dir: Path | None
     subprocess_env_overrides: Mapping[str, str]
+    ticket_file: Path | None
 
     @property
     def work_dir(self) -> Path:
@@ -90,4 +95,5 @@ def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
         logs_dir=_env_path("BOOLEY_LOGS_DIR"),
         runtime_dir=_env_path("BOOLEY_RUNTIME_DIR"),
         subprocess_env_overrides=MappingProxyType({}),
+        ticket_file=configured_ticket_file(),
     )
