@@ -6,6 +6,11 @@ and secondary row number/internal key. These explanations describe the shared
 concepts in `docs/CONTEXT.md` in hardware-engineer language; setup does not
 require the user to read that maintainer glossary.
 
+This onboarding companion is required by the setup contract in issue #1232.
+`docs/CONTEXT.md` remains authoritative for shared vocabulary; keep these
+beginner explanations aligned with it when a shared definition changes.
+Setup-only terms follow the setup steps and user configuration reference.
+
 ## Booley Flow
 Aliases: Flow, Flows
 A Booley Flow runs a complete job, such as simulation, lint, ASIC synthesis, or
@@ -23,6 +28,18 @@ Aliases: Specialists
 A Specialist is an optional AI helper, such as a code reviewer or mutation
 tester, given fresh context for one task. It advises or checks work rather than
 running the deterministic build job itself.
+
+## EDA tool
+Aliases: EDA tools
+An EDA tool is the external program that compiles, simulates, lints, synthesizes,
+or implements your design, such as Verilator, Icarus, Yosys, or Vivado. A Booley
+Flow runs that program and interprets its results.
+
+## Cocotb Target
+Aliases: Cocotb Targets
+A Cocotb Target is a simulation build whose testbench is a Python cocotb module.
+The Python tests attach to the DUT or a thin HDL wrapper, and Booley reads their
+pass/fail results from cocotb's result file instead of log-line sentinels.
 
 ## Sandbox
 A Sandbox is the isolated environment where Booley runs commands, edits files,

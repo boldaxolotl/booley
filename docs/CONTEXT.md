@@ -140,16 +140,6 @@ The design-description primitives Booley references but does not own. **Target**
 A codebase initialized with `booley init`, containing a `.booley_project/` directory with tickets, configuration, and logs. Booley discovers the active project by walking up the directory tree.
 _Avoid_: repo, workspace
 
-**Stealth Mode**:
-The Project setting that keeps Booley out of the RTL repo's history through
-commit-message scrubbing and hidden-core projection into ignored FuseSoC inputs.
-_Avoid_: privacy mode, hidden mode (the git-footprint choice that enables it)
-
-**Vendored-Core Quarantine**:
-The read-only treatment of third-party cores tagged `vendored` as upstream
-input for Booley's agents, distinct from Project-owned integration code.
-_Avoid_: vendor isolation, dependency sandbox
-
 **Project Inventory**:
 The host-owned catalog of canonical Project paths and their **Project Grants**, including paths whose Project data is missing or uninitialized.
 _Avoid_: Project registry, workspace list, filesystem scan
@@ -197,18 +187,6 @@ _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 **Booley Flow**:
 Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked inside the Sandbox through an MCP tool with no Criteria side effects. A resolved **Target** supplies the EDA-selection field used during FuseSoC resolution. Simulation and lint drive that selected tool directly; the FPGA Flow rebuilds the resolved design inputs into its fixed Vivado EDAM, so the Target's `fpga` naming axis declares drivability while its EDA-selection field remains a resolution input. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Sandbox**, and interprets the result into evidence.
 _Avoid_: B-Tool, mechanical tool, utility, command
-
-**Parity Check**:
-An optional post-gate Project Setup comparison of a Booley Flow's verdict
-against the repo's native build system, valid only for a phase where both use
-the same EDA tool.
-_Avoid_: cross-simulator equivalence, setup gate
-
-**Flow Cache**:
-Reusable build products owned by a Booley Flow and retained between runs to
-avoid rebuilding unchanged work; Project Setup preserves them by default.
-It is distinct from a Simulator Bundle scoped to one Simulation Campaign.
-_Avoid_: setup scratch, Simulator Bundle, cross-campaign simulator bundle
 
 **EDA tool**:
 Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target's EDA-selection field participates in FuseSoC resolution and normally selects the program; the FPGA Flow is the fixed-backend exception and always drives Vivado. The Booley Flow owns orchestration, evidence normalization, artifacts, and Criteria rather than delegating those responsibilities to the EDA tool.

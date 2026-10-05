@@ -1,7 +1,6 @@
 """Regression contracts for shipped ticket workflow skills."""
 
 import re
-from pathlib import Path
 
 import pytest
 
@@ -842,6 +841,8 @@ _SETUP_TERMS = (
     "Project Grant",
     "grant",
     "License Profile",
+    "EDA tool",
+    "Cocotb Target",
 )
 _REQUIRED_SETUP_TERMS = {
     "stealth",
@@ -853,6 +854,8 @@ _REQUIRED_SETUP_TERMS = {
     "tech cell replacement",
     "flow cache",
     "vendored-core quarantine",
+    "eda tool",
+    "cocotb target",
 }
 
 
@@ -988,9 +991,6 @@ def test_setup_hidden_footprint_enables_stealth():
             assert "hidden config-only project may leave stealth off" not in text
 
 
-def test_context_defines_setup_glossary_terms():
-    context = (Path(__file__).resolve().parents[2] / "docs" / "CONTEXT.md").read_text(
-        encoding="utf-8"
-    )
-    for term in ("Stealth Mode", "Parity Check", "Flow Cache", "Vendored-Core Quarantine"):
-        assert context.count(f"**{term}**:") == 1
+def test_setup_grill_terms_are_in_glossary():
+    terms = _glossary_terms()
+    _assert_terms_defined(_skill_text("booley-setup", "steps/0-plan.md"), terms)

@@ -628,10 +628,10 @@ Per-Target test lists plus an optional run-time selector.
 
 What goes here:
 
-- **Stealth mode — always write what rows 16 and 20 settled.** The merged
-  git-history answer sets `[stealth] enabled = true` for hidden, including
-  config-only projects, and `enabled = false` for open. Preserve a hand-set
-  block and the plan's volunteered exception or unattended fallback exactly.
+- **Stealth mode — always write what rows 16 and 20 settled.** Step 0 row 16
+  owns the merged git-history policy. Write the plan's `[stealth]` values
+  exactly, including hand-set values, volunteered exceptions, and unattended
+  fallbacks.
   Do not omit the block: Booley's runtime fallback for a missing key is on,
   so omission would reverse an explicit disabled choice.
   If row 16 explicitly chose to exclude repository-native `.core` files, also
