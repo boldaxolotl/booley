@@ -1584,3 +1584,38 @@ def test_host_policy_migration_warning_reaches_init_and_doctor(
         f.severity.value == "warn" and expected in f.message for f in report.report().findings
     )
     assert path.read_text() == text
+
+
+@pytest.mark.parametrize("installed", [(), ("claude",), ("codex",), ("claude", "codex")])
+def test_host_agent_cli_prerequisite(monkeypatch, installed):
+    monkeypatch.setattr(
+        bootstrap.shutil, "which", lambda name: f"/bin/{name}" if name in installed else None
+    )
+    monkeypatch.setattr(bootstrap, "_git_finding", lambda: _current("git"))
+    monkeypatch.setattr(bootstrap, "_tool_finding", lambda name, _arg: _current(name))
+    monkeypatch.setattr(bootstrap, "_docker_daemon_error", lambda: None)
+    monkeypatch.setattr(bootstrap, "_vscode_finding", lambda: _current("vscode"))
+    findings = bootstrap._prerequisite_findings()
+    agent = next(finding for finding in findings if finding.resource == "host-agent-cli")
+    if installed:
+        assert agent.state is bootstrap.BootstrapState.CURRENT
+    else:
+        assert agent.state is bootstrap.BootstrapState.WARNING
+        assert "https://code.claude.com/docs/en/setup" in agent.detail
+        assert "https://developers.openai.com/codex/cli" in agent.detail
+
+
+@pytest.mark.parametrize("intent", [Intent.CHECK, Intent.ENSURE])
+def test_missing_host_agent_cli_does_not_block_bootstrap(monkeypatch, intent):
+    calls = _wire_current(monkeypatch)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        bootstrap,
+        "_prerequisite_findings",
+        lambda: (_current("git"), _current("docker"), bootstrap._host_agent_cli_finding()),
+    )
+    result = bootstrap.reconcile_bootstrap(intent)
+    assert result.exit_status == 0
+    assert "skills" in calls
+    assert "base-image" in calls
+    assert any(finding.state is bootstrap.BootstrapState.WARNING for finding in result.findings)

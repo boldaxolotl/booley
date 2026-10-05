@@ -50,7 +50,9 @@ over that severity bug with a project waiver.
    root there). Each side checks what only it can see — host-side
    Docker/network/image checks never run in the container. Expect a few
    Sandbox-specific SKIPs on each side; a *FAIL* that exists on one side only
-   is real. Resolve or waive host-only warnings before continuing.
+   is real. The host-agent reminder is a PASS: Project Setup expects a host
+   agent, while Booley Flows and MCP tools live only in the Sandbox. It needs
+   no waiver. Resolve or waive other host-only warnings before continuing.
 7. Run plain `booley doctor` **once more** in the container after the footprint
    and host findings are settled. Host-side waiver changes must land before this
    point.
