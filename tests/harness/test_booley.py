@@ -477,7 +477,8 @@ def test_chat_parser_and_dispatch_are_registered():
     assert "[Sandbox] Open this Project's configured agent" in help_text
 
 
-def test_bare_booley_defaults_to_chat():
+def test_bare_booley_defaults_to_chat(monkeypatch):
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
     parser = tlr._build_parser()
 
     args = tlr._normalize_args(parser, parser.parse_args([]))
@@ -1009,16 +1010,14 @@ class TestEffectiveCommand:
         assert tlr._effective_command(self._parse(["run"])) == "run"
         assert tlr._effective_command(self._parse(["init"])) == "init"
 
-    def test_legacy_board_flag_resolves_to_board(self):
-        """Hidden flat `--board` flag must still hit the venue guard."""
-        assert tlr._effective_command(self._parse(["--board"])) == "board"
+    def test_unnormalized_no_command_has_no_effective_command(self):
+        assert tlr._effective_command(self._parse([])) is None
 
-    def test_legacy_doctor_and_cheat_flags(self):
-        assert tlr._effective_command(self._parse(["--doctor"])) == "doctor"
-        assert tlr._effective_command(self._parse(["--cheat"])) == "cheat"
-
-    def test_no_command_defaults_to_chat(self):
-        assert tlr._effective_command(self._parse([])) == "chat"
+    def test_normalized_sandbox_default_is_chat(self, monkeypatch):
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        parser = tlr._build_parser()
+        args = tlr._normalize_args(parser, parser.parse_args([]))
+        assert tlr._effective_command(args) == "chat"
 
 
 def test_prepare_review_board_parser():
@@ -3665,12 +3664,13 @@ def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv
 
 
 @pytest.mark.parametrize(
-    "argv", [["run"], ["init"], ["auth", "--clear"], [], ["--doctor"], ["--board"]]
+    "argv", [["run"], ["init"], ["auth", "--clear"], [], ["doctor"], ["board"]]
 )
 def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley", *argv])

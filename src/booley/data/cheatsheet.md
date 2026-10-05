@@ -18,13 +18,13 @@ and nested actions.
 
 #### Sandbox-only commands
 
-For Interactive Mode, we recommend `booley` / `booley chat`, which launches
+On the host, bare `booley` prints help and a getting-started hint.
+Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`, which launches
 `claude` or `codex` according to `[agent].provider`.
 
 | Command | Purpose |
 |---------|---------|
-| `booley` | Open the Project's configured Claude Code or Codex CLI |
-| `booley chat` | Explicit spelling of the default `booley` command |
+| `booley chat` | Explicit spelling of the Sandbox default `booley` command |
 | `booley run` | Execute queued or named tickets |
 | `booley board` | Create, inspect, move, reset, or archive tickets |
 
@@ -32,6 +32,7 @@ For Interactive Mode, we recommend `booley` / `booley chat`, which launches
 
 | Command | Location | Purpose |
 |---------|----------|---------|
+| `booley` | mixed | Host: help; Sandbox: open the configured agent CLI |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
 | `booley targets` | mixed | List or filter Targets and show resolved details |
@@ -387,9 +388,9 @@ The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and 
 
 To extend the image, create `.booley_project/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley_project/booley.toml`.
 
-`booley` / `booley chat` is a convenience alias for the selected agent command:
+Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected agent command:
 it replaces itself with the native CLI. Invoke `claude` or `codex` directly to
 pass agent-specific options. The selected provider's VS Code extension is an
 optional alternative in the attached container window.
 
-**Bare `booley` (`booley chat`), `booley run`, and `booley board` are container-only.** Run them from a terminal **inside** the devcontainer (Reopen in Container, or `booley session enter`). For Ticket Mode, use one terminal per concurrent ticket, up to `[jobs] max_tickets` (default 2); extra runs queue with "waiting for slot (position N)". Launched on the host these commands fail fast and name the fix. `booley init` and `booley session` stay host-side; `booley doctor` works on either side.
+**Explicit `booley chat`, `booley run`, and `booley board` are container-only.** Bare `booley` prints help on the host and opens the configured agent inside the Sandbox. Run them from a terminal **inside** the devcontainer (Reopen in Container, or `booley session enter`). For Ticket Mode, use one terminal per concurrent ticket, up to `[jobs] max_tickets` (default 2); extra runs queue with "waiting for slot (position N)". Launched on the host these commands fail fast and name the fix. `booley init` and `booley session` stay host-side; `booley doctor` works on either side.
