@@ -34,9 +34,10 @@ For Interactive Mode, we recommend `booley` / `booley chat`, which launches
 |---------|----------|---------|
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
-| `booley targets` | either | List or filter Targets and show resolved details |
+| `booley targets` | mixed | List or filter Targets and show resolved details |
 | `booley flow` | mixed | List or directly run deterministic Booley Flows |
 | `booley specialist` | mixed | List visible Specialists; run inside the Sandbox |
+| `booley feedback` | mixed | Record findings, friction, and impressions |
 | `booley cleanup` | mixed | Preview or apply manifest-owned Project Setup cleanup |
 | `booley cheat` | either | Show this reference, whole or by section |
 

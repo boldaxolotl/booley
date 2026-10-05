@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1092,6 +1093,7 @@ def _normalize_args(
             args.ticket = args.slug
         else:
             args.command = "chat"
+            args.default_chat = True
 
     _validate_doctor_args(parser, args)
 
@@ -2729,15 +2731,17 @@ def _effective_command(args: argparse.Namespace) -> str | None:
 def _enforce_runtime_location(command: str | None) -> None:
     """Refuse a command invoked on the wrong side of the container boundary.
 
-    One chokepoint, right after argparse (ADR 0028): rejection happens before
-    any runtime setup so the message — which names the fix — is the only
-    output.
+    One chokepoint before runtime setup (ADR 0028): Project validation may
+    reject explicit Project-bound commands first. The venue refusal names
+    the fix and precedes runtime mutation.
     """
     if command is None:
         return
     error: str | None = None
     if command in _CONTAINER_ONLY_COMMANDS:
-        error = runtime_context.container_only_error(f"booley {command}")
+        argv = ["booley", *sys.argv[1:]]
+        invocation = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        error = runtime_context.container_only_error(invocation)
     elif command in _HOST_ONLY_COMMANDS:
         error = runtime_context.host_only_error(f"booley {command}")
     if error is not None:
@@ -2771,6 +2775,36 @@ def _command_project_root(command: str) -> Path:
         raise
 
 
+class ProjectRequiredError(RuntimeError):
+    """A Project-bound CLI command has no initialized Project context."""
+
+
+def _require_command_project(command: str, project_root: Path) -> None:
+    """Validate required Project context before dispatch, allowing initialization."""
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    # Initialization creates the context this guard requires, including in non-Git folders.
+    if command == "init":
+        return
+    try:
+        with warnings.catch_warnings():
+            # Replace the stale-selection warning with the CLI's actionable error.
+            warnings.filterwarnings(
+                "ignore",
+                message=r"BOOLEY_PROJECT_DIR=.*does not exist; using anyway",
+                category=UserWarning,
+            )
+            present = resolve_checkout_project_dir(project_root).is_dir()
+    except FileNotFoundError:
+        present = False
+    except PermissionError as exc:
+        raise ProjectRequiredError(f"cannot access Booley Project data: {exc}") from exc
+    if not present:
+        raise ProjectRequiredError(
+            "not a Booley Project; cd into one or run `booley init` on the host."
+        )
+
+
 def _optional_project_root(args: argparse.Namespace) -> Path | None:
     from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
@@ -2799,18 +2833,46 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
         return None
 
 
+def _selected_project_root(
+    command: str, args: argparse.Namespace, binding: ProjectBinding
+) -> Path | None:
+    """Select context without discovering Projects for independent commands."""
+    if binding is ProjectBinding.INDEPENDENT:
+        return Path.cwd()
+    if binding is ProjectBinding.OPTIONAL:
+        return _optional_project_root(args)
+    if getattr(args, "project_root", None):
+        return Path(args.project_root).resolve()
+    return _command_project_root(command)
+
+
 def _dispatch_main() -> int:
     """Parse CLI, handle early exits, set up runtime, and run the ticket loop."""
     args = _parse_cli()
     command = _effective_command(args)
 
+    # Bare host invocation belongs to #1242; retain its existing venue refusal.
+    default_chat = getattr(args, "default_chat", False)
+    if default_chat:
+        _enforce_runtime_location(command)
+
+    binding = _command_project_binding(command, args)
+    project_root = _selected_project_root(command, args, binding)
+    if binding not in {ProjectBinding.INDEPENDENT, ProjectBinding.OPTIONAL}:
+        source_rejection = _reject_source_project_command(command, project_root)
+        if source_rejection is not None:
+            return source_rejection
+
+    if binding is ProjectBinding.REQUIRED:
+        _require_command_project(command, project_root)
+
     # Bootstrap has no Project and must not even discover one. Its host-only
     # venue guard still runs before configuration or reconciliation.
-    _enforce_runtime_location(command)
+    if not default_chat:
+        _enforce_runtime_location(command)
     if authority_error := _host_install_authority_error(command):
         print(authority_error, file=sys.stderr)
         return 2
-    binding = _command_project_binding(command, args)
     if command == "bootstrap":
         return run_bootstrap(args)
     if command == "projects":
@@ -2818,22 +2880,7 @@ def _dispatch_main() -> int:
 
         return project_inventory_cli.run(args, keeper_operations=runtime_image_keepers)
 
-    if binding is ProjectBinding.INDEPENDENT:
-        project_root = Path.cwd()
-    elif binding is ProjectBinding.OPTIONAL:
-        project_root = _optional_project_root(args)
-    else:
-        project_root = (
-            Path(args.project_root).resolve()
-            if getattr(args, "project_root", None)
-            else _command_project_root(command)
-        )
-        source_rejection = _reject_source_project_command(command, project_root)
-        if source_rejection is not None:
-            return source_rejection
-
-    # Runtime-location guard: one chokepoint after argparse, before anything
-    # touches the filesystem or clears the screen.
+    # Project and runtime-location guards precede runtime mutation and screen clearing.
     # docker-exec entry drops the spec's remoteEnv — self-heal the proxy env
     # here so agents spawned below inherit a working egress path.
     if runtime_context.ensure_proxy_env():
@@ -2868,11 +2915,18 @@ def _run_ticket_command(args: argparse.Namespace, project_root: Path) -> int:
 def main() -> int:
     """Run the CLI with one rendering boundary for lifecycle contention."""
     from booley.mcp.endpoint_config import EndpointConfigError
+    from booley.runtime.checkout_role import SourceCheckoutProjectError
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
     try:
         return _dispatch_main()
-    except (LifecycleLockError, ProjectRootDiscoveryError, EndpointConfigError) as exc:
+    except (
+        LifecycleLockError,
+        ProjectRootDiscoveryError,
+        EndpointConfigError,
+        ProjectRequiredError,
+        SourceCheckoutProjectError,
+    ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

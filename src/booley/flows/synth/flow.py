@@ -1004,7 +1004,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         "Per-call flags can override ppa_profile, flatten, frontend, and expert "
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
         "booley.toml is only for enablement and verdict "
-        "policy such as target, timeout_ms, and expected_latches."
+        "policy such as enabled, timeout_ms, expected_latches, and "
+        "fail_on_timing_violation."
     )
     code_modifying: bool = False
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by

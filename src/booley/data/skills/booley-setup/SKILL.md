@@ -43,10 +43,10 @@ Step 4 is the gate: setup is not complete until plain `booley doctor` and
 `booley doctor --deep` both exit 0 **and report zero active (unwaived)
 warnings**. A deliberate project constraint may use a reviewed
 `.booley_project/doctor-waivers.toml` entry following Step 4's rules; an ignored
-warning may not. **Steps 5 and 6 are post-gate** — Step 5
+warning may not. **Steps 5–7 are post-gate** — Step 5
 validates the finished setup against the native build system, Step 6 reports on
-the run; neither blocks completion (see `steps/5-parity.md`,
-`steps/6-findings.md`).
+the run; Step 7 performs bounded cleanup. These steps do not block the gate (see
+`steps/5-parity.md`, `steps/6-findings.md`, `steps/7-cleanup.md`).
 
 ## The plan file
 
@@ -112,7 +112,7 @@ execution.
 
 ## Running a step
 
-1. Read the step file under `steps/` (numbered `0-…` … `4-…`). (Step 1 has no
+1. Read the step file under `steps/` (numbered `0-…` … `7-…`). (Step 1 has no
    `steps/` file — it is described in the execution phase below.)
 2. **Delegate the step's work to a sub-agent** (Task MCP tool) whenever the step
    is more than a couple of commands — config authoring and the doctor
