@@ -15,7 +15,7 @@ from pathlib import Path
 
 INVOCATION_ORIGIN_ENV = "_BOOLEY_CLI_INVOCATION_ORIGIN"
 _selection: ContextVar[Path | None] = ContextVar("cli_project_selection", default=None)
-_transport: ContextVar[bool] = ContextVar("cli_transport", default=False)
+_transport: ContextVar[bool | None] = ContextVar("cli_transport", default=None)
 _DURATION = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", re.ASCII)
 
 
@@ -56,7 +56,8 @@ def parse_duration(value: str) -> Duration:
 
 def transport_invocation() -> bool:
     """Explicit parser metadata only; this grants no execution authority."""
-    return _transport.get() or os.environ.get(INVOCATION_ORIGIN_ENV) == "transport"
+    scoped = _transport.get()
+    return scoped if scoped is not None else os.environ.get(INVOCATION_ORIGIN_ENV) == "transport"
 
 
 @contextmanager

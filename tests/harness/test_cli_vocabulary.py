@@ -501,3 +501,36 @@ def test_bare_cheat_alias_warns_once_per_invocation(capsys):
     assert args.project
     assert capsys.readouterr().err.count("is deprecated") == 1
     assert not any(key.startswith("_cli_") for key in vars(args))
+
+
+def test_human_dispatch_context_overrides_inherited_transport_marker(
+    projects, monkeypatch, capsys
+):
+    monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
+    executed = []
+
+    def main(flow, argv):
+        request = parse_request(flow, argv)
+        executed.append((request.work_dir, request.timeout_ms))
+        return 0
+
+    monkeypatch.setattr(LintFlow, "main", main)
+    assert (
+        dispatch(
+            ["flow", "-C", "../b", "lint", "--target", "demo", "--timeout", "5s"], monkeypatch
+        )
+        == 0
+    )
+    assert executed == [(projects[1], 5000)]
+    # Context exit restores the subprocess marker's transport interpretation.
+    request = parse_request(LintFlow(), ["--target", "demo", "--timeout-ms", "1"])
+    assert request.timeout_ms == 1
+
+
+def test_human_main_alias_notice_overrides_inherited_transport_marker(
+    projects, monkeypatch, capsys
+):
+    monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
+    monkeypatch.setitem(cli._EARLY_COMMANDS, "doctor", lambda _args, _root: 0)
+    assert dispatch(["doctor", "--project-root", str(projects[1])], monkeypatch) == 0
+    assert "--project-root is deprecated" in capsys.readouterr().err
