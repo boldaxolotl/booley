@@ -164,8 +164,8 @@ class TestCheatCommand:
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = " ".join(capsys.readouterr().out.split())
         assert "Sandbox-only commands" in out
-        assert "booley Open the Project's configured Claude Code or Codex CLI" in out
-        assert "booley chat Explicit spelling of the default booley command" in out
+        assert "booley mixed Host: help; Sandbox: open the configured agent CLI" in out
+        assert "booley chat Explicit spelling of the Sandbox default booley command" in out
 
     def test_commands_are_grouped_by_execution_location(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0

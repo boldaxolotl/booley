@@ -74,7 +74,9 @@ booley flow lint --target lint --project ../other
 ```
 
 Use the selector once, at the root, command, or nested operation. It also works on
-bare `booley`, `chat`, `doctor`, `init`, `upgrade`, `cleanup`, and `feedback`.
+`chat`, `doctor`, `init`, `upgrade`, `cleanup`, and `feedback`, and on bare
+`booley` inside the Sandbox to select the Project for chat. On the host, bare
+`booley` prints help without resolving the selector.
 `auth --status` and `cheat --list` accept and ignore it without discovering a Project.
 `bootstrap`, `projects`, `eda`, and Ticket Mode `run`/`board` retain their grammar
 and do not accept the new selector. Full option names are stable; ambiguous
