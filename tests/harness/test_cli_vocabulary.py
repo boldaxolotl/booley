@@ -544,3 +544,19 @@ def test_human_main_alias_notice_overrides_inherited_transport_marker(
     monkeypatch.setitem(cli._EARLY_COMMANDS, "doctor", lambda _args, _root: 0)
     assert dispatch(["doctor", "--project-root", str(projects[1])], monkeypatch) == 0
     assert "--project-root is deprecated" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("quiet", ["-q", "--quiet"])
+def test_human_flow_progress_flags_preserve_project_and_duration_vocabulary(
+    projects, quiet, capsys
+):
+    flow = LintFlow()
+    before = flow_schema(flow)
+    request = parse_request(
+        flow, ["--target", "demo", "--project", "../b", "--timeout", "5s", quiet]
+    )
+    assert request.work_dir == projects[1]
+    assert request.timeout_ms == 5000
+    assert not any(key.startswith(("_cli_", "_console")) for key in vars(request))
+    assert flow_schema(flow) == before
+    assert capsys.readouterr().err == ""

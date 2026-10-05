@@ -74,6 +74,7 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
+from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.runtime.supervised_execution import current_supervised_execution
@@ -357,6 +358,7 @@ class PreparedOrdinaryGroup:
 
     def _adopt_retained_image(self, attempt: _Attempt) -> BuildOutcome:
         """Serve this group from the verified retained image without building."""
+        announce_unit("verified build reuse", target=self._handle.selector)
         self._build_process = SubprocessResult(returncode=0, stdout=_REUSE_PROCESS_NOTE)
         self._build = _reused_build_outcome(attempt)
         self._artifact_paths = self._session.retained_artifacts(attempt.prepared)
@@ -367,6 +369,7 @@ class PreparedOrdinaryGroup:
         inputs = attempt.build_inputs or self._session.capture_inputs(attempt.prepared)
         script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
         timeout_s = self._execution._build_timeout_s()
+        announce_unit("build/elaboration", target=self._handle.selector)
         process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
         build = _fresh_build_outcome(attempt, process, timeout_s)
         self._build_process = process
@@ -638,6 +641,7 @@ class SimulationExecution:
         started = time.monotonic()
         compile_surface = resolve_target_compile_surface(handle)
         sources_before = project_compile_surface(compile_surface)
+        announce_unit("configure", target=handle.selector)
         policy = _build_policy(self._options.trace)
         with SimulationBuildSession(handle, policy.variant) as session:
             self._build_session = session
@@ -938,6 +942,10 @@ class SimulationExecution:
             return _artifact_failure(handle, attempt, build, pre_sim, str(exc), started)
 
     def _execute_adapter(self, handle: TargetHandle, attempt: _Attempt) -> AdapterAttemptOutcome:
+        announce_unit(
+            "verified build reuse" if attempt.reused else "build/simulation",
+            target=handle.selector,
+        )
         if attempt.reused:
             return self._execute_reused_adapter(handle, attempt)
         if self._build_session is not None:
@@ -1003,6 +1011,7 @@ class SimulationExecution:
             inputs = attempt.build_inputs or session.capture_inputs(attempt.prepared)
             script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
             timeout_s = self._build_timeout_s()
+            announce_unit("build/elaboration", target=handle.selector)
             build_process = self._invoke(["sh", "-c", script], timeout=timeout_s)
             build = classify_build_outcome(
                 build_process,
@@ -1082,6 +1091,7 @@ class SimulationExecution:
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
+        announce_unit("configure", target=handle.selector)
         policy = _build_policy(self._options.trace)
         session = self._build_session
         build_root = (
@@ -1216,6 +1226,7 @@ class SimulationExecution:
         cocotb: bool,
     ) -> tuple[str, ...]:
         root = handle.project_root
+        announce_unit("configure", target=handle.selector)
         policy = _build_policy(self._options.trace)
         build_root = preview_generation_root(handle, policy.variant)
         setup = simulation_setup_command(

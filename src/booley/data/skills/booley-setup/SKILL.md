@@ -100,9 +100,12 @@ devcontainer entered via **Reopen in Container** in VS Code, or
 `booley session up` headlessly. There, each step edits files in the
 worktree and runs the `booley` CLI in a container terminal; the sandbox
 toolchain ships in the container, so EDA-tool probes and smoke checks run directly
-(`verilator --version`, or `booley flow <name> …` — runs any Booley Flow, passing
+(`verilator --version`, or `booley flow <name> --quiet …` — runs any Booley Flow, passing
 the rest of the line to it verbatim). `booley run`, `booley board`, and
-`booley doctor` are container commands here.
+`booley doctor` are container commands here. Use `--quiet` for captured Flow
+reproduction output: direct shell calls otherwise add live stderr progress and
+an observation transcript. Human live-output options are documented in
+`docs/user/FLOW_REFERENCE.md` → “Live progress and logs”.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
 refuses in-container; the workflow CLI (`booley run`/`board`, `bwave`) refuses

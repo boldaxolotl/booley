@@ -940,12 +940,15 @@ def test_cli_manifest_is_flushed_before_execution(
         return NativeExecution()
 
     result = SimulateFlow(coverage_execution=execution).execute_cli(
-        _campaign_cli_args(
-            work_dir=str(tmp_path),
-            report_dir=str(tmp_path / "reports"),
-            target="sim_0",
-            coverage=True,
-        )
+        [
+            "--quiet",
+            *_campaign_cli_args(
+                work_dir=str(tmp_path),
+                report_dir=str(tmp_path / "reports"),
+                target="sim_0",
+                coverage=True,
+            ),
+        ]
     )
     assert result.exit_code == 0
 

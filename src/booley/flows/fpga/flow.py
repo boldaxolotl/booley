@@ -136,6 +136,7 @@ class _PreparedFpgaCommand:
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
     ppa_profile: VivadoProfile = VIVADO_PROFILES["balanced"]
+    console_logs: tuple[Path, ...] = ()
 
     def __iter__(self):
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
@@ -626,6 +627,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         target: str,
     ) -> _PreparedFpgaCommand:
         """Materialize the validated Vivado recipe and return its executable command."""
+        from booley.flows.terminal_progress import announce_unit
+
+        announce_unit(f"{getattr(self, '_execution_role', 'candidate')}: configure", target=target)
         work_dir = Path(self.args.work_dir)
         recipe = self._fpga_recipe_for_execution(target)
         work_root = work_root_for(work_dir, "fpga", target)
@@ -644,6 +648,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             source_evidence=recipe.source_evidence,
         )
         return _PreparedFpgaCommand(
+            console_logs=(
+                work_root / "vivado.log",
+                work_root / f"{edam['name']}.runs" / "synth_1" / "runme.log",
+                work_root / f"{edam['name']}.runs" / "impl_1" / "runme.log",
+            ),
             run_cmd=fpga_edam.fpga_run_command(work_root, work_dir),
             work_root=work_root,
             fingerprint=fingerprint,
@@ -734,6 +743,14 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             "lives with the design, not on [flows.fpga] (ADR 0031)."
         )
 
+    def _announce_vivado_run(self, prepared, target: str) -> None:
+        from booley.flows.terminal_progress import announce_unit, observe_logs
+
+        role = getattr(self, "_execution_role", "candidate")
+        self._open_run_log(target, prepared.work_root)
+        announce_unit(f"{role}: Vivado running", target=target)
+        observe_logs(list(getattr(prepared, "console_logs", ())), temporary=role == "baseline")
+
     def _run_single_target(self, target: str) -> FpgaMetrics:
         """Configure, run, and interpret Vivado inside the Sandbox."""
         try:
@@ -765,9 +782,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # F-26: _persist_fpga_log only lands at the END of a long P&R run, so
         # claim the log now — a tail during the wait must not read the
         # previous run's utilization/timing tail as this run's progress.
-        self._open_run_log(target, work_root)
         # The command is not path-remapped: ``make -C <rel>`` resolves from the
         # shared Sandbox workspace.
+        self._announce_vivado_run(prepared, target)
         result = self._execute_boundary(run_cmd, timeout=self._get_timeout())
         # The edalize project-mode vivado flow (launch_runs/wait_on_run) writes
         # its utilization/timing/DRC reports to *files*, not stdout — unlike the
@@ -977,6 +994,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         metrics.cache_fingerprint = hit.fingerprint
         metrics.run_evidence = hit.producer_evidence
         metrics.dirs = self._artifact_dirs(work_root)
+        from booley.flows.terminal_progress import announce_unit
+
+        announce_unit("verified build reuse", target=target)
         return metrics
 
     def _persist_fpga_log(self, target: str, text: str) -> str:

@@ -603,7 +603,7 @@ def _stream_output(
     try:
         assert stdout is not None
         for line in stdout:
-            print(line, end="")
+            print(line, end="", flush=True)
             lines.append(line)
             if on_line is not None:
                 on_line(line)

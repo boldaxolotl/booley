@@ -1281,6 +1281,10 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             logger.warning("Synth %s: invalid Flow config: %s", target, exc)
             return _infra_metrics(str(exc)), str(exc)
 
+        from booley.flows.terminal_progress import announce_unit, observe_logs
+
+        role = getattr(self, "_execution_role", "candidate")
+        announce_unit(f"{role}: configure", target=target)
         timeout_s = self._timeout_ms() / 1000.0
         # DEBUG, not INFO: the joined argv sprays one ``--extra-rtl <file>``
         # pair per source file into captured stderr, eating the MCP layer's
@@ -1312,6 +1316,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         # synth, so claim the log now — a tail during the wait must not see
         # the previous run's area/timing tail as this run's progress.
         self._open_run_log(target, self._synth_work_root(target))
+        announce_unit(f"{role}: synthesis", target=target)
+        observe_logs(
+            [plan.build_dir / name for name in ("sv2v.log", "yosys.log", "openroad.log")],
+            temporary=role == "baseline",
+        )
         start = time.monotonic()
         proc_result = self._execute_boundary(make_cmd, timeout=self._get_timeout())
         elapsed = time.monotonic() - start

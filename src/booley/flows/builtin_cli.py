@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -36,17 +37,37 @@ def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.Argument
     return parser
 
 
-def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowRequest:
-    from booley.flows.cli_selection import normalize_endpoint_args, transport_invocation
+def build_cli_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
+    """Layer human presentation onto a fresh parser, outside the MCP schema."""
+    from booley.flows.cli_selection import transport_invocation
 
     parser = build_parser(flow, human=not transport_invocation())
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        dest="_console_quiet",
+        action="store_true",
+        help="Suppress human progress, live EDA output and log footers",
+    )
+    return parser
+
+
+def _parse_cli(flow: BuiltinFlow, argv: list[str] | None):
+    from booley.flows.cli_selection import normalize_endpoint_args
+
+    parser = build_cli_parser(flow)
     args = parser.parse_args(argv)
+    quiet = vars(args).pop("_console_quiet")
     normalize_endpoint_args(args)
     normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)
     request = flow.request_type(**vars(args))
     apply_environment(request, flow.endpoint_kind)
-    return request
+    return request, quiet
+
+
+def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowRequest:
+    return _parse_cli(flow, argv)[0]
 
 
 def execute_cli(
@@ -55,12 +76,34 @@ def execute_cli(
     *,
     adapter: FlowExecutionAdapter | None = None,
 ) -> ExecutionResult:
+    from booley.flows.cli_selection import transport_invocation
     from booley.flows.execution_persistence import StandaloneFlowExecution
     from booley.flows.flow_session import FlowSession
 
-    request = parse_request(flow, argv)
+    request, quiet = _parse_cli(flow, argv)
     flow.context = FlowSession(flow, adapter or StandaloneFlowExecution())
     flow.context._args = request
     flow.context._raw_argv = argv if argv is not None else sys.argv[1:]
     flow.context._console_publication_requested = True
-    return flow.context.execute_prepared()
+    if (
+        quiet
+        or transport_invocation()
+        or os.environ.get("BOOLEY_RUNTIME_DIR")
+        or not isinstance(flow.context.execution_adapter, StandaloneFlowExecution)
+        or getattr(request, "dry_run", False)
+    ):
+        return flow.context.execute_prepared()
+    from booley.flows.terminal_progress import TerminalProgress
+
+    observer = TerminalProgress(
+        flow.name,
+        request.target or "(selection)",
+        request.work_dir,
+        stream=sys.stderr,
+    )
+    flow.context.terminal_progress = observer
+    try:
+        with observer.installed():
+            return flow.context.execute_prepared()
+    finally:
+        flow.context.terminal_progress = None

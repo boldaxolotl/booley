@@ -51,6 +51,13 @@ def execute_adapter_attempt(
     invoke: ProcessInvoker, request: AdapterAttemptRequest
 ) -> AdapterAttemptOutcome:
     """Run and authenticate exactly one adapter process attempt."""
+    from booley.flows.terminal_progress import announce_unit
+
+    identity = request.identity
+    announce_unit(
+        f"simulation: {','.join(identity.selected_tests)} attempt={identity.attempt_token}",
+        target=identity.target_identity,
+    )
     terminal_before = snapshot_artifact(request.identity.result_path)
     partial = partial_result_identity(request.identity)
     partial_before = snapshot_artifact(partial.result_path)
