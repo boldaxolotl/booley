@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import re
-import shutil
 import subprocess
 import uuid
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.flows.baseline_pins import (
+    BaselinePinError,
+    SnapshotBuilder,
+    freeze_recipe_family,
+    pin_cycle_count_baselines,
+    snapshot_recipe,
+)
 from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
 from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
 from booley.ticket_board.board_layout import (
@@ -630,7 +633,7 @@ def _persist_initial_criteria_state(
     ctx: TicketContext,
     expanded: dict[str, bool],
     category_overrides: dict[str, str],
-    aliases: dict[str, str],
+    aliases: dict[str, list[str]],
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Write the freshly expanded ticket criteria as one strict state."""
@@ -736,6 +739,47 @@ def _seed_reviewer_scopes(
             criterion_params.setdefault(key, {})["scope"] = scope
 
 
+class _TicketPinContext:
+    """Adapt a :class:`TicketContext` to the Flow-neutral :class:`PinContext`.
+
+    Every member is read through to the Ticket on access, so nothing (in
+    particular the recipe-freeze directory) is computed before the pinning
+    logic asks for it.
+    """
+
+    def __init__(self, ticket: TicketContext) -> None:
+        self._ticket = ticket
+
+    @property
+    def work_dir(self) -> Path:
+        """The Ticket's worktree, or the project root before one exists."""
+        return self._ticket.work_dir
+
+    @property
+    def base_sha(self) -> str:
+        """The Ticket's recorded baseline revision."""
+        return self._ticket.base_sha
+
+    @property
+    def recipe_freeze_root(self) -> Path:
+        """Per-Ticket runtime directory for recipe-freeze build roots."""
+        return ticket_runtime_dir(self._ticket.logs_dir) / "recipe-freeze"
+
+
+def _raise_ticket_fatal(error: BaselinePinError, slug: str) -> NoReturn:
+    """Re-raise a neutral pinning error as the Ticket's ``FatalError``.
+
+    Called outside the ``except`` block, then copies the neutral error's
+    chain so the ``FatalError`` carries exactly the cause and context it had
+    when intake raised it directly (``from exc`` / ``from None`` / plain).
+    """
+    fatal = FatalError(str(error), slug=slug)
+    fatal.__cause__ = error.__cause__
+    fatal.__context__ = error.__context__
+    fatal.__suppress_context__ = error.__suppress_context__
+    raise fatal
+
+
 def _freeze_synthesis_recipe_fingerprints(
     ctx: TicketContext,
     expanded: dict[str, bool],
@@ -763,19 +807,12 @@ def _pin_cycle_count_baselines(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Pin every relative Cycle Count Criterion to the Ticket's base SHA."""
-    from booley.criteria.thresholds import has_relative_threshold
-    from booley.evidence.fields import BASELINE_REF_PARAM
-
-    for key, params in criterion_params.items():
-        if not key.startswith("cycle_count_") or not has_relative_threshold(params):
-            continue
-        if not ctx.base_sha:
-            raise FatalError(
-                f"Simulation criterion {key!r} requires a baseline-relative "
-                "threshold, but the ticket has no base_sha",
-                slug=ctx.slug,
-            )
-        params[BASELINE_REF_PARAM] = ctx.base_sha
+    try:
+        pin_cycle_count_baselines(_TicketPinContext(ctx), criterion_params)
+        return
+    except BaselinePinError as exc:
+        error = exc
+    _raise_ticket_fatal(error, ctx.slug)
 
 
 def _freeze_fpga_recipe_fingerprints(
@@ -806,103 +843,22 @@ def _freeze_recipe_family(
     *,
     prefix: str,
     flow_label: str,
-    snapshot_builder: Callable[[Any, str], dict[str, Any]],
+    snapshot_builder: SnapshotBuilder,
 ) -> None:
     """Freeze one implementation criterion family's recorded Target recipes."""
-    from booley.evidence.fields import (
-        RECIPE_FINGERPRINT_PARAM,
-        RECIPE_SNAPSHOT_PARAM,
-    )
-    from booley.evidence.recipe import recipe_snapshot_fingerprint
-
-    recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze" / prefix.rstrip("_")
-    prepared = _prepare_recipe_targets(ctx, expanded, criterion_params, prefix, flow_label)
-
-    with _baseline_recipe_root(ctx, any(item[3] for item in prepared), flow_label) as base_root:
-        for key, recipe_target, params, needs_baseline in prepared:
-            build_root = recipe_root / key
-            shutil.rmtree(build_root, ignore_errors=True)
-            snapshot = _snapshot_intake_recipe(
-                ctx,
-                base_root if needs_baseline else ctx.work_dir,
-                key,
-                recipe_target,
-                build_root,
-                needs_baseline,
-                flow_label,
-                snapshot_builder,
-            )
-            if snapshot is None:
-                continue
-            params[RECIPE_FINGERPRINT_PARAM] = recipe_snapshot_fingerprint(snapshot)
-            params[RECIPE_SNAPSHOT_PARAM] = snapshot
-
-
-def _prepare_recipe_targets(
-    ctx: TicketContext,
-    expanded: dict[str, bool],
-    criterion_params: dict[str, dict[str, Any]],
-    prefix: str,
-    flow_label: str,
-) -> list[tuple[str, str, dict[str, Any], bool]]:
-    prepared = []
-    for key in (item for item in expanded if item.startswith(prefix)):
-        params = criterion_params.setdefault(key, {})
-        candidate = params.get(TARGET_IDENTITY_PARAM)
-        if not isinstance(candidate, str) or not candidate:
-            raise FatalError(f"{flow_label} criterion {key!r} has no Target", slug=ctx.slug)
-        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
-        baseline = params.get(BASELINE_TARGET_PARAM, candidate)
-        if not isinstance(baseline, str) or not baseline:
-            raise FatalError(
-                f"{flow_label} criterion {key!r} has invalid baseline Target metadata",
-                slug=ctx.slug,
-            )
-        prepared.append((key, baseline if needs_baseline else candidate, params, needs_baseline))
-    return prepared
-
-
-@contextlib.contextmanager
-def _baseline_recipe_root(
-    ctx: TicketContext,
-    needed: bool,
-    flow_label: str,
-):
-    """Yield the exact baseline checkout used to freeze relative recipe evidence."""
-    if not needed:
-        yield ctx.work_dir
-        return
-    from booley.flows.baseline_worktree import BaselineWorktreeError, baseline_worktree
-
     try:
-        with baseline_worktree(Path(ctx.work_dir), ctx.base_sha) as root:
-            yield root
-    except BaselineWorktreeError as exc:
-        raise FatalError(
-            f"Cannot materialize {flow_label.lower()} baseline {ctx.base_sha}: {exc}",
-            slug=ctx.slug,
-        ) from exc
-
-
-def _pin_recipe_baseline(
-    ctx: TicketContext,
-    key: str,
-    params: dict[str, Any],
-    flow_label: str,
-) -> bool:
-    """Pin relative recipe evidence to the ticket baseline, returning whether needed."""
-    from booley.evidence.fields import BASELINE_REF_PARAM
-
-    needs_baseline = _has_relative_threshold(params)
-    if needs_baseline and not ctx.base_sha:
-        raise FatalError(
-            f"{flow_label} criterion {key!r} requires a baseline-relative "
-            "threshold, but the ticket has no base_sha",
-            slug=ctx.slug,
+        freeze_recipe_family(
+            _TicketPinContext(ctx),
+            expanded,
+            criterion_params,
+            prefix=prefix,
+            flow_label=flow_label,
+            snapshot_builder=snapshot_builder,
         )
-    if needs_baseline:
-        params[BASELINE_REF_PARAM] = ctx.base_sha
-    return needs_baseline
+        return
+    except BaselinePinError as exc:
+        error = exc
+    _raise_ticket_fatal(error, ctx.slug)
 
 
 def _snapshot_intake_recipe(
@@ -913,52 +869,22 @@ def _snapshot_intake_recipe(
     build_root: Path,
     needs_baseline: bool,
     flow_label: str,
-    snapshot_builder: Callable[[Any, str], dict[str, Any]],
+    snapshot_builder: SnapshotBuilder,
 ) -> dict[str, Any] | None:
     """Resolve one intake Target and return its normalized recipe when it exists."""
-    from booley.core.boundary import BoundaryError
-    from booley.fusesoc import fusesoc_registry
-    from booley.targets.catalog import TargetCatalog
-    from booley.targets.domain import FuseSocError, TargetResolutionError, UnknownTargetError
-
     try:
-        handle = TargetCatalog.build(project_root).select(target)
-    except UnknownTargetError:
-        if needs_baseline:
-            raise FatalError(
-                f"{flow_label} criterion {key!r} requires baseline metrics, but "
-                f"Target {target!r} does not exist at ticket intake",
-                slug=ctx.slug,
-            ) from None
-        logger.info(
-            "%s Target %r is not authored at ticket intake; deferring validation",
-            flow_label,
+        return snapshot_recipe(
+            project_root,
+            key,
             target,
+            build_root,
+            needs_baseline,
+            flow_label,
+            snapshot_builder,
         )
-        return None
-    except FuseSocError as exc:
-        raise FatalError(
-            f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
-            slug=ctx.slug,
-        ) from exc
-    try:
-        resolved = fusesoc_registry.resolve_target_handle(
-            handle,
-            build_root=build_root,
-        )
-        return snapshot_builder(resolved, handle.selector)
-    except (TargetResolutionError, BoundaryError, OSError) as exc:
-        raise FatalError(
-            f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
-            slug=ctx.slug,
-        ) from exc
-
-
-def _has_relative_threshold(params: dict[str, Any]) -> bool:
-    """Whether criterion params require baseline metrics."""
-    from booley.criteria.thresholds import has_relative_threshold
-
-    return has_relative_threshold(params)
+    except BaselinePinError as exc:
+        error = exc
+    _raise_ticket_fatal(error, ctx.slug)
 
 
 def _criteria_state_needs_reinit(ctx: TicketContext) -> bool:
