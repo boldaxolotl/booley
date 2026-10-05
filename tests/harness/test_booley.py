@@ -3816,3 +3816,35 @@ def test_source_project_binding_cheat_stale_custom_sentinel(tmp_path, monkeypatc
     assert tlr._dispatch_main() == 0
     assert "source_sentinel" not in capsys.readouterr().out
     assert not sentinel.exists()
+
+
+@pytest.mark.parametrize("command", ["init", "eda", "auth", "session", "projects"])
+def test_host_commands_use_persistent_venv_identity(tmp_path, monkeypatch, command):
+    from dataclasses import replace
+
+    from booley.runtime import host_install, paths
+    from booley.runtime.host_install import HostInstallationIdentity
+
+    source = Path("/home/user/venv/lib/site-packages/booley/data/skills")
+    identity = HostInstallationIdentity(
+        1,
+        "/home/user/venv/bin/booley",
+        "/usr/bin/python3",
+        str(source.parents[2]),
+        "1.2.3",
+        "abc123",
+        "f" * 64,
+    )
+    monkeypatch.setattr(host_install.sys, "prefix", "/home/user/venv")
+    monkeypatch.setattr(host_install.sys, "base_prefix", "/usr")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(paths, "skills_dir", lambda: source)
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
+    host_install.register_host_installation(source)
+    assert tlr._host_install_authority_error(command) is None
+    monkeypatch.setattr(
+        host_install,
+        "current_host_installation",
+        lambda _source: replace(identity, revision="different"),
+    )
+    assert "--update" in tlr._host_install_authority_error(command)

@@ -95,19 +95,7 @@ def current_host_installation(package_resource: Path) -> HostInstallationIdentit
     )
 
 
-def _eligibility_error(
-    package_resource: Path,
-    *,
-    prefix: Path | None = None,
-    base_prefix: Path | None = None,
-) -> str | None:
-    active_prefix = Path(sys.prefix) if prefix is None else prefix
-    interpreter_prefix = Path(sys.base_prefix) if base_prefix is None else base_prefix
-    if active_prefix.resolve() != interpreter_prefix.resolve():
-        return (
-            "Booley is running from a virtual environment; machine-global resources "
-            "may only be managed by the canonical host-installed wheel"
-        )
+def _eligibility_error(package_resource: Path) -> str | None:
     resolved = package_resource.resolve()
     temporary_root = Path(tempfile.gettempdir()).resolve()
     if resolved == temporary_root or resolved.is_relative_to(temporary_root):
@@ -197,12 +185,10 @@ def register_host_installation(
 def host_install_error(
     package_resource: Path,
     *,
-    prefix: Path | None = None,
-    base_prefix: Path | None = None,
     path: Path | None = None,
 ) -> str | None:
     """Explain why this process cannot mutate Booley host-owned state."""
-    if error := _eligibility_error(package_resource, prefix=prefix, base_prefix=base_prefix):
+    if error := _eligibility_error(package_resource):
         return error + "; run the canonical host `booley bootstrap`"
     try:
         expected = load_host_installation(path)

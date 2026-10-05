@@ -420,7 +420,7 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Model a PyPI user: bootstrap refuses virtual environments, and only an
+      # Model the existing base-interpreter PyPI installation smoke; only an
       # official-release wheel adopts the verified published image instead of
       # building locally. Stamp it exactly as publish.yml does and install it
       # into the isolated home's user site with the base interpreter.
