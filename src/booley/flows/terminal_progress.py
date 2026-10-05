@@ -24,9 +24,10 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TextIO
+from typing import BinaryIO, TextIO
 
 from booley.runtime.project_dir import runtime_dir
+from booley.runtime.timefmt import utc_now_rfc3339
 
 _CURRENT: contextvars.ContextVar[TerminalProgress | None] = contextvars.ContextVar(
     "flow_terminal_progress", default=None
@@ -38,6 +39,7 @@ _ENVELOPE = re.compile(
 _OWNED_RECORD = re.compile(
     r"^BOOLEY_(?:(?:BUILD|RUN)_STAGE\s|BUILD_(?:MILLISECONDS|SECONDS):|SIM_CPU_SECONDS:)"
 )
+_STAGE_LINES = re.compile(r"(?m)^BOOLEY_STAGE:[^\n]*$")
 _STAGE = re.compile(r"^BOOLEY_STAGE:\s*([\w.-]+)\s*$")
 
 
@@ -76,8 +78,13 @@ class _Lines:
         self.pending = ""
         self.truncated = False
 
-    def feed(self, chunk: bytes, *, final: bool = False) -> list[str]:
+    def feed(self, chunk: bytes, *, final: bool = False, tail_only: bool = False) -> list[str]:
         parts = self.decoder.decode(chunk, final=final).replace("\r", "\n").split("\n")
+        if tail_only and len(parts) > 8:
+            # Preserve the pending line and every stage marker, but coalesce
+            # presentation of floods before doing per-line Unicode sanitation.
+            markers = _STAGE_LINES.findall("\n".join(parts[1:-7]))
+            parts = [parts[0], *markers, *parts[-7:]]
         lines = []
         for index, part in enumerate(parts):
             available = max(0, 2048 - len(self.pending))
@@ -153,31 +160,42 @@ class TerminalProgress:
         clock: Callable[[], float] = time.monotonic,
         dimensions: Callable[[], os.terminal_size] = shutil.get_terminal_size,
     ) -> None:
-        self.flow, self.target, self.work_dir = flow, target, work_dir
-        self.stream, self.clock, self.dimensions = stream, clock, dimensions
-        self.tool_output = tool_output
-        self.started = clock()
-        self.command_started = self.started
-        self.stage = "preparing"
+        self.flow: str = flow
+        self.target: str = target
+        self.work_dir: Path = work_dir
+        self.stream: TextIO = stream
+        self.clock: Callable[[], float] = clock
+        self.dimensions: Callable[[], os.terminal_size] = dimensions
+        self.tool_output: bool = tool_output
+        self.started: float = clock()
+        self.command_started: float = self.started
+        self.stage: str = "preparing"
         self.tail: deque[str] = deque(maxlen=6)
         self.new_lines: deque[str] = deque(maxlen=6)
         self.last_output: float | None = None
-        self.last_record = self.started
-        self.last_render = self.started - 1
+        self.last_record: float = self.started
+        self.last_render: float = self.started - 1
+        self._initialize_observation()
+
+    def _initialize_observation(self) -> None:
         self.paths: dict[Path, bool] = {}
         self.files: list[_FileSource] = []
         self.pipe_lines: dict[str, _Lines] = {}
-        self.samples: queue.Queue[tuple[str, bytes]] = queue.Queue(maxsize=256)
-        self.dropped = False
-        self.closed = False
-        self.abandoned = False
-        self.rows = 0
-        self.log = None
+        # Captures already retain full output in memory. Buffer observations too,
+        # so a fast tool cannot discard transcript bytes while the writer catches up.
+        self.samples: queue.SimpleQueue[tuple[str, bytes]] = queue.SimpleQueue()
+        self._command_lock = threading.Lock()
+        self._active_commands = 0
+        self._execution_role: str | None = None
+        self.closed: bool = False
+        self.abandoned: bool = False
+        self.rows: int = 0
+        self.log: BinaryIO | None = None
         self.log_path: Path | None = None
         self.directory: Path | None = None
-        self.log_failed = False
-        self.lock = threading.RLock()
-        self.stop = threading.Event()
+        self.log_failed: bool = False
+        self.lock: threading.RLock = threading.RLock()
+        self.stop: threading.Event = threading.Event()
         self.worker: threading.Thread | None = None
 
     @contextmanager
@@ -225,7 +243,7 @@ class TerminalProgress:
     def _record(self, text: str) -> None:
         self._clear()
         self._write(
-            f"[booley-progress] {self.flow} Target={sanitize(self.target)} "
+            f"[booley-progress] {utc_now_rfc3339()} {self.flow} Target={sanitize(self.target)} "
             f"stage={sanitize(self.stage)} elapsed={int(self.clock() - self.started)}s "
             f"{sanitize(text)}\n"
         )
@@ -239,6 +257,10 @@ class TerminalProgress:
                 return
             if target is not None:
                 self.target = target
+            self._execution_role = next(
+                (role for role in ("candidate", "baseline") if new_stage.startswith(role + ": ")),
+                None,
+            )
             self.stage = new_stage
             self._record("")
 
@@ -276,7 +298,8 @@ class TerminalProgress:
     def begin_command(self, stage: str | None = None) -> None:
         if self.abandoned:
             return
-        with self.lock:
+        with self._command_lock, self.lock:
+            self._active_commands += 1
             self._open_transcript()
             self.command_started = self.clock()
             self.tail.clear()
@@ -301,10 +324,7 @@ class TerminalProgress:
         """Never block a pipe reader on terminal or disk I/O."""
         if self.abandoned:
             return
-        try:
-            self.samples.put_nowait((source, chunk))
-        except queue.Full:
-            self.dropped = True
+        self.samples.put((source, chunk))
 
     def _consume(self, source: str, chunk: bytes, lines: _Lines) -> None:
         if self.log is not None and not self.log_failed:
@@ -316,21 +336,23 @@ class TerminalProgress:
             except OSError:
                 self._log_failure()
         if not self.abandoned:
-            for line in lines.feed(chunk):
+            for line in lines.feed(chunk, tail_only=not self.tool_output):
                 self._line(line, source)
 
     def _line(self, line: str, source: str) -> None:
         clean = sanitize(line)
         marker = _STAGE.fullmatch(clean)
         if marker:
-            role = self.stage.split(":", 1)[0]
-            prefix = f"{role}: " if role in {"candidate", "baseline"} else ""
-            self.stage_changed(prefix + marker[1])
+            self.stage_changed(self._stage_label(marker[1]))
             return
         if _ENVELOPE.match(clean) or _OWNED_RECORD.match(clean):
             return
         # Synth make prints failure-tail copies of the authoritative stage logs.
-        if self.flow in {"synth", "fpga"} and self.files and source in {"stdout", "stderr"}:
+        if (
+            self.flow in {"synth", "fpga"}
+            and self.files
+            and source.split(":", 1)[0] in {"stdout", "stderr"}
+        ):
             return
         if self.flow == "fpga" and source.endswith("runme.log"):
             if "/synth_1/" in source:
@@ -347,11 +369,11 @@ class TerminalProgress:
         if self.tool_output:
             self._record(f"{source}: {clean}")
 
+    def _stage_label(self, stage: str) -> str:
+        return f"{self._execution_role}: {stage}" if self._execution_role else stage
+
     def _vivado_stage(self, stage: str) -> None:
-        role = self.stage.split(":", 1)[0]
-        prefix = f"{role}: " if role in {"candidate", "baseline"} else ""
-        if self.stage != prefix + stage:
-            self.stage_changed(prefix + stage)
+        self.stage_changed(self._stage_label(stage))
 
     def tick(self) -> None:
         """Render from monotonic time, even when the command emits no output."""
@@ -394,10 +416,6 @@ class TerminalProgress:
         if self.abandoned:
             return
         with self.lock:
-            if self.dropped:
-                self._log_failure()
-                self._record("dropped live output samples; authoritative captures unchanged")
-                self.dropped = False
             for _ in range(256):
                 if self.abandoned:
                     return
@@ -430,6 +448,13 @@ class TerminalProgress:
 
     def end_command(self) -> None:
         """Bound writer shutdown independently of the subprocess pipe readers."""
+        with self._command_lock:
+            self._active_commands = max(0, self._active_commands - 1)
+            if self._active_commands:
+                return
+            self._stop_worker()
+
+    def _stop_worker(self) -> None:
         self.stop.set()
         if self.worker is None:
             self._drain_end()
@@ -444,7 +469,8 @@ class TerminalProgress:
 
     def _drain_end(self) -> None:
         # Drain finite current-file backlogs while still inside the workspace lease.
-        self._poll()
+        for _ in range(1 + (self.samples.qsize() + 255) // 256):
+            self._poll()
         with self.lock:
             for source in self.files:
                 signature = source._stat()

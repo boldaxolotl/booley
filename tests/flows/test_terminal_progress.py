@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -369,19 +370,19 @@ def test_unique_transcripts_and_disk_failure_is_advisory(tmp_path, monkeypatch):
 def test_cli_flags_do_not_change_shared_schema(flow_type):
     flow = flow_type()
     before = [(action.dest, action.option_strings[:]) for action in build_parser(flow)._actions]
-    for flag in ("-q", "--quiet", "-v", "--tool-output", "--verbose"):
+    for flag in ("-q", "--quiet"):
         request = parse_request(flow, ["--target", "demo", flag])
         assert not any(name.startswith("_console") for name in vars(request))
         assert flag in build_cli_parser(flow).format_help()
-        if flag == "--verbose" and flow.name == "sim":
-            assert request.verbose
+    if flow.name == "sim":
+        assert parse_request(flow, ["--target", "demo", "--verbose", "--quiet"]).verbose
+    for flag in ("-v", "--tool-output"):
+        with pytest.raises(SystemExit) as exc:
+            parse_request(flow, ["--target", "demo", flag])
+        assert exc.value.code == 2
     assert before == [
         (action.dest, action.option_strings[:]) for action in build_parser(flow)._actions
     ]
-    for flag in ("-v", "--tool-output", "--verbose"):
-        with pytest.raises(SystemExit) as exc:
-            parse_request(flow, ["--target", "demo", "-q", flag])
-        assert exc.value.code == 2
 
 
 @pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "ticket", "dry-run"])
@@ -437,8 +438,8 @@ def test_module_entry_help_contains_cli_presentation_options(tmp_path, flow_type
         check=False,
     )
     assert result.returncode == 0
-    for option in ("--quiet", "--tool-output", "--verbose"):
-        assert option in result.stdout
+    assert "--quiet" in result.stdout
+    assert "--tool-output" not in result.stdout
     assert result.stderr == ""
 
 
@@ -668,3 +669,203 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
         sink.close()
     assert not sink.worker.is_alive()
     assert not (sink.directory / "active").exists()
+
+
+def test_sim_verbose_keeps_resume_semantics_with_quiet():
+    from booley.flows.flow_session import FlowSession
+
+    seen = []
+
+    def execute(session):
+        seen.append((session.args.verbose, current_progress()))
+        return ExecutionResult(0, EndpointOutcome())
+
+    with patch.object(FlowSession, "execute_prepared", execute):
+        execute_cli(SimulateFlow(), ["--target", "demo", "--verbose", "--quiet"])
+    assert seen == [(True, None)]
+
+
+def test_plain_progress_has_canonical_utc_timestamp(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "booley.flows.terminal_progress.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
+    )
+    sink = observer(tmp_path)
+    sink.stage_changed("simulation")
+    assert sink.stream.getvalue().startswith("[booley-progress] 2026-10-05T13:00:00Z ")
+
+
+def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
+    sink = observer(tmp_path, tool_output=True)
+    release = tmp_path / "release"
+    script = (
+        "import pathlib,time; print('second ready',flush=True); "
+        f"p=pathlib.Path({str(release)!r}); deadline=time.monotonic()+5; "
+        "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)'); "
+        "print('second still live',flush=True); time.sleep(0.5)"
+    )
+    with sink.installed():
+        sink.begin_command()
+        second = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        result = []
+        thread = threading.Thread(
+            target=lambda: result.append(communicate_observed(second, sink, timeout=6))
+        )
+        thread.start()
+        try:
+            wait_until(lambda: "second ready" in sink.stream.getvalue())
+            sink.begin_command()
+            with subprocess.Popen(
+                [sys.executable, "-c", "print('first done')"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            ) as first:
+                assert communicate_observed(first, sink, timeout=3)[0] == "first done\n"
+            release.touch()
+            wait_until(lambda: "second still live" in sink.stream.getvalue())
+            assert second.poll() is None
+        finally:
+            release.touch()
+            thread.join(timeout=7)
+            second.stdout.close()
+            second.stderr.close()
+    assert not thread.is_alive()
+    assert result == [("second ready\nsecond still live\n", "", False)]
+
+
+def test_fast_output_backlog_preserves_every_transcript_line(tmp_path):
+    sink = observer(tmp_path)
+    # Freeze the consumer so the backlog deterministically exceeds the old limit.
+    with sink.installed(), patch.object(sink, "_run"):
+        sink.begin_command()
+        chunk = b"unique-line\n" * 4000
+        for _ in range(300):
+            sink.observe("stdout", chunk)
+        sink.end_command()
+        sink._drain_end()
+    assert sink.log_path.read_bytes().count(b"unique-line\n") == 1_200_000
+    assert "incomplete/unavailable" not in sink.stream.getvalue()
+
+
+def test_parallel_pipe_sources_do_not_merge_partial_lines(tmp_path):
+    sink = observer(tmp_path, tool_output=True)
+    sink.observe("stdout:1", b"first ")
+    sink.observe("stdout:2", b"second ")
+    sink.observe("stdout:1", b"line\n")
+    sink.observe("stdout:2", b"line\n")
+    sink.end_command()
+    assert "stdout:1: first line" in sink.stream.getvalue()
+    assert "stdout:2: second line" in sink.stream.getvalue()
+
+
+@pytest.mark.parametrize("mode", ["runtime", "ticket"])
+def test_agent_console_and_display_bytes_match_existing_transport(
+    tmp_path, monkeypatch, capsys, mode
+):
+    from booley.flows.endpoint_events import (
+        _endpoint_progress_event,
+        _serialize_display_event,
+        _write_display_event,
+    )
+    from booley.flows.flow_session import FlowSession
+
+    def write_event(event):
+        with path.open("ab") as stream:
+            stream.write(_serialize_display_event(event).encode("utf-8"))
+
+    if mode == "runtime":
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
+    else:
+        monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+        # Observe the existing transport without activating the runtime exclusion.
+        monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", write_event)
+    monkeypatch.setenv("BOOLEY_DISPLAY_INVOCATION_ID", "fixed-invocation")
+    monkeypatch.setattr(
+        "booley.flows.endpoint_events.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
+    )
+    path = tmp_path / "display.jsonl"
+    with patch.dict(os.environ, {"BOOLEY_RUNTIME_DIR": str(tmp_path)}):
+        _write_display_event(_endpoint_progress_event("lint", "checking"))
+        _write_display_event(
+            _endpoint_progress_event("lint", "done", completion=True, repeats_at_end=False)
+        )
+    expected_events = path.read_bytes()
+    path.unlink()
+
+    def execute(session):
+        assert session.terminal_progress is None
+        assert current_progress() is None
+        session.emit_progress("checking")
+        session.emit_completion("done")
+        print("verdict unchanged")
+        return ExecutionResult(7, EndpointOutcome())
+
+    adapter = object() if mode == "ticket" else None
+    with patch.object(FlowSession, "execute_prepared", execute):
+        result = execute_cli(LintFlow(), ["--target", "demo"], adapter=adapter)
+    captured = capsys.readouterr()
+    assert captured.out == "verdict unchanged\n"
+    assert captured.err == ""
+    assert result.exit_code == 7
+    assert path.read_bytes() == expected_events
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows anonymous pipe compatibility")
+def test_windows_capture_does_not_require_nonblocking_pipe_support(tmp_path, monkeypatch):
+    def unavailable(*_args):
+        raise OSError("nonblocking pipes unavailable on Python 3.11")
+
+    monkeypatch.setattr(os, "set_blocking", unavailable)
+    sink = observer(tmp_path)
+    with sink.installed():
+        sink.begin_command()
+        with subprocess.Popen(
+            [sys.executable, "-c", "print('Windows capture')"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as process:
+            assert communicate_observed(process, sink, timeout=3) == (
+                "Windows capture\n",
+                "",
+                False,
+            )
+
+
+def test_real_fast_tool_keeps_complete_transcript(tmp_path):
+    sink = observer(tmp_path)
+    with sink.installed():
+        sink.begin_command()
+        with subprocess.Popen(
+            [sys.executable, "-c", "import os; os.write(1,b'line\\n'*6000000)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        ) as process:
+            stdout, stderr, timed_out = communicate_observed(process, sink, timeout=5)
+    assert stderr == ""
+    assert not timed_out
+    assert sink.log_path is not None
+    transcript = re.sub(
+        rb"\n\[sim Target=sim_demo stage=preparing source=stdout:\d+\]\n",
+        b"",
+        sink.log_path.read_bytes(),
+    )
+    assert transcript == stdout.encode()
+
+
+def test_coalesced_tail_keeps_stage_markers_inside_short_line_flood(tmp_path):
+    sink = observer(tmp_path)
+    sink.stage_changed("candidate: synthesis")
+    sink.observe("stdout", b"line\n" * 1000 + b"BOOLEY_STAGE: yosys\n" + b"tail\n" * 1000)
+    sink.end_command()
+    assert sink.stage == "candidate: yosys"
+    assert list(sink.tail) == ["tail"] * 6

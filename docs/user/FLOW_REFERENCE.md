@@ -40,12 +40,12 @@ Redirected/non-TTY stderr, `TERM=dumb`, and short terminals use flushed newline
 records without terminal escapes or carriage-return rewrites. For example:
 
 ```text
-[booley-progress] synth Target=synth_soc stage=candidate: synthesis elapsed=0s transcript=/work/.booley_project/.runtime/flow-console/invocation-abc/tool-output.log
-[booley-progress] synth Target=synth_soc stage=yosys elapsed=5s heartbeat (elapsed time; process health unknown)
-[booley-progress] synth Target=synth_soc stage=yosys elapsed=5s output: Executing synthesis passes.
+[booley-progress] 2026-10-05T13:00:00Z synth Target=synth_soc stage=candidate: synthesis elapsed=0s transcript=/work/.booley_project/.runtime/flow-console/invocation-abc/tool-output.log
+[booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s heartbeat (elapsed time; process health unknown)
+[booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s output: Executing synthesis passes.
 ```
 
-Records announce work-unit changes and a five-second heartbeat with up to six
+Records include UTC timestamps and announce work-unit changes and a five-second heartbeat with up to six
 new output lines. Synth observes its sv2v/Yosys/OpenROAD files; FPGA observes
 Vivado's main and child-run logs. Unknown stage markers leave the current work
 unit in place. Simulation identifies builds, reuse, Pre-Sim Commands and test
@@ -56,16 +56,13 @@ Place presentation flags **after the Flow name**:
 
 ```bash
 booley flow synth --target synth_soc --quiet
-booley flow fpga --target fpga_soc --verbose
-booley flow sim --target sim_soc --test reset -v
 ```
 
 `-q`/`--quiet` suppresses new progress, live output and log footers, and creates
 no observation transcript. Verdicts, errors and admission notices still appear.
-`-v`/`--tool-output`/`--verbose` streams sanitized observed output as stderr line
-records instead of a rolling display. Quiet and full output conflict. Sim's
-existing `--verbose` also retains detailed resume mismatch diagnostics;
-`--result-verbosity` continues to control result detail independently.
+Sim's existing `--verbose` controls detailed resume mismatch diagnostics;
+`--result-verbosity` continues to control result detail independently. Neither
+option changes live output. Follow the printed transcript path for full output.
 
 The existing verdict and return code are unchanged. Exact log paths are printed
 before dispatch as they become known and repeated in a separate stderr footer
@@ -87,7 +84,7 @@ For a replaceable `run.log`, use `tail -F` and expect bounded snapshots rather
 than complete output. Temporary baseline paths are labeled; their observed
 content survives in the invocation transcript after baseline cleanup, and they
 are not offered as retained logs in the footer. A transcript write failure or
-overloaded observer reports that the transcript is incomplete/unavailable and
+blocked writer reports that the transcript is incomplete/unavailable and
 omits a full-log path claim; the Flow continues with its normal evidence.
 
 Each invocation reserves its own directory under the Project runtime's

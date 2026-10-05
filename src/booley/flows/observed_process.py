@@ -18,6 +18,31 @@ if TYPE_CHECKING:
     from booley.flows.terminal_progress import TerminalProgress
 
 
+def _windows_pipe_ready(fd: int) -> bool:
+    """Poll anonymous pipes without the Python 3.12 nonblocking prerequisite."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    available = wintypes.DWORD()
+    peek = ctypes.WinDLL("kernel32", use_last_error=True).PeekNamedPipe
+    peek.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    peek.restype = wintypes.BOOL
+    if not peek(msvcrt.get_osfhandle(fd), None, 0, None, ctypes.byref(available), None):
+        error = ctypes.get_last_error()
+        if error == 109:  # ERROR_BROKEN_PIPE: let os.read consume EOF.
+            return True
+        raise ctypes.WinError(error)
+    return available.value > 0
+
+
 class _Capture:
     def __init__(self, pipe, name: str, observer: TerminalProgress) -> None:
         self.pipe, self.name, self.observer = pipe, name, observer
@@ -35,17 +60,13 @@ class _Capture:
             if not ready:
                 return None
             return os.read(self.pipe.fileno(), 65536)
-        try:
-            return os.read(self.pipe.fileno(), 65536)
-        except BlockingIOError:
+        if not _windows_pipe_ready(self.pipe.fileno()):
             self.stop.wait(0.02)
             return None
+        return os.read(self.pipe.fileno(), 65536)
 
     def _run(self) -> None:
         try:
-            if os.name == "nt":
-                # Python 3.12+ supports nonblocking Windows pipe handles.
-                os.set_blocking(self.pipe.fileno(), False)
             while not self.stop.is_set():
                 chunk = self._read()
                 if chunk is None:
@@ -104,8 +125,8 @@ def communicate_observed(
     only the separate human presentation decoder replaces invalid characters.
     """
     captures = [
-        _Capture(process.stdout, "stdout", observer),
-        _Capture(process.stderr, "stderr", observer),
+        _Capture(process.stdout, f"stdout:{process.pid}", observer),
+        _Capture(process.stderr, f"stderr:{process.pid}", observer),
     ]
     for capture in captures:
         capture.thread.start()
