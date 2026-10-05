@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import ntpath
 import os
 import re
@@ -719,6 +720,29 @@ def _tracked_repository_paths() -> list[str]:
     return [path for path in result.stdout.decode("utf-8").split("\0") if path]
 
 
+def _mutmut_config() -> dict[str, list[str]]:
+    """Read setup.cfg's ``[mutmut]`` lists the way mutmut's own reader does."""
+    parser = configparser.ConfigParser()
+    parser.read(REPOSITORY_ROOT / "setup.cfg", encoding="utf-8")
+    return {
+        key: [line for line in value.split("\n") if line] for key, value in parser.items("mutmut")
+    }
+
+
+def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
+    """pyproject.toml bytes define the Sandbox base contract; mutmut stays out.
+
+    mutmut reads setup.cfg only when pyproject.toml has no ``[tool.mutmut]``
+    table, so a reintroduced table would silently shadow the real campaign
+    configuration as well as rebuild the base image on every tuning edit.
+    """
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "mutmut" not in project.get("tool", {})
+    assert _mutmut_config()["only_mutate"] == ["src/booley/harness/setup/*.py"]
+    assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
+
+
 def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
     """mutmut's ``mutants/`` copy stays a faithful Booley source checkout.
 
@@ -727,10 +751,15 @@ def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
     Sandbox Image build inputs. A tracked path that mutmut neither mutates nor
     copies breaks the scheduled campaign before it tests a single mutant.
     """
-    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    mutmut = project["tool"]["mutmut"]
+    mutmut = _mutmut_config()
     # mutmut always copies these alongside the configured source paths.
-    copied = [*mutmut["source_paths"], "tests/", "pyproject.toml", *mutmut["also_copy"]]
+    copied = [
+        *mutmut["source_paths"],
+        "tests/",
+        "setup.cfg",
+        "pyproject.toml",
+        *mutmut["also_copy"],
+    ]
 
     def covered(path: str) -> bool:
         return any(
@@ -743,8 +772,7 @@ def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
 
 def test_mutation_sandbox_copy_order_and_build_output_exclusion() -> None:
     """Every ``also_copy`` entry is copyable in order and skips Cargo outputs."""
-    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    also_copy: list[str] = project["tool"]["mutmut"]["also_copy"]
+    also_copy = _mutmut_config()["also_copy"]
     tracked = _tracked_repository_paths()
 
     for index, entry in enumerate(also_copy):
