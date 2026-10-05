@@ -52,6 +52,9 @@ def run_pre_sim_commands(
     resolved_commands = tuple(resolve_pre_sim_commands(root)) if commands is None else commands
     if not resolved_commands:
         return None
+    from booley.flows.terminal_progress import announce_unit
+
+    announce_unit("Pre-Sim Commands: " + ",".join(test_names), target=handle.selector)
     environment = _pre_sim_environment(
         handle,
         test_names=test_names,
@@ -180,8 +183,11 @@ def _completed_pre_sim_evidence(
 
 
 def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
+    from booley.flows.terminal_progress import current_progress
+
+    observer = current_progress()
     scope = current_supervised_execution()
-    if scope is None:
+    if scope is None and observer is None:
         return subprocess.run(
             command,
             cwd=cwd,
@@ -194,11 +200,17 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
             check=False,
             **child_kwargs,
         )
-    if scope.cancelled():
+    return _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer)
+
+
+def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer):
+    if scope is not None and scope.cancelled():
         raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
     supervised_env = dict(env)
-    if scope.execution_id is not None:
+    if scope is not None and scope.execution_id is not None:
         supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
+    if observer is not None:
+        observer.begin_command()
     process = subprocess.Popen(
         command,
         cwd=cwd,
@@ -211,9 +223,29 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
         **popen_new_group_kwargs(),
         **child_kwargs,
     )
-    scope.processes.register(process)
+    if scope is not None:
+        scope.processes.register(process)
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
+        stdout, stderr = _communicate_pre_sim(process, command, timeout, observer)
+    finally:
+        if scope is not None:
+            scope.processes.unregister(process)
+        if observer is not None:
+            process.stdout.close()
+            process.stderr.close()
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _communicate_pre_sim(process, command, timeout, observer):
+    if observer is not None:
+        from booley.flows.observed_process import communicate_observed
+
+        stdout, stderr, timed_out = communicate_observed(process, observer, timeout=timeout)
+        if timed_out:
+            raise subprocess.TimeoutExpired(command, timeout, stdout, stderr)
+        return stdout, stderr
+    try:
+        return process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         kill_process_tree(process)
         stdout, stderr = process.communicate()
@@ -224,9 +256,6 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
         kill_process_tree(process)
         process.communicate()
         raise
-    finally:
-        scope.processes.unregister(process)
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 __all__ = ["run_pre_sim_commands"]

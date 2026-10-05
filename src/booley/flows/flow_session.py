@@ -14,6 +14,7 @@ from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
+    from booley.flows.terminal_progress import TerminalProgress
 
 
 class FlowSession(EndpointState):
@@ -26,6 +27,7 @@ class FlowSession(EndpointState):
     ) -> None:
         super().__init__()
         execution_adapter = execution_adapter or StandaloneFlowExecution()
+        self.terminal_progress: TerminalProgress | None = None
         self.publication_resources = ExitStack()
         self.flow = flow
         self.configure_flow_execution(execution_adapter)

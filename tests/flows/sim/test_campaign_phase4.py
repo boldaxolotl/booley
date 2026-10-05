@@ -1345,6 +1345,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
     capsys.readouterr()
     result = flow.execute_cli(
         [
+            "--quiet",
             "--work-dir",
             str(tmp_path),
             "--report-dir",

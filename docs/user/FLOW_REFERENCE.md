@@ -26,6 +26,78 @@ booley flow fpga  --target fpga_soc
 booley flow <name> --help          # the authoritative option list
 ```
 
+### Live progress and logs
+
+Direct built-in CLI calls (including `python3 -m booley.flows.<name>`) show
+progress on **stderr**. A capable terminal displays one status line and up to
+six recent output lines, refreshed at most four times per second. Status gives
+the Flow, Target, current work unit, invocation elapsed time, command elapsed
+time, and age of the last observed output. It fits the terminal when resized.
+Elapsed time advances during silent work; it is neither a percentage nor proof
+that the EDA process is healthy. EDA tools may buffer their output.
+
+Redirected/non-TTY stderr, `TERM=dumb`, and short terminals use flushed newline
+records without terminal escapes or carriage-return rewrites. For example:
+
+```text
+[booley-progress] 2026-10-05T13:00:00Z synth Target=synth_soc stage=candidate: synthesis elapsed=0s transcript=/work/.booley_project/.runtime/flow-console/invocation-abc/tool-output.log
+[booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s heartbeat (elapsed time; process health unknown)
+[booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s output: Executing synthesis passes.
+```
+
+Records include UTC timestamps and announce work-unit changes and a five-second heartbeat with up to six
+new output lines. Synth observes its sv2v/Yosys/OpenROAD files; FPGA observes
+Vivado's main and child-run logs. Unknown stage markers leave the current work
+unit in place. Simulation identifies builds, reuse, Pre-Sim Commands and test
+attempts; lint identifies configuration and checking. Current and baseline
+work are labeled separately. Queue waiting never consumes the EDA timeout.
+
+Place presentation flags **after the Flow name**:
+
+```bash
+booley flow synth --target synth_soc --quiet
+```
+
+`-q`/`--quiet` suppresses new progress, live output and log footers, and creates
+no observation transcript. Verdicts, errors and admission notices still appear.
+Sim's existing `--verbose` controls detailed resume mismatch diagnostics;
+`--result-verbosity` continues to control result detail independently. Neither
+option changes live output. Follow the printed transcript path for full output.
+
+The existing verdict and return code are unchanged. Exact log paths are printed
+before dispatch as they become known and repeated in a separate stderr footer
+following the verdict. The append-only `tool-output.log` records observed pipe
+and stage-file chunks with source/work-unit labels. It preserves original bytes,
+including internal result records filtered from the display. Cross-stream order
+is observational, not authoritative. Original stage logs remain the tool's
+source files. `run.log` remains a capped, atomically replaced evidence snapshot;
+it is not a full append-only transcript.
+
+Paths are **inside the Sandbox**. Follow the exact printed transcript path from
+a second terminal attached to that existing Sandbox:
+
+```bash
+booley session enter -- tail -f /work/.booley_project/.runtime/flow-console/invocation-abc/tool-output.log
+```
+
+For a replaceable `run.log`, use `tail -F` and expect bounded snapshots rather
+than complete output. Temporary baseline paths are labeled; their observed
+content survives in the invocation transcript after baseline cleanup, and they
+are not offered as retained logs in the footer. A transcript write failure or
+blocked writer reports that the transcript is incomplete/unavailable and
+omits a full-log path claim; the Flow continues with its normal evidence.
+
+Each invocation reserves its own directory under the Project runtime's
+`flow-console/`. Output consumes disk in proportion to observed bytes. Delete
+completed invocation directories manually when no longer needed; leave any
+directory containing an `active` marker untouched. There is no automatic pruning.
+Help, validation-only, dry-run and quiet calls create no transcript.
+
+Typed/MCP calls and runtime-composed Ticket calls retain their existing event
+transport. Ordinary direct shell calls gain stderr progress even without a TTY,
+including Interactive Agent shell calls. Agents or scripts requiring the previous
+captured transcript should pass `--quiet`.
+
 ### Choosing Targets
 
 Every run needs `--target`; there is no project-wide default. (The one exception

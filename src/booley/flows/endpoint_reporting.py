@@ -183,7 +183,10 @@ def _contains_whole_line_block(
 
 
 def emit_progress(endpoint: EndpointState, line: str) -> None:
-    """Write a progress line to display.jsonl for live host terminal output."""
+    """Write progress independently to the event transport and optional CLI sink."""
+    observer = getattr(endpoint, "terminal_progress", None)
+    if observer is not None:
+        observer.stage_changed(line)
     _write_display_event(
         _endpoint_progress_event(
             endpoint.name,
@@ -195,6 +198,9 @@ def emit_progress(endpoint: EndpointState, line: str) -> None:
 
 def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool = False) -> None:
     """Render one completed unit immediately inside the open endpoint box."""
+    observer = getattr(endpoint, "terminal_progress", None)
+    if observer is not None and not repeats_at_end:
+        observer.stage_changed(line)
     _write_display_event(
         _endpoint_progress_event(
             endpoint.name,
@@ -549,7 +555,13 @@ def _finish_main(
     finally:
         try:
             try:
+                observer = getattr(endpoint, "terminal_progress", None)
+                if observer is not None:
+                    observer.close()
                 endpoint._publish_console_report(result)
+                if observer is not None:
+                    sys.stdout.flush()
+                    observer.footer()
             except OSError as exc:
                 logger.debug("Endpoint console publication failed", exc_info=True)
                 normalize_completion_error(result, exc, "publish console diagnosis")

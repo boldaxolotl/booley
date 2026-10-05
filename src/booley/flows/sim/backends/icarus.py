@@ -238,7 +238,7 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     try:
         assert stdout is not None
         for line in stdout:
-            print(line, end="")
+            print(line, end="", flush=True)
             lines.append(line)
             progress.observe(lines)  # F-18: run.log shows a live tail mid-run
             # SETUP-23: a missing $readmemh init file warns once then vvp spins
