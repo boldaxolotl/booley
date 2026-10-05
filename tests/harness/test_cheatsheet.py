@@ -276,3 +276,24 @@ class TestCheatCommand:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_command_table_matches_locations():
+    """All public commands and their venues agree with top-level help."""
+    import re
+
+    text = cheatsheet_path().read_text(encoding="utf-8").split("### Ticket Board")[0]
+    sections = re.split(r"^#### ", text, flags=re.MULTILINE)[1:]
+    locations = {}
+    for section in sections:
+        heading = section.splitlines()[0]
+        for command, tail in re.findall(r"^\| `booley (\w+)` \| (.*)", section, re.MULTILINE):
+            if heading == "Host-only commands":
+                location = "host"
+            elif heading == "Sandbox-only commands":
+                location = "Sandbox"
+            else:
+                location = tail.split("|")[0].strip()
+            assert command not in locations
+            locations[command] = location
+    assert locations == {name: location.value for name, location in tlr.COMMAND_LOCATIONS.items()}

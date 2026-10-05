@@ -239,8 +239,8 @@ scaffold is written, the `booley-setup` skill takes it from here — see
 [greenfield mode](#a-new-ip-greenfield-mode).
 
 When the bootstrap finishes, the **`booley-setup`** skill is deployed into your
-agent runtime (item 5 above). **Stay on the host**: invoke it in your agent chat
-at the repo root.
+agent runtime by [Host Bootstrap](#host-bootstrap--host). **Stay on the host**:
+invoke it in your agent chat at the repo root.
 
 ---
 
@@ -260,18 +260,19 @@ tells you when to **Reopen in Container**, and you re-invoke it there to finish.
 ```text
 /booley-setup           # port: phase-detects, plans if no approved plan yet, else executes
 /booley-setup new       # a new IP: greenfield mode
-/booley-setup <N>       # runs just step N (0-5), to re-run or resume one
+/booley-setup <N>       # runs just step N (0-7), to re-run or resume one
 ```
 
 ### Porting an existing project: plan, then execute
 
-A single **0 → 4** sequence:
+Steps **0–7** comprise the gated **0 → 4** sequence followed by post-gate
+Steps **5–7**:
 
 - **0 · Plan · host.** The feasibility triage (per-flow green/yellow/red across
   `sim`, `lint`, `synth`, `fpga`) plus a decision grill over
   everything the later steps need. It asks only a few questions and shows the
   rest as defaults you can accept in one go. Writes
-  `.booley_project/SETUP-PLAN.md` and stops for your approval. **The only gate.**
+  `.booley_project/SETUP-PLAN.md` and stops for your approval. **The only approval gate.**
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
 - **2 · Project config.** The `.core` Target(s), `tests.toml`, and `booley.toml`.
@@ -281,8 +282,13 @@ A single **0 → 4** sequence:
   line per check, each `FAIL` carrying a `fix:` hint. `--deep` goes further and
   runs live sim/lint/synthesis smoke tests against the real EDA tools. Fix every
   `FAIL`, then run `--deep` and fix those too. The gate.
+- **5 · Parity · optional.** Cross-check Booley against the native build system
+  when the approved plan selects one.
+- **6 · Findings.** Report and triage findings from the setup run.
+- **7 · Cleanup.** Preview and apply bounded manifest-owned cleanup.
 
-Steps 2-4 run in-container, gate-free, consuming the approved plan. A test
+Steps 2-4 run in-container without further approval gates, consuming the
+approved plan. A test
 that needs a non-RTL build step (per-case firmware, vector staging) is
 declared as `[flows.sim].pre_run_commands` during project config.
 Each step is also a standalone how-to file in the skill's `steps/` directory if
