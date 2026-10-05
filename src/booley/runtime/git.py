@@ -136,6 +136,16 @@ def git_common_dir(wt: Path) -> Path:
     return common
 
 
+def is_linked_worktree(path: Path) -> bool:
+    """Return whether *path* is a linked-worktree root.
+
+    A linked worktree's ``.git`` is a regular pointer file (``gitdir: ...``)
+    rather than the repository directory. This is a filesystem check only: the
+    pointer's target is not read or validated.
+    """
+    return (path / ".git").is_file()
+
+
 def _git_common_dir_fs(wt: Path) -> Path | None:  # noqa: PLR0911 — ordered resolution ladder; each early return is a distinct .git layout case
     """Filesystem-only resolution of the shared git dir (no ``git`` invocation)."""
     git = wt / ".git"
