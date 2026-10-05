@@ -241,6 +241,7 @@ class TestServerConsumers:
             subprocess_env_overrides=MappingProxyType(
                 {"BOOLEY_R1_PROBE": "context", "BOOLEY_R1_ONLY": "context"}
             ),
+            ticket_file=base.ticket_file,
         )
 
         plain = mcp_server._endpoint_subprocess_env(base)

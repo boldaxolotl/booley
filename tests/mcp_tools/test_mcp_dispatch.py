@@ -2761,7 +2761,7 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
         "is_flow": True,
         "is_specialist": False,
     }
-    command = mcp_server._endpoint_command("project_probe", {}, definition, {})
+    command = mcp_server._endpoint_command("project_probe", {}, definition, {}, _call_ctx())
     command[0] = sys.executable
     environment = mcp_server._endpoint_subprocess_env(_call_ctx())
     source_root = Path(mcp_server.__file__).resolve().parents[2]
