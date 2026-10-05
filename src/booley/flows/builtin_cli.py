@@ -31,24 +31,24 @@ def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.Argument
     flow.argument_adapter.add_common_args(parser)
     flow.argument_adapter.add_args(parser)
     if human:
+        from booley.flows.cli_help import project_help, shared_help
         from booley.flows.cli_selection import human_parser
 
-        return human_parser(parser, durations=True)
+        groups = shared_help(flow.name, target_required=flow.target_required)
+        return project_help(
+            human_parser(parser, durations=True), groups + flow.argument_adapter.help_groups
+        )
     return parser
 
 
 def build_cli_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
     """Layer human presentation onto a fresh parser, outside the MCP schema."""
+    from booley.flows.cli_help import add_quiet
     from booley.flows.cli_selection import transport_invocation
 
-    parser = build_parser(flow, human=not transport_invocation())
-    parser.add_argument(
-        "-q",
-        "--quiet",
-        dest="_console_quiet",
-        action="store_true",
-        help="Suppress human progress, live EDA output and log footers",
-    )
+    human = not transport_invocation()
+    parser = build_parser(flow, human=human)
+    add_quiet(parser, human=human)
     return parser
 
 
