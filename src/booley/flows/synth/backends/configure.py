@@ -417,7 +417,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="abc_delay_ps",
         type=int,
         default=None,
-        help="Expert Yosys override: ABC delay target in ps (--tdelay is a legacy alias)",
+        help="Expert Yosys override: ABC delay target in ps",
     )
     parser.add_argument(
         "--abc-recipe",

@@ -116,7 +116,7 @@ Ticket in review. Then offer **fix here** / **reset** / **archive**. An accepted
 waiver reaches the destination only with the merge, as the commit
 `chore(<slug>): approve coverage waivers`.
 
-If a legacy review has no Criteria Satisfaction Record, the explicit recovery
+If a review has no Criteria Satisfaction Record, the explicit recovery
 operation is
 `booley board review $SLUG --request --repair --reason "<recovery intent>"`.
 It preserves work and creates an unaccepted package when its Basis/worktree are

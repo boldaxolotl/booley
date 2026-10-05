@@ -25,7 +25,7 @@ commands; only the `data` field varies.
 
 ## Subcommands that emit JSON
 
-As of v0.2, only four commands respect `--format
+Four commands respect `--format
 json`:
 
 - `list`: see `commands/list`
@@ -137,19 +137,10 @@ radix formatting). Examples:
   `"'hDEADBEEF"`.
 - X / Z values appear as `"X"` / `"Z"` literally.
 
-`stats` is the exception: as of v0.2.1, `value_hist` and
+For `stats`, `value_hist` and
 `time_in_state_ticks` map keys are **Verilog literals**
 that match the text-mode rendering for that signal's
-radix (`'hFF`, `'d255`, `'b101`). This makes it possible
-to grep the same key in both modes. The prior raw form
-was a regular source of "wait, which radix is this?"
-confusion in scripts.
-
-(Note: older releases described `value_hist` keys as raw
-store values, and emitted a single `time_in_state` map
-in ticks with no unit in the field name. Both have been
-fixed; downstream consumers should migrate to
-`time_in_state_ticks` / `time_in_state_ns`.)
+radix (`'hFF`, `'d255`, `'b101`). Use the same key in both modes.
 
 ## Warnings
 
@@ -167,11 +158,9 @@ A clean run has `"warnings": []`.
 
 ## Schema versioning
 
-The `$schema` URL is pinned to the release tag. v0.3
-emits `.../v0.3.0/crates/bwave/schema/bwave.json`. Future releases
-will bump the URL alongside any schema changes; older
-URLs will continue to resolve to their historical
-schema documents.
+The `$schema` URL identifies the exact payload schema:
+`.../v0.3.0/crates/bwave/schema/bwave.json`. Use that URL to validate
+a stored payload, or `bwave schema` for the installed schema.
 
 For local validation:
 

@@ -90,7 +90,7 @@ a missing golden, with the reason). A parity check that quietly narrows its own
 scope reads as "everything matched" when it did not. Fold a one-paragraph
 summary into Step 4's final report in the **onboarding voice**: a newcomer does
 not know what "parity" buys them, so say plainly what was checked against the
-old flow, what matched, and what could not be compared.
+prior flow, what matched, and what could not be compared.
 
 A mismatch here is a **finding, not a gate**: surface it, but setup already
 completed at Step 4. The user decides whether a divergence blocks their use.

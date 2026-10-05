@@ -1,0 +1,140 @@
+{
+  "phrases": [
+    "retired",
+    "deprecated",
+    "no longer",
+    "former",
+    "formerly",
+    "renamed from",
+    "previously",
+    "used to",
+    "legacy",
+    "old",
+    "was removed",
+    "were removed",
+    "has been removed",
+    "have been removed"
+  ],
+  "version_prefixes": [
+    "since",
+    "before",
+    "after",
+    "prior to",
+    "as of",
+    "introduced in"
+  ],
+  "fixtures": [
+    {
+      "text": "ReTiReD",
+      "history": true
+    },
+    {
+      "text": "no\nlonger",
+      "history": true
+    },
+    {
+      "text": "FORMER setting",
+      "history": true
+    },
+    {
+      "text": "formerly supported",
+      "history": true
+    },
+    {
+      "text": "renamed\nfrom",
+      "history": true
+    },
+    {
+      "text": "previously supported",
+      "history": true
+    },
+    {
+      "text": "used to ship",
+      "history": true
+    },
+    {
+      "text": "legacy-per-test",
+      "history": true
+    },
+    {
+      "text": "old behavior",
+      "history": true
+    },
+    {
+      "text": "has been\nremoved",
+      "history": true
+    },
+    {
+      "text": "have been removed",
+      "history": true
+    },
+    {
+      "text": "was removed",
+      "history": true
+    },
+    {
+      "text": "were removed",
+      "history": true
+    },
+    {
+      "text": "deprecated",
+      "history": true
+    },
+    {
+      "text": "since 1.2",
+      "history": true
+    },
+    {
+      "text": "before\nversion 0.7",
+      "history": true
+    },
+    {
+      "text": "after v2.1",
+      "history": true
+    },
+    {
+      "text": "prior to 0.3",
+      "history": true
+    },
+    {
+      "text": "as of v0.8",
+      "history": true
+    },
+    {
+      "text": "introduced in 0.6.2",
+      "history": true
+    },
+    {
+      "text": "golden threshold holders",
+      "history": false
+    },
+    {
+      "text": "previously_named_identifier",
+      "history": false
+    },
+    {
+      "text": "unused toplevel",
+      "history": false
+    },
+    {
+      "text": "since 1.x",
+      "history": false
+    },
+    {
+      "text": "since 1.2a",
+      "history": true
+    },
+    {
+      "text": "Python >= 3.12; Vivado 2025.2; acme:ip:unit:1.0",
+      "history": false
+    },
+    {
+      "text": "before cleanup",
+      "history": false
+    },
+    {
+      "text": "before vv0.2",
+      "history": false
+    }
+  ]
+}

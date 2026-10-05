@@ -51,7 +51,7 @@
 | 16 | Keep Booley out of your git history? | Hidden keeps `.booley_project/` untracked and enables stealth mode; open commits the config and uses native cores. | Git footprint: stealth `.booley_project/` or open native cores; ignore repository-native `.core` files? |  |  |  |  |  |
 | 17 | Turn off any Specialist (AI reviewer, mutation tester) from the start? | Keep optional AI helpers available by default, or record the ones you deliberately disable. | Specialists explicitly disabled from the start (reviewer, …) |  |  |  |  |  |
 | 18 | Cross-check Booley's results against your existing scripts (parity check)? | Compare results after setup only when both paths use the same EDA tool; propose sim for an identical runnable script, otherwise none. | Parity check (optional): native EDA-tool match per phase → tier, else `none` |  |  |  |  |  |
-| 19 | Which AI provider and account does Booley use? | Preserve the provider and authentication selected during initialization; ask only for missing fields. | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a legacy missing field |  |  |  |  |  |
+| 19 | Which AI provider and account does Booley use? | Preserve the provider and authentication selected during initialization; ask only for missing fields. | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a missing field |  |  |  |  |  |
 | 20 | Scrub AI/tool names out of commit messages (stealth)? | Record the git-history answer’s commit-message scrub and hidden-core projection policy; existing explicit config wins. | `[stealth]`: history scrub plus hidden-core projection; required by row 16 when hidden cores are authored |  |  |  |  |  |
 | 21 | Keep setup's scratch evidence, or clean it up? | Preserve durable configuration and reports; minimal removes only current-run scratch, while diagnostic keeps raw evidence. | Setup artifact retention: `minimal` (recommended) or `diagnostic` |  |  |  |  |  |
 | 22 | Keep or clear the build cache (flow cache) after setup? | Preserve reusable build products by default; explicit eviction of setup-touched cache costs a rebuild. | Flow-cache disposition: `preserve` (recommended) or `evict-setup-touched` |  |  |  |  |  |
@@ -163,7 +163,7 @@
 ### Execution ledger
 
 <!-- One resumable state machine for Steps 1–7 and cleanup. Missing ledger
-     metadata on a legacy plan deliberately means inventory-only cleanup. -->
+     metadata on a plan without an ownership ledger deliberately means inventory-only cleanup. -->
 
 - **Run ID:** <unset>
 - **Scratch root:** <unset>

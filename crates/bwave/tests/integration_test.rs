@@ -1716,7 +1716,7 @@ fn test_legacy_bwave_input_rejected() {
     let (_stdout, stderr, code) = run_bwave(&["signal", "trace.bwave", "-s", "clk"]);
     assert_eq!(code, 2, "legacy .bwave input must exit 2");
     assert!(
-        stderr.contains("replaced by FST"),
+        stderr.contains("replaced by FST") && stderr.contains("bwave build <vcd> -o trace.fst"),
         "stderr should point at the migration: {}",
         stderr
     );
@@ -1736,10 +1736,18 @@ fn test_legacy_bwave_build_output_rejected() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("replaced by FST"),
+        stderr.contains("replaced by FST") && stderr.contains("bwave build <vcd> -o trace.fst"),
         "stderr should point at the migration: {}",
         stderr
     );
+}
+
+#[test]
+fn test_at_cycle_error_names_at_replacement() {
+    let (_stdout, stderr, code) = run_bwave(&["value", "trace.fst", "--at-cycle", "1"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("--at-cycle"));
+    assert!(stderr.contains("similar argument exists: '--at'"));
 }
 
 // ===== --scope (build-time signal filtering) =====

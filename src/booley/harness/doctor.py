@@ -127,6 +127,7 @@ from booley.targets.domain import (
     TargetHandle,
     TargetInspection,
     TargetRef,
+    flow_can_drive,
 )
 from booley.targets.flow_names import config_section
 from booley.ticket_board.board_layout import required_board_directories
@@ -3871,9 +3872,35 @@ def _check_target_metadata(
     _check_naming_conventions(
         audit.project, audit.root, refs, audit.pass_, audit.warn, _note=audit.note
     )
+    _check_synth_recipe_migrations(refs, audit.warn)
     _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
     _check_sim_traceable(audit.root, refs, audit.pass_, audit.warn)
     _check_cocotb_targets(audit.project, refs, audit.pass_, audit.warn, audit.skip, audit.fail)
+
+
+def _check_synth_recipe_migrations(refs: dict[str, TargetHandle], warn: Check) -> None:
+    """Surface recipe fixes even when Sandbox resolution cannot reach the Flow.
+
+    These advisories leave the Flow's existing rejection and exit code intact.
+    """
+    from booley.core.boundary import as_dict
+    from booley.flows.synth.recipe_migrations import retired_option_message
+
+    for name, ref in sorted(refs.items()):
+        if not flow_can_drive("synth", ref):
+            continue
+        try:
+            document = fusesoc_registry.read_core(ref.core_file)
+        except fusesoc_registry.FuseSocError:
+            continue  # The owning core audit reports unreadable declarations.
+        targets = as_dict(document.get("targets"), default={}) or {}
+        target = as_dict(targets.get(name), default={}) or {}
+        options = as_dict(target.get("flow_options"), default={}) or {}
+        for key in ("timing_engine", "yosys", "openroad"):
+            if key in options:
+                _warning_sink(warn, "core.synth-recipe-migration", subject=f"{name}:{key}")(
+                    retired_option_message(key, f"Target {name!r} flow_options")
+                )
 
 
 def _check_target_sources(

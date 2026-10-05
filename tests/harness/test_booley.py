@@ -3854,3 +3854,22 @@ def test_host_commands_use_persistent_venv_identity(tmp_path, monkeypatch, comma
         lambda _source: replace(identity, revision="different"),
     )
     assert "--update" in tlr._host_install_authority_error(command)
+
+
+@pytest.mark.parametrize("option", ["--project-root", "-p"])
+def test_removed_alias_docs_still_have_project_replacement_notice(tmp_path, capsys, option):
+    parser = tlr._build_parser()
+    args = tlr._normalize_args(parser, parser.parse_args(["doctor", option, str(tmp_path)]))
+    assert tlr._resolve_cli_selection(args) == tmp_path
+    notice = capsys.readouterr().err
+    assert option in notice
+    assert "--project" in notice
+
+
+def test_bare_cheat_project_names_section_replacement(capsys):
+    parser = tlr._build_parser()
+    args = tlr._normalize_args(parser, parser.parse_args(["cheat", "--project"]))
+    assert args.project
+    notice = capsys.readouterr().err
+    assert "--project" in notice
+    assert "--project-files" in notice

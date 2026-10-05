@@ -344,7 +344,7 @@ projection exists.
 
 Required instead of authoring a parallel one when an open-footprint repo already
 ships the appropriate CAPI2 core. Modernize only selected Targets; leave
-unrelated legacy Targets intact. This has its own traps, and most only explode under *real* fusesoc while
+unrelated EDA-tool-API Targets intact. This has its own traps, and most only explode under *real* fusesoc while
 Booley's cheap `.core` reader stays green. Re-validate after **every** `.core`
 edit with the focused sandbox resolver command
 `fusesoc --cores-root <dir> run --setup --work-root "$(mktemp -d)" --target
@@ -352,7 +352,7 @@ edit with the focused sandbox resolver command
 Booley's `<vlnv>#<target>` spelling. Reserve the full deep Doctor matrix for
 Step 4's final gate:
 
-- Legacy EDA-tool-API Targets (`default_tool:` + `tools:` blocks) should be
+- EDA-tool-API Targets (`default_tool:` + `tools:` blocks) should be
   converted to the flow API (`flow:` + `flow_options:`). Booley falls back to
   the declared EDA-tool family, but that cannot express whether a multi-purpose
   EDA tool such as Verilator means sim or lint. Doctor names the ambiguity and the
@@ -639,7 +639,7 @@ What goes here:
   switch is valid only with `enabled = true`.
 - **Agent backend — preserve row 19 exactly.** `booley init` has already written
   explicit `provider` and `auth` values. Carry them forward unchanged; for a
-  legacy project, write only the missing field settled during planning. Preserve
+  Project with a missing field, write only the missing field settled during planning. Preserve
   an existing `[agent.git]` identity unchanged; it controls the default author
   and committer for Interactive and Ticket Mode checkouts.
 - **Feedback redaction — preserve it when present.** Booley never transmits
@@ -650,8 +650,7 @@ What goes here:
   built-in and every valid MCP tool under `.booley_project/mcp_tools/` is discovered
   automatically. Write `[flows.<name>].enabled = false` for an explicit Flow
   opt-out; use `[specialists.<name>].enabled = false` for a Specialist.
-  Rename retired `[mcp_tools.*]` Specialist sections to `[specialists.*]` and
-  remove protocol utility settings; utilities have no Project enable switch.
+  Protocol utilities have no Project enable switch.
   There is no source allowlist.
 - **First-run Flows start disabled** (`enabled = false`) for `sim`,
   `lint`, and `synth` unless the user explicitly asks
@@ -691,7 +690,7 @@ What goes here:
   equivalent, and ordinary Flow selection. The bad source is genuine project
   verification input, so keep it in the tracked RTL/TB tree and reference it
   from the dedicated `.core`—never hide the source under `.booley_project/`.
-  Do not add a `[flows.<flow>.selftest]` table; that mapping is retired. Step 4
+  Use the Target self-test conventions in Step 4, which
   consumes these fixtures; it must not be the first step to discover they were
   omitted.
 - **Sentinels** (SV Targets; the plan's row 5): make sure a run's verdict is

@@ -72,8 +72,7 @@ in text mode based on the radix suffix. See
 
 ## Common errors
 
-- **`unknown argument --at-cycle`**: that flag was
-  removed in v0.2. Use `--at N` and rely on sync/async
+- **Time selection**: use `--at N` and rely on sync/async
   mode to disambiguate units.
 - **`--at` out of range**: N exceeds the simulation
   length. The store reports its max cycle / tick; use

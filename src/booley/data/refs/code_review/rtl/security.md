@@ -52,5 +52,5 @@ Confidence:
 
 - **Missing error detection**: Are all illegal states, invalid inputs, and memory faults detected?
 - **Unsafe error response**: On detecting an error, does the module transition to a safe/locked state, or does it silently continue with corrupted data?
-- **Error recovery leaks**: Can an error condition be used to extract partial secret data (e.g., differential fault analysis)?
+- **Error recovery leaks**: Can an error condition reveal partial secret data (e.g., differential fault analysis)?
 - **Incomplete error coverage**: Are there error conditions that are checked in some paths but not others?

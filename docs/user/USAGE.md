@@ -87,17 +87,11 @@ an external data override remains supported. Checkout-local data configuration a
 initialization's destination scope keep their existing precedence. A selector
 requires an existing directory; `init` accepts an uninitialized directory.
 
-Hidden `--project-root`/`-p` aliases remain only where previously supported, for one
-compatibility release, with one-line stderr notices. They retain literal path
-resolution, while the canonical selector discovers nested directories. Persisted
-Sandbox initialization specifications retain internal compatibility with the old
-`session prepare` form. `cheat --project-files` selects the Project Files section;
-legacy bare `cheat --project` still selects that section with a deprecation notice.
+`cheat --project-files` selects the Project Files section.
 
 Flows and Specialists accept `--timeout DURATION`: positive integer seconds (`90`
 or `90s`), minutes (`30m`), hours (`2h`), or descending combinations (`1h30m`).
-The hidden `--timeout-ms` alias keeps millisecond precision and prints a notice for
-one compatibility release. MCP parameters and config keys stay in milliseconds.
+MCP parameters and config keys use milliseconds.
 
 ## First, verify your setup
 
@@ -336,8 +330,7 @@ checks, write them in `.booley_project/ticket_creation.md` in plain Markdown:
 No special format is needed. The skill reads this file each time it creates a
 Ticket and turns the rules into real criteria. Instructions you give for one
 Ticket win over these rules, and the skill tells you when a rule is unclear or
-can't be met. Editing the file doesn't change existing Tickets. (Older projects
-may call this file `ticket_defaults.md`; it still works.)
+can't be met. Editing the file doesn't change existing Tickets. `ticket_defaults.md` is also accepted.
 
 **Writing a Ticket by hand** is possible but advanced: a hand-written Ticket
 must pass the same checks the skill does for you. Follow
@@ -458,7 +451,7 @@ CRITERIA_MANDATORY:
     ticket_probe (temp): {smoke: pass}
 ```
 
-`(new)` Targets stay after the merge. `(replaces sim_core)` swaps out the old
+`(new)` Targets stay after the merge. `(replaces sim_core)` swaps out the prior
 Target. `(temp)` Targets exist only to prove this Ticket and are removed
 afterwards. A Ticket can't edit or delete existing Targets. The full rules are
 in [ADR 0060](../adr/0060-model-target-changes-with-ticket-target-plans.md).
@@ -574,7 +567,7 @@ booley session down                     # stop and remove it
 container-only command works through it. `Ctrl-C` on a command run with `--`
 stops everything it started inside the container.
 
-`session refresh` is safe to interrupt; the old container stays usable until
+`session refresh` is safe to interrupt; the prior container stays usable until
 the new one is ready. It won't replace a container that VS Code opened; use
 **Dev Containers: Rebuild Container** for that. If your EDA tools need a
 license server, run `booley session down` before refreshing.
@@ -671,7 +664,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 
 Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Existing model-call budgets and minimums remain unchanged; seconds-only providers round up. Hidden `--work-dir` and `--timeout-ms` aliases retain their old units for one compatibility release and print deprecation notices on stderr. Connected agent arguments and configuration stay unchanged.
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up.
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|

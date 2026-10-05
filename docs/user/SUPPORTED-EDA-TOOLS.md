@@ -24,7 +24,7 @@ half and leave the VHDL half alone.
 Two axes govern every flow:
 
 - **EDA tool**: the concrete external program a Flow executes. The Target's
-  `flow_options.tool` (or legacy `default_tool`) normally selects it and always
+  `flow_options.tool` (or `default_tool`) normally selects it and always
   participates in FuseSoC resolution. FPGA implementation is the fixed-backend
   exception: its Target-name axis declares intent, and Booley always executes
   Vivado after rebuilding the resolved inputs into a Vivado EDAM.

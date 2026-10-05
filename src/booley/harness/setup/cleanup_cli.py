@@ -16,7 +16,7 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
         "cleanup",
         help="Preview or apply manifest-owned Project Setup cleanup",
         description=(
-            "Bounded Project Setup cleanup. Legacy plans without an ownership "
+            "Bounded Project Setup cleanup. Plans without an ownership "
             "manifest are inventory-only."
         ),
     )

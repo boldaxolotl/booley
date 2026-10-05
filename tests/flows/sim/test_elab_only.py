@@ -838,3 +838,26 @@ def test_early_elab_error_names_available_report_destination(
         expected += f"\n  report: {(tmp_path / 'reports/sim.json').resolve()}"
     assert result.report_text == expected
     assert "manifest:" not in result.report_text
+
+
+@pytest.mark.parametrize(
+    ("flags", "mode"),
+    [
+        (["--build-only"], SimulationMode.ELAB_ONLY),
+        (["--build-only", "--standalone"], SimulationMode.ELAB_ONLY_STANDALONE),
+        (["--standalone"], None),
+    ],
+)
+def test_documented_mode_aliases_name_replacement(tmp_path, caplog, flags, mode):
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", *flags])
+    assert flow.args.mode is mode
+    if flags == ["--standalone"]:
+        outcome = flow._validate_mode_args()
+        assert outcome.exit_code == 2
+        assert "--standalone alone is invalid" in outcome.report_text
+        assert "--mode elab-only-standalone" in outcome.report_text
+    assert any(
+        "--build-only" in message and "--standalone" in message and "use --mode" in message
+        for message in caplog.messages
+    )

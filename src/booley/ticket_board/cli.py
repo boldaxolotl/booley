@@ -45,6 +45,7 @@ from .cli_handlers import (
     _cmd_validate_ticket,
     show_board_view,
 )
+from .cli_migrations import TicketArgumentParser
 from .helpers import (
     detect_tickets_dir,
     ensure_utf8_output,
@@ -112,14 +113,14 @@ def _add_ticket_edit_subcommands(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--log",
         action="store_true",
-        help="Auto-append transition log (uses old->new step from ticket state)",
+        help="Auto-append transition log (uses prior->next step from ticket state)",
     )
 
     # log-transition
     p = sub.add_parser("log-transition", help="Append to transitions.log")
     p.add_argument("slug", help="Ticket slug")
     p.add_argument(
-        "--from", dest="from_state", required=True, help="Old state (e.g. running:planning)"
+        "--from", dest="from_state", required=True, help="Prior state (e.g. running:planning)"
     )
     p.add_argument("--to", dest="to_state", required=True, help="New state")
     p.add_argument("--actor", required=True, help="Actor name (e.g. ticket-execute)")
@@ -274,7 +275,7 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
     )
 
     # reset-to (removed — deprecated stub prints error)
-    p = sub.add_parser("reset-to", help="[REMOVED] Use 'reset' for a full reset")
+    p = sub.add_parser("reset-to", help=argparse.SUPPRESS)
     p.add_argument("slug", nargs="?", help="Ticket slug")
     p.add_argument("stage", nargs="?", help="(ignored)")
 
@@ -384,7 +385,7 @@ def _add_reporting_subcommands(sub: argparse._SubParsersAction) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser with all ticket_board subcommands."""
-    parser = argparse.ArgumentParser(
+    parser = TicketArgumentParser(
         prog="ticket_board",
         description="Ticket board CLI -- mechanical operations for the ticket system.",
     )
@@ -396,6 +397,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_planning_subcommands(sub)
     _add_creation_subcommands(sub)
     _add_reporting_subcommands(sub)
+    # Argparse has no public API for hiding parseable compatibility commands.
+    sub._choices_actions = [
+        action for action in sub._choices_actions if action.help != argparse.SUPPRESS
+    ]
+    sub.metavar = "{" + ",".join(action.dest for action in sub._choices_actions) + "}"
 
     return parser
 

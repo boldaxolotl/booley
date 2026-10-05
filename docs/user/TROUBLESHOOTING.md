@@ -17,16 +17,10 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [CONTEXT.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTEXT.md).
 
-## Push notifications stopped arriving
+## Monitoring Ticket work
 
-Booley no longer sends ntfy push notifications. Legacy `[notifications]` settings
-in `.booley_project/booley.toml` are ignored and can be deleted; Doctor reports a
-nonblocking warning for the obsolete table. If you manually added `ntfy.sh` to
-the host `egress_allowlist` solely for this feature, remove that entry while
-preserving entries needed for other authorized purposes. Stop your Project
-containers, run `booley bootstrap` on the host, and restart them to apply the
-policy change. Local Ticket status, logs, review briefings, Doctor reports, and
-provider rate-limit wait/retry behavior remain available.
+Use local Ticket status, logs, review briefings, and Doctor reports to monitor
+work. Provider rate-limit waits and retries are reported locally.
 
 ## VS Code says “A mount config is invalid” while reopening the container
 
@@ -35,14 +29,13 @@ creates the Sandbox. The error names the missing or unavailable host
 source and its container target; restore that source, or run `booley init
 --seed` on the host when the source was intentionally removed.
 
-A rebuild may otherwise select a stopped VS Code container whose old bind list
+A rebuild may otherwise select a stopped VS Code container whose prior bind list
 still mentions a deleted skill, credential file, tool installation, mask
 directory, or editor-injected socket. When preparing the Sandbox for attachment, Booley
-now removes such a stopped container (without deleting named volumes) so Dev
-Containers creates one from the current spec. When exactly one running legacy
-VS Code container is authenticated to this Project, Booley stops it by immutable
+removes such a stopped container (without deleting named volumes) so Dev
+Containers creates one from the current spec. When exactly one running VS Code container with a stale spec is authenticated to this Project, Booley stops it by immutable
 container ID, validates the current spec again, and removes that same stopped
-container. Bind mounts and named volumes remain; unpersisted data in the old
+container. Bind mounts and named volumes remain; unpersisted data in the prior
 container's writable layer is discarded. Booley refuses without mutation when
 the container is headless, foreign, ambiguous, or one of multiple matches. If
 validation fails after the stop, the error includes the exact `docker start`
@@ -89,13 +82,11 @@ file for diagnosis, repair or remove only the malformed metadata, and rerun
 
 ## An MCP tool is missing from `/mcp`
 
-Every valid built-in and custom MCP tool is discovered by default. The old
-`[tools].builtin` and `[tools].custom` keys are migration errors and Doctor
-rejects them. To remove a Booley Flow from agent and autonomous discovery, set
-`[flows.<name>].enabled = false`; for a Specialist,
-set `[specialists.<name>].enabled = false`. The retired `[mcp_tools.*]` table
-is rejected; rename its Specialist sections to `[specialists.*]` and remove
-protocol utility settings. Utilities have no Project enable switch.
+Every valid built-in and custom MCP tool is discovered by default. To remove
+a Booley Flow from agent and autonomous discovery, set
+`[flows.<name>].enabled = false`; for a Specialist, set
+`[specialists.<name>].enabled = false`. Protocol utilities have no Project
+enable switch.
 
 Two intentional visibility cases remain. Interactive Mode hides
 `submit_run_report` because it finalizes autonomous Ticket runs. `tb_coder` is
@@ -147,7 +138,7 @@ extension automatically; then use **Developer: Reload Window**. Verify with
 The same repair applies when `--group` or a radix/color suffix reports missing
 `set_signal_layout`, `get_signal_layout`, or `get_viewer_state` capabilities.
 Stock VaporView 1.5.4 does not expose its recursive presentation state over WCP;
-Booley's compatibility patch adds the layout write/readback pair used to create,
+Booley's compatibility patch adds the layout write/readback pair to create and
 verify groups, radixes, and colors. That adapter is restricted to the exact
 official 1.5.4 bundle fingerprint; a different or partially modified bundle is
 left untouched and reported as unsupported rather than rewritten heuristically.
@@ -247,7 +238,7 @@ experiment, not a setup requirement.
   unless the root already owns a whole-tree policy. `text=auto` preserves Git's
   binary-file detection, and later rules in that file can override the default.
   **Commit only published root `.gitattributes` files** to share their policy.
-  Init warns about an old untracked root default or a local default conflicting
+  Init warns about a prior untracked root default or a local default conflicting
   with upstream rules or Stealth opt-out. Inspect those files and remove or
   migrate the default if appropriate; init preserves them because ownership
   cannot be proven.
@@ -278,9 +269,8 @@ experiment, not a setup requirement.
   `booley doctor` re-asks both repositories every run and identifies which one
   is unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
   index metadata left by an earlier repair gets caught rather than surfacing as
-  phantom diffs in the container. The old
-  `--fix-line-endings` option remains accepted for CLI compatibility but is no
-  longer required for a clean tree.
+  phantom diffs in the container. `--fix-line-endings` is accepted; clean
+  CRLF checkouts receive the same automatic repair with or without it.
 
   (Doing this by hand is fiddlier than it looks: `git checkout -- .` on its own
   is **not** enough. With the clean filter in place the worktree files already
@@ -453,7 +443,7 @@ git -C .booley_project status                      # what changed in Booley's ow
 git -C .booley_project log --oneline -5
 ```
 
-The same applies to `tests.toml`, `ticket_creation.md`, the legacy
+The same applies to `tests.toml`, `ticket_creation.md`, the alternate
 `ticket_defaults.md`, `criteria.toml`, and the `.core` files. If
 `git -C .booley_project rev-parse --git-dir` errors, the directory is not a
 repository on this machine and those files were never version-controlled: copy
@@ -463,8 +453,8 @@ one aside before you edit it.
 
 Booley keeps each live Ticket at `tickets/board/<slug>.md` with its status in
 `tickets/state/<slug>.json`, and closed Tickets in `tickets/history/`. Boards
-made by older versions kept Tickets in status folders (`board/queue/`,
-`board/done/`, ...) tracked by Git. Until you migrate, `booley doctor` FAILs
+with Tickets in status folders (`board/queue/`, `board/done/`, ...) need
+manual recovery before use. Until the layout is corrected, `booley doctor` FAILs
 and `booley board` and `booley run` refuse to start. There is no migration
 command:
 
@@ -474,7 +464,7 @@ command:
    `state` set from the folder: `queue/` → `queued`, `waiting/` → `waiting`,
    `blocked/` → `blocked`, `review/` → `review`, and `active/` → `blocked` with
    `"blocked_reason": "migrated while running"`. Copy any values from the
-   Ticket's old `logs/<slug>/.runtime/progress.json` (or
+   Ticket's prior `logs/<slug>/.runtime/progress.json` (or
    `logs/<slug>/progress.json`) over these defaults; the record holds exactly
    these keys:
 
@@ -528,7 +518,7 @@ If you don't need `slang`, stay on the default `sv2v` frontend.
 
 ## Simulation stalls at time zero without results
 
-cocotb's VPI/VHPI run loop is compiled against the simulator, so pinning an old
+cocotb's VPI/VHPI run loop is compiled against the simulator, so pinning a prior
 cocotb release does not guarantee compatibility with the image's current
 Verilator. The failure can be silent: cocotb 1.5.1 under an older Verilator builds,
 imports, and registers its VPI callbacks, but the timed callbacks never fire,
@@ -538,7 +528,7 @@ producing `results.xml`.
 No Python-package pin fixes that simulator pairing. Usually the cheapest fix is
 to modernize the testbench for cocotb 1.9+ or 2.x (`cocotb.fork` becomes
 `cocotb.start_soon`, with a few import moves). The more expensive alternative is
-a project image containing a mutually compatible old Verilator and Python
+a project image containing a mutually compatible prior Verilator and Python
 stack. The supported selection dialects and current image versions are in
 [SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#built-in-flows).
 
@@ -557,23 +547,22 @@ natively. This is an upstream `sv2v` limitation rather than something the flow
 can repair. Frontend selection and requirements are in
 [SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 
-## Verilator 5 rejects Verilator-4-era RTL
+## Verilator reports timing or enum errors
 
-The image ships Verilator 5. Designs and testbenches written for Verilator 4
-usually build, but checks that used to be warnings can now stop the build:
+The image ships Verilator 5. Check these diagnostics when a build fails:
 
 - **`%Error-NEEDTIMINGOPT`** — the testbench uses delays or event controls
   (`#10` or `@(posedge clk)` in an event-driven testbench). Add `--timing` to
-  the Target's `verilator_options`, or `--no-timing` for the old cycle-driven
-  behavior.
+  the Target's `verilator_options`, or `--no-timing` for cycle-driven
+  simulation.
 - **`%Error-ENUMVALUE`** — a value outside an enum's declared members is assigned
   to or compared with an enum-typed variable, usually through an implicit
   conversion. Prefer an explicit RTL cast; if the use is intentional, waive it
   per Target with `-Wno-ENUMVALUE`.
 
-Old waiver lists can also name codes that no longer cover the same findings.
-Verilator 5 split the old `WIDTH` warning into `WIDTHTRUNC` and `WIDTHEXPAND`, so
-an inherited `-Wno-WIDTH` may not silence the warning you expect. Read the code
+Waiver lists must name the emitted warning code. Verilator 5 uses
+`WIDTHTRUNC` and `WIDTHEXPAND` for width findings; a `-Wno-WIDTH` entry may
+not silence the warning you expect. Read the code
 from the failing `%Error-<CODE>` or `%Warning-<CODE>` line and either fix the RTL
 or add the corresponding `-Wno-<CODE>` to that Target's `verilator_options`.
 
@@ -699,7 +688,7 @@ collection: a resume, or its `--dry-run` preview, of a coverage Campaign whose
 collection has no recorded result exits `2`; start a new
 `booley flow sim --coverage` run. A coverage resume only finishes an
 interrupted publication. Neither Cocotb nor coverage resumes or overwrites an
-interrupted native result database. Legacy and elaboration-only invocations are not resumable. Empty
+interrupted native result database. Non-Campaign and elaboration-only invocations are not resumable. Empty
 `.pruned-N` directories reserve historical invocation numbers and should be
 retained.
 
@@ -765,7 +754,7 @@ replace its `detail` with an empty object. Select evidence through the numbered
 
 Call the `coverage_analyst` Specialist from your connected agent session with
 `campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
-Target names, `latest`, the point-store path, waveforms, and legacy
+Target names, `latest`, the point-store path, waveforms, and flat
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
 point store makes a Campaign unusable for analysis. Recollect unsupported
 Campaigns with the current Booley version. A missing or incomplete
@@ -784,7 +773,7 @@ Missing, changed, unsafe, or mismatched Target sources produce report-only analy
 Stealth-mode projects also use report-only analysis because resolving their sources
 requires FuseSoC registry reconciliation, which would change project files.
 This does not change the Campaign's measured verdict. The Analyst does not reuse
-legacy `coverage_waivers.json` files or approve its candidates.
+mutable `coverage_waivers.json` files or approve its candidates.
 
 Large valid Campaigns are not copied into the model prompt. The Analyst validates
 the complete Campaign first, then retrieves bounded overview, point, and verified
@@ -818,14 +807,11 @@ the Campaign-bound evidence tool.
   is loaded. An infrastructure or persistence error can also block a requested
   evaluation without producing coverage findings. In that case, inspect the
   Target's `error` and `collection` status, correct the failure, and rerun.
-- Legacy Criteria (`coverage_toggle`, `coverage_fsm`, `coverage_value`,
-  `coverage_branch`, `coverage_expression`, `coverage_mean`) are rejected.
-  Replace them with an uppercase, Target-keyed `COVERAGE` record such as
+- Coverage Criteria use an uppercase, Target-keyed `COVERAGE` record such as
   `COVERAGE: {sim_core: {tests: all, metrics: {toggle: {min_pct: 50}}}}`;
   replace `all` with an exact registered suite when needed. Choose only a
   supported native metric; no silent translation or waveform scoring remains.
-- Missing `sim_<target>.json`: flat Simulation projections were removed. Follow
-  the exact numbered report pointer. Missing `coverage_report.json` or mutable
+- Missing `sim_<target>.json`: follow the exact numbered report pointer. Missing `coverage_report.json` or mutable
   `coverage_waivers.json` is expected; use a canonical Campaign and the configured
   human-approved waiver directory.
 
@@ -849,11 +835,11 @@ the Campaign-bound evidence tool.
 - Approver refused as the `[agent.git]` identity: approve on the host with your
   personal `user.name` and `user.email`. The Sandbox intentionally uses the agent
   identity and refuses approval. Refresh and recreate the Sandbox with an updated
-  image, or start an already updated Sandbox, to clean recognized legacy worktree
+  image, or start an already updated Sandbox, to clean recognized worktree-scoped
   identity pairs. Unrecognized custom overrides are preserved; if host approval
   still refuses, inspect the Project checkout's worktree identity overrides.
 - Candidate shown as stale or invalid: its source changed since recording, it
-  came from another Campaign, or the evidence no longer supports it. Rerun
+  came from another Campaign, or the evidence does not support it. Rerun
   coverage and the Analyst to record fresh candidates.
-- A point you rejected is no longer proposed. It reopens when its source file
+- A point you rejected is suppressed. It reopens when its source file
   changes; closing the Ticket discards rejections.
