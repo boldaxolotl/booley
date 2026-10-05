@@ -26,6 +26,13 @@ booley flow fpga  --target fpga_soc
 booley flow <name> --help          # the authoritative option list
 ```
 
+Help groups shared controls under **Common**, reporting under **Output**, then
+Flow-specific options. Synth's **Expert: ABC** and **Expert: OpenROAD** sections
+come last and remain visible in ordinary `--help`. Boolean override pairs share
+one help entry; leaving them unset preserves Target/profile/backend resolution.
+Each option explains omission behavior. Required Target flags have no default;
+Simulation discovery and manifest-owned resume settings have their own rules.
+
 ### Live progress and logs
 
 Direct built-in CLI calls (including `python3 -m booley.flows.<name>`) show

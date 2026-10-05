@@ -524,7 +524,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="booley",
         description="Booley — RTL development harness.",
         epilog=(
-            "Run bare `booley` to open this Project's configured agent CLI. "
+            "Run bare `booley` on the host for help, or inside the Sandbox to open "
+            "this Project's configured agent CLI. "
             "Locations: [host] host terminal only; [Sandbox] container only; "
             "[either] either location; [mixed] depends on the nested operation."
         ),
@@ -591,10 +592,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_board_subparsers(sub)
     _add_utility_subparsers(sub)
 
-    # Backward compat: legacy flat flags (hidden)
-    parser.add_argument("--board", "-b", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--cheat", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--doctor", action="store_true", help=argparse.SUPPRESS)
+    # Hidden shortcut for a named one-shot run.
     parser.add_argument("--slug", "-s", type=str, default="", help=argparse.SUPPRESS)
 
     _install_project_options(parser)
@@ -1210,17 +1208,19 @@ def _normalize_project_options(parser, args) -> None:
 def _normalize_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> argparse.Namespace:
-    """Map legacy flat flags → subcommands and fill missing defaults."""
+    """Resolve the run shortcut and location-dependent default; fill defaults."""
     if args.command is None:
-        if getattr(args, "board", False):
-            args.command = "board"
-        elif getattr(args, "cheat", False):
-            args.command = "cheat"
-        elif getattr(args, "doctor", False):
-            args.command = "doctor"
-        elif getattr(args, "slug", ""):
+        if getattr(args, "slug", ""):
             args.command = "run"
             args.ticket = args.slug
+        elif not runtime_context.inside_session_runtime():
+            parser.print_help()
+            print(
+                "\nGetting started: run `booley bootstrap`, then `booley init` in your RTL "
+                "repo, and open the Project in its devcontainer. "
+                "See `booley --help` and docs/user/SETUP.md."
+            )
+            parser.exit(0)
         else:
             args.command = "chat"
             args.default_chat = True
@@ -2849,16 +2849,8 @@ _HOST_ONLY_COMMANDS = frozenset(
 
 
 def _effective_command(args: argparse.Namespace) -> str | None:
-    """The subcommand being run, resolving hidden legacy flat flags."""
-    if args.command:
-        return str(args.command)
-    if getattr(args, "board", False):
-        return "board"
-    if getattr(args, "doctor", False):
-        return "doctor"
-    if getattr(args, "cheat", False):
-        return "cheat"
-    return "chat"
+    """Return the command supplied by CLI normalization, if any."""
+    return str(args.command) if args.command else None
 
 
 def _enforce_runtime_location(command: str | None) -> None:
@@ -2990,7 +2982,6 @@ def _dispatch_main() -> int:
     args = _parse_cli()
     command = _effective_command(args)
 
-    # Bare host invocation belongs to #1242; retain its existing venue refusal.
     default_chat = getattr(args, "default_chat", False)
     if default_chat:
         _enforce_runtime_location(command)

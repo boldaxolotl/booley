@@ -3,9 +3,12 @@
 import argparse
 
 from booley.core.boundary import parse_positive_int_arg
+from booley.flows.cli_help import HelpGroup
 
 
 class BuiltinArguments:
+    help_groups: tuple[HelpGroup, ...] = ()
+
     @staticmethod
     def add_args(parser: argparse.ArgumentParser) -> None:
         """Concrete adapters add their own options."""

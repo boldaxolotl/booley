@@ -6,6 +6,7 @@ import argparse
 import logging
 
 from booley.flows.cli_arguments import BuiltinArguments
+from booley.flows.cli_help import BASELINE_HELP, EXPERT_GUIDANCE, PPA_HELP, HelpGroup, HelpOption
 from booley.flows.synth.backends.configure import FRONTEND_CHOICES
 from booley.flows.synth.ppa_config import add_ppa_arguments
 
@@ -13,6 +14,89 @@ logger = logging.getLogger(__name__)
 
 
 class SynthArguments(BuiltinArguments):
+    help_groups = (
+        HelpGroup("Common", (BASELINE_HELP,)),
+        HelpGroup(
+            "Synthesis options",
+            (
+                HelpOption(
+                    "flatten",
+                    "When omitted, use Target flow_options.flatten and backend defaults.",
+                    "Enable or disable hierarchy flattening before tech-mapping; overrides the selected Target",
+                    ("--flatten", "--no-flatten"),
+                ),
+                HelpOption(
+                    "frontend", "When omitted, use Target flow_options.frontend, else sv2v."
+                ),
+                PPA_HELP,
+            ),
+        ),
+        HelpGroup(
+            "Expert: ABC",
+            (
+                HelpOption(
+                    "abc_recipe",
+                    "When omitted, use Target flow_options / selected profile/backend defaults. Cannot combine with --abc-script.",
+                ),
+                HelpOption(
+                    "abc_script",
+                    "When omitted, use Target flow_options / selected profile/backend defaults. Cannot combine with --abc-recipe.",
+                ),
+                HelpOption(
+                    "generic_abc_before_mapping",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                    "Enable or disable generic ABC before technology mapping; overrides configured behavior",
+                    ("--generic-abc-before-mapping", "--no-generic-abc-before-mapping"),
+                ),
+                HelpOption(
+                    "abc_delay_ps",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                ),
+            ),
+            EXPERT_GUIDANCE,
+        ),
+        HelpGroup(
+            "Expert: OpenROAD",
+            (
+                HelpOption(
+                    "utilization_pct",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                ),
+                HelpOption(
+                    "placement_density",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                ),
+                HelpOption(
+                    "repair_setup",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                    "Enable or disable setup timing repair; overrides configured behavior",
+                    ("--repair-setup", "--no-repair-setup"),
+                ),
+                HelpOption(
+                    "repair_hold",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                    "Enable or disable hold timing repair; overrides configured behavior",
+                    ("--repair-hold", "--no-repair-hold"),
+                ),
+                HelpOption(
+                    "gate_cloning",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                    "Enable or disable gate cloning; overrides configured behavior",
+                    ("--gate-cloning", "--no-gate-cloning"),
+                ),
+                HelpOption(
+                    "setup_margin_ns",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                ),
+                HelpOption(
+                    "repair_tns_percent",
+                    "When omitted, use Target flow_options / selected profile/backend defaults.",
+                ),
+            ),
+            EXPERT_GUIDANCE,
+        ),
+    )
+
     @staticmethod
     def add_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

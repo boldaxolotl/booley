@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.cli_arguments import BuiltinArguments
+from booley.flows.cli_help import HelpGroup, HelpOption
 
 from .mode import SimulationMode, parse_simulation_mode
 
@@ -15,6 +16,49 @@ logger = logging.getLogger(__name__)
 
 
 class SimArguments(BuiltinArguments):
+    help_groups = (
+        HelpGroup(
+            "Output",
+            (
+                HelpOption("verbose", "Default: off."),
+                HelpOption("result_verbosity", "Default: compact."),
+            ),
+        ),
+        HelpGroup(
+            "Simulation options",
+            (
+                HelpOption(
+                    "coverage",
+                    "Default: off for new Simulation Campaigns; resume restores the manifest's coverage policy and rejects this flag.",
+                ),
+                HelpOption(
+                    "no_waivers",
+                    "When omitted, approved waivers apply on new coverage-collecting Simulation Campaigns; resume restores the manifest's raw-coverage/waiver policy and rejects this flag.",
+                ),
+                HelpOption(
+                    "mode",
+                    "When omitted, use simulate for new Simulation Campaigns; on resume omission is required because the manifest owns the workload.",
+                ),
+                HelpOption("_legacy_elab_only", ""),
+                HelpOption("_legacy_standalone", ""),
+                HelpOption(
+                    "test",
+                    "When omitted, use the configured suite and skip policy; on resume the manifest owns test selection. Cannot combine with --tests-file or --resume-from.",
+                ),
+                HelpOption(
+                    "tests_file",
+                    "When omitted, use --test or the configured suite and skip policy. Cannot combine with --test or --resume-from.",
+                ),
+                HelpOption("resume_from", "When omitted, start a new Simulation Campaign."),
+                HelpOption(
+                    "trace",
+                    "Default: off for new Simulation Campaigns; resume restores the manifest's trace policy and rejects this flag.",
+                ),
+                HelpOption("no_kill", "When omitted, zombie process cleanup is enabled."),
+            ),
+        ),
+    )
+
     @staticmethod
     def add_args(parser: Any) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its

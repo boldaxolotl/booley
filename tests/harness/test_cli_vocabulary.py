@@ -194,7 +194,8 @@ def test_detached_endpoint_inventory():
         ["upgrade", "status", "-C", "../b"],
     ],
 )
-def test_project_positions(projects, argv):
+def test_project_positions(projects, argv, monkeypatch):
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
     args = command(argv)
     assert cli._resolve_cli_selection(args) == projects[1]
 
@@ -560,3 +561,24 @@ def test_human_flow_progress_flags_preserve_project_and_duration_vocabulary(
     assert not any(key.startswith(("_cli_", "_console")) for key in vars(request))
     assert flow_schema(flow) == before
     assert capsys.readouterr().err == ""
+
+
+def test_canonical_synth_help_uses_initialized_project(
+    projects: list[Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "synth", "--help"])
+    monkeypatch.setattr(cli.runtime_context, "container_only_error", lambda *_args: None)
+    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
+    monkeypatch.setattr(
+        AsicSynthesizeFlow, "_run", lambda *_args: pytest.fail("help must not execute EDA")
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    titles = ["Common:", "Output:", "Synthesis options:", "Expert: ABC:", "Expert: OpenROAD:"]
+    positions = [output.index(title) for title in titles]
+    assert positions == sorted(positions)
+    assert list(projects[0].joinpath(".booley_project").iterdir()) == []
