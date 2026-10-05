@@ -35,6 +35,12 @@ PINNED_RUNNERS = {
     "pytest-cov": "7.1.0",
     "ruff": "0.16.10",
 }
+# ``pip --version`` takes well under a second warm, but a cold cache or an
+# antivirus scan of a Windows launcher can take far longer. A false "broken"
+# verdict makes the bootstrap rebuild a healthy environment under its users,
+# so this matches the bootstrap's probe budget rather than the 10 s used for
+# read-only observations elsewhere in this module.
+LAUNCHER_PROBE_TIMEOUT_SECONDS = 60
 _BRANCH_RE = re.compile(r"^codex/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _STATUS_ORDER = {"ready": 0, "degraded": 1, "escalation-required": 2, "blocked": 3}
 
@@ -598,6 +604,41 @@ def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
+def console_script_problem(
+    venv: Path, timeout: float = LAUNCHER_PROBE_TIMEOUT_SECONDS
+) -> str | None:
+    """Return why the environment's console-script launchers cannot start, if they cannot.
+
+    pip bakes the interpreter's absolute path into each launcher (a POSIX
+    shebang or a Windows ``.exe`` stub), so an environment moved after
+    installation keeps a working ``python`` while ``fusesoc`` and friends exit
+    127. Running ``pip``'s launcher proves that path on every platform.
+    """
+    launcher = venv_python(venv).with_name("pip.exe" if sys.platform == "win32" else "pip")
+    try:
+        result = subprocess.run(
+            (str(launcher), "--version"),
+            cwd=venv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return f"launcher {launcher} did not finish within {timeout:g} s"
+    except OSError as error:
+        return f"launcher {launcher} could not start: {error}"
+    if result.returncode != 0:
+        return f"launcher {launcher} exited {result.returncode}: {_tail(result.stderr)}"
+    return None
+
+
+def _tail(text: str | None, lines: int = 3, limit: int = 400) -> str:
+    """Return the last few non-blank lines of *text*, bounded for one-line reports."""
+    kept = [line.strip() for line in (text or "").splitlines() if line.strip()][-lines:]
+    return " | ".join(kept)[-limit:] or "(no stderr)"
+
+
 def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bool, str]:
     receipt_path = root / "receipt.json"
     try:
@@ -613,13 +654,22 @@ def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bo
         return False, "shared tools environment receipt or interpreter is stale"
     if not _runner_versions(receipt.get("installed", {})):
         return False, "shared tools environment has mismatched Ruff/Pytest runner pins"
-    actual = _installed_versions(python)
-    if actual is None or actual != receipt.get("installed", {}):
-        return False, "shared tools environment distribution set differs from its receipt"
-    pip_check = _run_child(python, ("-m", "pip", "check"), root)
-    if not _successful(pip_check):
-        return False, "shared tools environment failed pip check"
+    problem = _runtime_problem(root, python, receipt.get("installed", {}))
+    if problem is not None:
+        return False, problem
     return True, "shared tools environment matches the repository fingerprint"
+
+
+def _runtime_problem(root: Path, python: Path, recorded: Any) -> str | None:
+    """Probe the live environment against its receipt; return the first defect."""
+    actual = _installed_versions(python)
+    if actual is None or actual != recorded:
+        return "shared tools environment distribution set differs from its receipt"
+    if not _successful(_run_child(python, ("-m", "pip", "check"), root)):
+        return "shared tools environment failed pip check"
+    if console_script_problem(root) is not None:
+        return "shared tools environment console scripts cannot start"
+    return None
 
 
 def _runner_versions(installed: Any) -> bool:
