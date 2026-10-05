@@ -1026,7 +1026,7 @@ is never a Project, does not read this policy, and must not own
 
 ```toml
 [stealth]
-enabled = false              # setup default; set true to opt in
+enabled = false              # open setup; hidden answer sets true
 # ignore_native_cores = true # use only stealth-authored cores during Booley resolution
 # banned_words = ["claude", "anthropic", "codex", "booley", ...]  # override
 #                            # the built-in list; [] disables this tier
@@ -1040,10 +1040,12 @@ enabled = false              # setup default; set true to opt in
 #                            # at push time; unset or [] = unrestricted
 ```
 
-Setup asks whether you want to enable stealth mode and keeps it off unless you
-explicitly say yes. It persists that choice as `[stealth] enabled = false` so
-commit messages stay verbatim. For compatibility with projects configured
-before this setup policy, a missing `enabled` key still means **on**; write the
+Setup asks whether to keep Booley out of your git history. Yes keeps
+`.booley_project/` hidden and writes `[stealth] enabled = true`, enabling the
+commit-message scrub and hidden-core projection when Booley authors cores.
+No uses open config and native cores with `enabled = false`. Unattended setup
+leaves stealth off unless hidden authored cores require it; existing hand-set
+values are preserved. A missing `enabled` key still means **on**; write the
 key rather than omitting it when you want stealth disabled.
 
 Stealth also makes `.booley_project/` a self-contained home for authored
