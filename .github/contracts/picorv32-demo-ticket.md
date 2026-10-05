@@ -9,7 +9,7 @@ scope:
   - testbench_wb.v
   - Makefile
   - tests/zbb.S [new]
-spec: /opt/riscv-docs/riscv-isa-manual.html
+spec: /opt/riscv-docs/riscv-isa-unprivileged.html
 on_success: [triage_report, review, merge, cleanup]
 priority: medium
 CRITERIA_MANDATORY:

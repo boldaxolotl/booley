@@ -661,3 +661,15 @@ def test_images_install_same_verible_source_under_both_flow_module_names(filenam
 def test_image_sanity_imports_both_verible_flow_modules(filename):
     text = (SCRIPT.parents[2] / "src/booley/data/docker" / filename).read_text(encoding="utf-8")
     assert "edalize.tools.verible, edalize.tools.veriblelint" in text
+
+
+def test_riscv_runtime_contract_requires_both_offline_isa_volumes() -> None:
+    from booley.audit.eda_environment import RISCV_DOC_FILES
+
+    riscv = image_contract.load_contract(CONTRACT, "riscv")
+    docs = {path for path in riscv["required_paths"] if path.startswith("/opt/riscv-docs/")}
+    assert docs == {f"/opt/riscv-docs/{name}" for name in RISCV_DOC_FILES}
+    assert len(docs) == 7
+    for volume in ("unprivileged", "privileged"):
+        for extension in ("pdf", "html"):
+            assert f"/opt/riscv-docs/riscv-isa-{volume}.{extension}" in docs
