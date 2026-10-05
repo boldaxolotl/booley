@@ -271,6 +271,30 @@ def _communicate_local_process(
         )
 
 
+def _observe_local_process(proc, observer, scope, monitor, oom_before, started, timeout):
+    from booley.flows.observed_process import communicate_observed
+
+    result = SubprocessResult()
+
+    def capture_finished() -> None:
+        result.duration_s = time.monotonic() - started
+
+    try:
+        with proc:
+            stdout, stderr, timed_out = communicate_observed(
+                proc, observer, timeout=timeout, on_capture_complete=capture_finished
+            )
+        result.returncode = -1 if timed_out else proc.returncode
+        result.stdout = stdout
+        result.stderr = stderr
+        result.timed_out = timed_out
+    finally:
+        peak, oom = _process_resource_evidence(scope, proc, monitor, oom_before)
+    result.peak_rss_mb = peak
+    result.oom_kill_delta = oom
+    return result
+
+
 class FlowMechanics:
     """Base for deterministic Booley Flows that run subprocesses.
 
@@ -352,13 +376,28 @@ class FlowMechanics:
             pytest_scope=f"flow:{getattr(self, 'name', type(self).__name__)}:{cwd.resolve()}",
         )
         cmd, scope = _prepare_supervised_command(cmd, env)
+        from booley.flows.terminal_progress import current_progress
+
+        observer = current_progress()
+        if observer is not None:
+            observer.begin_command()
+            if cmd[:3] == ["python3", "-m", "booley.flows.sim"] or (
+                len(cmd) > 2 and cmd[1] == "-m" and cmd[2].startswith("booley.flows.sim.")
+            ):
+                env["PYTHONUNBUFFERED"] = "1"
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()
         proc = _start_local_process(cmd, cwd, env, scope)
         if proc is None:
+            if observer is not None:
+                observer.end_command()
             return SubprocessResult(returncode=-1)
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
+        if observer is not None:
+            return _observe_local_process(
+                proc, observer, scope, memory_monitor, oom_before, start, timeout
+            )
         return _communicate_local_process(
             cmd, proc, scope, memory_monitor, oom_before, start, timeout
         )
@@ -394,6 +433,14 @@ class FlowMechanics:
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             begin_run_log(log_dir, flow=self.name, target=target)
+            from booley.flows.terminal_progress import current_progress
+
+            observer = current_progress()
+            if observer is not None:
+                observer.log_path_known(
+                    log_dir / "run.log",
+                    temporary=getattr(self, "_execution_role", "candidate") == "baseline",
+                )
         except OSError:
             logger.debug("could not open a fresh run.log in %s", log_dir, exc_info=True)
 

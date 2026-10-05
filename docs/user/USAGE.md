@@ -36,6 +36,8 @@ Booley offers two kinds of capability:
 - **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
   AI agents that each do one focused job.
 
+For direct CLI reproduction, see [live Flow progress and logs](FLOW_REFERENCE.md#live-progress-and-logs), including quiet and verbose output.
+
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
 and keeps the agent away from the rest of your computer.
 

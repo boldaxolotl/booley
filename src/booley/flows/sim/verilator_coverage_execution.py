@@ -61,6 +61,7 @@ from booley.flows.sim.execution.engine import (
 )
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     core_target_coverage_errors,
@@ -200,6 +201,7 @@ class VerilatorCoverageExecution:
         session.discard_candidate(candidate.work_root)
         self._prepared = retained
         self._artifact_paths = session.retained_artifacts(retained)
+        announce_unit("coverage: verified build reuse", target=self._handle.selector)
         reason = f"verified Simulation build reuse ({session.cache_decision})"
         return retained, SimulationBuildResult(True, reason, identity)
 
@@ -220,6 +222,7 @@ class VerilatorCoverageExecution:
     def _prepare_build(
         self, request: SimulationBuildRequest, *, build_root: Path | None = None
     ) -> PreparedSimulationBuild | str:
+        announce_unit("coverage: configure", target=self._handle.selector)
         variant = request.variant.name
         if build_root is None:
             build_root = work_root_for(
@@ -269,6 +272,7 @@ class VerilatorCoverageExecution:
         script = _in_directory_script(self._handle.project_root, script)
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         timeout_s = max(1, timeout_ms // 1000)
+        announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
         outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
         if outcome.failure_kind == "infrastructure":
@@ -429,6 +433,7 @@ class VerilatorCoverageExecution:
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         """Run one collector utility in its requested artifact directory."""
+        announce_unit(f"coverage: {request.argv[0]}", target=self._handle.selector)
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"
         result = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)

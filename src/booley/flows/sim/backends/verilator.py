@@ -364,7 +364,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     try:
         assert stdout is not None
         for line in stdout:
-            print(line, end="")
+            print(line, end="", flush=True)
             lines.append(line)
             progress.observe(lines)
             # SETUP-23: a missing $readmemh init file warns once then spins

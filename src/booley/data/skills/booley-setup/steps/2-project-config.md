@@ -760,11 +760,11 @@ Before writing:
   audits). For a changed Target, use the focused `fusesoc run --setup` command
   above during iteration; Step 4 owns the final deep gate.
 - Where practical, run each Booley Flow in the sandbox against a resolved Target
-  (`booley flow <name> …`) and prove the fail path with a deliberate
+  (`booley flow <name> --quiet …`) and prove the fail path with a deliberate
   mutation — a passing-only check is not evidence the Flow can detect a
   regression. Step 4 (Doctor) formalizes this as the convention-discovered
   per-Flow fail-path self-test.
-  **These runs are minutes long and announce nothing when they end** — start
+  **These quiet runs can take minutes** — start
   them detached and poll them per SKILL.md → "Waiting on long runs". Never park
   "standing by" mid-run. This is also where the plan's smoke pin gets its real
   numbers: time every candidate Target, re-pin the smoke to the measured

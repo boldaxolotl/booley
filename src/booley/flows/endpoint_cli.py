@@ -148,6 +148,12 @@ def main(endpoint, argv: list[str] | None = None) -> int:
 
 def cli(endpoint) -> None:
     """Entry point for ``if __name__ == '__main__'`` usage."""
+    from booley.flows.base import BuiltinFlow
+
+    if isinstance(endpoint, BuiltinFlow):
+        # Built-ins own their invocation-scoped presentation. Installing INFO
+        # console logging here leaks EDA text around quiet and the live region.
+        sys.exit(endpoint.main())
     handler = logging.StreamHandler()
     handler.setFormatter(UtcLogFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
     logging.basicConfig(
