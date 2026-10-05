@@ -181,3 +181,39 @@ class TestHostOnlyError:
         assert msg is not None
         assert "`booley init`" in msg
         assert "HOST terminal" in msg  # the fix: run it outside the container
+
+
+def test_host_refusal_points_to_location_source(host):
+    message = runtime_context.container_only_error("booley run")
+    assert "`booley --help`" in message
+    assert "Only `booley init`" not in message
+
+
+def test_sandbox_refusal_points_to_location_source(container_env):
+    message = runtime_context.host_only_error("booley init")
+    assert "`booley --help`" in message
+    assert "Everything else" not in message
+
+
+@pytest.mark.parametrize(
+    "guard,inside",
+    [(runtime_context.container_only_error, False), (runtime_context.host_only_error, True)],
+)
+def test_venue_refusal_has_no_drifting_command_list(guard, inside, monkeypatch):
+    import re
+
+    from booley.harness.booley import COMMAND_LOCATIONS, CommandLocation
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
+    message = guard("booley run")
+    instructions = "\n".join(message.splitlines()[1:])
+    named_commands = set(re.findall(r"`booley ([a-z]+)`", instructions))
+    if named_commands:
+        expected = {
+            command
+            for command, location in COMMAND_LOCATIONS.items()
+            if location is not CommandLocation.SESSION_RUNTIME
+        }
+        assert named_commands == expected
+    else:
+        assert "`booley --help`" in instructions
