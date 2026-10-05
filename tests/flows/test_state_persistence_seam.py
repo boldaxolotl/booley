@@ -32,6 +32,10 @@ class RecordingPersistence(AtomicStateFile):
 
     def __init__(self) -> None:
         self.writers: list[str] = []
+        self.loaded_states: list[DevelopmentState] = []
+
+    def loaded(self, state: DevelopmentState) -> None:
+        self.loaded_states.append(state)
 
     def save(self, state: DevelopmentState) -> None:
         # Frame 0 is this method, 1 is DevelopmentState.save, 2 is the writer.
@@ -81,11 +85,16 @@ def test_read_state_attaches_strategy_with_and_without_a_state_file(tmp_path: Pa
     environment = {k: v for k, v in os.environ.items() if not k.startswith("BOOLEY_")}
     with mock.patch.dict(os.environ, environment, clear=True):
         endpoint.parse_args([])
-    assert endpoint.read_state()._persistence is persistence
+    in_memory = endpoint.read_state()
+    assert in_memory._persistence is persistence
+    assert in_memory._file_path is None
+    assert persistence.loaded_states == [in_memory]
 
     with mock.patch.dict(os.environ, _env_with_state(tmp_path / "state.json")):
         endpoint.parse_args([])
-    assert endpoint.read_state()._persistence is persistence
+    loaded = endpoint.read_state()
+    assert loaded._persistence is persistence
+    assert persistence.loaded_states == [in_memory, loaded]
 
 
 def test_acceptance_and_run_state_saves_reach_the_strategy(tmp_path: Path) -> None:

@@ -371,11 +371,23 @@ class StatePersistence(Protocol):
     touching any of the writers that call ``save()``.
     """
 
+    def loaded(self, state: DevelopmentState) -> None:
+        """Observe *state* once, as created, before any caller can mutate it.
+
+        Called by ``DevelopmentState.load`` (with ``_file_path`` already set)
+        and ``DevelopmentState.in_memory``, so a strategy can capture the
+        state it later saves against.
+        """
+        ...
+
     def save(self, state: DevelopmentState) -> None: ...
 
 
 class AtomicStateFile:
     """Default strategy: stamp ``last_updated`` and atomically replace the state file."""
+
+    def loaded(self, state: DevelopmentState) -> None:
+        """Nothing to capture: every save writes the whole state."""
 
     def save(self, state: DevelopmentState) -> None:
         """Atomically write state to disk. No-op when no file path (human mode)."""
@@ -429,7 +441,7 @@ class DevelopmentState:
 
     _file_path: Path | None = field(default=None, repr=False)
     # How save() persists this state; None means the default AtomicStateFile.
-    # Never serialized, compared, or deep-copied (see __deepcopy__).
+    # Never serialized or compared; a deepcopy shares it (see __deepcopy__).
     _persistence: StatePersistence | None = field(default=None, repr=False, compare=False)
 
     # --- Persistence ---
@@ -439,12 +451,26 @@ class DevelopmentState:
         """Load from disk or return empty state.
 
         The returned state saves through *persistence*, or through the default
-        atomic file write when it is ``None``.
+        atomic file write when it is ``None``. The strategy sees the state
+        through ``loaded`` before it is returned.
         """
         st = cls._read(path)
         st._file_path = path
-        st._persistence = persistence
-        return st
+        return st._attach(persistence)
+
+    @classmethod
+    def in_memory(cls, persistence: StatePersistence | None = None) -> DevelopmentState:
+        """Empty state with no file, saving through *persistence* (default: no-op)."""
+        return cls()._attach(persistence)
+
+    def _attach(self, persistence: StatePersistence | None) -> DevelopmentState:
+        """Hold *persistence* and let it observe this state as created."""
+        self._persistence = persistence
+        self._strategy().loaded(self)
+        return self
+
+    def _strategy(self) -> StatePersistence:
+        return _DEFAULT_PERSISTENCE if self._persistence is None else self._persistence
 
     @classmethod
     def _read(cls, path: Path) -> DevelopmentState:
@@ -478,13 +504,14 @@ class DevelopmentState:
 
     def save(self) -> None:
         """Persist through this state's strategy (default: atomic file write)."""
-        (self._persistence or _DEFAULT_PERSISTENCE).save(self)
+        self._strategy().save(self)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> DevelopmentState:
-        """Deep-copy every field except the persistence strategy, which is shared.
+        """Deep-copy every instance attribute in ``vars(self)``, sharing the strategy.
 
         Shadow copies (coverage publication, the acceptance ledger) mutate a
-        copy and save it, so the copy must save the way the original would.
+        copy and save it, so the copy must save through the same strategy
+        object as the original.
         """
         if self._persistence is not None:
             memo[id(self._persistence)] = self._persistence

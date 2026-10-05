@@ -1,9 +1,10 @@
-"""The one place that decides which execution path an MCP endpoint runs on.
+"""Where the MCP server and ``McpTool`` choose the Flow runner and the recorder.
 
 Before this module the server chose the Ticket Flow runner from
 ``BOOLEY_TICKET_FILE`` and ``McpTool`` built its Ticket recorder on its own.
-:func:`select_flow_execution` now makes both choices, so a later execution
-path is added here rather than at each call site.
+:func:`select_flow_execution` now makes both of those choices, so a later
+execution path is added here rather than at each of those two call sites.
+Other modules still read ``BOOLEY_TICKET_FILE`` for their own purposes.
 
 Today the choices equal the code they replaced: Flows launch through the
 Ticket Board runner only when a Ticket file is configured, and custom MCP

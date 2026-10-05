@@ -157,7 +157,7 @@ class EndpointState(ABC):
         persistence = state_persistence_for(self._acceptance_recorder)
         if sf is None:
             # No file path => the default strategy's save() is a no-op.
-            self._state = DevelopmentState(_persistence=persistence)
+            self._state = DevelopmentState.in_memory(persistence)
         else:
             self._state = DevelopmentState.load(sf, persistence)
         return self._state

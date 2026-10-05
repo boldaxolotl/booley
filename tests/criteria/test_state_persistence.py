@@ -57,13 +57,37 @@ GOLDEN_STATE_FILE = """{
 
 
 class RecordingPersistence:
-    """Strategy double that records every state it is asked to save."""
+    """Strategy double that records every state it observes and is asked to save."""
 
     def __init__(self) -> None:
+        self.loaded_states: list[DevelopmentState] = []
+        # (file path, serialized state) as the hook saw them, before any mutation.
+        self.loaded_views: list[tuple[Path | None, dict]] = []
         self.saved: list[DevelopmentState] = []
+
+    def loaded(self, state: DevelopmentState) -> None:
+        self.loaded_states.append(state)
+        self.loaded_views.append((state._file_path, copy.deepcopy(state._to_dict())))
 
     def save(self, state: DevelopmentState) -> None:
         self.saved.append(state)
+
+
+class FalsyPersistence(RecordingPersistence):
+    """A valid strategy whose truth value is False must still be used."""
+
+    def __len__(self) -> int:
+        return 0
+
+
+class BaselinePersistence:
+    """Strategy that stashes the as-loaded state on the instance, as a merge would."""
+
+    def loaded(self, state: DevelopmentState) -> None:
+        state.persistence_baseline = copy.deepcopy(state._to_dict())  # type: ignore[attr-defined]
+
+    def save(self, state: DevelopmentState) -> None:
+        return
 
 
 @pytest.fixture(autouse=True)
@@ -134,6 +158,7 @@ class TestInjectedStrategy:
         state.save()
 
         assert persistence.saved == [state]
+        assert persistence.loaded_states == [state]
         assert state._file_path == path
         # The strategy owns the write: the default file write did not run.
         assert (path.read_bytes() if path.exists() else None) == before
@@ -143,13 +168,36 @@ class TestInjectedStrategy:
 
         assert state._persistence is None
 
-    def test_constructed_state_saves_through_its_strategy(self) -> None:
+    def test_in_memory_state_is_observed_and_saves_through_its_strategy(self) -> None:
         persistence = RecordingPersistence()
-        state = DevelopmentState(_persistence=persistence)
+        state = DevelopmentState.in_memory(persistence)
 
         state.save()
 
+        assert persistence.loaded_states == [state]
+        assert persistence.loaded_views[0][0] is None
         assert persistence.saved == [state]
+
+    def test_in_memory_without_strategy_saves_nothing(self, tmp_path: Path) -> None:
+        state = DevelopmentState.in_memory()
+
+        state.save()
+
+        assert state._persistence is None
+        assert state.last_updated == ""
+        assert list(tmp_path.iterdir()) == []
+
+    def test_falsy_strategy_is_used_not_replaced_by_default(self, tmp_path: Path) -> None:
+        path = tmp_path / "booley_state.json"
+        persistence = FalsyPersistence()
+        assert not persistence
+
+        state = _fixed_state(path, persistence)
+        state.save()
+
+        assert persistence.loaded_states == [state]
+        assert persistence.saved == [state]
+        assert not path.exists()
 
     def test_deepcopy_saves_through_the_same_strategy_object(self, tmp_path: Path) -> None:
         persistence = RecordingPersistence()
@@ -184,3 +232,58 @@ class TestInjectedStrategy:
         assert "persistence" not in json.dumps(with_strategy._to_dict())
         assert with_strategy == without_strategy
         assert repr(with_strategy) == repr(without_strategy)
+
+
+class TestLoadedHook:
+    @pytest.mark.parametrize("existing", ["missing", "valid", "corrupted"])
+    def test_load_calls_hook_once_with_the_parsed_unmutated_state(
+        self, tmp_path: Path, existing: str
+    ) -> None:
+        path = tmp_path / "booley_state.json"
+        if existing == "valid":
+            path.write_text(GOLDEN_STATE_FILE, encoding="utf-8")
+        elif existing == "corrupted":
+            path.write_text("{not json", encoding="utf-8")
+        persistence = RecordingPersistence()
+
+        state = DevelopmentState.load(path, persistence)
+        as_loaded = copy.deepcopy(state._to_dict())
+        state.slug = "mutated"
+        state.save()
+
+        assert persistence.loaded_states == [state]
+        hook_path, hook_view = persistence.loaded_views[0]
+        assert hook_path == path
+        assert hook_view == as_loaded
+        assert hook_view["slug"] == ("golden" if existing == "valid" else "")
+
+    def test_baseline_stashed_on_the_state_survives_deepcopy_independently(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "booley_state.json"
+        path.write_text(GOLDEN_STATE_FILE, encoding="utf-8")
+        persistence = BaselinePersistence()
+        state = DevelopmentState.load(path, persistence)
+
+        shadow = copy.deepcopy(state)
+
+        baseline = state.persistence_baseline  # type: ignore[attr-defined]
+        shadow_baseline = shadow.persistence_baseline  # type: ignore[attr-defined]
+        assert shadow_baseline == baseline
+        assert shadow_baseline is not baseline
+        assert shadow_baseline["criteria"] is not baseline["criteria"]
+        assert shadow._persistence is persistence
+        # The stash is not state data: not serialized, compared, or shown.
+        assert "persistence_baseline" not in state._to_dict()
+        assert state == DevelopmentState.load(path)
+        assert "persistence_baseline" not in repr(state)
+
+    def test_default_strategy_hook_leaves_golden_bytes_unchanged(self, tmp_path: Path) -> None:
+        path = tmp_path / "booley_state.json"
+        path.write_text(GOLDEN_STATE_FILE, encoding="utf-8")
+        state = DevelopmentState.load(path)
+
+        AtomicStateFile().loaded(state)
+        state.save()
+
+        assert path.read_text(encoding="utf-8") == GOLDEN_STATE_FILE
