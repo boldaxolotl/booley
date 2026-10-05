@@ -2496,10 +2496,10 @@ def _requested_poll_wait_seconds(arguments: dict[str, Any]) -> float:
 
 
 def _locate_job(run_id: str) -> jobrec.JobRecord | None:
-    """Return the durable record for *run_id*, or None when no root holds it.
+    """Return *run_id*'s durable record from the container-wide jobs root, or None.
 
-    Every by-run-id job read goes through here. Records live under the
-    container-wide jobs root (``container_jobs_root``), read at call time.
+    Every by-run-id job read outside the manager's own runs goes through here.
+    The root (``container_jobs_root``) is read at call time.
     """
     return jobrec.read_record(run_id, root=container_jobs_root())
 
@@ -2715,6 +2715,12 @@ class _JobManager:
         if run_id in self._job_roots:
             return self._job_roots[run_id]
         return container_jobs_root()
+
+    def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
+        """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
+        if run_id in self._job_roots:
+            return jobrec.read_record(run_id, root=self._job_roots[run_id])
+        return _locate_job(run_id)
 
     def _next_run_id(self, endpoint: str) -> str:
         self._counter += 1
@@ -2977,7 +2983,7 @@ class _JobManager:
         process tree before recording the outcome. Adopted jobs retain RUNNING
         state until termination and fresh-report reconciliation complete.
         """
-        rec = _locate_job(run_id)
+        rec = self._read_run(run_id)
         if rec is None:
             return None
 
@@ -2990,7 +2996,7 @@ class _JobManager:
             await self._cancel_tracked_task(run_id, task)
         else:
             await self._cancel_adopted_job(rec)
-        final = _locate_job(run_id)
+        final = self._read_run(run_id)
         if final is None or final.status != jobrec.STATUS_CANCELLED:
             return "finished"
         return "queued" if was_queued else "running"
@@ -3015,7 +3021,7 @@ class _JobManager:
         run_id: str,
     ) -> tuple[int, str, str, dict[str, Any] | None, bool]:
         """Resolve one terminal Job into authoritative rendering inputs."""
-        rec = _locate_job(run_id)
+        rec = self._read_run(run_id)
         report, report_fresh = _job_report(rec)
         finished = self._results.get(run_id)
         if finished is not None:
@@ -3658,7 +3664,7 @@ def _implementation_budget_plan(
 
     timeout_ms = resolve_timeout_ms(
         name,
-        context.work_dir,
+        context.explicit_work_dir,
         requested_timeout_ms(arguments),
     )
     criterion_prefix = "synthesis_ok_" if name == "synth" else "fpga_impl_ok_"
@@ -3685,7 +3691,7 @@ def _lint_budget_plan(
 
     timeout_ms = resolve_timeout_ms(
         "lint",
-        context.work_dir,
+        context.explicit_work_dir,
         requested_timeout_ms(arguments),
     )
     work_units = _target_count(arguments)

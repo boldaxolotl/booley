@@ -59,7 +59,8 @@ functions. D14 has no waiver or composition exception.
 
 - `runtime.job_records` stores records at an explicit jobs root. MCP composition
   resolves `ticket_board.paths.session_jobs_dir` after Interactive logging setup;
-  each job manager retains its root through asynchronous completion. Standalone
+  the job manager retains each run's root from submission through completion,
+  and runs it did not start use the container-wide root. Standalone
   readers resolve the same session location. Explicit `None` disables persistence.
 - `core.models.AgentArtifactPaths` carries resolved output paths. An optional
   per-call resolver receives the final labeled/retry transcript path; Booley

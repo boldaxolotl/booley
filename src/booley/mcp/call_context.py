@@ -21,8 +21,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-# The only ticket_board import in the MCP call-context seam; a later Step 0
-# change moves session_jobs_dir to a neutral runtime module.
+# The MCP server reaches session_jobs_dir only through this module; a later
+# Step 0 change moves it to a neutral runtime module.
 from booley.ticket_board.paths import session_jobs_dir
 
 
@@ -30,23 +30,39 @@ from booley.ticket_board.paths import session_jobs_dir
 class CallContext:
     """Facts one MCP tool call runs under, resolved when the call arrives.
 
-    ``jobs_root``, ``state_path``, ``logs_dir``, and ``runtime_dir`` are
-    ``None`` when the server environment leaves them unset, exactly as the
-    reads they replaced returned nothing. ``runtime_dir`` is the explicit
-    ``BOOLEY_RUNTIME_DIR`` value, not the logs-derived fallback.
+    ``explicit_work_dir`` is the call's ``work_dir`` argument, or ``None`` when
+    omitted; :attr:`work_dir` applies the cwd default only when read, so a call
+    that never needs its checkout never touches the cwd. ``jobs_root``,
+    ``state_path``, ``logs_dir``, and ``runtime_dir`` are ``None`` when the
+    server environment leaves them unset, exactly as the reads they replaced
+    returned nothing. ``runtime_dir`` is the explicit ``BOOLEY_RUNTIME_DIR``
+    value, not the logs-derived fallback.
     """
 
-    work_dir: Path
+    explicit_work_dir: Path | None
     jobs_root: Path | None
     state_path: Path | None
     logs_dir: Path | None
     runtime_dir: Path | None
     subprocess_env_overrides: Mapping[str, str]
 
+    @property
+    def work_dir(self) -> Path:
+        """Checkout the call targets: the explicit ``work_dir``, else the cwd now."""
+        if self.explicit_work_dir is not None:
+            return self.explicit_work_dir
+        return Path.cwd()
+
 
 def container_jobs_root() -> Path | None:
     """Container-wide job-record root configured in the server environment."""
     return session_jobs_dir()
+
+
+def _explicit_work_dir(arguments: Mapping[str, Any]) -> Path | None:
+    """The call's ``work_dir`` argument as a path, or ``None`` when omitted or empty."""
+    work_dir = arguments.get("work_dir")
+    return Path(str(work_dir)) if work_dir else None
 
 
 def resolve_work_dir(arguments: Mapping[str, Any]) -> Path:
@@ -55,8 +71,8 @@ def resolve_work_dir(arguments: Mapping[str, Any]) -> Path:
     Validation stays with the caller (``_validate_work_dir``); this only
     applies the default.
     """
-    work_dir = arguments.get("work_dir")
-    return Path(str(work_dir)) if work_dir else Path.cwd()
+    explicit = _explicit_work_dir(arguments)
+    return explicit if explicit is not None else Path.cwd()
 
 
 def _env_path(name: str) -> Path | None:
@@ -68,7 +84,7 @@ def _env_path(name: str) -> Path | None:
 def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
     """Resolve the facts one tool call with *arguments* runs under."""
     return CallContext(
-        work_dir=resolve_work_dir(arguments),
+        explicit_work_dir=_explicit_work_dir(arguments),
         jobs_root=container_jobs_root(),
         state_path=_env_path("BOOLEY_STATE_FILE"),
         logs_dir=_env_path("BOOLEY_LOGS_DIR"),
