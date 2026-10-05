@@ -40,6 +40,13 @@ def test_public_docs_route_feedback_through_the_skill(relative_path):
     text = (root / relative_path).read_text(encoding="utf-8")
     assert "/booley-feedback" in text
     assert "booley-bug-report" not in text
+    if relative_path == "src/booley/data/cheatsheet.md":
+        # The complete command inventory includes the CLI; reporting guidance uses the skill.
+        inventory_row = (
+            "| `booley feedback` | mixed | Record findings, friction, and impressions |"
+        )
+        assert text.count(inventory_row) == 1
+        text = text.replace(inventory_row, "")
     assert "booley feedback" not in text
 
 
