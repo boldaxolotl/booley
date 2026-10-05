@@ -20,9 +20,21 @@ import yaml
 REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
-def _test_workflow() -> dict:
-    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "test.yml"
+def _workflow(filename: str) -> dict:
+    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / filename
     return yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+
+def _test_workflow() -> dict:
+    return _workflow("test.yml")
+
+
+def _deep_tests_workflow() -> dict:
+    return _workflow("deep-tests.yml")
+
+
+def _named_step(job: dict, name: str) -> dict:
+    return next(step for step in job["steps"] if step.get("name") == name)
 
 
 def _suite_config(pytestconfig: pytest.Config):
@@ -673,28 +685,13 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
 
 def test_scheduled_mutation_campaign_treats_its_time_budget_as_success() -> None:
     """A bounded scheduled campaign reports incomplete mutants without failing."""
-    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "deep-tests.yml"
-    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-    steps = workflow["jobs"]["mutation"]["steps"]
-    run_campaign = next(
-        step["run"] for step in steps if step.get("name") == "Run bounded mutation campaign"
-    )
-    report_results = next(
-        step["run"] for step in steps if step.get("name") == "Record mutation results"
-    )
+    job = _deep_tests_workflow()["jobs"]["mutation"]
+    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
+    report_results = _named_step(job, "Record mutation results")["run"]
 
     assert "campaign_status" in run_campaign
     assert "!= 124" in run_campaign
     assert "non-killed mutants" not in report_results
-
-
-def _deep_tests_workflow() -> dict:
-    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "deep-tests.yml"
-    return yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-
-
-def _named_step(job: dict, name: str) -> dict:
-    return next(step for step in job["steps"] if step.get("name") == name)
 
 
 def test_scheduled_mutation_campaign_runs_mutmut_as_a_module() -> None:
@@ -767,7 +764,10 @@ def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
         )
 
     missing = [path for path in _tracked_repository_paths() if not covered(path)]
-    assert missing == []
+    assert missing == [], (
+        "mutmut would not copy these tracked paths into mutants/; add their "
+        "top-level entry to setup.cfg [mutmut] also_copy"
+    )
 
 
 def test_mutation_sandbox_copy_order_and_build_output_exclusion() -> None:
@@ -803,6 +803,8 @@ def test_bwave_differential_installs_the_simulators_it_must_not_skip() -> None:
 
     assert "iverilog" in install
     assert "verilator" in install
+    # The Verilator oracle compiles its model with g++ directly.
+    assert "g++" in install
     assert "--max-skips 0" in assertion
     assert names.index("Install differential oracle simulators") < names.index(
         "Run existing simulator oracle differential suite"

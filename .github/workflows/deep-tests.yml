@@ -107,11 +107,14 @@ jobs:
 
       # The differential suite generates its oracle VCDs with real simulators
       # and skips each case whose simulator is absent; the zero-skip assertion
-      # below rejects such a run, so both simulators must be on PATH.
+      # below rejects such a run, so both simulators must be on PATH. The
+      # Verilator oracle compiles and links its model with g++ directly, which
+      # `--no-install-recommends` does not pull in, so provision it explicitly
+      # rather than relying on the runner image happening to ship a compiler.
       - name: Install differential oracle simulators
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iverilog verilator
+          sudo apt-get install -y --no-install-recommends g++ iverilog verilator
 
       - name: Record fuzz toolchain
         shell: bash
@@ -122,6 +125,7 @@ jobs:
           cargo fuzz --version | tee -a fuzz-evidence/versions.txt
           iverilog -V 2>&1 | sed -n 1p | tee -a fuzz-evidence/versions.txt
           verilator --version | tee -a fuzz-evidence/versions.txt
+          g++ --version | sed -n 1p | tee -a fuzz-evidence/versions.txt
 
       - name: Build B-Wave oracle target
         run: cargo build --release --locked --manifest-path crates/bwave/Cargo.toml
