@@ -35,14 +35,18 @@ only, so the ASGI scope remains the only place the peer address is visible.
 The registry key is, in order:
 
 1. `codex:<_meta.threadId>` when the client sends a thread id;
-2. `pid:<pid>:<start ticks>` from the peer-port lookup when that PID is not
-   shared (Claude Code; one-off `session enter` commands);
-3. the call's resolved `work_dir` otherwise.
+2. `pid:<pid>:<start ticks>` from the peer-port lookup, for clients that
+   do not multiplex tabs through one process: Claude Code and one-off
+   `session enter` commands. Codex (`clientInfo.name` `codex-mcp-client`)
+   never gets a PID key, because its tabs share one daemon and a Codex
+   build without thread ids would collapse every tab into one row
+   silently;
+3. the call's resolved `work_dir` otherwise (including Codex without a
+   thread id).
 
-Rule 2 must not be applied to a PID that already owns another registry
-row with a different thread id, which is how the shared Codex daemon
-would surface if a Codex build ever stopped sending thread ids. The
-registry stays presentational (Dashboard rows and the shared-worktree
+A PID key whose PID already owns a row with a different thread id is
+treated as rule 3 as well, as a second line of defence. The registry
+stays presentational (Dashboard rows and the shared-worktree
 warning); no lifecycle rule reads it, so a wrong key degrades the display,
 never the Goal record. ADR 0068's "one MCP connection is one session"
 becomes "one agent client thread or process, falling back to the

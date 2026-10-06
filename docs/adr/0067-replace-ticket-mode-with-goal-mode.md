@@ -141,14 +141,18 @@ Recorded after the Phase 0 spikes
 
 - **Changing Goals, elicitation.** Both supported clients speak the
   2026-07-28 wire and declare form elicitation. The proposal tool returns
-  `input_required` with the decision/reason form; the retry's `accept`
-  with content is an elicited approval. Claude Code renders the form to
-  the human; Codex auto-declines without showing it. On `decline`, `cancel`,
-  or no response the tool returns `approval_required` and the agent-recorded
-  path applies, so Codex sessions always end agent-recorded. Approval is
-  read from the request's `input_responses` only, never from tool
-  arguments, and the request state is sealed. Server-initiated
-  `elicitation/create` has no channel on this wire and is not used.
+  `input_required` with the decision/reason form; a retry whose response
+  is `accept` with content is an elicited decision, approve or reject as
+  `content.decision` says. Claude Code renders the form to the human; in
+  every exchange tested Codex auto-declined without showing it. On
+  `decline`, `cancel`, no response, or invalid content the tool returns
+  `approval_required` and the agent-recorded path applies, which is where
+  Codex sessions landed each time. The decision is read from the request's
+  `input_responses` only, never from tool arguments, and the request state
+  is sealed; neither proves a human answered, so the change log records the
+  peer process of the retry and the review package shows a mismatch with
+  the session's own process. Server-initiated `elicitation/create` has no
+  channel on this wire and is not used.
 - **Unit of work.** The worktree owns a Goal Mode. The sentence "A fresh
   session cannot adopt it in v1" is replaced by: any session working in the
   Goal worktree may read status, propose changes, and finish; the record
@@ -159,11 +163,12 @@ Recorded after the Phase 0 spikes
   one or a previous Goal Branch; the record stores the base commit and the
   branch HEAD was on.
 - **Record and summary.** The local record lives in the Project directory
-  that discovery returns, under `.booley_project/goals/<goal-id>/`. The
-  committed summary is a separate file written inside the Goal worktree at
-  `.booley_project/goals/history/<goal-id>.md` and committed there on the
-  Goal Branch; the repository is the worktree's, never the Project
-  directory's. `init` keeps its `/.booley_project` exclude line; the
+  that discovery returns, under `.booley_project/goals/<goal-id>/`. Outside
+  Stealth, the committed summary is a separate file written inside the Goal
+  worktree at `.booley_project/goals/history/<goal-id>.md` and committed
+  there with the branch bound to the Goal Branch (a different checkout
+  refuses); the repository is the worktree's, never the Project
+  directory's. Under Stealth the record stays local, as above. `init` keeps its `/.booley_project` exclude line; the
   Project `.gitignore` ignores `goals/*/` and keeps `goals/history/`.
 - **Goalsets.** `init` seeds only the four named Goalsets; it does not seed
   `default.md`. With no `default.md` the entry check passes and the skip

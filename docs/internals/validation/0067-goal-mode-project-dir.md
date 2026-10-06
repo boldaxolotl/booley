@@ -47,8 +47,9 @@ Two more facts the spike surfaced:
 
 - `worktree_create.sh` with an empty `branch_ref` creates a detached
   worktree, and `commit_file` refuses a detached HEAD. The Goal Branch must
-  exist before publication, which D8 (branch created in place at entry)
-  guarantees.
+  exist and be checked out at publication; D8 (branch created in place at
+  entry) creates it, and the `check_branch` binding above enforces it at
+  Finish.
 - Inside the Sandbox, `BOOLEY_PROJECT_DIR` points every `resolve_project_dir`
   call at the shared Project directory even with an explicit `start`, so a
   Goal record keyed by that resolution lives in the shared directory, not
@@ -58,12 +59,18 @@ Two more facts the spike surfaced:
 
 - The local Goal record stays in the Project directory that discovery
   returns (`.booley_project/goals/<goal-id>/`, shared in a Sandbox).
-- The committed summary is a separate file written at
+- Outside Stealth, the committed summary is a separate file written at
   `<goal worktree>/.booley_project/goals/history/<goal-id>.md` and committed
-  from the worktree on the checked-out Goal Branch, with the repository
-  taken from the worktree (`git rev-parse --show-toplevel` from the history
-  directory), never from the Project directory. This holds for Stealth and
-  both non-Stealth layouts.
+  from the worktree with the repository taken from the worktree
+  (`git rev-parse --show-toplevel` from the history directory), never from
+  the Project directory. The commit binds the branch: `commit_file` is
+  called with `check_branch` set to the Goal Branch and refuses when the
+  worktree has another branch or a detached HEAD checked out, since the
+  publisher otherwise commits onto whatever HEAD is current. Both
+  non-Stealth layouts were proven.
+- Under Stealth the record stays local and nothing is committed, as ADR
+  0067 already says; the `stealth` variant only shows that the mechanics
+  would work if that rule ever changed.
 - `init` keeps the `/.booley_project` exclude line as is; without it a
   non-Stealth checkout shows every linked worktree as untracked.
   `project_gitignore.py` ignores `goals/*/` and keeps `goals/history/`.

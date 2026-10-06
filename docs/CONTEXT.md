@@ -77,7 +77,7 @@ The mandatory prose report the agent writes when its session finishes Goal Mode:
 _Avoid_: Developer Report, run report, Goal Report
 
 **Goal Record**:
-The local, uncommitted state of one Goal Mode under `.booley_project/goals/<goal-id>/` in the Project directory: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Its committed counterpart is the summary file on the Goal Branch.
+The local, uncommitted state of one Goal Mode under `.booley_project/goals/<goal-id>/` in the Project directory: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Outside Stealth its committed counterpart is the summary file on the Goal Branch.
 _Avoid_: ticket record, board entry, goal file
 
 **Goal Change Proposal**:
