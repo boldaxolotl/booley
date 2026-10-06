@@ -636,3 +636,59 @@ def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch
         assert not (baseline / ".booley_project/.git").exists()
         assert (project / ".git").is_dir()
     assert not baseline.exists()
+
+
+def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
+    """An outer worktree whose paired Project branch has no upstream (a Goal worktree).
+
+    Returns the outer worktree, its paired Project checkout, and the paired
+    commit recorded at entry, which a later commit then moves past.
+    """
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    _init_repo(outer)
+    (outer / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
+    project = outer / ".booley_project"
+    (project / "cores").mkdir(parents=True)
+    _git(project, "init", "-q")
+    _git(project, "config", "user.email", "t@example.com")
+    _git(project, "config", "user.name", "Test")
+    (project / ".gitignore").write_text("/worktrees/\n", encoding="utf-8")
+    (project / "cores" / "top.core").write_text("recipe: entry\n", encoding="utf-8")
+    _commit_all(project, "project at entry")
+    goal = project / "worktrees" / "goal"
+    _git(outer, "worktree", "add", "-b", "goal", str(goal), "HEAD")
+    paired = goal / ".booley_project"
+    _git(project, "worktree", "add", "-b", "goal-project", str(paired), "HEAD")
+    entry_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=paired, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (paired / "cores" / "top.core").write_text("recipe: later\n", encoding="utf-8")
+    _commit_all(paired, "change after entry")
+    return goal, paired, entry_sha
+
+
+def test_entry_pinned_paired_project_needs_no_upstream(tmp_path: Path) -> None:
+    """A Goal pins the paired revision it recorded; no upstream fork point is guessed."""
+    from booley.evidence.acceptance import PairedProjectBaseline
+
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+
+    with baseline_worktree(
+        goal, "HEAD", paired_project=PairedProjectBaseline.entry_pinned(entry_sha)
+    ) as baseline:
+        frozen = baseline / ".booley_project" / "cores" / "top.core"
+        assert frozen.read_text(encoding="utf-8") == "recipe: entry\n"
+
+    assert (paired / "cores" / "top.core").read_text(encoding="utf-8") == "recipe: later\n"
+
+
+def test_standalone_paired_project_without_upstream_is_refused(tmp_path: Path) -> None:
+    """Without a pinned revision the upstream fork point is required, and absent here."""
+    goal, _paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
+
+    with (
+        pytest.raises(BaselineWorktreeError, match="no baseline upstream"),
+        baseline_worktree(goal, "HEAD"),
+    ):
+        pass
