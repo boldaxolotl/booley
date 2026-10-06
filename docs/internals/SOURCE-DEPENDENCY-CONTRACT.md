@@ -58,7 +58,7 @@ Runtime does not import Ticket Board, including under `TYPE_CHECKING` or inside
 functions. D14 has no waiver or composition exception.
 
 - `runtime.job_records` stores records at an explicit jobs root. MCP composition
-  resolves `ticket_board.paths.session_jobs_dir` after Interactive logging setup;
+  resolves `runtime.session_paths.session_jobs_dir` after Interactive logging setup;
   the job manager retains each run's root from submission through completion,
   and runs it did not start use the container-wide root. Standalone
   readers resolve the same session location. Explicit `None` disables persistence.

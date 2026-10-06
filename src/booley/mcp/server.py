@@ -106,8 +106,8 @@ from booley.runtime.process_group import (
 )
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.python_artifacts import relocate_python_artifacts
+from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import compact_utc_now, format_human_datetime, utc_now_rfc3339
-from booley.ticket_board.paths import ticket_runtime_dir
 
 if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
@@ -962,7 +962,7 @@ def _resolve_transcript_dir(
     if runtime_env:
         runtime_dir = Path(runtime_env)
     elif logs_dir:
-        runtime_dir = ticket_runtime_dir(logs_dir)
+        runtime_dir = logs_runtime_dir(logs_dir)
     else:
         # Interactive Mode sets neither env var. Writing transcripts to an
         # ephemeral OS tempdir made a failed specialist impossible to
@@ -1133,7 +1133,7 @@ def _endpoint_subprocess_env(
     env[INVOCATION_ORIGIN_ENV] = "transport"
     logs_dir = env.get("BOOLEY_LOGS_DIR", "")
     if logs_dir and not env.get("BOOLEY_RUNTIME_DIR"):
-        env["BOOLEY_RUNTIME_DIR"] = str(ticket_runtime_dir(logs_dir))
+        env["BOOLEY_RUNTIME_DIR"] = str(logs_runtime_dir(logs_dir))
     runtime = env.get("BOOLEY_RUNTIME_DIR")
     if runtime:
         runtime_root = Path(runtime)
@@ -1924,7 +1924,7 @@ def _endpoint_report_dirs() -> tuple[Path, ...]:
     if not logs_dir:
         return ()
     runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-    runtime_dir = Path(runtime_env) if runtime_env else ticket_runtime_dir(logs_dir)
+    runtime_dir = Path(runtime_env) if runtime_env else logs_runtime_dir(logs_dir)
     candidates = (runtime_dir / "flow-reports", runtime_dir / "mcp-tool-reports")
     return tuple(path for path in candidates if path.is_dir())
 
