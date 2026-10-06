@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,7 @@ from booley.bwave.contract import (
     decode_list_metadata,
 )
 from booley.flows.sim.trace_session import TraceSession
+from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -39,20 +39,6 @@ pytestmark = pytest.mark.native_bwave
 EMPTY_VCD = (
     "$timescale 1ns $end\n$scope module tb $end\n$upscope $end\n$enddefinitions $end\n#0\n#10\n"
 )
-
-
-def _native_bwave_binary() -> Path:
-    """Return a prebuilt Rust binary or skip on a stock development host."""
-    suffix = ".exe" if sys.platform == "win32" else ""
-    release = BOOLEY_ROOT / "crates" / "bwave" / "target" / "release" / f"bwave{suffix}"
-    debug = BOOLEY_ROOT / "crates" / "bwave" / "target" / "debug" / f"bwave{suffix}"
-    if release.exists():
-        return release
-    if debug.exists():
-        return debug
-    pytest.skip(
-        "native bwave binary not built; run cargo build --manifest-path crates/bwave/Cargo.toml"
-    )
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
