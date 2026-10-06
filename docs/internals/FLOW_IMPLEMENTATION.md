@@ -32,7 +32,7 @@ file, and every Flow run is generated from that description. Existing projects
 therefore port their build description when adopting Booley; [SETUP.md](../user/SETUP.md)
 covers that process.
 
-Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Criteria** (the named pass/fail conditions a Ticket must satisfy; see the [Ticket Board glossary](../../src/booley/ticket_board/CONTEXT.md)) are tracked automatically from the results, which is also what makes the whole thing usable in CI.
+Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Criteria** (the named pass/fail conditions a Ticket must satisfy; see the [Ticket Board glossary](../../src/booley/ticket_board/GLOSSARY.md)) are tracked automatically from the results, which is also what makes the whole thing usable in CI.
 
 A deterministic **Booley Flow** has to do two things: turn the caller's request into a real EDA tool invocation, and turn the result back into facts Booley can reason about. This doc covers both halves for the built-ins: the **invocation** half (FuseSoC and Edalize generate the command) and the **interpretation** half (the per-Flow evidence contract). See [ARCHITECTURE.md](ARCHITECTURE.md) for where this layer sits in the whole system.
 
@@ -183,7 +183,7 @@ executable Ticket formats are beyond the hard cutoff and must be recreated.
 The protected-path policy covers FuseSoC-selected Target declarations, the test
 registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
 discovery sentinels, Project routing, and the configured
-[Approved Waiver Set](../../src/booley/flows/sim/CONTEXT.md) together with every
+[Approved Waiver Set](../../src/booley/flows/sim/GLOSSARY.md) together with every
 proof artifact referenced by an approval. This project-wide approval
 policy is protected for every sealed Ticket, including a Ticket without a
 Coverage Criterion. Review-time waiver promotion (ADR 0066) does not break
@@ -489,7 +489,7 @@ not Booley config, so it lives on the Target: a `.vlt` file for Verilator,
 flow options) for Verible. Booley adds no severity tiers and no waiver
 machinery of its own: every finding counts against the Criterion, and a waiver
 edit lands in the diff like any other change, where ticket Scope and the
-Reviewer agent ([CONTEXT.md](../CONTEXT.md)) are the control.
+Reviewer agent ([GLOSSARY.md](../GLOSSARY.md)) are the control.
 
 The CLI adds `--scope` (comma-separated path fragments, which filter the findings
 *and* the Criteria counts with them), `--dry-run`, and `--timeout` (positive

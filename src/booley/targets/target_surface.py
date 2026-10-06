@@ -3,7 +3,7 @@
 A read-only presentation layer over :class:`booley.targets.catalog.TargetCatalog`.
 Shared by the CLI verb and MCP tool so both render the same catalog facts.
 
-Vocabulary (docs/CONTEXT.md): a **Target** is a named FuseSoC ``.core`` build
+Vocabulary (docs/GLOSSARY.md): a **Target** is a named FuseSoC ``.core`` build
 target, identified by ``(VLNV, name)`` (ADR 0030). "Doctor" means the Target
 selects a smoke Flow in ``flow_options.booley.doctor``; "drivable" means the
 Booley Flow *could* run it (Flow/EDA-tool compatibility), selected or not. Health auditing

@@ -183,7 +183,7 @@ corrupt local work or Criterion evidence.
 
 ## HDL Dependency Graph (intra-Target file pruning)
 
-**Planned.** This item assumes the FuseSoC Target/fileset model: a **Target** is a named `.core` build target, and its *fileset* is the ordered list of source files that Target resolves to (see [CONTEXT.md](../CONTEXT.md) for the vocabulary and [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) for how the Flow uses it).
+**Planned.** This item assumes the FuseSoC Target/fileset model: a **Target** is a named `.core` build target, and its *fileset* is the ordered list of source files that Target resolves to (see [GLOSSARY.md](../GLOSSARY.md) for the vocabulary and [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) for how the Flow uses it).
 
 Prune a resolved Target's fileset down to the module a Booley Flow actually
 needs. **The chosen front-end is slang; Booley will not implement its own

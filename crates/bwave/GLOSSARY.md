@@ -2,7 +2,7 @@
 
 This is the canonical vocabulary for B-Wave. Shared Booley concepts such as
 **Trace Artifact** and **EDA tool** are defined in the
-[shared glossary](../../docs/CONTEXT.md); detailed commands and behavior belong
+[shared glossary](../../docs/GLOSSARY.md); detailed commands and behavior belong
 in the [B-Wave documentation](docs/public/intro.md).
 
 ## Language

@@ -2,7 +2,7 @@
 
 ## Read this first
 
-This is the big-picture view of Booley and how its parts fit together. It assumes familiarity with the terms **Booley Flow**, **Target**, **Specialist**, **Sandbox**, and FuseSoC `.core`; all are defined in the [CONTEXT.md glossary](../CONTEXT.md). Operational commands and capability details belong in [USAGE.md](../user/USAGE.md), while each section below links to deeper technical documentation.
+This is the big-picture view of Booley and how its parts fit together. It assumes familiarity with the terms **Booley Flow**, **Target**, **Specialist**, **Sandbox**, and FuseSoC `.core`; all are defined in the [GLOSSARY.md glossary](../GLOSSARY.md). Operational commands and capability details belong in [USAGE.md](../user/USAGE.md), while each section below links to deeper technical documentation.
 
 The executable package-direction design and its legacy cycle baseline live in the
 [Source Dependency Contract](SOURCE-DEPENDENCY-CONTRACT.md).
@@ -62,11 +62,11 @@ Ticket Mode replaces turn-by-turn human steering with the **Harness** (`src/bool
 
 This separation is a verification boundary. The Developer Agent cannot satisfy a Criterion by assertion: only structured evidence returned from a harness-executed Flow or Specialist can do so. Relevant code edits invalidate dependent Criteria and force re-verification. Completed work remains on its branch for human review, while the worktree is runtime-scoped scratch.
 
-Tickets and their transitions live on the filesystem-backed Ticket Board. Their schema, Criteria, queue lifecycle, concurrency, and CLI are documented in [USAGE.md](../user/USAGE.md#ticket-driven-workflow); canonical terminology is in the [Ticket Board glossary](../../src/booley/ticket_board/CONTEXT.md).
+Tickets and their transitions live on the filesystem-backed Ticket Board. Their schema, Criteria, queue lifecycle, concurrency, and CLI are documented in [USAGE.md](../user/USAGE.md#ticket-driven-workflow); canonical terminology is in the [Ticket Board glossary](../../src/booley/ticket_board/GLOSSARY.md).
 
 ## B-Wave
 
-**[B-Wave](../../crates/bwave/CONTEXT.md)** is the agent-facing waveform query layer used by both modes. It converts a trace from an artifact too large for an LLM to inspect into structured questions about signals, events, values, and time ranges. Queries operate on standard FST traces; VCD can be converted at ingestion.
+**[B-Wave](../../crates/bwave/GLOSSARY.md)** is the agent-facing waveform query layer used by both modes. It converts a trace from an artifact too large for an LLM to inspect into structured questions about signals, events, values, and time ranges. Queries operate on standard FST traces; VCD can be converted at ingestion.
 
 B-Wave does not render waveforms. When a human needs a visual handoff, `bwave gui` opens the relevant signals and time window in an off-the-shelf viewer through its control protocol. This keeps programmatic analysis and GUI presentation separate. Query and viewing commands are documented in [USAGE.md](../user/USAGE.md#viewing-waveforms).
 

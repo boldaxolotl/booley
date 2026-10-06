@@ -3,11 +3,11 @@
 Use each definition verbatim the first time the term appears in the grill or
 `SETUP-PLAN.md`. Introduce the plain-English question first, then its definition
 and secondary row number/internal key. These explanations describe the shared
-concepts in `docs/CONTEXT.md` in hardware-engineer language; setup does not
+concepts in `docs/GLOSSARY.md` in hardware-engineer language; setup does not
 require the user to read that maintainer glossary.
 
 This onboarding companion is required by the setup contract in issue #1232.
-`docs/CONTEXT.md` remains authoritative for shared vocabulary; keep these
+`docs/GLOSSARY.md` remains authoritative for shared vocabulary; keep these
 beginner explanations aligned with it when a shared definition changes.
 Setup-only terms follow the setup steps and user configuration reference.
 

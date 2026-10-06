@@ -2,7 +2,7 @@
 
 This is the canonical vocabulary for concepts shared across Booley. Consult it
 when a term is unfamiliar; it is not an onboarding sequence. The
-[context map](../CONTEXT-MAP.md) points to the separately owned vocabularies.
+[context map](../GLOSSARY-MAP.md) points to the separately owned vocabularies.
 
 Booley is the **agentic RTL IDE**: the integrated working environment for human-guided and autonomous RTL development. **Interactive Mode** and **Ticket Mode** share the same isolated **Sandbox**, Booley Flows, and Specialists; neither mode alone defines the product.
 _Avoid_ (for the product itself): framework, system, library, platform, toolkit, package, harness
@@ -225,7 +225,7 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/CONTEXT.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -255,7 +255,7 @@ One **Test Variant** simulated with one seed, written `test+variant@seed` (witho
 _Avoid_: run (bare), iteration, seed run, QA Run
 
 **Simulation Campaign**:
-The durable execution record for one immutable, exact simulation workload on one **Target**. A Simulation Campaign may span multiple Simulation Flow invocations through explicit resume and records the strict aggregate outcome of all selected work. It is distinct from a [**Coverage Campaign**](../src/booley/flows/sim/CONTEXT.md), which records native RTL coverage for one Target and one Simulation Flow invocation; a coverage-collecting Simulation Campaign may contain a separate Coverage Campaign as evidence for an attempt.
+The durable execution record for one immutable, exact simulation workload on one **Target**. A Simulation Campaign may span multiple Simulation Flow invocations through explicit resume and records the strict aggregate outcome of all selected work. It is distinct from a [**Coverage Campaign**](../src/booley/flows/sim/GLOSSARY.md), which records native RTL coverage for one Target and one Simulation Flow invocation; a coverage-collecting Simulation Campaign may contain a separate Coverage Campaign as evidence for an attempt.
 _Avoid_: Campaign, regression run, test batch, Coverage Campaign
 
 **Simulator Bundle**:
@@ -264,7 +264,7 @@ _Avoid_: binary cache, global build cache, simulator image
 
 **Trace Artifact**:
 Fresh waveform evidence produced by a traced simulation and proven queryable by
-[B-Wave](../crates/bwave/CONTEXT.md). A Trace Artifact is an FST store; VCD is
+[B-Wave](../crates/bwave/GLOSSARY.md). A Trace Artifact is an FST store; VCD is
 an input or intermediate, not successful trace evidence. B-Wave proves store
 queryability; Simulation alone proves that the store is fresh evidence from the
 current Simulation Attempt and publishes it as a Trace Artifact.

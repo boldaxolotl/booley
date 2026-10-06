@@ -1,4 +1,4 @@
-# Booley context map
+# Booley glossary map
 
 Booley has six bounded vocabularies. Read the shared glossary first, then only
 the context that owns the work at hand.
@@ -7,12 +7,12 @@ the context that owns the work at hand.
 
 | Context | Canonical glossary | Owns |
 |---|---|---|
-| Shared Booley | [docs/CONTEXT.md](docs/CONTEXT.md) | Product lifecycle, execution modes, Sandbox, Projects, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
-| Ticket Board | [src/booley/ticket_board/CONTEXT.md](src/booley/ticket_board/CONTEXT.md) | Ticket authoring, Criteria, lifecycle, workspaces, acceptance, and escalation |
-| B-Wave | [crates/bwave/CONTEXT.md](crates/bwave/CONTEXT.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
-| Simulation Coverage | [src/booley/flows/sim/CONTEXT.md](src/booley/flows/sim/CONTEXT.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |
-| Feedback | [src/booley/feedback/CONTEXT.md](src/booley/feedback/CONTEXT.md) | Findings, friction, impressions, and their durable log |
-| Public QA | [qa/CONTEXT.md](qa/CONTEXT.md) | QA Missions, Mission Areas, QA Runs, Release Smoke List, and Capability Map |
+| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Projects, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
+| Ticket Board | [src/booley/ticket_board/GLOSSARY.md](src/booley/ticket_board/GLOSSARY.md) | Ticket authoring, Criteria, lifecycle, workspaces, acceptance, and escalation |
+| B-Wave | [crates/bwave/GLOSSARY.md](crates/bwave/GLOSSARY.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
+| Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |
+| Feedback | [src/booley/feedback/GLOSSARY.md](src/booley/feedback/GLOSSARY.md) | Findings, friction, impressions, and their durable log |
+| Public QA | [qa/GLOSSARY.md](qa/GLOSSARY.md) | QA Missions, Mission Areas, QA Runs, Release Smoke List, and Capability Map |
 
 ## Relationships
 

@@ -57,7 +57,7 @@ Command blocks go in the terminal named in the text around them. Sentences in
 `/booley-ticket-create` also go in the agent chat, not in a terminal.
 
 Booley uses some terms with exact meanings. When one is unfamiliar, look it up
-in the glossary linked from the [context map](../../CONTEXT-MAP.md).
+in the glossary linked from the [context map](../../GLOSSARY-MAP.md).
 
 ### Selecting a Project
 
