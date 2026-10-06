@@ -156,6 +156,11 @@ def _write_toml(tmp_path, body: str):
 
 
 class TestInteractiveConfig:
+    @pytest.fixture(autouse=True)
+    def _isolated_host_config(self, tmp_path, monkeypatch):
+        """Read no real host policy: a developer's ~/.config/booley must not leak in."""
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "isolated-xdg"))
+
     def test_defaults_when_section_absent(self, tmp_path):
         _write_toml(tmp_path, "[project]\nname='x'\n")
         cfg = load_interactive_config(tmp_path)
