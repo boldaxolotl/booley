@@ -87,6 +87,8 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
         "-m",
         "pytest",
         "tests/",
+        "--test-profile",
+        "python",
         "-n",
         "auto",
         "--maxprocesses=8",
