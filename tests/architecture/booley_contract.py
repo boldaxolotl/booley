@@ -469,6 +469,7 @@ APPROVED_LEGACY_SCCS = (
             "dev_support",
             "feedback",
             "flows",
+            "goals",
             "harness",
             "mcp",
             "runtime",

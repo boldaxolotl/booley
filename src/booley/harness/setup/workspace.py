@@ -14,7 +14,7 @@ from pathlib import Path
 from booley.commit_policy import stealth_enabled, validate_message
 from booley.runtime.filesystem_utils import copy_booley_tree, safe_rmtree
 from booley.runtime.git import add_git_excludes, git_run
-from booley.runtime.paths import dev_support_dir
+from booley.runtime.paths import dev_support_dir, worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import checkout_project_dir_relative_to
 from booley.runtime.project_prepare import PreparationResult, prepare_project
@@ -321,7 +321,10 @@ def _crlf_safe_script(script: Path) -> Path:
 
 
 def _worktree_hook_input(ctx: TicketContext) -> str:
-    payload = {"name": ctx.slug, "cwd": str(ctx.project_root)}
+    # Ticket setup owns its per-Ticket worktree path: a same-name leftover is
+    # stale state from an earlier run of this Ticket, so ask the script to
+    # replace it instead of using its refuse-by-default policy.
+    payload = {"name": ctx.slug, "cwd": str(ctx.project_root), "on_existing": "replace"}
     if ctx.ticket_baseline is not None:
         payload["branch_ref"] = ctx.ticket_baseline.participant("outer").ticket_ref
     return json.dumps(payload)
@@ -339,7 +342,7 @@ def _create_fresh_worktree(
     expected_wt: Path,
 ) -> StepResult | None:
     """Create worktree via shell script; return StepResult on failure."""
-    wt_script = dev_support_dir() / "worktree_create.sh"
+    wt_script = worktree_create_script()
     if not wt_script.exists():
         return StepResult(block_reason=f"Worktree script not found: {wt_script}")
     wt_script = _crlf_safe_script(wt_script)

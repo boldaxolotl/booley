@@ -27,6 +27,7 @@ Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`,
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
 | `booley run` | Execute queued or named tickets |
 | `booley board` | Create, inspect, move, reset, or archive tickets |
+| `booley worktree` | Create a linked worktree with a clean Project snapshot |
 
 #### Either-location and mixed commands
 

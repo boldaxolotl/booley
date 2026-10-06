@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,8 +65,9 @@ def _run_worktree_create(
     name: str,
     *,
     branch_ref: str = "",
+    on_existing: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    from booley.runtime.paths import dev_support_dir
+    from booley.runtime.paths import worktree_create_script
     from booley.runtime.platform_paths import bash_bin
 
     env = {k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"}
@@ -73,8 +75,10 @@ def _run_worktree_create(
     payload = {"name": name, "cwd": str(project_root)}
     if branch_ref:
         payload["branch_ref"] = branch_ref
+    if on_existing:
+        payload["on_existing"] = on_existing
     return subprocess.run(
-        [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
+        [bash_bin(), str(worktree_create_script())],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -625,6 +629,35 @@ class TestWorktreeCreateScript:
         assert "does not descend" in result.block_reason
         assert _git(project_root, "rev-parse", branch).stdout.strip() == orphan
 
+    def test_ticket_setup_asks_the_script_to_replace_stale_worktrees(self) -> None:
+        from booley.harness.setup.workspace import _worktree_hook_input
+
+        ctx = SimpleNamespace(slug="ticket", project_root=Path("/repo"), ticket_baseline=None)
+
+        assert json.loads(_worktree_hook_input(ctx))["on_existing"] == "replace"
+
+    def test_replace_policy_recreates_a_stale_destination(self, tmp_path: Path) -> None:
+        project_root, project_data = _submodule_project(tmp_path)
+        stale = project_data / "worktrees" / "stale-ticket"
+        stale.mkdir(parents=True)
+        (stale / "leftover.txt").write_text("stale\n", encoding="utf-8")
+
+        result = _run_worktree_create(project_root, "stale-ticket", on_existing="replace")
+
+        assert result.returncode == 0, result.stderr
+        assert "Stale worktree directory detected" in result.stderr
+        assert not (stale / "leftover.txt").exists()
+        assert (stale / ".git").is_file()
+
+    def test_unknown_existing_policy_is_rejected(self, tmp_path: Path) -> None:
+        project_root, project_data = _submodule_project(tmp_path)
+
+        result = _run_worktree_create(project_root, "bad-policy", on_existing="overwrite")
+
+        assert result.returncode != 0
+        assert "on_existing must be" in result.stderr
+        assert not (project_data / "worktrees" / "bad-policy").exists()
+
     def test_git_identity_comes_from_booley_toml(self, tmp_path: Path):
         project_root, project_data = _submodule_project(tmp_path)
         (project_data / "booley.toml").write_text(
@@ -677,11 +710,11 @@ class TestWorktreeCreateScript:
 
     def test_rejects_unsafe_worktree_name(self, tmp_path: Path):
         """Worktree slug must not escape the worktrees directory."""
-        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.paths import worktree_create_script
         from booley.runtime.platform_paths import bash_bin
 
         result = subprocess.run(
-            [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
+            [bash_bin(), str(worktree_create_script())],
             input=json.dumps({"name": "../escape", "cwd": str(tmp_path)}),
             capture_output=True,
             text=True,
@@ -701,11 +734,11 @@ class TestWorktreeCreateScript:
 
     def test_rejects_cwd_outside_git_root_before_writing(self, tmp_path: Path):
         """Hook JSON must not redirect state creation into an arbitrary directory."""
-        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.paths import worktree_create_script
         from booley.runtime.platform_paths import bash_bin
 
         result = subprocess.run(
-            [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
+            [bash_bin(), str(worktree_create_script())],
             input=json.dumps({"name": "safe-name", "cwd": str(tmp_path)}),
             capture_output=True,
             text=True,
@@ -734,7 +767,7 @@ class TestWorktreeCreateScript:
 
     def test_handles_parent_core_worktree_from_docker(self, tmp_path: Path):
         """Host setup must survive a parent config polluted with /work."""
-        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.paths import worktree_create_script
         from booley.runtime.platform_paths import bash_bin
 
         project_root = tmp_path / "repo"
@@ -757,7 +790,7 @@ class TestWorktreeCreateScript:
 
         slug = "core-worktree-repro"
         result = subprocess.run(
-            [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
+            [bash_bin(), str(worktree_create_script())],
             input=json.dumps({"name": slug, "cwd": str(project_root)}),
             capture_output=True,
             text=True,
@@ -1070,11 +1103,11 @@ class TestWorkspaceRun:
 
     @pytest.mark.asyncio
     @patch("subprocess.run")
-    @patch("booley.harness.setup.workspace.dev_support_dir")
-    async def test_hook_not_found_blocks(self, mock_tools_dir, mock_sub, project_root):
+    @patch("booley.harness.setup.workspace.worktree_create_script")
+    async def test_hook_not_found_blocks(self, mock_script, mock_sub, project_root):
         """Kills: L47 negate_if."""
-        # Point dev_support_dir at a temp dir with no worktree_create.sh
-        mock_tools_dir.return_value = project_root / "_empty_tools"
+        # Point the script accessor at a path that does not exist
+        mock_script.return_value = project_root / "_empty_tools" / "worktree_create.sh"
         ctx = _make_ctx(project_root)
 
         from booley.harness.setup.workspace import run
@@ -1089,7 +1122,7 @@ class TestWorkspaceRun:
         """Kills: L67 cmpop NotEq→Eq."""
         ctx = _make_ctx(project_root)
 
-        hook = project_root / ".booley" / "src" / "booley" / "dev_support" / "worktree_create.sh"
+        hook = project_root / ".booley" / "src" / "booley" / "runtime" / "worktree_create.sh"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text("#!/bin/bash\nexit 1", encoding="utf-8")
         mock_sub.return_value = MagicMock(returncode=1, stdout="", stderr="disk full")
@@ -1106,7 +1139,7 @@ class TestWorkspaceRun:
         """Kills: L73 negate_if."""
         ctx = _make_ctx(project_root)
 
-        hook = project_root / ".booley" / "src" / "booley" / "dev_support" / "worktree_create.sh"
+        hook = project_root / ".booley" / "src" / "booley" / "runtime" / "worktree_create.sh"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text("#!/bin/bash", encoding="utf-8")
         mock_sub.return_value = MagicMock(returncode=0, stdout="/nonexistent\n", stderr="")
@@ -1123,7 +1156,7 @@ class TestWorkspaceRun:
         """Kills: L64 timeout exception handling."""
         ctx = _make_ctx(project_root)
 
-        hook = project_root / ".booley" / "src" / "booley" / "dev_support" / "worktree_create.sh"
+        hook = project_root / ".booley" / "src" / "booley" / "runtime" / "worktree_create.sh"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text("#!/bin/bash", encoding="utf-8")
         mock_sub.side_effect = subprocess.TimeoutExpired(cmd="bash", timeout=900)
@@ -1469,7 +1502,7 @@ class TestOSErrorHandling:
         """OSError during worktree script execution should block cleanly."""
         ctx = _make_ctx(project_root)
 
-        hook = project_root / ".booley" / "src" / "booley" / "dev_support" / "worktree_create.sh"
+        hook = project_root / ".booley" / "src" / "booley" / "runtime" / "worktree_create.sh"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text("#!/bin/bash", encoding="utf-8")
         mock_sub.side_effect = FileNotFoundError("bash not found")
@@ -1668,7 +1701,7 @@ class TestResyncFallback:
         mock_sub.return_value = _mock_success()
 
         # Create the worktree script so creation path can proceed
-        hook = project_root / ".booley" / "src" / "booley" / "dev_support" / "worktree_create.sh"
+        hook = project_root / ".booley" / "src" / "booley" / "runtime" / "worktree_create.sh"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text("#!/bin/bash", encoding="utf-8")
 

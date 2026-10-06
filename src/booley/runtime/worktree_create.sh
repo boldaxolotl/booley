@@ -1,10 +1,26 @@
 #!/bin/bash
-# WorktreeCreate: creates an outer git worktree for later Python setup
+# WorktreeCreate: creates an outer git worktree for later Python setup.
 # Reads JSON from stdin, outputs worktree absolute path to stdout.
 # All diagnostic messages go to stderr so they don't pollute stdout.
 #
-# Moved from .agents/hooks/ into Booley's packaged developer-support utilities
-# to satisfy Principle 11 (dependency direction: pipeline must not reference .agents/).
+# Input JSON fields:
+#   name         (required) single safe path component; the worktree is
+#                created at <cwd>/.booley_project/worktrees/<name>.
+#   cwd          (required) root of the Git repository to branch from.
+#   branch_ref   (optional) existing refs/heads/... branch to attach; without
+#                it the worktree starts on a detached HEAD at the current HEAD.
+#   on_existing  (optional) policy when the destination already exists:
+#                  "refuse"  (default) exit 1 without touching anything when
+#                            the destination is an existing path, a registered
+#                            worktree, or a half-created worktree.
+#                  "replace" treat the destination as a stale leftover:
+#                            force-remove the registered worktree and delete
+#                            the directory before creating a fresh one. Only
+#                            Ticket setup, which owns its per-Ticket
+#                            worktrees, passes this policy.
+#
+# Shipped as runtime package data (booley/runtime/worktree_create.sh); the
+# Ticket setup stage and `booley worktree new` both invoke it.
 
 set -e
 
@@ -33,6 +49,7 @@ INPUT=$(cat)
 NAME=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; print(json.load(sys.stdin)['name'])")
 CWD=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; print(json.load(sys.stdin)['cwd'])")
 BRANCH_REF=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; value=json.load(sys.stdin).get('branch_ref', ''); isinstance(value, str) or sys.exit('ERROR: branch_ref must be a string'); print(value)")
+ON_EXISTING=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; value=json.load(sys.stdin).get('on_existing', 'refuse'); value in ('refuse', 'replace') or sys.exit('ERROR: on_existing must be \"refuse\" or \"replace\"'); print(value)")
 
 if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "ERROR: worktree name must be a single safe path component: $NAME" >&2
@@ -102,10 +119,13 @@ fi
 # Cleanup trap: if we fail mid-build AND we're the one that started creating
 # this worktree (marker file present), remove the half-built worktree so it
 # doesn't leave an orphan that confuses later runs. Concurrent runners are
-# gated by the per-worktree flock below.
+# gated by the per-worktree flock below. _OWNS_WORKTREE flips to true only
+# after THIS invocation created the worktree, so an early failure can never
+# delete a half-created worktree that belongs to someone else.
+_OWNS_WORKTREE=false
 cleanup_on_error() {
     local rc=$?
-    if [ -f "$CREATING_MARKER" ]; then
+    if [ "$_OWNS_WORKTREE" = true ] && [ -f "$CREATING_MARKER" ]; then
         echo "ERROR: worktree_create.sh failed (rc=$rc) — cleaning up partial worktree" >&2
         git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
         rm -rf "$WORKTREE_DIR"
@@ -245,12 +265,46 @@ _parent_lock_release() {
 # workers don't race on .git/config.lock. Released before the tar/copy work.
 _parent_lock_acquire
 
+# Refuse policy (the default): an existing destination may be an active
+# worktree holding someone's work, so never delete it. Checked here, under
+# the per-name creation lock, before `worktree prune` can forget a registered
+# entry. Covers any existing path (directory, file, or dangling symlink,
+# including a half-created worktree with its .creating marker) and a
+# worktree Git still registers at that path even if its directory is gone.
+if [ "$ON_EXISTING" = "refuse" ]; then
+    _destination_problem=""
+    if [ -e "$WORKTREE_DIR" ] || [ -L "$WORKTREE_DIR" ]; then
+        _destination_problem="the path already exists"
+    else
+        # Git prints registered worktree paths in its own spelling: POSIX on
+        # Linux/macOS, drive-letter mixed form (C:/...) under Git for Windows.
+        _registered_forms=("$WORKTREE_DIR")
+        if command -v cygpath >/dev/null 2>&1; then
+            _registered_forms+=("$(cygpath -m "$WORKTREE_DIR")")
+        fi
+        _registered=$(git -C "$CWD" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' || true)
+        for _form in "${_registered_forms[@]}"; do
+            # Case-insensitive on purpose: Windows paths are, and a false
+            # match only refuses (never deletes).
+            if printf '%s\n' "$_registered" | grep -qixF -- "$_form"; then
+                _destination_problem="a Git worktree is already registered there"
+            fi
+        done
+    fi
+    if [ -n "$_destination_problem" ]; then
+        _parent_lock_release
+        echo "ERROR: worktree destination is not free ($_destination_problem): $WORKTREE_DIR" >&2
+        echo "ERROR: choose another name, or remove the old worktree yourself with 'git worktree remove' once its work is safe" >&2
+        exit 1
+    fi
+fi
+
 git -C "$CWD" worktree prune 2>/dev/null || true
 
-# If a stale directory exists from a previous run, clean it up.
-# This handles both broken leftovers (no .git file) and complete worktrees
-# that weren't cleaned up (e.g. agent died mid-execution).
-if [ -d "$WORKTREE_DIR" ]; then
+# Replace policy: a same-name directory is a stale leftover from a previous
+# Ticket run. This handles both broken leftovers (no .git file) and complete
+# worktrees that weren't cleaned up (e.g. agent died mid-execution).
+if [ "$ON_EXISTING" = "replace" ] && [ -d "$WORKTREE_DIR" ]; then
     echo "WARNING: Stale worktree directory detected at $WORKTREE_DIR — removing" >&2
     git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
     rm -rf "$WORKTREE_DIR"
@@ -278,7 +332,7 @@ echo "Creating worktree: $WORKTREE_DIR" >&2
 # on stdout, and this script's contract is worktree path ONLY on stdout.
 ADD_ERR="$LOCK_DIR/${NAME}.worktree-add.$$.err"
 if ! git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" "${WORKTREE_ADD_TARGET[@]}" >&2 2>"$ADD_ERR"; then
-    if grep -qi "missing but already registered worktree" "$ADD_ERR"; then
+    if [ "$ON_EXISTING" = "replace" ] && grep -qi "missing but already registered worktree" "$ADD_ERR"; then
         echo "WARNING: Worktree registered but missing; pruning and retrying" >&2
         git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
         git -C "$CWD" worktree prune 2>/dev/null || true
@@ -296,7 +350,9 @@ _parent_lock_release
 # --- End critical section A ---
 
 # Drop marker so cleanup_on_error knows this is a mid-build worktree.
-# Removed at the end of the script once everything succeeded.
+# Removed at the end of the script once everything succeeded. From here on
+# this invocation owns the new worktree, so the ERR trap may clean it up.
+_OWNS_WORKTREE=true
 touch "$CREATING_MARKER"
 
 # If a target branch was specified, check it out
@@ -413,6 +469,9 @@ if [ -d "$CWD/.booley" ]; then
 fi
 
 # Copy .booley_project/ into worktree if it exists as a sibling (convention-based discovery).
+# Live state stays behind: Ticket boards/logs/locks, Goal state under goals/
+# (records, locks, and history; committed Goal history reaches the worktree
+# through Git only), and per-session runtime state under runtime/sessions/.
 if [ -d "$CWD/.booley_project" ]; then
     echo "Copying .booley_project/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/.booley_project"
@@ -430,6 +489,8 @@ if [ -d "$CWD/.booley_project" ]; then
         --exclude='tickets/board' \
         --exclude='tickets/logs' \
         --exclude='tickets/locks' \
+        --exclude='goals' \
+        --exclude='runtime/sessions' \
         --exclude='.locks' \
         --exclude='tmp' \
         --exclude='eval' \

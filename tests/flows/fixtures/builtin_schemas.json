@@ -4,7 +4,7 @@
     "properties": {
       "work_dir": {
         "type": "string",
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace."
       },
       "target": {
         "type": "string",
@@ -41,7 +41,7 @@
     "properties": {
       "work_dir": {
         "type": "string",
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace."
       },
       "target": {
         "type": "string",
@@ -127,7 +127,7 @@
     "properties": {
       "work_dir": {
         "type": "string",
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace."
       },
       "target": {
         "type": "string",
@@ -234,7 +234,7 @@
     "properties": {
       "work_dir": {
         "type": "string",
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with worktree_create.sh. Omit to use the current workspace."
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley_project/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace."
       },
       "target": {
         "type": "string",
