@@ -78,23 +78,56 @@ STAGING_MAX_AGE_S = 3600.0
 # ``None`` outside a task). Re-entry, saves, and the lock-order check accept
 # only the exact owner, so a copied context, a spawned task or thread, or a
 # forked child never borrows a lock it did not take; it takes the real flock.
-LockOwner = tuple[int, int, int | None]
+LockOwner = tuple[int, threading.Thread, asyncio.Task[Any] | None]
 # A lock file's filesystem identity, so every path spelling of one record
 # names the same held lock.
 LockFileKey = tuple[object, ...]
 
 # Record locks held in this process, keyed by (lock file identity, owner).
 _HELD_RECORD_LOCKS: dict[tuple[LockFileKey, LockOwner], RecordLock] = {}
-_HELD_RECORD_LOCKS_GUARD = threading.Lock()
+# Lowercase on purpose: a forked child rebinds it (see below).
+_held_record_locks_guard = threading.Lock()
+
+
+def _reset_held_locks_after_fork() -> None:
+    """Give a forked child an empty registry and an unlocked guard.
+
+    The child inherits the parent's registry entries and, if another thread
+    held the guard at the fork, a guard nobody will ever release. None of the
+    parent's locks belong to the child, so both are replaced.
+    """
+    global _held_record_locks_guard
+    _held_record_locks_guard = threading.Lock()
+    _HELD_RECORD_LOCKS.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_held_locks_after_fork)
 
 
 def current_lock_owner() -> LockOwner:
-    """The calling process, thread, and asyncio task (``None`` outside a task)."""
+    """The calling process, thread, and asyncio task (``None`` outside a task).
+
+    The thread and task are the objects themselves, compared by identity: a
+    held lock keeps them alive, so a later thread or task can never be handed
+    a recycled identifier and pass for the owner.
+    """
     try:
         task = asyncio.current_task()
     except RuntimeError:
         task = None
-    return os.getpid(), threading.get_ident(), None if task is None else id(task)
+    return os.getpid(), threading.current_thread(), task
+
+
+def _release_if_acquirer(handle: IO[Any], acquirer_pid: int) -> None:
+    """Unlock *handle* unless this process is a fork of the one that locked it.
+
+    ``flock`` belongs to the open file description, which a forked child
+    shares with its parent: an unlock from the child would release the
+    parent's lock. The child only closes its copy of the descriptor.
+    """
+    if os.getpid() == acquirer_pid:
+        release_file_lock(handle)
 
 
 def _lock_file_key(handle: IO[Any], path: Path) -> LockFileKey:
@@ -109,7 +142,7 @@ def _file_key(status: os.stat_result, path: Path) -> LockFileKey:
 
 
 def _holds_record_lock(owner: LockOwner) -> bool:
-    with _HELD_RECORD_LOCKS_GUARD:
+    with _held_record_locks_guard:
         return any(key[1] == owner for key in _HELD_RECORD_LOCKS)
 
 
@@ -269,10 +302,11 @@ def _flock(path: Path, timeout_s: float) -> Generator[None]:
             wait_for_file_lock(handle, timeout_s=timeout_s)
         except LockTimeoutError as exc:
             raise GoalLockTimeoutError(f"Goal lock {path} stayed busy: {exc}") from exc
+        acquirer_pid = os.getpid()
         try:
             yield
         finally:
-            release_file_lock(handle)
+            _release_if_acquirer(handle, acquirer_pid)
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +395,7 @@ class GoalStore:
         with handle:
             owner = current_lock_owner()
             key = (_lock_file_key(handle, paths.lock_file), owner)
-            with _HELD_RECORD_LOCKS_GUARD:
+            with _held_record_locks_guard:
                 held = _HELD_RECORD_LOCKS.get(key)
             if held is not None and held.held:
                 handle.close()  # re-entry: this open file must not hold a second flock
@@ -381,15 +415,16 @@ class GoalStore:
         except LockTimeoutError as exc:
             raise GoalLockTimeoutError(f"Goal lock {path} stayed busy: {exc}") from exc
         lock = RecordLock(self.project_dir, goal_id, key[0], key[1])
-        with _HELD_RECORD_LOCKS_GUARD:
+        with _held_record_locks_guard:
             _HELD_RECORD_LOCKS[key] = lock
         try:
             yield lock
         finally:
             lock.held = False
-            with _HELD_RECORD_LOCKS_GUARD:
-                del _HELD_RECORD_LOCKS[key]
-            release_file_lock(handle)
+            with _held_record_locks_guard:
+                # A forked child starts with an empty registry, so the entry may be gone.
+                _HELD_RECORD_LOCKS.pop(key, None)
+            _release_if_acquirer(handle, key[1][0])
 
     def create(self, lock: WorktreeLock, record: GoalRecord) -> GoalRecord:
         """Publish a new ``entering`` record at revision 1 under *lock*.

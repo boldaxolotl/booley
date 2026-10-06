@@ -357,12 +357,24 @@ def test_cycle_count_thresholds_accept_only_cycle_count_parameters(name: str) ->
         )
 
 
-def test_clock_scoped_thresholds_are_accepted_for_implementation_goals() -> None:
-    arg = parse_goal_arg(
-        {"family": "synth", "target": "t", "thresholds": {"clk_i.fmax_mhz_min": 1}}
-    )
+@pytest.mark.parametrize("clock", ["clk_i", "clk-out", "clk[0]", "u_pll/clk"])
+def test_clock_scoped_thresholds_accept_every_clock_name_criteria_accept(clock: str) -> None:
+    name = f"{clock}.fmax_mhz_min"
+    arg = parse_goal_arg({"family": "synth", "target": "t", "thresholds": {name: 1}})
     assert isinstance(arg, ImplementationGoalArg)
-    assert dict(arg.thresholds) == {"clk_i.fmax_mhz_min": 1}
+    assert dict(arg.thresholds) == {name: 1}
+    # The same entry is valid Criteria authoring, bound to the same Target.
+    authored = {"mandatory": {"synthesis_ok": {"targets": ["t"], name: 1}}}
+    specs = templates.CriteriaTemplate.from_yaml(authored).specs
+    assert [(spec.name, spec.targets, spec.params) for spec in specs] == [
+        ("synthesis_ok", ["t"], {name: 1})
+    ]
+
+
+@pytest.mark.parametrize("name", ["a.b.fmax_mhz_min", ".fmax_mhz_min", "clk i.fmax_mhz_min"])
+def test_malformed_clock_scopes_are_rejected(name: str) -> None:
+    with pytest.raises(GoalArgError, match="unknown threshold"):
+        parse_goal_arg({"family": "synth", "target": "t", "thresholds": {name: 1}})
 
 
 @pytest.mark.parametrize("name", ["targets", "tests", "statement"])

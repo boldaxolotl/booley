@@ -645,3 +645,109 @@ def test_a_missing_repository_id_with_a_corrupt_record_is_refused(repo: dict[str
     with pytest.raises(GoalRecordCorruptError, match=str(bad)):
         store.identify_worktree(repo["linked"], create=True)
     assert not id_file.exists()
+
+
+# --- Lock ownership across fork and across owner lifetimes ------------------------
+
+
+def _other_thread_can_lock(store: GoalStore, goal_id: str) -> bool:
+    """Whether a different thread of this process gets the record lock right now."""
+    got: list[bool] = []
+
+    def contend() -> None:
+        try:
+            with store.record_lock(goal_id):
+                got.append(True)
+        except GoalLockTimeoutError:
+            got.append(False)
+
+    thread = threading.Thread(target=contend)
+    thread.start()
+    thread.join(timeout=GIT_TIMEOUT_S)
+    return got == [True]
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
+def test_a_forked_child_unwinding_the_lock_does_not_release_the_parents(
+    repo: dict[str, Path],
+) -> None:
+    store = GoalStore(repo["project"], lock_timeout_s=0.2)
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    manager = store.record_lock(record.id)
+    lock = manager.__enter__()
+    try:
+        pid = os.fork()
+        if pid == 0:  # the child unwinds the inherited context manager, then leaves
+            status = 1
+            try:
+                manager.__exit__(None, None, None)
+                status = 0
+            finally:
+                os._exit(status)
+        assert os.waitpid(pid, 0)[1] == 0
+        # The flock is still the parent's: nobody else gets it, and the parent still owns it.
+        assert not _other_thread_can_lock(store, record.id)
+        lock.require_owned()
+    finally:
+        manager.__exit__(None, None, None)
+    assert _other_thread_can_lock(store, record.id)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
+def test_a_forked_child_gets_a_fresh_registry_and_an_unlocked_guard(
+    repo: dict[str, Path],
+) -> None:
+    from booley.goals import store as store_module
+
+    store = GoalStore(repo["project"], lock_timeout_s=0.2)
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    with store.record_lock(record.id) as lock:
+        store_module._held_record_locks_guard.acquire()  # as if another thread held it at fork
+        try:
+            pid = os.fork()
+            if pid == 0:
+                status = 1
+                try:
+                    # Neither call may hang on the inherited guard or see the parent's hold.
+                    clean = not store_module._HELD_RECORD_LOCKS
+                    refused = False
+                    try:
+                        lock.require_owned()
+                    except GoalStoreError:
+                        refused = True
+                    with store.worktree_lock(record.worktree):
+                        pass  # no false LockOrderError from the parent's record lock
+                    status = 0 if clean and refused else 2
+                finally:
+                    os._exit(status)
+        finally:
+            store_module._held_record_locks_guard.release()
+        assert os.waitpid(pid, 0)[1] == 0
+
+
+def test_a_later_thread_never_passes_for_a_dead_owner(repo: dict[str, Path]) -> None:
+    """A lock left held by a finished thread is not re-entered by its successors.
+
+    Thread identifiers are recycled; the owner is the thread object, which the
+    held lock keeps alive, so no later thread can equal it.
+    """
+    store = GoalStore(repo["project"], lock_timeout_s=0.2)
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    kept: list[Any] = []
+
+    def take_and_leave() -> None:
+        manager = store.record_lock(record.id)
+        kept.append((manager, manager.__enter__()))
+
+    first = threading.Thread(target=take_and_leave)
+    first.start()
+    first.join(timeout=GIT_TIMEOUT_S)
+    manager, abandoned = kept[0]
+    try:
+        for _ in range(8):  # successors, one of which reuses the dead thread's identifier
+            assert not _other_thread_can_lock(store, record.id)
+        with pytest.raises(GoalStoreError, match="another process, thread, or task"):
+            abandoned.require_owned()
+    finally:
+        manager.__exit__(None, None, None)
+    assert _other_thread_can_lock(store, record.id)

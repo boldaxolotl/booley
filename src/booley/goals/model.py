@@ -284,8 +284,10 @@ def _reject_unknown(raw: Mapping[str, Any], allowed: frozenset[str], where: str)
         raise GoalArgError(f"{where} has unknown fields: {unknown}")
 
 
-# A clock name in a clock-scoped threshold (``<clock>.<name>``).
-_CLOCK_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A clock name in a clock-scoped threshold (``<clock>.<name>``): Criteria split
+# at the first dot and accept any clock spelling (``clk-out``, ``clk[0]``), so
+# only dots and whitespace are excluded here.
+_CLOCK_NAME = re.compile(r"[^.\s]+")
 
 
 def _require_threshold_names(
@@ -296,11 +298,13 @@ def _require_threshold_names(
     Thresholds are spread into the Criterion authoring entry next to the
     fields that bind the Goal to its Target, so a structural name such as
     ``targets`` or ``test`` must never get through. A per-clock name is
-    ``<clock>.<parameter>`` with a plain identifier as the clock; whether that
+    ``<clock>.<parameter>``, split at the first dot as Criteria do; whether that
     parameter may be clock-scoped is checked by the Criteria rules.
     """
     for name in thresholds:
-        clock, dot, base = name.rpartition(".")
+        clock, dot, base = name.partition(".")
+        if not dot:
+            clock, base = "", name
         scoped_ok = clock_scoped and bool(_CLOCK_NAME.fullmatch(clock))
         if base not in params or (dot and not scoped_ok):
             raise GoalArgError(
