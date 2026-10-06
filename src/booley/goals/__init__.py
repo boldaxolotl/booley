@@ -8,7 +8,19 @@
 - :mod:`booley.goals.store` — worktree identity, locks, and revisioned
   ``record.json`` writes.
 - :mod:`booley.goals.changes` — the append-only Change Log.
+- :mod:`booley.goals.goalsets` — rendering and create-only seeding of the
+  Project-owned Goalsets.
+- :mod:`booley.goals.entry` — the locked, re-drivable entry transaction and
+  its rollback.
+- :mod:`booley.goals.checkout` — the Git operations entry performs.
+- :mod:`booley.goals.protected_inputs` — the protected-input resolver
+  contract, digest, and violation check.
+- :mod:`booley.goals.rules` — the rules text an agent follows in Goal Mode.
+- :mod:`booley.goals.preview` — the switch that registers the Goal Mode
+  surface before it replaces Ticket Mode.
 
-The package depends only on ``criteria``, ``runtime``, and ``core``. Its
-vocabulary is in ``GLOSSARY.md`` beside this file.
+The package depends on ``criteria``, ``evidence``, ``targets``, ``runtime``,
+``core``, and the Flow-neutral ``flows.baseline_pins``; concrete Flows are
+composed in by the MCP entry point. Its vocabulary is in ``GLOSSARY.md``
+beside this file.
 """

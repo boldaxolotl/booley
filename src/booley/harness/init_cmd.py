@@ -59,6 +59,8 @@ from booley.fusesoc.core_projection import (
     projection_issues,
     reconcile_projected_cores,
 )
+from booley.goals.goalsets import seed_goalsets
+from booley.goals.preview import goal_mode_preview_enabled
 
 # --- Re-exported for backward compatibility (Single Responsibility split) ---
 # These symbols were relocated into sibling init_* modules so this file is just
@@ -245,6 +247,14 @@ def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
         if guarded_write(project_dir / name, body, dry_run=ctx.check_only, newline="\n")
         is WriteOutcome.WRITTEN
     ]
+    # Goalsets are seeded only while the Goal Mode preview switch is on; the
+    # files are create-only, so a Project's own edits always survive.
+    if goal_mode_preview_enabled():
+        added += [
+            path.relative_to(project_dir).as_posix()
+            for path, outcome in seed_goalsets(project_dir, dry_run=ctx.check_only)
+            if outcome is WriteOutcome.WRITTEN
+        ]
     if not added:
         return
     if ctx.check_only:
