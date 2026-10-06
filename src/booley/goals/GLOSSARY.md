@@ -30,9 +30,10 @@ origin.
 _Avoid_: source, template
 
 **Goal Change**:
-An approved Goal Change Proposal as recorded in the Change Log: it adds,
-relaxes, or retargets one Goal, or records a coverage waiver, together with
-the human's reason and how the approval was obtained.
+One approved Goal Change Proposal as the Change Log records it when it is
+applied: it adds, relaxes, or retargets one Goal, or waives coverage points
+(`add`, `relax`, `retarget`, `waiver`), together with the human's reason
+and how the approval was obtained. Rejected proposals are not Goal Changes.
 _Avoid_: amendment, criteria edit
 
 **Interrupted Apply**:

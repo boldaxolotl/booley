@@ -170,6 +170,10 @@ Recorded after the Phase 0 spikes
   refuses); the repository is the worktree's, never the Project
   directory's. Under Stealth the record stays local, as above. `init` keeps its `/.booley_project` exclude line; the
   Project `.gitignore` ignores `goals/*/` and keeps `goals/history/`.
+- **Goal conflicts.** Goals that differ in a setting with no defined order
+  (different baseline Target, coverage test selection, review spec file,
+  mutation scope/total/auto) are refused at translation; nothing is merged
+  silently.
 - **Goalsets.** `init` seeds only the four named Goalsets; it does not seed
   `default.md`. With no `default.md` the entry check passes and the skip
   flag must be false; `booley-setup` offers to create one.

@@ -93,9 +93,16 @@ DIRECTION_RULES = (
     DirectionRule(
         "D35",
         (prefix("booley.goals"),),
-        (prefix("booley.harness"), prefix("booley.mcp"), prefix("booley.ticket_board")),
-        "Goal Mode policy and records are composed by MCP and command entry points and do "
-        "not depend on them or on Ticket Board persistence",
+        (
+            prefix("booley.harness"),
+            prefix("booley.mcp"),
+            prefix("booley.specialists"),
+            prefix("booley.ticket_board"),
+            *_FLOW_PREFIXES,
+        ),
+        "Goal Mode policy and records are composed by MCP and command entry points; they do "
+        "not depend on those entry points, Specialists, concrete Flows, or Ticket Board "
+        "persistence",
     ),
     DirectionRule(
         "D34",
@@ -187,6 +194,7 @@ DIRECTION_RULES = (
                 "feedback",
                 "flows",
                 "fusesoc",
+                "goals",
                 "harness",
                 "mcp",
                 "presentation",
