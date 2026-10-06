@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from booley.criteria import evidence_ledger
 from booley.criteria.state import DevelopmentState
-from booley.ticket_board import acceptance_ledger
 from booley.ticket_board.acceptance_ledger import (
+    TICKET_SCOPE,
     AcceptanceLedgerError,
     EvidenceRef,
     bind_review_package,
@@ -401,13 +402,15 @@ def test_campaign_transaction_recovers_uncommitted_canonical_prefix(tmp_path: Pa
     second = state.set_criterion("sim_pass_uart", False, detail={"second": True})
     changes.extend(second)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    lookup, intent, transaction_id = acceptance_ledger._build_transaction_documents(
-        state, changes, _campaign_facts(), identity
+    lookup, intent, transaction_id = evidence_ledger._build_transaction_documents(
+        TICKET_SCOPE, state, changes, _campaign_facts(), identity
     )
-    acceptance_ledger._load_or_publish_intent(log_dir, lookup, intent)
+    evidence_ledger._load_or_publish_intent(TICKET_SCOPE, log_dir, lookup, intent)
     evidence_root = log_dir / "acceptance" / "evidence"
     evidence_root.mkdir(parents=True)
-    acceptance_ledger._publish_v2_record(evidence_root, intent["envelope"], transaction_id, 0)
+    evidence_ledger._publish_v2_record(
+        TICKET_SCOPE, evidence_root, intent["envelope"], transaction_id, 0
+    )
 
     recovered = record_or_verify_transaction(
         log_dir,
@@ -427,8 +430,8 @@ def test_campaign_transaction_removes_truncated_current_temp_and_republishes(
 ) -> None:
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    _lookup, _intent, transaction_id = acceptance_ledger._build_transaction_documents(
-        state, changes, _campaign_facts(), identity
+    _lookup, _intent, transaction_id = evidence_ledger._build_transaction_documents(
+        TICKET_SCOPE, state, changes, _campaign_facts(), identity
     )
     temp = (
         log_dir
@@ -455,19 +458,21 @@ def test_campaign_transaction_removes_truncated_current_temp_and_republishes(
 def test_selecting_committed_transaction_replays_later_plain_evidence(tmp_path: Path) -> None:
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    lookup, intent, transaction_id = acceptance_ledger._build_transaction_documents(
-        state, changes, _campaign_facts(), identity
+    lookup, intent, transaction_id = evidence_ledger._build_transaction_documents(
+        TICKET_SCOPE, state, changes, _campaign_facts(), identity
     )
-    acceptance_ledger._load_or_publish_intent(log_dir, lookup, intent)
+    evidence_ledger._load_or_publish_intent(TICKET_SCOPE, log_dir, lookup, intent)
     evidence_root = log_dir / "acceptance" / "evidence"
     evidence_root.mkdir(parents=True)
     prefix = [
-        acceptance_ledger._publish_v2_record(evidence_root, intent["envelope"], transaction_id, 0)
+        evidence_ledger._publish_v2_record(
+            TICKET_SCOPE, evidence_root, intent["envelope"], transaction_id, 0
+        )
     ]
-    commit = acceptance_ledger._commit_document(intent["envelope"], transaction_id, prefix)
-    acceptance_ledger._write_once(
+    commit = evidence_ledger._commit_document(intent["envelope"], transaction_id, prefix)
+    evidence_ledger.write_once(
         log_dir / "acceptance" / "transactions" / f"{transaction_id}.json",
-        acceptance_ledger._canonical(commit) + b"\n",
+        evidence_ledger.canonical_json(commit) + b"\n",
     )
     later = state.set_criterion("sim_pass_uart", False, detail={"later": True})
     record_changes(
@@ -498,10 +503,10 @@ def test_allocate_sequence_reports_exhaustion(tmp_path, monkeypatch):
     root = tmp_path / "evidence"
     root.mkdir()
     (root / "000000001").mkdir()
-    monkeypatch.setattr(acceptance_ledger, "range", lambda *_args: (1,), raising=False)
+    monkeypatch.setattr(evidence_ledger, "range", lambda *_args: (1,), raising=False)
 
     with pytest.raises(AcceptanceLedgerError, match="Criterion evidence sequence exhausted"):
-        acceptance_ledger._allocate_sequence(root, "")
+        evidence_ledger._allocate_sequence(root, "")
 
 
 def test_freeze_rejects_conflicting_content_at_an_existing_snapshot(tmp_path):
@@ -696,7 +701,7 @@ def test_foreign_v2_manifest_corruption_is_still_fatal(tmp_path: Path) -> None:
     path = next((log / "acceptance/evidence").glob("*/record.json"))
     row = json.loads(path.read_text())
     row["met"] = False
-    path.write_bytes(acceptance_ledger._canonical(row) + b"\n")
+    path.write_bytes(evidence_ledger.canonical_json(row) + b"\n")
     with pytest.raises(AcceptanceLedgerError, match="does not bind"):
         freeze_acceptance(
             log,

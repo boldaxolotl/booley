@@ -311,8 +311,8 @@ def record_campaign_acceptance(
     if endpoint.state._file_path is not None and work_dir is not None:
         endpoint.state.work_dir = str(Path(work_dir).resolve())
     recorder = endpoint._acceptance_recorder
-    identity_loader = getattr(recorder, "_validated_ticket_identity", None)
-    ticket_identity = identity_loader() if callable(identity_loader) else {}
+    recorded_identity = recorder.acceptance_identity()
+    ticket_identity: Mapping[str, Any] = recorded_identity if recorded_identity is not None else {}
     stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
     context = AcceptanceContext(
         endpoint.state.slug,

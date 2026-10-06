@@ -1200,6 +1200,9 @@ def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
     tool._state = state
 
     class FailedRecorder:
+        def acceptance_identity(self):
+            return {}
+
         def record_changes(self, *_args, **_kwargs):
             raise OSError("coverage ledger unavailable")
 
