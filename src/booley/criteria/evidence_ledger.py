@@ -33,7 +33,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -591,17 +591,22 @@ def _existing_prefix(
     return [found[index] for index in range(len(found))]
 
 
-def _next_sequence(root: Path) -> int:
-    used: set[int] = set()
-    if root.exists():
-        for path in root.iterdir():
-            prefix = path.name.partition(".tx.")[0]
-            if re.fullmatch(r"[0-9]{9}", prefix):
-                used.add(int(prefix))
+def _free_sequences(root: Path) -> Iterator[int]:
+    """Yield, in order, every bounded sequence no entry beneath *root* uses yet."""
+    used = {path.name.partition(".tx.")[0] for path in root.iterdir()} if root.exists() else set()
     for sequence in range(1, 1_000_001):
-        if sequence not in used:
-            return sequence
-    raise AcceptanceLedgerError(f"Criterion evidence sequence exhausted beneath {root}")
+        if f"{sequence:09d}" not in used:
+            yield sequence
+
+
+def _sequence_exhausted(root: Path) -> AcceptanceLedgerError:
+    return AcceptanceLedgerError(f"Criterion evidence sequence exhausted beneath {root}")
+
+
+def _next_sequence(root: Path) -> int:
+    for sequence in _free_sequences(root):
+        return sequence
+    raise _sequence_exhausted(root)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -977,21 +982,13 @@ def _validate_observation(payload: Mapping[str, Any]) -> None:
 def read_evidence_records(
     scope: EvidenceScope, log_dir: Path, state: DevelopmentState, identity: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    """Read and structurally validate every immutable observation for *identity*."""
-    records = _active_evidence_records(scope, Path(log_dir), state, identity)
-    for payload in records:
-        try:
-            if "acceptance_basis" in payload:
-                raise ValueError("unsupported Ticket format: recreate this Ticket")
-            criterion = payload["criterion"]
-            role = payload["role"]
-            if not isinstance(criterion, str) or role not in {"baseline", "candidate"}:
-                raise ValueError("record has invalid criterion identity or role")
-            if payload.get(scope.codec.identity_field) != identity:
-                raise ValueError("Criterion evidence names another Ticket identity")
-        except (KeyError, TypeError, ValueError) as exc:
-            raise AcceptanceLedgerError(f"corrupt Criterion evidence: {exc}") from exc
-    return records
+    """Read every validated immutable observation recorded under *identity*.
+
+    ``validated_evidence_records`` already rejects each observation with a
+    malformed shape or identity, and ``_active_evidence_records`` keeps only
+    those whose identity equals *identity*.
+    """
+    return _active_evidence_records(scope, Path(log_dir), state, identity)
 
 
 def replay_projection(
@@ -1243,18 +1240,15 @@ def _reserve_sequence(root: Path, transaction_id: str = "") -> tuple[int, Path]:
 
 
 def _allocate_sequence(root: Path, transaction_id: str) -> tuple[int, Path]:
-    used = {path.name.partition(".tx.")[0] for path in root.iterdir()}
-    for sequence in range(1, 1_000_001):
+    for sequence in _free_sequences(root):
         name = f"{sequence:09d}"
-        if name in used:
-            continue
         directory = root / (f"{name}.tx.{transaction_id}" if transaction_id else name)
         try:
             directory.mkdir()
         except FileExistsError:
             continue
         return sequence, directory
-    raise AcceptanceLedgerError(f"Criterion evidence sequence exhausted beneath {root}")
+    raise _sequence_exhausted(root)
 
 
 def record_changes(
