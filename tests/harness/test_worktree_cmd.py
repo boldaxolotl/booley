@@ -134,6 +134,9 @@ def project(tmp_path: Path, monkeypatch) -> Path:
     _write(data / "goals" / "locks" / "worktree-abc.lock", "")
     _write(data / "goals" / "history" / "untracked-20261006T000000Z.md", "local only\n")
     _write(data / "runtime" / "sessions" / "s1" / "state.json", "{}\n")
+    # Nested directories that merely share those names are ordinary Project data.
+    _write(data / "cores" / "goals" / "goals.core", "CAPI=2:\n")
+    _write(data / "mcp_tools" / "runtime" / "sessions" / "helper.py", "# helper\n")
     return root
 
 
@@ -170,6 +173,15 @@ def test_copied_project_dir_leaves_goal_and_session_state_behind(project: Path) 
     assert not list(goals.rglob("record.json"))
     assert not (goals / "locks").exists()
     assert not (copied / "runtime" / "sessions").exists()
+
+
+@_real_script
+def test_only_the_top_level_goal_and_session_directories_stay_behind(project: Path) -> None:
+    assert _new("nested", project) == 0
+
+    copied = project / ".booley_project" / "worktrees" / "nested" / ".booley_project"
+    assert (copied / "cores" / "goals" / "goals.core").is_file()
+    assert (copied / "mcp_tools" / "runtime" / "sessions" / "helper.py").is_file()
 
 
 @_real_script
@@ -214,3 +226,11 @@ def test_refuses_a_registered_worktree_whose_directory_is_gone(project: Path, ca
 
     assert "already registered" in capsys.readouterr().err
     assert not worktree.exists()
+
+
+def test_help_never_names_the_preview_surface(capsys) -> None:
+    """`worktree new` is released; its help must not mention hidden Goal Mode state."""
+    with pytest.raises(SystemExit):
+        tlr._build_parser().parse_args(["worktree", "new", "--help"])
+
+    assert "Goal" not in capsys.readouterr().out

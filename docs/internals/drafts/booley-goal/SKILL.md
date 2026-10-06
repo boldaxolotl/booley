@@ -25,10 +25,10 @@ Remember the absolute root. It is `work_dir` on every Booley call from now on.
 
 ## 2. Read the Goalsets
 
-List `.booley_project/goalsets/*.md`. Each is a Project-owned Markdown file
-written in the vocabulary of `goal_enter`'s `goals` argument: a short list of
-Goals and one JSON block of Goal arguments with placeholders such as
-`<target>`.
+List the `*.md` files in the Project directory's `goalsets/`. Each is a
+Project-owned Markdown file written in the vocabulary of `goal_enter`'s
+`goals` argument: a short list of Goals and one JSON block of Goal arguments
+with placeholders such as `<target>`.
 
 If `default.md` exists it applies to every entry. Include its Goals and list
 `default` in `goalsets_used`, unless the human explicitly says to skip it;

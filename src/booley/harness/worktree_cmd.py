@@ -53,7 +53,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Create .booley_project/worktrees/<name> and print its path",
         description=(
             "Create a linked Git worktree at .booley_project/worktrees/<name> with a "
-            "clean .booley_project snapshot (live Ticket, Goal, and session state stays "
+            "clean .booley_project snapshot (live run and session state stays "
             "behind). The worktree starts on a detached HEAD at the current commit; a "
             "<branch>--<description> name checks out that existing branch instead. "
             "An existing destination is refused and left untouched. Prints the "

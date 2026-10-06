@@ -472,6 +472,8 @@ fi
 # Live state stays behind: Ticket boards/logs/locks, Goal state under goals/
 # (records, locks, and history; committed Goal history reaches the worktree
 # through Git only), and per-session runtime state under runtime/sessions/.
+# Those two patterns start with ./ so tar matches only the top-level members
+# (the archive is built from "."); a nested directory named goals is copied.
 if [ -d "$CWD/.booley_project" ]; then
     echo "Copying .booley_project/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/.booley_project"
@@ -489,8 +491,8 @@ if [ -d "$CWD/.booley_project" ]; then
         --exclude='tickets/board' \
         --exclude='tickets/logs' \
         --exclude='tickets/locks' \
-        --exclude='goals' \
-        --exclude='runtime/sessions' \
+        --exclude='./goals' \
+        --exclude='./runtime/sessions' \
         --exclude='.locks' \
         --exclude='tmp' \
         --exclude='eval' \
