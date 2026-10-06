@@ -54,12 +54,26 @@ def _bound_names(node: ast.AST, nodes: list[ast.AST]) -> set[str]:
     return names
 
 
+def _scope_bindings(
+    node: ast.AST, nodes: list[ast.AST], parent: dict[str, set[str]]
+) -> dict[str, set[str]]:
+    result = {name: values.copy() for name, values in parent.items()}
+    for name in _bound_names(node, nodes):
+        # Class bodies use dynamic local lookup with fallback to enclosing names.
+        if isinstance(node, ast.ClassDef):
+            result.setdefault(name, set())
+        else:
+            result[name] = set()
+    for item in nodes:
+        if isinstance(item, (*_FUNCTIONS[:2], ast.ClassDef)):
+            result.setdefault(item.name, set()).add(f"<local>.{item.name}")
+    return result
+
+
 def _bindings(node: ast.AST, parent: dict[str, set[str]]) -> dict[str, set[str]]:
     """Collect scope-wide possible bindings, including late enclosing imports."""
-    result = {name: values.copy() for name, values in parent.items()}
     nodes = list(_local_nodes(node))
-    for name in _bound_names(node, nodes):
-        result[name] = set()
+    result = _scope_bindings(node, nodes, parent)
     for item in nodes:
         if isinstance(item, ast.Import):
             for alias in item.names:
@@ -85,9 +99,9 @@ def _bindings(node: ast.AST, parent: dict[str, set[str]]) -> dict[str, set[str]]
 
 def _assertion_call(node: ast.Call, bindings: dict[str, set[str]]) -> bool:
     qualified = _qualified(node.func, bindings)
-    if qualified & {"subprocess.check_call", "subprocess.check_output"}:
+    names = qualified - {"subprocess.check_call", "subprocess.check_output"}
+    if qualified and not names:
         return False
-    names = qualified.copy()
     names.add(
         node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
     )
@@ -106,12 +120,12 @@ def _assertion_name(name: str) -> bool:
 
 class Scanner(ast.NodeVisitor):
     def __init__(self, path: str, tree: ast.AST) -> None:
-        self.path = path
-        self.bindings = _bindings(tree, {})
-        self.closure_bindings = self.bindings
-        self.scope = "<module>"
-        self.suppressed = False
-        self.direct: set[int] = set()
+        self.path: str = path
+        self.bindings: dict[str, set[str]] = _bindings(tree, {})
+        self.closure_bindings: dict[str, set[str]] = self.bindings
+        self.scope: str = "<module>"
+        self.suppressed: bool = False
+        self.direct_suppress_calls: set[int] = set()
         self.allowed_references: set[int] = set()
         self.findings: set[Finding] = set()
 
@@ -154,7 +168,7 @@ class Scanner(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         if _SUPPRESS in _qualified(node.func, self.bindings):
             self.allowed_references.add(id(node.func))
-            if id(node) not in self.direct:
+            if id(node) not in self.direct_suppress_calls:
                 self.report(node, "unsupported-suppress-use")
             if any(
                 value.split(".")[-1] in _BROAD | {"failureException"}
@@ -180,7 +194,7 @@ class Scanner(ast.NodeVisitor):
                 expr.func, self.bindings
             )
             if is_suppress:
-                self.direct.add(id(expr))
+                self.direct_suppress_calls.add(id(expr))
             self.visit(expr)
             if item.optional_vars:
                 self.visit(item.optional_vars)

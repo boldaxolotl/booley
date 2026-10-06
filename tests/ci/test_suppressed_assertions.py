@@ -452,3 +452,49 @@ def test_import_without_as_binds_the_top_level_module() -> None:
         with contextlib.suppress(OSError):
             assert False
     """)
+
+
+def test_class_body_retains_outer_binding_before_later_assignment() -> None:
+    source = textwrap.dedent("""
+        import contextlib
+        class TestContracts:
+            with contextlib.suppress(AssertionError):
+                assert False
+            contextlib = None
+    """)
+    exec(source, {})
+    assert [f.rule for f in _scan(source)] == ["broad-suppression", "suppressed-assertion"]
+
+
+@pytest.mark.parametrize("helper", ["assert_contract", "_assert_contract", "check_contract"])
+def test_local_assertion_helper_assignment_alias_preserves_identity(helper: str) -> None:
+    source = textwrap.dedent(f"""
+        import contextlib
+        def {helper}():
+            assert False
+        verify = {helper}
+        with contextlib.suppress(OSError):
+            raise OSError()
+            verify()
+    """)
+    exec(source, {})
+    assert [f.rule for f in _scan(source)] == ["suppressed-assertion-call"]
+
+
+@pytest.mark.parametrize("first", ["subprocess.check_call", "mock.assert_called_once"])
+def test_mixed_subprocess_and_assertion_bindings_remain_conservative(first: str) -> None:
+    second = (
+        "mock.assert_called_once" if first == "subprocess.check_call" else "subprocess.check_call"
+    )
+    source = textwrap.dedent(f"""
+        import contextlib, subprocess
+        from unittest.mock import Mock
+        mock = Mock()
+        verify = {first}
+        verify = {second}
+        with contextlib.suppress(OSError):
+            raise OSError()
+            verify()
+    """)
+    exec(source, {})
+    assert [f.rule for f in _scan(source)] == ["suppressed-assertion-call"]
