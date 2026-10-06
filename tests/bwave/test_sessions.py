@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 from booley.bwave.cli import SESSION_FILE
+from booley.dev_support.test_profiles import native_test_binary
+from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -27,19 +29,6 @@ def _inside_session_runtime(monkeypatch):
     (which inherits os.environ), so the venue guard passes on a host machine.
     """
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-
-
-def _native_bwave_binary() -> Path:
-    suffix = ".exe" if sys.platform == "win32" else ""
-    release = BOOLEY_ROOT / "crates" / "bwave" / "target" / "release" / f"bwave{suffix}"
-    debug = BOOLEY_ROOT / "crates" / "bwave" / "target" / "debug" / f"bwave{suffix}"
-    if release.exists():
-        return release
-    if debug.exists():
-        return debug
-    pytest.skip(
-        "native bwave binary not built; run cargo build --manifest-path crates/bwave/Cargo.toml"
-    )
 
 
 def _ensure_bwave_fixture() -> None:
@@ -81,10 +70,19 @@ def _query(*extra_args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "BOOLEY_CONTAINER": "1",
-        "PYTHONPATH": str(BOOLEY_ROOT / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": os.pathsep.join(
+            [str(BOOLEY_ROOT), str(BOOLEY_ROOT / "src"), os.environ.get("PYTHONPATH", "")]
+        ),
     }
     return subprocess.run(
-        [sys.executable, "-m", "booley.bwave.cli", "query", *extra_args],
+        [
+            sys.executable,
+            "-m",
+            "tests.bwave.native_binary",
+            str(native_test_binary(BOOLEY_ROOT)),
+            "query",
+            *extra_args,
+        ],
         capture_output=True,
         text=True,
         timeout=timeout,

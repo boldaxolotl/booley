@@ -6,15 +6,17 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import pytest
 
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(_SOURCE_ROOT / "src"))
 
 pytest_plugins = ["tests.timeout_evidence", "tests.timeout_headroom"]
 
@@ -105,6 +107,91 @@ def _isolate_xdist_worker_temp() -> None:
     _XDIST_WORKER_TEMP = worker_temp
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--test-profile",
+        choices=("python", "full"),
+        default=None,
+        help="Source tests: python excludes native B-Wave; full preflights it",
+    )
+
+
+def _validate_full_selection(config: pytest.Config) -> None:
+    """A full profile must collect the complete source suite."""
+    options = config.option
+    filtered = any(
+        (
+            options.markexpr,
+            options.keyword,
+            options.deselect,
+            options.ignore,
+            options.ignore_glob,
+            options.lf,
+            options.stepwise,
+            options.stepwise_skip,
+            options.stepwise_reset,
+        )
+    )
+    paths = [Path(arg).resolve() for arg in config.args]
+    if filtered or paths != [(_SOURCE_ROOT / "tests").resolve()]:
+        raise pytest.UsageError(
+            "full profile requires the complete tests/ suite without filters; use unprofiled pytest for diagnostics"
+        )
+
+
+def _configure_test_profile(config: pytest.Config) -> None:
+    profile = config.getoption("--test-profile")
+    if profile == "python":
+        expression = config.option.markexpr
+        config.option.markexpr = (
+            f"({expression}) and not native_bwave" if expression else "not native_bwave"
+        )
+    if profile == "full" and not hasattr(config, "workerinput") and not config.option.help:
+        _validate_full_selection(config)
+        from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
+
+        problem = native_test_problem(_SOURCE_ROOT)
+        if problem:
+            raise pytest.UsageError(f"{problem}; run {' '.join(BWAVE_BUILD)}")
+
+
+@pytest.fixture(autouse=True)
+def _native_source_test_binary(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if request.node.get_closest_marker("native_bwave"):
+        from booley.dev_support.test_profiles import native_test_binary
+
+        binary = native_test_binary(_SOURCE_ROOT)
+        monkeypatch.setenv("BOOLEY_BWAVE_BIN", str(binary))
+        monkeypatch.setattr(
+            "booley.runtime.paths.native_bwave_binary",
+            lambda: binary if binary.is_file() else None,
+        )
+        from tests.bwave.native_binary import require_exact_binary
+
+        monkeypatch.setattr(
+            "booley.bwave.cli.native_bwave_binary", lambda: require_exact_binary(binary)
+        )
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[Any]
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report = yield
+    if (
+        item.config.getoption("--test-profile") == "full"
+        and item.get_closest_marker("native_bwave")
+        and report.skipped
+        and not hasattr(report, "wasxfail")
+        and not (os.name != "posix" and "FIFO requires POSIX" in str(report.longrepr))
+    ):
+        report.outcome = "failed"
+        report.longrepr = f"Full profile requires native test execution: {report.longrepr}"
+    return report
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Bound every test's wall-clock so a hang fails loudly instead of wedging
     the whole suite.
@@ -113,6 +200,7 @@ def pytest_configure(config: pytest.Config) -> None:
     this is a deliberate no-op that emits *no* config warning, keeping the suite
     warning-free (principle 12) in bare environments.
     """
+    _configure_test_profile(config)
     # Imported here: pytest_plugins must load it first for assertion rewriting.
     from tests.timeout_headroom import timeout_plugin_loaded
 

@@ -2154,8 +2154,9 @@ def test_issue_1108_legacy_and_grep_dispatch(monkeypatch, extra, subcommand, rem
 @pytest.mark.parametrize("limit", [["--limit", "10001"], ["--limit=2000000"]])
 def test_issue_1108_real_json_cap_preserves_native_warnings(monkeypatch, tmp_path, capfd, limit):
     from booley.bwave import cli as bwave
+    from booley.dev_support.test_profiles import native_test_binary
 
-    binary = BOOLEY_ROOT / "crates/bwave/target/debug/bwave"
+    binary = native_test_binary(BOOLEY_ROOT)
     assert binary.is_file(), "build the native bwave binary before this integration test"
     vcd = tmp_path / "input.vcd"
     fst = tmp_path / "input.fst"
@@ -2201,8 +2202,9 @@ def test_issue_1108_real_json_cap_preserves_native_warnings(monkeypatch, tmp_pat
 )
 def test_issue_1108_wrapper_preserves_native_input_errors(monkeypatch, extra):
     from booley.bwave import cli as bwave
+    from booley.dev_support.test_profiles import native_test_binary
 
-    binary = BOOLEY_ROOT / "crates/bwave/target/debug/bwave"
+    binary = native_test_binary(BOOLEY_ROOT)
     assert binary.is_file()
     monkeypatch.setattr(bwave, "_resolve_trace", lambda args: "/nonexistent/trace.fst")
     monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)

@@ -59,7 +59,7 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
-from booley.runtime.paths import native_bwave_binary
+from booley.runtime import paths as runtime_paths
 from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -2147,7 +2147,7 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
 ) -> None:
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
-    native_bwave = native_bwave_binary()
+    native_bwave = runtime_paths.native_bwave_binary()
     if queryable and native_bwave is None:
         pytest.skip("native B-Wave binary is required to verify a queryable Trace Artifact")
     project, _ = _write_stale_compiler_fixture(tmp_path)
