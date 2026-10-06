@@ -692,9 +692,14 @@ class GoalRecord:
     Entry fields (D15): ``original_ref`` is the branch or detached commit
     HEAD was on, ``branch`` the Goal Branch, ``branch_created`` whether entry
     created it. Finish fields: ``validated_head`` and ``package_digest``.
-    ``protected_digest`` and ``protected_paths`` are the D7 snapshot.
+    ``protected_paths``, ``protected_digest`` (working view), and
+    ``protected_head_digest`` (HEAD view) are the D7 snapshot.
     ``session_key`` is the entering session, an audit field only (D3).
     ``failure`` explains a ``failed`` record, for example a branch left behind.
+    ``paired_project_base_sha`` is the commit a paired Project repository
+    (Stealth's separate ``.booley_project`` repository, checked out inside the
+    worktree) was on at entry; baseline checkouts use it instead of guessing
+    a fork point. ``None`` when the worktree has no paired Project repository.
     """
 
     id: str
@@ -715,9 +720,11 @@ class GoalRecord:
     skip_reason: str | None = None
     protected_digest: str | None = None
     protected_paths: tuple[str, ...] = ()
+    protected_head_digest: str | None = None
     validated_head: str | None = None
     package_digest: str | None = None
     failure: str | None = None
+    paired_project_base_sha: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The JSON form stored in ``record.json``."""
@@ -741,9 +748,11 @@ class GoalRecord:
             "skip_reason": self.skip_reason,
             "protected_digest": self.protected_digest,
             "protected_paths": list(self.protected_paths),
+            "protected_head_digest": self.protected_head_digest,
             "validated_head": self.validated_head,
             "package_digest": self.package_digest,
             "failure": self.failure,
+            "paired_project_base_sha": self.paired_project_base_sha,
         }
 
     @classmethod
@@ -792,9 +801,11 @@ _RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
         "skip_reason": None,
         "protected_digest": None,
         "protected_paths": [],
+        "protected_head_digest": None,
         "validated_head": None,
         "package_digest": None,
         "failure": None,
+        "paired_project_base_sha": None,
     }
 )
 
@@ -818,6 +829,9 @@ def _identity_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "branch_created": _record_bool(mapping["branch_created"], "record.branch_created"),
         "session_key": _record_opt_str(mapping["session_key"], "record.session_key"),
         "entered_at": record_timestamp(mapping["entered_at"], "record.entered_at"),
+        "paired_project_base_sha": _record_opt_commit(
+            mapping["paired_project_base_sha"], "record.paired_project_base_sha"
+        ),
     }
 
 
@@ -840,6 +854,9 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         ),
         "protected_paths": tuple(
             _record_str_list(mapping["protected_paths"], "record.protected_paths")
+        ),
+        "protected_head_digest": _record_opt_digest(
+            mapping["protected_head_digest"], "record.protected_head_digest"
         ),
         "validated_head": (
             None
@@ -924,6 +941,10 @@ def _record_commit(raw: object, where: str) -> str:
     if not _COMMIT.fullmatch(value):
         raise GoalRecordFormatError(f"{where} must be a full commit id, got {value!r}")
     return value
+
+
+def _record_opt_commit(raw: object, where: str) -> str | None:
+    return None if raw is None else _record_commit(raw, where)
 
 
 def _record_opt_digest(raw: object, where: str) -> str | None:

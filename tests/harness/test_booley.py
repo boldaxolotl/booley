@@ -964,7 +964,7 @@ class TestEnforceVenue:
         `auth` is host-only too: it drives the host's browser OAuth flow and
         writes the host's ~/.config, neither of which exists in the sandbox.
         """
-        assert {"run", "chat", "board"} == tlr._CONTAINER_ONLY_COMMANDS
+        assert {"run", "chat", "board", "worktree"} == tlr._CONTAINER_ONLY_COMMANDS
         assert {
             "bootstrap",
             "init",

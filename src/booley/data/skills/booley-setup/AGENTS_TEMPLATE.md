@@ -32,8 +32,7 @@ tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3)
 ## Working on Another Branch or Commit (git worktrees)
 
 - To build or simulate another branch/commit without touching the workspace, do not run plain `git worktree add`, use an arbitrary path, or manually copy/symlink `.booley_project/`. A bare checkout lacks Booley state; the live state contains machine-specific runtime data.
-- The worktree helper is Sandbox package data at `booley/dev_support/worktree_create.sh`. Invoke it to create `.booley_project/worktrees/<name>` with a clean `.booley_project` snapshot:
-  `echo '{"name":"<name>","cwd":"'"$PWD"'"}' | bash "$(python -c 'import booley.dev_support, pathlib; print(pathlib.Path(booley.dev_support.__file__).parent / "worktree_create.sh")')"`
+- Inside the Sandbox, run `booley worktree new <name>` from the workspace root to create `.booley_project/worktrees/<name>` with a clean `.booley_project` snapshot. It prints the worktree path and refuses a name whose destination already exists.
   (a `<branch>--<description>` name checks out `<branch>`; otherwise the worktree is a detached HEAD at the current commit).
 - Pass `work_dir=<worktree path>` to a Flow (`sim`, `lint`, `synth`, ...) to use that checkout; omit it for the normal workspace. Either way, project config comes from the canonical project dir.
 - For synthesis/implementation QoR against a past commit, prefer `synth`/`fpga`'s built-in `--baseline <git ref>` over a manual worktree.

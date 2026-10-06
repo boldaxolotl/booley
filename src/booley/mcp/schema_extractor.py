@@ -44,7 +44,7 @@ _WORK_DIR_PROPERTY: dict[str, Any] = {
         "Run the endpoint against this checkout instead of the session "
         "workspace. Must be the root of a linked git worktree of the "
         "workspace repo — create one under .booley_project/worktrees/ "
-        "with worktree_create.sh. Omit to use the current workspace."
+        "with `booley worktree new <name>`. Omit to use the current workspace."
     ),
 }
 

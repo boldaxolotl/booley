@@ -564,3 +564,42 @@ def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
     info = extract_mcp_tool_info(source, builtin=True, package="flows/lint")
     assert info is not None
     assert (info.name, info.kind, info.satisfies) == ("lint", "flow", ("lint_clean",))
+
+
+class TestGoalToolCount:
+    """The Interactive catalog grows by exactly the four Goal tools behind the preview switch."""
+
+    @staticmethod
+    def _interactive_catalog(monkeypatch: pytest.MonkeyPatch, preview: bool) -> list[str]:
+        from booley.goals.preview import GOAL_MODE_PREVIEW_ENV
+        from booley.mcp import server as mcp_server
+
+        for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        if preview:
+            monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
+        else:
+            monkeypatch.delenv(GOAL_MODE_PREVIEW_ENV, raising=False)
+        monkeypatch.setattr(mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
+        builtins = [{"name": "sim", "description": "Run simulation", "schema": {"type": "object"}}]
+        return [definition["name"] for definition in mcp_server._all_mcp_tool_defs(builtins)]
+
+    def test_preview_off_lists_no_goal_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        names = self._interactive_catalog(monkeypatch, preview=False)
+
+        assert len(names) == 6
+        assert not [name for name in names if name.startswith("goal_")]
+
+    def test_preview_on_adds_exactly_four_goal_tools(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        names = self._interactive_catalog(monkeypatch, preview=True)
+
+        assert len(names) == 10
+        assert sorted(name for name in names if name.startswith("goal_")) == [
+            "goal_enter",
+            "goal_finish",
+            "goal_propose_change",
+            "goal_status",
+        ]

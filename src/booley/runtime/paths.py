@@ -21,6 +21,15 @@ def dev_support_dir() -> Path:
     return Path(str(files("booley").joinpath("dev_support")))
 
 
+def worktree_create_script() -> Path:
+    """Return the packaged worktree-creation script (runtime package data).
+
+    Ticket setup and ``booley worktree new`` both run this bash script; its
+    JSON stdin contract is documented in the script header.
+    """
+    return Path(str(files("booley").joinpath("runtime", "worktree_create.sh")))
+
+
 def refs_dir() -> Path:
     """Return path to reference docs (style guides, review guides, etc.)."""
     return package_data_dir() / "refs"

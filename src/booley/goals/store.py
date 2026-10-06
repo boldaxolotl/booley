@@ -323,7 +323,15 @@ class RecordScan:
 
 
 # Fields fixed when a record is created; a save may not change them.
-_CREATION_FIELDS = ("id", "worktree", "branch", "original_ref", "base_sha", "entered_at")
+_CREATION_FIELDS = (
+    "id",
+    "worktree",
+    "branch",
+    "original_ref",
+    "base_sha",
+    "entered_at",
+    "paired_project_base_sha",
+)
 
 
 @dataclass(frozen=True)

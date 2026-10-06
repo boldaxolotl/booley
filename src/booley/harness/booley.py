@@ -5,6 +5,7 @@ Subcommands:
     run       Persistent ticket execution loop
     chat      Open the Project's configured agent CLI
     board     Print the ticket board
+    worktree  Create a linked worktree with a clean Project snapshot
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources
@@ -36,6 +37,7 @@ from typing import TYPE_CHECKING
 from booley.config.jobs import parse_caps
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
+from booley.goals.preview import goal_mode_preview_enabled
 from booley.harness import cheatsheet, doctor_stamp, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
 from booley.harness.blocking import EXIT_USER_QUIT
@@ -67,6 +69,8 @@ from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
 from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
+from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
+from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.lifecycle_lock import LifecycleLockError
@@ -127,6 +131,7 @@ COMMAND_LOCATIONS = {
     "run": CommandLocation.SESSION_RUNTIME,
     "chat": CommandLocation.SESSION_RUNTIME,
     "board": CommandLocation.SESSION_RUNTIME,
+    "worktree": CommandLocation.SESSION_RUNTIME,
     "cheat": CommandLocation.EITHER,
     "doctor": CommandLocation.EITHER,
     "bootstrap": CommandLocation.HOST,
@@ -158,6 +163,7 @@ COMMAND_PROJECT_BINDINGS = {
     "run": ProjectBinding.REQUIRED,
     "chat": ProjectBinding.REQUIRED,
     "board": ProjectBinding.REQUIRED,
+    "worktree": ProjectBinding.REQUIRED,
     "cheat": ProjectBinding.OPTIONAL,
     "doctor": ProjectBinding.REQUIRED,
     "bootstrap": ProjectBinding.INDEPENDENT,
@@ -175,9 +181,29 @@ COMMAND_PROJECT_BINDINGS = {
     "shell": ProjectBinding.REQUIRED,
 }
 
+# Goal Mode preview commands (ADR 0067 D13). They join the effective catalogs
+# below only while BOOLEY_GOAL_MODE_PREVIEW=1, so the released catalogs above,
+# help, and the cheatsheet never mention them.
+GOAL_PREVIEW_COMMAND_LOCATIONS = {"goal": CommandLocation.SESSION_RUNTIME}
+GOAL_PREVIEW_COMMAND_PROJECT_BINDINGS = {"goal": ProjectBinding.REQUIRED}
+
+
+def command_locations() -> dict[str, CommandLocation]:
+    """Return the effective location catalog: released commands plus preview ones."""
+    if goal_mode_preview_enabled():
+        return {**COMMAND_LOCATIONS, **GOAL_PREVIEW_COMMAND_LOCATIONS}
+    return COMMAND_LOCATIONS
+
+
+def command_project_bindings() -> dict[str, ProjectBinding]:
+    """Return the effective Project-binding catalog: released plus preview commands."""
+    if goal_mode_preview_enabled():
+        return {**COMMAND_PROJECT_BINDINGS, **GOAL_PREVIEW_COMMAND_PROJECT_BINDINGS}
+    return COMMAND_PROJECT_BINDINGS
+
 
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
-    binding = COMMAND_PROJECT_BINDINGS[command]
+    binding = command_project_bindings()[command]
     if binding is ProjectBinding.AUTH:
         return ProjectBinding.INDEPENDENT if args.status else ProjectBinding.REQUIRED
     return binding
@@ -430,7 +456,7 @@ def _install_project_options(parser: argparse.ArgumentParser) -> None:
                 for name, child in action.choices.items():
                     if not route and (
                         name in {"run", "board"}
-                        or COMMAND_PROJECT_BINDINGS[name] is ProjectBinding.INDEPENDENT
+                        or command_project_bindings()[name] is ProjectBinding.INDEPENDENT
                     ):
                         continue
                     install(child, (*route, name))
@@ -541,7 +567,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # usage line; subparsers added without `help=` stay out of the listing.
     sub = parser.add_subparsers(
         dest="command",
-        metavar=f"{{{','.join(COMMAND_LOCATIONS)}}}",
+        metavar=f"{{{','.join(command_locations())}}}",
     )
 
     run_p = sub.add_parser(
@@ -590,7 +616,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     _add_board_subparsers(sub)
+    add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
+    if goal_mode_preview_enabled():
+        _add_goal_subparser(sub)
 
     # Hidden shortcut for a named one-shot run.
     parser.add_argument("--slug", "-s", type=str, default="", help=argparse.SUPPRESS)
@@ -604,7 +633,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
     """Prefix advertised command summaries from the location catalog."""
     for action in subparsers._choices_actions:
-        location = COMMAND_LOCATIONS.get(action.dest)
+        location = command_locations().get(action.dest)
         if location is not None and action.help != argparse.SUPPRESS:
             action.help = f"{location.label} {action.help}"
 
@@ -1148,6 +1177,32 @@ def _add_utility_subparsers(sub) -> None:
     _add_shell_subparser(sub)
 
 
+def _add_goal_subparser(sub) -> None:
+    """Add the Goal Mode preview group `booley goal` (ADR 0067 D13).
+
+    Registered only while BOOLEY_GOAL_MODE_PREVIEW=1; see command_locations().
+    """
+    goal_p = sub.add_parser(
+        "goal",
+        help="Inspect or abandon this worktree's Goal Mode",
+        description="Goal Mode commands for the Goal Mode this worktree hosts.",
+    )
+    goal_sub = goal_p.add_subparsers(
+        dest="goal_command", metavar="{status,abandon}", required=True
+    )
+    status_p = goal_sub.add_parser("status", help="Show this worktree's Goal Mode status")
+    detail = status_p.add_mutually_exclusive_group()
+    detail.add_argument("--short", action="store_true", help="One-line summary")
+    detail.add_argument("--long", action="store_true", help="Full detail")
+    goal_sub.add_parser("abandon", help="Abandon this worktree's Goal Mode")
+
+
+def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
+    """Placeholder for `booley goal`: the subcommands parse but do not run yet."""
+    print(f"booley goal {args.goal_command}: not available yet", file=sys.stderr)
+    return 2
+
+
 def _add_targets_subparser(sub) -> None:
     """Add the `booley targets` subparser (ADR 0030 Target listing)."""
     # The positional does double duty: a glob (contains * ? [) filters the
@@ -1199,7 +1254,7 @@ def _normalize_project_options(parser, args) -> None:
         args.project_root = ""
     if hasattr(args, "_cli_selection") and (
         args.command in {"run", "board"}
-        or COMMAND_PROJECT_BINDINGS[args.command] is ProjectBinding.INDEPENDENT
+        or command_project_bindings()[args.command] is ProjectBinding.INDEPENDENT
     ):
         parser.error(f"--project is unsupported for {args.command}")
     _extract_endpoint_selection(parser, args)
@@ -2255,6 +2310,8 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "shell": _cmd_shell,
     "session": _cmd_session,
     "targets": _cmd_targets,
+    "worktree": run_worktree,
+    "goal": _cmd_goal,
     "flow": _cmd_flow,
     "specialist": _cmd_specialist,
     "feedback": _cmd_feedback,
@@ -2284,7 +2341,7 @@ def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | N
 
 def _reject_source_project_command(command: str, project_root: Path) -> int | None:
     """Reject Project commands in Booley source while allowing dogfood feedback."""
-    if COMMAND_PROJECT_BINDINGS[command] in {
+    if command_project_bindings()[command] in {
         ProjectBinding.INDEPENDENT,
         ProjectBinding.OPTIONAL,
         ProjectBinding.FEEDBACK,
@@ -2863,11 +2920,14 @@ def _enforce_runtime_location(command: str | None) -> None:
     if command is None:
         return
     error: str | None = None
-    if command in _CONTAINER_ONLY_COMMANDS:
+    # The effective catalog adds preview commands (e.g. `goal`) to the
+    # released _CONTAINER_ONLY_COMMANDS / _HOST_ONLY_COMMANDS sets.
+    location = command_locations().get(command)
+    if location is CommandLocation.SESSION_RUNTIME:
         argv = ["booley", *sys.argv[1:]]
         invocation = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         error = runtime_context.container_only_error(invocation)
-    elif command in _HOST_ONLY_COMMANDS:
+    elif location is CommandLocation.HOST:
         error = runtime_context.host_only_error(f"booley {command}")
     if error is not None:
         print(error, file=sys.stderr)

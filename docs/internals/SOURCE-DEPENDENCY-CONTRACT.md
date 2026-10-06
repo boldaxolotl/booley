@@ -769,6 +769,27 @@ deferred `ticket_board.paths` import inside the Ticket report gate. Direct
 mutual pairs are unchanged. Reproduce with `compare_report.py` (below) between
 `8a96392c1` and `2d4cc572d`.
 
+## Current snapshot: 06 OCT 2026 — Goal Mode entry
+
+ADR 0067 Phase 2 composes `booley.goals` from its entry points:
+`mcp.goal_tools` (the Goal MCP tools, which also inject the synthesis and FPGA
+recipe snapshot builders that D35 keeps out of `booley.goals`),
+`harness.init_cmd` (Goalset seeding), and `harness.booley` (the preview
+switch). Comparing `main` source `d2a5b9806` with the Phase 2 source, the
+graph grows from 637 modules, 3,761 facts, and 3,076 unique edges to 645
+modules, 3,803 facts, and 3,117 edges; no edge is removed and no direct mutual
+package pair is added. New `booley.goals` edges target `booley.core`,
+`booley.criteria`, `booley.evidence`, `booley.targets`, `booley.runtime`, and
+the Flow-neutral `booley.flows.baseline_pins`. Because `criteria`, `runtime`,
+and `flows` already reach `harness` and `mcp`, which now import `goals`, the
+package joins the execution group: approved SCC metadata becomes the 12-member
+group `agent_workspace, bwave, criteria, dev_support, feedback, flows, goals,
+harness, mcp, runtime, specialists, ticket_board` plus the separate
+Target/FuseSoC pair. D35 still forbids every direct `goals` edge into
+`harness`, `mcp`, `specialists`, `ticket_board`, and the concrete Flows.
+Reproduce with `compare_report.py` (below) in root mode between a
+`git archive d2a5b9806` tree and the Phase 2 tree.
+
 ## Required gate
 
 The pytest gate checks every normalized production dependency against the direction

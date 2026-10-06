@@ -829,6 +829,9 @@ booley run --idle-timeout 0       # keep waiting for new Tickets forever
 booley board                      # show the Ticket board
 booley board --all                # ...including done and archived Tickets
 
+# Worktrees (container)
+booley worktree new <name>        # .booley_project/worktrees/<name>, clean Project snapshot
+
 # Quick reference
 booley cheat                      # the whole cheatsheet
 booley cheat --list               # its section names

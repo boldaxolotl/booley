@@ -198,19 +198,17 @@ def _install_paired_project_baseline(
     wt_dir: Path,
     policy: PairedProjectBaseline,
 ) -> Path | None:
-    """Check out the paired project repository at its ticket fork point."""
+    """Check out the paired project repository at its pinned revision or fork point."""
     repository = paired_project_repository(project_root)
     if repository is None:
-        if policy.mode is PairedBaselineMode.TICKET_PINNED:
-            raise BaselineWorktreeError("ticket-pinned paired Project repository is unavailable")
+        if policy.pinned:
+            raise BaselineWorktreeError(
+                f"{policy.mode.value} paired Project repository is unavailable"
+            )
         return None
     if policy.mode is PairedBaselineMode.ABSENT:
         raise BaselineWorktreeError("unexpected paired Project repository in Ticket execution")
-    base_sha = (
-        policy.sha
-        if policy.mode is PairedBaselineMode.TICKET_PINNED
-        else _paired_project_base_sha(repository.worktree)
-    )
+    base_sha = policy.sha if policy.pinned else _paired_project_base_sha(repository.worktree)
     destination = wt_dir / ".booley_project"
     source = repository.worktree.resolve()
     _git(source, "config", "gc.worktreePruneExpire", "never", timeout=30)
