@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import overload
 
 RUNTIME_DIR = ".runtime"
 JOBS_DIR = "jobs"
@@ -21,6 +22,14 @@ JOBS_DIR = "jobs"
 def logs_runtime_dir(logs_dir: str | Path) -> Path:
     """Return the runtime directory beneath one human-facing log root."""
     return Path(logs_dir) / RUNTIME_DIR
+
+
+@overload
+def session_jobs_dir(root: Path) -> Path: ...
+
+
+@overload
+def session_jobs_dir(root: None = None) -> Path | None: ...
 
 
 def session_jobs_dir(root: Path | None = None) -> Path | None:
