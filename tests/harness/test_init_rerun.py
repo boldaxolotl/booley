@@ -510,6 +510,39 @@ class TestProjectGitignoreBackfill:
         assert ignored("tickets/waiver-candidates/alpha.json")
         assert not ignored("tickets/history/alpha.md")
 
+    def test_goal_records_are_ignored_and_goal_history_is_tracked(self, tmp_path: Path):
+        # ADR 0067: Goal Record directories and Goal locks are local working
+        # state; the committed Goal summaries under goals/history/ are not.
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+
+        def ignored(path: str) -> bool:
+            result = subprocess.run(
+                ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
+                cwd=tmp_path,
+                check=False,
+                timeout=30,
+            )
+            return result.returncode == 0
+
+        assert ignored("goals/fix-uart-20261006T101500Z/record.json")
+        assert ignored("goals/fix-uart-20261006T101500Z/.runtime/jobs/x.json")
+        assert ignored("goals/locks/worktree-abc.lock")
+        assert not ignored("goals/history/fix-uart-20261006T101500Z.md")
+
+    def test_backfill_puts_goal_history_reinclude_after_its_override(self, tmp_path: Path):
+        # A re-include written before the pattern it overrides does nothing, so
+        # an old file holding only the re-include gets both lines appended.
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("!goals/history/\n", encoding="utf-8")
+
+        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+        last_override = max(i for i, line in enumerate(lines) if line == "goals/*/")
+        last_reinclude = max(i for i, line in enumerate(lines) if line == "!goals/history/")
+        assert last_reinclude > last_override
+
     def test_anchored_spelling_is_not_duplicated(self, tmp_path: Path):
         gitignore = tmp_path / ".gitignore"
         gitignore.write_text("/tickets/board/\n/tickets/state/\n", encoding="utf-8")

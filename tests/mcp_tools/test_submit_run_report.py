@@ -25,7 +25,7 @@ from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.mcp.submit_run_report import SubmitRunReportMcpTool
 from booley.runtime import job_records as jobrec
-from booley.ticket_board.paths import session_jobs_dir
+from booley.runtime.session_paths import session_jobs_dir
 from booley.ticket_board.ticket_repositories import (
     ProjectRepositoryChange,
     TicketWorkspaceError,

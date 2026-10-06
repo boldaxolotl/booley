@@ -1,6 +1,6 @@
 # Booley glossary map
 
-Booley has six bounded vocabularies. Read the shared glossary first, then only
+Booley has seven bounded vocabularies. Read the shared glossary first, then only
 the context that owns the work at hand.
 
 ## Contexts
@@ -8,6 +8,7 @@ the context that owns the work at hand.
 | Context | Canonical glossary | Owns |
 |---|---|---|
 | Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Projects, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
+| Goal Mode | [src/booley/goals/GLOSSARY.md](src/booley/goals/GLOSSARY.md) | Goal States, Worktree Identity, Goal Origins, Goal Changes, and Interrupted Applies inside one Goal Record |
 | Ticket Board | [src/booley/ticket_board/GLOSSARY.md](src/booley/ticket_board/GLOSSARY.md) | Ticket authoring, Criteria, lifecycle, workspaces, acceptance, and escalation |
 | B-Wave | [crates/bwave/GLOSSARY.md](crates/bwave/GLOSSARY.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |
@@ -18,6 +19,8 @@ the context that owns the work at hand.
 
 - **Ticket Board → Shared Booley**: Tickets select shared Targets and Booley
   Flows; Flow evidence satisfies the Ticket Board's Criteria.
+- **Goal Mode → Shared Booley**: a Goal is judged by Booley Flow and Specialist
+  evidence on shared Targets; the Goal Record holds that evidence.
 - **Shared Booley → B-Wave**: a traced Simulation Flow produces a shared
   Trace Artifact, which B-Wave queries or opens in a Waveform Viewer.
 - **Simulation Coverage → Shared Booley**: a coverage Campaign measures one
