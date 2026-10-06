@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -466,7 +467,7 @@ def test_one_corrupt_record_does_not_hide_a_readable_occupant(repo: dict[str, Pa
     assert scan.records == (occupant,)
     assert [entry.path for entry in scan.corrupt] == [bad]
     assert store.list_active().corrupt == scan.corrupt
-    with pytest.raises(GoalRecordCorruptError, match=str(bad)):
+    with pytest.raises(GoalRecordCorruptError, match=re.escape(str(bad))):
         store.active_for_worktree(repo["main"])  # no readable occupant there
     with pytest.raises(GoalRecordCorruptError):
         _enter(store, repo["main"], "c-20261006T101700Z")  # create refuses while any is corrupt
@@ -640,9 +641,9 @@ def test_a_missing_repository_id_with_a_corrupt_record_is_refused(repo: dict[str
     id_file = repo["main"] / ".git" / "booley" / "repository-id"
     id_file.unlink()
 
-    with pytest.raises(GoalRecordCorruptError, match=str(bad)):
+    with pytest.raises(GoalRecordCorruptError, match=re.escape(str(bad))):
         store.active_for_worktree(repo["linked"])
-    with pytest.raises(GoalRecordCorruptError, match=str(bad)):
+    with pytest.raises(GoalRecordCorruptError, match=re.escape(str(bad))):
         store.identify_worktree(repo["linked"], create=True)
     assert not id_file.exists()
 
