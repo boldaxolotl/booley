@@ -229,7 +229,7 @@ def _run_scenario(root: Path) -> dict[str, Any]:
     result["frozen_digest"] = frozen.digest
     result["rejections"] = [
         _rejection(log_dir, lost, {"generation": "xyz"}),
-        _rejection(log_dir, lost, {"generation": "d" * 32, "bad": float("nan")}),
+        _rejection(log_dir, lost, {"generation": "d" * 32, "bad": b"not json"}),
     ]
     return result
 

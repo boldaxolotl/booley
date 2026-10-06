@@ -139,7 +139,7 @@
   ],
   "rejections": [
     "ticket generation must match the canonical identity",
-    "acceptance value is not canonical JSON: Out of range float values are not JSON compliant: nan"
+    "acceptance value is not canonical JSON: Object of type bytes is not JSON serializable"
   ],
   "replay_checkpoints": [],
   "replayed_equal": true,
