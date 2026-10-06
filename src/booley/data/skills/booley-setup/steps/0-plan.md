@@ -17,7 +17,7 @@ into a decision sheet; **C** — grill the user on the open rows; **D** — writ
 the plan and get it approved.
 
 Use `../GLOSSARY.md` definitions verbatim on first use of each Booley term in
-the grill or plan; do not paraphrase from `CONTEXT.md`. Ask each question by its
+the grill or plan; do not paraphrase from `GLOSSARY.md`. Ask each question by its
 plain label from the template; give the row number/internal key only in
 parentheses.
 

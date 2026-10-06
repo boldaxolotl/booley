@@ -1,8 +1,8 @@
 # Public QA glossary
 
 This is the canonical vocabulary for Booley's public QA missions. Shared
-product concepts are defined in the [shared glossary](../docs/CONTEXT.md), and
-**Finding** is defined in the [Feedback glossary](../src/booley/feedback/CONTEXT.md).
+product concepts are defined in the [shared glossary](../docs/GLOSSARY.md), and
+**Finding** is defined in the [Feedback glossary](../src/booley/feedback/GLOSSARY.md).
 
 ## Language
 

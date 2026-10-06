@@ -15,7 +15,7 @@ For installation see the [README](https://github.com/boldaxolotl/Booley#installa
 [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md), for day-to-day driving see [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md), and for
 the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md). For the Booley-specific
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
-Agent) see the glossary in [CONTEXT.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTEXT.md).
+Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
 
 ## Monitoring Ticket work
 

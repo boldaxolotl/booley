@@ -1,7 +1,7 @@
 # Coverage Campaign public release gate
 
 Canonical coverage terminology is defined in the
-[Simulation Coverage glossary](../../src/booley/flows/sim/CONTEXT.md).
+[Simulation Coverage glossary](../../src/booley/flows/sim/GLOSSARY.md).
 
 Issue [#213](https://github.com/boldaxolotl/booley/issues/213), phase 7, exposes
 Simulation `--coverage` / permanent `--cov`, MCP boolean `coverage`, and the

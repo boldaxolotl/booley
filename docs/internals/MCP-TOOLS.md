@@ -27,7 +27,7 @@ built-in flows. Follow the links above for those references.
 
 This is an implementation-level guide. It assumes the vocabulary and whole-system model from:
 
-- **[CONTEXT-MAP.md](../../CONTEXT-MAP.md)** — the controlled-vocabulary
+- **[GLOSSARY-MAP.md](../../GLOSSARY-MAP.md)** — the controlled-vocabulary
   index. This guide uses both the shared Booley and Ticket Board glossaries.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the Developer Agent, Specialists, and the Booley Flow contract fit together at run time.
 - **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Sim Commands.
@@ -676,7 +676,7 @@ category    = "rtl"
 | Field | Values | Meaning |
 |-------|--------|---------|
 | `description` | string | Human-readable purpose |
-| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | The Workflow Region the criterion belongs to; drives advisory ordering of Developer Agent activity (see *Workflow Region* in [CONTEXT.md](../CONTEXT.md)) and never gates execution. Legacy key `phase` is still read |
+| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | The Workflow Region the criterion belongs to; drives advisory ordering of Developer Agent activity (see *Workflow Region* in [GLOSSARY.md](../GLOSSARY.md)) and never gates execution. Legacy key `phase` is still read |
 | `per_target` | `true`/`false` | If true, expands to one criterion per target (e.g., `drc_clean_variant_a`, `drc_clean_variant_b`) |
 | `category` | `rtl`, `tb`, `none` | Controls invalidation cascade |
 

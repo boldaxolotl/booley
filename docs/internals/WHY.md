@@ -2,7 +2,7 @@
 
 [ARCHITECTURE.md](ARCHITECTURE.md) says *what* Booley is and *how* the pieces fit. This document says *why* the load-bearing pieces are the way they are: only the choices that would have produced a fundamentally different framework if made differently, with their costs stated honestly. These don't get revisited without rebuilding.
 
-This doc assumes Booley's vocabulary — Target, Booley Flow, Specialist, EDA Provisioning, Ticket Mode — rather than redefining it. [CONTEXT.md](../CONTEXT.md) is the glossary if a term is unfamiliar; you don't need to read ARCHITECTURE.md first.
+This doc assumes Booley's vocabulary — Target, Booley Flow, Specialist, EDA Provisioning, Ticket Mode — rather than redefining it. [GLOSSARY.md](../GLOSSARY.md) is the glossary if a term is unfamiliar; you don't need to read ARCHITECTURE.md first.
 
 ## Why Docker
 

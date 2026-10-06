@@ -12,7 +12,7 @@ are normative; dated graph snapshots are diagnostic evidence.
 ## Source map
 
 The package layout maps to the canonical concepts indexed by the
-[context map](../../CONTEXT-MAP.md):
+[context map](../../GLOSSARY-MAP.md):
 
 | Canonical concept | Principal source owners | Responsibility |
 | --- | --- | --- |

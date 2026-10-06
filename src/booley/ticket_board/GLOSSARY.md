@@ -3,7 +3,7 @@
 This is the canonical vocabulary for Ticket authoring, execution state, and
 acceptance. Shared Booley concepts such as **Target**, **Booley Flow**,
 **Developer Agent**, and **Harness** are defined in the
-[shared glossary](../../../docs/CONTEXT.md).
+[shared glossary](../../../docs/GLOSSARY.md).
 
 ## Language
 

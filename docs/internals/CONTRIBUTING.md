@@ -6,7 +6,7 @@ Thanks for wanting to help. Booley is early and the surface is wide, so almost
 any contribution is useful, but some help is worth far more than others.
 
 This guide assumes you've read the [README](../../README.md). The
-[context map](../../CONTEXT-MAP.md) locates Booley's controlled vocabularies;
+[context map](../../GLOSSARY-MAP.md) locates Booley's controlled vocabularies;
 keep the relevant glossary open if a term is unfamiliar. For how the pieces fit
 together, read [ARCHITECTURE.md](ARCHITECTURE.md).
 
