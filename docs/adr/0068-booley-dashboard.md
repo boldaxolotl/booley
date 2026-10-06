@@ -140,8 +140,14 @@ Recorded after the Phase 0
   Claude Code does not, but each tab is its own process, found from the
   loopback peer port; when neither applies the key is the call's resolved
   `work_dir`. Codex tabs share one daemon process, so Codex never gets a
-  process key: without a thread id it falls back to the worktree. There
-  is no host MCP daemon; the sentence about it is withdrawn.
+  process key: without a thread id it falls back to the worktree. Rows
+  are not tied to HTTP connections (a client opens a new one per call):
+  a row is upserted on every Booley call under its key and removed when
+  its identity is dead (the process is gone, or a thread's last call is
+  older than the quiet threshold) or when its worktree disappears. "One
+  MCP connection is one session, registered when it opens and removed
+  when it closes" is replaced by this rule. There is no host MCP daemon;
+  the sentence about it is withdrawn.
 - **Registry is presentational.** It feeds the Dashboard rows and ADR
   0067's shared-worktree warning only. No lifecycle rule reads it, and it
   never selects a Goal record or a `work_dir`.

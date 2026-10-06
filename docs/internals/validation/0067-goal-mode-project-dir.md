@@ -64,9 +64,10 @@ Two more facts the spike surfaced:
   from the worktree with the repository taken from the worktree
   (`git rev-parse --show-toplevel` from the history directory), never from
   the Project directory. The commit binds the branch: `commit_file` is
-  called with `check_branch` set to the Goal Branch and refuses when the
-  worktree has another branch or a detached HEAD checked out, since the
-  publisher otherwise commits onto whatever HEAD is current. Both
+  called with a `check_branch` callback that raises unless the full ref it
+  receives is the Goal Branch, and `commit_file` itself refuses a detached
+  HEAD, since the publisher otherwise commits onto whatever HEAD is
+  current. Both
   non-Stealth layouts were proven.
 - Under Stealth the record stays local and nothing is committed, as ADR
   0067 already says; the `stealth` variant only shows that the mechanics

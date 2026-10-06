@@ -61,11 +61,13 @@ it against Booley, so it is not supported.
   and the tool returns `approval_required`, after which the agent-recorded
   path applies (`approval_quote` on a second call, entry marked
   `agent-recorded` in the change log and review package).
-- In every exchange tested, Claude Code 2.1.285 produced elicited decisions
-  and Codex 0.160.0 auto-declined, so Codex sessions reached the
-  agent-recorded path each time. Other versions or configurations were not
-  tested; the change log records which response the client gave, so the
-  review package never depends on this expectation.
+- Exchanges tested: Claude Code 2.1.285 returned one elicited `accept`
+  (approve, typed reason) and one `cancel` (Esc); Codex 0.160.0
+  auto-declined both of its exchanges. The agent-recorded fallback is the
+  chosen policy for those non-accept responses; the spike only echoed
+  retries and did not exercise it. Other versions or configurations were
+  not tested; the change log records which response the client gave, so
+  the review package never depends on this expectation.
 - A client without `elicitation.form` skips the form and goes straight to
   the agent-recorded path.
 - `request_state` is sealed with the SDK's `RequestStateBoundary` and bound

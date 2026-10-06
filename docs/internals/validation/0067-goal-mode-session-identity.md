@@ -45,8 +45,12 @@ The registry key is, in order:
    thread id).
 
 A PID key whose PID already owns a row with a different thread id is
-treated as rule 3 as well, as a second line of defence. The registry
-stays presentational (Dashboard rows and the shared-worktree
+treated as rule 3 as well, as a second line of defence. Rows live
+independently of HTTP connections, since both clients open a fresh
+connection per call (Claude PID 132 used ports 49874, 60700, and 59736
+across its calls): a row is upserted on every call and pruned when its
+PID is dead, its thread has been quiet beyond the threshold, or its
+worktree is gone. The registry stays presentational (Dashboard rows and the shared-worktree
 warning); no lifecycle rule reads it, so a wrong key degrades the display,
 never the Goal record. ADR 0068's "one MCP connection is one session"
 becomes "one agent client thread or process, falling back to the
