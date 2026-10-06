@@ -13,7 +13,31 @@ for required in "$liberty" "$tech_lef" "$stdcell_lef" "$layer_rc"; do
 done
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# Export partial diagnostics before removing scratch space, preserving the
+# probe's status even when an evidence copy fails.
+retain_evidence() {
+  status=$?
+  trap - EXIT
+  if test -n "$evidence_dir"; then
+    shopt -s nullglob
+    files=("$work"/check_dut_*.txt "$work"/yosys*.log
+      "$work"/log_abc_*.txt "$work"/openroad-*.log
+      "$work"/run_openroad-*.tcl "$work"/synth*.ys "$work"/placed-*.v)
+    for directory in abc-control collision-preserve collision-attribute; do
+      if test -d "$work/$directory"; then
+        files+=("$work/$directory")
+      fi
+    done
+    if (( ${#files[@]} )); then
+      if ! mkdir -p "$evidence_dir" || ! cp -R -- "${files[@]}" "$evidence_dir"/; then
+        echo '::warning::Could not retain all OpenROAD runtime evidence.' >&2
+      fi
+    fi
+  fi
+  rm -rf "$work"
+  exit "$status"
+}
+trap retain_evidence EXIT
 mkdir -p "$work/reports"
 
 # Loading the Qt-backed entry point catches runtime-library omissions without
@@ -220,13 +244,3 @@ run_openroad() {
 run_openroad "repair-off"
 run_openroad "repair-on"
 grep -Fq "BOOLEY_STAGE: repair_timing" "$work/openroad-repair-on.log"
-
-if test -n "$evidence_dir"; then
-  mkdir -p "$evidence_dir"
-  cp "$work"/check_dut_*.txt "$work"/yosys*.log \
-    "$work"/log_abc_*.txt "$work"/openroad-*.log \
-    "$work"/run_openroad-*.tcl "$work"/synth*.ys \
-    "$work"/placed-*.v "$evidence_dir"/
-  cp -R "$work/abc-control" "$work/collision-preserve" \
-    "$work/collision-attribute" "$evidence_dir"/
-fi

@@ -77,6 +77,27 @@ the job summary and keeps the JSON artifact for 90 days. Performance evaluation
 uses at least 20 code-changing runs and includes queue time rather than
 considering job runtime alone.
 
+### Smoke diagnostic evidence
+
+`bwave-smoke` always attempts to publish `junit-coverage-release-*` (JUnit XML
+and incremental `test-timings.jsonl`), `bwave-smoke-phase-records-*` (raw phase
+records), and `openroad-runtime-*` (logs and scripts, including partial evidence
+from failed probes). These artifacts have 14-day retention. Missing evidence
+warns when a producer never started or was terminated before writing it.
+
+The incremental report closes each JSON line as a pytest setup, call, or
+teardown report arrives. Each line contains the node ID, phase, outcome,
+`duration_seconds`, and UTC `recorded_at`. Sum the phases for a test's total;
+an interrupted test may have only setup evidence. Completed-test timings survive
+process termination even when pytest cannot finish its JUnit XML. Runner loss
+or a hard job timeout can still prevent the upload steps from running.
+
+The upload contract tests cover explicit JUnit, diagnostic, and phase-record
+outputs in `test.yml`, including composite actions and container mounts.
+CI-metrics publication also runs after collection failures, retaining any
+completed telemetry file.
+Caches, temporary test projects, and build products are not diagnostic outputs.
+
 ### RISC-V image phase measurements
 
 When `riscv_image` is selected, `bwave-smoke` retains `riscv-image-evidence-*`

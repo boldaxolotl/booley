@@ -145,3 +145,48 @@ def test_native_crash_during_unconfigure_retains_fatal_stack(tmp_path: Path) -> 
     reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
     assert len(reports) == 1
     assert "conftest.py" in reports[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("workers", [0, 1])
+def test_completed_timings_survive_abrupt_pytest_exit(tmp_path: Path, workers: int) -> None:
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "test_case.py").write_text(
+        "import os\ndef test_completed():\n    pass\ndef test_terminated():\n    os._exit(17)\n"
+    )
+    timings = tmp_path / "evidence" / "timings.jsonl"
+    environment = _timeout_environment(tmp_path / "evidence")
+    environment["BOOLEY_PYTEST_TIMING_FILE"] = str(timings)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "test_case.py",
+            "-q",
+            "-p",
+            "xdist.plugin",
+            "-p",
+            "timeout_evidence",
+            "-n",
+            str(workers),
+            "--max-worker-restart=0",
+            "--junitxml=result.xml",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == (17 if workers == 0 else 1), result.stdout + result.stderr
+    records = [json.loads(line) for line in timings.read_text().splitlines()]
+    completed = [
+        record for record in records if record["nodeid"] == "test_case.py::test_completed"
+    ]
+    assert [record["phase"] for record in completed] == ["setup", "call", "teardown"]
+    assert all(record["outcome"] == "passed" for record in completed)
+    assert all(record["duration_seconds"] >= 0 for record in records)
+    assert all(record["recorded_at"].endswith("Z") for record in records)
+    if workers == 0:
+        assert not (tmp_path / "result.xml").exists()
