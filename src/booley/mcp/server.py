@@ -81,6 +81,12 @@ from booley.mcp.call_context import (
     resolve_work_dir,
 )
 from booley.mcp.flow_execution_selection import select_flow_execution
+from booley.mcp.goal_tools import (
+    GOAL_TOOL_NAMES,
+    dispatch_goal_tool,
+    goal_tool_defs,
+    goal_tools_visible,
+)
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
@@ -630,6 +636,15 @@ def _targets_mcp_tool_visible() -> bool:
     developer, nested specialist) needs to know what ``target`` values exist.
     """
     return not _coverage_evidence_mode()
+
+
+def _goal_tools_visible() -> bool:
+    """Return whether the Goal Mode MCP tools are listed and callable.
+
+    Only a human's Interactive Mode tab (never a nested Specialist server), and
+    only behind the Goal Mode preview switch (ADR 0067 D13).
+    """
+    return goal_tools_visible(interactive=_interactive_mcp_mode() and _nested_allowlist() is None)
 
 
 def _coverage_evidence_mode() -> bool:
@@ -2260,6 +2275,8 @@ def _all_mcp_tool_defs(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     coverage_evidence_def = _coverage_evidence_tool_def()
     if coverage_evidence_def is not None:
         mcp_tool_defs.append(coverage_evidence_def)
+    if _goal_tools_visible():
+        mcp_tool_defs.extend(goal_tool_defs())
     return sorted(mcp_tool_defs, key=lambda item: item["name"])
 
 
@@ -3359,7 +3376,7 @@ def _validate_work_dir(value: Any) -> str | None:
     """Reject a ``work_dir`` argument that is not a usable checkout root.
 
     The agent-facing ``work_dir`` retargets an endpoint at another checkout (a
-    linked git worktree, e.g. one made by ``worktree_create.sh``). Fail-closed
+    linked git worktree, e.g. one made by ``booley worktree new``). Fail-closed
     validation: an arbitrary directory would silently scan zero cores or —
     worse — a stale copy of the RTL, so anything that is not the session
     workspace itself or the root of a linked worktree (``.git`` is a *file*
@@ -3382,14 +3399,15 @@ def _validate_work_dir(value: Any) -> str | None:
     if not resolved.is_dir():
         return (
             f"ERROR: work_dir {value!r} does not exist. Create a worktree "
-            "first (worktree_create.sh puts it under .booley_project/worktrees/)."
+            "first: `booley worktree new <name>` puts it under "
+            ".booley_project/worktrees/<name>."
         )
     if not is_linked_worktree(resolved):
         return (
             f"ERROR: work_dir {value!r} is not the root of a linked git "
             "worktree (no .git pointer file). Pass the worktree root created "
-            "by worktree_create.sh under .booley_project/worktrees/, or omit "
-            "work_dir to run against the session workspace."
+            "by `booley worktree new <name>` under .booley_project/worktrees/, "
+            "or omit work_dir to run against the session workspace."
         )
     return None
 
@@ -3810,6 +3828,8 @@ async def _dispatch_special_mcp_tool(
         return await _dispatch_cancel(arguments, jobs)
     if name == _SLEEP_MCP_TOOL_NAME and _sleep_mcp_tool_visible():
         return await _dispatch_sleep(arguments)
+    if name in GOAL_TOOL_NAMES and _goal_tools_visible():
+        return await dispatch_goal_tool(name, arguments, project_dir=resolve_project_dir())
     return None
 
 
