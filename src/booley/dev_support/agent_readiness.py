@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.host_probes import ProbeState, probe_docker, probe_github
+from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
 
 SCHEMA_VERSION = 1
 MIN_PYTHON = (3, 11)
@@ -199,12 +200,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--branch")
     parser.add_argument("--worktree-path", type=Path)
     parser.add_argument("--require", choices=("docker",))
+    parser.add_argument("--test-profile", choices=("python", "full"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.phase == "prepare" and not args.branch:
         parser.error("--branch is required for --phase prepare")
     if args.phase != "prepare" and (args.branch or args.worktree_path):
         parser.error("--branch and --worktree-path are only valid for --phase prepare")
+    if args.test_profile and args.phase != "develop":
+        parser.error("--test-profile is only valid for --phase develop")
     if args.require and args.phase != "develop":
         parser.error("--require docker is only valid for --phase develop")
     if args.branch and not _valid_branch(args.branch):
@@ -219,7 +223,9 @@ def run_phase(args: argparse.Namespace) -> Result:
         return _prepare(root, args.branch, args.worktree_path)
     if args.phase == "publish":
         return _publish(root)
-    return _develop(root, require_docker=args.require == "docker")
+    return _develop(
+        root, require_docker=args.require == "docker", test_profile=args.test_profile or "python"
+    )
 
 
 def find_source_checkout(start: Path) -> Path:
@@ -287,7 +293,7 @@ def _prepare(root: Path, branch: str, requested_path: Path | None) -> Result:
     return _result("prepare", root, checks, commands, git=git)
 
 
-def _develop(root: Path, *, require_docker: bool) -> Result:
+def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") -> Result:
     checks: list[Check] = []
     linked = _is_linked_worktree(root)
     branch = _git_text(root, ("symbolic-ref", "--short", "-q", "HEAD"))
@@ -310,7 +316,13 @@ def _develop(root: Path, *, require_docker: bool) -> Result:
     docker_check = _docker_check(require_docker)
     checks.append(docker_check)
     commands = list(env_commands)
-    commands.extend(_verification_commands(shared_python, root))
+    native_ready = True
+    if test_profile == "full":
+        native_check = _native_test_check(root)
+        checks.append(native_check)
+        native_ready = native_check.status is Status.READY
+        commands.extend(native_check.commands)
+    commands.extend(_verification_commands(shared_python, root, test_profile, native_ready))
     return _result(
         "develop", root, checks, tuple(commands), git=shutil.which("git"), branch=branch
     )
@@ -767,9 +779,35 @@ def _probe_check(identifier: str, state: ProbeState, success: str) -> Check:
     )
 
 
-def _verification_commands(python: Path, root: Path) -> tuple[Command, ...]:
+def _native_test_check(root: Path) -> Check:
+    problem = native_test_problem(root)
+    if problem and shutil.which("cargo") is None:
+        return Check(
+            "native.bwave",
+            Status.BLOCKED,
+            True,
+            f"{problem}; install Rust/Cargo before building native tests",
+        )
+    build = Command(
+        "native.bwave-build", BWAVE_BUILD, str(root), "build-native-tests", "before-full-test"
+    )
+    return Check(
+        "native.bwave",
+        Status.BLOCKED if problem else Status.READY,
+        True,
+        problem or "native B-Wave debug binary responds to the version probe",
+        commands=(build,) if problem else (),
+    )
+
+
+def _verification_commands(
+    python: Path,
+    root: Path,
+    test_profile: str = "python",
+    native_ready: bool = True,
+) -> tuple[Command, ...]:
     common = (str(python), "-m")
-    return (
+    lint = (
         Command(
             "ruff.agent-gate",
             (*common, "ruff", "check", "src/", "tests/"),
@@ -785,9 +823,21 @@ def _verification_commands(python: Path, root: Path) -> tuple[Command, ...]:
             "format",
             "handoff",
         ),
+    )
+    if not native_ready:
+        return lint
+    return (
+        *lint,
         Command(
             "pytest.broad",
-            (*common, "pytest", "tests/", *_broad_pytest_options(root)),
+            (
+                *common,
+                "pytest",
+                "tests/",
+                "--test-profile",
+                test_profile,
+                *_broad_pytest_options(root),
+            ),
             str(root),
             "test",
             "optional-broad-verification",

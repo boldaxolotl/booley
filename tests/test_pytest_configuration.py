@@ -116,6 +116,8 @@ def test_sidecar_proofs_have_cancellation_cleanup() -> None:
 
 
 _EXPECTED_NATIVE_BWAVE_NODES = {
+    "tests/bwave/test_waveform_store_streaming.py::test_streaming_conversion_produces_queryable_store",
+    "tests/bwave/test_waveform_store_streaming.py::test_trace_session_streams_into_its_own_cache_destination",
     "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit0]",
     "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit1]",
     "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra0]",
