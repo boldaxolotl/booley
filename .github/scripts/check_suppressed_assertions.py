@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
+_BUILTIN_NAMES = frozenset(vars(builtins))
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _SUPPRESS = "contextlib.suppress"
-_BROAD = {"Exception", "BaseException", "AssertionError"}
+_BROAD = {"Exception", "BaseException", "AssertionError", "failureException"}
 
 
 @dataclass(frozen=True, order=True)
@@ -35,7 +37,7 @@ def _local_nodes(node: ast.AST):
 
 def _qualified(node: ast.AST, bindings: dict[str, set[str]]) -> set[str]:
     if isinstance(node, ast.Name):
-        return bindings.get(node.id, {node.id})
+        return bindings.get(node.id, {node.id if node.id in _BUILTIN_NAMES else f"?.{node.id}"})
     if isinstance(node, ast.Attribute):
         return {f"{value}.{node.attr}" for value in (_qualified(node.value, bindings) or {"?"})}
     return set()
@@ -118,6 +120,18 @@ def _assertion_name(name: str) -> bool:
     )
 
 
+def _unsupported_exception_argument(node: ast.AST, bindings: dict[str, set[str]]) -> bool:
+    receiver = node
+    while isinstance(receiver, ast.Attribute):
+        receiver = receiver.value
+    if not isinstance(receiver, ast.Name):
+        return True
+    values = _qualified(node, bindings)
+    return not values or any(
+        value.startswith("?") and value.split(".")[-1] not in _BROAD for value in values
+    )
+
+
 class Scanner(ast.NodeVisitor):
     def __init__(self, path: str, tree: ast.AST) -> None:
         self.path: str = path
@@ -171,15 +185,13 @@ class Scanner(ast.NodeVisitor):
             if id(node) not in self.direct_suppress_calls:
                 self.report(node, "unsupported-suppress-use")
             if any(
-                value.split(".")[-1] in _BROAD | {"failureException"}
+                value.split(".")[-1] in _BROAD
                 for arg in node.args
                 for value in _qualified(arg, self.bindings)
             ):
                 self.report(node, "broad-suppression")
             if node.keywords or any(
-                not isinstance(arg, (ast.Name, ast.Attribute))
-                or not _qualified(arg, self.bindings)
-                for arg in node.args
+                _unsupported_exception_argument(arg, self.bindings) for arg in node.args
             ):
                 self.report(node, "unsupported-suppress-arguments")
         if self.suppressed and _assertion_call(node, self.bindings):

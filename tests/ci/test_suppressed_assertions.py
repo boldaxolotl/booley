@@ -498,3 +498,33 @@ def test_mixed_subprocess_and_assertion_bindings_remain_conservative(first: str)
     """)
     exec(source, {})
     assert [f.rule for f in _scan(source)] == ["suppressed-assertion-call"]
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "get_errors().error",
+        "errors[0].error",
+        "self.error",
+        "(lambda: errors)().error",
+    ],
+)
+def test_computed_or_unresolved_attribute_exception_arguments_fail_closed(argument: str) -> None:
+    findings = _scan(f"import contextlib\nwith contextlib.suppress({argument}):\n    helper()")
+    assert [f.rule for f in findings] == ["unsupported-suppress-arguments"]
+
+
+def test_computed_exception_attribute_cannot_swallow_helper_assertion() -> None:
+    source = textwrap.dedent("""
+        import contextlib
+        class Errors:
+            error = AssertionError
+        def get_errors():
+            return Errors()
+        def helper():
+            assert False
+        with contextlib.suppress(get_errors().error):
+            helper()
+    """)
+    exec(source, {})
+    assert [f.rule for f in _scan(source)] == ["unsupported-suppress-arguments"]
