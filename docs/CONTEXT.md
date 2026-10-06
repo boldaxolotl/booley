@@ -76,6 +76,30 @@ _Avoid_: Ticket Creation Guidance, criteria defaults, goal profile
 The mandatory prose report the agent writes when its session finishes Goal Mode: what changed and why, which Booley Flows and Specialists it used, and remaining uncertainties.
 _Avoid_: Developer Report, run report, Goal Report
 
+**Goal Record**:
+The local, uncommitted state of one Goal Mode under `.booley_project/goals/<goal-id>/` in the Project directory: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Outside Stealth its committed counterpart is the summary file on the Goal Branch.
+_Avoid_: ticket record, board entry, goal file
+
+**Goal Change Proposal**:
+An agent's request, made through the proposal MCP tool, to add or relax a Goal in an active Goal Mode. It is pending until a human approves or rejects it, either through the client's elicitation form or in chat with the agent recording the quoted words.
+_Avoid_: amendment, Ticket Amendment, waiver request
+
+**Change Log**:
+The append-only record inside a Goal Record of every Goal Change Proposal and its outcome: who proposed it, the human's decision and reason, and whether the approval was elicited by the client or agent-recorded.
+_Avoid_: audit log, history, journal
+
+**Protected Input**:
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry: `booley.toml`, `FUSESOC_IGNORE`, and the `hooks`, `.managed`, `generators`, and `mcp_tools` directories under the Project directory. Editing one warns at once and blocks Finish until reverted.
+_Avoid_: frozen file, locked config, Scope
+
+**Review Package**:
+The structured result Finish presents for a Goal Mode: diff summary against the base, each Goal with its final evidence, the Change Log, open review findings, Target changes, constraint-file edits, and the Session Summary.
+_Avoid_: triage package, run report, acceptance report
+
+**Session**:
+In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. Presentational only: it feeds the Dashboard and the shared-worktree warning and never selects a Goal Record.
+_Avoid_: connection, tab, MCP session, Sandbox session
+
 **Sandbox Attachment**:
 The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
 _Avoid_: Runtime Attachment, remote, tunnel, app bridge
