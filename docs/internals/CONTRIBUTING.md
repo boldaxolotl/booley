@@ -81,6 +81,13 @@ Human contributors may continue using the editable `.venv` workflow above.
 Readiness output contains local paths and is diagnostic material; do not
 publish it.
 
+### Test assertion safety
+
+Run `python3 .github/scripts/check_suppressed_assertions.py` before submitting
+test changes. CI runs the same command in lint. See the
+[suppressed test assertions rule](suppressed-test-assertions.md) for supported
+syntax, narrowly reviewed exemptions, and the static-analysis boundary.
+
 ### Maintainer QA skills
 
 Maintainers may install the repository-owned QA skills from a complete, clean

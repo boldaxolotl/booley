@@ -146,7 +146,7 @@ def worktree_factory(real_project_root: Path):
     yield _factory
 
     for slug in created:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             cleanup_worktree(real_project_root, slug)
 
 
