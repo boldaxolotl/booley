@@ -644,7 +644,8 @@ def _review_category(key: str) -> str:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Opened for update: Windows flushes only a handle with write access.
+    with path.open("r+b") as handle:
         os.fsync(handle.fileno())
 
 
