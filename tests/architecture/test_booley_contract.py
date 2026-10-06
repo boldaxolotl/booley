@@ -62,6 +62,9 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D5", "booley.runtime.agent", "booley.specialists.reviewer", "seed.py"),
         ("D6", "booley.runtime.agent", "booley.harness.cli", "seed.py"),
         ("D14", "booley.runtime.agent", "booley.ticket_board.paths", "seed.py"),
+        ("D35", "booley.goals.store", "booley.harness.cli", "seed.py"),
+        ("D35", "booley.goals.translate", "booley.mcp.server", "seed.py"),
+        ("D35", "booley.goals", "booley.ticket_board.io", "goals/__init__.py"),
         ("D7", "booley.flows.target_campaign", "booley.harness.cli", "seed.py"),
         ("D7", "booley.flows.target_criteria", "booley.mcp.registry", "seed.py"),
         (

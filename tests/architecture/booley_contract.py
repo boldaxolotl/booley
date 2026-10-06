@@ -91,6 +91,13 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D35",
+        (prefix("booley.goals"),),
+        (prefix("booley.harness"), prefix("booley.mcp"), prefix("booley.ticket_board")),
+        "Goal Mode policy and records are composed by MCP and command entry points and do "
+        "not depend on them or on Ticket Board persistence",
+    ),
+    DirectionRule(
         "D34",
         (prefix("booley.commit_policy"),),
         (

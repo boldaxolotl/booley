@@ -277,6 +277,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Forbid | Packaged execution consumes commit policy through its shared owner; development commands do not own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
+| D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.ticket_board` | Forbid | Goal Mode policy and records are composed by MCP and command entry points and do not depend on them or on Ticket Board persistence. |
 
 ## Simulation Campaign storage boundary
 
@@ -749,6 +750,22 @@ FuseSoC/Target group; `booley.commit_policy` is an acyclic singleton. D32-D34 ra
 the corrected ownership. The exact edge inventory, bundle and fallback evidence,
 fan-out change, and verification commands are recorded in
 [the #660 implementation evidence](../research/runtime-feedback-dependencies-660-evidence.md).
+
+## Current snapshot: 06 OCT 2026 — Goal Mode package
+
+ADR 0067 Phase 1 adds `booley.goals` (Goal model, translation, record store,
+paths, Change Log) and D35. Comparing `main` source revision `8a96392c1` with
+the implementation, the source changes from 629 modules, 3,737 facts, and
+3,051 unique edges to 636 modules, 3,758 facts, and 3,073 edges. Every new
+`booley.goals` edge targets `booley.core`, `booley.criteria`, `booley.runtime`,
+or `booley.goals` itself, so the package is an acyclic singleton outside the
+11-package execution group. Moving `session_jobs_dir` and the logs runtime
+directory to `runtime.session_paths` removes the
+`mcp.call_context -> ticket_board.paths` and
+`mcp.submit_run_report -> ticket_board.paths` edges; `mcp.server` keeps one
+deferred `ticket_board.paths` import inside the Ticket report gate. Direct
+mutual pairs are unchanged. Reproduce with `compare_report.py` (below) between
+`8a96392c1` and the implementation commit.
 
 ## Required gate
 
