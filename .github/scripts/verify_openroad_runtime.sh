@@ -13,7 +13,43 @@ for required in "$liberty" "$tech_lef" "$stdcell_lef" "$layer_rc"; do
 done
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# Export partial diagnostics before removing scratch space, preserving the
+# probe's status even when an evidence copy fails.
+retain_evidence() {
+  status=$?
+  trap - EXIT
+  if test -n "$evidence_dir"; then
+    if (( status == 0 )); then
+      # Keep successful probes strict: an unmatched required pattern must fail
+      # the export, as it did before failure-time retention was introduced.
+      shopt -u nullglob
+    else
+      shopt -s nullglob
+    fi
+    files=("$work"/check_dut_*.txt "$work"/yosys*.log
+      "$work"/log_abc_*.txt "$work"/openroad-*.log
+      "$work"/run_openroad-*.tcl "$work"/synth*.ys "$work"/placed-*.v)
+    if test -f "$work/check_dut.txt"; then
+      files+=("$work/check_dut.txt")
+    fi
+    for directory in abc-control collision-preserve collision-attribute repair-off repair-on; do
+      if (( status == 0 )) || test -d "$work/$directory"; then
+        files+=("$work/$directory")
+      fi
+    done
+    if (( ${#files[@]} )); then
+      if ! mkdir -p "$evidence_dir" || ! cp -R -- "${files[@]}" "$evidence_dir"/; then
+        echo '::warning::Could not retain all OpenROAD runtime evidence.' >&2
+        if (( status == 0 )); then
+          status=1
+        fi
+      fi
+    fi
+  fi
+  rm -rf "$work"
+  exit "$status"
+}
+trap retain_evidence EXIT
 mkdir -p "$work/reports"
 
 # Loading the Qt-backed entry point catches runtime-library omissions without
@@ -220,13 +256,3 @@ run_openroad() {
 run_openroad "repair-off"
 run_openroad "repair-on"
 grep -Fq "BOOLEY_STAGE: repair_timing" "$work/openroad-repair-on.log"
-
-if test -n "$evidence_dir"; then
-  mkdir -p "$evidence_dir"
-  cp "$work"/check_dut_*.txt "$work"/yosys*.log \
-    "$work"/log_abc_*.txt "$work"/openroad-*.log \
-    "$work"/run_openroad-*.tcl "$work"/synth*.ys \
-    "$work"/placed-*.v "$evidence_dir"/
-  cp -R "$work/abc-control" "$work/collision-preserve" \
-    "$work/collision-attribute" "$evidence_dir"/
-fi

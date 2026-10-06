@@ -8,6 +8,7 @@ import os
 import threading
 from collections.abc import Generator
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -123,3 +124,25 @@ def pytest_testnodedown(node: Any, error: object | None) -> None:
     reporter = node.config.pluginmanager.getplugin("terminalreporter")
     if reporter is not None:
         reporter.write_line(f"Worker {node.gateway.id} process exit code: {exit_code}")
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Close each timing record before the next test can terminate the process.
+
+    Configure one file per pytest controller. Under xdist only the controller
+    writes reports forwarded by workers, avoiding duplicate concurrent writes.
+    """
+    destination = os.environ.get("BOOLEY_PYTEST_TIMING_FILE")
+    if not destination or "PYTEST_XDIST_WORKER" in os.environ:
+        return
+    path = Path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "nodeid": report.nodeid,
+        "phase": report.when,
+        "outcome": report.outcome,
+        "duration_seconds": report.duration,
+        "recorded_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload) + "\n")
