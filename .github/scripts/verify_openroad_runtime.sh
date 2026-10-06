@@ -19,18 +19,30 @@ retain_evidence() {
   status=$?
   trap - EXIT
   if test -n "$evidence_dir"; then
-    shopt -s nullglob
+    if (( status == 0 )); then
+      # Keep successful probes strict: an unmatched required pattern must fail
+      # the export, as it did before failure-time retention was introduced.
+      shopt -u nullglob
+    else
+      shopt -s nullglob
+    fi
     files=("$work"/check_dut_*.txt "$work"/yosys*.log
       "$work"/log_abc_*.txt "$work"/openroad-*.log
       "$work"/run_openroad-*.tcl "$work"/synth*.ys "$work"/placed-*.v)
-    for directory in abc-control collision-preserve collision-attribute; do
-      if test -d "$work/$directory"; then
+    if test -f "$work/check_dut.txt"; then
+      files+=("$work/check_dut.txt")
+    fi
+    for directory in abc-control collision-preserve collision-attribute repair-off repair-on; do
+      if (( status == 0 )) || test -d "$work/$directory"; then
         files+=("$work/$directory")
       fi
     done
     if (( ${#files[@]} )); then
       if ! mkdir -p "$evidence_dir" || ! cp -R -- "${files[@]}" "$evidence_dir"/; then
         echo '::warning::Could not retain all OpenROAD runtime evidence.' >&2
+        if (( status == 0 )); then
+          status=1
+        fi
       fi
     fi
   fi

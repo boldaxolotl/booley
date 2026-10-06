@@ -15,7 +15,14 @@ import pytest
 import yaml
 
 _ROOT = Path(__file__).parents[2]
-_FLAGS = r"junitxml|record|evidence|json|markdown"
+_FLAGS = r"junitxml|record|evidence|json|markdown|ci-shard-manifest|ci-timing-output"
+_DIAGNOSTIC_ENV = ("BOOLEY_PYTEST_TIMING_FILE", "BOOLEY_PYTEST_EVIDENCE_DIR")
+_OUTPUT_HELPERS = (
+    "ci_run_metrics.py",
+    "base_package_inventory.py",
+    "riscv_phase_metrics.py finalize",
+)
+_EXPORT_PROBES = {"verify_openroad_runtime.sh": "/evidence/openroad-gui.log"}
 _VALUE = r'("[^"]+"|\$\{\{.*?\}\}[^\s]*|[^\s]+)'
 
 
@@ -23,21 +30,43 @@ def _workflow() -> dict:
     return yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text())
 
 
-def _steps(steps: list[dict]) -> list[dict]:
+def _resolve_condition(condition: str, inputs: dict) -> str:
+    """Resolve the boolean action inputs used by evidence publication."""
+    for name, value in inputs.items():
+        expression = str(value).removeprefix("${{ ").removesuffix(" }}")
+        condition = condition.replace(f"inputs.{name} == 'true'", expression)
+    return condition.removesuffix(" && true")
+
+
+def _steps(steps: list[dict], actions: dict | None = None) -> list[dict]:
     flattened = []
     for step in steps:
         if "parallel" in step:
-            flattened.extend(_steps(step["parallel"]))
+            flattened.extend(_steps(step["parallel"], actions))
         elif step.get("uses", "").startswith("./.github/actions/"):
-            action = yaml.safe_load((_ROOT / step["uses"] / "action.yml").read_text())
-            children = _steps(action["runs"]["steps"])
+            path = step["uses"]
+            action = (
+                actions[path]
+                if actions and path in actions
+                else yaml.safe_load((_ROOT / path / "action.yml").read_text())
+            )
+            children = _steps(action["runs"]["steps"], actions)
             if any(
                 child.get("uses", "").startswith("actions/upload-artifact@") for child in children
             ):
                 assert step.get("if") == "always()", (
                     "composite evidence publication must run after failures"
                 )
-            flattened.extend(children)
+            inputs = {
+                name: definition.get("default", "")
+                for name, definition in action.get("inputs", {}).items()
+            }
+            inputs.update(step.get("with", {}))
+            for child in children:
+                rendered = copy.deepcopy(child)
+                if "if" in rendered:
+                    rendered["if"] = _resolve_condition(rendered["if"], inputs)
+                flattened.append(rendered)
         else:
             flattened.append(step)
     return flattened
@@ -69,19 +98,19 @@ def _outputs(step: dict) -> list[str]:
         )
     }
     values = re.findall(rf"--(?:{_FLAGS})(?:=|\s+){_VALUE}", script)
-    if any(
-        helper in script
-        for helper in (
-            "ci_run_metrics.py",
-            "base_package_inventory.py",
-            "riscv_phase_metrics.py finalize",
-        )
-    ):
+    if any(helper in script for helper in _OUTPUT_HELPERS):
         values.extend(re.findall(rf"--output(?:=|\s+){_VALUE}", script))
-    values.extend(re.findall(r"BOOLEY_PYTEST_TIMING_FILE=([^\s]+)", script))
-    # The helper's second argument is an explicit export directory, not scratch.
-    if "verify_openroad_runtime.sh" in script:
-        values.append("/evidence/openroad-gui.log")
+    for variable in _DIAGNOSTIC_ENV:
+        values.extend(re.findall(rf"{variable}=([^\s]+)", script))
+        if variable in step.get("env", {}):
+            destination = str(step["env"][variable])
+            # Directory diagnostics represent the files created by the plugin.
+            values.append(
+                destination + "/timeout.log" if variable.endswith("DIR") else destination
+            )
+    for helper, sample in _EXPORT_PROBES.items():
+        if helper in script:
+            values.append(sample)
     outputs = []
     for value in values:
         path = _expand(value, variables)
@@ -107,22 +136,25 @@ def _covered(path: str, upload: dict, tmp_path: Path) -> bool:
     return False
 
 
-def _assert_uploads(workflow: dict, tmp_path: Path) -> None:
+def _assert_uploads(workflow: dict, tmp_path: Path, actions: dict | None = None) -> None:
     audited_jobs = set()
     for job_name, job in workflow["jobs"].items():
-        steps = _steps(job.get("steps", []))
+        steps = _steps(job.get("steps", []), actions)
         uploads = [
             step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")
         ]
-        for step in steps:
+        for producer_index, step in enumerate(steps):
             for path in _outputs(step):
                 audited_jobs.add(job_name)
                 gate = step.get("if", "").removeprefix("always() && ")
                 compatible = [
                     upload
                     for upload in uploads
-                    if upload.get("if") == "always()"
-                    or (gate and upload.get("if") == f"always() && {gate}")
+                    if steps.index(upload) > producer_index
+                    and (
+                        upload.get("if") == "always()"
+                        or (gate and upload.get("if") == f"always() && {gate}")
+                    )
                 ]
                 assert any(_covered(path, upload, tmp_path) for upload in compatible), (
                     f"{step['name']}: no unconditional or producer-gated upload covers {path}"
@@ -193,3 +225,35 @@ def test_smoke_evidence_is_uploaded_after_container_cleanup() -> None:
     ):
         index = next(index for index, step in enumerate(steps) if step.get("name") == name)
         assert index > cleanup
+
+
+@pytest.mark.parametrize(
+    "upload_name",
+    ["Upload worker timeout diagnostics", "Upload shard selection and timing evidence"],
+)
+@pytest.mark.parametrize("change", ["remove", "narrow"])
+def test_plugin_evidence_audit_rejects_upload_gaps(
+    tmp_path: Path, upload_name: str, change: str
+) -> None:
+    action_path = "./.github/actions/publish-pytest-evidence"
+    action = yaml.safe_load((_ROOT / action_path / "action.yml").read_text())
+    steps = action["runs"]["steps"]
+    upload = next(step for step in steps if step.get("name") == upload_name)
+    if change == "remove":
+        steps.remove(upload)
+    else:
+        upload["if"] = "always() && github.ref == 'refs/heads/main'"
+    with pytest.raises(AssertionError, match="no unconditional or producer-gated upload"):
+        _assert_uploads(_workflow(), tmp_path, {action_path: action})
+
+
+def test_evidence_audit_rejects_publication_before_producer(tmp_path: Path) -> None:
+    workflow = _workflow()
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+    upload = next(
+        step for step in steps if step.get("name") == "Upload coverage release test timing"
+    )
+    steps.remove(upload)
+    steps.insert(0, upload)
+    with pytest.raises(AssertionError, match="no unconditional or producer-gated upload"):
+        _assert_uploads(workflow, tmp_path)

@@ -81,9 +81,10 @@ considering job runtime alone.
 
 `bwave-smoke` always attempts to publish `junit-coverage-release-*` (JUnit XML
 and incremental `test-timings.jsonl`), `bwave-smoke-phase-records-*` (raw phase
-records), and `openroad-runtime-*` (logs and scripts, including partial evidence
-from failed probes). These artifacts have 14-day retention. Missing evidence
-warns when a producer never started or was terminated before writing it.
+records), and `openroad-runtime-*` (logs, scripts, Yosys check reports, and placement
+run directories, including partial evidence from failed probes).
+Successful OpenROAD probes still fail if required evidence cannot be exported.
+These artifacts have 14-day retention. Missing evidence warns when a producer never started or was terminated before writing it.
 
 The incremental report closes each JSON line as a pytest setup, call, or
 teardown report arrives. Each line contains the node ID, phase, outcome,
@@ -93,7 +94,8 @@ process termination even when pytest cannot finish its JUnit XML. Runner loss
 or a hard job timeout can still prevent the upload steps from running.
 
 The upload contract tests cover explicit JUnit, diagnostic, and phase-record
-outputs in `test.yml`, including composite actions and container mounts.
+outputs in `test.yml`, including timeout diagnostics, shard manifests and timings,
+composite-action input gates, container mounts, and publication after producers.
 CI-metrics publication also runs after collection failures, retaining any
 completed telemetry file.
 Caches, temporary test projects, and build products are not diagnostic outputs.
