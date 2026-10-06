@@ -1,6 +1,6 @@
 # Replace Ticket Mode with Goal Mode
 
-Status: proposed (2026-10-02)
+Status: proposed (2026-10-02; amended 2026-10-06: Phase 0 spike results and plan decisions, see Amendments)
 
 Ticket Mode makes a human write a Ticket up front, queue it on the Ticket
 Board, and review it later, with a separate Developer Agent doing the work.
@@ -130,3 +130,45 @@ evidence machinery and is followed by a large dead-code removal.
   It also removes Target Plan validation, acceptance-time Target removal,
   and planned-dependency Target exports. The semantic `.core` and
   `tests.toml` comparison survives to build the Target changes section.
+
+
+## Amendments (2026-10-06)
+
+Recorded after the Phase 0 spikes
+([elicitation](../internals/validation/0067-goal-mode-elicitation.md),
+[session identity](../internals/validation/0067-goal-mode-session-identity.md),
+[Project directory](../internals/validation/0067-goal-mode-project-dir.md)).
+
+- **Changing Goals, elicitation.** Both supported clients speak the
+  2026-07-28 wire and declare form elicitation. The proposal tool returns
+  `input_required` with the decision/reason form; the retry's `accept`
+  with content is an elicited approval. Claude Code renders the form to
+  the human; Codex auto-declines without showing it. On `decline`, `cancel`,
+  or no response the tool returns `approval_required` and the agent-recorded
+  path applies, so Codex sessions always end agent-recorded. Approval is
+  read from the request's `input_responses` only, never from tool
+  arguments, and the request state is sealed. Server-initiated
+  `elicitation/create` has no channel on this wire and is not used.
+- **Unit of work.** The worktree owns a Goal Mode. The sentence "A fresh
+  session cannot adopt it in v1" is replaced by: any session working in the
+  Goal worktree may read status, propose changes, and finish; the record
+  stores the entering and acting session keys as audit fields only.
+- **Entry, Goal Branch.** Entry creates the Goal Branch in place
+  (`git checkout -b goal/<slug>-<date>` in the session's worktree, refusing
+  an existing name). Any clean HEAD is a valid base, including a detached
+  one or a previous Goal Branch; the record stores the base commit and the
+  branch HEAD was on.
+- **Record and summary.** The local record lives in the Project directory
+  that discovery returns, under `.booley_project/goals/<goal-id>/`. The
+  committed summary is a separate file written inside the Goal worktree at
+  `.booley_project/goals/history/<goal-id>.md` and committed there on the
+  Goal Branch; the repository is the worktree's, never the Project
+  directory's. `init` keeps its `/.booley_project` exclude line; the
+  Project `.gitignore` ignores `goals/*/` and keeps `goals/history/`.
+- **Goalsets.** `init` seeds only the four named Goalsets; it does not seed
+  `default.md`. With no `default.md` the entry check passes and the skip
+  flag must be false; `booley-setup` offers to create one.
+- **Rollout.** Goal tools, `booley goal`, `booley dashboard`, and the
+  `booley-goal` skill are registered only when `BOOLEY_GOAL_MODE_PREVIEW=1`
+  is set until the release that removes Ticket Mode; "no coexistence" is
+  enforced on registration, not on files.

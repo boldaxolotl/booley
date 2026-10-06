@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -128,3 +128,20 @@ The overview stays concise; session, Goal, and Job details have separate views.
   establish that these integrations already exist.
 - **Not in v1.** Active Specialist runs, per-session token usage, and recent
   Feedback findings remain deferred.
+
+
+## Amendments (2026-10-06)
+
+Recorded after the Phase 0
+[session identity spike](../internals/validation/0067-goal-mode-session-identity.md).
+
+- **Sessions.** A session is one agent client thread or process, falling
+  back to the worktree: Codex sends a thread id in every request's `_meta`;
+  Claude Code does not, but each tab is its own process, found from the
+  loopback peer port; when neither applies the key is the call's resolved
+  `work_dir`. Codex tabs share one daemon process, so a process key is never
+  used for a PID that already owns a row with a different thread id. There
+  is no host MCP daemon; the sentence about it is withdrawn.
+- **Registry is presentational.** It feeds the Dashboard rows and ADR
+  0067's shared-worktree warning only. No lifecycle rule reads it, and it
+  never selects a Goal record or a `work_dir`.
