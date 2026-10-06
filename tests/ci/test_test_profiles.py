@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -128,13 +129,14 @@ def _run_suite(
             "_fallback = Path(__file__).parent / 'fallback-bwave'\n"
             "_fallback.write_bytes(b'controlled native fallback')\n"
             "paths._native_bwave_candidates = lambda: [_fallback]\n"
+            "from booley.bwave import cli\n"
         )
     (suite / "conftest.py").write_text(source)
     (suite / "test_sample.py").write_text(
         "import pytest\n"
         "def test_python() -> None: pass\n"
         "@pytest.mark.native_bwave\n"
-        f"def test_native() -> None: {native_body}\n"
+        f"def test_native() -> None:\n{textwrap.indent(native_body, '    ')}\n"
     )
     (tmp_path / "pytest.ini").write_text(
         "[pytest]\nmarkers =\n    native_bwave: native integration\n"
@@ -142,7 +144,15 @@ def _run_suite(
     env = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
     return subprocess.run(
-        [sys.executable, "-m", "pytest", str(suite), "-q", *options],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(suite),
+            "-q",
+            f"--basetemp={tmp_path / 'pytest-temp'}",
+            *options,
+        ],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -236,9 +246,30 @@ def test_full_profile_preserves_expected_xfail(tmp_path: Path) -> None:
     assert "1 passed, 1 xfailed" in result.stdout
 
 
-def test_native_test_fixture_refuses_runtime_fallback(tmp_path: Path) -> None:
-    body = "__import__('booley.runtime.paths', fromlist=['native_bwave_binary']).native_bwave_binary() is None"
-    result = _run_suite(tmp_path, [], native_body=f"assert {body}", seed_fallback=True)
+@pytest.mark.parametrize("consumer", ["runtime", "cached_cli", "child_cli"])
+def test_native_test_fixture_refuses_runtime_fallback(tmp_path: Path, consumer: str) -> None:
+    bodies = {
+        "runtime": "from booley.runtime import paths\nassert paths.native_bwave_binary() is None",
+        "cached_cli": (
+            "from booley.bwave import cli\n"
+            "with pytest.raises(FileNotFoundError, match='native B-Wave debug binary is missing'):\n"
+            "    cli.native_bwave_binary()"
+        ),
+        "child_cli": (
+            "import os, subprocess, sys\nfrom pathlib import Path\n"
+            'script = "import sys; from pathlib import Path; from booley.runtime import paths; '
+            "fallback=Path(sys.argv.pop(1)); paths._native_bwave_candidates=lambda:[fallback]; "
+            'from tests.bwave.native_binary import main; main()"\n'
+            "result = subprocess.run([sys.executable, '-c', script, "
+            "str(Path(__file__).with_name('fallback-bwave')), os.environ['BOOLEY_BWAVE_BIN'], "
+            "'query', 'build', 'missing.vcd'], env={**os.environ, 'BOOLEY_CONTAINER': '1'}, "
+            "capture_output=True, text=True, timeout=30, check=False)\n"
+            "assert result.returncode != 0\n"
+            "assert 'native B-Wave debug binary is missing' in result.stderr\n"
+            "assert 'building from' not in result.stderr"
+        ),
+    }
+    result = _run_suite(tmp_path, [], native_body=bodies[consumer], seed_fallback=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "2 passed" in result.stdout
 

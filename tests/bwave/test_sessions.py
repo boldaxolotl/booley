@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from booley.bwave.cli import SESSION_FILE
+from booley.dev_support.test_profiles import native_test_binary
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -69,10 +70,19 @@ def _query(*extra_args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "BOOLEY_CONTAINER": "1",
-        "PYTHONPATH": str(BOOLEY_ROOT / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": os.pathsep.join(
+            [str(BOOLEY_ROOT), str(BOOLEY_ROOT / "src"), os.environ.get("PYTHONPATH", "")]
+        ),
     }
     return subprocess.run(
-        [sys.executable, "-m", "booley.bwave.cli", "query", *extra_args],
+        [
+            sys.executable,
+            "-m",
+            "tests.bwave.native_binary",
+            str(native_test_binary(BOOLEY_ROOT)),
+            "query",
+            *extra_args,
+        ],
         capture_output=True,
         text=True,
         timeout=timeout,

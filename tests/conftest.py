@@ -168,6 +168,11 @@ def _native_source_test_binary(
             "booley.runtime.paths.native_bwave_binary",
             lambda: binary if binary.is_file() else None,
         )
+        from tests.bwave.native_binary import require_exact_binary
+
+        monkeypatch.setattr(
+            "booley.bwave.cli.native_bwave_binary", lambda: require_exact_binary(binary)
+        )
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
