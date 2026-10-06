@@ -32,6 +32,7 @@ from booley.goals.store import (
     GoalStoreError,
     InvalidRecordUpdateError,
     LockOrderError,
+    RecordLock,
     StaleRevisionError,
     WorktreeIdentityError,
     WorktreeOccupiedError,
@@ -368,7 +369,7 @@ def test_save_refuses_an_unheld_lock(repo: dict[str, Path]) -> None:
     record = _enter(store, repo["linked"], "a-20261006T101500Z")
     with store.record_lock(record.id) as lock:
         pass
-    with pytest.raises(GoalStoreError, match="held record lock"):
+    with pytest.raises(GoalStoreError, match="no longer held"):
         store.save(lock, record)
 
 
@@ -497,3 +498,150 @@ def test_missing_record_and_non_record_directories(repo: dict[str, Path]) -> Non
     assert (scan.records, scan.corrupt) == ((), ())
     with pytest.raises(GoalRecordNotFoundError):
         store.load("a-20261006T101500Z")
+
+
+# --- Lock ownership (who may re-enter or use a record lock) ------------------------
+
+
+def _in_copied_context_thread(work: Any, context: Any = None) -> list[object]:
+    """Run *work* in a thread under *context* (default: a copy of this one)."""
+    import contextvars
+
+    outcome: list[object] = []
+
+    def run() -> None:
+        try:
+            outcome.append(work())
+        except Exception as exc:  # noqa: BLE001 — the test inspects the failure
+            outcome.append(exc)
+
+    context = context or contextvars.copy_context()
+    thread = threading.Thread(target=context.run, args=(run,))
+    thread.start()
+    thread.join(timeout=GIT_TIMEOUT_S)
+    return outcome
+
+
+def test_a_copied_context_thread_contends_instead_of_re_entering(repo: dict[str, Path]) -> None:
+    store = GoalStore(repo["project"], lock_timeout_s=0.2)
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+
+    def take() -> RecordLock:
+        with store.record_lock(record.id) as lock:
+            assert lock.held
+            return lock
+
+    import contextvars
+
+    with store.record_lock(record.id) as parent:
+        captured = contextvars.copy_context()  # taken while the parent holds the lock
+        (blocked,) = _in_copied_context_thread(take)
+        assert isinstance(blocked, GoalLockTimeoutError)
+        (wrong_owner,) = _in_copied_context_thread(
+            lambda: store.save(parent, replace(record, state=GoalState.ACTIVE))
+        )
+        assert isinstance(wrong_owner, GoalStoreError)
+        assert "another process, thread, or task" in str(wrong_owner)
+        # An unrelated thread holds no record lock, so the lock order allows it.
+        identity = record.worktree
+
+        def worktree_lock_in_thread() -> bool:
+            with store.worktree_lock(identity):
+                return True
+
+        assert _in_copied_context_thread(worktree_lock_in_thread) == [True]
+    (acquired,) = _in_copied_context_thread(take)
+    assert isinstance(acquired, RecordLock)
+    assert acquired is not parent
+    # A context captured while the parent held the lock gets a fresh lock, not the stale one.
+    (fresh,) = _in_copied_context_thread(take, captured)
+    assert isinstance(fresh, RecordLock)
+    assert fresh is not parent
+
+
+def test_an_asyncio_task_does_not_re_enter_its_parents_lock(repo: dict[str, Path]) -> None:
+    import asyncio
+
+    store = GoalStore(repo["project"], lock_timeout_s=0.2)
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+
+    async def child() -> None:
+        with store.record_lock(record.id):
+            pass
+
+    async def parent() -> BaseException | None:
+        with store.record_lock(record.id):
+            task = asyncio.ensure_future(child())
+            try:
+                await task
+            except GoalLockTimeoutError as exc:
+                return exc
+        return None
+
+    assert isinstance(asyncio.run(parent()), GoalLockTimeoutError)
+
+
+def test_a_released_lock_is_never_honoured_again(repo: dict[str, Path]) -> None:
+    store = GoalStore(repo["project"])
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    with store.record_lock(record.id) as first:
+        pass
+    with store.record_lock(record.id) as second:
+        assert second is not first
+        assert second.held and not first.held
+        with pytest.raises(GoalStoreError, match="no longer held"):
+            store.save(first, replace(record, state=GoalState.ACTIVE))
+        store.save(second, replace(record, state=GoalState.ACTIVE))
+
+
+def test_a_second_project_spelling_re_enters_the_same_lock(
+    repo: dict[str, Path], tmp_path: Path
+) -> None:
+    store = GoalStore(repo["project"], lock_timeout_s=0.2)
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    spelling = tmp_path / "project-alias"
+    symlink_or_skip(spelling, repo["project"], target_is_directory=True)
+    aliased = GoalStore(spelling, lock_timeout_s=0.2)
+
+    with store.record_lock(record.id) as outer:
+        started = time.monotonic()
+        with aliased.record_lock(record.id) as inner:
+            assert inner is outer
+            saved = aliased.save(inner, replace(record, state=GoalState.ACTIVE))
+        assert time.monotonic() - started < 0.1
+    assert store.load(record.id) == saved
+
+
+# --- Staging sweep and missing repository id with corrupt records ------------------
+
+
+def test_a_staging_directory_vanishing_during_the_sweep_does_not_abort_create(
+    repo: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GoalStore(repo["project"])
+    racing = repo["project"] / "goals" / ".staging-other-20261006T101500Z-abc"
+    racing.mkdir(parents=True)
+    real_stat = Path.stat
+
+    def stat(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if self == racing:
+            raise FileNotFoundError(self)  # renamed by its creator after iterdir
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    created = _enter(store, repo["linked"], "a-20261006T101500Z")
+    assert created.revision == 1
+
+
+def test_a_missing_repository_id_with_a_corrupt_record_is_refused(repo: dict[str, Path]) -> None:
+    store = GoalStore(repo["project"])
+    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    bad = _corrupt(repo["project"], record.id)
+    id_file = repo["main"] / ".git" / "booley" / "repository-id"
+    id_file.unlink()
+
+    with pytest.raises(GoalRecordCorruptError, match=str(bad)):
+        store.active_for_worktree(repo["linked"])
+    with pytest.raises(GoalRecordCorruptError, match=str(bad)):
+        store.identify_worktree(repo["linked"], create=True)
+    assert not id_file.exists()

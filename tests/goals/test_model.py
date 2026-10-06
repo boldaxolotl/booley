@@ -173,17 +173,17 @@ def test_schema_has_one_variant_per_family_matching_the_parser() -> None:
     assert set(by_family) == {family.value for family in GoalFamily}
     for family, variant in by_family.items():
         assert variant["additionalProperties"] is False
-        raw = {name: _sample(name) for name in variant["required"]}
+        raw = {name: _sample(name, family) for name in variant["required"]}
         raw["family"] = family
         if family == "review":
             raw.update(review="rtl_spec", spec="doc/spec.md")
         assert parse_goal_arg(raw).family == family
         for extra in set(variant["properties"]) - set(raw):
-            parse_goal_arg({**raw, extra: _sample(extra)})  # every schema field parses
+            parse_goal_arg({**raw, extra: _sample(extra, family)})  # every schema field parses
     json.dumps(goal_arg_json_schema())  # serializable as an MCP input schema
 
 
-def _sample(name: str) -> object:
+def _sample(name: str, family: str) -> object:
     samples: dict[str, object] = {
         "metrics": {"line": 50},
         "tests": "all",
@@ -194,6 +194,8 @@ def _sample(name: str) -> object:
         "total": 2,
         "auto": True,
     }
+    if name == "thresholds" and family in ("synth", "fpga"):
+        return {"critical_path_ps_max": 900}
     return samples.get(name, "x_name")
 
 
@@ -319,6 +321,86 @@ def test_required_fields_stay_required(required: str) -> None:
     "spec", ["/etc/spec.md", "../outside.md", "doc/../../x.md", "C:\\spec.md", "a\\..\\..\\b"]
 )
 def test_spec_paths_may_not_escape_the_worktree(spec: str) -> None:
+    with pytest.raises(GoalArgError, match="relative to the worktree"):
+        parse_goal_arg(
+            {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": spec}
+        )
+
+
+_STRUCTURAL = [
+    "targets",
+    "target",
+    "test",
+    "baseline",
+    "candidate",
+    "metrics",
+    "tests",
+    "_baseline_target",
+]
+
+
+@pytest.mark.parametrize("family", ["synth", "fpga"])
+@pytest.mark.parametrize(
+    "name",
+    [*_STRUCTURAL, "lut_or_area", "clk i.fmax_mhz_min", ".fmax_mhz_min", "a.b.fmax_mhz_min"],
+)
+def test_implementation_thresholds_accept_only_family_parameters(family: str, name: str) -> None:
+    with pytest.raises(GoalArgError, match="unknown threshold"):
+        parse_goal_arg({"family": family, "target": "t", "thresholds": {name: 1}})
+
+
+@pytest.mark.parametrize("name", [*_STRUCTURAL, "clk.cycle_count_max", "area_um2_max"])
+def test_cycle_count_thresholds_accept_only_cycle_count_parameters(name: str) -> None:
+    with pytest.raises(GoalArgError, match="unknown threshold"):
+        parse_goal_arg(
+            {"family": "cycle_count", "target": "t", "test": "x", "thresholds": {name: 1}}
+        )
+
+
+def test_clock_scoped_thresholds_are_accepted_for_implementation_goals() -> None:
+    arg = parse_goal_arg(
+        {"family": "synth", "target": "t", "thresholds": {"clk_i.fmax_mhz_min": 1}}
+    )
+    assert isinstance(arg, ImplementationGoalArg)
+    assert dict(arg.thresholds) == {"clk_i.fmax_mhz_min": 1}
+
+
+@pytest.mark.parametrize("name", ["targets", "tests", "statement"])
+def test_coverage_metrics_accept_only_coverage_metrics(name: str) -> None:
+    with pytest.raises(GoalArgError, match="unknown metrics"):
+        parse_goal_arg(
+            {"family": "coverage", "target": "t", "metrics": {name: 50}, "tests": "all"}
+        )
+
+
+def test_schema_threshold_names_agree_with_the_parser() -> None:
+    import re
+
+    variants = {v["properties"]["family"]["const"]: v for v in goal_arg_json_schema()["oneOf"]}
+    candidates = [
+        *_STRUCTURAL,
+        "area_um2_max",
+        "clk_i.fmax_mhz_min",
+        "cycle_count_max",
+        "lut_count_max",
+        "x.cycle_count_max",
+    ]
+    for family, extra in (("synth", {}), ("fpga", {}), ("cycle_count", {"test": "x"})):
+        pattern = variants[family]["properties"]["thresholds"]["propertyNames"]["pattern"]
+        for name in candidates:
+            raw = {"family": family, "target": "t", "thresholds": {name: 1}, **extra}
+            try:
+                parse_goal_arg(raw)
+                parsed = True
+            except GoalArgError:
+                parsed = False
+            assert bool(re.fullmatch(pattern, name)) == parsed, (family, name)
+
+
+@pytest.mark.parametrize(
+    "spec", ["\\outside\\spec.md", "/outside/spec.md", "D:spec.md", "\\\\server\\share\\s.md"]
+)
+def test_rooted_and_drive_relative_spec_paths_are_refused(spec: str) -> None:
     with pytest.raises(GoalArgError, match="relative to the worktree"):
         parse_goal_arg(
             {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": spec}

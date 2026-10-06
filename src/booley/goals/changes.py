@@ -253,8 +253,7 @@ def append_applied(lock: RecordLock, change_id: str) -> None:
 
 
 def _locked_path(lock: RecordLock) -> Path:
-    if not lock.held:
-        raise GoalStoreError(f"the record lock of {lock.goal_id} is no longer held")
+    lock.require_owned()
     return lock.record_dir / CHANGES_FILE
 
 

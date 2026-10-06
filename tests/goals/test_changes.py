@@ -170,7 +170,7 @@ def test_writers_enforce_the_intent_then_applied_order(locked: tuple[RecordLock,
 
 def test_writers_require_a_held_record_lock(locked: tuple[RecordLock, Path]) -> None:
     lock, _ = locked
-    stale = RecordLock(lock.project_dir, lock.goal_id)
+    stale = RecordLock(lock.project_dir, lock.goal_id, lock.file_key, lock.owner)
     stale.held = False
     with pytest.raises(GoalStoreError, match="no longer held"):
         append_intent(stale, _entry())

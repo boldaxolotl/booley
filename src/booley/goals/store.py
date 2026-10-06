@@ -25,18 +25,19 @@ uniqueness check.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-import contextvars
 import json
+import os
 import shutil
+import threading
 import time
 import uuid
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from types import MappingProxyType
-from typing import Any
+from typing import IO, Any
 
 from booley.core.boundary import BoundaryError, require_uuid4
 from booley.core.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
@@ -73,13 +74,43 @@ DEFAULT_LOCK_TIMEOUT_S = 30.0
 # create renames its staging directory within moments of making it.
 STAGING_MAX_AGE_S = 3600.0
 
-# Record locks this context holds, keyed by (Project dir, Goal id): a nested
-# ``record_lock`` for a held record re-enters it, and the D15 lock order is
-# checked against it. Each change sets a new mapping, so copied contexts (for
-# example a thread started with ``copy_context``) never share holds.
-_HELD_RECORD_LOCKS: contextvars.ContextVar[Mapping[tuple[Path, str], RecordLock]] = (
-    contextvars.ContextVar("booley_goal_record_locks", default=MappingProxyType({}))
-)
+# The caller a record lock belongs to: process, thread, and asyncio task (or
+# ``None`` outside a task). Re-entry, saves, and the lock-order check accept
+# only the exact owner, so a copied context, a spawned task or thread, or a
+# forked child never borrows a lock it did not take; it takes the real flock.
+LockOwner = tuple[int, int, int | None]
+# A lock file's filesystem identity, so every path spelling of one record
+# names the same held lock.
+LockFileKey = tuple[object, ...]
+
+# Record locks held in this process, keyed by (lock file identity, owner).
+_HELD_RECORD_LOCKS: dict[tuple[LockFileKey, LockOwner], RecordLock] = {}
+_HELD_RECORD_LOCKS_GUARD = threading.Lock()
+
+
+def current_lock_owner() -> LockOwner:
+    """The calling process, thread, and asyncio task (``None`` outside a task)."""
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return os.getpid(), threading.get_ident(), None if task is None else id(task)
+
+
+def _lock_file_key(handle: IO[Any], path: Path) -> LockFileKey:
+    """Identify an open lock file by device and inode, else by its resolved path."""
+    return _file_key(os.fstat(handle.fileno()), path)
+
+
+def _file_key(status: os.stat_result, path: Path) -> LockFileKey:
+    if status.st_ino:
+        return ("inode", status.st_dev, status.st_ino)
+    return ("path", str(path.resolve()))
+
+
+def _holds_record_lock(owner: LockOwner) -> bool:
+    with _HELD_RECORD_LOCKS_GUARD:
+        return any(key[1] == owner for key in _HELD_RECORD_LOCKS)
 
 
 class GoalStoreError(RuntimeError):
@@ -200,12 +231,29 @@ class WorktreeLock:
 
 
 class RecordLock:
-    """Proof that the caller holds the record lock of Goal Record :attr:`goal_id`."""
+    """Proof that :attr:`owner` holds the record lock of Goal Record :attr:`goal_id`.
 
-    def __init__(self, project_dir: Path, goal_id: str) -> None:
+    :attr:`file_key` is the lock file's filesystem identity, so a lock taken
+    through one Project path spelling is the lock of every spelling.
+    """
+
+    def __init__(
+        self, project_dir: Path, goal_id: str, file_key: LockFileKey, owner: LockOwner
+    ) -> None:
         self.project_dir = project_dir
         self.goal_id = goal_id
+        self.file_key = file_key
+        self.owner = owner
         self.held = True
+
+    def require_owned(self) -> None:
+        """Raise unless the lock is held and the caller is its owner."""
+        if not self.held:
+            raise GoalStoreError(f"the record lock of {self.goal_id} is no longer held")
+        if self.owner != current_lock_owner():
+            raise GoalStoreError(
+                f"the record lock of {self.goal_id} belongs to another process, thread, or task"
+            )
 
     @property
     def record_dir(self) -> Path:
@@ -213,18 +261,10 @@ class RecordLock:
         return record_paths(self.project_dir, self.goal_id).root
 
 
-class _LockDirectoryMissingError(GoalStoreError):
-    """The directory of a lock file vanished before the lock was opened."""
-
-
 @contextmanager
 def _flock(path: Path, timeout_s: float) -> Generator[None]:
     """Hold an exclusive ``flock`` on *path*, whose directory must exist."""
-    try:
-        opened = path.open("a+", encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise _LockDirectoryMissingError(f"{path.parent} does not exist") from exc
-    with opened as handle:
+    with path.open("a+", encoding="utf-8") as handle:
         try:
             wait_for_file_lock(handle, timeout_s=timeout_s)
         except LockTimeoutError as exc:
@@ -267,11 +307,17 @@ class GoalStore:
         A missing repository id while any Goal Record occupies a worktree means
         the id was deleted; minting a new one would orphan those records and
         let a second Goal Mode enter, so it raises :class:`WorktreeIdentityError`.
+        A corrupt record may be such an occupant, so with the id missing it
+        raises :class:`GoalRecordCorruptError` instead of answering.
         """
         identity = resolve_worktree_identity(work_dir)
         if identity is not None:
             return identity
-        occupying = self.list_active().records
+        scan = self.list_active()
+        if scan.corrupt:
+            # A corrupt record may occupy a worktree of this repository.
+            raise GoalRecordCorruptError(scan.corrupt)
+        occupying = scan.records
         if occupying:
             ids = ", ".join(record.id for record in occupying)
             raise WorktreeIdentityError(
@@ -283,7 +329,7 @@ class GoalStore:
     @contextmanager
     def worktree_lock(self, identity: WorktreeIdentity) -> Generator[WorktreeLock]:
         """Hold the worktree lock of *identity* (taken before any record lock)."""
-        if _HELD_RECORD_LOCKS.get():
+        if _holds_record_lock(current_lock_owner()):
             raise LockOrderError("a worktree lock must be taken before any record lock")
         lock = WorktreeLock(self.project_dir, identity)
         path = worktree_lock_file(self.project_dir, identity)
@@ -296,33 +342,54 @@ class GoalStore:
 
     @contextmanager
     def record_lock(self, goal_id: str) -> Generator[RecordLock]:
-        """Hold the record lock of an existing Goal Record; re-entrant in one context.
+        """Hold the record lock of an existing Goal Record; re-entrant for its owner.
 
-        The record directory is never created here: a record removed after
-        the existence check makes the lock open fail and raise
-        :class:`GoalRecordNotFoundError` instead of leaving a lock-only
-        directory behind.
+        A nested ``record_lock`` by the same process, thread, and asyncio task
+        re-enters the held lock, whatever path spelling it uses; every other
+        caller takes the real flock and waits for it. The record directory is
+        never created here: a record removed after the existence check makes
+        the lock open fail and raise :class:`GoalRecordNotFoundError` instead
+        of leaving a lock-only directory behind.
         """
-        key = (self.project_dir, goal_id)
-        held = _HELD_RECORD_LOCKS.get()
-        if key in held:
-            yield held[key]
-            return
         paths = record_paths(self.project_dir, goal_id)
         if not paths.root.is_dir():
             raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.project_dir}")
-        lock = RecordLock(self.project_dir, goal_id)
-        token = _HELD_RECORD_LOCKS.set(MappingProxyType({**held, key: lock}))
         try:
-            with _flock(paths.lock_file, self.lock_timeout_s):
-                try:
-                    yield lock
-                finally:
-                    lock.held = False
-        except _LockDirectoryMissingError as exc:
+            handle = paths.lock_file.open("a+", encoding="utf-8")
+        except FileNotFoundError as exc:
             raise GoalRecordNotFoundError(f"Goal Record {goal_id} disappeared") from exc
+        with handle:
+            owner = current_lock_owner()
+            key = (_lock_file_key(handle, paths.lock_file), owner)
+            with _HELD_RECORD_LOCKS_GUARD:
+                held = _HELD_RECORD_LOCKS.get(key)
+            if held is not None and held.held:
+                handle.close()  # re-entry: this open file must not hold a second flock
+                yield held
+                return
+            yield from self._hold_record_lock(handle, paths.lock_file, goal_id, key)
+
+    def _hold_record_lock(
+        self,
+        handle: IO[Any],
+        path: Path,
+        goal_id: str,
+        key: tuple[LockFileKey, LockOwner],
+    ) -> Generator[RecordLock]:
+        try:
+            wait_for_file_lock(handle, timeout_s=self.lock_timeout_s)
+        except LockTimeoutError as exc:
+            raise GoalLockTimeoutError(f"Goal lock {path} stayed busy: {exc}") from exc
+        lock = RecordLock(self.project_dir, goal_id, key[0], key[1])
+        with _HELD_RECORD_LOCKS_GUARD:
+            _HELD_RECORD_LOCKS[key] = lock
+        try:
+            yield lock
         finally:
-            _HELD_RECORD_LOCKS.reset(token)
+            lock.held = False
+            with _HELD_RECORD_LOCKS_GUARD:
+                del _HELD_RECORD_LOCKS[key]
+            release_file_lock(handle)
 
     def create(self, lock: WorktreeLock, record: GoalRecord) -> GoalRecord:
         """Publish a new ``entering`` record at revision 1 under *lock*.
@@ -359,6 +426,13 @@ class GoalStore:
         fsync_directory(target.parent)
         return created
 
+    def _lock_file_key(self, goal_id: str) -> LockFileKey:
+        path = record_paths(self.project_dir, goal_id).lock_file
+        try:
+            return _file_key(path.stat(), path)
+        except FileNotFoundError as exc:
+            raise GoalRecordNotFoundError(f"Goal Record {goal_id} has no lock file") from exc
+
     def _sweep_stale_staging(self) -> None:
         """Remove staging directories left by creates that died mid-publication."""
         root = goals_root(self.project_dir)
@@ -366,7 +440,13 @@ class GoalStore:
             return
         cutoff = time.time() - STAGING_MAX_AGE_S
         for entry in root.iterdir():
-            if entry.name.startswith(STAGING_PREFIX) and entry.stat().st_mtime < cutoff:
+            if not entry.name.startswith(STAGING_PREFIX):
+                continue
+            try:
+                stale = entry.stat().st_mtime < cutoff
+            except OSError:
+                continue  # another create renamed or removed it meanwhile
+            if stale:
                 shutil.rmtree(entry, ignore_errors=True)
 
     def _check_create(self, lock: WorktreeLock, record: GoalRecord) -> None:
@@ -402,9 +482,10 @@ class GoalStore:
         transition, a change to a field fixed at creation, or content that
         would not load back.
         """
-        if not lock.held or lock.goal_id != record.id or lock.project_dir != self.project_dir:
-            raise GoalStoreError(f"save needs the held record lock of {record.id}")
+        lock.require_owned()
         current = self.load(record.id)
+        if lock.goal_id != record.id or lock.file_key != self._lock_file_key(record.id):
+            raise GoalStoreError(f"save needs the held record lock of {record.id}")
         if current.revision != record.revision:
             raise StaleRevisionError(
                 f"Goal Record {record.id} is at revision {current.revision}, "
@@ -434,7 +515,7 @@ class GoalStore:
         ids = sorted(
             entry.name
             for entry in root.iterdir()
-            if entry.is_dir() and GOAL_ID_PATTERN.fullmatch(entry.name)
+            if GOAL_ID_PATTERN.fullmatch(entry.name) and entry.is_dir()
         )
         records: list[GoalRecord] = []
         corrupt: list[CorruptRecord] = []

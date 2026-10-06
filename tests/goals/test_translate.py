@@ -138,7 +138,7 @@ def test_a_candidate_target_that_does_not_exist_yet_is_accepted() -> None:
     ("raw", "message"),
     [
         (
-            {"family": "synth", "target": "t", "thresholds": {"lut_count_max": 1}},
+            {"family": "synth", "target": "t", "thresholds": {"clk.area_um2_max": 1}},
             "Unknown synthesis_ok params",
         ),
         (
@@ -408,3 +408,69 @@ def test_mutation_min_detected_merges_upward_when_the_rest_agree() -> None:
     (goal,) = result.goals
     assert goal.params == {"scope": ["rtl/a.sv"], "min_detected": 8, "total": 10}
     assert "min_detected 6 (from feature) and 8 (from ad-hoc) -> stricter 8" in result.warnings[0]
+
+
+_HOSTILE_THRESHOLDS: list[dict[str, Any]] = [
+    {"targets": ["other"], "cell_count_max": 10},
+    {"target": "other", "cycle_count_max": 5},
+    {"test": "other", "cycle_count_max": 5},
+    {"baseline": "other"},
+    {"candidate": "other"},
+]
+
+
+def _hostile_goals() -> list[dict[str, Any]]:
+    goals: list[dict[str, Any]] = [
+        {"family": "lint", "target": "wanted"},
+        {"family": "sim", "target": "wanted"},
+        {"family": "elab", "target": "wanted"},
+        {"family": "coverage", "target": "wanted", "metrics": {"line": 5}, "tests": ["a"]},
+        {"family": "coverage", "target": "wanted", "metrics": {"targets": 5}, "tests": "all"},
+        {"family": "mutation", "target": "wanted", "min_detected": 1, "total": 2},
+        {"family": "mutation", "target": "wanted", "targets": ["other"]},
+        {"family": "synth", "target": "wanted", "thresholds": {"cell_count_max": 3}},
+        {
+            "family": "fpga",
+            "target": "wanted",
+            "baseline": "old",
+            "thresholds": {"lut_count_reduce_at_least": "1%"},
+        },
+        {
+            "family": "cycle_count",
+            "target": "wanted",
+            "test": "smoke",
+            "thresholds": {"cycle_count_max": 2},
+        },
+    ]
+    for thresholds in _HOSTILE_THRESHOLDS:
+        goals.append({"family": "synth", "target": "wanted", "thresholds": thresholds})
+        goals.append({"family": "fpga", "target": "wanted", "thresholds": thresholds})
+        goals.append(
+            {
+                "family": "cycle_count",
+                "target": "wanted",
+                "test": "smoke",
+                "thresholds": thresholds,
+            }
+        )
+    return goals
+
+
+@pytest.mark.parametrize("raw", _hostile_goals())
+def test_goal_key_and_target_always_follow_the_goal_argument(raw: dict[str, Any]) -> None:
+    from booley.goals.model import GoalArgError
+
+    try:
+        result = translate(raw)
+    except (GoalArgError, GoalTranslationError):
+        return  # refused at the boundary or by the Criteria rules
+    (goal,) = result.goals
+    spec = criterion_spec(goal)
+    assert spec.expand([]) == [(goal.key, True)]
+    assert goal.target == "wanted"
+    if raw["family"] == "cycle_count":
+        assert goal.key == cycle_count_criterion_key("wanted", "smoke")
+        assert (spec.params["target"], spec.params["test"]) == ("wanted", "smoke")
+    else:
+        assert spec.targets == ["wanted"]
+        assert goal.key.endswith("_wanted")

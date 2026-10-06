@@ -284,6 +284,31 @@ def _reject_unknown(raw: Mapping[str, Any], allowed: frozenset[str], where: str)
         raise GoalArgError(f"{where} has unknown fields: {unknown}")
 
 
+# A clock name in a clock-scoped threshold (``<clock>.<name>``).
+_CLOCK_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _require_threshold_names(
+    thresholds: Mapping[str, Any], params: frozenset[str], where: str, *, clock_scoped: bool
+) -> None:
+    """Refuse every threshold name that is not a known parameter of the family.
+
+    Thresholds are spread into the Criterion authoring entry next to the
+    fields that bind the Goal to its Target, so a structural name such as
+    ``targets`` or ``test`` must never get through. A per-clock name is
+    ``<clock>.<parameter>`` with a plain identifier as the clock; whether that
+    parameter may be clock-scoped is checked by the Criteria rules.
+    """
+    for name in thresholds:
+        clock, dot, base = name.rpartition(".")
+        scoped_ok = clock_scoped and bool(_CLOCK_NAME.fullmatch(clock))
+        if base not in params or (dot and not scoped_ok):
+            raise GoalArgError(
+                f"{where} has unknown threshold {name!r}; valid names: {sorted(params)}"
+                + (" (optionally '<clock>.<name>')" if clock_scoped else "")
+            )
+
+
 def _origin(raw: Mapping[str, Any], where: str) -> str:
     return _required_text(raw, "origin", where) if "origin" in raw else AD_HOC_ORIGIN
 
@@ -303,10 +328,13 @@ def _parse_implementation_goal(
     assert family in (GoalFamily.SYNTH, GoalFamily.FPGA)
     target = _target_name(raw, "target", where)
     baseline = _target_name(raw, "baseline", where) if "baseline" in raw else None
+    params = SYNTHESIS_OK_PARAMS if family is GoalFamily.SYNTH else FPGA_IMPL_OK_PARAMS
+    thresholds = _mapping(raw, "thresholds", where, required=False)
+    _require_threshold_names(thresholds, params, f"{where}.thresholds", clock_scoped=True)
     return ImplementationGoalArg(
         family,
         target,
-        _mapping(raw, "thresholds", where, required=False),
+        thresholds,
         None if baseline == target else baseline,
         _origin(raw, where),
     )
@@ -314,10 +342,14 @@ def _parse_implementation_goal(
 
 def _parse_cycle_count_goal(raw: Mapping[str, Any], where: str) -> CycleCountGoalArg:
     _reject_unknown(raw, frozenset({"family", "target", "test", "thresholds", "origin"}), where)
+    thresholds = _mapping(raw, "thresholds", where, required=True)
+    _require_threshold_names(
+        thresholds, CYCLE_COUNT_PARAMS, f"{where}.thresholds", clock_scoped=False
+    )
     return CycleCountGoalArg(
         _target_name(raw, "target", where),
         _required_text(raw, "test", where),
-        _mapping(raw, "thresholds", where, required=True),
+        thresholds,
         _origin(raw, where),
     )
 
@@ -339,9 +371,13 @@ def _coverage_tests(raw: Mapping[str, Any], where: str) -> Literal["all"] | tupl
 
 def _parse_coverage_goal(raw: Mapping[str, Any], where: str) -> CoverageGoalArg:
     _reject_unknown(raw, frozenset({"family", "target", "metrics", "tests", "origin"}), where)
+    metrics = _mapping(raw, "metrics", where, required=True)
+    unknown = sorted(name for name in metrics if name not in COVERAGE_METRICS)
+    if unknown:
+        raise GoalArgError(f"{where}.metrics has unknown metrics {unknown}")
     return CoverageGoalArg(
         _target_name(raw, "target", where),
-        _mapping(raw, "metrics", where, required=True),
+        metrics,
         _coverage_tests(raw, where),
         _origin(raw, where),
     )
@@ -376,7 +412,9 @@ def _spec_path(raw: Mapping[str, Any], where: str) -> str:
     """A spec file path relative to the worktree that cannot escape it."""
     spec = _required_text(raw, "spec", where)
     escapes = ".." in re.split(r"[\\/]", spec)
-    if PurePosixPath(spec).is_absolute() or PureWindowsPath(spec).is_absolute() or escapes:
+    windows = PureWindowsPath(spec)
+    rooted = spec.startswith(("/", "\\")) or bool(windows.drive) or bool(windows.root)
+    if rooted or PurePosixPath(spec).is_absolute() or escapes:
         raise GoalArgError(f"{where}.spec {spec!r} must be relative to the worktree, without '..'")
     return spec
 
@@ -448,14 +486,21 @@ def _object(family: GoalFamily, properties: dict[str, Any], required: list[str])
     }
 
 
-def _thresholds(params: frozenset[str]) -> dict[str, Any]:
+def _thresholds(params: frozenset[str], *, clock_scoped: bool) -> dict[str, Any]:
+    names = "|".join(sorted(params))
+    clock = f"(?:{_CLOCK_NAME.pattern}\\.)?" if clock_scoped else ""
+    scoping = (
+        " Per-clock timing thresholds may be scoped as '<clock>.<name>'." if clock_scoped else ""
+    )
     return {
         "type": "object",
+        "propertyNames": {"pattern": f"^{clock}(?:{names})$"},
         "additionalProperties": _THRESHOLD_VALUE,
         "description": (
             "Threshold name to value; percentages as '8%'. Names: "
             + ", ".join(sorted(params))
-            + ". Per-clock timing thresholds may be scoped as '<clock>.<name>'."
+            + "."
+            + scoping
         ),
     }
 
@@ -472,9 +517,17 @@ def goal_arg_json_schema() -> dict[str, Any]:
         (GoalFamily.FPGA, FPGA_IMPL_OK_PARAMS),
     ):
         baseline = {**_STRING, "description": "Baseline Target at the base commit."}
-        properties = {"target": target, "baseline": baseline, "thresholds": _thresholds(params)}
+        properties = {
+            "target": target,
+            "baseline": baseline,
+            "thresholds": _thresholds(params, clock_scoped=True),
+        }
         variants.append(_object(family, properties, ["target"]))
-    cycle = {"target": target, "test": _STRING, "thresholds": _thresholds(CYCLE_COUNT_PARAMS)}
+    cycle = {
+        "target": target,
+        "test": _STRING,
+        "thresholds": _thresholds(CYCLE_COUNT_PARAMS, clock_scoped=False),
+    }
     variants.append(_object(GoalFamily.CYCLE_COUNT, cycle, ["target", "test", "thresholds"]))
     metrics = {
         "type": "object",
