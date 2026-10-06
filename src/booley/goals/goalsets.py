@@ -117,8 +117,8 @@ def _header(name: str) -> list[str]:
     return [
         f"# Goalset: {name}",
         "",
-        "This file belongs to the Project: edit, extend, or delete it freely.",
-        "`booley init` created it once and never rewrites it.",
+        "This file belongs to the Project: edit and extend it freely.",
+        "`booley init` creates it when it is missing and never rewrites it.",
         "",
         "When a session enters Goal Mode with this Goalset, the agent translates",
         "it into the entry tool's Goal arguments. Every Goal is mandatory. Write",
