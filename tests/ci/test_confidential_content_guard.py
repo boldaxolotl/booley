@@ -511,18 +511,34 @@ def test_audit_finds_blob_deleted_later_in_history(tmp_path: Path) -> None:
     assert SENTINEL not in result.stderr
 
 
-def test_audit_accepts_mergify_merge_commit_identity(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "committer_email",
+    [
+        "37929162+mergify[bot]@users.noreply.github.com",
+        "commit-signer@mergify.com",
+        "untrusted@mergify.com",
+    ],
+)
+def test_audit_checks_mergify_merge_commit_identities(
+    tmp_path: Path, committer_email: str
+) -> None:
     repo, _base = _repository(tmp_path)
     (repo / "bot.txt").write_text("clean bot-authored content\n", encoding="utf-8")
-    head = _commit(
+    _git(repo, "add", ".")
+    _git(
         repo,
+        "commit",
+        "-m",
         "add bot-authored fixture",
-        name="Mergify",
-        email="37929162+mergify[bot]@users.noreply.github.com",
+        env=(
+            _identity_env("Mergify", "37929162+mergify[bot]@users.noreply.github.com")
+            | {"GIT_COMMITTER_EMAIL": committer_email}
+        ),
     )
+    head = _git(repo, "rev-parse", "HEAD")
     env = _sealed_fixture(repo, _encoded_config()) | {
         "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": (
-            "37929162+mergify[[]bot[]]@users.noreply.github.com"
+            "37929162+mergify[[]bot[]]@users.noreply.github.com\ncommit-signer@mergify.com"
         ),
     }
 
@@ -542,7 +558,11 @@ def test_audit_accepts_mergify_merge_commit_identity(tmp_path: Path) -> None:
         text=True,
     )
 
-    assert result.returncode == 0, result.stderr
+    if committer_email == "untrusted@mergify.com":
+        assert result.returncode == 1
+        assert "committer identity" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
 
 
 def test_merge_introduced_blob_deleted_later_is_blocked(tmp_path: Path) -> None:
@@ -1289,7 +1309,9 @@ def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> N
     )[0]
 
     allowed_identity = (
-        'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "37929162+mergify[[]bot[]]@users.noreply.github.com"'
+        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: |\n"
+        "            37929162+mergify[[]bot[]]@users.noreply.github.com\n"
+        "            commit-signer@mergify.com"
     )
     assert allowed_identity in pr_scan
     assert allowed_identity in main_scan
