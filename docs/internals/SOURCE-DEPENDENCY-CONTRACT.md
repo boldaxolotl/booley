@@ -25,6 +25,7 @@ The package layout maps to the canonical concepts indexed by the
 | Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, reviewer receipts/dispositions, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
 | Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
+| Goal Mode | `booley.goals` | Translate Goals into Criteria and own Goal Records, their locks and revisions, worktree identity, and the Change Log. |
 | Ticket Board | `booley.ticket_board` | Persist Tickets, transitions, Criteria state, execution records, and the complete ticket-review lifecycle; project resolved Ticket documents into generic Criteria declarations. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Inspect, convert, discover, and query waveform stores; own the B-Wave half of streaming and control human viewing. |
@@ -58,7 +59,7 @@ Runtime does not import Ticket Board, including under `TYPE_CHECKING` or inside
 functions. D14 has no waiver or composition exception.
 
 - `runtime.job_records` stores records at an explicit jobs root. MCP composition
-  resolves `ticket_board.paths.session_jobs_dir` after Interactive logging setup;
+  resolves `runtime.session_paths.session_jobs_dir` after Interactive logging setup;
   the job manager retains each run's root from submission through completion,
   and runs it did not start use the container-wide root. Standalone
   readers resolve the same session location. Explicit `None` disables persistence.
@@ -267,7 +268,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D22 | Prefix `booley.ticket_board` | Prefix `booley.review` | Forbid, subject only to C9 | Ticket Board composes Review only through its exact artifact-generation entry point. |
 | D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
 | D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
-| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.commit_policy`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
+| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.commit_policy`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.goals`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
 | D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.harness.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
@@ -277,6 +278,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Forbid | Packaged execution consumes commit policy through its shared owner; development commands do not own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
+| D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.ticket_board`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, concrete Flows, or Ticket Board persistence. |
 
 ## Simulation Campaign storage boundary
 
@@ -749,6 +751,23 @@ FuseSoC/Target group; `booley.commit_policy` is an acyclic singleton. D32-D34 ra
 the corrected ownership. The exact edge inventory, bundle and fallback evidence,
 fan-out change, and verification commands are recorded in
 [the #660 implementation evidence](../research/runtime-feedback-dependencies-660-evidence.md).
+
+## Current snapshot: 06 OCT 2026 — Goal Mode package
+
+ADR 0067 Phase 1 adds `booley.goals` (Goal model, translation, record store,
+paths, Change Log), D35, and `booley.goals` as a D25 forbidden target.
+Comparing `main` source revision `8a96392c1` with implementation source
+`2d4cc572d`, the source changes from 629 modules, 3,737 facts, and 3,051
+unique edges to 636 modules, 3,760 facts, and 3,075 edges. Every new
+`booley.goals` edge targets `booley.core`, `booley.criteria`, `booley.runtime`,
+or `booley.goals` itself, so the package is an acyclic singleton outside the
+11-package execution group. Moving `session_jobs_dir` and the logs runtime
+directory to `runtime.session_paths` removes the
+`mcp.call_context -> ticket_board.paths` and
+`mcp.submit_run_report -> ticket_board.paths` edges; `mcp.server` keeps one
+deferred `ticket_board.paths` import inside the Ticket report gate. Direct
+mutual pairs are unchanged. Reproduce with `compare_report.py` (below) between
+`8a96392c1` and `2d4cc572d`.
 
 ## Required gate
 

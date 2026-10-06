@@ -11,7 +11,8 @@ class WriteOnceConflictError(RuntimeError):
     """A write-once path already contains different bytes."""
 
 
-def _fsync_directory(directory: Path) -> None:
+def fsync_directory(directory: Path) -> None:
+    """Persist a directory entry change (create, rename, unlink); a no-op on Windows."""
     if os.name == "nt":
         return
     descriptor = os.open(directory, os.O_RDONLY)
@@ -46,7 +47,7 @@ def atomic_replace_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> No
     temporary = _staged_bytes(path, content, mode)
     try:
         temporary.replace(path)
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -61,7 +62,7 @@ def atomic_write_once(path: Path, content: bytes, *, mode: int = 0o600) -> bool:
             if path.read_bytes() != content:
                 raise WriteOnceConflictError(f"conflicting write-once record: {path}") from None
             return False
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
         return True
     finally:
         temporary.unlink(missing_ok=True)
@@ -73,5 +74,5 @@ def durable_unlink(path: Path) -> bool:
         path.unlink()
     except FileNotFoundError:
         return False
-    _fsync_directory(path.parent)
+    fsync_directory(path.parent)
     return True

@@ -23,10 +23,7 @@ from types import MappingProxyType
 from typing import Any
 
 from booley.mcp.flow_execution_selection import configured_ticket_file
-
-# The MCP server reaches session_jobs_dir only through this module; a later
-# Step 0 change moves it to a neutral runtime module.
-from booley.ticket_board.paths import session_jobs_dir
+from booley.runtime.session_paths import session_jobs_dir
 
 
 @dataclass(frozen=True, slots=True)

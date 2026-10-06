@@ -44,9 +44,9 @@ from booley.runtime.endpoint_execution import (
     normalize_completion_error,
 )
 from booley.runtime.pid import is_pid_alive
+from booley.runtime.session_paths import session_jobs_dir
 from booley.runtime.timefmt import format_human_datetime, format_human_datetime_safe
 from booley.ticket_board import report_submission as submission
-from booley.ticket_board.paths import session_jobs_dir
 from booley.ticket_board.ticket_repositories import TicketWorkspaceError, pending_ticket_changes
 
 from .base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult

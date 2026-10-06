@@ -8,6 +8,8 @@ tickets/state/
 tickets/waiver-candidates/
 tickets/logs/
 tickets/locks/
+goals/*/
+!goals/history/
 .interactive_logs/
 .runtime/
 runtime/
