@@ -745,6 +745,37 @@ def test_project_gitignore_names_each_missing_pattern(tmp_path: Path) -> None:
     assert findings[0].fix == "booley init"
 
 
+def test_project_gitignore_names_goal_patterns(tmp_path: Path) -> None:
+    kept = [
+        p
+        for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS
+        if not p.lstrip("!").startswith("goals/")
+    ]
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in kept), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "goals/*/" in findings[0].message
+    assert "!goals/history/" in findings[0].message
+
+
+def test_project_gitignore_warns_when_goal_history_reinclude_precedes_its_override(
+    tmp_path: Path,
+) -> None:
+    # Git applies the last matching line, so a re-include written before
+    # ``goals/*/`` leaves Goal summaries ignored.
+    patterns = list(project_gitignore.PROJECT_GITIGNORE_PATTERNS)
+    patterns.remove("!goals/history/")
+    patterns.insert(0, "!goals/history/")
+    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in patterns), encoding="utf-8")
+
+    findings = _gitignore_probe(tmp_path)
+
+    assert [f.severity for f in findings] == ["warn"]
+    assert "!goals/history/" in findings[0].message
+
+
 def test_project_gitignore_accepts_anchored_spelling_of_nested_pattern(tmp_path: Path) -> None:
     anchored = {"tickets/board/": "/tickets/board/", "tickets/state/": "/tickets/state/"}
     lines = [anchored.get(p, p) for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS]
