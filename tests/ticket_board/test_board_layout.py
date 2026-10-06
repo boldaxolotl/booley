@@ -358,4 +358,6 @@ def test_project_gitignore_ignores_live_state_but_not_history():
     assert f"tickets/{BOARD_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
     assert f"tickets/{STATE_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
     assert f"tickets/{WAIVER_CANDIDATES_DIR_NAME}/" in PROJECT_GITIGNORE_PATTERNS
-    assert not any(HISTORY_DIR_NAME in pattern for pattern in PROJECT_GITIGNORE_PATTERNS)
+    assert not any(
+        f"tickets/{HISTORY_DIR_NAME}" in pattern for pattern in PROJECT_GITIGNORE_PATTERNS
+    )

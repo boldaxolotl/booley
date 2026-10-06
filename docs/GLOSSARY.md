@@ -81,11 +81,11 @@ The local, uncommitted state of one Goal Mode under `.booley_project/goals/<goal
 _Avoid_: ticket record, board entry, goal file
 
 **Goal Change Proposal**:
-An agent's request, made through the proposal MCP tool, to add or relax a Goal in an active Goal Mode. It is pending until a human approves or rejects it, either through the client's elicitation form or in chat with the agent recording the quoted words.
+An agent's request, made through the proposal MCP tool, to change one Goal of an active Goal Mode: add it, relax it, retarget it to another Target, or waive coverage points through a Coverage Waiver Candidate. It is pending until a human approves or rejects it, either through the client's elicitation form or in chat with the agent recording the quoted words.
 _Avoid_: amendment, Ticket Amendment, waiver request
 
 **Change Log**:
-The append-only record inside a Goal Record of every Goal Change Proposal and its outcome: who proposed it, the human's decision and reason, and whether the approval was elicited by the client or agent-recorded.
+The append-only record inside a Goal Record of every approved Goal Change Proposal as it is applied (a [Goal Change](../src/booley/goals/GLOSSARY.md)): the Goal before and after, the kind of change (add, relax, retarget, or waiver), the human's reason, whether the approval was elicited by the client or agent-recorded with the human's quoted words, and the acting session.
 _Avoid_: audit log, history, journal
 
 **Protected Input**:

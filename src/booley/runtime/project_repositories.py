@@ -146,6 +146,38 @@ def common_git_dir(worktree: Path) -> Path | None:
         return None
 
 
+class GitDirectoryInspectionError(RuntimeError):
+    """Git could not name the metadata directories of a path."""
+
+
+@dataclass(frozen=True)
+class GitDirectories:
+    """A checkout's own Git directory and the repository's shared one, resolved."""
+
+    git_dir: Path
+    common_dir: Path
+
+
+def git_directories(path: Path) -> GitDirectories:
+    """Return the Git directory and common directory of the checkout containing *path*.
+
+    Both come from one bounded ``git rev-parse`` with absolute path output, so
+    every spelling of one checkout yields the same resolved pair. Raises
+    :class:`GitDirectoryInspectionError` when *path* is not inside a checkout.
+    """
+    result = run_git(path, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+    detail = result.stderr.strip() or result.stdout.strip()
+    if result.returncode != 0:
+        raise GitDirectoryInspectionError(f"{path} is not a Git checkout: {detail}")
+    try:
+        git_dir, common_dir = result.stdout.splitlines()
+    except ValueError:
+        raise GitDirectoryInspectionError(
+            f"unexpected rev-parse output for {path}: {detail}"
+        ) from None
+    return GitDirectories(Path(git_dir).resolve(), Path(common_dir).resolve())
+
+
 def ref_sha(source: Path, ref: str) -> str:
     result = run_git(source, "rev-parse", "--verify", ref)
     return result.stdout.strip() if result.returncode == 0 else ""

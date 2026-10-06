@@ -7,10 +7,15 @@ Large but human-readable logs live under ``human-logs/``.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-RUNTIME_DIR = ".runtime"
+# The runtime-directory layout and Job record location are shared by every
+# execution mode; Ticket Mode callers keep importing them from here.
+from booley.runtime import session_paths
+
+RUNTIME_DIR = session_paths.RUNTIME_DIR
+session_jobs_dir = session_paths.session_jobs_dir
+
 HUMAN_LOGS_DIR = "human-logs"
 
 # ---------------------------------------------------------------------------
@@ -44,7 +49,7 @@ def ticket_log_dir(logs_dir: str | Path, slug: str) -> Path:
 
 def ticket_runtime_dir(log_dir: str | Path) -> Path:
     """Return the runtime directory for one ticket log root."""
-    return Path(log_dir) / RUNTIME_DIR
+    return session_paths.logs_runtime_dir(log_dir)
 
 
 def runtime_dir(logs_dir: str | Path, slug: str) -> Path:
@@ -130,13 +135,3 @@ def migrate_runtime_file(log_dir: str | Path, filename: str) -> Path:
         ticket_legacy_file(log_dir, filename),
         ticket_runtime_file(log_dir, filename),
     )
-
-
-def session_jobs_dir() -> Path | None:
-    """Resolve job storage after the execution caller has configured its logs."""
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-    if not logs_dir:
-        return None
-    runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-    runtime = Path(runtime_env) if runtime_env else ticket_runtime_dir(logs_dir)
-    return runtime / "jobs"

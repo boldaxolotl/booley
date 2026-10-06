@@ -347,6 +347,9 @@ include = [
     "src/booley/runtime/project_dir.py",
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
+    # Goal Mode records and the Goal argument trust boundary.
+    "src/booley/goals",
+    "src/booley/runtime/session_paths.py",
 ]
 strict = [
     # External-input coercion and the project-directory trust boundary.
@@ -356,4 +359,5 @@ strict = [
     # Persisted simulator-result structures and verdict parsing.
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
+    "src/booley/goals",
 ]

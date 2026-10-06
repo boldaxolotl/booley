@@ -32,6 +32,11 @@ from __future__ import annotations
 # ``tickets/history/`` (Closed Tickets) stays tracked. ``tickets/waiver-candidates/``
 # (ADR 0066) holds per-Ticket Waiver Candidates, disposable until approval.
 #
+# ``goals/*/`` and ``!goals/history/`` (ADR 0067): each Goal Record directory and
+# the Goal lock directory are local working state, while ``goals/history/``
+# holds the committed Goal summaries. The re-include must follow the pattern it
+# overrides, so :func:`missing_gitignore_patterns` only counts it when it does.
+#
 # ``__pycache__/`` + ``*.pyc``: Project-authored Python lifecycle hooks may
 # still run in ``.booley_project/hooks/``. The managed Git policy bundle is
 # isolated under ``.booley_project/.managed/`` and runs from its zip archive.
@@ -45,6 +50,8 @@ PROJECT_GITIGNORE_PATTERNS = (
     "tickets/waiver-candidates/",
     "tickets/logs/",
     "tickets/locks/",
+    "goals/*/",
+    "!goals/history/",
     ".interactive_logs/",
     ".runtime/",
     "runtime/",
@@ -54,6 +61,10 @@ PROJECT_GITIGNORE_PATTERNS = (
     "SETUP-REPORT.md",
     "FEEDBACK-REPORT.md",
 )
+
+# Each ``!`` re-include and the required pattern it overrides. Git applies the
+# last matching line, so the re-include must follow that pattern.
+REINCLUDES: dict[str, str] = {"!goals/history/": "goals/*/"}
 
 PROJECT_GITIGNORE = "# Transient Booley state — do not commit.\n" + "".join(
     f"{pattern}\n" for pattern in PROJECT_GITIGNORE_PATTERNS
@@ -66,14 +77,43 @@ def _gitignore_line_key(line: str) -> str:
     A pattern with a slash before its end is anchored to the ``.gitignore``
     directory either way, so ``/tickets/board/`` and ``tickets/board/`` match
     the same paths. A pattern without one (``worktrees/``) is not equivalent
-    to its anchored form and keeps its spelling.
+    to its anchored form and keeps its spelling. A ``!`` re-include keeps its
+    prefix and normalizes the pattern after it.
     """
     pattern = line.strip()
+    negation = "!" if pattern.startswith("!") else ""
+    pattern = pattern.removeprefix("!")
     body = pattern.removeprefix("/")
-    return body if "/" in body.rstrip("/") else pattern
+    return negation + (body if "/" in body.rstrip("/") else pattern)
 
 
 def missing_gitignore_patterns(content: str) -> list[str]:
-    """Return the required ignore patterns that *content* does not already cover."""
-    present = {_gitignore_line_key(line) for line in content.splitlines()}
-    return [p for p in PROJECT_GITIGNORE_PATTERNS if _gitignore_line_key(p) not in present]
+    """Return the required ignore patterns that *content* does not already cover.
+
+    A ``!`` re-include only takes effect after the pattern it overrides
+    (:data:`REINCLUDES`). It counts as present only
+    when that pattern is present too and the re-include occurs after its last
+    occurrence, so appending the reported patterns in order always leaves a
+    working re-include.
+    """
+    keys = [_gitignore_line_key(line) for line in content.splitlines()]
+    return [pattern for pattern in PROJECT_GITIGNORE_PATTERNS if not _covers(keys, pattern)]
+
+
+def _covers(keys: list[str], pattern: str) -> bool:
+    """Whether normalized *keys* cover the required *pattern*."""
+    key = _gitignore_line_key(pattern)
+    if key not in keys:
+        return False
+    overridden = REINCLUDES.get(pattern)
+    return overridden is None or _reincludes_after(keys, key, overridden)
+
+
+def _reincludes_after(keys: list[str], reinclude: str, overridden_pattern: str) -> bool:
+    """Whether *reinclude* follows every line of the pattern it overrides."""
+    overridden = _gitignore_line_key(overridden_pattern)
+    overridden_positions = [position for position, key in enumerate(keys) if key == overridden]
+    if not overridden_positions:
+        return False
+    last_reinclude = max(position for position, key in enumerate(keys) if key == reinclude)
+    return last_reinclude > max(overridden_positions)
