@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +19,6 @@ from typing import Any
 
 import pytest
 
-from booley.core.project_dir import reset_cache
 from booley.goals import entry as entry_module
 from booley.goals.checkout import GoalCheckout
 from booley.goals.entry import (
@@ -31,80 +30,14 @@ from booley.goals.entry import (
 )
 from booley.goals.model import GoalState, parse_goal_args
 from booley.goals.paths import record_paths
-from booley.goals.protected_inputs import (
-    ProtectedInputRoots,
-    protected_input_violations,
-    resolve_protected_inputs,
-)
 from booley.goals.store import GoalStore
-from booley.targets.domain import UnknownTargetError
+from tests.goals.conftest import DATE, FakeCatalog, git, install_paired_project
 
-GIT_TIMEOUT_S = 30
-KNOWN_TARGETS = frozenset({"top", "base"})
-DATE = "20261006"
 BRANCH = f"goal/uart-fix-{DATE}"
 
 
 class _Crash(BaseException):
     """Raised at a boundary to stop entry the way a killed process would (no rollback)."""
-
-
-def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-c", "user.name=Goal Test", "-c", "user.email=goal@test.invalid", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=GIT_TIMEOUT_S,
-    )
-    return result.stdout.strip()
-
-
-class _FakeCatalog:
-    """Knows :data:`KNOWN_TARGETS`; any other name is unknown."""
-
-    @classmethod
-    def build(cls, _root: Path) -> SimpleNamespace:
-        def select(name: str) -> SimpleNamespace:
-            if name not in KNOWN_TARGETS:
-                raise UnknownTargetError(name)
-            return SimpleNamespace(selector=name)
-
-        return SimpleNamespace(select=select)
-
-
-@pytest.fixture
-def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
-    """A Project with a control Project directory and one linked worktree."""
-    main = tmp_path / "main"
-    main.mkdir()
-    _git(main, "init", "-q", "-b", "main")
-    (main / "booley.toml").write_text("# root config\n", encoding="utf-8")
-    (main / "rtl.v").write_text("module top; endmodule\n", encoding="utf-8")
-    (main / "docs").mkdir()
-    (main / "docs" / "spec.md").write_text("spec\n", encoding="utf-8")
-    _git(main, "add", "-A")
-    _git(main, "commit", "-q", "-m", "base")
-    (main / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
-    control = main / ".booley_project"
-    _write_project_files(control)
-    worktree = control / "worktrees" / "wt"
-    _git(main, "worktree", "add", "-q", "-b", "work", str(worktree))
-    _write_project_files(worktree / ".booley_project")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(control))
-    monkeypatch.setattr(entry_module, "TargetCatalog", _FakeCatalog)
-    stamps = iter(f"{DATE}T12{minute:02d}00Z" for minute in range(60))
-    monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
-    reset_cache()
-    yield SimpleNamespace(main=main, control=control, worktree=worktree)
-    reset_cache()
-
-
-def _write_project_files(project_dir: Path) -> None:
-    (project_dir / "mcp_tools").mkdir(parents=True)
-    (project_dir / "booley.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
-    (project_dir / "mcp_tools" / "tool.py").write_text("# custom tool\n", encoding="utf-8")
 
 
 def _request(layout: SimpleNamespace, goals: list[dict[str, Any]] | None = None, **fields: Any):
@@ -126,11 +59,11 @@ def _store(layout: SimpleNamespace) -> GoalStore:
 
 
 def _head_ref(path: Path) -> str:
-    return _git(path, "symbolic-ref", "-q", "HEAD")
+    return git(path, "symbolic-ref", "-q", "HEAD")
 
 
 def _branches(path: Path) -> set[str]:
-    return set(_git(path, "branch", "--format=%(refname:short)").split())
+    return set(git(path, "branch", "--format=%(refname:short)").split())
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +72,7 @@ def _branches(path: Path) -> set[str]:
 
 
 def test_entry_creates_branch_record_and_unmet_strict_state(layout: SimpleNamespace) -> None:
-    base = _git(layout.worktree, "rev-parse", "HEAD")
+    base = git(layout.worktree, "rev-parse", "HEAD")
     goals = [{"family": "lint", "target": "top"}, {"family": "sim", "target": "top"}]
 
     result = enter_goal_mode(_request(layout, goals), _env(layout))
@@ -161,8 +94,8 @@ def test_entry_creates_branch_record_and_unmet_strict_state(layout: SimpleNamesp
 
 
 def test_entry_works_from_a_detached_head(layout: SimpleNamespace) -> None:
-    base = _git(layout.worktree, "rev-parse", "HEAD")
-    _git(layout.worktree, "checkout", "-q", "--detach")
+    base = git(layout.worktree, "rev-parse", "HEAD")
+    git(layout.worktree, "checkout", "-q", "--detach")
 
     record = enter_goal_mode(_request(layout), _env(layout)).record
 
@@ -290,7 +223,7 @@ def test_spec_review_needs_its_spec_file(layout: SimpleNamespace) -> None:
 
 
 def test_existing_goal_branch_name_is_refused(layout: SimpleNamespace) -> None:
-    _git(layout.main, "branch", BRANCH)
+    git(layout.main, "branch", BRANCH)
 
     with pytest.raises(GoalEntryError, match=f"branch {BRANCH} already exists"):
         enter_goal_mode(_request(layout), _env(layout))
@@ -305,128 +238,6 @@ def test_conflicting_goals_are_refused_before_any_write(layout: SimpleNamespace)
     with pytest.raises(GoalEntryError, match="different spec files"):
         enter_goal_mode(_request(layout, goals), _env(layout))
     assert not (layout.control / "goals").exists()
-
-
-# ---------------------------------------------------------------------------
-# Protected inputs (D7)
-# ---------------------------------------------------------------------------
-
-
-def _violations(layout: SimpleNamespace) -> list[str]:
-    record = _store(layout).active_for_worktree(layout.worktree)
-    assert record is not None and record.protected_digest is not None
-    roots = ProtectedInputRoots(layout.worktree, layout.control)
-    return protected_input_violations(record.protected_paths, record.protected_digest, roots)
-
-
-def test_protected_paths_cover_what_runs_read(layout: SimpleNamespace) -> None:
-    record = enter_goal_mode(_request(layout), _env(layout)).record
-
-    paths = set(record.protected_paths)
-    snapshot = layout.worktree / ".booley_project"
-    assert str(layout.control / "booley.toml") in paths
-    assert str(snapshot / "booley.toml") in paths
-    assert str(layout.worktree / "booley.toml") in paths
-    assert str(layout.control / "mcp_tools") in paths
-    assert str(layout.worktree / "FUSESOC_IGNORE") in paths
-    assert str(snapshot / "mcp_tools") not in paths  # the unused copy
-    assert _violations(layout) == []
-
-
-@pytest.mark.parametrize(
-    "relative",
-    [
-        "control/booley.toml",  # session-global config readers
-        "snapshot/booley.toml",  # Flow readers given work_dir
-        "control/mcp_tools/tool.py",  # custom MCP tools run from the control copy
-    ],
-)
-def test_editing_an_input_a_run_reads_is_a_violation(
-    layout: SimpleNamespace, relative: str
-) -> None:
-    enter_goal_mode(_request(layout), _env(layout))
-    where, _, rest = relative.partition("/")
-    base = layout.control if where == "control" else layout.worktree / ".booley_project"
-    path = base / rest
-    original = path.read_text(encoding="utf-8")
-
-    path.write_text(original + "# edited\n", encoding="utf-8")
-    assert _violations(layout) == ["a protected input differs from its state at entry"]
-
-    path.write_text(original, encoding="utf-8")  # untracked: the entry digest alone decides
-    assert _violations(layout) == []
-
-
-def test_editing_the_worktrees_unused_copy_is_not_a_violation(layout: SimpleNamespace) -> None:
-    enter_goal_mode(_request(layout), _env(layout))
-    unused = layout.worktree / ".booley_project" / "mcp_tools" / "tool.py"
-
-    unused.write_text("# edited copy nobody runs\n", encoding="utf-8")
-
-    assert _violations(layout) == []
-
-
-def test_adding_a_file_to_a_protected_directory_is_a_violation(layout: SimpleNamespace) -> None:
-    enter_goal_mode(_request(layout), _env(layout))
-    (layout.control / "hooks").mkdir()
-    (layout.control / "hooks" / "post-setup").write_text("#!/bin/sh\n", encoding="utf-8")
-
-    assert _violations(layout)
-
-
-def test_python_bytecode_caches_are_not_inputs(layout: SimpleNamespace) -> None:
-    enter_goal_mode(_request(layout), _env(layout))
-    cache = layout.control / "mcp_tools" / "__pycache__"
-    cache.mkdir()
-    (cache / "tool.cpython-313.pyc").write_bytes(b"\0")
-
-    assert _violations(layout) == []
-
-
-def test_creating_a_missing_input_is_a_violation(layout: SimpleNamespace) -> None:
-    enter_goal_mode(_request(layout), _env(layout))
-    (layout.worktree / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-
-    assert _violations(layout) == ["a protected input differs from its state at entry"]
-
-
-def test_a_committed_edit_is_a_violation_even_after_reverting_the_file(
-    layout: SimpleNamespace,
-) -> None:
-    enter_goal_mode(_request(layout), _env(layout))
-    config = layout.worktree / "booley.toml"
-    original = config.read_text(encoding="utf-8")
-    config.write_text(original + "# committed\n", encoding="utf-8")
-    _git(layout.worktree, "commit", "-q", "-am", "edit config")
-
-    config.write_text(original, encoding="utf-8")  # working copy back to the entry state
-
-    assert _violations(layout) == ["a protected input differs from its state at entry in HEAD"]
-
-
-def test_a_resolver_picking_another_file_is_a_violation(layout: SimpleNamespace) -> None:
-    record = enter_goal_mode(_request(layout), _env(layout)).record
-    assert record.protected_digest is not None
-    roots = ProtectedInputRoots(layout.worktree, layout.control)
-    moved = [*record.protected_paths[:-1], str(layout.main / "elsewhere")]
-
-    violations = protected_input_violations(moved, record.protected_digest, roots)
-
-    assert len(violations) == 1 and "resolve to different files" in violations[0]
-
-
-def test_resolution_falls_back_to_the_main_checkout_without_a_snapshot(
-    layout: SimpleNamespace,
-) -> None:
-    snapshot = layout.worktree / ".booley_project"
-    (snapshot / "booley.toml").unlink()
-    roots = ProtectedInputRoots(layout.worktree, layout.control)
-
-    paths = resolve_protected_inputs(roots)
-
-    assert layout.main.resolve() / ".booley_project" / "booley.toml" in {
-        p.resolve() for p in paths
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -497,8 +308,8 @@ def test_a_failure_during_entry_rolls_back_at_once(layout: SimpleNamespace) -> N
 
 
 def test_rollback_after_a_crash_back_to_a_detached_head(layout: SimpleNamespace) -> None:
-    base = _git(layout.worktree, "rev-parse", "HEAD")
-    _git(layout.worktree, "checkout", "-q", "--detach")
+    base = git(layout.worktree, "rev-parse", "HEAD")
+    git(layout.worktree, "checkout", "-q", "--detach")
     with pytest.raises(_Crash):
         enter_goal_mode(_request(layout), _env(layout, _crash_at("checked_out")))
 
@@ -511,7 +322,7 @@ def test_rollback_after_a_crash_back_to_a_detached_head(layout: SimpleNamespace)
         )
 
     assert record.state is GoalState.FAILED
-    assert _git(layout.worktree, "rev-parse", "HEAD") == base
+    assert git(layout.worktree, "rev-parse", "HEAD") == base
     assert (
         subprocess.run(
             ["git", "symbolic-ref", "-q", "HEAD"], cwd=layout.worktree, check=False
@@ -530,7 +341,7 @@ def test_rollback_keeps_work_committed_on_the_goal_branch(layout: SimpleNamespac
     with pytest.raises(_Crash):
         enter_goal_mode(_request(layout), _env(layout, _crash_at("checked_out")))
     (layout.worktree / "rtl.v").write_text("module top(); endmodule\n", encoding="utf-8")
-    _git(layout.worktree, "commit", "-q", "-am", "real work")
+    git(layout.worktree, "commit", "-q", "-am", "real work")
 
     result = enter_goal_mode(_request(layout, slug="retry"), _env(layout))
 
@@ -538,15 +349,15 @@ def test_rollback_keeps_work_committed_on_the_goal_branch(layout: SimpleNamespac
     assert "HEAD stays on Goal Branch" in (result.recovered.failure or "")
     assert BRANCH in _branches(layout.main)
     # The new Goal Mode stacks on the kept work.
-    assert result.record.base_sha == _git(layout.main, "rev-parse", BRANCH)
+    assert result.record.base_sha == git(layout.main, "rev-parse", BRANCH)
 
 
 def test_rollback_keeps_a_goal_branch_that_moved_while_detached(layout: SimpleNamespace) -> None:
     with pytest.raises(_Crash):
         enter_goal_mode(_request(layout), _env(layout, _crash_at("checked_out")))
-    _git(layout.worktree, "checkout", "-q", "work")
-    _git(layout.main, "commit", "-q", "--allow-empty", "-m", "main moves")
-    _git(layout.main, "branch", "-f", BRANCH, "main")
+    git(layout.worktree, "checkout", "-q", "work")
+    git(layout.main, "commit", "-q", "--allow-empty", "-m", "main moves")
+    git(layout.main, "branch", "-f", BRANCH, "main")
 
     result = enter_goal_mode(_request(layout, slug="retry"), _env(layout))
 
@@ -562,7 +373,7 @@ def test_an_ambiguous_branch_from_a_crash_before_recording_it_is_kept(
         enter_goal_mode(_request(layout), _env(layout, _crash_at("created")))
     (stale,) = _store(layout).list_records().records
     # The process created the branch, then died before saving branch_created.
-    _git(layout.worktree, "branch", stale.branch, stale.base_sha)
+    git(layout.worktree, "branch", stale.branch, stale.base_sha)
 
     result = enter_goal_mode(_request(layout, slug="retry"), _env(layout))
 
@@ -604,18 +415,8 @@ def test_relative_goal_pins_the_paired_project_revision_seen_at_entry(
     from booley.fusesoc import fusesoc_registry
     from booley.targets.catalog import TargetCatalog
 
-    project_repo = tmp_path / "project-repo"
-    project_repo.mkdir()
-    _git(project_repo, "init", "-q", "-b", "main")
-    (project_repo / "booley.toml").write_text("[project]\n", encoding="utf-8")
-    _git(project_repo, "add", "-A")
-    _git(project_repo, "commit", "-q", "-m", "project")
-    snapshot = layout.worktree / ".booley_project"
-    for path in sorted(snapshot.rglob("*"), reverse=True):
-        path.rmdir() if path.is_dir() else path.unlink()
-    snapshot.rmdir()
-    _git(project_repo, "worktree", "add", "-q", "--detach", str(snapshot))
-    paired_sha = _git(snapshot, "rev-parse", "HEAD")
+    snapshot = install_paired_project(layout, tmp_path)
+    paired_sha = git(snapshot, "rev-parse", "HEAD")
 
     calls: list[tuple[str, PairedProjectBaseline | None]] = []
 
@@ -626,7 +427,7 @@ def test_relative_goal_pins_the_paired_project_revision_seen_at_entry(
 
     monkeypatch.setattr(baseline_module, "baseline_worktree", fake_baseline)
     monkeypatch.setattr(
-        TargetCatalog, "build", classmethod(lambda _c, root: _FakeCatalog.build(root))
+        TargetCatalog, "build", classmethod(lambda _c, root: FakeCatalog.build(root))
     )
     monkeypatch.setattr(
         fusesoc_registry, "resolve_target_handle", lambda handle, *, build_root: handle
@@ -703,3 +504,122 @@ def test_a_concurrent_entry_on_one_worktree_is_refused(
     record = outcome["first"]
     assert getattr(record, "state", None) is GoalState.ACTIVE
     assert len(_store(layout).list_records().records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: rollback guard, paired tree, activation window, durability
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_keeps_head_when_the_original_branch_moved(layout: SimpleNamespace) -> None:
+    """Checking out a moved original branch could overwrite ignored files (B3)."""
+    with pytest.raises(_Crash):
+        enter_goal_mode(_request(layout), _env(layout, _crash_at("checked_out")))
+    git(layout.main, "commit", "-q", "--allow-empty", "-m", "elsewhere")
+    git(layout.main, "branch", "-f", "work", "main")
+
+    result = enter_goal_mode(_request(layout, slug="retry"), _env(layout))
+
+    assert result.recovered is not None
+    failure = result.recovered.failure or ""
+    assert "the original branch work moved to" in failure
+    assert BRANCH in _branches(layout.main)
+    # The new Goal Mode stacks on the Goal Branch HEAD was left on.
+    assert result.record.original_ref == f"refs/heads/{BRANCH}"
+
+
+def test_a_dirty_paired_project_checkout_is_refused(
+    layout: SimpleNamespace, tmp_path: Path
+) -> None:
+    paired = install_paired_project(layout, tmp_path)
+    (paired / "booley.toml").write_text("[project]\nname = 'wip'\n", encoding="utf-8")
+
+    with pytest.raises(GoalEntryError, match="paired Project checkout has uncommitted"):
+        enter_goal_mode(_request(layout), _env(layout))
+    assert _store(layout).list_records().records == ()
+
+
+def _during_pinning(action: Callable[[], None]) -> Callable[[str], None]:
+    def hook(boundary: str) -> None:
+        if boundary == "pinned":
+            action()
+
+    return hook
+
+
+def test_a_protected_edit_while_pinning_is_refused_and_rolled_back(
+    layout: SimpleNamespace,
+) -> None:
+    """The snapshot is taken before the freeze, so an edit during it is caught (B7)."""
+    config = layout.control / "booley.toml"
+
+    def edit() -> None:
+        config.write_text("[project]\nname = 'sneaky'\n", encoding="utf-8")
+
+    with pytest.raises(GoalEntryError, match="protected input differs"):
+        enter_goal_mode(_request(layout), _env(layout, _during_pinning(edit)))
+
+    (record,) = _store(layout).list_records().records
+    assert record.state is GoalState.FAILED
+    assert _head_ref(layout.worktree) == "refs/heads/work"
+    assert BRANCH not in _branches(layout.main)
+
+
+def test_a_commit_while_pinning_is_refused(layout: SimpleNamespace) -> None:
+    def commit() -> None:
+        git(layout.worktree, "commit", "-q", "--allow-empty", "-m", "sneaky")
+
+    with pytest.raises(GoalEntryError, match="before activation"):
+        enter_goal_mode(_request(layout), _env(layout, _during_pinning(commit)))
+
+    (record,) = _store(layout).list_records().records
+    assert record.state is GoalState.FAILED
+    assert "HEAD stays on Goal Branch" in (record.failure or "")
+
+
+def test_a_dirty_tree_while_pinning_is_refused(layout: SimpleNamespace) -> None:
+    def scribble() -> None:
+        (layout.worktree / "scratch.txt").write_text("wip\n", encoding="utf-8")
+
+    with pytest.raises(GoalEntryError, match="uncommitted changes"):
+        enter_goal_mode(_request(layout), _env(layout, _during_pinning(scribble)))
+
+    (record,) = _store(layout).list_records().records
+    assert record.state is GoalState.FAILED
+
+
+def test_a_paired_project_commit_while_pinning_is_refused(
+    layout: SimpleNamespace, tmp_path: Path
+) -> None:
+    paired = install_paired_project(layout, tmp_path)
+
+    def commit() -> None:
+        git(paired, "commit", "-q", "--allow-empty", "-m", "moved")
+
+    with pytest.raises(GoalEntryError, match="paired Project checkout moved"):
+        enter_goal_mode(_request(layout), _env(layout, _during_pinning(commit)))
+
+
+def test_head_leaving_the_original_ref_before_checkout_is_refused(
+    layout: SimpleNamespace,
+) -> None:
+    def detach(boundary: str) -> None:
+        if boundary == "branch_created":
+            git(layout.worktree, "checkout", "-q", "--detach")
+
+    with pytest.raises(GoalEntryError, match="before checking out the Goal Branch"):
+        enter_goal_mode(_request(layout), _env(layout, detach))
+
+
+def test_the_state_file_is_flushed_before_activation(
+    layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flushed: list[Path] = []
+    real = entry_module.fsync_directory
+    monkeypatch.setattr(
+        entry_module, "fsync_directory", lambda path: (flushed.append(path), real(path))
+    )
+
+    record = enter_goal_mode(_request(layout), _env(layout)).record
+
+    assert record_paths(layout.control, record.id).state_file.parent in flushed

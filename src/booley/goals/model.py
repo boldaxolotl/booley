@@ -692,7 +692,8 @@ class GoalRecord:
     Entry fields (D15): ``original_ref`` is the branch or detached commit
     HEAD was on, ``branch`` the Goal Branch, ``branch_created`` whether entry
     created it. Finish fields: ``validated_head`` and ``package_digest``.
-    ``protected_digest`` and ``protected_paths`` are the D7 snapshot.
+    ``protected_paths``, ``protected_digest`` (working view), and
+    ``protected_head_digest`` (HEAD view) are the D7 snapshot.
     ``session_key`` is the entering session, an audit field only (D3).
     ``failure`` explains a ``failed`` record, for example a branch left behind.
     ``paired_project_base_sha`` is the commit a paired Project repository
@@ -719,6 +720,7 @@ class GoalRecord:
     skip_reason: str | None = None
     protected_digest: str | None = None
     protected_paths: tuple[str, ...] = ()
+    protected_head_digest: str | None = None
     validated_head: str | None = None
     package_digest: str | None = None
     failure: str | None = None
@@ -746,6 +748,7 @@ class GoalRecord:
             "skip_reason": self.skip_reason,
             "protected_digest": self.protected_digest,
             "protected_paths": list(self.protected_paths),
+            "protected_head_digest": self.protected_head_digest,
             "validated_head": self.validated_head,
             "package_digest": self.package_digest,
             "failure": self.failure,
@@ -798,6 +801,7 @@ _RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
         "skip_reason": None,
         "protected_digest": None,
         "protected_paths": [],
+        "protected_head_digest": None,
         "validated_head": None,
         "package_digest": None,
         "failure": None,
@@ -850,6 +854,9 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         ),
         "protected_paths": tuple(
             _record_str_list(mapping["protected_paths"], "record.protected_paths")
+        ),
+        "protected_head_digest": _record_opt_digest(
+            mapping["protected_head_digest"], "record.protected_head_digest"
         ),
         "validated_head": (
             None

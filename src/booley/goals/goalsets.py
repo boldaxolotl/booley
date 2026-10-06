@@ -129,7 +129,7 @@ def _header(name: str) -> list[str]:
 
 def _arguments_section(goals: Sequence[Mapping[str, Any]]) -> list[str]:
     """The machine-readable Goal argument list, with its substitution rules."""
-    rules = []
+    rules: list[str] = []
     if any("target" in goal for goal in goals):
         rules.append(
             f"- Repeat each Goal that names `{TARGET_PLACEHOLDER}` once for every Target"

@@ -1,74 +1,81 @@
 """Protected inputs: the files that decide how evidence is produced (ADR 0067 D7).
 
-At entry the Goal Record stores one ``protected_digest`` over the protected set
-and the absolute paths it covered (``protected_paths``). Later calls compare
-three things against that snapshot (:func:`protected_input_violations`): the
-working files, HEAD for the inputs tracked in the Goal worktree, and the path
-list itself (a resolver that now picks a different file is a violation).
+At entry the Goal Record stores the protected paths (``protected_paths``) and
+two digests over them: the working view (``protected_digest``) and the HEAD
+view (``protected_head_digest``). Later calls recompute both and compare like
+with like (:func:`protected_input_violations`); a protected path list that
+changed is itself a violation.
 
 Resolver contract
 =================
 
-A Booley run with an explicit ``work_dir`` (a linked worktree carrying a copied
-``.booley_project/`` snapshot) does not read every protected input through one
-resolver. The digest covers the file each consumer actually reads, so one
-protected name can resolve to more than one path. Below, *control* is the
-Project directory the caller resolved for the session
-(:func:`booley.runtime.project_dir.resolve_project_dir`; inside a Sandbox the
-shared ``BOOLEY_PROJECT_DIR``), *snapshot* is
-:func:`~booley.runtime.project_dir.resolve_checkout_project_dir` of the
-worktree (its copied ``.booley_project/``), and *root* is the worktree root.
+Booley's consumers of the protected set do not share one resolver, and several
+choose between candidates at run time (a snapshot copy if it exists, else the
+main checkout's). Emulating each choice would let a selection mismatch hide a
+change, so the digest covers the **superset**: every file any consumer could
+read for a protected input. A candidate that does not exist is digested as
+absent. Every path is recorded relative to one of four roots, so the same
+worktree reached through another spelling (a bind-mount alias, a symlink)
+records the same list:
 
-=============================== =============================================== ==============================
-Protected input                 Consumer and the resolver it uses               Paths digested
-=============================== =============================================== ==============================
-``.booley_project/booley.toml`` Session-global readers (``project_config``      ``control/booley.toml``
-                                lazy globals, EDA requests, endpoint config,
-                                Specialist ``[agent]``/``[models]``) use
-                                control. Flow readers given ``work_dir``
-                                (Flow enablement, Flow options, project name,   ``snapshot/booley.toml`` and
-                                stealth projection, compiler cache) use the     ``root/.booley_project/
-                                snapshot or the fixed                           booley.toml``; when both are
-                                ``root/.booley_project/booley.toml``, falling   missing, the main checkout's
-                                back to the main checkout's copy when it is     ``.booley_project/booley.toml``
-                                missing.
-``booley.toml`` (checkout root) ``[project].dir`` routing walks up from the     ``root/booley.toml``
-                                worktree root (D7: the checkout root).
-``hooks/``                      No Booley Flow or Specialist reads it; Runner   ``control/hooks/``
-                                hooks read control, worktree preparation reads
-                                the snapshot. Digested where it is authored.
-``.managed/``                   The Git hook adapters run                       ``root/.booley_project/
-                                ``<root>/.booley_project/.managed`` first,      .managed/`` if present, else
-                                then the main checkout's copy.                  ``control/.managed/``
-``generators/``                 No Booley reader exists; FuseSoC generators     ``control/generators/``
+- ``worktree``: the Goal worktree root (``work_dir``);
+- ``project``: the session Project directory the caller resolved
+  (:func:`booley.runtime.project_dir.resolve_project_dir`; in a Sandbox the
+  shared ``BOOLEY_PROJECT_DIR``);
+- ``main``: the primary checkout of the worktree's repository;
+- ``abs``: an absolute path, only for a ``[project].dir`` override that lies
+  outside the other three.
+
+=============================== =============================================== ===================================
+Protected input                 Consumers and what they read                    Candidates digested
+=============================== =============================================== ===================================
+Project ``booley.toml``         Session-global readers (``project_config``      ``project:booley.toml``; the
+                                globals, EDA requests, endpoint config,         ``booley.toml`` in
+                                Specialist ``[agent]``/``[models]``) read the   ``worktree:.booley_project/``,
+                                session Project directory. Flow readers given   ``worktree:.booley/project/``,
+                                ``work_dir`` read the worktree snapshot         ``main:.booley_project/``,
+                                (``resolve_checkout_project_dir``, which may    ``main:.booley/project/``; the
+                                follow a ``[project].dir`` override) or the     directory
+                                fixed ``.booley_project`` / ``.booley/project`` ``resolve_checkout_project_dir``
+                                path, falling back to the main checkout's copy. returns
+Checkout ``booley.toml``        ``[project].dir`` routing walks up from the     ``worktree:booley.toml``
+                                worktree root.
+legacy ``pipeline.toml``        Every reader above falls back to it beside      the ``pipeline.toml`` sibling of
+                                a missing ``booley.toml`` (``resolve_toml``).   every ``booley.toml`` candidate
+``hooks/``                      Runner hooks read the session Project           ``project:hooks``,
+                                directory; worktree preparation reads the       ``worktree:.booley_project/hooks``
+                                snapshot. No Flow or Specialist reads it.
+``.managed/``                   The Git hook adapters run the worktree's        ``worktree:.booley_project/.managed``,
+                                bundle file when it exists, else the main       ``main:.booley_project/.managed``,
+                                checkout's; ``init`` writes the session         ``project:.managed``
+                                Project directory's.
+``generators/``                 No Booley reader exists; FuseSoC generators     ``project:generators``
                                 are declared per ``.core``. Digested where it
                                 is authored.
-``mcp_tools/``                  Custom MCP tools are discovered once, at MCP    ``control/mcp_tools/``
-                                server start, from ``BOOLEY_PROJECT_DIR`` (the
-                                caller passes the same directory as control);
-                                the snapshot copy is never run.
-``FUSESOC_IGNORE``              Core discovery scans the ``work_dir`` root      ``root/FUSESOC_IGNORE``
-                                (D7: the checkout root).
-=============================== =============================================== ==============================
+``mcp_tools/``                  Discovered once, at MCP server start, from      ``project:mcp_tools``,
+                                ``BOOLEY_PROJECT_DIR``, else the server's       ``main:.booley_project/mcp_tools``
+                                working directory (the main checkout). The
+                                snapshot copy is never run.
+``FUSESOC_IGNORE``              Core discovery scans the ``work_dir`` root.     ``worktree:FUSESOC_IGNORE``
+=============================== =============================================== ===================================
 
-Rules shared by every entry:
+Encoding rules:
 
-- A missing path is digested as absent, so creating it later is a change.
-  Nothing here creates a file or directory.
-- A directory is digested recursively: each regular file by content, each
-  symlink by its target text (not followed, so a link target outside the
-  protected set is not protected), and each subdirectory by name, so adding
-  or deleting a file or an empty directory is a change. ``__pycache__``
-  directories are skipped: Python rewrites them when it imports a custom MCP
-  tool, which is not a change to the input.
-- Paths are stored as given by the resolvers, made absolute without resolving
-  symlinks. A later path list counts as the same when each path is the same
-  string or names the same existing file (bind-mount aliases of the shared
-  Project directory are one directory).
-- The HEAD view replaces the content of every path tracked in the worktree's
-  HEAD with the committed content, so a committed edit is a violation even
-  after the working copy is reverted. An untracked input has no HEAD and is
-  compared with the entry digest only.
+- A directory is digested recursively by its files and symlinks; adding or
+  deleting a file changes the digest. Empty subdirectories are not entries
+  (Git cannot track one either). ``__pycache__`` directories are skipped:
+  Python rewrites them when it imports a custom MCP tool.
+- A symlink is digested by its target text **and** by what it resolves to:
+  a file's content, a directory's tree (followed, with a visited set so a
+  cycle is recorded as ``cycle`` instead of recursing), or ``dangling``.
+  Consumers open the target, so a change behind a link is a change.
+- The working view digests the bytes on disk. The HEAD view applies only to
+  ``worktree`` paths: each entry HEAD tracks contributes its committed blob,
+  marked tracked; each other entry contributes its working bytes, marked
+  untracked. A committed deletion therefore changes the HEAD view even when
+  the file is restored as untracked bytes, and a checkout that converts line
+  endings never differs from itself. Paths outside the worktree have no HEAD
+  and contribute their working view.
 """
 
 from __future__ import annotations
@@ -76,13 +83,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from enum import StrEnum
+from pathlib import Path, PurePosixPath
 
 from booley.core.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
-from booley.goals.checkout import GIT_TIMEOUT_S, GoalCheckout
+from booley.goals.checkout import CheckoutError, GoalCheckout
+from booley.runtime.git import git_common_dir
 
 # The protected set as the rules text names it (ADR 0067 "Protected inputs").
 PROTECTED_INPUT_NAMES: tuple[str, ...] = (
@@ -94,12 +102,52 @@ PROTECTED_INPUT_NAMES: tuple[str, ...] = (
     f"{PROJECT_DIR_NAME}/mcp_tools/",
     "FUSESOC_IGNORE",
 )
+# Every name a Project configuration file may have, newest first (resolve_toml).
+CONFIG_FILE_NAMES: tuple[str, ...] = ("booley.toml", "pipeline.toml")
+# The legacy Project directory layout resolve_booley_toml still reads.
+LEGACY_PROJECT_DIR = ".booley/project"
 _SKIPPED_DIRECTORIES = frozenset({"__pycache__"})
-_DIGEST_FORMAT = "booley-protected-inputs/1"
+_DIGEST_FORMAT = "booley-protected-inputs/2"
+
+Entry = dict[str, object]
+Tree = dict[str, Entry]
 
 
 class ProtectedInputError(RuntimeError):
-    """A protected input could not be read to digest it."""
+    """A protected input could not be read, or a recorded path could not be parsed."""
+
+
+class RootKind(StrEnum):
+    """The root a protected path is recorded relative to (module docstring)."""
+
+    WORKTREE = "worktree"
+    PROJECT = "project"
+    MAIN = "main"
+    ABSOLUTE = "abs"
+
+
+@dataclass(frozen=True)
+class ProtectedPath:
+    """One protected path: a root and a POSIX path relative to it (absolute for ``abs``)."""
+
+    root: RootKind
+    relative: str
+
+    def encode(self) -> str:
+        """The form stored in ``record.json``: ``<root>:<path>``."""
+        return f"{self.root.value}:{self.relative}"
+
+    @classmethod
+    def decode(cls, text: str) -> ProtectedPath:
+        """Parse a stored path, raising :class:`ProtectedInputError`."""
+        root, separator, relative = text.partition(":")
+        try:
+            kind = RootKind(root)
+        except ValueError:
+            raise ProtectedInputError(f"protected path {text!r} has an unknown root") from None
+        if not separator or not relative:
+            raise ProtectedInputError(f"protected path {text!r} has no path")
+        return cls(kind, relative)
 
 
 @dataclass(frozen=True)
@@ -109,120 +157,182 @@ class ProtectedInputRoots:
     worktree: Path
     project_dir: Path
 
+    def main_checkout(self) -> Path | None:
+        """The primary checkout of the worktree's repository (``None`` for a bare one)."""
+        try:
+            common = git_common_dir(self.worktree)
+        except RuntimeError as exc:
+            raise ProtectedInputError(str(exc)) from exc
+        return common.parent if common.name == ".git" else None
 
-def resolve_protected_inputs(roots: ProtectedInputRoots) -> tuple[Path, ...]:
-    """The absolute paths a run in *roots.worktree* reads for the protected set.
-
-    Follows the resolver contract in the module docstring; duplicates (one
-    file reached through two resolvers under the same spelling) appear once.
-    The order is fixed, so equal inputs give equal lists.
-    """
-    root = _absolute(roots.worktree)
-    control = _absolute(roots.project_dir)
-    fixed_snapshot = root / PROJECT_DIR_NAME
-    try:
-        snapshot = _absolute(resolve_checkout_project_dir(root))
-    except FileNotFoundError:
-        # No snapshot and no session Project directory: Flow readers find nothing
-        # beyond the fixed path, which is digested as absent.
-        snapshot = fixed_snapshot
-    paths = [control / "booley.toml", snapshot / "booley.toml", fixed_snapshot / "booley.toml"]
-    if not (snapshot / "booley.toml").exists() and not (fixed_snapshot / "booley.toml").exists():
-        main_checkout = _main_checkout(root)
-        if main_checkout is not None:
-            paths.append(main_checkout / PROJECT_DIR_NAME / "booley.toml")
-    paths.append(root / "booley.toml")
-    paths.append(control / "hooks")
-    managed = fixed_snapshot / ".managed"
-    paths.append(managed if managed.exists() else control / ".managed")
-    paths.append(control / "generators")
-    paths.append(control / "mcp_tools")
-    paths.append(root / "FUSESOC_IGNORE")
-    return tuple(dict.fromkeys(paths))
-
-
-def digest_protected_inputs(paths: Sequence[Path], *, head_of: Path | None = None) -> str:
-    """One SHA-256 digest over *paths* in the documented encoding.
-
-    With *head_of* (a worktree root), every path tracked in that worktree's
-    HEAD contributes its committed content instead of the working copy.
-    """
-    head = _HeadView(GoalCheckout(head_of)) if head_of is not None else None
-    entries = [_path_entry(path, head) for path in paths]
-    payload = json.dumps(
-        {"format": _DIGEST_FORMAT, "inputs": entries}, sort_keys=True, separators=(",", ":")
-    )
-    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    def absolute(self, path: ProtectedPath, main: Path | None) -> Path | None:
+        """Where *path* is now; ``None`` when its root does not exist."""
+        if path.root is RootKind.ABSOLUTE:
+            return Path(path.relative)
+        base = {
+            RootKind.WORKTREE: self.worktree,
+            RootKind.PROJECT: self.project_dir,
+            RootKind.MAIN: main,
+        }[path.root]
+        return None if base is None else base.joinpath(*PurePosixPath(path.relative).parts)
 
 
 @dataclass(frozen=True)
 class ProtectedSnapshot:
-    """The entry snapshot: resolved paths and the digest over them."""
+    """The protected paths and both digests over them."""
 
-    paths: tuple[Path, ...]
-    digest: str
+    paths: tuple[ProtectedPath, ...]
+    working_digest: str
+    head_digest: str
+
+    @property
+    def encoded_paths(self) -> tuple[str, ...]:
+        """The paths as ``record.json`` stores them."""
+        return tuple(path.encode() for path in self.paths)
+
+
+# ---------------------------------------------------------------------------
+# Resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_protected_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath, ...]:
+    """Every candidate a consumer could read for the protected set (module docstring)."""
+    worktree, project, main = RootKind.WORKTREE, RootKind.PROJECT, RootKind.MAIN
+    config_dirs = [
+        (project, ""),
+        (worktree, PROJECT_DIR_NAME),
+        (worktree, LEGACY_PROJECT_DIR),
+        (main, PROJECT_DIR_NAME),
+        (main, LEGACY_PROJECT_DIR),
+        _checkout_project_dir(roots),
+        (worktree, ""),  # the checkout root's own booley.toml
+    ]
+    paths = [
+        ProtectedPath(kind, _join(directory, name))
+        for kind, directory in config_dirs
+        for name in CONFIG_FILE_NAMES
+    ]
+    paths += [
+        ProtectedPath(project, "hooks"),
+        ProtectedPath(worktree, f"{PROJECT_DIR_NAME}/hooks"),
+        ProtectedPath(worktree, f"{PROJECT_DIR_NAME}/.managed"),
+        ProtectedPath(main, f"{PROJECT_DIR_NAME}/.managed"),
+        ProtectedPath(project, ".managed"),
+        ProtectedPath(project, "generators"),
+        ProtectedPath(project, "mcp_tools"),
+        ProtectedPath(main, f"{PROJECT_DIR_NAME}/mcp_tools"),
+        ProtectedPath(worktree, "FUSESOC_IGNORE"),
+    ]
+    return tuple(dict.fromkeys(paths))
+
+
+def _checkout_project_dir(roots: ProtectedInputRoots) -> tuple[RootKind, str]:
+    """The directory Flow readers resolve for the worktree, relative to its root."""
+    try:
+        resolved = resolve_checkout_project_dir(roots.worktree)
+    except FileNotFoundError:
+        return RootKind.WORKTREE, PROJECT_DIR_NAME  # nothing resolves: the fixed path
+    main = roots.main_checkout()
+    bases = [(RootKind.WORKTREE, roots.worktree), (RootKind.PROJECT, roots.project_dir)]
+    if main is not None:
+        bases.append((RootKind.MAIN, main))
+    for kind, base in bases:
+        for spelling in (base, base.resolve()):
+            try:
+                relative = resolved.relative_to(spelling).as_posix()
+            except ValueError:
+                continue
+            return kind, "" if relative == "." else relative
+    return RootKind.ABSOLUTE, resolved.as_posix()
+
+
+def _join(directory: str, name: str) -> str:
+    return f"{directory}/{name}" if directory else name
+
+
+# ---------------------------------------------------------------------------
+# Digests and violations
+# ---------------------------------------------------------------------------
 
 
 def snapshot_protected_inputs(roots: ProtectedInputRoots) -> ProtectedSnapshot:
-    """Resolve and digest the protected set as a run would read it now."""
+    """Resolve the protected set and digest both views as a run would read it now."""
     paths = resolve_protected_inputs(roots)
-    return ProtectedSnapshot(paths, digest_protected_inputs(paths))
+    return ProtectedSnapshot(
+        paths,
+        digest_protected_inputs(paths, roots, head=False),
+        digest_protected_inputs(paths, roots, head=True),
+    )
+
+
+def digest_protected_inputs(
+    paths: Sequence[ProtectedPath], roots: ProtectedInputRoots, *, head: bool
+) -> str:
+    """One ``sha256:`` digest over *paths*: the working view, or with *head* the HEAD view."""
+    main = roots.main_checkout()
+    head_view = _HeadView(GoalCheckout(roots.worktree)) if head else None
+    entries: list[Entry] = []
+    for path in paths:
+        location = roots.absolute(path, main)
+        tree = {} if location is None else _disk_tree(location)
+        if head_view is not None and path.root is RootKind.WORKTREE and location is not None:
+            tree = head_view.committed_tree(path.relative, location, tree)
+        entries.append({"path": path.encode(), "tree": tree})
+    payload = json.dumps(
+        {"format": _DIGEST_FORMAT, "head": head, "inputs": entries},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def protected_input_violations(
-    recorded_paths: Sequence[str], recorded_digest: str, roots: ProtectedInputRoots
+    recorded_paths: Sequence[str],
+    working_digest: str,
+    head_digest: str | None,
+    roots: ProtectedInputRoots,
 ) -> list[str]:
     """Why the protected inputs no longer match the entry snapshot; empty when they do.
 
-    Checks, in order, reporting the first that fails: the resolvers still pick
-    the recorded paths; the working files digest to the recorded digest; HEAD
-    (for tracked inputs) digests to it.
+    Checks, in order, reporting the first that fails: the protected path list
+    is unchanged; the working view equals the working view at entry; the HEAD
+    view equals the HEAD view at entry.
     """
+    recorded = tuple(ProtectedPath.decode(text) for text in recorded_paths)
     current = resolve_protected_inputs(roots)
-    if not _same_paths(current, [Path(path) for path in recorded_paths]):
-        return [
-            "protected inputs now resolve to different files: "
-            f"{[str(path) for path in current]} instead of {list(recorded_paths)}"
-        ]
-    recorded = tuple(Path(path) for path in recorded_paths)
-    if digest_protected_inputs(recorded) != recorded_digest:
+    if current != recorded:
+        changed = sorted({p.encode() for p in current} ^ {p.encode() for p in recorded})
+        return [f"protected inputs now resolve to different files: {', '.join(changed)}"]
+    if digest_protected_inputs(current, roots, head=False) != working_digest:
         return ["a protected input differs from its state at entry"]
-    # The working files match; HEAD can still hold a committed edit that was
-    # reverted only in the working copy, and Finish would publish HEAD.
-    if digest_protected_inputs(recorded, head_of=roots.worktree) != recorded_digest:
+    if (
+        head_digest is not None
+        and digest_protected_inputs(current, roots, head=True) != head_digest
+    ):
         return ["a protected input differs from its state at entry in HEAD"]
     return []
 
 
 # ---------------------------------------------------------------------------
-# Encoding
+# Working view
 # ---------------------------------------------------------------------------
 
 
-def _path_entry(path: Path, head: _HeadView | None) -> dict[str, object]:
-    """The typed record of one protected path: its tree of entries, keyed relative to it.
+def _disk_tree(path: Path) -> Tree:
+    """The entries of *path*, keyed relative to it: ``.`` is the path itself.
 
-    The path itself is ``.``: absent paths have an empty tree, a file or
-    symlink is one leaf, and a directory is ``.`` plus every file and symlink
-    below it. Directories below the root are not entries of their own, so an
-    empty subdirectory never counts (Git cannot track one either).
+    An absent path has no entries; a file or symlink is one leaf; a directory
+    is ``.`` plus every file and symlink below it.
     """
-    tree = _disk_tree(path)
-    if head is not None:
-        tree = head.committed_tree(path, tree)
-    return {"path": str(path), "tree": tree}
-
-
-def _disk_tree(path: Path) -> dict[str, dict[str, object]]:
-    """The working-copy entries of *path* (see :func:`_path_entry`)."""
     if not os.path.lexists(path):
         return {}
     if path.is_symlink() or not path.is_dir():
-        return {".": _leaf(path)}
-    return {".": {"kind": "directory"}, **dict(_walk(path))}
+        return {".": _leaf(path, frozenset())}
+    return {".": {"kind": "directory"}, **dict(_walk(path, frozenset()))}
 
 
-def _walk(directory: Path) -> Iterator[tuple[str, dict[str, object]]]:
+def _walk(directory: Path, seen: frozenset[str]) -> Iterator[tuple[str, Entry]]:
     """Every file and symlink under *directory*, keyed by its POSIX path relative to it."""
     for current, subdirs, files in os.walk(directory, followlinks=False):
         subdirs[:] = sorted(name for name in subdirs if name not in _SKIPPED_DIRECTORIES)
@@ -230,22 +340,48 @@ def _walk(directory: Path) -> Iterator[tuple[str, dict[str, object]]]:
         for name in subdirs:
             entry = base / name
             if entry.is_symlink():  # os.walk lists a directory symlink as a subdirectory
-                yield entry.relative_to(directory).as_posix(), _leaf(entry)
+                yield entry.relative_to(directory).as_posix(), _leaf(entry, seen)
         for name in sorted(files):
             entry = base / name
-            yield entry.relative_to(directory).as_posix(), _leaf(entry)
+            yield entry.relative_to(directory).as_posix(), _leaf(entry, seen)
 
 
-def _leaf(path: Path) -> dict[str, object]:
-    """A symlink by its target, a regular file by its content hash."""
+def _leaf(path: Path, seen: frozenset[str]) -> Entry:
+    """A symlink by its target text and resolution; a regular file by its content."""
     try:
         if path.is_symlink():
-            return {"kind": "symlink", "target": str(path.readlink())}
+            target = str(path.readlink())
+            return {"kind": "symlink", "target": target, "resolves": _follow(path, seen)}
         if not path.is_file():
             return {"kind": "special"}
-        return {"kind": "file", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        return {"kind": "file", "sha256": _content_hash(path.read_bytes())}
     except OSError as exc:
         raise ProtectedInputError(f"cannot read protected input {path}: {exc}") from exc
+
+
+def _follow(link: Path, seen: frozenset[str]) -> Entry:
+    """What *link* (a symlink, or the path its target text names) resolves to.
+
+    A file's content, a directory's tree, or why it resolves to nothing.
+    """
+    try:
+        target = link.resolve(strict=True)
+    except FileNotFoundError:
+        return {"kind": "dangling"}
+    except (OSError, RuntimeError):  # a symlink loop
+        return {"kind": "cycle"}
+    key = str(target)
+    if key in seen:
+        return {"kind": "cycle"}
+    if target.is_dir():
+        return {"kind": "directory", "tree": dict(_walk(target, seen | {key}))}
+    if target.is_file():
+        return {"kind": "file", "sha256": _content_hash(target.read_bytes())}
+    return {"kind": "special"}
+
+
+def _content_hash(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -254,120 +390,48 @@ def _leaf(path: Path) -> dict[str, object]:
 
 
 class _HeadView:
-    """Committed content of protected paths inside one worktree.
-
-    The committed tree of a path is HEAD's entry for every path HEAD tracks,
-    and the working entry for every path it does not: an untracked input has
-    no committed state, so it is compared with the entry digest only (the
-    module docstring). Paths outside the worktree have no HEAD at all.
-    """
+    """Committed content of protected paths inside the Goal worktree (module docstring)."""
 
     def __init__(self, checkout: GoalCheckout) -> None:
-        self._root = _absolute(checkout.root)
+        self._checkout = checkout
 
-    def committed_tree(
-        self, path: Path, disk: dict[str, dict[str, object]]
-    ) -> dict[str, dict[str, object]]:
-        """*disk* with every HEAD-tracked entry replaced by its committed state."""
-        try:
-            relative = _absolute(path).relative_to(self._root).as_posix()
-        except ValueError:
-            return disk  # outside the worktree: no HEAD
-        tracked = self._tracked(relative)
-        tree = {**disk, **tracked}
-        if "." not in tree and tracked:
-            tree["."] = {"kind": "directory"}  # deleted from disk, still in HEAD
+    def committed_tree(self, relative: str, location: Path, disk: Tree) -> Tree:
+        """*disk* with each entry marked tracked or not, tracked ones as HEAD holds them."""
+        tracked = self._tracked(relative, location)
+        tree: Tree = {
+            key: {**value, "tracked": False}
+            for key, value in disk.items()
+            if key not in tracked and value.get("kind") != "directory"
+        }
+        tree.update(tracked)
+        if any(key != "." for key in tree):
+            # A directory, in HEAD or on disk: its membership lives in its entries.
+            tree["."] = {"kind": "directory"}
         return tree
 
-    def _tracked(self, relative: str) -> dict[str, dict[str, object]]:
-        entries: dict[str, dict[str, object]] = {}
-        for mode, object_id, name in self._ls_tree(relative):
-            key = "." if name == relative else name.removeprefix(f"{relative}/")
+    def _tracked(self, relative: str, location: Path) -> Tree:
+        try:
+            rows = self._checkout.head_tree(relative)
+        except CheckoutError as exc:
+            raise ProtectedInputError(f"cannot list HEAD for {relative}: {exc}") from exc
+        entries: Tree = {}
+        for row in rows:
+            key = "." if row.path == relative else row.path.removeprefix(f"{relative}/")
             if any(part in _SKIPPED_DIRECTORIES for part in key.split("/")):
                 continue
-            entries[key] = self._entry(mode, object_id)
+            entries[key] = self._entry(row.mode, row.object_id, location / key)
         return entries
 
-    def _ls_tree(self, relative: str) -> list[tuple[str, str, str]]:
-        result = self._git(["ls-tree", "-r", "-z", "HEAD", "--", relative], b"")
-        if result.returncode != 0:
-            detail = result.stderr.decode("utf-8", "replace").strip()
-            raise ProtectedInputError(f"cannot list HEAD for {relative}: {detail}")
-        rows = []
-        for record in result.stdout.split(b"\0"):
-            if not record:
-                continue
-            meta, _, name = record.partition(b"\t")
-            mode, _kind, object_id = meta.decode("ascii").split(" ")
-            rows.append((mode, object_id, name.decode("utf-8", "surrogateescape")))
-        return rows
-
-    def _entry(self, mode: str, object_id: str) -> dict[str, object]:
+    def _entry(self, mode: str, object_id: str, location: Path) -> Entry:
         if mode == "160000":
-            return {"kind": "submodule", "commit": object_id}
-        result = self._git(["cat-file", "blob", object_id], b"")
-        if result.returncode != 0:
-            raise ProtectedInputError(f"cannot read HEAD object {object_id}")
-        if mode == "120000":
-            return {"kind": "symlink", "target": result.stdout.decode("utf-8", "surrogateescape")}
-        return {"kind": "file", "sha256": hashlib.sha256(result.stdout).hexdigest()}
-
-    def _git(self, args: list[str], stdin: bytes) -> subprocess.CompletedProcess[bytes]:
+            return {"kind": "submodule", "commit": object_id, "tracked": True}
         try:
-            return subprocess.run(
-                ["git", *args],
-                cwd=self._root,
-                input=stdin,
-                capture_output=True,
-                timeout=GIT_TIMEOUT_S,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ProtectedInputError(
-                f"git {' '.join(args)} failed in {self._root}: {exc}"
-            ) from exc
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _absolute(path: Path) -> Path:
-    """*path* made absolute without resolving symlinks or mount aliases."""
-    return path.absolute()
-
-
-def _same_paths(current: Sequence[Path], recorded: Sequence[Path]) -> bool:
-    """Equal lists, where two spellings of one existing file count as equal."""
-    if len(current) != len(recorded):
-        return False
-    return all(_same_path(left, right) for left, right in zip(current, recorded, strict=True))
-
-
-def _same_path(left: Path, right: Path) -> bool:
-    if left == right:
-        return True
-    try:
-        return left.exists() and right.exists() and left.samefile(right)
-    except OSError:
-        return False
-
-
-def _main_checkout(worktree: Path) -> Path | None:
-    """The primary checkout of *worktree*'s repository, or ``None`` when unknown."""
-    try:
-        common = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=worktree,
-            capture_output=True,
-            text=True,
-            timeout=GIT_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if common.returncode != 0 or not common.stdout.strip():
-        return None
-    common_dir = Path(common.stdout.strip())
-    return common_dir.parent if common_dir.name == ".git" else None
+            content = self._checkout.blob(object_id)
+        except CheckoutError as exc:
+            raise ProtectedInputError(f"cannot read HEAD object {object_id}: {exc}") from exc
+        if mode == "120000":
+            target = content.decode("utf-8", "surrogateescape")
+            # Resolve the committed target text, as a checkout of HEAD would.
+            resolves = _follow(location.parent / target, frozenset())
+            return {"kind": "symlink", "target": target, "resolves": resolves, "tracked": True}
+        return {"kind": "file", "sha256": _content_hash(content), "tracked": True}

@@ -17,17 +17,23 @@ undoes whatever the boundaries reached):
    must exist at HEAD).
 3. Publish the record as ``entering`` (``branch_created`` false).
 4. ``git branch <goal-branch> <base>``, then save ``branch_created`` true.
-5. Re-check HEAD and the tree, ``git checkout <goal-branch>``.
-6. Pin baselines and freeze recipe fingerprints (no record lock held).
-7. Snapshot the protected inputs into the record.
-8. Write ``booley_state.json`` with every Goal unmet and strict Criteria.
-9. Promote the record to ``active``.
+5. Re-check that HEAD is still the original ref at the base commit and the
+   trees are clean, ``git checkout <goal-branch>``, and confirm HEAD is the
+   Goal Branch at the base commit.
+6. Snapshot the protected inputs into the record, before anything slow runs.
+7. Pin baselines and freeze recipe fingerprints (no record lock held).
+8. Write ``booley_state.json`` with every Goal unmet and strict Criteria,
+   flushed to disk.
+9. Revalidate: HEAD is the Goal Branch at the base commit, the worktree and
+   any paired Project checkout are clean, and the protected inputs still
+   match the step-6 snapshot. Then promote the record to ``active``.
 
-A failure inside steps 4-9 rolls back at once. A process that dies there
+A failure inside steps 4-9, including a failed revalidation, rolls back at once. A process that dies there
 leaves an ``entering`` record; the next entry on the worktree rolls it back
 (step 1). Rollback never discards work: it returns HEAD to the original ref
 only when HEAD is still on the Goal Branch at the base commit with a clean
-tree, deletes the Goal Branch only by compare-and-swap on the base commit and
+tree and the original ref still at the base commit, deletes the Goal Branch
+only by compare-and-swap on the base commit and
 only when entry recorded creating it, and names everything it leaves behind
 in the ``failed`` record.
 
@@ -44,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_bool_value, require_list, require_str_value
+from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
@@ -55,7 +62,8 @@ from booley.flows.baseline_pins import (
     freeze_recipe_family,
     pin_cycle_count_baselines,
 )
-from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
+from booley.goals.checkout import CheckoutError, GoalCheckout, branch_name, branch_ref
+from booley.goals.goalsets import GOALSETS_DIR
 from booley.goals.model import (
     GoalArg,
     GoalArgError,
@@ -68,10 +76,17 @@ from booley.goals.model import (
     parse_goal_args,
 )
 from booley.goals.paths import GoalIdError, new_goal_id, record_paths, validate_slug
-from booley.goals.protected_inputs import ProtectedInputRoots, snapshot_protected_inputs
+from booley.goals.protected_inputs import (
+    ProtectedInputError,
+    ProtectedInputRoots,
+    ProtectedSnapshot,
+    protected_input_violations,
+    snapshot_protected_inputs,
+)
 from booley.goals.rules import goal_mode_rules
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
+from booley.runtime.atomic_files import fsync_directory
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
@@ -82,7 +97,6 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TARGET_IDENTITY_PARAM, FuseSocError, UnknownTargetError
 
 GOAL_BRANCH_PREFIX = "goal/"
-GOALSETS_DIR = "goalsets"
 DEFAULT_GOALSET = "default"
 # How pinning errors name a Goal Mode (they name a Ticket on the Ticket path).
 GOAL_PIN_WORDING = PinWording(work_item="the Goal Mode", entry_point="Goal entry")
@@ -235,7 +249,7 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
         assert identity is not None  # create=True always returns an identity
         with store.worktree_lock(identity) as lock:
             recovered = _recover_occupant(store, identity, checkout)
-            plan = _plan_entry(request, env, checkout, identity, translation, project_dir)
+            plan = _plan_entry(request, checkout, identity, translation, project_dir)
             created = store.create(lock, plan.record)
             _boundary(env, "created")
             try:
@@ -257,13 +271,12 @@ class _EntryPlan:
     """Everything decided under the worktree lock before the record is published."""
 
     record: GoalRecord
-    criterion_params: dict[str, dict[str, Any]] = field(default_factory=dict)
+    criterion_params: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
     warnings: tuple[str, ...] = ()
 
 
 def _plan_entry(
     request: EntryRequest,
-    env: EntryEnvironment,
     checkout: GoalCheckout,
     identity: WorktreeIdentity,
     translation: Translation,
@@ -272,12 +285,10 @@ def _plan_entry(
     """Validate the checkout and the Goals under the lock; build the new record."""
     base_sha = checkout.head_sha()
     head_ref = checkout.head_ref()
-    dirty = checkout.dirty_paths()
-    if dirty:
-        shown = ", ".join(dirty[:5]) + (" ..." if len(dirty) > 5 else "")
-        raise GoalEntryError(
-            f"the worktree has uncommitted changes ({shown}); commit or stash them"
-        )
+    paired = _paired_project_checkout(checkout.root)
+    _require_clean(checkout, "the worktree")
+    if paired is not None:
+        _require_clean(paired, "the paired Project checkout")
     _check_default_goalset(request, project_dir)
     timestamp = compact_utc_now()
     branch = f"{GOAL_BRANCH_PREFIX}{request.slug}-{timestamp[:8]}"
@@ -299,7 +310,7 @@ def _plan_entry(
         goalsets_used=request.goalsets_used,
         default_skipped=request.default_skipped,
         skip_reason=request.skip_reason,
-        paired_project_base_sha=_paired_project_head(checkout.root),
+        paired_project_base_sha=None if paired is None else paired.head_sha(),
     )
     return _EntryPlan(record, _criterion_params(translation.goals), tuple(warnings))
 
@@ -311,26 +322,28 @@ def _drive_entry(
     env: EntryEnvironment,
     checkout: GoalCheckout,
 ) -> GoalRecord:
-    """Steps 4-9: branch, checkout, pins, protected inputs, state, activation."""
+    """Steps 4-9: branch, checkout, protected inputs, pins, state, activation."""
     checkout.create_branch(record.branch, record.base_sha)
     record = _save(store, record, branch_created=True)
     _boundary(env, "branch_created")
     _checkout_goal_branch(checkout, record)
     _boundary(env, "checked_out")
-    params = {key: dict(value) for key, value in plan.criterion_params.items()}
-    _pin_baselines(record, params, env, checkout)
-    _boundary(env, "pinned")
     roots = ProtectedInputRoots(checkout.root, store.project_dir)
-    snapshot = snapshot_protected_inputs(roots)
+    snapshot = _snapshot(roots)
     record = _save(
         store,
         record,
-        protected_digest=snapshot.digest,
-        protected_paths=tuple(str(path) for path in snapshot.paths),
+        protected_paths=snapshot.encoded_paths,
+        protected_digest=snapshot.working_digest,
+        protected_head_digest=snapshot.head_digest,
     )
     _boundary(env, "protected_saved")
+    params = {key: dict(value) for key, value in plan.criterion_params.items()}
+    _pin_baselines(record, params, env, checkout)
+    _boundary(env, "pinned")
     _write_initial_state(store, record, params, checkout.root)
     _boundary(env, "state_saved")
+    _revalidate_before_activation(checkout, record, roots)
     record = _save(store, record, state=GoalState.ACTIVE)
     _boundary(env, "active")
     return record
@@ -490,22 +503,71 @@ def _criterion_params(goals: Sequence[GoalSpec]) -> dict[str, dict[str, Any]]:
     return params
 
 
-def _paired_project_head(work_dir: Path) -> str | None:
-    """The commit of the worktree's paired Project repository, if it has one (A3)."""
+def _paired_project_checkout(work_dir: Path) -> GoalCheckout | None:
+    """The worktree's paired Project repository checkout, if it has one (A3)."""
     try:
         repository = paired_project_repository(work_dir)
     except RepositoryCheckoutError as exc:
         raise GoalEntryError(str(exc)) from exc
-    return None if repository is None else GoalCheckout(repository.worktree).head_sha()
+    return None if repository is None else GoalCheckout(repository.worktree)
+
+
+def _require_clean(checkout: GoalCheckout, what: str) -> None:
+    """Refuse uncommitted changes: Targets would resolve from files the base lacks."""
+    dirty = checkout.dirty_paths()
+    if dirty:
+        shown = ", ".join(dirty[:5]) + (" ..." if len(dirty) > 5 else "")
+        raise GoalEntryError(f"{what} has uncommitted changes ({shown}); commit or stash them")
+
+
+def _require_head(checkout: GoalCheckout, ref: str | None, sha: str, when: str) -> None:
+    """Refuse unless HEAD is on *ref* (``None``: detached) at commit *sha*."""
+    head_ref, head_sha = checkout.head_ref(), checkout.head_sha()
+    if head_ref != ref or head_sha != sha:
+        where = head_ref or f"detached {head_sha[:12]}"
+        expected = ref or f"detached {sha[:12]}"
+        raise GoalEntryError(f"HEAD is {where} {when}, not {expected} at {sha[:12]}")
 
 
 def _checkout_goal_branch(checkout: GoalCheckout, record: GoalRecord) -> None:
     """Check out the Goal Branch, refusing if HEAD or the tree moved since validation."""
-    if checkout.head_sha() != record.base_sha or checkout.dirty_paths():
-        raise GoalEntryError("the worktree changed while entering Goal Mode")
+    original = record.original_ref if branch_name(record.original_ref) else None
+    _require_head(checkout, original, record.base_sha, "before checking out the Goal Branch")
+    _require_clean(checkout, "the worktree")
     checkout.checkout_branch(record.branch)
-    if checkout.head_ref() != branch_ref(record.branch):
-        raise GoalEntryError(f"HEAD is not on {record.branch} after checking it out")
+    _require_head(
+        checkout, branch_ref(record.branch), record.base_sha, "after checking out the Goal Branch"
+    )
+
+
+def _snapshot(roots: ProtectedInputRoots) -> ProtectedSnapshot:
+    """Step 6: the protected paths and both digests, as a run would read them now."""
+    try:
+        return snapshot_protected_inputs(roots)
+    except ProtectedInputError as exc:
+        raise GoalEntryError(str(exc)) from exc
+
+
+def _revalidate_before_activation(
+    checkout: GoalCheckout, record: GoalRecord, roots: ProtectedInputRoots
+) -> None:
+    """Step 9: nothing a run would read moved while entry pinned and froze (B7)."""
+    _require_head(checkout, branch_ref(record.branch), record.base_sha, "before activation")
+    _require_clean(checkout, "the worktree")
+    paired = _paired_project_checkout(checkout.root)
+    if record.paired_project_base_sha is not None:
+        if paired is None or paired.head_sha() != record.paired_project_base_sha:
+            raise GoalEntryError("the paired Project checkout moved while entering Goal Mode")
+        _require_clean(paired, "the paired Project checkout")
+    assert record.protected_digest is not None  # saved at step 6
+    try:
+        violations = protected_input_violations(
+            record.protected_paths, record.protected_digest, record.protected_head_digest, roots
+        )
+    except ProtectedInputError as exc:
+        raise GoalEntryError(str(exc)) from exc
+    if violations:
+        raise GoalEntryError(f"{'; '.join(violations)} while entering Goal Mode")
 
 
 @dataclass(frozen=True)
@@ -552,14 +614,16 @@ def _pin_baselines(
 def _write_initial_state(
     store: GoalStore, record: GoalRecord, params: dict[str, dict[str, Any]], work_dir: Path
 ) -> None:
-    """Write ``booley_state.json``: every Goal mandatory, unmet, strict (D4)."""
-    categories = {
-        key: "rtl" if key.startswith("review_rtl_") else "tb"
-        for key in params
-        if key.startswith(("review_rtl_", "review_tb_"))
-    }
+    """Write ``booley_state.json``: every Goal mandatory, unmet, strict (D4).
+
+    ``DevelopmentState.save`` replaces the file without flushing it, so the
+    file and its directory are flushed here: a record promoted to ``active``
+    never points at a state file a crash could lose.
+    """
+    categories = {key: _review_category(key) for key in params if key.startswith("review_")}
+    state_file = record_paths(store.project_dir, record.id).state_file
     with store.record_lock(record.id):
-        state = DevelopmentState.load(record_paths(store.project_dir, record.id).state_file)
+        state = DevelopmentState.load(state_file)
         state.slug = record.id
         state.work_dir = str(work_dir)
         state.init_criteria(
@@ -569,6 +633,19 @@ def _write_initial_state(
             strict=True,
         )
         state.save()
+        _fsync_file(state_file)
+        fsync_directory(state_file.parent)
+
+
+def _review_category(key: str) -> str:
+    """The one source category a review Goal judges (``criteria.categories``)."""
+    (category,) = verification_fingerprint_categories(key)
+    return category
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
 
 
 def _session_warnings(env: EntryEnvironment, identity: WorktreeIdentity) -> list[str]:
@@ -615,6 +692,14 @@ def _undo_goal_branch(checkout: GoalCheckout, record: GoalRecord) -> list[str]:
                 f"HEAD stays on Goal Branch {branch}: it has commits or uncommitted changes "
                 "since entry; the branch is left in place"
             ]
+        original = branch_name(record.original_ref)
+        original_tip = base if original is None else checkout.branch_tip(original)
+        if original_tip != base:
+            moved = "was deleted" if original_tip is None else f"moved to {original_tip[:12]}"
+            return [
+                f"HEAD stays on Goal Branch {branch}: the original branch {original} {moved} "
+                f"since entry (base {base[:12]}); both are left in place"
+            ]
         try:
             checkout.checkout_ref(record.original_ref)
         except CheckoutError as exc:
@@ -649,9 +734,8 @@ def _delete_goal_branch(checkout: GoalCheckout, record: GoalRecord, tip: str) ->
 
 
 def _describe_ref(ref: str) -> str:
-    if ref.startswith("refs/heads/"):
-        return f"branch {ref.removeprefix('refs/heads/')}"
-    return f"detached {ref[:12]}"
+    branch = branch_name(ref)
+    return f"detached {ref[:12]}" if branch is None else f"branch {branch}"
 
 
 def _describe_goal(goal: GoalSpec) -> str:

@@ -23,6 +23,15 @@ class CheckoutError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class TreeEntry:
+    """One ``git ls-tree`` row: mode, object id, and POSIX path."""
+
+    mode: str
+    object_id: str
+    path: str
+
+
+@dataclass(frozen=True)
 class GoalCheckout:
     """Git access to one worktree root."""
 
@@ -47,10 +56,6 @@ class GoalCheckout:
             raise CheckoutError(f"git {' '.join(args)} failed in {self.root}: {detail}")
         return result
 
-    def toplevel(self) -> Path:
-        """The worktree root Git reports for :attr:`root`."""
-        return Path(self._git("rev-parse", "--show-toplevel").stdout.strip())
-
     def head_sha(self) -> str:
         """The full commit id HEAD points at."""
         return self._git("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
@@ -72,24 +77,40 @@ class GoalCheckout:
         ).stdout
         return [entry[3:] for entry in output.split("\0") if len(entry) > 3]
 
-    def is_tracked(self, relative: str) -> bool:
-        """Whether *relative* (a path inside the worktree) is in HEAD's tree."""
-        result = self._git("ls-tree", "--name-only", "HEAD", "--", relative, check=False)
-        return result.returncode == 0 and bool(result.stdout.strip())
-
-    def head_blob(self, relative: str) -> bytes | None:
-        """The bytes of *relative* in HEAD, or ``None`` when HEAD has no such file."""
+    def _git_bytes(self, *args: str) -> bytes:
+        """Run git and return raw stdout: path-bearing output is read as bytes."""
         try:
             result = subprocess.run(
-                ["git", "cat-file", "blob", f"HEAD:{relative}"],
+                ["git", *args],
                 cwd=self.root,
                 capture_output=True,
                 timeout=GIT_TIMEOUT_S,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise CheckoutError(f"git cat-file HEAD:{relative} failed: {exc}") from exc
-        return result.stdout if result.returncode == 0 else None
+            raise CheckoutError(f"git {' '.join(args)} failed in {self.root}: {exc}") from exc
+        if result.returncode != 0:
+            detail = (
+                result.stderr.decode("utf-8", "replace").strip() or f"exit {result.returncode}"
+            )
+            raise CheckoutError(f"git {' '.join(args)} failed in {self.root}: {detail}")
+        return result.stdout
+
+    def head_tree(self, relative: str) -> list[TreeEntry]:
+        """HEAD's entries at or under *relative* (a POSIX path inside the worktree)."""
+        output = self._git_bytes("ls-tree", "-r", "-z", "HEAD", "--", relative)
+        entries: list[TreeEntry] = []
+        for record in output.split(b"\0"):
+            if not record:
+                continue
+            meta, _, name = record.partition(b"\t")
+            mode, _kind, object_id = meta.decode("ascii").split(" ")
+            entries.append(TreeEntry(mode, object_id, name.decode("utf-8", "surrogateescape")))
+        return entries
+
+    def blob(self, object_id: str) -> bytes:
+        """The content of one Git object."""
+        return self._git_bytes("cat-file", "blob", object_id)
 
     def branch_tip(self, branch: str) -> str | None:
         """The commit *branch* points at, or ``None`` when it does not exist."""
@@ -111,8 +132,9 @@ class GoalCheckout:
 
     def checkout_ref(self, ref: str) -> None:
         """Check out a full branch ref by name, or a commit detached."""
-        if ref.startswith(_BRANCH_REF_PREFIX):
-            self.checkout_branch(ref.removeprefix(_BRANCH_REF_PREFIX))
+        branch = branch_name(ref)
+        if branch is not None:
+            self.checkout_branch(branch)
         else:
             self._git("checkout", "--quiet", "--detach", ref, "--")
 
@@ -125,3 +147,8 @@ class GoalCheckout:
 def branch_ref(branch: str) -> str:
     """The full ref of a local branch."""
     return f"{_BRANCH_REF_PREFIX}{branch}"
+
+
+def branch_name(ref: str) -> str | None:
+    """The branch a full ``refs/heads/...`` ref names, or ``None`` for a commit id."""
+    return ref.removeprefix(_BRANCH_REF_PREFIX) if ref.startswith(_BRANCH_REF_PREFIX) else None
