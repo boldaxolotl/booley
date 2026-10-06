@@ -1,0 +1,238 @@
+{
+  "current_records": [
+    {
+      "criterion": "lint_clean",
+      "detail": {
+        "warnings": 0
+      },
+      "execution_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "invocation_id": "lint-1",
+      "mandatory": true,
+      "met": true,
+      "params": {},
+      "producer": "lint",
+      "purpose": "ticket_acceptance",
+      "reason": "outcome",
+      "recorded_at": "2026-09-21T09:00:00Z",
+      "role": "candidate",
+      "schema": 1,
+      "sequence": 1,
+      "ticket": "fix-uart",
+      "ticket_identity": {
+        "authored_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generation": "dddddddddddddddddddddddddddddddd"
+      }
+    },
+    {
+      "criterion": "sim_pass_uart",
+      "detail": {
+        "failed_tests": [
+          "test_tx"
+        ]
+      },
+      "execution_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "invocation_id": "sim-red",
+      "mandatory": true,
+      "met": false,
+      "params": {},
+      "producer": "sim",
+      "purpose": "ticket_acceptance",
+      "reason": "outcome",
+      "recorded_at": "2026-09-21T09:30:00Z",
+      "role": "candidate",
+      "schema": 1,
+      "sequence": 2,
+      "ticket": "fix-uart",
+      "ticket_identity": {
+        "authored_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generation": "dddddddddddddddddddddddddddddddd"
+      }
+    },
+    {
+      "$schema": "booley.acceptance-record/v2",
+      "criterion": "sim_pass_uart",
+      "detail": {
+        "passed_tests": [
+          "test_tx"
+        ]
+      },
+      "envelope_sha256": "sha256:31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e",
+      "execution_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "invocation_id": 7,
+      "mandatory": true,
+      "met": true,
+      "params": {},
+      "producer": "simulation_campaign",
+      "purpose": "ticket_acceptance",
+      "reason": "outcome",
+      "recorded_at": "2026-09-21T10:00:00Z",
+      "role": "candidate",
+      "sequence": 3,
+      "ticket": "fix-uart",
+      "ticket_identity": {
+        "authored_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generation": "dddddddddddddddddddddddddddddddd"
+      },
+      "transaction_id": "31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e",
+      "transaction_ordinal": 0,
+      "transaction_size": 2
+    },
+    {
+      "$schema": "booley.acceptance-record/v2",
+      "criterion": "lint_clean",
+      "detail": {
+        "rerun": true,
+        "warnings": 0
+      },
+      "envelope_sha256": "sha256:31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e",
+      "execution_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "invocation_id": 7,
+      "mandatory": true,
+      "met": true,
+      "params": {},
+      "producer": "simulation_campaign",
+      "purpose": "ticket_acceptance",
+      "reason": "outcome",
+      "recorded_at": "2026-09-21T10:00:00Z",
+      "role": "candidate",
+      "sequence": 4,
+      "ticket": "fix-uart",
+      "ticket_identity": {
+        "authored_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generation": "dddddddddddddddddddddddddddddddd"
+      },
+      "transaction_id": "31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e",
+      "transaction_ordinal": 1,
+      "transaction_size": 2
+    }
+  ],
+  "frozen_digest": "7c8a73f77bd95ec18d5eed446ddb9178734cb2f3835afe83d4454b8d3405aec2",
+  "interrupted_checkpoints": [
+    "before:acceptance_intent",
+    "after:acceptance_intent",
+    "before:acceptance_record",
+    "after:acceptance_record",
+    "before:acceptance_record"
+  ],
+  "recovered": {
+    "evidence": [
+      {
+        "criterion": "sim_pass_uart",
+        "digest": "5f2ce9d69e1309c1afce68bf0837cd04a9520fc33774284fef105568e5b3f8f4",
+        "role": "candidate",
+        "sequence": 3
+      },
+      {
+        "criterion": "lint_clean",
+        "digest": "e91d9de3ca03214ffe226caf1b393edde02ee2fdc28be433e388748fb5d55fc7",
+        "role": "candidate",
+        "sequence": 4
+      }
+    ],
+    "transaction_id": "31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e"
+  },
+  "recovered_checkpoints": [
+    "before:acceptance_commit",
+    "after:acceptance_commit",
+    "before:acceptance_state",
+    "after:acceptance_state"
+  ],
+  "rejections": [
+    "ticket generation must match the canonical identity",
+    "acceptance value is not canonical JSON: Out of range float values are not JSON compliant: nan"
+  ],
+  "replay_checkpoints": [],
+  "replayed_equal": true,
+  "reselect_checkpoints": [
+    "before:acceptance_state",
+    "after:acceptance_state"
+  ],
+  "reselected_equal": true,
+  "v1_refs": [
+    {
+      "criterion": "lint_clean",
+      "digest": "5b8bdcda16e85f66fe3cc8b327b7742dd7ad98a30d6a67a19287b92147cb72c8",
+      "role": "candidate",
+      "sequence": 1
+    },
+    {
+      "criterion": "sim_pass_uart",
+      "digest": "dce8a8b5a65e755d2b4eb543d684efc0c69efdd4cc2f0e1df30e558295ad2969",
+      "role": "candidate",
+      "sequence": 2
+    }
+  ]
+}
+=== dir .runtime
+=== file .runtime/booley_state.json (821 bytes)
+{
+  "slug": "fix-uart",
+  "ticket_type": "bugfix",
+  "strict_criteria": true,
+  "criteria": {
+    "sim_pass_uart": {
+      "met": true,
+      "mandatory": true,
+      "ever_met": true,
+      "ever_failed": true,
+      "updated_at": "2026-09-21T08:00:00Z",
+      "detail": {
+        "passed_tests": [
+          "test_tx"
+        ]
+      }
+    },
+    "lint_clean": {
+      "met": true,
+      "mandatory": true,
+      "ever_met": true,
+      "updated_at": "2026-09-21T08:00:00Z",
+      "detail": {
+        "rerun": true,
+        "warnings": 0
+      }
+    }
+  },
+  "category_map": {},
+  "all_mandatory_met": true,
+  "timeline": [],
+  "acceptance_transactions": [
+    "31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e"
+  ],
+  "authorized_zero_mandatory_basis_id": "",
+  "last_updated": "2026-09-21T08:00:00Z"
+}
+=== dir acceptance
+=== file acceptance/accepted.json (148 bytes)
+{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","schema":1,"snapshot_digest":"7c8a73f77bd95ec18d5eed446ddb9178734cb2f3835afe83d4454b8d3405aec2"}
+
+=== dir acceptance/evidence
+=== file acceptance/evidence/.sequence.lock (0 bytes)
+
+=== dir acceptance/evidence/000000001
+=== file acceptance/evidence/000000001/record.json (486 bytes)
+{"criterion":"lint_clean","detail":{"warnings":0},"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":"lint-1","mandatory":true,"met":true,"params":{},"producer":"lint","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T09:00:00Z","role":"candidate","schema":1,"sequence":1,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"}}
+
+=== dir acceptance/evidence/000000002
+=== file acceptance/evidence/000000002/record.json (504 bytes)
+{"criterion":"sim_pass_uart","detail":{"failed_tests":["test_tx"]},"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":"sim-red","mandatory":true,"met":false,"params":{},"producer":"sim","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T09:30:00Z","role":"candidate","schema":1,"sequence":2,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"}}
+
+=== dir acceptance/evidence/000000003.tx.31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e
+=== file acceptance/evidence/000000003.tx.31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e/record.json (761 bytes)
+{"$schema":"booley.acceptance-record/v2","criterion":"sim_pass_uart","detail":{"passed_tests":["test_tx"]},"envelope_sha256":"sha256:31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e","execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7,"mandatory":true,"met":true,"params":{},"producer":"simulation_campaign","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T10:00:00Z","role":"candidate","sequence":3,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"transaction_id":"31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e","transaction_ordinal":0,"transaction_size":2}
+
+=== dir acceptance/evidence/000000004.tx.31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e
+=== file acceptance/evidence/000000004.tx.31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e/record.json (757 bytes)
+{"$schema":"booley.acceptance-record/v2","criterion":"lint_clean","detail":{"rerun":true,"warnings":0},"envelope_sha256":"sha256:31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e","execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7,"mandatory":true,"met":true,"params":{},"producer":"simulation_campaign","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T10:00:00Z","role":"candidate","sequence":4,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"transaction_id":"31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e","transaction_ordinal":1,"transaction_size":2}
+
+=== dir acceptance/intents
+=== file acceptance/intents/ff6bb96091a93c1d4c7c8b2147a0bfe44158bdaaa560d55593f476e483708b3b.json (2176 bytes)
+{"$schema":"booley.simulation-acceptance-intent/v1","acceptance_facts":{"$schema":"booley.simulation-acceptance-facts/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","consumed_results":[{"finished_at":"2026-09-21T10:00:00Z"}],"coverage_reference":null,"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observations":[],"origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"prerequisites":[],"required_suite":{"default_invocation":true,"names":["test_tx"],"source_sha256":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"target":{"identity":"acme:lib:uart:1#sim_uart","selector":"sim_uart"}},"acceptance_facts_sha256":"sha256:d05283033786d0c3ca8c257c580d2f7eb1abcf6d84a45b050d0d264fad611e10","envelope":{"$schema":"booley.acceptance-transaction-envelope/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","changes":[{"detail":{"passed_tests":["test_tx"]},"key":"sim_pass_uart","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"},{"detail":{"rerun":true,"warnings":0},"key":"lint_clean","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"}],"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"producer":"simulation_campaign","purpose":"ticket_acceptance","recorded_at":"2026-09-21T10:00:00Z","role_derivation":"booley.acceptance-role/v1","ticket":{"generation":"dddddddddddddddddddddddddddddddd","identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"slug":"fix-uart"}},"lookup_key":{"campaign_id":"12345678-1234-4234-9234-123456789abc","manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","producer":"simulation_campaign","purpose":"ticket_acceptance","ticket_generation":"dddddddddddddddddddddddddddddddd","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"}}}
+
+=== dir acceptance/snapshots
+=== file acceptance/snapshots/7c8a73f77bd95ec18d5eed446ddb9178734cb2f3835afe83d4454b8d3405aec2.json (1226 bytes)
+{"accepted_at":"2026-09-21T11:00:00Z","criteria":{"lint_clean":{"detail":{"rerun":true,"warnings":0},"ever_met":true,"mandatory":true,"met":true,"updated_at":"2026-09-21T08:00:00Z"},"sim_pass_uart":{"detail":{"passed_tests":["test_tx"]},"ever_failed":true,"ever_met":true,"mandatory":true,"met":true,"updated_at":"2026-09-21T08:00:00Z"}},"evidence":[{"criterion":"lint_clean","digest":"5b8bdcda16e85f66fe3cc8b327b7742dd7ad98a30d6a67a19287b92147cb72c8","role":"candidate","sequence":1},{"criterion":"sim_pass_uart","digest":"dce8a8b5a65e755d2b4eb543d684efc0c69efdd4cc2f0e1df30e558295ad2969","role":"candidate","sequence":2},{"criterion":"sim_pass_uart","digest":"35ed1dd408c9a38ca19422730e5168af07fd1d017be623f47a4fef8b32c94f28","role":"candidate","sequence":3},{"criterion":"lint_clean","digest":"662035a178507eadae85aa317d63eee564ddb49390a5df379c2eb2479f3c199b","role":"candidate","sequence":4}],"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","participant_heads":{"outer":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"schema":1,"slug":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"ticket_type":"bugfix"}
+
+=== dir acceptance/transactions
+=== file acceptance/transactions/31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e.json (1535 bytes)
+{"$schema":"booley.acceptance-transaction/v1","envelope":{"$schema":"booley.acceptance-transaction-envelope/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","changes":[{"detail":{"passed_tests":["test_tx"]},"key":"sim_pass_uart","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"},{"detail":{"rerun":true,"warnings":0},"key":"lint_clean","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"}],"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"producer":"simulation_campaign","purpose":"ticket_acceptance","recorded_at":"2026-09-21T10:00:00Z","role_derivation":"booley.acceptance-role/v1","ticket":{"generation":"dddddddddddddddddddddddddddddddd","identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"slug":"fix-uart"}},"envelope_sha256":"sha256:31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e","record_count":2,"records":[{"criterion":"sim_pass_uart","role":"candidate","sequence":3,"sha256":"sha256:5f2ce9d69e1309c1afce68bf0837cd04a9520fc33774284fef105568e5b3f8f4","transaction_ordinal":0},{"criterion":"lint_clean","role":"candidate","sequence":4,"sha256":"sha256:e91d9de3ca03214ffe226caf1b393edde02ee2fdc28be433e388748fb5d55fc7","transaction_ordinal":1}],"transaction_id":"31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e"}
