@@ -56,6 +56,23 @@ class GoalCheckout:
             raise CheckoutError(f"git {' '.join(args)} failed in {self.root}: {detail}")
         return result
 
+    def containing_repository(self) -> tuple[Path, str] | None:
+        """The innermost repository containing ``root`` and ``root``'s path inside it.
+
+        Returns the repository's top level and the POSIX prefix of ``root``
+        below it (empty at the top level), or ``None`` outside any repository.
+        A nested repository (a paired Project checkout) wins over the one
+        around it, as it does for Git itself.
+        """
+        result = self._git("rev-parse", "--show-toplevel", "--show-prefix", check=False)
+        if result.returncode != 0:
+            return None
+        lines = result.stdout.splitlines()
+        if not lines or not lines[0]:
+            return None
+        prefix = lines[1].rstrip("/") if len(lines) > 1 else ""
+        return Path(lines[0]), prefix
+
     def head_sha(self) -> str:
         """The full commit id HEAD points at."""
         return self._git("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
@@ -127,8 +144,13 @@ class GoalCheckout:
         self._git("branch", "--no-track", branch, start)
 
     def checkout_branch(self, branch: str) -> None:
-        """Check out an existing local branch."""
-        self._git("checkout", "--quiet", branch, "--")
+        """Check out an existing local branch, never overwriting an ignored file.
+
+        ``--no-overwrite-ignore`` makes Git refuse instead: a branch that
+        moved between a caller's tip check and this checkout cannot destroy
+        ignored local work.
+        """
+        self._git("checkout", "--quiet", "--no-overwrite-ignore", branch, "--")
 
     def checkout_ref(self, ref: str) -> None:
         """Check out a full branch ref by name, or a commit detached."""
@@ -136,7 +158,7 @@ class GoalCheckout:
         if branch is not None:
             self.checkout_branch(branch)
         else:
-            self._git("checkout", "--quiet", "--detach", ref, "--")
+            self._git("checkout", "--quiet", "--no-overwrite-ignore", "--detach", ref, "--")
 
     def delete_branch_if_at(self, branch: str, expected_tip: str) -> bool:
         """Delete *branch* only while it still points at *expected_tip*; return whether it did."""

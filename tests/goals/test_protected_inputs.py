@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from booley.goals import protected_inputs as protected_inputs_module
+from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
 from booley.goals.model import parse_goal_args
 from booley.goals.protected_inputs import (
@@ -21,7 +25,7 @@ from booley.goals.protected_inputs import (
 )
 from booley.goals.store import GoalStore
 from tests.conftest import symlink_or_skip
-from tests.goals.conftest import git
+from tests.goals.conftest import git, install_paired_project
 
 WORKING = "a protected input differs from its state at entry"
 IN_HEAD = "a protected input differs from its state at entry in HEAD"
@@ -376,3 +380,101 @@ def test_another_spelling_with_missing_inputs_is_not_a_violation(
 
     assert not (layout.worktree / "FUSESOC_IGNORE").exists()
     assert _violations(layout, alias) == []
+
+
+# ---------------------------------------------------------------------------
+# Second review round: override hooks, HEAD behind links and in a paired
+# checkout, unreadable directories, ignored files at rollback
+# ---------------------------------------------------------------------------
+
+
+def test_hooks_of_a_routed_project_directory_are_protected(
+    layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preparation reads the hooks of the directory `[project].dir` routes to."""
+    routed = layout.worktree / "custom-project"
+    (routed / "hooks").mkdir(parents=True)
+    hook = routed / "hooks" / "post-setup.sh"
+    hook.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        protected_inputs_module, "resolve_checkout_project_dir", lambda _worktree: routed
+    )
+    assert "worktree:custom-project/hooks" in {
+        path.encode() for path in resolve_protected_inputs(_roots(layout))
+    }
+    snapshot = snapshot_protected_inputs(_roots(layout))
+
+    hook.write_text("#!/bin/sh\nrm -rf build\n", encoding="utf-8")
+
+    assert _check(layout, snapshot) == [WORKING]
+
+
+def test_a_committed_change_behind_a_tracked_symlink_is_a_violation(
+    layout: SimpleNamespace,
+) -> None:
+    settings = layout.worktree / "config" / "settings.toml"
+    settings.parent.mkdir()
+    settings.write_text("[project]\n", encoding="utf-8")
+    config = layout.worktree / "booley.toml"
+    config.unlink()
+    symlink_or_skip(config, Path("config") / "settings.toml")
+    git(layout.worktree, "add", "-A")
+    git(layout.worktree, "commit", "-q", "-m", "link config")
+    snapshot = snapshot_protected_inputs(_roots(layout))
+    original = settings.read_bytes()
+
+    settings.write_text("[project]\nname = 'committed'\n", encoding="utf-8")
+    git(layout.worktree, "commit", "-q", "-am", "edit behind the link")
+    settings.write_bytes(original)  # working bytes back to their entry state
+
+    assert _check(layout, snapshot) == [IN_HEAD]
+
+
+def test_a_commit_in_a_paired_project_checkout_is_a_violation(
+    layout: SimpleNamespace, tmp_path: Path
+) -> None:
+    """The paired checkout's own HEAD is read, not the outer repository's."""
+    paired = install_paired_project(layout, tmp_path)
+    snapshot = snapshot_protected_inputs(_roots(layout))
+    config = paired / "booley.toml"
+    original = config.read_bytes()
+
+    config.write_text("[project]\nname = 'committed'\n", encoding="utf-8")
+    git(paired, "commit", "-q", "-am", "edit paired config")
+    config.write_bytes(original)
+
+    assert _check(layout, snapshot) == [IN_HEAD]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory permissions")
+def test_a_directory_that_cannot_be_listed_fails_the_snapshot(layout: SimpleNamespace) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root lists any directory")
+    hooks = layout.control / "hooks"
+    hooks.mkdir()
+    (hooks / "post-setup.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    hooks.chmod(0o300)  # searchable and writable, not listable
+    try:
+        with pytest.raises(ProtectedInputError, match="cannot list protected input"):
+            snapshot_protected_inputs(_roots(layout))
+    finally:
+        hooks.chmod(0o700)
+
+
+def test_returning_to_a_ref_never_overwrites_an_ignored_file(layout: SimpleNamespace) -> None:
+    """A branch that starts tracking a locally ignored path is refused, not checked out."""
+    worktree = layout.worktree
+    (worktree / ".gitignore").write_text("local.cfg\n", encoding="utf-8")
+    git(worktree, "add", ".gitignore")
+    git(worktree, "commit", "-q", "-m", "ignore local.cfg")
+    git(worktree, "checkout", "-q", "-b", "tracks-it")
+    (worktree / "local.cfg").write_text("committed\n", encoding="utf-8")
+    git(worktree, "add", "-f", "local.cfg")
+    git(worktree, "commit", "-q", "-m", "track local.cfg")
+    git(worktree, "checkout", "-q", "work")
+    (worktree / "local.cfg").write_text("precious local work\n", encoding="utf-8")
+
+    with pytest.raises(CheckoutError):
+        GoalCheckout(worktree).checkout_ref("refs/heads/tracks-it")
+
+    assert (worktree / "local.cfg").read_text(encoding="utf-8") == "precious local work\n"

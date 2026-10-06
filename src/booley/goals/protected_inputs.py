@@ -43,8 +43,10 @@ Checkout ``booley.toml``        ``[project].dir`` routing walks up from the     
 legacy ``pipeline.toml``        Every reader above falls back to it beside      the ``pipeline.toml`` sibling of
                                 a missing ``booley.toml`` (``resolve_toml``).   every ``booley.toml`` candidate
 ``hooks/``                      Runner hooks read the session Project           ``project:hooks``,
-                                directory; worktree preparation reads the       ``worktree:.booley_project/hooks``
-                                snapshot. No Flow or Specialist reads it.
+                                directory; worktree preparation reads the       ``worktree:.booley_project/hooks``,
+                                snapshot, or the directory                      ``hooks`` in the directory
+                                ``resolve_checkout_project_dir`` returns.       ``resolve_checkout_project_dir``
+                                No Flow or Specialist reads it.                 returns
 ``.managed/``                   The Git hook adapters run the worktree's        ``worktree:.booley_project/.managed``,
                                 bundle file when it exists, else the main       ``main:.booley_project/.managed``,
                                 checkout's; ``init`` writes the session         ``project:.managed``
@@ -76,6 +78,11 @@ Encoding rules:
   the file is restored as untracked bytes, and a checkout that converts line
   endings never differs from itself. Paths outside the worktree have no HEAD
   and contribute their working view.
+- HEAD is that of the innermost repository containing the path, so a paired
+  Project checkout nested in the worktree is read from its own HEAD. A
+  tracked symlink's target is read through the HEAD view as well.
+- A directory that cannot be listed fails the snapshot; it is never digested
+  as empty.
 """
 
 from __future__ import annotations
@@ -213,9 +220,13 @@ def resolve_protected_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath,
         for kind, directory in config_dirs
         for name in CONFIG_FILE_NAMES
     ]
+    checkout_kind, checkout_dir = _checkout_project_dir(roots)
     paths += [
         ProtectedPath(project, "hooks"),
         ProtectedPath(worktree, f"{PROJECT_DIR_NAME}/hooks"),
+        # Preparation reads the hooks of the directory Flow readers resolve,
+        # which a `[project].dir` override moves away from the fixed path.
+        ProtectedPath(checkout_kind, _join(checkout_dir, "hooks")),
         ProtectedPath(worktree, f"{PROJECT_DIR_NAME}/.managed"),
         ProtectedPath(main, f"{PROJECT_DIR_NAME}/.managed"),
         ProtectedPath(project, ".managed"),
@@ -271,13 +282,13 @@ def digest_protected_inputs(
 ) -> str:
     """One ``sha256:`` digest over *paths*: the working view, or with *head* the HEAD view."""
     main = roots.main_checkout()
-    head_view = _HeadView(GoalCheckout(roots.worktree)) if head else None
+    head_view = _HeadView() if head else None
     entries: list[Entry] = []
     for path in paths:
         location = roots.absolute(path, main)
         tree = {} if location is None else _disk_tree(location)
         if head_view is not None and path.root is RootKind.WORKTREE and location is not None:
-            tree = head_view.committed_tree(path.relative, location, tree)
+            tree = head_view.committed_tree(location, tree, frozenset())
         entries.append({"path": path.encode(), "tree": tree})
     payload = json.dumps(
         {"format": _DIGEST_FORMAT, "head": head, "inputs": entries},
@@ -334,7 +345,7 @@ def _disk_tree(path: Path) -> Tree:
 
 def _walk(directory: Path, seen: frozenset[str]) -> Iterator[tuple[str, Entry]]:
     """Every file and symlink under *directory*, keyed by its POSIX path relative to it."""
-    for current, subdirs, files in os.walk(directory, followlinks=False):
+    for current, subdirs, files in os.walk(directory, followlinks=False, onerror=_unreadable):
         subdirs[:] = sorted(name for name in subdirs if name not in _SKIPPED_DIRECTORIES)
         base = Path(current)
         for name in subdirs:
@@ -344,6 +355,13 @@ def _walk(directory: Path, seen: frozenset[str]) -> Iterator[tuple[str, Entry]]:
         for name in sorted(files):
             entry = base / name
             yield entry.relative_to(directory).as_posix(), _leaf(entry, seen)
+
+
+def _unreadable(error: OSError) -> None:
+    """Fail the snapshot: a directory that cannot be listed is not an empty one."""
+    raise ProtectedInputError(
+        f"cannot list protected input {error.filename}: {error.strerror or error}"
+    ) from error
 
 
 def _leaf(path: Path, seen: frozenset[str]) -> Entry:
@@ -390,14 +408,15 @@ def _content_hash(content: bytes) -> str:
 
 
 class _HeadView:
-    """Committed content of protected paths inside the Goal worktree (module docstring)."""
+    """Committed content of protected paths inside the Goal worktree (module docstring).
 
-    def __init__(self, checkout: GoalCheckout) -> None:
-        self._checkout = checkout
+    Each path is read from the HEAD of the innermost repository containing
+    it: the Goal worktree's, or a paired Project checkout nested inside it.
+    """
 
-    def committed_tree(self, relative: str, location: Path, disk: Tree) -> Tree:
+    def committed_tree(self, location: Path, disk: Tree, seen: frozenset[str]) -> Tree:
         """*disk* with each entry marked tracked or not, tracked ones as HEAD holds them."""
-        tracked = self._tracked(relative, location)
+        tracked = self._tracked(location, seen)
         tree: Tree = {
             key: {**value, "tracked": False}
             for key, value in disk.items()
@@ -409,29 +428,76 @@ class _HeadView:
             tree["."] = {"kind": "directory"}
         return tree
 
-    def _tracked(self, relative: str, location: Path) -> Tree:
+    def _tracked(self, location: Path, seen: frozenset[str]) -> Tree:
+        found = _repository_of(location)
+        if found is None:
+            return {}  # outside every repository: nothing is committed
+        checkout, relative = found
         try:
-            rows = self._checkout.head_tree(relative)
+            rows = checkout.head_tree(relative)
         except CheckoutError as exc:
-            raise ProtectedInputError(f"cannot list HEAD for {relative}: {exc}") from exc
+            raise ProtectedInputError(f"cannot list HEAD for {location}: {exc}") from exc
         entries: Tree = {}
         for row in rows:
             key = "." if row.path == relative else row.path.removeprefix(f"{relative}/")
             if any(part in _SKIPPED_DIRECTORIES for part in key.split("/")):
                 continue
-            entries[key] = self._entry(row.mode, row.object_id, location / key)
+            entries[key] = self._entry(checkout, row.mode, row.object_id, location / key, seen)
         return entries
 
-    def _entry(self, mode: str, object_id: str, location: Path) -> Entry:
+    def _entry(
+        self,
+        checkout: GoalCheckout,
+        mode: str,
+        object_id: str,
+        location: Path,
+        seen: frozenset[str],
+    ) -> Entry:
         if mode == "160000":
             return {"kind": "submodule", "commit": object_id, "tracked": True}
         try:
-            content = self._checkout.blob(object_id)
+            content = checkout.blob(object_id)
         except CheckoutError as exc:
             raise ProtectedInputError(f"cannot read HEAD object {object_id}: {exc}") from exc
         if mode == "120000":
             target = content.decode("utf-8", "surrogateescape")
-            # Resolve the committed target text, as a checkout of HEAD would.
-            resolves = _follow(location.parent / target, frozenset())
+            resolves = self._follow_committed(location.parent / target, seen)
             return {"kind": "symlink", "target": target, "resolves": resolves, "tracked": True}
         return {"kind": "file", "sha256": _content_hash(content), "tracked": True}
+
+    def _follow_committed(self, target: Path, seen: frozenset[str]) -> Entry:
+        """What a committed symlink target holds in the HEAD view.
+
+        The target is resolved as a checkout of HEAD would resolve it, and its
+        content is read through the HEAD view too: a committed change behind
+        the link shows even when the working bytes were restored.
+        """
+        try:
+            resolved = target.resolve(strict=False)
+        except (OSError, RuntimeError):  # a symlink loop
+            return {"kind": "cycle"}
+        key = str(resolved)
+        if key in seen:
+            return {"kind": "cycle"}
+        tree = self.committed_tree(resolved, _disk_tree(resolved), seen | {key})
+        return {"kind": "head-view", "tree": tree} if tree else {"kind": "dangling"}
+
+
+def _repository_of(location: Path) -> tuple[GoalCheckout, str] | None:
+    """The innermost repository containing *location* and its POSIX path inside it."""
+    directory = location if location.is_dir() and not location.is_symlink() else location.parent
+    below: list[str] = [] if directory == location else [location.name]
+    while not directory.is_dir():
+        if directory.parent == directory:
+            return None
+        below.insert(0, directory.name)
+        directory = directory.parent
+    try:
+        found = GoalCheckout(directory).containing_repository()
+    except CheckoutError as exc:
+        raise ProtectedInputError(f"cannot find the repository of {location}: {exc}") from exc
+    if found is None:
+        return None
+    toplevel, prefix = found
+    relative = "/".join(part for part in (*prefix.split("/"), *below) if part)
+    return GoalCheckout(toplevel), relative or "."
