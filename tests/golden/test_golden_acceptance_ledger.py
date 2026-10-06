@@ -7,12 +7,21 @@ a crash-left complete temporary record that recovery must promote, a replay
 of the committed transaction, a re-selection into a state that lost it, a
 frozen Criteria Satisfaction Record, and two rejected identities.
 
-It snapshots every file beneath the Ticket log directory byte for byte, the
-checkpoint boundaries in order, the returned references, and the rejection
-messages. The expected file was generated before the ledger moved to
-``booley.criteria.evidence_ledger``, so any drift in canonical bytes,
-transaction hashes, paths, checkpoints, projection, or error text shows up
-as a diff (see ``tests/golden/conftest.py`` for the regeneration convention).
+A second, parametrized scenario interrupts a V2 transaction once at every
+publication checkpoint boundary, recovers it, and replays it; its declared
+Criteria include the report-fenced ``_report_submitted``, so replay and the
+projection check run Ticket report fencing.
+
+Each golden snapshots every ledger file beneath the Ticket log directory byte
+for byte, the checkpoint boundaries in order, the returned references, and
+rejection messages. Two files are rendered platform-neutrally on purpose:
+lock files show presence only (Windows lock acquisition writes a NUL byte),
+and the text-mode ``booley_state.json`` is shown with LF line endings
+(Windows text mode writes CRLF). The expected files were generated on main
+before the ledger moved to ``booley.criteria.evidence_ledger``, so any drift
+in canonical bytes, transaction hashes, paths, checkpoints, projection, or
+error text shows up as a diff (see ``tests/golden/conftest.py`` for the
+regeneration convention).
 """
 
 from __future__ import annotations
@@ -225,14 +234,25 @@ def _run_scenario(root: Path) -> dict[str, Any]:
     return result
 
 
+#: Files the state module writes in platform text mode (CRLF on Windows).
+_TEXT_MODE_FILES = frozenset({".runtime/booley_state.json"})
+
+
 def _render_tree(log_dir: Path) -> str:
+    """Render every path beneath *log_dir*; ledger files byte for byte."""
     lines: list[str] = []
     for path in sorted(log_dir.rglob("*"), key=lambda item: item.relative_to(log_dir).as_posix()):
         relative = path.relative_to(log_dir).as_posix()
         if path.is_dir():
             lines.append(f"=== dir {relative}")
             continue
+        if path.name.endswith(".lock"):
+            # Lock files carry no evidence; on Windows acquisition writes a NUL byte.
+            lines.append(f"=== lock {relative}")
+            continue
         content = path.read_bytes()
+        if relative in _TEXT_MODE_FILES:
+            content = content.replace(b"\r\n", b"\n")
         lines.append(f"=== file {relative} ({len(content)} bytes)")
         lines.append(content.decode("utf-8"))
     return "\n".join(lines)
@@ -247,3 +267,88 @@ def test_ticket_evidence_tree_matches_golden(tmp_path: Path, monkeypatch) -> Non
         + _render_tree(tmp_path / "logs" / "fix-uart")
     )
     assert_matches_golden(GOLDEN, normalize_work_dir(rendered, tmp_path))
+
+
+#: Every publication checkpoint the V2 path names, in the order it emits them.
+BOUNDARIES = (
+    "before:acceptance_intent",
+    "after:acceptance_intent",
+    "before:acceptance_record",
+    "after:acceptance_record",
+    "before:acceptance_commit",
+    "after:acceptance_commit",
+    "before:acceptance_state",
+    "after:acceptance_state",
+)
+REPORT_KEY = "_report_submitted"
+#: A report candidate whose submission never committed: fencing masks it.
+FENCED_REPORT_DETAIL = {"report_submission_id": "c" * 32, "report_sha256": "f" * 64}
+
+
+def _report_fenced_state(log_dir: Path) -> tuple[DevelopmentState, list[Any]]:
+    """Declare a report-fenced Criterion, append V1 evidence, and stage V2 changes."""
+    state = DevelopmentState.load(log_dir / ".runtime" / "booley_state.json")
+    state.slug = "fix-uart"
+    state.ticket_type = "bugfix"
+    state.init_criteria({"sim_pass_uart": True, "lint_clean": True, REPORT_KEY: True}, strict=True)
+    record_changes(
+        log_dir,
+        state,
+        state.set_criterion("lint_clean", True, detail={"warnings": 0}),
+        invocation_id="lint-1",
+        producer="lint",
+        execution_id="b" * 32,
+        ticket_identity=IDENTITY,
+        recorded_at="2026-09-21T09:00:00Z",
+    )
+    changes = [
+        *state.set_criterion("sim_pass_uart", True, detail={"passed_tests": ["test_tx"]}),
+        *state.set_criterion(REPORT_KEY, True, detail=dict(FENCED_REPORT_DETAIL)),
+    ]
+    state.save()
+    return state, changes
+
+
+def _run_interrupted_scenario(root: Path, boundary: str) -> dict[str, Any]:
+    log_dir = root / "logs" / "fix-uart"
+    state_path = log_dir / ".runtime" / "booley_state.json"
+    state, changes = _report_fenced_state(log_dir)
+    result: dict[str, Any] = {"boundary": boundary}
+    interrupted: list[str] = []
+    with pytest.raises(_InterruptedError):
+        _transact(
+            log_dir,
+            state,
+            changes,
+            _checkpoint_recorder(interrupted, interrupt_at=boundary, occurrence=1),
+        )
+    result["interrupted_checkpoints"] = interrupted
+
+    recovered_log: list[str] = []
+    recovered_state = DevelopmentState.load(state_path)
+    recovered = _transact(log_dir, recovered_state, changes, _checkpoint_recorder(recovered_log))
+    result["recovered_checkpoints"] = recovered_log
+    result["recovered"] = asdict(recovered)
+    result["recovered_report_met"] = recovered_state.criteria[REPORT_KEY].met
+
+    replay_log: list[str] = []
+    replayed = _transact(log_dir, recovered_state, [], _checkpoint_recorder(replay_log))
+    result["replay_checkpoints"] = replay_log
+    result["replayed_equal"] = replayed == recovered
+    result["current_records"] = current_evidence_records(log_dir, recovered_state, IDENTITY)
+    return result
+
+
+@pytest.mark.parametrize("boundary", BOUNDARIES)
+def test_interrupted_transaction_recovers_to_golden(
+    tmp_path: Path, monkeypatch, boundary: str
+) -> None:
+    monkeypatch.setattr("booley.criteria.state.utc_now_rfc3339", lambda: FIXED_NOW)
+    result = _run_interrupted_scenario(tmp_path, boundary)
+    rendered = (
+        json.dumps(result, indent=2, sort_keys=True)
+        + "\n"
+        + _render_tree(tmp_path / "logs" / "fix-uart")
+    )
+    golden = f"acceptance_ledger/interrupt_{boundary.replace(':', '_')}.txt"
+    assert_matches_golden(golden, normalize_work_dir(rendered, tmp_path))

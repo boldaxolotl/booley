@@ -207,8 +207,7 @@
 {"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","schema":1,"snapshot_digest":"7c8a73f77bd95ec18d5eed446ddb9178734cb2f3835afe83d4454b8d3405aec2"}
 
 === dir acceptance/evidence
-=== file acceptance/evidence/.sequence.lock (0 bytes)
-
+=== lock acceptance/evidence/.sequence.lock
 === dir acceptance/evidence/000000001
 === file acceptance/evidence/000000001/record.json (486 bytes)
 {"criterion":"lint_clean","detail":{"warnings":0},"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":"lint-1","mandatory":true,"met":true,"params":{},"producer":"lint","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T09:00:00Z","role":"candidate","schema":1,"sequence":1,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"}}
