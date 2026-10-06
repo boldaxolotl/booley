@@ -62,6 +62,10 @@ PROJECT_GITIGNORE_PATTERNS = (
     "FEEDBACK-REPORT.md",
 )
 
+# Each ``!`` re-include and the required pattern it overrides. Git applies the
+# last matching line, so the re-include must follow that pattern.
+REINCLUDES: dict[str, str] = {"!goals/history/": "goals/*/"}
+
 PROJECT_GITIGNORE = "# Transient Booley state — do not commit.\n" + "".join(
     f"{pattern}\n" for pattern in PROJECT_GITIGNORE_PATTERNS
 )
@@ -86,32 +90,28 @@ def _gitignore_line_key(line: str) -> str:
 def missing_gitignore_patterns(content: str) -> list[str]:
     """Return the required ignore patterns that *content* does not already cover.
 
-    A ``!`` re-include only takes effect after the pattern it overrides, which
-    is the required pattern listed just before it. It counts as present only
+    A ``!`` re-include only takes effect after the pattern it overrides
+    (:data:`REINCLUDES`). It counts as present only
     when that pattern is present too and the re-include occurs after its last
     occurrence, so appending the reported patterns in order always leaves a
     working re-include.
     """
     keys = [_gitignore_line_key(line) for line in content.splitlines()]
-    return [
-        pattern
-        for index, pattern in enumerate(PROJECT_GITIGNORE_PATTERNS)
-        if not _covers(keys, index)
-    ]
+    return [pattern for pattern in PROJECT_GITIGNORE_PATTERNS if not _covers(keys, pattern)]
 
 
-def _covers(keys: list[str], index: int) -> bool:
-    """Whether normalized *keys* cover the required pattern at *index*."""
-    pattern = PROJECT_GITIGNORE_PATTERNS[index]
+def _covers(keys: list[str], pattern: str) -> bool:
+    """Whether normalized *keys* cover the required *pattern*."""
     key = _gitignore_line_key(pattern)
     if key not in keys:
         return False
-    return not pattern.startswith("!") or _reincludes_after(keys, key, index)
+    overridden = REINCLUDES.get(pattern)
+    return overridden is None or _reincludes_after(keys, key, overridden)
 
 
-def _reincludes_after(keys: list[str], reinclude: str, index: int) -> bool:
-    """Whether *reinclude* follows every line of the pattern listed before it."""
-    overridden = _gitignore_line_key(PROJECT_GITIGNORE_PATTERNS[index - 1])
+def _reincludes_after(keys: list[str], reinclude: str, overridden_pattern: str) -> bool:
+    """Whether *reinclude* follows every line of the pattern it overrides."""
+    overridden = _gitignore_line_key(overridden_pattern)
     overridden_positions = [position for position, key in enumerate(keys) if key == overridden]
     if not overridden_positions:
         return False

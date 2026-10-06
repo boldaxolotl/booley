@@ -239,6 +239,7 @@ def test_record_round_trips_through_json() -> None:
         ("schema", 2, "not supported"),
         ("goals", "lint", "must be a list"),
         ("branch_created", "yes", "boolean"),
+        ("ended_at", "yesterday", "RFC 3339"),
     ],
 )
 def test_record_fields_are_validated(field: str, value: object, message: str) -> None:
@@ -286,3 +287,39 @@ def test_primary_and_linked_checkout_named_main_never_collide() -> None:
     linked = WorktreeIdentity(REPOSITORY, "worktrees/main")
     assert primary != linked
     assert primary.key != linked.key
+
+
+# --- Schema evolution within one version --------------------------------------
+
+
+def test_an_older_record_without_optional_fields_loads_with_defaults() -> None:
+    raw = record().to_json()
+    for optional in ("failure", "package_digest", "validated_head", "goalsets_used", "goals"):
+        del raw[optional]
+    loaded = GoalRecord.from_json(raw)
+    assert (loaded.failure, loaded.package_digest, loaded.goals) == (None, None, ())
+
+
+def test_a_record_from_a_newer_booley_is_refused_with_that_reason() -> None:
+    raw = record().to_json()
+    raw["dashboard_color"] = "teal"
+    with pytest.raises(GoalRecordFormatError, match="written by a newer Booley"):
+        GoalRecord.from_json(raw)
+
+
+@pytest.mark.parametrize("required", ["id", "worktree", "base_sha", "entered_at", "schema"])
+def test_required_fields_stay_required(required: str) -> None:
+    raw = record().to_json()
+    del raw[required]
+    with pytest.raises(GoalRecordFormatError, match="missing"):
+        GoalRecord.from_json(raw)
+
+
+@pytest.mark.parametrize(
+    "spec", ["/etc/spec.md", "../outside.md", "doc/../../x.md", "C:\\spec.md", "a\\..\\..\\b"]
+)
+def test_spec_paths_may_not_escape_the_worktree(spec: str) -> None:
+    with pytest.raises(GoalArgError, match="relative to the worktree"):
+        parse_goal_arg(
+            {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": spec}
+        )

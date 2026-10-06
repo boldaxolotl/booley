@@ -41,6 +41,8 @@ LOGS_DIR = "logs"
 CHANGES_FILE = "changes.jsonl"
 SUMMARY_FILE = "SUMMARY.md"
 REVIEW_PACKAGE_FILE = "review-package.json"
+# A record directory is built under this prefix and renamed into place.
+STAGING_PREFIX = ".staging-"
 
 # A Goal slug is what a human names the work; it becomes part of the Goal id
 # and of the Goal Branch name, so it stays a short lowercase path segment.

@@ -26,9 +26,10 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict, require_uuid4
-from booley.goals.model import GoalRecordFormatError, GoalSpec
+from booley.goals.model import GoalRecordFormatError, GoalSpec, record_timestamp
 from booley.goals.paths import CHANGES_FILE
 from booley.goals.store import GoalStoreError, RecordLock
+from booley.runtime.atomic_files import fsync_directory
 from booley.runtime.timefmt import utc_now_rfc3339
 
 
@@ -86,6 +87,7 @@ class ChangeEntry:
 
     def __post_init__(self) -> None:
         require_uuid4(self.id, field="change id")
+        record_timestamp(self.at, "change at")
         if (self.kind is ChangeKind.ADD) != (self.before is None):
             needed = "absent" if self.kind is ChangeKind.ADD else "present"
             raise ValueError(f"a {self.kind.value!r} change needs 'before' {needed}")
@@ -222,6 +224,7 @@ def _apply_line(
                 raise ValueError(f"intent {change_id} is duplicated or mislabelled")
             intents[change_id] = entry
         elif phase == "applied" and set(record) == {"id", "phase", "at"}:
+            record_timestamp(record["at"], "applied at")
             if change_id not in intents or change_id in applied:
                 raise ValueError(f"applied {change_id} has no pending intent")
             applied.append(change_id)
@@ -273,9 +276,5 @@ def _append_line(path: Path, record: dict[str, Any]) -> None:
         stream.write(line)
         stream.flush()
         os.fsync(stream.fileno())
-    if created and os.name != "nt":
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+    if created:
+        fsync_directory(path.parent)

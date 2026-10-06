@@ -14,6 +14,14 @@ Three layers, each a frozen value:
   (``record.json``). :meth:`GoalRecord.from_json` validates every field read
   from disk and raises :class:`GoalRecordFormatError` instead of guessing.
 
+Record schema evolution: ``record.json`` carries a ``schema`` version, and a
+different version is refused. Within one version, fields may only be added,
+and only as optional fields: a record that lacks one (written by an older
+Booley) loads it as its default, while a record with a field this code does
+not know (written by a newer Booley) is refused with that explanation rather
+than having the field silently dropped on the next save. Required fields stay
+required.
+
 Nothing here touches the filesystem or Git; :mod:`booley.goals.store` owns
 persistence and :mod:`booley.goals.translate` owns GoalArg-to-Goal translation.
 """
@@ -24,6 +32,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import PurePosixPath, PureWindowsPath
+from types import MappingProxyType
 from typing import Any, Literal
 
 from booley.core.boundary import (
@@ -36,11 +46,7 @@ from booley.core.boundary import (
     require_str_value,
     require_uuid4,
 )
-from booley.criteria.templates import (
-    FPGA_IMPL_OK_PARAMS,
-    SYNTHESIS_OK_PARAMS,
-    parse_target_pair,
-)
+from booley.criteria.templates import FPGA_IMPL_OK_PARAMS, SYNTHESIS_OK_PARAMS
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS
 from booley.runtime.timefmt import parse_timestamp
 
@@ -207,7 +213,10 @@ class MutationGoalArg:
 class ReviewGoalArg:
     """A review Goal: ``clean`` (no findings) or ``done`` (terminal advisory review).
 
-    A spec review names the spec file it judges the RTL against (ADR 0067).
+    A spec review names the spec file it judges the RTL against (ADR 0067):
+    a path relative to the Goal worktree, without ``..``. Parsing rejects
+    absolute and escaping paths; whether the file exists is checked at entry,
+    against the worktree (a later phase).
     """
 
     review: str
@@ -293,13 +302,12 @@ def _parse_implementation_goal(
     )
     assert family in (GoalFamily.SYNTH, GoalFamily.FPGA)
     target = _target_name(raw, "target", where)
-    baseline = _target_name(raw, "baseline", where) if "baseline" in raw else target
-    pair = parse_target_pair({"baseline": baseline, "candidate": target}, field=where)
+    baseline = _target_name(raw, "baseline", where) if "baseline" in raw else None
     return ImplementationGoalArg(
         family,
-        pair.candidate,
+        target,
         _mapping(raw, "thresholds", where, required=False),
-        None if pair.baseline == pair.candidate else pair.baseline,
+        None if baseline == target else baseline,
         _origin(raw, where),
     )
 
@@ -353,7 +361,7 @@ def _parse_review_goal(raw: Mapping[str, Any], where: str) -> ReviewGoalArg:
     verdict = _required_text(raw, "verdict", where)
     if verdict not in REVIEW_VERDICTS:
         raise GoalArgError(f"{where}.verdict must be 'clean' or 'done', got {verdict!r}")
-    spec = _required_text(raw, "spec", where) if "spec" in raw else None
+    spec = _spec_path(raw, where) if "spec" in raw else None
     if (review == SPEC_REVIEW_KIND) != (spec is not None):
         raise GoalArgError(
             f"{where}.spec is required for review {SPEC_REVIEW_KIND!r} and "
@@ -362,6 +370,15 @@ def _parse_review_goal(raw: Mapping[str, Any], where: str) -> ReviewGoalArg:
     return ReviewGoalArg(
         review, "clean" if verdict == "clean" else "done", spec, _origin(raw, where)
     )
+
+
+def _spec_path(raw: Mapping[str, Any], where: str) -> str:
+    """A spec file path relative to the worktree that cannot escape it."""
+    spec = _required_text(raw, "spec", where)
+    escapes = ".." in re.split(r"[\\/]", spec)
+    if PurePosixPath(spec).is_absolute() or PureWindowsPath(spec).is_absolute() or escapes:
+        raise GoalArgError(f"{where}.spec {spec!r} must be relative to the worktree, without '..'")
+    return spec
 
 
 def _family(raw: Mapping[str, Any], where: str) -> GoalFamily:
@@ -676,7 +693,13 @@ class GoalRecord:
     def from_json(cls, raw: object) -> GoalRecord:
         """Parse ``record.json`` content, raising :class:`GoalRecordFormatError`."""
         mapping = _record_mapping(raw, "record")
-        _require_keys(mapping, set(_RECORD_KEYS), "record")
+        unknown = sorted(set(mapping) - set(_RECORD_KEYS) - set(_RECORD_DEFAULTS))
+        if unknown:
+            raise GoalRecordFormatError(
+                f"record has unknown fields {unknown}; it was written by a newer Booley"
+            )
+        mapping = {**_RECORD_DEFAULTS, **mapping}
+        _require_keys(mapping, set(_RECORD_KEYS) | set(_RECORD_DEFAULTS), "record")
         schema = _record_positive_int(mapping["schema"], "record.schema")
         if schema != RECORD_SCHEMA_VERSION:
             raise GoalRecordFormatError(f"record.schema {schema} is not supported")
@@ -687,6 +710,7 @@ class GoalRecord:
         return record
 
 
+# Fields every ``record.json`` of this schema version carries.
 _RECORD_KEYS = (
     "schema",
     "id",
@@ -697,19 +721,24 @@ _RECORD_KEYS = (
     "branch",
     "original_ref",
     "base_sha",
-    "branch_created",
-    "session_key",
     "entered_at",
-    "ended_at",
-    "goals",
-    "goalsets_used",
-    "default_skipped",
-    "skip_reason",
-    "protected_digest",
-    "protected_paths",
-    "validated_head",
-    "package_digest",
-    "failure",
+)
+# Optional fields and the JSON value an older record without them loads as.
+_RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
+    {
+        "branch_created": False,
+        "session_key": None,
+        "ended_at": None,
+        "goals": [],
+        "goalsets_used": [],
+        "default_skipped": False,
+        "skip_reason": None,
+        "protected_digest": None,
+        "protected_paths": [],
+        "validated_head": None,
+        "package_digest": None,
+        "failure": None,
+    }
 )
 
 
@@ -731,7 +760,7 @@ def _identity_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "base_sha": _record_commit(mapping["base_sha"], "record.base_sha"),
         "branch_created": _record_bool(mapping["branch_created"], "record.branch_created"),
         "session_key": _record_opt_str(mapping["session_key"], "record.session_key"),
-        "entered_at": _record_timestamp(mapping["entered_at"], "record.entered_at"),
+        "entered_at": record_timestamp(mapping["entered_at"], "record.entered_at"),
     }
 
 
@@ -741,7 +770,7 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
     ended_at = mapping["ended_at"]
     validated_head = mapping["validated_head"]
     return {
-        "ended_at": None if ended_at is None else _record_timestamp(ended_at, "record.ended_at"),
+        "ended_at": None if ended_at is None else record_timestamp(ended_at, "record.ended_at"),
         "goals": tuple(
             RecordedGoal.from_json(goal, where=f"record.goals[{index}]")
             for index, goal in enumerate(goals)
@@ -849,7 +878,8 @@ def _record_opt_digest(raw: object, where: str) -> str | None:
         raise GoalRecordFormatError(str(exc)) from None
 
 
-def _record_timestamp(raw: object, where: str) -> str:
+def record_timestamp(raw: object, where: str) -> str:
+    """A canonical second-resolution UTC RFC 3339 timestamp, or :class:`GoalRecordFormatError`."""
     value = _record_str(raw, where)
     if not _TIMESTAMP.fullmatch(value):
         raise GoalRecordFormatError(f"{where} must be a UTC RFC 3339 timestamp, got {value!r}")

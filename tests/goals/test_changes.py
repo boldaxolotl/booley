@@ -141,6 +141,7 @@ def test_corruption_before_the_last_line_is_reported(locked: tuple[RecordLock, P
     [
         {"id": str(uuid.uuid4()), "phase": "applied", "at": "2026-10-06T10:20:00Z"},
         {"id": str(uuid.uuid4()), "phase": "rollback"},
+        {"id": "bad-applied-at", "phase": "applied", "at": "now"},
         {"id": "not-a-uuid", "phase": "intent", "entry": {}},
         ["not", "an", "object"],
     ],
@@ -183,6 +184,8 @@ def test_writers_require_a_held_record_lock(locked: tuple[RecordLock, Path]) -> 
         ({"reason": "  "}, "reason"),
         ({"approval": Approval.AGENT_RECORDED}, "quoted words"),
         ({"id": "change-1"}, "UUIDv4"),
+        ({"at": "2026-10-06 10:20"}, "RFC 3339"),
+        ({"at": "2026-10-06T10:20:00+04:00"}, "RFC 3339"),
     ],
 )
 def test_change_entries_are_validated(changes: dict[str, object], message: str) -> None:
@@ -193,3 +196,16 @@ def test_change_entries_are_validated(changes: dict[str, object], message: str) 
 def test_agent_recorded_entry_round_trips_with_its_quote() -> None:
     entry = _entry(approval=Approval.AGENT_RECORDED, quote="yes, relax it to 120")
     assert ChangeEntry.from_json(json.loads(json.dumps(entry.to_json()))) == entry
+
+
+def test_an_applied_line_with_a_non_canonical_time_is_corrupt(
+    locked: tuple[RecordLock, Path],
+) -> None:
+    lock, path = locked
+    entry = _entry()
+    append_intent(lock, entry)
+    applied = {"id": entry.id, "phase": "applied", "at": "06 OCT 2026"}
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(applied) + "\n")
+    with pytest.raises(ChangeLogCorruptError, match="RFC 3339"):
+        read_change_log(path)

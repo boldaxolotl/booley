@@ -15,11 +15,14 @@ the stricter Goal (D11) and every merge is reported as a warning:
   stricter value, by the direction its Criterion evaluates it.
 - Review Goals conflict by review, not by key: ``clean`` (no findings) wins
   over ``done`` (a terminal advisory review whose findings may stay open).
-- Settings that are not thresholds have no stricter value: a different
-  baseline Target, coverage test selection, spec file, or any mutation
-  setting is a :class:`GoalConflictError`, as is a merge whose combined
+- Coverage floors and the mutation ``min_detected`` count are lower bounds:
+  the larger wins (mutation only when scope, total, and auto agree).
+- Settings that are not bounds have no stricter value: a different baseline
+  Target (among Goals with a relative threshold, the only ones that read a
+  baseline), coverage test selection, spec file, or mutation scope, total,
+  or auto is a :class:`GoalConflictError`, as is a merge whose combined
   thresholds the Criteria rules refuse (for example ``area_um2_max`` with
-  ``area_kge_max``).
+  ``area_kge_max``). Nothing is merged silently.
 """
 
 from __future__ import annotations
@@ -28,7 +31,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
-from booley.criteria.templates import CriteriaTemplate, CriterionSpec
+from booley.criteria.templates import (
+    CriteriaTemplate,
+    CriterionSpec,
+    has_relative_qor_threshold,
+)
 from booley.criteria.thresholds import describe_threshold
 from booley.goals.model import (
     CoverageGoalArg,
@@ -193,6 +200,8 @@ def _merge(members: Members) -> tuple[GoalSpec, str | None]:
         except GoalTranslationError as exc:
             raise GoalConflictError(f"cannot merge {_group_name(members)}: {exc}") from None
     merged = replace(merged, origins=origins)
+    identical = all(goal.params == first_goal.params for _, goal in members)
+    assert identical or decisions, f"{merged.key} merged differing Goals without a decision"
     detail = "; ".join(decisions) if decisions else "identical Goals"
     return merged, f"Goal {merged.key} from {', '.join(origins)} merged: {detail}"
 
@@ -226,10 +235,12 @@ def _merge_values(
     stricter than another for a bound name.
     """
     chosen: dict[str, tuple[Any, Any, str]] = {}  # name -> (authored, normalized, origin)
+    setters: dict[str, int] = {}  # name -> how many members set it
     decisions: list[str] = []
     for arg, goal in members:
         for name, written in authored(arg).items():
             value = normalized(goal, name)
+            setters[name] = setters.get(name, 0) + 1
             kept = chosen.get(name)
             if kept is None:
                 chosen[name] = (written, value, arg.origin)
@@ -242,6 +253,11 @@ def _merge_values(
                 f"{name} {kept[1]!r} (from {kept[2]}) and {value!r} (from {arg.origin}) "
                 f"-> stricter {chosen[name][1]!r}"
             )
+    decisions.extend(
+        f"{name} {value!r} added from {origin}"
+        for name, (_, value, origin) in chosen.items()
+        if setters[name] < len(members)
+    )
     return {name: kept[0] for name, kept in chosen.items()}, decisions
 
 
@@ -283,17 +299,32 @@ def _merge_review(members: Members) -> tuple[GoalArg, list[str]]:
     return clean[0], [decision]
 
 
+def _baseline_opinion(arg: GoalArg) -> str | None:
+    """The baseline Target a synth/fpga Goal compares against, if it compares at all.
+
+    A Goal without a relative threshold never reads a baseline, so it has no
+    opinion. One with a relative threshold and no named baseline compares
+    against the candidate's own name at the base commit.
+    """
+    goal = _as(arg, ImplementationGoalArg)
+    if goal.baseline is not None:
+        return goal.baseline
+    return goal.target if has_relative_qor_threshold(dict(goal.thresholds)) else None
+
+
 def _merge_implementation(members: Members) -> tuple[GoalArg, list[str]]:
-    _require_equal(
-        members, "baseline Targets", lambda arg: _as(arg, ImplementationGoalArg).baseline
-    )
+    opinions = [(arg, goal) for arg, goal in members if _baseline_opinion(arg) is not None]
+    _require_equal(opinions, "baseline Targets", _baseline_opinion)
+    first = _as(members[0][0], ImplementationGoalArg)
+    baseline = _baseline_opinion(opinions[0][0]) if opinions else None
     thresholds, decisions = _merge_values(
         members,
         lambda arg: _as(arg, ImplementationGoalArg).thresholds,
         lambda goal, name: goal.params[name],
         stricter_threshold,
     )
-    return replace(_as(members[0][0], ImplementationGoalArg), thresholds=thresholds), decisions
+    merged_baseline = None if baseline == first.target else baseline
+    return replace(first, thresholds=thresholds, baseline=merged_baseline), decisions
 
 
 def _merge_cycle_count(members: Members) -> tuple[GoalArg, list[str]]:
@@ -326,11 +357,29 @@ def _coverage_tests_key(arg: CoverageGoalArg) -> object:
     return arg.tests if arg.tests == "all" else sorted(arg.tests)
 
 
+_MUTATION_FIXED = ("scope", "total", "auto")
+
+
 def _merge_mutation(members: Members) -> tuple[GoalArg, list[str]]:
-    # Mutation settings (scope, detected and total counts, auto) have no
-    # defined stricter value, so only identical mutation Goals merge.
-    _require_equal(members, "mutation settings", lambda arg: _as(arg, MutationGoalArg).params)
-    return members[0][0], []
+    # Scope, total and auto have no defined stricter value and must agree.
+    # With them equal, more detected mutants out of the same total is stricter.
+    _require_equal(
+        members,
+        "mutation scope, total, or auto",
+        lambda arg: [_as(arg, MutationGoalArg).params.get(name) for name in _MUTATION_FIXED],
+    )
+    floors, decisions = _merge_values(
+        members,
+        lambda arg: {
+            name: value
+            for name, value in _as(arg, MutationGoalArg).params.items()
+            if name == "min_detected"
+        },
+        lambda goal, name: goal.params[name],
+        lambda _name, candidate, current: candidate > current,
+    )
+    first = _as(members[0][0], MutationGoalArg)
+    return replace(first, params={**first.params, **floors}), decisions
 
 
 def _as(arg: GoalArg, kind: type[_ArgT]) -> _ArgT:

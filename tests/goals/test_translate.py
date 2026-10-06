@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from booley.criteria.templates import CriteriaTemplate, cycle_count_criterion_key
-from booley.goals.model import GoalFamily, parse_goal_arg, parse_goal_args
+from booley.goals.model import GoalFamily, parse_goal_args
 from booley.goals.translate import (
     GoalConflictError,
     GoalTranslationError,
@@ -132,15 +132,6 @@ def test_a_candidate_target_that_does_not_exist_yet_is_accepted() -> None:
     # Translation never consults the Target catalog; entry warns later (Phase 2).
     (goal,) = translate({"family": "synth", "target": "synth_not_written_yet"}).goals
     assert goal.target == "synth_not_written_yet"
-
-
-def test_unknown_family_and_missing_target_never_reach_translation() -> None:
-    from booley.goals.model import GoalArgError
-
-    with pytest.raises(GoalArgError, match="family must be one of"):
-        parse_goal_arg({"family": "formal", "target": "x"})
-    with pytest.raises(GoalArgError, match="target is required"):
-        parse_goal_arg({"family": "synth", "thresholds": {}})
 
 
 @pytest.mark.parametrize(
@@ -340,8 +331,8 @@ def test_coverage_floors_merge_per_metric() -> None:
         ),
         (
             {"family": "mutation", "target": "s", "min_detected": 8, "total": 10},
-            {"family": "mutation", "target": "s", "min_detected": 9, "total": 10},
-            "different mutation settings",
+            {"family": "mutation", "target": "s", "min_detected": 8, "total": 12},
+            "different mutation scope, total, or auto",
         ),
         (
             {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
@@ -366,3 +357,54 @@ def test_goals_without_a_stricter_one_conflict(
 def test_stricter_threshold_refuses_a_name_without_a_direction() -> None:
     with pytest.raises(GoalConflictError, match="no defined stricter value"):
         stricter_threshold("scope", 1, 2)
+
+
+def test_disjoint_thresholds_are_listed_per_origin_not_called_identical() -> None:
+    result = translate(_synth("feature", area_um2_max=100), _synth("ad-hoc", fmax_mhz_min=150))
+    (warning,) = result.warnings
+    assert "identical" not in warning
+    assert "area_um2_max 100 added from feature" in warning
+    assert "fmax_mhz_min 150 added from ad-hoc" in warning
+
+
+def test_a_goal_without_relative_thresholds_has_no_baseline_opinion() -> None:
+    plain = {"family": "synth", "target": "t", "origin": "feature"}
+    paired = {
+        "family": "synth",
+        "target": "t",
+        "baseline": "b",
+        "thresholds": {"area_reduce_at_least": "5%"},
+        "origin": "ad-hoc",
+    }
+    for order in ((plain, paired), (paired, plain)):
+        (goal,) = translate(*order).goals
+        assert goal.params == {"area_reduce_at_least": 5, "_baseline_target": "b"}
+
+
+def test_a_relative_threshold_without_baseline_compares_against_the_candidate() -> None:
+    own = {"family": "synth", "target": "t", "thresholds": {"area_increase_at_most": "1%"}}
+    paired = {
+        "family": "synth",
+        "target": "t",
+        "baseline": "b",
+        "thresholds": {"area_reduce_at_least": "5%"},
+    }
+    with pytest.raises(GoalConflictError, match="different baseline Targets"):
+        translate(own, paired)
+
+
+def test_mutation_min_detected_merges_upward_when_the_rest_agree() -> None:
+    def mutation(origin: str, detected: int) -> dict[str, Any]:
+        return {
+            "family": "mutation",
+            "target": "s",
+            "scope": ["rtl/a.sv"],
+            "min_detected": detected,
+            "total": 10,
+            "origin": origin,
+        }
+
+    result = translate(mutation("feature", 6), mutation("ad-hoc", 8))
+    (goal,) = result.goals
+    assert goal.params == {"scope": ["rtl/a.sv"], "min_detected": 8, "total": 10}
+    assert "min_detected 6 (from feature) and 8 (from ad-hoc) -> stricter 8" in result.warnings[0]
