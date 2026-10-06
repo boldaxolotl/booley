@@ -73,10 +73,44 @@ Agents use the read-only Agent Readiness Check at
 `.github/scripts/agent_readiness.py` before creating a linked worktree and
 again before editing it. It uses one shared tools-only environment, never
 installs Booley from any checkout, and runs commands against the active
-worktree's source. Its broad pytest command runs the full suite on up to
-eight xdist workers (`-n auto --maxprocesses=8`) with a disk-backed
-per-checkout `--basetemp` on POSIX. Set `PYTEST_XDIST_AUTO_NUM_WORKERS` to use
-fewer workers on a smaller host, or drop the xdist options to run serially.
+worktree's source. Develop readiness defaults to the `python` test profile: its
+broad command runs `tests/ --test-profile python`, excluding every
+`native_bwave` test. It includes exhaustive recovery tests, as the complete
+Python compatibility workflow does; selective PR CI may exclude those tests.
+
+Use `python3 .github/scripts/agent_readiness.py --test-profile full` before a
+full test run. `full` covers all of `tests/`, including native integration; it
+does not include Rust tests or `crates/bwave/tests/`. Native source tests all
+use the active checkout's `crates/bwave/target/debug/bwave` (`bwave.exe` on
+Windows), ignoring release builds and runtime binary overrides. This test-only
+policy leaves production binary lookup unchanged. Rebuilding or deleting the
+binary during testing invalidates the run. Readiness checks that this is an
+executable native file and runs its bounded `--version` probe. The probe
+executes that local build but never builds or changes it. When unavailable,
+readiness is blocked, advertises `cargo build --locked --manifest-path
+crates/bwave/Cargo.toml --target-dir crates/bwave/target`, and omits the test
+command. If Cargo is absent, install the Rust toolchain first. The explicit
+target directory overrides Cargo output-directory configuration. Run remediation
+and repeat full readiness before testing; use the default Python profile for
+editing without a native build.
+
+The emitted pytest command repeats preflight in the controller before xdist
+starts workers. Full-profile native tests fail on missing-prerequisite skips;
+FIFO tests may still skip on platforms without POSIX FIFOs; expected xfails
+remain xfails. Full runs require the complete `tests/` path without marker,
+keyword, ignore, deselect, last-failed, or stepwise filters. Use unprofiled
+pytest for subset diagnostics. `--help` does not run native preflight.
+Unprofiled pytest keeps its existing selection and skip behavior, including CI's
+`-m native_bwave`. Explicit Python profiles combine the exclusion with any
+existing marker expression. The readiness JSON schema stays at version 1:
+`pytest.broad` and `optional-broad-verification` retain their IDs, while the
+command's arguments explicitly identify the selected profile. Passing an
+explicit profile to prepare or publish is a usage error.
+
+Both profiles use up to eight xdist workers (`-n auto --maxprocesses=8`) with a
+disk-backed per-checkout `--basetemp` on POSIX. Set
+`PYTEST_XDIST_AUTO_NUM_WORKERS` to use fewer workers on a smaller host, or drop
+the xdist options to run serially.
 Human contributors may continue using the editable `.venv` workflow above.
 Readiness output contains local paths and is diagnostic material; do not
 publish it.

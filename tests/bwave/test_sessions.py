@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from booley.bwave.cli import SESSION_FILE
+from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -27,19 +28,6 @@ def _inside_session_runtime(monkeypatch):
     (which inherits os.environ), so the venue guard passes on a host machine.
     """
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-
-
-def _native_bwave_binary() -> Path:
-    suffix = ".exe" if sys.platform == "win32" else ""
-    release = BOOLEY_ROOT / "crates" / "bwave" / "target" / "release" / f"bwave{suffix}"
-    debug = BOOLEY_ROOT / "crates" / "bwave" / "target" / "debug" / f"bwave{suffix}"
-    if release.exists():
-        return release
-    if debug.exists():
-        return debug
-    pytest.skip(
-        "native bwave binary not built; run cargo build --manifest-path crates/bwave/Cargo.toml"
-    )
 
 
 def _ensure_bwave_fixture() -> None:

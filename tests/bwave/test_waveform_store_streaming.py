@@ -15,7 +15,10 @@ from booley.bwave.waveform_store import (
 )
 from booley.flows.sim.trace_session import TraceSession
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="FIFO requires POSIX")
+pytestmark = [
+    pytest.mark.native_bwave,
+    pytest.mark.skipif(os.name != "posix", reason="FIFO requires POSIX"),
+]
 
 MINIMAL_VCD = textwrap.dedent("""\
     $timescale 1ns $end
