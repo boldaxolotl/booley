@@ -183,6 +183,9 @@ jobs:
       - name: Validate GitHub Actions workflows
         run: '"${RUNNER_TEMP}/actionlint" -color'
 
+      - name: Reject suppressed test assertions
+        run: python .github/scripts/check_suppressed_assertions.py
+
       - name: Ruff check
         run: ruff check .
 
