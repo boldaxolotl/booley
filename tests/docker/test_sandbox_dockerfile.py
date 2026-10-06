@@ -882,7 +882,7 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
     assert '"$work"/check_dut_*.txt "$work"/yosys*.log' in probe
     assert '"$work"/log_abc_*.txt' in probe
     assert '"$work"/synth*.ys' in probe
-    assert 'cp -R "$work/abc-control" "$work/collision-preserve"' in probe
+    assert "trap retain_evidence EXIT" in probe
 
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:

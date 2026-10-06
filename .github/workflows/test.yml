@@ -1274,13 +1274,14 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp -e BOOLEY_CONTAINER=1
+              -e BOOLEY_PYTEST_TIMING_FILE=/validation-tmp/test-timings.jsonl
               booley-test bash -c "pip install --break-system-packages
               pytest==9.1.1 pytest-asyncio==1.4.0 pytest-timeout==2.4.0 hypothesis &&
               python -m pytest
               /work/tests/smoke/test_verilator_release_matrix.py
               /work/tests/smoke/test_verilator_coverage_collector_smoke.py
               /work/tests/smoke/test_verilator_compiler_cache_smoke.py
-              --timeout=900 -q -rs --junitxml=/validation-tmp/coverage-release.xml
+              --timeout=900 -q -rs --durations=30 --junitxml=/validation-tmp/coverage-release.xml
               -o cache_dir=/validation-tmp/pytest-cache &&
               python /work/.github/scripts/assert_junit.py
               /validation-tmp/coverage-release.xml --label coverage-release
@@ -1432,6 +1433,35 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Upload coverage release test timing
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-coverage-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/bwave-smoke/coverage-release/coverage-release.xml
+            ${{ runner.temp }}/bwave-smoke/coverage-release/test-timings.jsonl
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload smoke phase records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bwave-smoke-phase-records-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/records/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload OpenROAD runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openroad-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bwave-smoke/openroad/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload Verilator acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1533,4 +1563,5 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./.github/actions/collect-ci-metrics
+      - if: always()
+        uses: ./.github/actions/collect-ci-metrics
