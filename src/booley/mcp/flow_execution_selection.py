@@ -10,6 +10,12 @@ Today the choices equal the code they replaced: Flows launch through the
 Ticket Board runner only when a Ticket file is configured, and custom MCP
 tools and Specialists always record through ``TicketAcceptanceRecorder``,
 which itself does nothing outside a Ticket.
+
+Handed a :class:`~booley.goals.binding.GoalRunBinding`, the selection instead
+records through :class:`~booley.goals.flow_execution.GoalFlowExecution`, the
+same adapter for custom tools, Specialists, and built-in Flows. No caller
+passes a binding yet (ADR 0067 Phase 3c composes it, with the Goal Flow
+runner), so a Goal selection launches the endpoint's own module.
 """
 
 from __future__ import annotations
@@ -18,8 +24,12 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from booley.flows.execution_persistence import AcceptanceRecorder
+
+if TYPE_CHECKING:
+    from booley.goals.binding import GoalRunBinding
 
 TICKET_FLOW_RUNNER = "booley.ticket_board.flow_runner"
 
@@ -54,6 +64,23 @@ def configured_ticket_file() -> Path | None:
     return Path(value) if value else None
 
 
-def select_flow_execution(ticket_file: Path | None) -> FlowExecutionSelection:
-    """Select the execution path for a call whose configured Ticket file is *ticket_file*."""
+def select_flow_execution(
+    ticket_file: Path | None, binding: GoalRunBinding | None = None
+) -> FlowExecutionSelection:
+    """Select the execution path for a call whose configured Ticket file is *ticket_file*.
+
+    A Goal run *binding* selects the Goal adapter, whatever *ticket_file* says.
+    """
+    if binding is not None:
+        return FlowExecutionSelection(None, _goal_acceptance_recorder(binding))
     return _TICKET_SELECTION if ticket_file is not None else _STANDALONE_SELECTION
+
+
+def _goal_acceptance_recorder(binding: GoalRunBinding) -> Callable[[], AcceptanceRecorder]:
+    def build() -> AcceptanceRecorder:
+        # Imported on construction so importing MCP tools never loads Goal Mode.
+        from booley.goals.flow_execution import GoalFlowExecution
+
+        return GoalFlowExecution(binding)
+
+    return build

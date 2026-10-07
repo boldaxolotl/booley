@@ -140,6 +140,7 @@ def test_coverage_metrics_share_one_campaign_but_keep_separate_verdicts(
         handle=SimpleNamespace(identity="sim_core", name="sim_core"),
         selected_tests=("smoke",),
         declared_tests=("smoke",),
+        required_tests=("smoke",),
         criterion=policies["coverage_sim_core"],
         criterion_key="coverage_sim_core",
     )

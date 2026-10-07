@@ -14,7 +14,11 @@ from booley.core.config_paths import resolve_toml
 from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON, validate_coverage_metrics
 from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.criteria.templates import find_retired_criteria
-from booley.flows.execution_persistence import AcceptanceRecorder, NoAcceptanceRecorder
+from booley.flows.execution_persistence import (
+    AcceptanceRecorder,
+    EvidenceDiscarded,
+    NoAcceptanceRecorder,
+)
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 
@@ -53,10 +57,11 @@ def coverage_acceptance(
     *,
     diagnostic: bool,
     observer: Callable[[list[CriterionChange]], None] | None = None,
+    on_discard: Callable[[EvidenceDiscarded], None] | None = None,
 ) -> CoverageAcceptance | None:
     if diagnostic or state._file_path is None or isinstance(recorder, NoAcceptanceRecorder):
         return None
-    return CoverageAcceptance(state, recorder, observer)
+    return CoverageAcceptance(state, recorder, observer, on_discard)
 
 
 def _coverage_policies(root: Path, state: DevelopmentState) -> dict[str, CoverageCriterion]:

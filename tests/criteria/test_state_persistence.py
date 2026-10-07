@@ -67,7 +67,7 @@ class RecordingPersistence:
 
     def loaded(self, state: DevelopmentState) -> None:
         self.loaded_states.append(state)
-        self.loaded_views.append((state._file_path, copy.deepcopy(state._to_dict())))
+        self.loaded_views.append((state._file_path, copy.deepcopy(state.to_dict())))
 
     def save(self, state: DevelopmentState) -> None:
         self.saved.append(state)
@@ -84,7 +84,7 @@ class BaselinePersistence:
     """Strategy that stashes the as-loaded state on the instance, as a merge would."""
 
     def loaded(self, state: DevelopmentState) -> None:
-        state.persistence_baseline = copy.deepcopy(state._to_dict())  # type: ignore[attr-defined]
+        state.persistence_baseline = copy.deepcopy(state.to_dict())  # type: ignore[attr-defined]
 
     def save(self, state: DevelopmentState) -> None:
         return
@@ -228,8 +228,8 @@ class TestInjectedStrategy:
         with_strategy = _fixed_state(path, persistence)
         without_strategy = _fixed_state(path)
 
-        assert with_strategy._to_dict() == without_strategy._to_dict()
-        assert "persistence" not in json.dumps(with_strategy._to_dict())
+        assert with_strategy.to_dict() == without_strategy.to_dict()
+        assert "persistence" not in json.dumps(with_strategy.to_dict())
         assert with_strategy == without_strategy
         assert repr(with_strategy) == repr(without_strategy)
 
@@ -247,7 +247,7 @@ class TestLoadedHook:
         persistence = RecordingPersistence()
 
         state = DevelopmentState.load(path, persistence)
-        as_loaded = copy.deepcopy(state._to_dict())
+        as_loaded = copy.deepcopy(state.to_dict())
         state.slug = "mutated"
         state.save()
 
@@ -274,7 +274,7 @@ class TestLoadedHook:
         assert shadow_baseline["criteria"] is not baseline["criteria"]
         assert shadow._persistence is persistence
         # The stash is not state data: not serialized, compared, or shown.
-        assert "persistence_baseline" not in state._to_dict()
+        assert "persistence_baseline" not in state.to_dict()
         assert state == DevelopmentState.load(path)
         assert "persistence_baseline" not in repr(state)
 

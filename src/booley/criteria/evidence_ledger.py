@@ -18,7 +18,12 @@ the identity, names it inside lookup keys, envelopes, and records, and
 judges stored observations. V2 additionally takes an
 :class:`EvidenceProjection` that applies the caller's completion fencing to
 replayed state and to the projection check. Ticket Mode composes these in
-``booley.ticket_board.acceptance_ledger``.
+``booley.ticket_board.acceptance_ledger``, Goal Mode in
+``booley.goals.recorder``.
+
+A V2 intent is read back only when its envelope names the very identity its
+lookup key does, so a transaction frozen under one identity is never
+selected under another.
 
 On-disk layout beneath ``<log_dir>/acceptance/``: ``evidence/`` (sequenced
 records plus ``.sequence.lock``), ``intents/`` (one frozen intent per lookup
@@ -135,6 +140,21 @@ class EvidenceIdentityCodec(Protocol):
 
 class EvidenceProjection(Protocol):
     """Completion fencing applied when evidence is projected into live state."""
+
+    def current_observations(
+        self,
+        log_dir: Path,
+        state: DevelopmentState,
+        identity: Mapping[str, Any],
+        records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """The observations to replay or validate for *identity*'s own active *records*.
+
+        A purpose whose identity groups may overlap substitutes, per
+        Criterion, a newer observation recorded under another valid group;
+        a purpose whose groups never overlap returns *records* unchanged.
+        """
+        ...
 
     def project_state(
         self, state: DevelopmentState, log_dir: Path, identity: Mapping[str, Any]
@@ -460,6 +480,11 @@ def _read_intent(
     if not isinstance(envelope, dict):
         raise AcceptanceLedgerError("acceptance intent envelope must be an object")
     _validate_envelope(scope, cast("dict[str, Any]", envelope))
+    # The envelope is what publication commits and selects, so it must name the
+    # very identity the lookup key does: an envelope frozen under another
+    # identity (say an older Goal specification revision) is never selectable.
+    if _envelope_lookup_key(scope, cast("dict[str, Any]", envelope)) != lookup_key:
+        raise AcceptanceLedgerError("acceptance intent envelope does not match its lookup key")
     return intent
 
 
@@ -830,10 +855,8 @@ def _verify_no_extra_transaction_records(
         raise AcceptanceLedgerError("transaction has evidence outside its commit manifest")
 
 
-def _commit_matches_lookup(
-    scope: EvidenceScope, commit: Mapping[str, Any], lookup_key: Mapping[str, Any]
-) -> bool:
-    envelope = commit["envelope"]
+def _envelope_lookup_key(scope: EvidenceScope, envelope: Mapping[str, Any]) -> dict[str, Any]:
+    """The lookup key a validated envelope names."""
     subject = envelope[scope.codec.subject_field]
     return {
         "campaign_id": envelope["campaign_id"],
@@ -841,7 +864,13 @@ def _commit_matches_lookup(
         **scope.codec.subject_lookup_identity(subject),
         "producer": envelope["producer"],
         "purpose": envelope["purpose"],
-    } == lookup_key
+    }
+
+
+def _commit_matches_lookup(
+    scope: EvidenceScope, commit: Mapping[str, Any], lookup_key: Mapping[str, Any]
+) -> bool:
+    return _envelope_lookup_key(scope, commit["envelope"]) == lookup_key
 
 
 def _matching_commits(
@@ -999,7 +1028,8 @@ def replay_projection(
     identity: Mapping[str, Any],
 ) -> None:
     """Rebuild *state*'s Criteria from active evidence, then apply completion fencing."""
-    for payload in _active_evidence_records(scope, log_dir, state, identity):
+    active = _active_evidence_records(scope, log_dir, state, identity)
+    for payload in projection.current_observations(log_dir, state, identity, active):
         criterion = payload.get("criterion")
         if not isinstance(criterion, str) or criterion not in state.criteria:
             raise AcceptanceLedgerError("Criterion evidence names an undeclared Criterion")
@@ -1024,18 +1054,20 @@ def replay_projection(
     projection.project_state(state, log_dir, identity)
 
 
-def _update_live_state(state: DevelopmentState, saved: DevelopmentState) -> None:
-    state.slug = saved.slug
-    state.ticket_type = saved.ticket_type
-    state.strict_criteria = saved.strict_criteria
-    state.criteria = saved.criteria
-    state.category_map = saved.category_map
-    state.flow_key_aliases = saved.flow_key_aliases
-    state.timeline = saved.timeline
-    state.work_dir = saved.work_dir
-    state.last_updated = saved.last_updated
-    state.acceptance_transactions = saved.acceptance_transactions
-    state.authorized_zero_mandatory_basis_id = saved.authorized_zero_mandatory_basis_id
+#: Every field a selected transaction's saved state hands back to the live state.
+_LIVE_STATE_FIELDS = (
+    "slug",
+    "ticket_type",
+    "strict_criteria",
+    "criteria",
+    "category_map",
+    "flow_key_aliases",
+    "timeline",
+    "work_dir",
+    "last_updated",
+    "acceptance_transactions",
+    "authorized_zero_mandatory_basis_id",
+)
 
 
 def _select_transaction(
@@ -1053,15 +1085,15 @@ def _select_transaction(
     shadow.save()
     # The ledger shares DevelopmentState's persistence contract: a state bound
     # to a file is re-read after save so the replay sees exactly what landed.
-    file_path = shadow._file_path  # pyright: ignore[reportPrivateUsage]
+    file_path = shadow.file_path
     if file_path is not None:
-        saved = DevelopmentState.load(file_path)
+        saved = DevelopmentState.load(file_path, shadow.persistence)
         if transaction_id not in saved.acceptance_transactions:
             raise AcceptanceLedgerError("saved state did not select acceptance transaction")
         replay_projection(scope, projection, log_dir, saved, identity)
     else:
         saved = shadow
-    _update_live_state(state, saved)
+    state.take_saved(saved, _LIVE_STATE_FIELDS)
 
 
 def validate_state_projection(
@@ -1073,7 +1105,8 @@ def validate_state_projection(
 ) -> None:
     """Reject mutable Criterion values that conflict with ledger-observed values."""
     latest: dict[str, dict[str, Any]] = {}
-    for payload in read_evidence_records(scope, log_dir, state, identity):
+    active = read_evidence_records(scope, log_dir, state, identity)
+    for payload in projection.current_observations(log_dir, state, identity, active):
         latest[payload["criterion"]] = payload
     for criterion, payload in latest.items():
         entry = state.criteria.get(criterion)

@@ -272,6 +272,13 @@ def require_int(value: Any, *, field: str = "value") -> int:
     return value
 
 
+def require_positive_int(value: Any, *, field: str = "value") -> int:
+    """Return a strict integer of at least 1, rejecting bool and every other value."""
+    if require_int(value, field=field) < 1:
+        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
+    return value
+
+
 def as_float(value: Any, default: float | None = None) -> float | None:
     """Coerce *value* to ``float``; degrade to *default* on bad input.
 

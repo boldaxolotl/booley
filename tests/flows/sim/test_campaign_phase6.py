@@ -1518,6 +1518,6 @@ def test_infrastructure_abort_preserves_simulation_criterion(
             "max_cycles": 100,
         },
     )
-    before = state._to_dict()
+    before = state.to_dict()
     assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
-    assert state._to_dict() == before
+    assert state.to_dict() == before

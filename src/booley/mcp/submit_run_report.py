@@ -133,6 +133,8 @@ class SubmitRunReportMcpTool(McpTool):
 
         if isinstance(self._acceptance_recorder, NoAcceptanceRecorder):
             return
+        if self.evidence_discarded is not None:
+            return
         if getattr(self, "_candidate_entry", None) is None:
             super()._post_run(result, duration)
             return
@@ -147,8 +149,12 @@ class SubmitRunReportMcpTool(McpTool):
         )
         candidate = deepcopy(self.state)
         candidate.criteria[_REPORT_CRITERION] = self._candidate_entry
-        if candidate._file_path is not None:
+        if candidate.file_path is not None:
             candidate.save()
+            # The live report gate stays unmet until the submission commits.
+            live_report = self.state.criteria[_REPORT_CRITERION]
+            self.state.take_saved(candidate, ())
+            self.state.criteria[_REPORT_CRITERION] = live_report
             _emit_criteria_update(self.state)
 
     def finish_execution(

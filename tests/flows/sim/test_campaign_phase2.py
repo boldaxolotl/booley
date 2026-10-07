@@ -744,6 +744,7 @@ def test_generic_endpoint_delegates_campaign_acceptance_to_owning_flow() -> None
     endpoint = SimpleNamespace(
         _simulation_campaign_outcomes=("campaign-outcome",),
         flow=SimpleNamespace(record_campaign_acceptance=received.append),
+        evidence_discarded=None,
     )
 
     record_acceptance(

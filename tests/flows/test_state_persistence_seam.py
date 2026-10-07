@@ -158,3 +158,62 @@ def test_coverage_publication_shadow_saves_through_the_strategy(tmp_path: Path) 
     saved = DevelopmentState.load(state_file)
     assert saved.criteria["coverage_sim_0"].met is True
     assert saved.criteria["sim_pass_sim_0"].met is False
+
+
+class DiscardingRecorder(PersistingRecorder):
+    """A recorder whose authority no longer holds: every write is discarded."""
+
+    def record_changes(self, *_args: object, **_kwargs: object) -> None:
+        from booley.flows.execution_persistence import EvidenceDiscarded
+
+        raise EvidenceDiscarded("Goal Mode abandoned")
+
+
+def test_coverage_publication_discard_is_reported_and_saves_nothing(tmp_path: Path) -> None:
+    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
+    from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+    from booley.flows.sim.coverage_invocation import (
+        CoverageInvocationRequest,
+        prepare_coverage_invocation,
+    )
+    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+    from booley.flows.sim.coverage_transaction import run_coverage_target
+    from tests.flows.sim.test_coverage_invocation import project
+    from tests.flows.sim.test_coverage_transaction import NativeExecution, Progress
+
+    context = project(tmp_path)
+    state_file = tmp_path / "state.json"
+    persistence = RecordingPersistence()
+    endpoint = ConcreteMcpTool()
+    endpoint._acceptance_recorder = DiscardingRecorder(persistence)
+    with mock.patch.dict(os.environ, _env_with_state(state_file)):
+        endpoint.parse_args([])
+    state = endpoint.read_state()
+    state.strict_criteria = True
+    state.criteria = {"coverage_sim_0": CriterionEntry(), "sim_pass_sim_0": CriterionEntry()}
+    criterion = CoverageCriterion(
+        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+        (CoverageThreshold("line", Fraction(100)),),
+        None,
+    )
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",)),
+        replace(context, criteria={"coverage_sim_0": criterion}),
+    )
+    discarded: list[str] = []
+    plan = replace(
+        prepared.plan.targets[0],
+        invocation_dir=tmp_path / "reports/sim/1",
+        acceptance=CoverageAcceptance(
+            state,
+            endpoint._acceptance_recorder,
+            on_discard=lambda exc: discarded.append(exc.reason),
+        ),
+    )
+
+    run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
+
+    assert discarded == ["Goal Mode abandoned"]
+    assert persistence.writers == []
+    assert not state_file.exists()
+    assert state.criteria["coverage_sim_0"].met is False

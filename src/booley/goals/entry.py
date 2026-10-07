@@ -50,7 +50,6 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_bool_value, require_list, require_str_value
-from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
@@ -84,6 +83,7 @@ from booley.goals.protected_inputs import (
     snapshot_protected_inputs,
 )
 from booley.goals.rules import goal_mode_rules
+from booley.goals.state_store import goal_criterion_params, review_categories
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
 from booley.runtime.atomic_files import fsync_directory
@@ -94,7 +94,7 @@ from booley.runtime.project_repositories import (
 )
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TARGET_IDENTITY_PARAM, FuseSocError, UnknownTargetError
+from booley.targets.domain import FuseSocError, UnknownTargetError
 
 GOAL_BRANCH_PREFIX = "goal/"
 DEFAULT_GOALSET = "default"
@@ -312,7 +312,7 @@ def _plan_entry(
         skip_reason=request.skip_reason,
         paired_project_base_sha=None if paired is None else paired.head_sha(),
     )
-    return _EntryPlan(record, _criterion_params(translation.goals), tuple(warnings))
+    return _EntryPlan(record, goal_criterion_params(translation.goals), tuple(warnings))
 
 
 def _drive_entry(
@@ -492,17 +492,6 @@ def _baseline_target(goal: GoalSpec) -> str | None:
     return baseline if isinstance(baseline, str) else None
 
 
-def _criterion_params(goals: Sequence[GoalSpec]) -> dict[str, dict[str, Any]]:
-    """State params per Goal key: the Criterion params plus the bound Target."""
-    params: dict[str, dict[str, Any]] = {}
-    for goal in goals:
-        entry = dict(goal.params)
-        if goal.target is not None:
-            entry.setdefault(TARGET_IDENTITY_PARAM, goal.target)
-        params[goal.key] = entry
-    return params
-
-
 def _paired_project_checkout(work_dir: Path) -> GoalCheckout | None:
     """The worktree's paired Project repository checkout, if it has one (A3)."""
     try:
@@ -620,7 +609,7 @@ def _write_initial_state(
     file and its directory are flushed here: a record promoted to ``active``
     never points at a state file a crash could lose.
     """
-    categories = {key: _review_category(key) for key in params if key.startswith("review_")}
+    categories = review_categories(params)
     state_file = record_paths(store.project_dir, record.id).state_file
     with store.record_lock(record.id):
         state = DevelopmentState.load(state_file)
@@ -635,12 +624,6 @@ def _write_initial_state(
         state.save()
         _fsync_file(state_file)
         fsync_directory(state_file.parent)
-
-
-def _review_category(key: str) -> str:
-    """The one source category a review Goal judges (``criteria.categories``)."""
-    (category,) = verification_fingerprint_categories(key)
-    return category
 
 
 def _fsync_file(path: Path) -> None:

@@ -14,9 +14,11 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from booley.core.boundary import BoundaryError, require_dict, require_list
 from booley.criteria.categories import CATEGORY_RTL, CATEGORY_TB
@@ -383,6 +385,19 @@ class StatePersistence(Protocol):
     def save(self, state: DevelopmentState) -> None: ...
 
 
+@runtime_checkable
+class StateFileReader(Protocol):
+    """Optional strategy capability: parse the state file itself.
+
+    ``DevelopmentState.load`` reads through it when the strategy has it, so
+    a strategy can refuse content the default reader would load as empty.
+    """
+
+    def read(self, path: Path) -> DevelopmentState:
+        """Parse *path* into an unbound state, raising on content it refuses."""
+        ...
+
+
 class AtomicStateFile:
     """Default strategy: stamp ``last_updated`` and atomically replace the state file."""
 
@@ -397,7 +412,7 @@ class AtomicStateFile:
         state._file_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = state._file_path.with_suffix(".tmp")
         tmp_path.write_text(
-            json.dumps(state._to_dict(), indent=2),
+            json.dumps(state.to_dict(), indent=2),
             encoding="utf-8",
         )
         _atomic_replace(tmp_path, state._file_path)
@@ -443,6 +458,13 @@ class DevelopmentState:
     # How save() persists this state; None means the default AtomicStateFile.
     # Never serialized or compared; a deepcopy shares it (see __deepcopy__).
     _persistence: StatePersistence | None = field(default=None, repr=False, compare=False)
+    # The state as its strategy last read or wrote it, for strategies that merge
+    # a save with the file on disk (Goal Mode). The default strategy leaves it
+    # ``None``. Never serialized or compared; a deepcopy copies it, so a shadow
+    # saves against the baseline of the instance it was copied from.
+    persistence_baseline: dict[str, Any] | None = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
 
     # --- Persistence ---
 
@@ -451,10 +473,15 @@ class DevelopmentState:
         """Load from disk or return empty state.
 
         The returned state saves through *persistence*, or through the default
-        atomic file write when it is ``None``. The strategy sees the state
-        through ``loaded`` before it is returned.
+        atomic file write when it is ``None``. A strategy that is a
+        :class:`StateFileReader` parses the file itself; otherwise a missing or
+        corrupt file loads as empty. The strategy sees the state through
+        ``loaded`` before it is returned.
         """
-        st = cls._read(path)
+        if isinstance(persistence, StateFileReader):
+            st = persistence.read(path)
+        else:
+            st = cls._read(path)
         st._file_path = path
         return st._attach(persistence)
 
@@ -472,35 +499,82 @@ class DevelopmentState:
     def _strategy(self) -> StatePersistence:
         return _DEFAULT_PERSISTENCE if self._persistence is None else self._persistence
 
+    @property
+    def file_path(self) -> Path | None:
+        """The file this state was loaded from and saves to; ``None`` in memory."""
+        return self._file_path
+
+    @property
+    def persistence(self) -> StatePersistence | None:
+        """The strategy this state saves through; ``None`` means the default."""
+        return self._persistence
+
+    def tracks_persistence_baseline(self) -> bool:
+        """Whether this state's strategy merges saves against a captured baseline."""
+        return self.persistence_baseline is not None
+
+    def take_saved(self, shadow: DevelopmentState, fields: Iterable[str]) -> None:
+        """Copy a saved ``deepcopy`` *shadow* back into this live state.
+
+        Every writer that saves a shadow and copies it back calls this; the
+        strategy, not the writer, decides how. A state that tracks a
+        persistence baseline adopts the whole shadow, baseline included
+        (:meth:`adopt`); otherwise only the named *fields* are copied, as
+        writers always did.
+        """
+        if self.tracks_persistence_baseline():
+            self.adopt(shadow)
+            return
+        for name in fields:
+            setattr(self, name, getattr(shadow, name))
+
+    def adopt(self, shadow: DevelopmentState) -> None:
+        """Take every field of *shadow*, including its persistence baseline.
+
+        A writer that saved a ``deepcopy`` shadow copies the result back with
+        this when the state tracks a baseline: the live instance then saves
+        against what the shadow wrote, so a later save never mistakes the
+        adopted values (or another process's merged writes) for its own edits.
+        The file and the strategy stay this instance's own.
+        """
+        for item in dataclass_fields(self):
+            if item.name not in ("_file_path", "_persistence"):
+                setattr(self, item.name, getattr(shadow, item.name))
+
     @classmethod
     def _read(cls, path: Path) -> DevelopmentState:
         """Parse *path*; a missing or corrupted file yields an empty state."""
         if not path.exists():
             return cls()
         try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-            return cls(
-                slug=data.get("slug", ""),
-                ticket_type=data.get("ticket_type", ""),
-                strict_criteria=data.get("strict_criteria", False),
-                criteria={
-                    k: CriterionEntry.from_dict(v) for k, v in data.get("criteria", {}).items()
-                },
-                category_map=data.get("category_map", {}),
-                flow_key_aliases=data.get("flow_key_aliases", {}),
-                timeline=data.get("timeline", []),
-                acceptance_transactions=_acceptance_transactions(
-                    data.get("acceptance_transactions", [])
-                ),
-                authorized_zero_mandatory_basis_id=data.get(
-                    "authorized_zero_mandatory_basis_id", ""
-                ),
-                work_dir=data.get("work_dir", ""),
-                last_updated=data.get("last_updated", ""),
-            )
+            return cls.from_json_object(json.loads(path.read_text(encoding="utf-8-sig")))
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             logger.warning("Corrupted state file %s, starting fresh: %s", path, exc)
             return cls()
+
+    @classmethod
+    def from_json_object(cls, data: Any) -> DevelopmentState:
+        """Build an unbound state from one parsed state file object.
+
+        Raises ``KeyError``, ``TypeError``, ``ValueError``, or (for content
+        that is not a JSON object) ``AttributeError``; callers decide whether
+        such content is fatal.
+        """
+        return cls(
+            slug=data.get("slug", ""),
+            ticket_type=data.get("ticket_type", ""),
+            strict_criteria=data.get("strict_criteria", False),
+            criteria={k: CriterionEntry.from_dict(v) for k, v in data.get("criteria", {}).items()},
+            category_map=data.get("category_map", {}),
+            flow_key_aliases=data.get("flow_key_aliases", {}),
+            timeline=data.get("timeline", []),
+            acceptance_transactions=_acceptance_transactions(
+                data.get("acceptance_transactions", [])
+            ),
+            authorized_zero_mandatory_basis_id=data.get("authorized_zero_mandatory_basis_id", ""),
+            work_dir=data.get("work_dir", ""),
+            last_updated=data.get("last_updated", ""),
+        )
 
     def save(self) -> None:
         """Persist through this state's strategy (default: atomic file write)."""
@@ -521,7 +595,8 @@ class DevelopmentState:
             setattr(clone, name, copy.deepcopy(value, memo))
         return clone
 
-    def _to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
+        """The JSON object a save writes for this state."""
         d: dict[str, Any] = {
             "slug": self.slug,
             "ticket_type": self.ticket_type,

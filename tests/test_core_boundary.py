@@ -28,6 +28,7 @@ from booley.core.boundary import (
     require_int,
     require_list,
     require_opt_str,
+    require_positive_int,
     require_sha256_digest,
     require_str,
     require_str_value,
@@ -311,6 +312,16 @@ class TestRequireInt:
     def test_field_is_named_in_error(self):
         with pytest.raises(BoundaryError, match="parameter"):
             require_int("1", field="parameter")
+
+
+class TestRequirePositiveInt:
+    def test_positive_int_is_returned(self):
+        assert require_positive_int(3) == 3
+
+    @pytest.mark.parametrize("value", [0, -1, True, 1.0, "1", None])
+    def test_other_values_are_rejected(self, value):
+        with pytest.raises(BoundaryError, match="revision"):
+            require_positive_int(value, field="revision")
 
 
 # ---------------------------------------------------------------------------

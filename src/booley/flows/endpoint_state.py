@@ -30,6 +30,7 @@ from booley.flows.endpoint_report_criteria import ReportCriteria
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
+    EvidenceDiscarded,
     FlowExecutionAdapter,
     StandaloneFlowExecution,
     state_persistence_for,
@@ -131,6 +132,8 @@ class EndpointState(ABC):
         # time; write_report() emits it as ``eda_tool`` so reports say which
         # binary produced the result — distinct from the Booley Flow name.
         self._eda_tool: str | None = None
+        # Why this invocation's evidence was discarded (B1); reset per invocation.
+        self._evidence_discarded: str | None = None
         self.configure_flow_execution(StandaloneFlowExecution())
         self.flow_acceptance: ResolvedFlowAcceptance = ResolvedFlowAcceptance()
 
@@ -179,6 +182,26 @@ class EndpointState(ABC):
         return endpoint_acceptance.set_criterion(
             self, key, met, detail=detail, source_target=source_target
         )
+
+    @property
+    def evidence_discarded(self) -> str | None:
+        """Why this invocation's evidence was discarded, or ``None`` while it was not."""
+        return self._evidence_discarded
+
+    def reset_evidence_discard(self) -> None:
+        """Start a new invocation whose evidence has not been discarded."""
+        self._evidence_discarded = None
+
+    def discard_evidence(self, exc: EvidenceDiscarded) -> None:
+        """Record that this invocation's evidence was discarded; the first reason wins.
+
+        Nothing more is written for the invocation: the endpoint skips its
+        remaining state saves, and the recorder that raised *exc* refuses any
+        it is still asked for.
+        """
+        if self._evidence_discarded is None:
+            self._evidence_discarded = exc.reason
+            logger.warning("%s: %s", self.name, exc)
 
     def record_report_criteria(self, changes: list[CriterionChange]) -> None:
         """Capture effective evaluated values before durable recording."""

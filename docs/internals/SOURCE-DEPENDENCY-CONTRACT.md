@@ -343,6 +343,12 @@ checkpoints. Callers pass an `EvidenceScope` (a purpose plus an
 `ticket_board.acceptance_ledger` composes it for Tickets: the
 `ticket_acceptance` purpose, the `TicketIdentity` codec, and report-submission
 fencing. The dependency points from `ticket_board` to `criteria` only (D30).
+`goals.recorder` composes it for Goal Mode: the `goal_evidence` purpose, the
+`GoalIdentity` codec (one transaction records one identity group of Goal keys
+and their specification revisions), and a projection that refuses evidence
+recorded under a Goal specification the record no longer holds. For every
+codec, an intent whose envelope names a different identity than its lookup
+key is rejected.
 
 Coverage Campaign persistence and queries remain Simulation Flow responsibilities.
 `flows.sim.coverage_campaign_store` owns V1/V2 loading, summary access, and complete
@@ -798,6 +804,25 @@ Target/FuseSoC pair. D35 still forbids every direct `goals` edge into
 `harness`, `mcp`, `specialists`, `ticket_board`, and the concrete Flows.
 Reproduce with `compare_report.py` (below) in root mode between a
 `git archive d2a5b9806` tree and the Phase 2 tree.
+
+## Current snapshot: 07 OCT 2026 — Goal Mode evidence binding
+
+ADR 0067 Phase 3b adds the Goal run binding, publication gate, merging state
+persistence, evidence recorder, freshness, `target_surface` digest, and
+simulation contract to `booley.goals`, and lets
+`mcp.flow_execution_selection` build the Goal adapter on demand (a deferred
+import). Comparing `main` source `730d7d51d` with the Phase 3b source, the
+graph grows from 646 modules, 3,812 facts, and 3,125 unique edges to 654
+modules, 3,874 facts, and 3,186 edges; no edge is removed, the approved SCC
+groups are unchanged, and no direct mutual package pair is added. New
+`booley.goals` edges target `booley.core`, `booley.criteria`,
+`booley.evidence`, `booley.config`, `booley.fusesoc`, `booley.targets`,
+`booley.runtime`, and the Flow-neutral `booley.flows.execution_persistence`,
+`booley.flows.request`, `booley.flows.source_fingerprint`, and
+`booley.flows.target_test_suite`. D35 still forbids every direct `goals` edge
+into `harness`, `mcp`, `specialists`, `ticket_board`, and the concrete Flows.
+Reproduce with `report.py` (below) on a `git archive 730d7d51d` tree and the
+Phase 3b tree.
 
 ## Required gate
 
