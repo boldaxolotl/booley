@@ -1198,7 +1198,23 @@ def _add_goal_subparser(sub) -> None:
 
 
 def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
-    """Placeholder for `booley goal`: the subcommands parse but do not run yet."""
+    """Show Goal status using the Project directory discovered for this command."""
+    if args.goal_command == "status":
+        from booley.criteria.evidence_ledger import AcceptanceLedgerError
+        from booley.goals.format import render_status
+        from booley.goals.state_store import GoalStateError
+        from booley.goals.status import status_views
+        from booley.goals.store import GoalStore, GoalStoreError
+        from booley.runtime.project_dir import resolve_project_dir
+
+        try:
+            views = status_views(GoalStore(resolve_project_dir(_project_root)), Path.cwd())
+            short = True if args.short else False if args.long else None
+            print(render_status(views, short=short) if views else "No active Goal Mode.")
+            return 0
+        except (GoalStoreError, GoalStateError, AcceptanceLedgerError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
     print(f"booley goal {args.goal_command}: not available yet", file=sys.stderr)
     return 2
 

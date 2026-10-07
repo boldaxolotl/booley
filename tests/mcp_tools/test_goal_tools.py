@@ -163,7 +163,7 @@ def test_dispatch_refuses_a_hidden_goal_tool_even_if_named(
     assert result is None
 
 
-@pytest.mark.parametrize("name", ["goal_status", "goal_propose_change", "goal_finish"])
+@pytest.mark.parametrize("name", ["goal_propose_change", "goal_finish"])
 def test_later_goal_tools_say_not_available_yet(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:

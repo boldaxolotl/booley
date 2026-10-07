@@ -36,6 +36,7 @@ from booley.runtime.endpoint_execution import (  # noqa: F401 — compatibility 
     EndpointOutcome,
 )
 
+from .call_context import binding_from_environment
 from .diff_classify import (
     _RTL_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._RTL_DIRS
     _TB_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._TB_DIRS
@@ -86,7 +87,9 @@ class McpTool(EndpointContext):
 
     def __init__(self) -> None:
         super().__init__()
-        selection = select_flow_execution(configured_ticket_file())
+        selection = select_flow_execution(
+            configured_ticket_file(), binding=binding_from_environment()
+        )
         self._acceptance_recorder = selection.acceptance_recorder()
 
     def _adapt_outcome(self, outcome: EndpointOutcome) -> McpToolResult:

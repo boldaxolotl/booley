@@ -4003,3 +4003,19 @@ def test_ambiguous_reviewer_mapping_cannot_be_narrowed_by_one_evaluation(tmp_pat
     freeze(reviewer)
     report = json.loads(reviewer.write_report(McpToolResult()).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+
+
+def test_goal_spec_arg_ignores_ticket_document(tmp_path, monkeypatch):
+    from booley.evidence.review_receipt import _decisions_path, _ticket_path
+    from booley.specialists.reviewer import resolve_spec_content
+
+    spec = tmp_path / "spec.md"
+    spec.write_text("Goal specification", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_GOAL_FILE", str(tmp_path / "record.json"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "absent"))
+    text, source = resolve_spec_content("spec.md", tmp_path)
+    assert text == "Goal specification"
+    assert source.startswith("spec file:")
+    assert resolve_spec_content(None, tmp_path) == (None, "")
+    assert _ticket_path(tmp_path) is None
+    assert _decisions_path(tmp_path, None) is not None

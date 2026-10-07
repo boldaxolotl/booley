@@ -34,6 +34,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -68,6 +69,11 @@ from booley.flows.progress_lifecycle import (
     repair_progress_after_reap,
 )
 from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
+from booley.goals.binding import GoalBindingError, GoalRunBinding
+from booley.goals.paths import record_paths
+from booley.goals.preview import goal_mode_preview_enabled
+from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.warnings import goal_warnings
 from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
@@ -429,8 +435,11 @@ def _reconcile_orphaned_jobs() -> None:
 
     if not should_run_outer_bookkeeping():
         return
-    jobs_root = container_jobs_root()
-    for rec in jobrec.list_records(root=jobs_root):
+    for located in (
+        LocatedJob(rec, root) for root in job_roots() for rec in jobrec.list_records(root=root)
+    ):
+        rec = located.record
+        jobs_root = located.root
         if rec.status != jobrec.STATUS_RUNNING:
             continue
         if jobrec.derive_status(rec, is_pid_alive) == jobrec.STATUS_RUNNING:
@@ -447,7 +456,9 @@ def _reconcile_orphaned_jobs() -> None:
             rec.status = jobrec.STATUS_FAILED
             if rec.exit_code is None:
                 rec.exit_code = 2
-        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
+        repair_progress_after_reap(
+            _endpoint_report_dirs(_locate_job(rec.run_id)), rec.endpoint, rec.run_id
+        )
         jobrec.write_record(rec, root=jobs_root)
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 
@@ -964,6 +975,7 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
 def _resolve_transcript_dir(
     mcp_tool_name: str,
     call_counts: dict[str, int],
+    context: CallContext | None = None,
 ) -> Path:
     """Build a per-invocation transcript directory for an an agent capability.
 
@@ -972,8 +984,16 @@ def _resolve_transcript_dir(
     where N is the 1-based invocation counter for that Specialist.
     Falls back to a tempdir if BOOLEY_LOGS_DIR is not set (with a warning).
     """
-    runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
+    runtime_env = (
+        str(context.runtime_dir)
+        if context is not None and context.runtime_dir
+        else os.environ.get("BOOLEY_RUNTIME_DIR", "")
+    )
+    logs_dir = (
+        str(context.logs_dir)
+        if context is not None and context.logs_dir
+        else os.environ.get("BOOLEY_LOGS_DIR", "")
+    )
     if runtime_env:
         runtime_dir = Path(runtime_env)
     elif logs_dir:
@@ -1930,16 +1950,29 @@ def _format_mcp_tool_result(
         stderr_truncated=stderr_truncated,
     )
 
-    return "\n".join(parts)
+    rendered = "\n".join(parts)
+    reason = (report or {}).get("detail", {}).get("evidence_discarded")
+    return f"evidence discarded: {reason}\n{rendered}" if reason else rendered
 
 
-def _endpoint_report_dirs() -> tuple[Path, ...]:
+def _endpoint_report_dirs(
+    located: LocatedJob | None = None, *, context: CallContext | None = None
+) -> tuple[Path, ...]:
     """Return existing Flow and MCP endpoint report directories."""
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-    if not logs_dir:
-        return ()
-    runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-    runtime_dir = Path(runtime_env) if runtime_env else logs_runtime_dir(logs_dir)
+    if located is not None and located.record.binding is not None:
+        binding = _job_binding(located.record)
+        assert binding is not None
+        runtime_dir = record_paths(binding.project_dir, binding.record_id).runtime_dir
+    elif context is not None and context.runtime_dir is not None:
+        runtime_dir = context.runtime_dir
+    elif located is not None and located.root is not None:
+        runtime_dir = located.root.parent
+    else:
+        logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
+        if not logs_dir:
+            return ()
+        runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
+        runtime_dir = Path(runtime_env) if runtime_env else logs_runtime_dir(logs_dir)
     candidates = (runtime_dir / "flow-reports", runtime_dir / "mcp-tool-reports")
     return tuple(path for path in candidates if path.is_dir())
 
@@ -1956,7 +1989,12 @@ def _read_report_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _latest_report(endpoint: str | None = None) -> dict[str, Any] | None:
+def _latest_report(
+    endpoint: str | None = None,
+    *,
+    located: LocatedJob | None = None,
+    context: CallContext | None = None,
+) -> dict[str, Any] | None:
     """Read the most recent run report from disk.
 
     With *endpoint* set, prefer that endpoint's flat ``<endpoint>.json`` (the latest copy
@@ -1964,7 +2002,7 @@ def _latest_report(endpoint: str | None = None) -> dict[str, Any] | None:
     numbered ``<endpoint>/<N>/report.json``. Without *endpoint*, return the most recent
     ``report.json`` across every endpoint (the inline dispatch behaviour).
     """
-    report_dirs = _endpoint_report_dirs()
+    report_dirs = _endpoint_report_dirs(located, context=context)
     if not report_dirs:
         return None
 
@@ -1999,9 +2037,15 @@ def _try_read_report() -> dict[str, Any] | None:
     return _latest_report(None)
 
 
-def _available_report_endpoints() -> list[str]:
+def _available_report_endpoints(*, context: CallContext | None = None) -> list[str]:
     """Names of endpoints that have a flat report on disk."""
-    return sorted({p.stem for reports in _endpoint_report_dirs() for p in reports.glob("*.json")})
+    return sorted(
+        {
+            p.stem
+            for reports in _endpoint_report_dirs(context=context)
+            for p in reports.glob("*.json")
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2057,7 +2101,7 @@ def _report_mcp_tool_def() -> dict[str, Any] | None:
     """Return the synthetic report-fetch MCP tool definition (or None if hidden)."""
     if not _report_mcp_tool_visible():
         return None
-    return {
+    definition: dict[str, Any] = {
         "name": _REPORT_MCP_TOOL_NAME,
         "description": _REPORT_MCP_TOOL_DESCRIPTION,
         "schema": {
@@ -2075,6 +2119,13 @@ def _report_mcp_tool_def() -> dict[str, Any] | None:
             "additionalProperties": False,
         },
     }
+
+    if goal_mode_preview_enabled():
+        definition["schema"]["properties"]["work_dir"] = {
+            "type": "string",
+            "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
+        }
+    return definition
 
 
 def _poll_mcp_tool_def() -> dict[str, Any] | None:
@@ -2372,11 +2423,13 @@ def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     return [TextContent(type="text", text=_json.dumps(payload, indent=2))]
 
 
-def _format_report_card(report: dict[str, Any] | None, endpoint: str | None) -> str:
+def _format_report_card(
+    report: dict[str, Any] | None, endpoint: str | None, *, context: CallContext | None = None
+) -> str:
     """Render a fetched run report (or a helpful not-found message)."""
     if report is None:
         which = f" for endpoint {endpoint!r}" if endpoint else ""
-        available = _available_report_endpoints()
+        available = _available_report_endpoints(context=context)
         hint = (
             f" Reports on disk: {', '.join(available)}."
             if available
@@ -2412,8 +2465,19 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
     """Handle the synthetic report-fetch MCP tool without spawning a subprocess."""
     raw = arguments.get("endpoint")
     endpoint = raw.strip() if isinstance(raw, str) and raw.strip() else None
-    report = _latest_report(endpoint)
-    content = [TextContent(type="text", text=_format_report_card(report, endpoint))]
+    context = None
+    if goal_mode_preview_enabled():
+        work_dir_error = _validate_work_dir(arguments.get("work_dir"))
+        if work_dir_error is not None:
+            return _error_result(work_dir_error)
+        try:
+            context = resolve_call_context(arguments)
+        except (GoalBindingError, GoalStoreError) as exc:
+            return _error_result(str(exc))
+    report = _latest_report(endpoint, context=context)
+    content = [
+        TextContent(type="text", text=_format_report_card(report, endpoint, context=context))
+    ]
     return _with_structured_report(content, report)
 
 
@@ -2516,13 +2580,59 @@ def _requested_poll_wait_seconds(arguments: dict[str, Any]) -> float:
     return float(min(max(seconds, 0), _POLL_WAIT_SECONDS_MAX))
 
 
-def _locate_job(run_id: str) -> jobrec.JobRecord | None:
-    """Return *run_id*'s durable record from the container-wide jobs root, or None.
+@dataclass(frozen=True)
+class LocatedJob:
+    """A durable Job and the exact root it was read from."""
 
-    Every by-run-id job read outside the manager's own runs goes through here.
-    The root (``container_jobs_root``) is read at call time.
-    """
-    return jobrec.read_record(run_id, root=container_jobs_root())
+    record: jobrec.JobRecord
+    root: Path | None
+
+
+def job_roots() -> tuple[Path, ...]:
+    """Container jobs and every retained Goal Record, including terminal ones."""
+    roots = [container_jobs_root()]
+    if goal_mode_preview_enabled():
+        store = GoalStore(resolve_project_dir())
+        roots.extend(
+            record_paths(store.project_dir, rec.id).jobs_dir
+            for rec in store.list_records().records
+        )
+    return tuple(dict.fromkeys(root for root in roots if root is not None))
+
+
+def _locate_job(run_id: str) -> LocatedJob | None:
+    """Find a unique run across roots; refuse even legacy collisions."""
+    roots: list[Path | None] = list(job_roots())
+    if run_id in _KNOWN_JOB_ROOTS and _KNOWN_JOB_ROOTS[run_id] not in roots:
+        roots.insert(0, _KNOWN_JOB_ROOTS[run_id])
+    found = [
+        LocatedJob(rec, root)
+        for root in roots
+        if (rec := jobrec.read_record(run_id, root=root)) is not None
+    ]
+    if len(found) > 1:
+        raise jobrec.JobRecordError(f"Ambiguous run_id {run_id!r}: present in multiple job roots")
+    if found:
+        _job_binding(found[0].record)
+    return found[0] if found else None
+
+
+_KNOWN_JOB_ROOTS: dict[str, Path | None] = {}
+
+
+def _job_binding(rec: jobrec.JobRecord) -> GoalRunBinding | None:
+    """Interpret a persisted Goal binding at the MCP composition boundary."""
+    if rec.binding is None:
+        return None
+    try:
+        return GoalRunBinding.from_json(rec.binding)
+    except GoalBindingError as exc:
+        raise jobrec.JobRecordError(f"Malformed Goal binding for Job {rec.run_id}: {exc}") from exc
+
+
+def _job_record(run_id: str) -> jobrec.JobRecord | None:
+    located = _locate_job(run_id)
+    return None if located is None else located.record
 
 
 def _job_phase(run_id: str) -> str:
@@ -2533,7 +2643,7 @@ def _job_phase(run_id: str) -> str:
     is 1-based for humans. Falls back to RUNNING when the store or claim is
     unreadable — over-claiming "queued" would stall agents that should poll.
     """
-    rec = _locate_job(run_id)
+    rec = _job_record(run_id)
     root = job_slots.slots_dir()
     if rec is None or rec.pid is None or root is None:
         return "RUNNING"
@@ -2597,7 +2707,7 @@ def _format_job_running_poll(run_id: str) -> str:
 
 def _running_progress(run_id: str) -> dict[str, Any] | None:
     """Return only this live job's run-scoped nonterminal checkpoint."""
-    rec = _locate_job(run_id)
+    rec = _job_record(run_id)
     if rec is None:
         return None
     progress = _progress_for_run_id(rec.endpoint, rec.run_id)
@@ -2617,7 +2727,7 @@ def _report_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
 
     Fallback when the flat ``<endpoint>.json`` belongs to a different run.
     """
-    reports = _endpoint_report_dirs()
+    reports = _endpoint_report_dirs(_locate_job(run_id))
     if not reports:
         return None
     numbered = sorted(
@@ -2634,7 +2744,7 @@ def _report_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
 
 def _progress_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
     """Newest run-scoped checkpoint when a killed matrix has no final report."""
-    reports = _endpoint_report_dirs()
+    reports = _endpoint_report_dirs(_locate_job(run_id))
     if not reports:
         return None
     found = read_progress_for_run(reports, endpoint, run_id)
@@ -2678,7 +2788,7 @@ def _job_report(rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bo
     if report is not None:
         return report, True
 
-    report = _latest_report(rec.endpoint)
+    report = _latest_report(rec.endpoint, located=_locate_job(rec.run_id))
     if report is None:
         return None, False
 
@@ -2735,13 +2845,21 @@ class _JobManager:
         """Root for *run_id*'s record writes: pinned at start, else the container root."""
         if run_id in self._job_roots:
             return self._job_roots[run_id]
-        return container_jobs_root()
+        located = _locate_job(run_id)
+        return None if located is None else located.root
+
+    def _write_root(self, rec: jobrec.JobRecord) -> Path | None:
+        """Use the admitted binding for every Goal write, including completion."""
+        binding = _job_binding(rec)
+        if binding is not None:
+            return record_paths(binding.project_dir, binding.record_id).jobs_dir
+        return self._record_root(rec.run_id)
 
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
         """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
         if run_id in self._job_roots:
             return jobrec.read_record(run_id, root=self._job_roots[run_id])
-        return _locate_job(run_id)
+        return _job_record(run_id)
 
     def _next_run_id(self, endpoint: str) -> str:
         self._counter += 1
@@ -2767,9 +2885,19 @@ class _JobManager:
             display_scope=DisplayScope.current(),
         )
 
+    @staticmethod
+    def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
+        rec.work_dir = (
+            str(context.work_dir)
+            if context.binding
+            else (str(context.explicit_work_dir) if context.explicit_work_dir else None)
+        )
+        rec.session_key = context.session_key
+        rec.binding = None if context.binding is None else context.binding.to_json()
+
     def _stamp_pid(self, rec: jobrec.JobRecord, pid: int) -> None:
         rec.pid = pid
-        jobrec.write_record(rec, root=self._record_root(rec.run_id))
+        jobrec.write_record(rec, root=self._write_root(rec))
 
     def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
         if rec.pid is None:
@@ -2785,7 +2913,7 @@ class _JobManager:
 
     def _stamp_run_started(self, rec: jobrec.JobRecord) -> None:
         rec.run_started_at = utc_now_rfc3339()
-        jobrec.write_record(rec, root=self._record_root(rec.run_id))
+        jobrec.write_record(rec, root=self._write_root(rec))
 
     def _record_terminal(
         self,
@@ -2794,10 +2922,12 @@ class _JobManager:
         *,
         timed_out: bool,
     ) -> None:
-        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
+        repair_progress_after_reap(
+            _endpoint_report_dirs(_locate_job(rec.run_id)), rec.endpoint, rec.run_id
+        )
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
-        jobrec.write_record(rec, root=self._record_root(rec.run_id))
+        jobrec.write_record(rec, root=self._write_root(rec))
 
     @staticmethod
     def _display_identity(rec: jobrec.JobRecord) -> DisplayIdentity:
@@ -2805,7 +2935,7 @@ class _JobManager:
 
     def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
         """Drop a finished inline run's record and its pinned root."""
-        jobrec.delete_record(rec.run_id, root=self._record_root(rec.run_id))
+        jobrec.delete_record(rec.run_id, root=self._write_root(rec))
         self._job_roots.pop(rec.run_id, None)
 
     def _abort_synchronous(self, rec: jobrec.JobRecord) -> None:
@@ -2832,10 +2962,12 @@ class _JobManager:
         claim, not this server's decision. The record lives under the call
         context's jobs root.
         """
-        run_id = self._next_run_id(name)
+        run_id = context.binding.invocation_id if context.binding else self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
+        self._stamp_context(rec, context)
         self._job_roots[run_id] = context.jobs_root
-        jobrec.write_record(rec, root=self._record_root(rec.run_id))
+        _KNOWN_JOB_ROOTS[run_id] = context.jobs_root
+        jobrec.write_record(rec, root=self._write_root(rec))
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold
         # the lifetime busy independently or the server idle-exits mid-run.
         self._lifetime.mark_mcp_endpoint_start()
@@ -2853,9 +2985,16 @@ class _JobManager:
         context: CallContext,
     ) -> tuple[int, str, str, bool]:
         """Run an inline endpoint while publishing bounded status state."""
-        rec = self._new_record(uuid.uuid4().hex, name, cmd, timeout)
+        rec = self._new_record(
+            context.binding.invocation_id if context.binding else uuid.uuid4().hex,
+            name,
+            cmd,
+            timeout,
+        )
+        self._stamp_context(rec, context)
         self._job_roots[rec.run_id] = context.jobs_root
-        jobrec.write_record(rec, root=self._record_root(rec.run_id))
+        _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
+        jobrec.write_record(rec, root=self._write_root(rec))
         try:
             result = await _run_subprocess(
                 cmd,
@@ -2938,7 +3077,9 @@ class _JobManager:
             self._lifetime.mark_mcp_endpoint_end()
 
     def _record_user_cancellation(self, rec: jobrec.JobRecord) -> None:
-        repair_progress_after_reap(_endpoint_report_dirs(), rec.endpoint, rec.run_id)
+        repair_progress_after_reap(
+            _endpoint_report_dirs(_locate_job(rec.run_id)), rec.endpoint, rec.run_id
+        )
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         self._results[rec.run_id] = (
@@ -2947,7 +3088,7 @@ class _JobManager:
             f"CANCELLED: job {rec.run_id} was stopped by request.",
             False,
         )
-        jobrec.write_record(rec, root=self._record_root(rec.run_id))
+        jobrec.write_record(rec, root=self._write_root(rec))
         _write_synthetic_endpoint_end(
             rec.endpoint,
             0,
@@ -3090,7 +3231,13 @@ class _JobManager:
             )
         ]
         rendered = _with_structured_report(content, report if report_fresh else None)
-        return _dispatch_result(rendered, is_error=exit_code != 0)
+        rec = self._read_run(run_id)
+        binding = None if rec is None else _job_binding(rec)
+        return _goal_warning_result(
+            _dispatch_result(rendered, is_error=exit_code != 0),
+            binding,
+            None if rec is None else rec.session_key,
+        )
 
 
 # Re-check cadence while long-polling a disk-only (adopted) job. Each check
@@ -3114,7 +3261,7 @@ async def _poll_from_disk(
     """
     deadline = time.monotonic() + max(0.0, wait_seconds)
     while True:
-        rec = _locate_job(run_id)
+        rec = _job_record(run_id)
         if rec is None:
             return _error_result(
                 f"Unknown run_id {run_id!r}. It may belong to a different project "
@@ -3129,7 +3276,7 @@ async def _poll_from_disk(
         await asyncio.sleep(min(_DISK_POLL_TICK_SECONDS, remaining))
 
 
-async def _dispatch_poll(
+async def _dispatch_poll_impl(
     arguments: dict[str, Any],
     jobs: _JobManager,
 ) -> McpToolContent:
@@ -3229,7 +3376,7 @@ async def _cancel_adopted_process_group(pid: int) -> None:
     )
 
 
-async def _dispatch_cancel(
+async def _dispatch_cancel_impl(
     arguments: dict[str, Any],
     jobs: _JobManager,
 ) -> list[TextContent]:
@@ -3238,7 +3385,7 @@ async def _dispatch_cancel(
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
         return [TextContent(type="text", text="Provide the 'run_id' of a queued job.")]
-    rec = _locate_job(run_id)
+    rec = _job_record(run_id)
     if rec is None:
         return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
 
@@ -3298,7 +3445,10 @@ async def _dispatch_async_job(
     child's queue-full refusal, which comes back through the normal result
     path.
     """
-    attach = _find_attachable_job(name, cmd)
+    try:
+        attach = _find_attachable_job(name, cmd, context=context)
+    except jobrec.JobRecordError as exc:
+        return _error_result(str(exc))
     if attach is not None:
         return await _attach_to_job(name, attach, jobs)
     run_id = jobs.submit(name, cmd, mcp_tool_timeout, context=context)
@@ -3331,7 +3481,9 @@ def _strip_transcript_dir(argv: list[str]) -> list[str]:
     return out
 
 
-def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
+def _find_attachable_job(
+    name: str, cmd: list[str], *, context: CallContext | None = None
+) -> str | None:
     """run_id of a live (running or queued) job matching endpoint + argv, or None.
 
     Scans the durable records rather than any in-process slot: the identical
@@ -3342,7 +3494,12 @@ def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
     """
     wanted = _strip_transcript_dir(cmd)
     newest: jobrec.JobRecord | None = None
-    for rec in jobrec.list_records(root=container_jobs_root()):
+    for rec in (rec for root in job_roots() for rec in jobrec.list_records(root=root)):
+        wanted_binding = (
+            None if context is None or context.binding is None else context.binding.to_json()
+        )
+        if _attach_binding_key(rec.binding) != _attach_binding_key(wanted_binding):
+            continue
         if rec.endpoint != name or _strip_transcript_dir(rec.argv) != wanted:
             continue
         if rec.status != jobrec.STATUS_RUNNING:
@@ -3353,6 +3510,20 @@ def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
         if newest is None or rec.started_at > newest.started_at:
             newest = rec
     return newest.run_id if newest is not None else None
+
+
+def _attach_binding_key(binding: dict[str, Any] | None) -> dict[str, Any] | None:
+    if binding is None:
+        return None
+    try:
+        validated = GoalRunBinding.from_json(binding).to_json()
+    except GoalBindingError as exc:
+        raise jobrec.JobRecordError(f"Malformed Goal Job binding: {exc}") from exc
+    return {
+        key: value
+        for key, value in validated.items()
+        if key not in {"invocation_id", "record_revision"}
+    }
 
 
 async def _attach_to_job(
@@ -3420,12 +3591,26 @@ def _endpoint_command(
     context: CallContext,
 ) -> list[str]:
     """Build the canonical subprocess command for one endpoint definition."""
+    arguments = dict(arguments)
+    if (
+        context.binding is not None
+        and name == "reviewer"
+        and "spec" in str(arguments.get("focus", ""))
+    ):
+        record = GoalStore(context.binding.project_dir).load(context.binding.record_id)
+        specs = {g.spec.params.get("spec") for g in record.goals if g.spec.params.get("spec")}
+        if len(specs) == 1:
+            arguments["spec"] = specs.pop()
     argv = _params_to_argv(arguments)
     if definition.get("is_specialist"):
-        transcript_dir = _resolve_transcript_dir(name, call_counts)
+        transcript_dir = (
+            _resolve_transcript_dir(name, call_counts, context=context)
+            if context.binding
+            else _resolve_transcript_dir(name, call_counts)
+        )
         argv.extend(["--transcript-dir", str(transcript_dir)])
     module = definition["module"]
-    runner = select_flow_execution(context.ticket_file).flow_runner_module
+    runner = select_flow_execution(context.ticket_file, binding=context.binding).flow_runner_module
     if definition.get("is_flow") and runner is not None:
         cmd = ["python", "-m", runner]
         if definition.get("is_custom") and definition.get("custom_path"):
@@ -3486,9 +3671,15 @@ async def _dispatch_booley_mcp_tool(
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
         return _error_result(work_dir_error)
-    context = resolve_call_context(arguments)
+    try:
+        context = resolve_call_context(arguments)
+    except (GoalBindingError, GoalStoreError) as exc:
+        return _error_result(f"ERROR: {exc}")
 
-    cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts, context)
+    try:
+        cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts, context)
+    except (GoalStoreError, GoalBindingError) as exc:
+        return _error_result(f"ERROR: {exc}")
 
     try:
         mcp_tool_timeout = _mcp_tool_timeout_seconds(
@@ -3499,7 +3690,8 @@ async def _dispatch_booley_mcp_tool(
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
     if name in _ASYNC_JOB_MCP_TOOLS:
-        return await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs, context=context)
+        result = await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs, context=context)
+        return _goal_warning_result(result, context.binding, context.session_key)
 
     report_attempt = uuid.uuid4().hex if name == "submit_run_report" else None
     exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
@@ -3514,7 +3706,11 @@ async def _dispatch_booley_mcp_tool(
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
     )
-    report = None if skip_report else _try_read_report()
+    report = (
+        None
+        if skip_report
+        else (_latest_report(context=context) if context.binding else _try_read_report())
+    )
     report, stdout, stderr, exit_code = _report_completion(
         report_attempt, report, stdout, stderr, exit_code
     )
@@ -3522,7 +3718,9 @@ async def _dispatch_booley_mcp_tool(
         TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
     ]
     rendered = _with_structured_report(content, report)
-    return _dispatch_result(rendered, is_error=exit_code != 0)
+    return _goal_warning_result(
+        _dispatch_result(rendered, is_error=exit_code != 0), context.binding, context.session_key
+    )
 
 
 def _report_completion(report_attempt, report, stdout, stderr, exit_code):
@@ -4185,6 +4383,44 @@ def main() -> None:
     except EndpointConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+
+
+def _goal_warning_result(
+    result: McpToolContent, binding: GoalRunBinding | None, session_key: str | None
+) -> McpToolContent:
+    if binding is None:
+        return result
+    try:
+        prefix = goal_warnings(
+            GoalStore(binding.project_dir).load(binding.record_id),
+            binding.project_dir,
+            work_dir=binding.worktree_root,
+            session_key=session_key,
+        )
+    except GoalStoreError as exc:
+        prefix = f"WARNING: Goal Record cannot be read: {exc}"
+    if not prefix:
+        return result
+    block = TextContent(type="text", text=prefix)
+    if isinstance(result, McpDispatchResult):
+        return McpDispatchResult(
+            value=_prepend_health_block(result.value, block), is_error=result.is_error
+        )
+    return _prepend_health_block(result, block)
+
+
+async def _dispatch_poll(arguments: dict[str, Any], jobs: _JobManager) -> McpToolContent:
+    try:
+        return await _dispatch_poll_impl(arguments, jobs)
+    except jobrec.JobRecordError as exc:
+        return _error_result(str(exc))
+
+
+async def _dispatch_cancel(arguments: dict[str, Any], jobs: _JobManager) -> McpToolContent:
+    try:
+        return await _dispatch_cancel_impl(arguments, jobs)
+    except jobrec.JobRecordError as exc:
+        return _error_result(str(exc))
 
 
 if __name__ == "__main__":

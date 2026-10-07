@@ -27,7 +27,7 @@ class TicketFlowLoadError(ValueError):
     """A project-local Flow cannot be loaded unambiguously."""
 
 
-def _load_project_flow(path: Path, name: str) -> BooleyFlow:
+def load_project_flow(path: Path, name: str) -> BooleyFlow:
     """Load one named project-local Flow without executing its script entry point."""
     module = _load_module(path)
     candidates = [
@@ -44,6 +44,10 @@ def _load_project_flow(path: Path, name: str) -> BooleyFlow:
             f"project Flow {name!r} must resolve to exactly one BooleyFlow in {path}"
         )
     return candidates[0]()
+
+
+# Historical private import retained for existing extensions and tests.
+_load_project_flow = load_project_flow
 
 
 def _load_module(path: Path) -> ModuleType:
@@ -85,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     if custom_path is None:
         return _FLOW_TYPES[flow_name]().main(args, adapter=adapter)
     try:
-        flow = _load_project_flow(custom_path, flow_name)
+        flow = load_project_flow(custom_path, flow_name)
     except (OSError, TicketFlowLoadError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

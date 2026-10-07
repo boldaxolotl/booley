@@ -8,8 +8,8 @@ release exposes exactly one development surface.
 
 ``goal_enter`` runs the entry transaction from :mod:`booley.goals.entry` in
 one worker thread, which takes and releases every Goal lock itself; no lock
-crosses the hand-off. The other three answer "not available yet" until their
-phases land.
+crosses the hand-off. Status reads the record without changing it. Proposal and finish tools answer
+"not available yet" until their phases land.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from typing import Any
 
 from mcp.types import TextContent
 
+from booley.criteria.evidence_ledger import AcceptanceLedgerError
+from booley.goals.binding import GoalBindingError
 from booley.goals.entry import (
     EntryEnvironment,
     GoalEntryError,
@@ -28,9 +30,15 @@ from booley.goals.entry import (
     enter_goal_mode,
     parse_entry_request,
 )
+from booley.goals.format import render_status
 from booley.goals.model import goal_arg_json_schema
 from booley.goals.paths import SLUG_MAX_LENGTH, SLUG_PATTERN
 from booley.goals.preview import goal_mode_preview_enabled
+from booley.goals.rules import goal_mode_rules
+from booley.goals.session_key import session_key
+from booley.goals.state_store import GoalStateError
+from booley.goals.status import status_views
+from booley.goals.store import GoalStore, GoalStoreError
 from booley.mcp.application import McpDispatchResult
 
 GOAL_ENTER = "goal_enter"
@@ -67,6 +75,14 @@ def goal_tool_defs() -> list[dict[str, Any]]:
     """The four Goal tool definitions, in the MCP server's catalog shape."""
     return [
         {"name": GOAL_ENTER, "description": _ENTER_DESCRIPTION, "schema": goal_enter_schema()},
+        {
+            "name": GOAL_STATUS,
+            "description": "Read the current Goal status; rules=true repeats the Goal Mode rules.",
+            "schema": {
+                "type": "object",
+                "properties": {"work_dir": _WORK_DIR, "rules": {"type": "boolean"}},
+            },
+        },
         *(
             {
                 "name": name,
@@ -77,7 +93,7 @@ def goal_tool_defs() -> list[dict[str, Any]]:
                     "required": ["work_dir"],
                 },
             }
-            for name in (GOAL_STATUS, GOAL_PROPOSE_CHANGE, GOAL_FINISH)
+            for name in (GOAL_PROPOSE_CHANGE, GOAL_FINISH)
         ),
     ]
 
@@ -119,21 +135,35 @@ async def dispatch_goal_tool(
     name: str, arguments: Mapping[str, Any], *, project_dir: Path
 ) -> McpDispatchResult:
     """Serve one visible Goal tool call; the caller checked visibility."""
+    from booley.mcp.call_context import require_goal_work_dir
+
+    store = GoalStore(project_dir)
+    try:
+        require_goal_work_dir(arguments, store)
+        if name == GOAL_STATUS:
+            root = Path(str(arguments.get("work_dir") or Path.cwd()))
+            views = await asyncio.to_thread(status_views, store, root)
+            text = render_status(views) if views else "No active Goal Mode."
+            if arguments.get("rules") is True:
+                text += "\n\n" + goal_mode_rules()
+            return _text(text, is_error=False)
+    except (GoalBindingError, GoalStoreError, GoalStateError, AcceptanceLedgerError) as exc:
+        return _text(f"ERROR: {exc}", is_error=True)
     if name != GOAL_ENTER:
         return _text(f"{name} is not available yet in this Booley version.", is_error=True)
     try:
-        request = parse_entry_request(arguments, session_key=_session_key(arguments))
+        request = parse_entry_request(arguments, session_key=_session_key(arguments, store))
         env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
         result = await asyncio.to_thread(enter_goal_mode, request, env)
-    except GoalEntryError as exc:
+    except (GoalEntryError, GoalStoreError) as exc:
         return _text(f"ERROR: Goal Mode was not entered: {exc}", is_error=True)
     return _text(result.render(), is_error=False)
 
 
-def _session_key(arguments: Mapping[str, Any]) -> str | None:
-    """The entering session for the audit field: the worktree until sessions are tracked (D2)."""
+def _session_key(arguments: Mapping[str, Any], store: GoalStore) -> str | None:
+    """Worktree identity audit key until Phase 6 adds the process registry."""
     work_dir = arguments.get("work_dir")
-    return f"work_dir:{work_dir}" if isinstance(work_dir, str) and work_dir else None
+    return session_key(store, Path(work_dir)) if isinstance(work_dir, str) and work_dir else None
 
 
 def _recipe_families() -> tuple[RecipeFamily, ...]:

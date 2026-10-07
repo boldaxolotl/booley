@@ -296,6 +296,8 @@ def _load_ticket_text() -> tuple[str, str]:
 
     Returns (ticket_text, source_path); ("", "") outside Ticket Mode.
     """
+    if os.environ.get("BOOLEY_GOAL_FILE"):
+        return "", ""
     logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
     if logs_dir:
         ticket_path = Path(logs_dir) / "ticket.md"
@@ -350,7 +352,9 @@ def resolve_spec_content(
     Returns (spec_text, source_description), or (None, "") when no ticket
     is available or it carries neither a spec file nor a body.
     """
-    document, ticket_source = _load_ticket_document()
+    document, ticket_source = (
+        (None, "") if os.environ.get("BOOLEY_GOAL_FILE") else _load_ticket_document()
+    )
     if document is None:
         if not spec_arg:
             return None, ""
@@ -1020,6 +1024,8 @@ class ReviewerSpecialist(Specialist):
         self._attempt_id = ""
         self._audit_phase = "initial"
         self._review_run_id = ""
+        self._acceptance_current: bool | None = None
+        self._goal_receipt_replayed = False
 
     def _workspace_isolation_category(self) -> str | None:
         """Hide opposite-category sources only inside the private snapshot."""
@@ -1670,7 +1676,11 @@ object, even after calling the capability.
         path = self._attach_review_evidence(result.detail, result.exit_code, "result")
         if result.exit_code == EXIT_ERROR and self.state:
             self.set_criterion(crit_key, False, detail=result.detail)
-        if self.state and not getattr(self.args, "diagnostic", False):
+        if (
+            self.state
+            and not getattr(self.args, "diagnostic", False)
+            and not self._goal_receipt_replayed
+        ):
             entry = self.state.criteria.get(crit_key)
             if entry is not None:
                 entry.detail.update(
@@ -1790,7 +1800,15 @@ object, even after calling the capability.
         # Refresh before either mode's idempotency guard.  Report submission
         # uses this same operation, so Reviewer cannot replay a verdict which
         # the acceptance path will immediately call stale.
-        if self.state:
+        from booley.flows.execution_persistence import criterion_is_current_for
+
+        self._goal_receipt_replayed = False
+        self._acceptance_current = (
+            criterion_is_current_for(self._acceptance_recorder, self.state, crit_key)
+            if self.state
+            else None
+        )
+        if self.state and self._acceptance_current is None:
             refresh_verification_freshness(
                 self.state,
                 work_dir=Path(self.args.work_dir),
@@ -1804,6 +1822,7 @@ object, even after calling the capability.
         # _done mode records terminal review completion, not cleanliness.
         # Fresh completed legacy receipts may still have an unmet cleanliness gate.
         if self._done_receipt_completed(crit_key):
+            self._goal_receipt_replayed = self._acceptance_current is not None
             return self._replay_done_verdict(crit_key)
 
         # Run single-focus review
@@ -1824,7 +1843,7 @@ object, even after calling the capability.
     def _done_receipt_completed(self, crit_key: str) -> bool:
         """Replay only fresh completed review evidence, never incomplete/error detail."""
         entry = self.state.criteria.get(crit_key)
-        if entry is None or entry.stale:
+        if entry is None or entry.stale or self._acceptance_current is False:
             return False
         detail = entry.detail or {}
         findings = detail.get("issue_list")
@@ -1894,7 +1913,8 @@ object, even after calling the capability.
 
     def _run_clean_mode(self, crit_key: str) -> McpToolResult:
         """Drive the _clean criterion through initial review → verify loop."""
-        if self.state and self.state.is_met(crit_key):
+        if self.state and self.state.is_met(crit_key) and self._acceptance_current is not False:
+            self._goal_receipt_replayed = self._acceptance_current is not None
             return self._already_clean_result(crit_key)
         prior_detail = self._get_prior_detail(crit_key)
         if prior_detail is not None and prior_detail.get("needs_discovery"):

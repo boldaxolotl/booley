@@ -39,12 +39,32 @@ class TicketCandidateContext:
     slug: str
     tickets_dir: Path
     flow_reports_root: Path
+    record_dir: Path | None = None
 
     @classmethod
     def from_environment(
         cls, slug: str, environment: Mapping[str, str]
     ) -> TicketCandidateContext | None:
         """Return the Ticket context, or None outside Ticket Mode."""
+        goal_file = environment.get("BOOLEY_GOAL_FILE", "")
+        if goal_file:
+            import json
+
+            from booley.goals.binding import GoalRunBinding
+
+            raw = environment.get("BOOLEY_GOAL_RUN_BINDING")
+            if not raw:
+                raise ValueError("Goal candidates require the admission binding")
+            binding = GoalRunBinding.from_json(json.loads(raw))
+            from booley.goals.paths import record_paths
+
+            paths = record_paths(binding.project_dir, binding.record_id)
+            return cls(
+                binding.record_id,
+                binding.project_dir,
+                paths.runtime_dir / "flow-reports",
+                paths.root,
+            )
         control_root = environment.get("BOOLEY_CONTROL_PROJECT_ROOT", "")
         runtime_dir = environment.get("BOOLEY_RUNTIME_DIR", "")
         if not slug or not control_root or not runtime_dir:
@@ -84,7 +104,7 @@ def _proposals(
 ) -> list[store.WaiverProposal]:
     """Turn the ready-for-review screen results into store proposals."""
     points = {point.id: point for point in campaign.points}
-    proposals = []
+    proposals: list[store.WaiverProposal] = []
     for item in screened:
         if item.get("screening") != "ready_for_human_review":
             continue
@@ -150,8 +170,9 @@ def record_ticket_candidates(
             _proposals(screened, campaign),
             invocation_id=invocation_id,
             now=now or datetime.now(UTC),
+            directory=context.record_dir,
         )
-        record = store.load(context.tickets_dir, context.slug)
+        record = store.load(context.tickets_dir, context.slug, directory=context.record_dir)
         verdicts = _provisional_block(campaign, binding, record)
     except (
         OSError,

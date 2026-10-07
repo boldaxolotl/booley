@@ -83,6 +83,7 @@ from booley.goals.protected_inputs import (
     snapshot_protected_inputs,
 )
 from booley.goals.rules import goal_mode_rules
+from booley.goals.session_key import worktree_session_key
 from booley.goals.state_store import goal_criterion_params, review_categories
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
@@ -305,7 +306,7 @@ def _plan_entry(
         original_ref=head_ref or base_sha,
         base_sha=base_sha,
         entered_at=utc_now_rfc3339(),
-        session_key=request.session_key,
+        session_key=request.session_key or worktree_session_key(identity),
         goals=tuple(RecordedGoal(goal, 1) for goal in translation.goals),
         goalsets_used=request.goalsets_used,
         default_skipped=request.default_skipped,

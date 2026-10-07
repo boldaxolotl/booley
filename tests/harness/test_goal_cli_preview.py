@@ -61,9 +61,6 @@ def test_released_cheatsheet_never_mentions_goal() -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["goal", "status"],
-        ["goal", "status", "--short"],
-        ["goal", "status", "--long"],
         ["goal", "abandon"],
     ],
 )

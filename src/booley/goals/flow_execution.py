@@ -42,6 +42,7 @@ class GoalFlowExecution:
         publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         self._binding = binding
+        self._resolvers = resolvers
         self._recorder = GoalEvidenceRecorder(
             binding, resolvers=resolvers, publication_checkpoint=publication_checkpoint
         )
@@ -78,6 +79,49 @@ class GoalFlowExecution:
             else PairedProjectBaseline.entry_pinned(record.paired_project_base_sha)
         )
         return ResolvedFlowAcceptance(paired_project=paired)
+
+    def criterion_source_target(self, key: str, fallback: str | None) -> str | None:
+        """Stamp against a declared Goal Target before the producer samples sources.
+
+        Existing source digests are never recaptured by publication. A moved
+        specification will be rejected by the gate; it cannot acquire evidence.
+        """
+        try:
+            record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+        except GoalStoreError:
+            return fallback  # publication reports the missing/corrupt authority
+        for goal in record.goals:
+            if goal.spec.key == key and goal.spec_revision == self._binding.spec_revision(key):
+                return goal.spec.target
+        return fallback
+
+    def criterion_is_current(self, state: DevelopmentState, key: str) -> bool:
+        """Validate the exact receipt a caller intends to replay, without state writes."""
+        from booley.goals.state_store import load_goal_state
+        from booley.goals.status import build_status
+
+        store = GoalStore(self._binding.project_dir)
+        with store.record_lock(self._binding.record_id):
+            record = store.load(self._binding.record_id)
+            goal = next((item for item in record.goals if item.spec.key == key), None)
+            if goal is None or goal.spec_revision != self._binding.spec_revision(key):
+                return False
+            current = load_goal_state(store, record)
+            local_entry = state.criteria.get(key)
+            current_entry = current.criteria.get(key)
+            if (
+                state.slug != record.id
+                or local_entry is None
+                or current_entry is None
+                or local_entry.to_dict() != current_entry.to_dict()
+            ):
+                return False
+            # Goal writers hold this same record lock: the entry and evidence
+            # identity checked by status belong to one stable disk snapshot.
+            view = build_status(
+                store, record, work_dir=self._binding.worktree_root, resolvers=self._resolvers
+            )
+            return any(item.key == key and item.status == "met" for item in view.goals)
 
     def state_persistence(self) -> StatePersistence:
         """The gated, merging persistence of the run's state."""
