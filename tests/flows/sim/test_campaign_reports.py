@@ -421,6 +421,8 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     assert resolved.path == outcome.pre_sim_firings[0].path
 
 
+# Windows CI observed 34 s; budget = 3x the slowest run, rounded up to 30 s.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_external_resume_number_collision_reports_only_actual_new_firings(
     tmp_path, monkeypatch, interrupted
