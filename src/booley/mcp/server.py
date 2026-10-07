@@ -41,12 +41,16 @@ from typing import TYPE_CHECKING, Any
 
 from mcp import MCPError
 from mcp.server import Server
+from mcp.server.request_state import RequestStateBoundary, RequestStateSecurity
 from mcp.server.stdio import stdio_server
 from mcp.types import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     CallToolRequestParams,
     CallToolResult,
+    ElicitRequest,
+    ElicitRequestFormParams,
+    InputRequiredResult,
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
@@ -77,6 +81,8 @@ from booley.goals.warnings import goal_warnings
 from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
+    McpInputRequired,
+    McpRequestContext,
     McpToolDefinition,
     UnknownMcpToolError,
 )
@@ -3996,7 +4002,8 @@ async def _dispatch_special_mcp_tool(
     arguments: dict[str, Any],
     jobs: _JobManager,
     status_mcp_tool_names: list[str],
-) -> McpToolContent | None:
+    request_context: McpRequestContext | None = None,
+) -> McpToolContent | McpInputRequired | None:
     """Route the fixed, always-nameable meta MCP tools (status/report/poll/cancel/sleep).
 
     Returns ``None`` when *name* isn't one of these — the caller falls through
@@ -4027,7 +4034,9 @@ async def _dispatch_special_mcp_tool(
     if name == _SLEEP_MCP_TOOL_NAME and _sleep_mcp_tool_visible():
         return await _dispatch_sleep(arguments)
     if name in GOAL_TOOL_NAMES and _goal_tools_visible():
-        return await dispatch_goal_tool(name, arguments, project_dir=resolve_project_dir())
+        return await dispatch_goal_tool(
+            name, arguments, project_dir=resolve_project_dir(), request_context=request_context
+        )
     return None
 
 
@@ -4039,9 +4048,17 @@ async def _dispatch_application_tool(
     jobs: _JobManager,
     status_mcp_tool_names: list[str],
     mcp_tool_call_counts: dict[str, int],
-) -> McpToolContent:
+    request_context: McpRequestContext | None = None,
+) -> McpToolContent | McpInputRequired:
     """Dispatch one validated application call to its concrete endpoint."""
-    special_result = await _dispatch_special_mcp_tool(name, arguments, jobs, status_mcp_tool_names)
+    if name in GOAL_TOOL_NAMES and request_context is not None:
+        special_result = await _dispatch_special_mcp_tool(
+            name, arguments, jobs, status_mcp_tool_names, request_context
+        )
+    else:
+        special_result = await _dispatch_special_mcp_tool(
+            name, arguments, jobs, status_mcp_tool_names
+        )
     if special_result is not None:
         return special_result
     bwave_result = await _dispatch_bwave(name, arguments)
@@ -4074,7 +4091,7 @@ def _build_mcp_application(
         name: str,
         arguments: dict[str, Any],
         mcp_tool_def: Mapping[str, Any],
-    ) -> McpToolContent:
+    ) -> McpToolContent | McpInputRequired:
         return await _dispatch_application_tool(
             name,
             arguments,
@@ -4084,11 +4101,28 @@ def _build_mcp_application(
             mcp_tool_call_counts=mcp_tool_call_counts,
         )
 
+    async def request_dispatch(
+        name: str,
+        arguments: dict[str, Any],
+        mcp_tool_def: Mapping[str, Any],
+        context: McpRequestContext,
+    ) -> McpToolContent | McpInputRequired:
+        return await _dispatch_application_tool(
+            name,
+            arguments,
+            mcp_tool_def,
+            jobs=jobs,
+            status_mcp_tool_names=status_mcp_tool_names,
+            mcp_tool_call_counts=mcp_tool_call_counts,
+            request_context=context,
+        )
+
     application = McpApplication(
         _all_mcp_tool_defs(mcp_tools),
         dispatch=dispatch,
         canonicalize=canonical,
         on_discovery_error=discovery_errors.append,
+        request_dispatch=request_dispatch,
     )
     status_mcp_tool_names.extend(
         tool.name for tool in application.list_tools() if tool.name in mcp_tool_index
@@ -4123,10 +4157,32 @@ def build_mcp_probe_payload() -> dict[str, Any]:
 async def _call_application_tool(
     application: McpApplication,
     params: CallToolRequestParams,
-) -> CallToolResult:
+    context: ServerRequestContext | None = None,
+) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
     try:
-        payload = await application.call_tool(params.name, params.arguments or {})
+        if context is None:
+            payload = await application.call_tool(params.name, params.arguments or {})
+        else:
+            payload = await application.call_tool(
+                params.name,
+                params.arguments or {},
+                request_context=_application_request_context(context, params),
+            )
+        if isinstance(payload, McpInputRequired):
+            return InputRequiredResult(
+                request_state=payload.request_state,
+                input_requests={
+                    payload.response_key: ElicitRequest(
+                        method="elicitation/create",
+                        params=ElicitRequestFormParams(
+                            mode="form",
+                            message=payload.message,
+                            requested_schema=payload.form_schema,
+                        ),
+                    )
+                },
+            )
         return CallToolResult(
             content=[TextContent(type="text", text=block.text) for block in payload.content],
             structuredContent=payload.structured_content,
@@ -4145,6 +4201,27 @@ async def _call_application_tool(
         raise MCPError(INTERNAL_ERROR, "Internal server error") from exc
 
 
+def _application_request_context(
+    context: ServerRequestContext, params: CallToolRequestParams
+) -> McpRequestContext:
+    """Only SDK-boundary-verified request state enters application dispatch."""
+    capabilities = context.session.client_capabilities
+    form = (
+        capabilities is not None
+        and capabilities.elicitation is not None
+        and capabilities.elicitation.form is not None
+    )
+    responses = (
+        None
+        if params.input_responses is None
+        else {
+            key: value.model_dump(mode="json", by_alias=False)
+            for key, value in params.input_responses.items()
+        }
+    )
+    return McpRequestContext(context.protocol_version, form, params.request_state, responses)
+
+
 def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Server:
     """Adapt the Booley MCP application to the MCP SDK server callbacks."""
 
@@ -4158,19 +4235,25 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
     async def handle_call_tool(
         _ctx: ServerRequestContext,
         params: CallToolRequestParams,
-    ) -> CallToolResult:
+    ) -> CallToolResult | InputRequiredResult:
         lifetime.mark_mcp_endpoint_start()
         try:
-            return await _call_application_tool(application, params)
+            return await _call_application_tool(application, params, _ctx)
         finally:
             lifetime.mark_mcp_endpoint_end()
 
-    return Server(
+    server = Server(
         "booley",
         version=__version__,
         on_list_tools=handle_list_tools,
         on_call_tool=handle_call_tool,
     )
+    server.middleware.append(
+        RequestStateBoundary(
+            RequestStateSecurity.ephemeral(audience="booley"), default_audience="booley"
+        )
+    )
+    return server
 
 
 def _build_server(

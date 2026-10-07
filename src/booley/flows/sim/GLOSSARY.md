@@ -26,7 +26,7 @@ The immutable project-wide set of human-approved Target-and-Coverage-Point exclu
 _Avoid_: cached LLM waivers
 
 **Waiver Candidate**:
-A proposed exclusion recorded for one Ticket; it becomes part of the Approved Waiver Set only when a human approves it at review.
+A proposed exclusion recorded for one Ticket or Goal Record; it becomes part of the Approved Waiver Set only when a human approves it through that record's approval workflow.
 _Avoid_: approved waiver, automatic exclusion, pending waiver
 
 **Provisional Coverage Verdict**:
@@ -34,5 +34,5 @@ A Coverage Criterion evaluation that also counts the Ticket's Waiver Candidates;
 _Avoid_: soft pass, pending verdict
 
 **Coverage Analyst**:
-A Specialist that explains one Coverage Campaign and may record Waiver Candidates for its Ticket; its model only reads evidence.
+A Specialist that explains one Coverage Campaign and may record Waiver Candidates for its Ticket or Goal Record; its model only reads evidence.
 _Avoid_: coverage scorer, waveform coverage engine

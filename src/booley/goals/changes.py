@@ -84,6 +84,7 @@ class ChangeEntry:
     quote: str | None = None
     session_key: str | None = None
     peer_process: str | None = None
+    transaction_ref: str | None = None
 
     def __post_init__(self) -> None:
         require_uuid4(self.id, field="change id")
@@ -98,7 +99,7 @@ class ChangeEntry:
 
     def to_json(self) -> dict[str, Any]:
         """The JSON object stored in an ``intent`` line."""
-        return {
+        result: dict[str, Any] = {
             "id": self.id,
             "at": self.at,
             "kind": self.kind.value,
@@ -111,12 +112,15 @@ class ChangeEntry:
             "session_key": self.session_key,
             "peer_process": self.peer_process,
         }
+        if self.transaction_ref is not None:
+            result["transaction_ref"] = self.transaction_ref
+        return result
 
     @classmethod
     def from_json(cls, raw: Any) -> ChangeEntry:
         """Parse an ``intent`` line's entry; raises ``ValueError`` on any defect."""
         raw = require_dict(raw, field="entry")
-        if set(raw) != set(_ENTRY_KEYS):
+        if set(raw) - {"transaction_ref"} != set(_ENTRY_KEYS):
             raise ValueError(f"entry must have exactly the fields {list(_ENTRY_KEYS)}")
         before = raw["before"]
         return cls(
@@ -131,6 +135,9 @@ class ChangeEntry:
             quote=_optional_text(raw["quote"], "quote"),
             session_key=_optional_text(raw["session_key"], "session_key"),
             peer_process=_optional_text(raw["peer_process"], "peer_process"),
+            transaction_ref=None
+            if raw.get("transaction_ref") is None
+            else require_uuid4(raw["transaction_ref"], field="transaction_ref"),
         )
 
 

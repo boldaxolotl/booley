@@ -296,7 +296,7 @@ def _plan_entry(
     checkout.require_valid_branch_name(branch)
     if checkout.branch_tip(branch) is not None:
         raise GoalEntryError(f"branch {branch} already exists; choose another slug")
-    warnings = [*translation.warnings, *_check_targets(checkout.root, translation.goals)]
+    warnings = [*translation.warnings, *check_goal_targets(checkout.root, translation.goals)]
     record = GoalRecord(
         id=new_goal_id(request.slug, timestamp=timestamp),
         state=GoalState.ENTERING,
@@ -340,7 +340,7 @@ def _drive_entry(
     )
     _boundary(env, "protected_saved")
     params = {key: dict(value) for key, value in plan.criterion_params.items()}
-    _pin_baselines(record, params, env, checkout)
+    pin_goal_baselines(record, params, env, checkout)
     _boundary(env, "pinned")
     _write_initial_state(store, record, params, checkout.root)
     _boundary(env, "state_saved")
@@ -450,10 +450,13 @@ def _check_default_goalset(request: EntryRequest, project_dir: Path) -> None:
         )
 
 
-def _check_targets(work_dir: Path, goals: Sequence[GoalSpec]) -> list[str]:
+def check_goal_targets(
+    work_dir: Path, goals: Sequence[GoalSpec], *, baseline_root: Path | None = None
+) -> list[str]:
     """Warn on candidate Targets that do not exist; refuse missing baselines and specs."""
     try:
         catalog = TargetCatalog.build(work_dir)
+        baseline_catalog = catalog if baseline_root is None else TargetCatalog.build(baseline_root)
     except FuseSocError as exc:
         raise GoalEntryError(f"cannot list the Targets of {work_dir}: {exc}") from exc
     warnings: list[str] = []
@@ -464,7 +467,7 @@ def _check_targets(work_dir: Path, goals: Sequence[GoalSpec]) -> list[str]:
                 "it stays unmet until the Target exists"
             )
         baseline = _baseline_target(goal)
-        if baseline is not None and not _target_exists(catalog, baseline):
+        if baseline is not None and not _target_exists(baseline_catalog, baseline):
             raise GoalEntryError(
                 f"Goal {goal.key} compares against baseline Target {baseline!r}, which does "
                 "not exist at the base commit"
@@ -569,7 +572,7 @@ class _GoalPinContext:
     recipe_freeze_root: Path
 
 
-def _pin_baselines(
+def pin_goal_baselines(
     record: GoalRecord,
     params: dict[str, dict[str, Any]],
     env: EntryEnvironment,

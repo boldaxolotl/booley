@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.criteria.evidence_ledger import validated_evidence_records
+from booley.goals.apply_barrier import pending_applies
+from booley.goals.change_policy import conflict
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
 from booley.goals.format import format_criterion_metric
 from booley.goals.freshness import (
@@ -16,6 +18,7 @@ from booley.goals.freshness import (
 )
 from booley.goals.model import GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
+from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.state_store import load_goal_state
 from booley.goals.store import GoalStore, GoalStoreError
@@ -40,6 +43,9 @@ class GoalStatusView:
     goals: tuple[GoalStatus, ...]
     warning: str = ""
     pending_proposals: int = 0
+    proposals: tuple[ProposalView, ...] = ()
+    proposal_conflicts: tuple[tuple[str, str], ...] = ()
+    interrupted_applies: tuple[str, ...] = ()
 
     @property
     def met(self) -> int:
@@ -69,7 +75,18 @@ def build_status(
     work_dir: Path | None = None,
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
 ) -> GoalStatusView:
-    """Load fail-closed, then protected inputs, checkout, evidence revision, and freshness."""
+    """Read one coherent record/state/lifecycle projection without recovering it."""
+    with store.record_lock(record.id):
+        return _build_status(store, store.load(record.id), work_dir=work_dir, resolvers=resolvers)
+
+
+def _build_status(
+    store: GoalStore,
+    record: GoalRecord,
+    *,
+    work_dir: Path | None,
+    resolvers: GoalFreshnessResolvers,
+) -> GoalStatusView:
     root = work_dir or Path(record.worktree_path)
     try:
         checkout = GoalCheckout(root).containing_repository()
@@ -77,17 +94,17 @@ def build_status(
         checkout = None  # protected/checkout checks report an inaccessible worktree
     if checkout is not None:
         root = checkout[0]
+    paths = record_paths(store.project_dir, record.id)
+    proposals = list_proposals(paths.root)
+    interrupted = pending_applies(paths.root)
     state = load_goal_state(store, record)
     if state.slug != record.id:
         raise GoalStoreError(f"Goal state belongs to {state.slug}, not {record.id}")
     protected = protected_warnings(record, store.project_dir, root)
-    drift = protected[0] if protected else checkout_violation(store, record, root)
-    records = validated_evidence_records(
-        GOAL_SCOPE, record_paths(store.project_dir, record.id).logs_dir, state, {}
+    drift = ("Goal apply is interrupted; recovery is required" if interrupted else "") or (
+        protected[0] if protected else checkout_violation(store, record, root)
     )
-    latest = {
-        payload["criterion"]: payload for payload in records if payload["role"] == "candidate"
-    }
+    latest = _latest_evidence(paths.logs_dir, state)
     goals = tuple(
         _goal_status(
             goal,
@@ -100,7 +117,24 @@ def build_status(
         )
         for goal in record.goals
     )
-    return GoalStatusView(record, goals, goal_warnings(record, store.project_dir, work_dir=root))
+    return GoalStatusView(
+        record,
+        goals,
+        goal_warnings(record, store.project_dir, work_dir=root),
+        sum(view.state == "pending" for view in proposals),
+        proposals,
+        tuple(
+            (view.proposal.id, conflict(view.proposal, record))
+            for view in proposals
+            if view.state == "pending" and conflict(view.proposal, record)
+        ),
+        interrupted,
+    )
+
+
+def _latest_evidence(logs_dir: Path, state: Any) -> dict[str, dict[str, Any]]:
+    records = validated_evidence_records(GOAL_SCOPE, logs_dir, state, {})
+    return {payload["criterion"]: payload for payload in records if payload["role"] == "candidate"}
 
 
 def _goal_status(
@@ -113,6 +147,14 @@ def _goal_status(
     resolvers: GoalFreshnessResolvers,
 ) -> GoalStatus:
     key = goal.spec.key
+    projection = "" if entry is None else _projection_violation(entry, evidence)
+    if entry is not None and projection:
+        return GoalStatus(
+            key,
+            "stale" if entry.met else "unmet",
+            "state conflicts with immutable evidence",
+            projection,
+        )
     if entry is None or not entry.met:
         metric = (
             "no evidence"
@@ -128,6 +170,16 @@ def _goal_status(
     if reason:
         return GoalStatus(key, "stale", "evidence is stale", reason)
     return GoalStatus(key, "met", format_criterion_metric(key, entry) or "evidence recorded")
+
+
+def _projection_violation(entry: Any, evidence: dict[str, Any] | None) -> str:
+    if evidence is not None and (
+        entry.met != evidence["met"]
+        or (entry.params or {}) != evidence["params"]
+        or entry.detail != evidence["detail"]
+    ):
+        return "Goal state differs from its selected immutable producer observation"
+    return ""
 
 
 def _revision_violation(

@@ -53,6 +53,26 @@ class McpDispatchResult:
     is_error: bool
 
 
+@dataclass(frozen=True, slots=True)
+class McpRequestContext:
+    """SDK-independent verified request-level inputs; never read from tool arguments."""
+
+    protocol: str = ""
+    form_capability: bool = False
+    resume_state: str | None = None
+    input_responses: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class McpInputRequired:
+    """Application result requesting a form; the SDK seals its opaque state."""
+
+    request_state: str
+    response_key: str
+    message: str
+    form_schema: dict[str, Any]
+
+
 class UnknownMcpToolError(ValueError):
     """The caller named a tool outside the advertised catalog."""
 
@@ -62,6 +82,9 @@ class UnknownMcpToolError(ValueError):
 
 
 Dispatch = Callable[[str, dict[str, Any], Mapping[str, Any]], Awaitable[object]]
+RequestDispatch = Callable[
+    [str, dict[str, Any], Mapping[str, Any], McpRequestContext], Awaitable[object]
+]
 Canonicalize = Callable[[str], str]
 DiscoveryError = Callable[[str], None]
 
@@ -81,8 +104,10 @@ class McpApplication:
         dispatch: Dispatch,
         canonicalize: Canonicalize,
         on_discovery_error: DiscoveryError,
+        request_dispatch: RequestDispatch | None = None,
     ) -> None:
         self._dispatch = dispatch
+        self._request_dispatch = request_dispatch
         self._canonicalize = canonicalize
         self._definitions: dict[str, McpToolDefinition] = {}
         self._sources: dict[str, Mapping[str, Any]] = {}
@@ -101,7 +126,13 @@ class McpApplication:
         """Return the advertised catalog in deterministic wire-name order."""
         return [self._definitions[name] for name in sorted(self._definitions)]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> McpToolPayload:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        request_context: McpRequestContext | None = None,
+    ) -> McpToolPayload | McpInputRequired:
         """Validate and dispatch one tool call through the advertised catalog."""
         canonical_name = self._canonicalize(name)
         definition = self._definitions.get(canonical_name)
@@ -113,8 +144,13 @@ class McpApplication:
                 content=(McpTextBlock(_format_validation_error(error)),),
                 is_error=True,
             )
-        result = await self._dispatch(canonical_name, arguments, self._sources[canonical_name])
-        return _normalize_payload(result)
+        if self._request_dispatch is not None and request_context is not None:
+            result = await self._request_dispatch(
+                canonical_name, arguments, self._sources[canonical_name], request_context
+            )
+        else:
+            result = await self._dispatch(canonical_name, arguments, self._sources[canonical_name])
+        return result if isinstance(result, McpInputRequired) else _normalize_payload(result)
 
     def _register(self, source: Mapping[str, Any]) -> None:
         name = str(source["name"])

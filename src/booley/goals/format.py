@@ -201,4 +201,18 @@ def render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = Non
                 table.add_row(goal.key, goal.status, goal.evidence_summary)
             console.print(table)
             console.print(f"Pending proposals: {view.pending_proposals}")
+            conflicts = dict(view.proposal_conflicts)
+            for proposal_view in view.proposals:
+                proposal = proposal_view.proposal
+                console.print(
+                    f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {proposal.goal_key} · {proposal.rationale}"
+                )
+                if proposal.id in conflicts:
+                    console.print(f"  Conflict: {conflicts[proposal.id]}")
+                if proposal_view.decision is not None:
+                    console.print(
+                        f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
+                    )
+            if view.interrupted_applies:
+                console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))
     return stream.getvalue().rstrip()
