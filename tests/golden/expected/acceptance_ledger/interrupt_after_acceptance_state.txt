@@ -1,0 +1,187 @@
+{
+  "boundary": "after:acceptance_state",
+  "current_records": [
+    {
+      "criterion": "lint_clean",
+      "detail": {
+        "warnings": 0
+      },
+      "execution_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "invocation_id": "lint-1",
+      "mandatory": true,
+      "met": true,
+      "params": {},
+      "producer": "lint",
+      "purpose": "ticket_acceptance",
+      "reason": "outcome",
+      "recorded_at": "2026-09-21T09:00:00Z",
+      "role": "candidate",
+      "schema": 1,
+      "sequence": 1,
+      "ticket": "fix-uart",
+      "ticket_identity": {
+        "authored_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generation": "dddddddddddddddddddddddddddddddd"
+      }
+    },
+    {
+      "$schema": "booley.acceptance-record/v2",
+      "criterion": "sim_pass_uart",
+      "detail": {
+        "passed_tests": [
+          "test_tx"
+        ]
+      },
+      "envelope_sha256": "sha256:4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5",
+      "execution_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "invocation_id": 7,
+      "mandatory": true,
+      "met": true,
+      "params": {},
+      "producer": "simulation_campaign",
+      "purpose": "ticket_acceptance",
+      "reason": "outcome",
+      "recorded_at": "2026-09-21T10:00:00Z",
+      "role": "candidate",
+      "sequence": 2,
+      "ticket": "fix-uart",
+      "ticket_identity": {
+        "authored_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generation": "dddddddddddddddddddddddddddddddd"
+      },
+      "transaction_id": "4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5",
+      "transaction_ordinal": 0,
+      "transaction_size": 2
+    },
+    {
+      "$schema": "booley.acceptance-record/v2",
+      "criterion": "_report_submitted",
+      "detail": {
+        "report_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "report_submission_id": "cccccccccccccccccccccccccccccccc"
+      },
+      "envelope_sha256": "sha256:4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5",
+      "execution_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "invocation_id": 7,
+      "mandatory": true,
+      "met": true,
+      "params": {},
+      "producer": "simulation_campaign",
+      "purpose": "ticket_acceptance",
+      "reason": "outcome",
+      "recorded_at": "2026-09-21T10:00:00Z",
+      "role": "candidate",
+      "sequence": 3,
+      "ticket": "fix-uart",
+      "ticket_identity": {
+        "authored_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generation": "dddddddddddddddddddddddddddddddd"
+      },
+      "transaction_id": "4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5",
+      "transaction_ordinal": 1,
+      "transaction_size": 2
+    }
+  ],
+  "interrupted_checkpoints": [
+    "before:acceptance_intent",
+    "after:acceptance_intent",
+    "before:acceptance_record",
+    "after:acceptance_record",
+    "before:acceptance_record",
+    "after:acceptance_record",
+    "before:acceptance_commit",
+    "after:acceptance_commit",
+    "before:acceptance_state",
+    "after:acceptance_state"
+  ],
+  "recovered": {
+    "evidence": [
+      {
+        "criterion": "sim_pass_uart",
+        "digest": "3e3a8f21c75462cc234e5081a956e888c280055019b350eb89137df5bb41bc75",
+        "role": "candidate",
+        "sequence": 2
+      },
+      {
+        "criterion": "_report_submitted",
+        "digest": "e583f30c471af82e4c9e5cb8cc7b0681c99b15ae41a1ef3eff7312d21fd4dcaa",
+        "role": "candidate",
+        "sequence": 3
+      }
+    ],
+    "transaction_id": "4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5"
+  },
+  "recovered_checkpoints": [],
+  "recovered_report_met": false,
+  "replay_checkpoints": [],
+  "replayed_equal": true
+}
+=== dir .runtime
+=== file .runtime/booley_state.json (1104 bytes)
+{
+  "slug": "fix-uart",
+  "ticket_type": "bugfix",
+  "strict_criteria": true,
+  "criteria": {
+    "sim_pass_uart": {
+      "met": true,
+      "mandatory": true,
+      "ever_met": true,
+      "updated_at": "2026-09-21T08:00:00Z",
+      "detail": {
+        "passed_tests": [
+          "test_tx"
+        ]
+      }
+    },
+    "lint_clean": {
+      "met": true,
+      "mandatory": true,
+      "ever_met": true,
+      "updated_at": "2026-09-21T08:00:00Z",
+      "detail": {
+        "warnings": 0
+      }
+    },
+    "_report_submitted": {
+      "met": false,
+      "mandatory": true,
+      "ever_met": true,
+      "updated_at": "2026-09-21T08:00:00Z",
+      "detail": {
+        "report_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "report_submission_id": "cccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "category_map": {},
+  "all_mandatory_met": true,
+  "timeline": [],
+  "acceptance_transactions": [
+    "4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5"
+  ],
+  "authorized_zero_mandatory_basis_id": "",
+  "last_updated": "2026-09-21T08:00:00Z"
+}
+=== dir acceptance
+=== dir acceptance/evidence
+=== lock acceptance/evidence/.sequence.lock
+=== dir acceptance/evidence/000000001
+=== file acceptance/evidence/000000001/record.json (486 bytes)
+{"criterion":"lint_clean","detail":{"warnings":0},"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":"lint-1","mandatory":true,"met":true,"params":{},"producer":"lint","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T09:00:00Z","role":"candidate","schema":1,"sequence":1,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"}}
+
+=== dir acceptance/evidence/000000002.tx.4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5
+=== file acceptance/evidence/000000002.tx.4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5/record.json (761 bytes)
+{"$schema":"booley.acceptance-record/v2","criterion":"sim_pass_uart","detail":{"passed_tests":["test_tx"]},"envelope_sha256":"sha256:4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5","execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7,"mandatory":true,"met":true,"params":{},"producer":"simulation_campaign","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T10:00:00Z","role":"candidate","sequence":2,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"transaction_id":"4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5","transaction_ordinal":0,"transaction_size":2}
+
+=== dir acceptance/evidence/000000003.tx.4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5
+=== file acceptance/evidence/000000003.tx.4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5/record.json (879 bytes)
+{"$schema":"booley.acceptance-record/v2","criterion":"_report_submitted","detail":{"report_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","report_submission_id":"cccccccccccccccccccccccccccccccc"},"envelope_sha256":"sha256:4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5","execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7,"mandatory":true,"met":true,"params":{},"producer":"simulation_campaign","purpose":"ticket_acceptance","reason":"outcome","recorded_at":"2026-09-21T10:00:00Z","role":"candidate","sequence":3,"ticket":"fix-uart","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"transaction_id":"4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5","transaction_ordinal":1,"transaction_size":2}
+
+=== dir acceptance/intents
+=== file acceptance/intents/ff6bb96091a93c1d4c7c8b2147a0bfe44158bdaaa560d55593f476e483708b3b.json (2298 bytes)
+{"$schema":"booley.simulation-acceptance-intent/v1","acceptance_facts":{"$schema":"booley.simulation-acceptance-facts/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","consumed_results":[{"finished_at":"2026-09-21T10:00:00Z"}],"coverage_reference":null,"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observations":[],"origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"prerequisites":[],"required_suite":{"default_invocation":true,"names":["test_tx"],"source_sha256":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"target":{"identity":"acme:lib:uart:1#sim_uart","selector":"sim_uart"}},"acceptance_facts_sha256":"sha256:d05283033786d0c3ca8c257c580d2f7eb1abcf6d84a45b050d0d264fad611e10","envelope":{"$schema":"booley.acceptance-transaction-envelope/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","changes":[{"detail":{"passed_tests":["test_tx"]},"key":"sim_pass_uart","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"},{"detail":{"report_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","report_submission_id":"cccccccccccccccccccccccccccccccc"},"key":"_report_submitted","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"}],"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"producer":"simulation_campaign","purpose":"ticket_acceptance","recorded_at":"2026-09-21T10:00:00Z","role_derivation":"booley.acceptance-role/v1","ticket":{"generation":"dddddddddddddddddddddddddddddddd","identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"slug":"fix-uart"}},"lookup_key":{"campaign_id":"12345678-1234-4234-9234-123456789abc","manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","producer":"simulation_campaign","purpose":"ticket_acceptance","ticket_generation":"dddddddddddddddddddddddddddddddd","ticket_identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"}}}
+
+=== dir acceptance/transactions
+=== file acceptance/transactions/4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5.json (1664 bytes)
+{"$schema":"booley.acceptance-transaction/v1","envelope":{"$schema":"booley.acceptance-transaction-envelope/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","changes":[{"detail":{"passed_tests":["test_tx"]},"key":"sim_pass_uart","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"},{"detail":{"report_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","report_submission_id":"cccccccccccccccccccccccccccccccc"},"key":"_report_submitted","mandatory":true,"met":true,"params":{},"reason":"outcome","role":"candidate"}],"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"producer":"simulation_campaign","purpose":"ticket_acceptance","recorded_at":"2026-09-21T10:00:00Z","role_derivation":"booley.acceptance-role/v1","ticket":{"generation":"dddddddddddddddddddddddddddddddd","identity":{"authored_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","generation":"dddddddddddddddddddddddddddddddd"},"slug":"fix-uart"}},"envelope_sha256":"sha256:4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5","record_count":2,"records":[{"criterion":"sim_pass_uart","role":"candidate","sequence":2,"sha256":"sha256:3e3a8f21c75462cc234e5081a956e888c280055019b350eb89137df5bb41bc75","transaction_ordinal":0},{"criterion":"_report_submitted","role":"candidate","sequence":3,"sha256":"sha256:e583f30c471af82e4c9e5cb8cc7b0681c99b15ae41a1ef3eff7312d21fd4dcaa","transaction_ordinal":1}],"transaction_id":"4d764a4dd962d0995a2d4e60853eea30bf2bb51d9e821d32ac2fdb2b207091e5"}

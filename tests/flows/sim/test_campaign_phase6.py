@@ -826,6 +826,37 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     assert final_state.criteria["sim_pass_sim"].met is False
 
 
+def test_campaign_acceptance_reads_identity_through_the_public_recorder_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    outcome, invocation = _one_item_outcome(tmp_path)
+    state = DevelopmentState.load(tmp_path / "state.json")
+    state.slug = "ticket"
+    state.init_criteria({"sim_pass_sim": True}, strict=True)
+    state.save()
+    identity = {"generation": "f" * 32}
+    received: list[Mapping[str, object]] = []
+
+    class PublicIdentityRecorder:
+        """Recorder exposing its identity only through ``acceptance_identity``."""
+
+        def acceptance_identity(self) -> Mapping[str, object]:
+            return identity
+
+        def record_changes(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def record_or_verify_transaction(self, _state, _changes, **kwargs):
+            received.append(kwargs["ticket_identity"])
+            return SimpleNamespace(transaction_id="a" * 64)
+
+    endpoint = _acceptance_endpoint(state, PublicIdentityRecorder(), invocation)
+    record_campaign_acceptance(endpoint, (outcome,))
+
+    assert received == [identity]
+
+
 def test_campaign_projection_error_tail_rejects_malformed_detail(tmp_path: Path) -> None:
     outcome, invocation = _one_item_outcome(tmp_path)
     malformed_observation = dict(outcome.observations[0], detail=[])

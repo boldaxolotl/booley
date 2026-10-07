@@ -34,6 +34,14 @@ class AcceptanceRecorder(Protocol):
         ticket_identity: Mapping[str, Any],
     ) -> object | None: ...
 
+    def acceptance_identity(self) -> Mapping[str, Any] | None:
+        """Validated identity evidence is recorded under, or ``None`` without a recorder.
+
+        Raises :class:`AcceptanceRecordingError` when the identity cannot be
+        established for an execution that requires one.
+        """
+        ...
+
 
 @runtime_checkable
 class StatePersistenceSource(Protocol):
@@ -88,6 +96,9 @@ class NoAcceptanceRecorder:
         acceptance_facts: Mapping[str, Any],
         ticket_identity: Mapping[str, Any],
     ) -> object | None:
+        return None
+
+    def acceptance_identity(self) -> Mapping[str, Any] | None:
         return None
 
 

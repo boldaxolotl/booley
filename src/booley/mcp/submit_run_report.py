@@ -35,6 +35,7 @@ import uuid
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from booley.flows.endpoint_session import PreparedExecution
 from booley.runtime import job_records as jobrec
@@ -89,12 +90,12 @@ class SubmitRunReportMcpTool(McpTool):
     code_modifying: bool = False
     config_aware: bool = False
 
-    def _submission_identity(self) -> dict:
+    def _submission_identity(self) -> dict[str, Any]:
         from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 
         recorder = self._acceptance_recorder
         if isinstance(recorder, TicketAcceptanceRecorder):
-            return recorder._validated_ticket_identity()
+            return recorder.acceptance_identity()
         return {}
 
     def _validate_submission_authority(self) -> None:

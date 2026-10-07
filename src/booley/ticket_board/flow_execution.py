@@ -67,6 +67,10 @@ class TicketAcceptanceRecorder:
 
             raise AcceptanceRecordingError(str(exc)) from exc
 
+    def acceptance_identity(self) -> dict[str, Any]:
+        """Validated Ticket identity; empty when no Ticket snapshot is present."""
+        return self._validated_ticket_identity()
+
     def record_changes(
         self,
         state: DevelopmentState,
@@ -101,7 +105,7 @@ class TicketAcceptanceRecorder:
                     else os.environ.get("BOOLEY_EXECUTION_ID", "")
                 ),
                 ticket_identity=self._validated_ticket_identity(),
-                transaction_id=transaction_id,
+                transaction_id=transaction_id or "",
             )
         except acceptance_ledger.AcceptanceLedgerError as exc:
             from booley.flows.execution_persistence import AcceptanceRecordingError

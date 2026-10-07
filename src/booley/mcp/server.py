@@ -3567,7 +3567,7 @@ def _committed_submission_report(report, submission_id, exit_code):
     try:
         from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
 
-        identity = TicketAcceptanceRecorder()._validated_ticket_identity()
+        identity = TicketAcceptanceRecorder().acceptance_identity()
         if not submission.effective_met(
             Path(logs),
             True,

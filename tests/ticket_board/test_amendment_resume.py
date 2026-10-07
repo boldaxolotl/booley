@@ -719,12 +719,12 @@ def test_amendment_proof_transaction_recovers_without_duplicate_observations(
 ) -> None:
     import json
 
-    from booley.ticket_board import acceptance_ledger
+    from booley.criteria import evidence_ledger
     from booley.ticket_board.acceptance_ledger import record_amendment_observations
 
     state, changes = _retained_proof_changes()
     identity = {"generation": "a" * 32}
-    write_once = acceptance_ledger._write_once
+    write_once = evidence_ledger.write_once
     writes = 0
 
     def interrupt(path, content):
@@ -737,7 +737,7 @@ def test_amendment_proof_transaction_recovers_without_duplicate_observations(
 
     if boundary == "record":
         with monkeypatch.context() as patch:
-            patch.setattr(acceptance_ledger, "_write_once", interrupt)
+            patch.setattr(evidence_ledger, "write_once", interrupt)
             with pytest.raises(OSError, match="record interrupted"):
                 record_amendment_observations(
                     tmp_path, state, changes, operation_id="operation", ticket_identity=identity

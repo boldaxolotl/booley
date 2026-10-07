@@ -1025,6 +1025,9 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
     tool.state.init_criteria({"sim_pass_sim": True}, strict=True)
 
     class FailedRecorder:
+        def acceptance_identity(self):
+            return {}
+
         def record_or_verify_transaction(self, *_args, **_kwargs):
             raise OSError("campaign ledger unavailable")
 

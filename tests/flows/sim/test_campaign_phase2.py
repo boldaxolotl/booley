@@ -154,6 +154,9 @@ def _simulation_changes(
         def __init__(self) -> None:
             self.changes = ()
 
+        def acceptance_identity(self):
+            return {}
+
         def record_or_verify_transaction(self, _state, changes, **_kwargs):
             self.changes = tuple(changes)
             return SimpleNamespace(transaction_id="a" * 64)
@@ -269,6 +272,9 @@ def _cycle_reconciliation(
     class Recorder:
         def __init__(self) -> None:
             self.changes = ()
+
+        def acceptance_identity(self):
+            return {}
 
         def record_or_verify_transaction(self, _state, changes, **_kwargs):
             self.changes = tuple(changes)
@@ -435,6 +441,9 @@ def test_acceptance_coordinator_uses_record_or_verify(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.calls = []
 
+        def acceptance_identity(self):
+            return {}
+
         def record_or_verify_transaction(self, state, changes, **kwargs):
             self.calls.append((state, changes, kwargs))
             return type("Transaction", (), {"transaction_id": "a" * 64})()
@@ -482,6 +491,9 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
     tmp_path: Path,
 ) -> None:
     class Recorder:
+        def acceptance_identity(self):
+            return {}
+
         def record_or_verify_transaction(self, *_args, **_kwargs):
             raise AssertionError("subset campaign must not publish target-level acceptance")
 

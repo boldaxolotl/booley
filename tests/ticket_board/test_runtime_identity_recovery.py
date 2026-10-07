@@ -39,7 +39,7 @@ def test_corrupt_selected_pointer_is_an_attributed_domain_error(tmp_path, name, 
 
 
 def test_proof_retry_recovers_abandoned_atomic_write_temporary(tmp_path, monkeypatch):
-    from booley.ticket_board import acceptance_ledger
+    from booley.criteria import evidence_ledger
 
     state = DevelopmentState()
     state.slug = "proof"
@@ -51,7 +51,7 @@ def test_proof_retry_recovers_abandoned_atomic_write_temporary(tmp_path, monkeyp
         raise OSError("killed after staging")
 
     with monkeypatch.context() as patch:
-        patch.setattr(acceptance_ledger, "_write_once", interrupted)
+        patch.setattr(evidence_ledger, "write_once", interrupted)
         with pytest.raises(OSError, match="killed after staging"):
             record_amendment_observations(
                 tmp_path,

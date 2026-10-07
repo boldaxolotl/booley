@@ -330,10 +330,19 @@ fingerprints. Moving shared field names below both packages does not move source
 scanning or execution responsibility out of Flows.
 
 `evidence.acceptance` owns storage-independent resolved acceptance inputs.
-`flows.execution_persistence` defines the execution and recording interface;
-`ticket_board.flow_execution` supplies the Ticket Board adapter. This keeps
-Ticket baseline lookup and ledger writes outside deterministic Flow execution
-under D17.
+`flows.execution_persistence` defines the execution and recording interface,
+including `AcceptanceRecorder.acceptance_identity()`, the public read of the
+identity evidence is recorded under; `ticket_board.flow_execution` supplies the
+Ticket Board adapter. This keeps Ticket baseline lookup and ledger writes
+outside deterministic Flow execution under D17.
+
+`criteria.evidence_ledger` owns durable Criterion evidence storage: V1 appends,
+V2 Simulation Campaign transactions, their lock, recovery, and publication
+checkpoints. Callers pass an `EvidenceScope` (a purpose plus an
+`EvidenceIdentityCodec`) and, for V2, an `EvidenceProjection`.
+`ticket_board.acceptance_ledger` composes it for Tickets: the
+`ticket_acceptance` purpose, the `TicketIdentity` codec, and report-submission
+fencing. The dependency points from `ticket_board` to `criteria` only (D30).
 
 Coverage Campaign persistence and queries remain Simulation Flow responsibilities.
 `flows.sim.coverage_campaign_store` owns V1/V2 loading, summary access, and complete

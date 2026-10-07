@@ -15,8 +15,13 @@ def _detail(attempt):
 
 @pytest.mark.parametrize("checkpoint", ["pending", "report", "positive", "state", "publication"])
 def test_restart_at_precommit_checkpoint_masks_positive(tmp_path, checkpoint):
+    from booley.criteria.evidence_ledger import replay_projection
     from booley.criteria.state import DevelopmentState
-    from booley.ticket_board.acceptance_ledger import _replay_projection, record_changes
+    from booley.ticket_board.acceptance_ledger import (
+        TICKET_REPORT_PROJECTION,
+        TICKET_SCOPE,
+        record_changes,
+    )
 
     state = DevelopmentState.load(tmp_path / ".runtime/booley_state.json")
     state.slug = "report"
@@ -44,7 +49,7 @@ def test_restart_at_precommit_checkpoint_masks_positive(tmp_path, checkpoint):
         (tmp_path / ".runtime/candidate-result.json").write_text('{"criterion_met": true}')
     attempt.close()
     reloaded = DevelopmentState.load(state._file_path)
-    _replay_projection(tmp_path, reloaded, {})
+    replay_projection(TICKET_SCOPE, TICKET_REPORT_PROJECTION, tmp_path, reloaded, {})
     assert not reloaded.is_met(rs.KEY)
     assert not rs.effective_met(tmp_path, True, detail, identity={})
     assert rs.read_receipt(tmp_path)["status"] == "pending"
