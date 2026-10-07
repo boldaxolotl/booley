@@ -139,6 +139,9 @@ MUTATION_PARAMS: frozenset[str] = frozenset({"scope", "min_detected", "total", "
 COVERAGE_METRICS: tuple[str, ...] = ("line", "branch", "expression", "toggle", "cover_property")
 
 
+PROJECT_SNAPSHOT_NAMES = ("booley.toml", "pipeline.toml", "tests.toml", ".gitignore")
+
+
 class GoalArgError(ValueError):
     """One Goal argument does not match its family's shape."""
 
@@ -723,8 +726,16 @@ class GoalRecord:
     protected_head_digest: str | None = None
     validated_head: str | None = None
     package_digest: str | None = None
+    finish_attempt_digest: str | None = None
     failure: str | None = None
     paired_project_base_sha: str | None = None
+    input_topology_digest: str | None = None
+    input_paths: Mapping[str, Any] | None = None
+    project_snapshot: Mapping[str, str | None] | None = None
+    publication_floor: int = 0
+    finish_operation: str | None = None
+    end_instruction_quote: str | None = None
+    abandon_operation: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The JSON form stored in ``record.json``."""
@@ -751,8 +762,18 @@ class GoalRecord:
             "protected_head_digest": self.protected_head_digest,
             "validated_head": self.validated_head,
             "package_digest": self.package_digest,
+            "finish_attempt_digest": self.finish_attempt_digest,
             "failure": self.failure,
             "paired_project_base_sha": self.paired_project_base_sha,
+            "input_topology_digest": self.input_topology_digest,
+            "input_paths": None if self.input_paths is None else dict(self.input_paths),
+            "project_snapshot": None
+            if self.project_snapshot is None
+            else dict(self.project_snapshot),
+            "publication_floor": self.publication_floor,
+            "finish_operation": self.finish_operation,
+            "end_instruction_quote": self.end_instruction_quote,
+            "abandon_operation": self.abandon_operation,
         }
 
     @classmethod
@@ -770,6 +791,8 @@ class GoalRecord:
         if schema != RECORD_SCHEMA_VERSION:
             raise GoalRecordFormatError(f"record.schema {schema} is not supported")
         record = cls(**_identity_fields(mapping), **_lifecycle_fields(mapping))
+        if not 0 <= record.publication_floor <= record.revision:
+            raise GoalRecordFormatError("publication_floor must be within record revisions")
         stale = [goal.spec.key for goal in record.goals if goal.spec_revision > record.revision]
         if stale:
             raise GoalRecordFormatError(f"record.goals {stale} are newer than the record")
@@ -804,8 +827,16 @@ _RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
         "protected_head_digest": None,
         "validated_head": None,
         "package_digest": None,
+        "finish_attempt_digest": None,
         "failure": None,
         "paired_project_base_sha": None,
+        "input_topology_digest": None,
+        "input_paths": None,
+        "project_snapshot": None,
+        "publication_floor": 0,
+        "finish_operation": None,
+        "end_instruction_quote": None,
+        "abandon_operation": None,
     }
 )
 
@@ -864,7 +895,25 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
             else _record_commit(validated_head, "record.validated_head")
         ),
         "package_digest": _record_opt_digest(mapping["package_digest"], "record.package_digest"),
+        "finish_attempt_digest": _record_opt_digest(
+            mapping["finish_attempt_digest"], "record.finish_attempt_digest"
+        ),
         "failure": _record_opt_str(mapping["failure"], "record.failure"),
+        "input_topology_digest": _record_opt_digest(
+            mapping["input_topology_digest"], "input_topology_digest"
+        ),
+        "input_paths": _record_input_paths(mapping["input_paths"]),
+        "project_snapshot": _record_project_snapshot(mapping["project_snapshot"]),
+        "publication_floor": _record_nonnegative_int(
+            mapping["publication_floor"], "publication_floor"
+        ),
+        "finish_operation": _record_opt_str(mapping["finish_operation"], "finish_operation"),
+        "abandon_operation": None
+        if mapping["abandon_operation"] is None
+        else require_uuid4(mapping["abandon_operation"], field="abandon_operation"),
+        "end_instruction_quote": _record_opt_str(
+            mapping["end_instruction_quote"], "end_instruction_quote"
+        ),
     }
 
 
@@ -934,6 +983,47 @@ def _record_positive_int(raw: object, where: str) -> int:
     if value < 1:
         raise GoalRecordFormatError(f"{where} must be a positive integer, got {value}")
     return value
+
+
+def _record_nonnegative_int(raw: object, where: str) -> int:
+    try:
+        value = require_int(raw, field=where)
+    except BoundaryError as exc:
+        raise GoalRecordFormatError(str(exc)) from None
+    if value < 0:
+        raise GoalRecordFormatError(f"{where} must be a nonnegative integer")
+    return value
+
+
+def _record_input_paths(raw: object) -> dict[str, Any] | None:
+    from booley.goals.input_identity import parse_bindings
+
+    if raw is None:
+        return None
+    try:
+        return parse_bindings(raw)
+    except ValueError as exc:
+        raise GoalRecordFormatError(str(exc)) from exc
+
+
+def _record_project_snapshot(raw: object) -> dict[str, str | None] | None:
+    if raw is None:
+        return None
+    snapshot = _record_mapping(raw, "project_snapshot")
+    if set(snapshot) != set(PROJECT_SNAPSHOT_NAMES):
+        raise GoalRecordFormatError("project_snapshot has unexpected configuration names")
+    result: dict[str, str | None] = {}
+    for name, value in snapshot.items():
+        if value is not None and not isinstance(value, str):
+            raise GoalRecordFormatError("project_snapshot must contain hex strings or null")
+        text = value
+        if text is not None:
+            try:
+                bytes.fromhex(text)
+            except ValueError as exc:
+                raise GoalRecordFormatError("project_snapshot must contain hex bytes") from exc
+        result[name] = text
+    return result
 
 
 def _record_commit(raw: object, where: str) -> str:

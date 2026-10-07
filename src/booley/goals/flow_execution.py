@@ -80,6 +80,10 @@ class GoalFlowExecution:
         )
         return ResolvedFlowAcceptance(paired_project=paired)
 
+    def done_findings_require_approval(self) -> bool:
+        """Goal completion exposes findings without changing its accepted completion policy."""
+        return False
+
     def criterion_source_target(self, key: str, fallback: str | None) -> str | None:
         """Stamp against a declared Goal Target before the producer samples sources.
 

@@ -2362,7 +2362,14 @@ def _check_devcontainer_excludes(
     common = _git_common_dir(project_root)
     exclude = (common / "info" / "exclude") if common else None
     body = exclude.read_text(encoding="utf-8") if exclude and exclude.is_file() else ""
-    missing = [n for n in (".devcontainer", ".booley_project") if f"/{n}" not in body]
+    from booley.commit_policy import stealth_enabled
+
+    required = (
+        (".devcontainer", ".booley_project")
+        if stealth_enabled(project_root)
+        else (".devcontainer",)
+    )
+    missing = [name for name in required if f"/{name}" not in body]
     if missing:
         for entry in missing:
             _warning_sink(
@@ -3042,6 +3049,9 @@ def _run_ticket_preflight_parity_checks(
     _check_ticket_board_layout(project.project_dir, reporter.pass_, reporter.fail_)
     _check_project_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_ticket_history_committed(project.project_dir, reporter.pass_, reporter.warn_)
+    _check_goal_history_ignored(
+        project.project_root, project.project_dir, reporter.pass_, reporter.warn_
+    )
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_ticket_board_import(project.project_root, reporter.pass_, reporter.fail_)
@@ -3152,6 +3162,45 @@ def _check_ticket_history_committed(project_dir: Path, _pass: Check, _warn: Chec
         f"{len(pending)} Closed Ticket history record(s) not committed yet ({shown})",
         "run any `booley board` command to retry the commit and read its warning",
     )
+
+
+def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _warn: Warn) -> None:
+    """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
+    from booley.commit_policy import stealth_enabled
+    from booley.runtime.project_dir import PROJECT_DIR_NAME
+
+    if stealth_enabled(root, project_dir=project_dir):
+        return
+    relative = (Path(PROJECT_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
+    _warn = _warning_sink(_warn, "goals.history-ignored")
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-v", "--", relative],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _warn(
+            f"cannot inspect Goal history exclusions: {exc}",
+            "check Git exclusions and rerun booley doctor",
+        )
+        return
+    if result.returncode == 0:
+        _warn(
+            f"Goal Session Summary path {relative} is gitignored; summaries remain local. "
+            f"Exclusion: {result.stdout.strip()}",
+            "edit the reported exclusion when publication is wanted, then rerun booley doctor",
+        )
+    elif result.returncode == 1:
+        _pass("Goal history is eligible for commits")
+    else:
+        _warn(
+            f"cannot inspect Goal history exclusions: {result.stderr.strip()}",
+            "check Git exclusions and rerun booley doctor",
+        )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:

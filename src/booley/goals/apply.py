@@ -173,16 +173,33 @@ def decide(
 def recover(store: GoalStore, record_id: str, env: ChangeEnvironment) -> GoalRecord:
     """Shared mutating-call recovery for proposal calls and Phase 5 finish."""
     with store.record_lock(record_id) as lock:
-        _recover_locked(lock, env)
+        recover_locked(lock, env)
         return store.load(record_id)
 
 
-def _recover_locked(lock: RecordLock, env: ChangeEnvironment) -> None:
+def recover_locked(lock: RecordLock, env: ChangeEnvironment, *, abandoning: bool = False) -> None:
+    """Shared authority under an already-owned lifecycle lock. Abandon only committed intents."""
+    lock.require_owned()
     views = list_proposals(lock.record_dir)
-    approved = [view for view in views if view.state == "approved"]
+    log = read_change_log(lock.record_dir / "changes.jsonl")
+    intents = {entry.id for entry in (*log.interrupted, *log.applied)}
+    approved = [
+        view
+        for view in views
+        if view.state == "approved"
+        and not view.closed_by_abandonment
+        and (not abandoning or view.proposal.id in intents)
+    ]
     if len(approved) > 1:
         raise ProposalError("more than one approved Goal apply needs recovery")
     for view in views:
+        if view.closed_by_abandonment:
+            continue
+        if abandoning and (
+            view.state == "pending"
+            or (view.state == "approved" and view.proposal.id not in intents)
+        ):
+            continue
         if (
             view.state not in {"approved", "rejected"}
             or view.decision is None
@@ -213,7 +230,7 @@ def _waiver_lock(proposal: Proposal, env: ChangeEnvironment) -> Generator[None]:
 
 
 def _require_pending(view: ProposalView, record: GoalRecord) -> None:
-    if view.state != "pending":
+    if view.closed_by_abandonment or view.state != "pending":
         raise ProposalError("proposal already decided; terminal decisions cannot be replayed")
     if record.state is not GoalState.ACTIVE:
         raise ProposalError(f"Goal Mode is {record.state.value}")

@@ -363,6 +363,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{verdicts}\n", stderr=""
             )
+        if cmd[0:2] == ["git", "check-ignore"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -8370,3 +8372,45 @@ def test_doctor_renders_synthesis_target_migration(
     output = capsys.readouterr().out
     assert f"flow_options.{key} is retired" in output
     assert replacement in output
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+def test_goal_history_exclusion_diagnostic_preserves_explicit_git_policy(tmp_path, ignored):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _history_git(root, "init", "-q", "-b", "main")
+    project = root / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    exclude = root / ".git/info/exclude"
+    exclude.write_text(".booley_project/\n" if ignored else "")
+    before = exclude.read_bytes()
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
+    findings = reporter.findings or []
+    if ignored:
+        assert [(finding.severity, finding.check_id) for finding in findings] == [
+            ("warn", "goals.history-ignored")
+        ]
+    else:
+        assert [finding.severity for finding in findings] == ["pass"]
+    assert exclude.read_bytes() == before
+
+
+def test_goal_history_exclusion_uses_rtl_checkout_with_external_control(tmp_path):
+    root = tmp_path / "rtl"
+    root.mkdir()
+    _history_git(root, "init", "-q", "-b", "main")
+    control = tmp_path / "control"
+    control.mkdir()
+    (control / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    exclude = root / ".git/info/exclude"
+    exclude.write_text(".booley_project/\n")
+    before = exclude.read_bytes()
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(root, control, reporter.pass_, reporter.warn_)
+    findings = reporter.findings or []
+    assert findings[0].check_id == "goals.history-ignored"
+    assert ".git/info/exclude:1:.booley_project/" in findings[0].message
+    assert not (root / ".booley_project").exists()
+    assert exclude.read_bytes() == before

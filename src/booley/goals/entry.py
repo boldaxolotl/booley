@@ -312,6 +312,9 @@ def _plan_entry(
         default_skipped=request.default_skipped,
         skip_reason=request.skip_reason,
         paired_project_base_sha=None if paired is None else paired.head_sha(),
+        input_topology_digest=_input_topology(checkout.root),
+        input_paths=_input_paths(checkout.root, project_dir),
+        project_snapshot=_input_snapshot(checkout.root),
     )
     return _EntryPlan(record, goal_criterion_params(translation.goals), tuple(warnings))
 
@@ -385,9 +388,9 @@ def _require_linked_worktree_root(work_dir: Path) -> Path:
 
 def _refuse_worktree_copy(project_dir: Path, work_dir: Path) -> None:
     """Refuse a control Project directory inside the worktree: that is its copy (D9)."""
-    try:
-        Path(os.path.realpath(project_dir)).relative_to(os.path.realpath(work_dir))
-    except ValueError:
+    from booley.runtime.project_dir import contains
+
+    if contains(project_dir, project_dir=work_dir) is None:
         return
     raise GoalEntryError(
         f"the Project directory {project_dir} is the worktree's own copy; Goal Records "
@@ -730,3 +733,25 @@ def _describe_goal(goal: GoalSpec) -> str:
     subject = goal.target if goal.target is not None else "review"
     origins = ", ".join(goal.origins)
     return f"{goal.key}: {goal.family.value} {subject} (from {origins})"
+
+
+def _input_topology(root: Path) -> str:
+    from booley.goals.input_view import topology_digest
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    paired = _paired_project_checkout(root)
+    return "sha256:" + topology_digest(
+        root, resolve_checkout_project_dir(root), None if paired is None else paired.root
+    )
+
+
+def _input_snapshot(root: Path) -> dict[str, str | None] | None:
+    from booley.goals.input_view import snapshot_project
+
+    return snapshot_project(root)
+
+
+def _input_paths(root: Path, project_dir: Path) -> dict[str, Any]:
+    from booley.goals.input_view import capture_path_roots
+
+    return capture_path_roots(root, project_dir)

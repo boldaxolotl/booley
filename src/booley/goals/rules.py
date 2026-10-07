@@ -42,4 +42,12 @@ def goal_mode_rules() -> str:
         "Summary. Commit your work on the Goal Branch.",
         "Check `goal_status` when unsure; `goal_status(rules=true)` repeats these rules.",
     )
-    return "".join(f"- {bullet}\n" for bullet in bullets)
+    return LIFECYCLE_RETRY_RULE + "\n" + "".join(f"- {bullet}\n" for bullet in bullets)
+
+
+LIFECYCLE_RETRY_RULE = (
+    "Pass record_id and a caller-stable operation_id to goal_finish, including abandonment. "
+    "Retry with identical summary/quote/options to recover its saved result, even after re-entry. "
+    "A revalidation_required result needs a fresh operation_id and Session Summary. "
+    "Open done review findings do not require a second approval to finish."
+)

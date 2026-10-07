@@ -228,10 +228,20 @@ def resolve_worktree_identity(work_dir: Path, *, create: bool = False) -> Worktr
 
 def _checkout_name(git_dir: Path, common_dir: Path) -> str:
     """``main`` for the primary checkout, ``worktrees/<admin>`` for a linked one."""
-    if git_dir == common_dir:
-        return MAIN_CHECKOUT
-    if git_dir.parent == common_dir / "worktrees":
-        return f"worktrees/{git_dir.name}"
+    try:
+        if git_dir.samefile(common_dir):
+            return "main"
+        candidates = common_dir / "worktrees"
+        if candidates.is_dir():
+            names = [
+                child.name
+                for child in candidates.iterdir()
+                if child.is_dir() and child.samefile(git_dir)
+            ]
+            if len(names) == 1:
+                return "worktrees/" + names[0]
+    except OSError as exc:
+        raise WorktreeIdentityError(f"cannot inspect Git directory identity: {exc}") from exc
     raise WorktreeIdentityError(f"Git directory {git_dir} is not a worktree of {common_dir}")
 
 
@@ -331,6 +341,9 @@ _CREATION_FIELDS = (
     "base_sha",
     "entered_at",
     "paired_project_base_sha",
+    "input_topology_digest",
+    "input_paths",
+    "project_snapshot",
 )
 
 
@@ -539,6 +552,8 @@ class GoalStore:
                 f"Goal Record {record.id} cannot move from {current.state.value} "
                 f"to {record.state.value}"
             )
+        if record.publication_floor < current.publication_floor:
+            raise InvalidRecordUpdateError("lifecycle publication fence cannot move backward")
         changed = [
             name for name in _CREATION_FIELDS if getattr(record, name) != getattr(current, name)
         ]

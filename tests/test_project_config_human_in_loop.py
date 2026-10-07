@@ -15,6 +15,7 @@ from booley.config.project_config import (
     project_name,
     render_test_selector,
 )
+from booley.runtime.project_dir import reset_cache
 
 
 def _write_toml(work_dir: Path, body: str) -> None:
@@ -24,6 +25,15 @@ def _write_toml(work_dir: Path, body: str) -> None:
 
 
 class TestProjectName:
+    @pytest.fixture(autouse=True)
+    def empty_ambient_project(self, tmp_path, monkeypatch):
+        """The default-name contract assumes no intentional legacy ambient Project override."""
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.chdir(tmp_path)
+        reset_cache()
+        yield
+        reset_cache()
+
     def test_missing_toml_uses_default_without_warning(self, tmp_path: Path, caplog):
         assert project_name(tmp_path) == "rtl_project"
         assert not caplog.records

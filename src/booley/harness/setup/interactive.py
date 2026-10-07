@@ -6,6 +6,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.commit_policy import stealth_enabled
 from booley.eda.provisioning.licensing.flexnet_docker import (
     remove_relay,
     resources_for_session,
@@ -13,7 +14,11 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
 from booley.runtime import interactive_docker, session_issuance, session_runtime
 from booley.runtime.git import add_git_excludes, git_excludes_pending
 
-_EXCLUDE_NAMES = (".devcontainer", ".booley_project", ".claude")
+
+def _exclude_names(root: Path) -> tuple[str, ...]:
+    """Fresh non-Stealth Projects keep durable Project content trackable."""
+    names = (".devcontainer", ".claude")
+    return (*names, ".booley_project") if stealth_enabled(root) else names
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +105,9 @@ def inspect(request: InteractiveInitRequest) -> InteractiveInitPlan:
         prepared=prepared,
         issuance=issuance,
         issuance_problem=issuance_problem,
-        exclusions_pending=git_excludes_pending(request.project_root, _EXCLUDE_NAMES),
+        exclusions_pending=git_excludes_pending(
+            request.project_root, _exclude_names(request.project_root)
+        ),
         relay_cleanup_pending=relay_pending,
         runtime_cleanup_pending=runtime_pending,
     )
@@ -127,7 +134,9 @@ def apply(plan: InteractiveInitPlan, *, force: bool = False) -> InteractiveInitC
     runtime_reconciled = session_runtime.reconcile_stopped_headless_runtime(
         plan.request.project_root, issuance
     )
-    exclusions_changed = add_git_excludes(plan.request.project_root, _EXCLUDE_NAMES)
+    exclusions_changed = add_git_excludes(
+        plan.request.project_root, _exclude_names(plan.request.project_root)
+    )
     return InteractiveInitChanges(
         issuance=issuance,
         issued=issued,

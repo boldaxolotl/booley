@@ -59,7 +59,13 @@ class TargetSurfaceError(RuntimeError):
     """The bound Target's declaration cannot be resolved now."""
 
 
-def target_surface_fingerprint(work_dir: Path, target: str | None) -> dict[str, Any]:
+def target_surface_fingerprint(
+    work_dir: Path,
+    target: str | None,
+    *,
+    logical_roots: Mapping[Path, Path] | None = None,
+    logical_tests: str | None = None,
+) -> dict[str, Any]:
     """The ``target_surface`` fingerprint entry: ``{"digest", "files"}`` (module docstring).
 
     Raises :class:`TargetSurfaceError` when the Target or one of its cores
@@ -83,7 +89,13 @@ def target_surface_fingerprint(work_dir: Path, target: str | None) -> dict[str, 
         for listed in _auxiliary_fileset_files(document, core, root):
             files[("fileset", _label(listed, root))] = listed
     entries = [
-        {"kind": kind, "path": label, "sha256": _content_digest(path)}
+        {
+            "kind": kind,
+            "path": logical_tests
+            if kind == "tests" and logical_tests is not None
+            else _logical_label(label, logical_roots),
+            "sha256": _content_digest(path),
+        }
         for (kind, label), path in sorted(files.items())
     ]
     payload = json.dumps(
@@ -166,3 +178,12 @@ def _content_digest(path: Path) -> str | None:
         return None
     except OSError as exc:
         raise TargetSurfaceError(f"cannot read Target declaration file {path}: {exc}") from exc
+
+
+def _logical_label(label: str, roots: Mapping[Path, Path] | None) -> str:
+    path = Path(label)
+    if path.is_absolute():
+        for physical, logical in (roots or {}).items():
+            if path.is_relative_to(physical):
+                return (logical / path.relative_to(physical)).as_posix()
+    return label

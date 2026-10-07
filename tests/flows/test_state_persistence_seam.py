@@ -217,3 +217,14 @@ def test_coverage_publication_discard_is_reported_and_saves_nothing(tmp_path: Pa
     assert persistence.writers == []
     assert not state_file.exists()
     assert state.criteria["coverage_sim_0"].met is False
+
+
+def test_optional_done_approval_policy_accepts_neutral_recorders():
+    from booley.flows.execution_persistence import done_findings_require_approval_for
+
+    class IndependentRecorder(NoAcceptanceRecorder):
+        def done_findings_require_approval(self) -> bool:
+            return False
+
+    assert not done_findings_require_approval_for(IndependentRecorder())
+    assert done_findings_require_approval_for(NoAcceptanceRecorder())

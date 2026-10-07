@@ -19,6 +19,7 @@ import os
 import tomllib
 from collections.abc import Generator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from booley.core.boundary import as_dict, as_str
@@ -152,6 +153,28 @@ def _resolve_explicit_project_dir(root: Path) -> Path | None:
     return local if local.is_dir() else None
 
 
+_input_projects: ContextVar[dict[Path, Path] | None] = ContextVar(
+    "booley_input_projects", default=None
+)
+
+
+@contextmanager
+def committed_project_scope(root: Path, project: Path) -> Generator[None]:
+    """Bind an explicit immutable input view without process-global selection changes.
+
+    The materialization owner proves topology and captures every permitted
+    non-versioned input before entering this scope. Only this exact root is
+    rebound; other callers retain their ordinary checkout resolution.
+    """
+    token = _input_projects.set(
+        {**(_input_projects.get() or {}), root.resolve(): project.resolve()}
+    )
+    try:
+        yield
+    finally:
+        _input_projects.reset(token)
+
+
 def resolve_checkout_project_dir(project_root: Path) -> Path:
     """Resolve config for one explicitly selected checkout.
 
@@ -161,6 +184,9 @@ def resolve_checkout_project_dir(project_root: Path) -> Path:
     without a local snapshot retain the normal resolution chain.
     """
     root = require_project_checkout(project_root)
+    captured = (_input_projects.get() or {}).get(root.resolve())
+    if captured is not None:
+        return captured
     explicit = _resolve_explicit_project_dir(root)
     if explicit is not None:
         return explicit

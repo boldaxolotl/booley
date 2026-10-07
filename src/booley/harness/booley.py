@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from booley.config.jobs import parse_caps
 from booley.feedback import cli as feedback_cli
@@ -1182,10 +1182,13 @@ def _add_goal_subparser(sub) -> None:
 
     Registered only while BOOLEY_GOAL_MODE_PREVIEW=1; see command_locations().
     """
-    goal_p = sub.add_parser(
-        "goal",
-        help="Inspect or abandon this worktree's Goal Mode",
-        description="Goal Mode commands for the Goal Mode this worktree hosts.",
+    goal_p = cast(
+        "argparse.ArgumentParser",
+        sub.add_parser(
+            "goal",
+            help="Inspect or abandon this worktree's Goal Mode",
+            description="Goal Mode commands for the Goal Mode this worktree hosts.",
+        ),
     )
     goal_sub = goal_p.add_subparsers(
         dest="goal_command", metavar="{status,abandon}", required=True
@@ -1194,7 +1197,14 @@ def _add_goal_subparser(sub) -> None:
     detail = status_p.add_mutually_exclusive_group()
     detail.add_argument("--short", action="store_true", help="One-line summary")
     detail.add_argument("--long", action="store_true", help="Full detail")
-    goal_sub.add_parser("abandon", help="Abandon this worktree's Goal Mode")
+    abandon_p = goal_sub.add_parser("abandon", help="Abandon this worktree's Goal Mode")
+    abandon_p.add_argument("--record-id", help="Exact expected Goal record for a retry")
+    abandon_p.add_argument("--operation-id", help="Stable UUID operation for a retry")
+    abandon_p.add_argument(
+        "--instruction-quote",
+        default="Human invoked booley goal abandon",
+        help="Human instruction retained in the record",
+    )
 
 
 def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
@@ -1215,8 +1225,48 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         except (GoalStoreError, GoalStateError, AcceptanceLedgerError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
-    print(f"booley goal {args.goal_command}: not available yet", file=sys.stderr)
-    return 2
+    return _abandon_goal_cli(args, _project_root)
+
+
+def _abandon_goal_cli(args: argparse.Namespace, _project_root: Path) -> int:
+    """Render the shared lifecycle result and its exact retry identity."""
+    from booley.goals.abandon import abandon_goal
+    from booley.goals.checkout import CheckoutError
+    from booley.goals.entry import EntryEnvironment
+    from booley.goals.lifecycle import LifecycleError
+    from booley.goals.proposals import ProposalError
+    from booley.goals.store import GoalStore, GoalStoreError
+    from booley.mcp.goal_completion import completion_environment
+    from booley.runtime.history_commit import FileCommitError
+    from booley.runtime.project_dir import resolve_project_dir
+
+    try:
+        project_dir = resolve_project_dir(_project_root)
+        result = abandon_goal(
+            GoalStore(project_dir),
+            Path.cwd(),
+            completion_environment(EntryEnvironment(project_dir)),
+            record_id=args.record_id,
+            operation_id=args.operation_id,
+            instruction_quote=args.instruction_quote,
+            on_bound=lambda request: print(
+                f"Retry IDs: --record-id {request.record_id} --operation-id {request.operation_id}",
+                flush=True,
+            ),
+        )
+        print(result["message"])
+        return 0
+    except (
+        LifecycleError,
+        GoalStoreError,
+        ProposalError,
+        CheckoutError,
+        FileCommitError,
+        OSError,
+        ValueError,
+    ) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 def _add_targets_subparser(sub) -> None:

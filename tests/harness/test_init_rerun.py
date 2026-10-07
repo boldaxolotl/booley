@@ -129,6 +129,8 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
 
 
 class TestFullInitRerun:
+    # Windows CI measured 34.1s: 3x slowest rounded up to 30s requires 120s.
+    @pytest.mark.timeout(120)
     def test_check_only_after_full_init_is_current_and_mutation_free(
         self,
         repo: Path,

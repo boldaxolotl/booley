@@ -8,6 +8,7 @@ from stat import S_ISDIR
 from booley.core.project_dir import (
     PROJECT_DIR_NAME,
     checkout_project_dir_relative_to,
+    committed_project_scope,
     init_project_dir_scope,
     project_dir_for_init,
     reset_cache,
@@ -19,6 +20,7 @@ from booley.core.project_dir import (
 __all__ = [
     "PROJECT_DIR_NAME",
     "checkout_project_dir_relative_to",
+    "committed_project_scope",
     "contains",
     "init_project_dir_scope",
     "project_dir_for_init",

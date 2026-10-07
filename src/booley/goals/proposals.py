@@ -26,6 +26,7 @@ from booley.goals.changes import Approval, ChangeKind
 from booley.goals.model import (
     GoalRecord,
     GoalSpec,
+    GoalState,
     WorktreeIdentity,
     parse_goal_arg,
     record_timestamp,
@@ -243,6 +244,7 @@ class ProposalView:
     applied_at: str | None = None
     resolved_at: str | None = None
     transaction_digest: str | None = None
+    closed_by_abandonment: str | None = None
 
     def metadata(self) -> dict[str, Any]:
         """Separate mutable metadata, bound to the immutable payload."""
@@ -253,6 +255,7 @@ class ProposalView:
             "decision": None if self.decision is None else self.decision.to_json(),
             "applied_at": self.applied_at,
             "resolved_at": self.resolved_at,
+            "closed_by_abandonment": self.closed_by_abandonment,
         }
         if self.transaction_digest is not None:
             result["transaction_digest"] = self.transaction_digest
@@ -276,25 +279,7 @@ def load_proposal(root: Path, proposal_id: str) -> ProposalView:
 
 
 def _view(proposal: Proposal, value: object) -> ProposalView:
-    raw = {
-        "resolved_at": None,
-        "transaction_digest": None,
-        **require_dict(value, field="proposal state"),
-    }
-    if (
-        set(raw)
-        != {
-            "schema",
-            "payload_digest",
-            "state",
-            "decision",
-            "applied_at",
-            "resolved_at",
-            "transaction_digest",
-        }
-        or raw["schema"] != "booley.goal-proposal-state/v1"
-    ):
-        raise ProposalError("invalid Goal proposal lifecycle schema")
+    raw = _state_metadata(value)
     if raw["payload_digest"] != proposal.payload_digest:
         raise ProposalError("Goal proposal payload was substituted")
     state = raw["state"]
@@ -316,10 +301,44 @@ def _view(proposal: Proposal, value: object) -> ProposalView:
     )
     if resolved_at is not None and state != "rejected":
         raise ProposalError("only rejection effects have a resolution timestamp")
-    transaction_digest = _transaction_digest(raw["transaction_digest"], decision)
     return ProposalView(
-        proposal, cast("ProposalState", state), decision, at, resolved_at, transaction_digest
+        proposal,
+        cast("ProposalState", state),
+        decision,
+        at,
+        resolved_at,
+        _transaction_digest(raw["transaction_digest"], decision),
+        _closure_timestamp(raw["closed_by_abandonment"]),
     )
+
+
+def _state_metadata(value: object) -> dict[str, Any]:
+    raw = {
+        "closed_by_abandonment": None,
+        "resolved_at": None,
+        "transaction_digest": None,
+        **require_dict(value, field="proposal state"),
+    }
+    if (
+        set(raw)
+        != {
+            "schema",
+            "payload_digest",
+            "state",
+            "decision",
+            "applied_at",
+            "resolved_at",
+            "transaction_digest",
+            "closed_by_abandonment",
+        }
+        or raw["schema"] != "booley.goal-proposal-state/v1"
+    ):
+        raise ProposalError("invalid Goal proposal lifecycle schema")
+    return raw
+
+
+def _closure_timestamp(value: object) -> str | None:
+    return None if value is None else record_timestamp(value, "closed_by_abandonment")
 
 
 def _transaction_digest(value: object, decision: Decision | None) -> str | None:
@@ -372,7 +391,11 @@ def save_decision(
     """Only a pending exact payload can receive a decision, including rejection."""
     lock.require_owned()
     current = load_proposal(lock.record_dir, view.proposal.id)
-    if current.state != "pending" or current.proposal != view.proposal:
+    if (
+        current.closed_by_abandonment
+        or current.state != "pending"
+        or current.proposal != view.proposal
+    ):
         raise ProposalError("proposal already decided or payload changed")
     updated = replace(
         view,
@@ -431,6 +454,25 @@ def finalize_rejection(lock: RecordLock, view: ProposalView) -> ProposalView:
     if current.resolved_at is not None:
         return current
     updated = replace(current, resolved_at=utc_now_rfc3339())
+    atomic_replace_bytes(
+        proposal_path(lock.record_dir, view.proposal.id) / "state.json", encode(updated.metadata())
+    )
+    return updated
+
+
+def close_by_abandonment(
+    lock: RecordLock, view: ProposalView, *, closed_at: str | None = None
+) -> ProposalView:
+    """Close pre-intent proposals without changing their original human decision."""
+    lock.require_owned()
+    if view.closed_by_abandonment is not None:
+        return view
+    if (
+        GoalRecord.from_json(json.loads((lock.record_dir / "record.json").read_bytes())).state
+        is not GoalState.ABANDONED
+    ):
+        raise ProposalError("proposal closure requires durable abandonment")
+    updated = replace(view, closed_by_abandonment=closed_at or utc_now_rfc3339())
     atomic_replace_bytes(
         proposal_path(lock.record_dir, view.proposal.id) / "state.json", encode(updated.metadata())
     )

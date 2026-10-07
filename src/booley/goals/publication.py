@@ -145,6 +145,8 @@ class PublicationGate:
             raise EvidenceDiscarded(
                 "the Goal Mode's protected-input baseline changed during the run"
             )
+        if binding.record_revision < record.publication_floor:
+            raise EvidenceDiscarded("run predates the Goal lifecycle publication fence")
         current = {goal.spec.key: goal.spec_revision for goal in record.goals}
         for key in sorted(affected):
             admitted = binding.spec_revision(key)

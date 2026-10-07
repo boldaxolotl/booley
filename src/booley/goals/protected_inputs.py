@@ -90,13 +90,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from booley.core.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
 from booley.goals.checkout import CheckoutError, GoalCheckout
+from booley.goals.input_identity import capture_roots, require_bindings
 from booley.runtime.git import git_common_dir
 
 # The protected set as the rules text names it (ADR 0067 "Protected inputs").
@@ -163,6 +165,22 @@ class ProtectedInputRoots:
 
     worktree: Path
     project_dir: Path
+    logical_paths: tuple[tuple[Path, Path], ...] = ()
+    checkout_label: tuple[RootKind, str] | None = None
+
+    def with_input_paths(self, saved: Mapping[str, Any] | None) -> ProtectedInputRoots:
+        """Physical proof preserves D7 labels and resolves them through the current mount."""
+        if saved is None:
+            return self
+        current = capture_roots(self.worktree, self.project_dir)
+        require_bindings(saved, current)
+        return replace(
+            self,
+            logical_paths=tuple(
+                (Path(current[key]["path"]), Path(saved[key]["path"])) for key in saved
+            ),
+            checkout_label=_entry_checkout_label(saved),
+        )
 
     def main_checkout(self) -> Path | None:
         """The primary checkout of the worktree's repository (``None`` for a bare one)."""
@@ -175,7 +193,15 @@ class ProtectedInputRoots:
     def absolute(self, path: ProtectedPath, main: Path | None) -> Path | None:
         """Where *path* is now; ``None`` when its root does not exist."""
         if path.root is RootKind.ABSOLUTE:
-            return Path(path.relative)
+            physical = Path(path.relative)
+            for current, original in sorted(
+                self.logical_paths,
+                key=lambda pair: len(pair[1].parts),
+                reverse=True,
+            ):
+                if physical.is_relative_to(original):
+                    return current / physical.relative_to(original)
+            return physical
         base = {
             RootKind.WORKTREE: self.worktree,
             RootKind.PROJECT: self.project_dir,
@@ -240,6 +266,8 @@ def resolve_protected_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath,
 
 def _checkout_project_dir(roots: ProtectedInputRoots) -> tuple[RootKind, str]:
     """The directory Flow readers resolve for the worktree, relative to its root."""
+    if roots.checkout_label is not None:
+        return roots.checkout_label
     try:
         resolved = resolve_checkout_project_dir(roots.worktree)
     except FileNotFoundError:
@@ -255,7 +283,27 @@ def _checkout_project_dir(roots: ProtectedInputRoots) -> tuple[RootKind, str]:
             except ValueError:
                 continue
             return kind, "" if relative == "." else relative
+    for current, original in sorted(
+        roots.logical_paths, key=lambda pair: len(pair[0].parts), reverse=True
+    ):
+        if resolved.is_relative_to(current):
+            resolved = original / resolved.relative_to(current)
+            break
     return RootKind.ABSOLUTE, resolved.as_posix()
+
+
+def _entry_checkout_label(saved: Mapping[str, Any]) -> tuple[RootKind, str]:
+    """Keep the exact D7 role label after physical roots have been proved equal."""
+    project = Path(saved["project"]["path"])
+    for key, kind in (
+        ("rtl", RootKind.WORKTREE),
+        ("control", RootKind.PROJECT),
+        ("main", RootKind.MAIN),
+    ):
+        if key in saved and project.is_relative_to(Path(saved[key]["path"])):
+            relative = project.relative_to(Path(saved[key]["path"])).as_posix()
+            return kind, "" if relative == "." else relative
+    return RootKind.ABSOLUTE, project.as_posix()
 
 
 def _join(directory: str, name: str) -> str:

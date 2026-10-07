@@ -164,7 +164,7 @@ def test_dispatch_refuses_a_hidden_goal_tool_even_if_named(
 
 
 @pytest.mark.parametrize("name", ["goal_finish"])
-def test_later_goal_tools_say_not_available_yet(
+def test_finish_requires_explicit_retry_binding(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
@@ -173,7 +173,7 @@ def test_later_goal_tools_say_not_available_yet(
     payload = _call(name, {"work_dir": "/nowhere"})
 
     assert payload.is_error is True
-    assert "not available yet" in payload.content[0].text
+    assert "record_id" in payload.content[0].text
 
 
 def test_goal_enter_without_work_dir_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
