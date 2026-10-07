@@ -13,7 +13,7 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.endpoint_report_criteria import ReportCriteria, freeze, project
-from booley.flows.endpoint_reporting import _StdoutWitness
+from booley.flows.endpoint_reporting import _StdoutWitness, report_discarded_evidence
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
@@ -83,6 +83,7 @@ def prepare_execution(
     if callable(reset):
         reset()
     endpoint._report_criteria = ReportCriteria()
+    endpoint.reset_evidence_discard()
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
         if endpoint.endpoint_kind in {"flow", "specialist"}:
@@ -218,6 +219,7 @@ def finish_execution(
 ) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
     final_outcome = endpoint._adapt_outcome(outcome)
+    report_discarded_evidence(endpoint, final_outcome)
     project(endpoint, final_outcome)
     exit_code = endpoint._finish_main(
         final_outcome,

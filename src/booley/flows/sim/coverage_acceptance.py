@@ -13,13 +13,17 @@ from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.criterion_freshness import build_criterion_freshness
-from booley.flows.execution_persistence import AcceptanceRecorder
+from booley.flows.execution_persistence import AcceptanceRecorder, EvidenceDiscarded
 
 from .coverage_projection import project_coverage_criterion
 
 if TYPE_CHECKING:
     from .coverage_campaign import CoverageCampaign
     from .coverage_invocation import CoverageTargetPlan
+
+
+#: The fields a published shadow hands back to the live state.
+_COPIED_BACK = ("work_dir", "criteria", "acceptance_transactions", "last_updated")
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,8 @@ class CoverageAcceptance:
     state: DevelopmentState
     recorder: AcceptanceRecorder = field(compare=False)
     observer: Callable[[list[CriterionChange]], None] | None = field(default=None, compare=False)
+    # Told when the recorder discards the evidence (B1); without it the error propagates.
+    on_discard: Callable[[EvidenceDiscarded], None] | None = field(default=None, compare=False)
 
     def publish(self, plan: CoverageTargetPlan, campaign: CoverageCampaign, path: Path) -> None:
         """Append normalized evidence before committing the mutable state projection."""
@@ -39,22 +45,31 @@ class CoverageAcceptance:
             self.observer(changes)
         if not changes:
             return
-        if shadow.strict_criteria:
-            transaction = hashlib.sha256(campaign.campaign_id.encode()).hexdigest()
-            self.recorder.record_changes(
-                shadow,
-                changes,
-                invocation_id=campaign.campaign_id,
-                producer="sim",
-                transaction_id=transaction,
-            )
-            if transaction not in shadow.acceptance_transactions:
-                shadow.acceptance_transactions.append(transaction)
-        shadow.save()
-        self.state.work_dir = shadow.work_dir
-        self.state.criteria = shadow.criteria
-        self.state.acceptance_transactions = shadow.acceptance_transactions
-        self.state.last_updated = shadow.last_updated
+        try:
+            self._record(shadow, campaign, changes)
+            shadow.save()
+        except EvidenceDiscarded as exc:
+            if self.on_discard is None:
+                raise
+            self.on_discard(exc)
+            return
+        self.state.take_saved(shadow, _COPIED_BACK)
+
+    def _record(
+        self, shadow: DevelopmentState, campaign: CoverageCampaign, changes: list[CriterionChange]
+    ) -> None:
+        if not shadow.strict_criteria:
+            return
+        transaction = hashlib.sha256(campaign.campaign_id.encode()).hexdigest()
+        self.recorder.record_changes(
+            shadow,
+            changes,
+            invocation_id=campaign.campaign_id,
+            producer="sim",
+            transaction_id=transaction,
+        )
+        if transaction not in shadow.acceptance_transactions:
+            shadow.acceptance_transactions.append(transaction)
 
 
 def _apply_campaign(

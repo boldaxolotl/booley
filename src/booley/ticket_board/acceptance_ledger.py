@@ -230,6 +230,16 @@ def _validate_stored_identity(value: dict[str, Any], current: Mapping[str, Any])
 class TicketReportProjection:
     """Completion fencing of the Ticket report Criterion on projection."""
 
+    def current_observations(
+        self,
+        log_dir: Path,
+        state: DevelopmentState,
+        identity: Mapping[str, Any],
+        records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Ticket evidence has one identity per Ticket: its own records stand."""
+        return records
+
     def project_state(
         self, state: DevelopmentState, log_dir: Path, identity: Mapping[str, Any]
     ) -> None:

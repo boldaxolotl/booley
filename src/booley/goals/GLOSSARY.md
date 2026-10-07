@@ -41,3 +41,17 @@ A Goal Change whose intent is in the Change Log but whose application was
 never confirmed, because the process stopped in between. The next call that
 changes or finishes the Goal Mode completes it first.
 _Avoid_: pending change, partial write
+
+**Run Binding**:
+What one Flow or Specialist run was admitted under: its active Goal Record
+and that record's revision, the Goal Branch, the specification revision of
+every Goal, and the Protected Inputs as the run started. The run's evidence
+is checked against it again when it is published; it is never re-resolved.
+_Avoid_: session binding, run context
+
+**Discarded Evidence**:
+A run's evidence that was not published because its Run Binding no longer
+held when the run finished: the Goal Mode stopped being active, an affected
+Goal changed, or a Protected Input differed at the start or the end of the
+run. Nothing of it reaches the Goal state or the ledger.
+_Avoid_: rejected run, failed evidence

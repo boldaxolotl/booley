@@ -17,7 +17,7 @@ from booley.flows.endpoint_events import (
     _endpoint_progress_event,
     _write_display_event,
 )
-from booley.flows.execution_persistence import NoAcceptanceRecorder
+from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRecorder
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
@@ -511,6 +511,8 @@ def _persist_run_state(
 ) -> None:
     if isinstance(endpoint._acceptance_recorder, NoAcceptanceRecorder):
         return
+    if endpoint.evidence_discarded is not None:
+        return  # a discarded invocation writes nothing, not even its timeline entry
     endpoint.state.record_mcp_tool_run(
         endpoint.name,
         result.exit_code,
@@ -520,9 +522,26 @@ def _persist_run_state(
         cost_usd=result.cost_usd if result.cost_usd else None,
         args=_endpoint_timeline_args(endpoint),
     )
-    if endpoint._state is not None and endpoint._state._file_path is not None:
-        endpoint.state.save()
+    if endpoint._state is not None and endpoint._state.file_path is not None:
+        try:
+            endpoint.state.save()
+        except EvidenceDiscarded as exc:
+            # First discovered here when the run set no Criterion (B1).
+            endpoint.discard_evidence(exc)
+            report_discarded_evidence(endpoint, result)
+            return
         _emit_criteria_update(endpoint.state)
+
+
+def report_discarded_evidence(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
+    """Prefix the run's own outcome with why its evidence was discarded (B1); idempotent."""
+    reason = endpoint.evidence_discarded
+    if reason is None or "evidence_discarded" in outcome.detail:
+        return
+    prefix = f"evidence discarded: {reason}"
+    outcome.report_text = f"{prefix}\n{outcome.report_text}" if outcome.report_text else prefix
+    outcome.summary = f"{prefix}; {outcome.summary}" if outcome.summary else prefix
+    outcome.detail = {**outcome.detail, "evidence_discarded": reason}
 
 
 def _endpoint_timeline_args(endpoint: EndpointState) -> dict[str, Any] | None:

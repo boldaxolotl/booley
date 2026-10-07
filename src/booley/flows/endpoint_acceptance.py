@@ -19,6 +19,7 @@ from booley.flows.endpoint_events import (
     _emit_criteria_update,
 )
 from booley.flows.endpoint_session import PreparedExecution
+from booley.flows.execution_persistence import EvidenceDiscarded
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -56,10 +57,15 @@ def set_criterion(
     )
     changes = endpoint.state.set_criterion(key, met, detail=stamped_detail)
     endpoint.record_report_criteria(changes)
-    if endpoint.state._file_path is not None:
+    if endpoint.state.file_path is None or endpoint.evidence_discarded is not None:
+        return
+    try:
         endpoint._record_acceptance_changes(changes)
         endpoint.state.save()
-        _emit_criteria_update(endpoint.state)
+    except EvidenceDiscarded as exc:
+        endpoint.discard_evidence(exc)
+        return
+    _emit_criteria_update(endpoint.state)
 
 
 def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionChange]) -> None:
@@ -417,9 +423,17 @@ def record_acceptance(
     if prepared.non_persisting_dry_run:
         endpoint._pending_criteria_set = ()
         return
-    if outcome.exit_code == EXIT_CANCELLED:
+    if outcome.exit_code == EXIT_CANCELLED or endpoint.evidence_discarded is not None:
         endpoint._pending_criteria_set = ()
         return
+    try:
+        _record_final_acceptance(endpoint, outcome)
+    except EvidenceDiscarded as exc:
+        endpoint.discard_evidence(exc)
+        endpoint._pending_criteria_set = ()
+
+
+def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
     campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())
     if campaign_outcomes:
         handler = getattr(getattr(endpoint, "flow", None), "record_campaign_acceptance", None)
@@ -427,6 +441,8 @@ def record_acceptance(
             raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
         try:
             handler(campaign_outcomes)
+        except EvidenceDiscarded:
+            raise
         except Exception:
             _retain_partial_campaign_acceptance(endpoint, outcome, campaign_outcomes)
             raise

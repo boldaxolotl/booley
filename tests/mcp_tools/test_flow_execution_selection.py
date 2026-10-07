@@ -182,3 +182,35 @@ class TestEndpointCommand:
             "--target",
             "lint_uart",
         ]
+
+
+class TestGoalSelection:
+    """A Goal run binding selects the Goal adapter for every endpoint kind."""
+
+    def test_binding_selects_the_goal_adapter(self, tmp_path: Path) -> None:
+        from booley.goals.binding import GoalRunBinding
+        from booley.goals.flow_execution import GoalFlowExecution
+        from booley.goals.model import WorktreeIdentity
+
+        binding = GoalRunBinding(
+            project_dir=tmp_path,
+            record_id="evidence-20261006T120000Z",
+            record_revision=3,
+            worktree=WorktreeIdentity("12345678-1234-4234-9234-123456789abc", "worktrees/wt"),
+            worktree_root=tmp_path / "wt",
+            goal_branch="goal/evidence-20261006",
+            invocation_id="run-1",
+            spec_revisions=(("lint_clean_top", 1),),
+            protected_paths=(),
+            start_digest="sha256:" + "0" * 64,
+            start_head_digest="sha256:" + "1" * 64,
+            eligible=True,
+        )
+
+        selection = select_flow_execution(tmp_path / "ticket.md", binding)
+
+        adapter = selection.acceptance_recorder()
+        assert isinstance(adapter, GoalFlowExecution)
+        assert adapter.binding == binding
+        assert selection.flow_runner_module is None
+        assert adapter.acceptance_identity()["goal_keys"] == ["lint_clean_top"]

@@ -65,6 +65,20 @@ class AcceptanceRecordingError(RuntimeError):
     """Durable Criterion evidence could not be recorded."""
 
 
+class EvidenceDiscarded(AcceptanceRecordingError):  # noqa: N818 - names the outcome, as ADR 0067 B1 does
+    """An invocation's evidence was discarded before anything was written.
+
+    A recorder raises it when the authority the run was admitted under no
+    longer holds (Goal Mode's publication gate). The endpoint completion path
+    catches it once per invocation, writes nothing more for that invocation,
+    and reports ``evidence discarded: <reason>`` with the run's own result.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"evidence discarded: {reason}")
+        self.reason = reason
+
+
 class FlowExecutionAdapter(AcceptanceRecorder, Protocol):
     """Resolve admission inputs and persist evidence outside Flow mechanics."""
 

@@ -1,0 +1,186 @@
+{
+  "lint_after_v1": false,
+  "transaction": {
+    "evidence": [
+      {
+        "criterion": "sim_pass_top",
+        "digest": "be1efbcf06d1845272716102acc400786fcc244205d5b35207296522a95dba9d",
+        "role": "candidate",
+        "sequence": 2
+      },
+      {
+        "criterion": "lint_clean_top",
+        "digest": "ef64b055fbb9881ca8b539a0d2dcaa472a275e54e1be5dee1ee046d7397ec363",
+        "role": "candidate",
+        "sequence": 3
+      }
+    ],
+    "transaction_id": "e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037"
+  }
+}
+=== dir acceptance
+=== dir acceptance/evidence
+=== lock acceptance/evidence/.sequence.lock
+=== dir acceptance/evidence/000000001
+=== file acceptance/evidence/000000001/record.json (1248 bytes)
+{"criterion":"lint_clean_top","detail":{"_source_fingerprint":{"categories":["rtl","target_surface"],"fingerprint":{"algorithm":"sha256","campaign":{"digest":"657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167","files":[".booley_project/tests.toml","top.core"]},"rtl":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d","files":["top.core",".booley_project/tests.toml"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"workload":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]}},"target":"top"},"checks":[],"warnings":2},"execution_id":"","goal_identity":{"goal_keys":["lint_clean_top"],"purpose":"goal_evidence","record_id":"evidence-20261006T120000Z","spec_revisions":{"lint_clean_top":1}},"goal_record":"evidence-20261006T120000Z","invocation_id":"run-1","mandatory":true,"met":false,"params":{"target":"top"},"producer":"lint","purpose":"goal_evidence","reason":"outcome","recorded_at":"2026-10-07T08:00:00Z","role":"candidate","schema":1,"sequence":1}
+
+=== dir acceptance/evidence/000000002.tx.e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037
+=== file acceptance/evidence/000000002.tx.e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037/record.json (1644 bytes)
+{"$schema":"booley.acceptance-record/v2","criterion":"sim_pass_top","detail":{"_source_fingerprint":{"categories":["rtl","target_surface","tb"],"fingerprint":{"algorithm":"sha256","campaign":{"digest":"657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167","files":[".booley_project/tests.toml","top.core"]},"rtl":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d","files":["top.core",".booley_project/tests.toml"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"workload":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]}},"target":"top"},"checks":[],"goal_required_tests":["smoke"],"passed_tests":["smoke"],"required_tests":["smoke"]},"envelope_sha256":"sha256:e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037","execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","goal_identity":{"goal_keys":["lint_clean_top","sim_pass_top"],"purpose":"goal_evidence","record_id":"evidence-20261006T120000Z","spec_revisions":{"lint_clean_top":1,"sim_pass_top":1}},"goal_record":"evidence-20261006T120000Z","invocation_id":7,"mandatory":true,"met":true,"params":{"target":"top"},"producer":"simulation_campaign","purpose":"goal_evidence","reason":"outcome","recorded_at":"2026-10-07T10:00:00Z","role":"candidate","sequence":2,"transaction_id":"e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037","transaction_ordinal":0,"transaction_size":2}
+
+=== dir acceptance/evidence/000000003.tx.e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037
+=== file acceptance/evidence/000000003.tx.e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037/record.json (1570 bytes)
+{"$schema":"booley.acceptance-record/v2","criterion":"lint_clean_top","detail":{"_source_fingerprint":{"categories":["rtl","target_surface"],"fingerprint":{"algorithm":"sha256","campaign":{"digest":"657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167","files":[".booley_project/tests.toml","top.core"]},"rtl":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d","files":["top.core",".booley_project/tests.toml"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"workload":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]}},"target":"top"},"checks":[],"warnings":0},"envelope_sha256":"sha256:e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037","execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","goal_identity":{"goal_keys":["lint_clean_top","sim_pass_top"],"purpose":"goal_evidence","record_id":"evidence-20261006T120000Z","spec_revisions":{"lint_clean_top":1,"sim_pass_top":1}},"goal_record":"evidence-20261006T120000Z","invocation_id":7,"mandatory":true,"met":true,"params":{"target":"top"},"producer":"simulation_campaign","purpose":"goal_evidence","reason":"outcome","recorded_at":"2026-10-07T10:00:00Z","role":"candidate","sequence":3,"transaction_id":"e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037","transaction_ordinal":1,"transaction_size":2}
+
+=== dir acceptance/intents
+=== file acceptance/intents/6aa5c16e3c2e1743c175f653a31ef9c3136231b3ca2c312bdcff9fa37d85fb0b.json (3638 bytes)
+{"$schema":"booley.simulation-acceptance-intent/v1","acceptance_facts":{"$schema":"booley.simulation-acceptance-facts/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","consumed_results":[{"finished_at":"2026-10-07T10:00:00Z"}],"coverage_reference":null,"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observations":[],"origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"prerequisites":[],"required_suite":{"default_invocation":false,"names":["smoke"]},"target":{"identity":"::top:0#top","selector":"top"}},"acceptance_facts_sha256":"sha256:b04f622b853636b346e9710c4bf608a4e619e5cc6d54c411d71b86df42272bad","envelope":{"$schema":"booley.acceptance-transaction-envelope/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","changes":[{"detail":{"_source_fingerprint":{"categories":["rtl","target_surface","tb"],"fingerprint":{"algorithm":"sha256","campaign":{"digest":"657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167","files":[".booley_project/tests.toml","top.core"]},"rtl":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d","files":["top.core",".booley_project/tests.toml"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"workload":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]}},"target":"top"},"checks":[],"goal_required_tests":["smoke"],"passed_tests":["smoke"],"required_tests":["smoke"]},"key":"sim_pass_top","mandatory":true,"met":true,"params":{"target":"top"},"reason":"outcome","role":"candidate"},{"detail":{"_source_fingerprint":{"categories":["rtl","target_surface"],"fingerprint":{"algorithm":"sha256","campaign":{"digest":"657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167","files":[".booley_project/tests.toml","top.core"]},"rtl":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d","files":["top.core",".booley_project/tests.toml"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"workload":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]}},"target":"top"},"checks":[],"warnings":0},"key":"lint_clean_top","mandatory":true,"met":true,"params":{"target":"top"},"reason":"outcome","role":"candidate"}],"goal":{"identity":{"goal_keys":["lint_clean_top","sim_pass_top"],"purpose":"goal_evidence","record_id":"evidence-20261006T120000Z","spec_revisions":{"lint_clean_top":1,"sim_pass_top":1}},"record_id":"evidence-20261006T120000Z"},"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"producer":"simulation_campaign","purpose":"goal_evidence","recorded_at":"2026-10-07T10:00:00Z","role_derivation":"booley.acceptance-role/v1"},"lookup_key":{"campaign_id":"12345678-1234-4234-9234-123456789abc","goal_identity":{"goal_keys":["lint_clean_top","sim_pass_top"],"purpose":"goal_evidence","record_id":"evidence-20261006T120000Z","spec_revisions":{"lint_clean_top":1,"sim_pass_top":1}},"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","producer":"simulation_campaign","purpose":"goal_evidence"}}
+
+=== dir acceptance/transactions
+=== file acceptance/transactions/e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037.json (3136 bytes)
+{"$schema":"booley.acceptance-transaction/v1","envelope":{"$schema":"booley.acceptance-transaction-envelope/v1","campaign_id":"12345678-1234-4234-9234-123456789abc","changes":[{"detail":{"_source_fingerprint":{"categories":["rtl","target_surface","tb"],"fingerprint":{"algorithm":"sha256","campaign":{"digest":"657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167","files":[".booley_project/tests.toml","top.core"]},"rtl":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d","files":["top.core",".booley_project/tests.toml"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"workload":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]}},"target":"top"},"checks":[],"goal_required_tests":["smoke"],"passed_tests":["smoke"],"required_tests":["smoke"]},"key":"sim_pass_top","mandatory":true,"met":true,"params":{"target":"top"},"reason":"outcome","role":"candidate"},{"detail":{"_source_fingerprint":{"categories":["rtl","target_surface"],"fingerprint":{"algorithm":"sha256","campaign":{"digest":"657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167","files":[".booley_project/tests.toml","top.core"]},"rtl":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d","files":["top.core",".booley_project/tests.toml"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"workload":{"digest":"5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52","files":["rtl.v"]}},"target":"top"},"checks":[],"warnings":0},"key":"lint_clean_top","mandatory":true,"met":true,"params":{"target":"top"},"reason":"outcome","role":"candidate"}],"goal":{"identity":{"goal_keys":["lint_clean_top","sim_pass_top"],"purpose":"goal_evidence","record_id":"evidence-20261006T120000Z","spec_revisions":{"lint_clean_top":1,"sim_pass_top":1}},"record_id":"evidence-20261006T120000Z"},"manifest_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","origin":{"execution_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","invocation_id":7},"producer":"simulation_campaign","purpose":"goal_evidence","recorded_at":"2026-10-07T10:00:00Z","role_derivation":"booley.acceptance-role/v1"},"envelope_sha256":"sha256:e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037","record_count":2,"records":[{"criterion":"sim_pass_top","role":"candidate","sequence":2,"sha256":"sha256:be1efbcf06d1845272716102acc400786fcc244205d5b35207296522a95dba9d","transaction_ordinal":0},{"criterion":"lint_clean_top","role":"candidate","sequence":3,"sha256":"sha256:ef64b055fbb9881ca8b539a0d2dcaa472a275e54e1be5dee1ee046d7397ec363","transaction_ordinal":1}],"transaction_id":"e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037"}
+
+=== file booley_state.json
+{
+  "slug": "evidence-20261006T120000Z",
+  "ticket_type": "",
+  "strict_criteria": true,
+  "criteria": {
+    "lint_clean_top": {
+      "met": true,
+      "mandatory": true,
+      "ever_met": true,
+      "ever_failed": true,
+      "updated_at": "2026-10-07T08:00:00Z",
+      "detail": {
+        "_source_fingerprint": {
+          "categories": [
+            "rtl",
+            "target_surface"
+          ],
+          "fingerprint": {
+            "algorithm": "sha256",
+            "campaign": {
+              "digest": "657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167",
+              "files": [
+                ".booley_project/tests.toml",
+                "top.core"
+              ]
+            },
+            "rtl": {
+              "digest": "5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52",
+              "files": [
+                "rtl.v"
+              ]
+            },
+            "rtl_dirs": [
+              "."
+            ],
+            "target": "top",
+            "target_surface": {
+              "digest": "2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d",
+              "files": [
+                "top.core",
+                ".booley_project/tests.toml"
+              ]
+            },
+            "tb": {
+              "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "files": []
+            },
+            "tb_dirs": [],
+            "workload": {
+              "digest": "5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52",
+              "files": [
+                "rtl.v"
+              ]
+            }
+          },
+          "target": "top"
+        },
+        "checks": [],
+        "warnings": 0
+      },
+      "params": {
+        "target": "top"
+      }
+    },
+    "sim_pass_top": {
+      "met": true,
+      "mandatory": true,
+      "ever_met": true,
+      "updated_at": "2026-10-07T08:00:00Z",
+      "detail": {
+        "_source_fingerprint": {
+          "categories": [
+            "rtl",
+            "target_surface",
+            "tb"
+          ],
+          "fingerprint": {
+            "algorithm": "sha256",
+            "campaign": {
+              "digest": "657c3216f7783ea5e47c9a562137084220288dc295c34d5979627e3c82ca0167",
+              "files": [
+                ".booley_project/tests.toml",
+                "top.core"
+              ]
+            },
+            "rtl": {
+              "digest": "5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52",
+              "files": [
+                "rtl.v"
+              ]
+            },
+            "rtl_dirs": [
+              "."
+            ],
+            "target": "top",
+            "target_surface": {
+              "digest": "2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d",
+              "files": [
+                "top.core",
+                ".booley_project/tests.toml"
+              ]
+            },
+            "tb": {
+              "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "files": []
+            },
+            "tb_dirs": [],
+            "workload": {
+              "digest": "5f1550baf5e740b8e53a1cff0786e91f743e6cb0053eafc3babeb23a8407bb52",
+              "files": [
+                "rtl.v"
+              ]
+            }
+          },
+          "target": "top"
+        },
+        "checks": [],
+        "goal_required_tests": [
+          "smoke"
+        ],
+        "passed_tests": [
+          "smoke"
+        ],
+        "required_tests": [
+          "smoke"
+        ]
+      },
+      "params": {
+        "target": "top"
+      }
+    }
+  },
+  "category_map": {},
+  "all_mandatory_met": true,
+  "timeline": [],
+  "acceptance_transactions": [
+    "e85fbe4bbf6199d86da2d6df3bfddeea5fa0bb443d158235bafeba496d5d2037"
+  ],
+  "authorized_zero_mandatory_basis_id": "",
+  "last_updated": "2026-10-07T08:00:00Z",
+  "work_dir": "<WORK>/main/.booley_project/worktrees/wt"
+}

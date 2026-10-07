@@ -3757,6 +3757,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 self.context._acceptance_recorder,
                 diagnostic=self.args.diagnostic,
                 observer=self.context.record_report_criteria,
+                on_discard=self.context.discard_evidence,
             ),
         )
         options = SimulationOptions(

@@ -18,9 +18,23 @@
 - :mod:`booley.goals.rules` — the rules text an agent follows in Goal Mode.
 - :mod:`booley.goals.preview` — the switch that registers the Goal Mode
   surface before it replaces Ticket Mode.
+- :mod:`booley.goals.binding` — the immutable binding of one run to the
+  worktree's active Goal Mode.
+- :mod:`booley.goals.publication` — the gate every Goal evidence write passes.
+- :mod:`booley.goals.state_store` — fail-closed loads and merging saves of
+  ``booley_state.json``.
+- :mod:`booley.goals.recorder` — Goal evidence in the Criterion evidence
+  ledger: the identity codec, projection fencing, and the recorder.
+- :mod:`booley.goals.freshness`, :mod:`booley.goals.target_surface`, and
+  :mod:`booley.goals.simulation` — when met evidence is stale, the Target
+  declaration digest, and the simulation suite contract.
+- :mod:`booley.goals.flow_execution` — the Flow execution adapter of a bound
+  Goal run.
 
-The package depends on ``criteria``, ``evidence``, ``targets``, ``runtime``,
-``core``, and the Flow-neutral ``flows.baseline_pins``; concrete Flows are
-composed in by the MCP entry point. Its vocabulary is in ``GLOSSARY.md``
+The package depends on ``criteria``, ``evidence``, ``targets``, ``fusesoc``,
+``config``, ``runtime``, ``core``, and the Flow-neutral ``flows`` modules
+(``baseline_pins``, ``execution_persistence``, ``request``,
+``source_fingerprint``, ``target_test_suite``); concrete Flows are composed in
+by the MCP entry point. Its vocabulary is in ``GLOSSARY.md``
 beside this file.
 """
