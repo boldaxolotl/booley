@@ -13,9 +13,9 @@ which itself does nothing outside a Ticket.
 
 Handed a :class:`~booley.goals.binding.GoalRunBinding`, the selection instead
 records through :class:`~booley.goals.flow_execution.GoalFlowExecution`, the
-same adapter for custom tools, Specialists, and built-in Flows. No caller
-passes a binding yet (ADR 0067 Phase 3c composes it, with the Goal Flow
-runner), so a Goal selection launches the endpoint's own module.
+same adapter for custom tools, Specialists, and built-in Flows. The MCP
+server passes the binding resolved at admission; built-in and Project Flows
+launch through ``mcp.goal_flow_runner``.
 """
 
 from __future__ import annotations
@@ -72,7 +72,9 @@ def select_flow_execution(
     A Goal run *binding* selects the Goal adapter, whatever *ticket_file* says.
     """
     if binding is not None:
-        return FlowExecutionSelection(None, _goal_acceptance_recorder(binding))
+        return FlowExecutionSelection(
+            "booley.mcp.goal_flow_runner", _goal_acceptance_recorder(binding)
+        )
     return _TICKET_SELECTION if ticket_file is not None else _STANDALONE_SELECTION
 
 

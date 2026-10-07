@@ -212,5 +212,5 @@ class TestGoalSelection:
         adapter = selection.acceptance_recorder()
         assert isinstance(adapter, GoalFlowExecution)
         assert adapter.binding == binding
-        assert selection.flow_runner_module is None
+        assert selection.flow_runner_module == "booley.mcp.goal_flow_runner"
         assert adapter.acceptance_identity()["goal_keys"] == ["lint_clean_top"]

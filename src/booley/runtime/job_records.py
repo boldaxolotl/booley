@@ -29,9 +29,11 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
@@ -104,17 +106,38 @@ class JobRecord:
     # and every deadline must anchor here when available. None while queued,
     # or forever if the server died before the job left the queue.
     run_started_at: str | None = None
+    schema: int = 2
+    work_dir: str | None = None
+    session_key: str | None = None
+    binding: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> JobRecord:
+    def from_dict(cls, d: dict[str, Any]) -> JobRecord:
         # Tolerate unknown keys from a future writer — read only what we model.
-        known = {f: d.get(f) for f in cls.__dataclass_fields__}
+        try:
+            d = require_dict(d, field="Job record")
+            _validate_envelope(d)
+        except BoundaryError as exc:
+            raise JobRecordError(f"malformed Job record: {exc}") from exc
+        known: dict[str, Any] = {f: d.get(f) for f in cls.__dataclass_fields__}
         if known.get("display_scope") is not None:
             known["display_scope"] = DisplayScope.parse(known["display_scope"])
         return cls(**{k: v for k, v in known.items() if v is not None})
+
+
+def _validate_envelope(data: dict[str, Any]) -> None:
+    """Validate neutral routing fields without interpreting a Goal binding."""
+    schema = data.get("schema", 1)
+    if require_int(schema, field="Job schema") <= 0:
+        raise BoundaryError("Job schema must be positive")
+    for key in ("work_dir", "session_key"):
+        if data.get(key) is not None:
+            require_str(data, key)
+    if data.get("binding") is not None:
+        require_dict(data["binding"], field="Job binding")
 
 
 def terminal_status(exit_code: int, timed_out: bool) -> str:
@@ -123,12 +146,12 @@ def terminal_status(exit_code: int, timed_out: bool) -> str:
 
 
 def make_run_id(endpoint: str, started_compact: str, counter: int) -> str:
-    """Build a session-unique run-id.
+    """Build a run-id with a cross-server random suffix.
 
     ``started_compact`` is a filesystem-safe timestamp (e.g. ``20260704T131502Z``)
     and ``counter`` disambiguates same-second submits from the same server.
     """
-    return f"{endpoint}-{started_compact}-{counter}"
+    return f"{endpoint}-{started_compact}-{counter}-{uuid.uuid4().hex[:8]}"
 
 
 def _record_path(run_id: str, root: Path | None) -> Path | None:
@@ -164,7 +187,8 @@ def read_record(run_id: str, root: Path | None) -> JobRecord | None:
     if path is None or not path.is_file():
         return None
     try:
-        return JobRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        data = require_dict(json.loads(path.read_text(encoding="utf-8")), field="Job record")
+        return JobRecord.from_dict(data)
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         logger.warning("Malformed job record at %s", path, exc_info=True)
         return None
@@ -211,6 +235,7 @@ def parse_stamp(stamp: object) -> float | None:
 
 def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
     data = require_dict(record.to_dict(), field="Job record")
+    _validate_envelope(data)
     require_str(data, "run_id")
     require_str(data, "endpoint")
     require_str(data, "started_at")
@@ -259,7 +284,7 @@ def strict_records(root: Path | None) -> list[JobRecord]:
             if record is None:
                 raise BoundaryError("record is unreadable")
             _validate_record(record)
-        except (BoundaryError, TypeError, ValueError) as exc:
+        except (BoundaryError, JobRecordError, TypeError, ValueError) as exc:
             malformed.append(f"{path.name}: {exc}")
         else:
             records.append(record)

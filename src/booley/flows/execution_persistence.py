@@ -44,6 +44,40 @@ class AcceptanceRecorder(Protocol):
 
 
 @runtime_checkable
+class CriterionSourceTarget(Protocol):
+    """Optional recorder policy for the Target a Criterion's source stamp describes."""
+
+    def criterion_source_target(self, key: str, fallback: str | None) -> str | None: ...
+
+
+def criterion_source_target_for(
+    recorder: AcceptanceRecorder, key: str, fallback: str | None
+) -> str | None:
+    """Use declared acceptance policy when present, otherwise retain producer policy."""
+    if isinstance(recorder, CriterionSourceTarget):
+        return recorder.criterion_source_target(key, fallback)
+    return fallback
+
+
+@runtime_checkable
+class CriterionFreshness(Protocol):
+    """Optional acceptance policy for whether recorded evidence is current."""
+
+    def criterion_is_current(self, state: DevelopmentState, key: str) -> bool: ...
+
+
+def criterion_is_current_for(
+    recorder: AcceptanceRecorder, state: DevelopmentState, key: str
+) -> bool | None:
+    """Read acceptance freshness when supported; None keeps the caller policy."""
+    return (
+        recorder.criterion_is_current(state, key)
+        if isinstance(recorder, CriterionFreshness)
+        else None
+    )
+
+
+@runtime_checkable
 class StatePersistenceSource(Protocol):
     """Optional recorder capability: choose how the execution's state is saved.
 

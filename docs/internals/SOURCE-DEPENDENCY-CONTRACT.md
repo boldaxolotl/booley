@@ -61,8 +61,10 @@ functions. D14 has no waiver or composition exception.
 - `runtime.job_records` stores records at an explicit jobs root. MCP composition
   resolves `runtime.session_paths.session_jobs_dir` after Interactive logging setup;
   the job manager retains each run's root from submission through completion,
-  and runs it did not start use the container-wide root. Standalone
-  readers resolve the same session location. Explicit `None` disables persistence.
+  and restarted readers locate a unique run across the container root and every
+  retained Goal Record (all lifecycle states) while Goal preview is enabled.
+  Located jobs carry their root into terminal writes and report discovery.
+  Standalone readers resolve the same session location. Explicit `None` disables persistence.
 - `core.models.AgentArtifactPaths` carries resolved output paths. An optional
   per-call resolver receives the final labeled/retry transcript path; Booley
   callers bind `ticket_board.agent_execution` to preserve fallback prompt names
@@ -855,3 +857,31 @@ python3 tests/architecture/report.py --source-root src/booley --top 30
 python3 tests/architecture/compare_report.py \
   --before-ref <exact-base> --after-ref <exact-head> --repo-root .
 ```
+
+## Goal evidence composition (preview)
+
+`booley.goals` owns immutable Run Bindings, publication gates, state merging,
+freshness policy, status views, and neutral evidence metrics. D35 continues to
+forbid imports of concrete Flows, MCP, Harness, Specialists, and Ticket Board.
+`mcp.call_context` resolves the Worktree Identity and binds an active record once,
+before endpoint admission. `mcp.goal_flow_runner` selects concrete Flows and
+composes them with `goals.flow_execution.GoalFlowExecution`; custom MCP endpoints
+receive the same serialized binding through `mcp.base`. Both reach the Goal
+persistence strategy through the acceptance recorder at `EndpointState.read_state`.
+The optional `CriterionSourceTarget` recorder capability supplies a declared Goal
+Target before an endpoint samples source fingerprints; publication preserves that
+sample instead of recapturing source digests. Ticket recorders retain their existing
+producer-supplied Target policy. The optional `CriterionFreshness` capability reads
+Goal status for the exact in-memory Reviewer receipt, checked against a locked
+disk snapshot and its bound specification identity. Replayed Goal receipts do
+not write state, so their audit cannot replace a concurrently completed review.
+Ticket Reviewers retain the existing persistent freshness refresh.
+
+Status resolves a supplied worktree subdirectory to its containing Git root, then
+enumerates the record's declared Goals, with absent evidence unmet and
+corrupt state reported. For met evidence it checks protected resolver paths,
+working contents and tracked HEAD contents; Worktree Identity and symbolic Goal
+Branch; the evidence identity group's specification revisions; then Goal source,
+Target surface, Reviewer receipt, and simulation-suite freshness. Status performs
+no persistence or re-binding. The Phase 2 audit key is now a Worktree Identity key;
+process-session discovery and shared-worktree session enumeration remain Phase 6.

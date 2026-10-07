@@ -443,13 +443,21 @@ def _parse_record(value: Any, slug: str) -> CandidateRecord:
     return CandidateRecord(slug, by_key, rejections)
 
 
-def load(tickets_dir: Path, slug: str) -> CandidateRecord:
+def _candidate_path(tickets_dir: Path, slug: str, directory: Path | None) -> Path:
+    return (
+        waiver_candidates_path(tickets_dir, slug)
+        if directory is None
+        else directory / "waiver-candidates.json"
+    )
+
+
+def load(tickets_dir: Path, slug: str, *, directory: Path | None = None) -> CandidateRecord:
     """Return the Waiver Candidate record for *slug*; an absent file is empty.
 
     Raises :class:`WaiverCandidateRecordError` for a record that exists but is
     unreadable, not JSON, of an unknown schema, for another slug, or invalid.
     """
-    path = waiver_candidates_path(tickets_dir, slug)
+    path = _candidate_path(tickets_dir, slug, directory)
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
@@ -476,9 +484,13 @@ def load(tickets_dir: Path, slug: str) -> CandidateRecord:
 
 
 @contextmanager
-def _record_lock(tickets_dir: Path, slug: str) -> Iterator[None]:
+def _record_lock(tickets_dir: Path, slug: str, directory: Path | None = None) -> Iterator[None]:
     """Hold the cross-process lock of *slug*'s record, waiting a bounded time."""
-    path = waiver_candidates_lock_path(tickets_dir, slug)
+    path = (
+        waiver_candidates_lock_path(tickets_dir, slug)
+        if directory is None
+        else directory / "waiver-candidates.lock"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         try:
@@ -494,9 +506,9 @@ def _record_lock(tickets_dir: Path, slug: str) -> Iterator[None]:
             release_file_lock(handle)
 
 
-def _publish(tickets_dir: Path, record: CandidateRecord) -> None:
+def _publish(tickets_dir: Path, record: CandidateRecord, directory: Path | None = None) -> None:
     """Atomically replace the record, or durably remove it once it is empty."""
-    path = waiver_candidates_path(tickets_dir, record.slug)
+    path = _candidate_path(tickets_dir, record.slug, directory)
     if record.is_empty:
         durable_unlink(path)
         return
@@ -507,16 +519,17 @@ def _mutate(
     tickets_dir: Path,
     slug: str,
     change: Callable[[CandidateRecord], tuple[CandidateRecord, _Result]],
+    directory: Path | None = None,
 ) -> _Result:
     """Read, change, and publish *slug*'s record under its lock; return *change*'s result.
 
     Publishes only when the record changed, so no-op mutations leave the file alone.
     """
-    with _record_lock(tickets_dir, slug):
-        current = load(tickets_dir, slug)
+    with _record_lock(tickets_dir, slug, directory):
+        current = load(tickets_dir, slug, directory=directory)
         updated, result = change(current)
         if updated != current:
-            _publish(tickets_dir, updated)
+            _publish(tickets_dir, updated, directory)
         return result
 
 
@@ -546,6 +559,7 @@ def record_proposals(
     *,
     invocation_id: str,
     now: datetime,
+    directory: Path | None = None,
 ) -> RecordOutcome:
     """Record one Analyst run's screened proposals for *slug* against *binding*.
 
@@ -571,7 +585,7 @@ def record_proposals(
         outcome = RecordOutcome(len(recorded), len(batch) - len(recorded), tuple(recorded))
         return replace(record, candidates=candidates), outcome
 
-    return _mutate(tickets_dir, slug, change)
+    return _mutate(tickets_dir, slug, change, directory)
 
 
 def record_rejections(tickets_dir: Path, slug: str, rejections: Iterable[Rejection]) -> int:

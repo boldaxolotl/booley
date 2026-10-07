@@ -33,6 +33,7 @@ from booley.flows.execution_persistence import (
     EvidenceDiscarded,
     FlowExecutionAdapter,
     StandaloneFlowExecution,
+    criterion_source_target_for,
     state_persistence_for,
 )
 from booley.runtime import job_slots
@@ -221,6 +222,7 @@ class EndpointState(ABC):
         *,
         source_target: str | None,
     ) -> dict[str, Any] | None:
+        source_target = criterion_source_target_for(self._acceptance_recorder, key, source_target)
         return endpoint_acceptance._stamp_source_fingerprint(
             self, key, met, detail, source_target=source_target
         )

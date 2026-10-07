@@ -235,3 +235,22 @@ def test_run_outside_ticket_mode_records_nothing(tmp_path: Path, monkeypatch) ->
 
     assert "waiver_candidate_record" not in result.detail
     assert not (tmp_path / "tickets").exists()
+
+
+def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(ticket, tmp_path):
+    context, loaded, campaign, path, sha = ticket
+    goal_dir = tmp_path / "goals" / "evidence-20261007T100000Z"
+    context = replace(context, slug=goal_dir.name, record_dir=goal_dir)
+    section = record_ticket_candidates(
+        context,
+        campaign,
+        loaded.summary,
+        path,
+        _screened(campaign.points[0].id, sha),
+        invocation_id="1",
+        now=_NOW,
+    )
+    assert section["status"] == "recorded"
+    assert (goal_dir / "waiver-candidates.json").is_file()
+    assert not (context.tickets_dir / "waiver-candidates").exists()
+    assert not store.load(context.tickets_dir, context.slug, directory=goal_dir).is_empty

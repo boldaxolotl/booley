@@ -348,3 +348,52 @@ class TestDeadlineAnchorsAtRunStart:
         loaded = jobrec.read_record("r", root=_jobs_env)
         assert loaded is not None
         assert loaded.run_started_at == self._RUN_STARTED
+
+
+def test_legacy_schema_loads_missing_goal_facts() -> None:
+    rec = jobrec.JobRecord.from_dict(
+        {
+            "run_id": "old",
+            "endpoint": "lint",
+            "started_at": "2026-10-07T10:00:00Z",
+            "timeout_s": 30,
+        }
+    )
+    assert rec.binding is None and rec.work_dir is None and rec.session_key is None
+    assert rec.schema == 2
+
+
+def test_run_id_has_random_eight_hex_suffix() -> None:
+    import re
+
+    first = jobrec.make_run_id("lint", "20261007T100000Z", 1)
+    assert re.fullmatch(r"lint-20261007T100000Z-1-[0-9a-f]{8}", first)
+    assert jobrec.make_run_id("lint", "20261007T100000Z", 1) != first
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("binding", []),
+        ("binding", "bad"),
+        ("work_dir", 17),
+        ("session_key", []),
+        ("schema", False),
+        ("schema", 0),
+        ("schema", "2"),
+    ],
+)
+def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
+    import json
+
+    raw = jobrec.JobRecord("bad-envelope", "lint", "20261007T120000Z", 60).to_dict()
+    raw[field] = value
+    with pytest.raises(jobrec.JobRecordError, match=field):
+        jobrec.JobRecord.from_dict(raw)
+    root = tmp_path / "jobs"
+    root.mkdir()
+    (root / "bad-envelope.json").write_text(json.dumps(raw))
+    with pytest.raises(jobrec.JobRecordError, match=field):
+        jobrec.read_record("bad-envelope", root)
+    with pytest.raises(jobrec.JobRecordError, match=field):
+        jobrec.strict_records(root)

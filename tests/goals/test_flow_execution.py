@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
 from booley.flows.execution_persistence import FlowExecutionAdapter, state_persistence_for
@@ -55,3 +57,27 @@ def test_endpoint_state_saves_through_the_adapters_persistence(
     saved = DevelopmentState.load(adapter.state_file)
     assert saved.criteria[LINT_KEY].met is True
     assert (adapter.binding.project_dir / "goals" / goal_mode.record.id / "logs").is_dir()
+
+
+def test_source_target_policy_uses_bound_goal_then_retains_unrelated_fallback(goal_mode):
+    from tests.goals.conftest import bump_spec
+
+    adapter = GoalFlowExecution(bind(goal_mode))
+    assert adapter.criterion_source_target(LINT_KEY, "producer-target") == "top"
+    assert adapter.criterion_source_target("custom_gate", "producer-target") == "producer-target"
+    bump_spec(goal_mode, LINT_KEY)
+    assert adapter.criterion_source_target(LINT_KEY, "producer-target") == "producer-target"
+    state = DevelopmentState.load(adapter.state_file, adapter.state_persistence())
+    assert adapter.criterion_is_current(state, LINT_KEY) is False
+
+
+def test_missing_record_defers_source_policy_failure_to_publication(goal_mode):
+    from booley.flows.execution_persistence import EvidenceDiscarded
+
+    adapter = GoalFlowExecution(bind(goal_mode))
+    state = DevelopmentState.load(adapter.state_file, adapter.state_persistence())
+    record_paths(goal_mode.control, goal_mode.record.id).record_file.unlink()
+    assert adapter.criterion_source_target(LINT_KEY, "producer-target") == "producer-target"
+    changes = state.set_criterion(LINT_KEY, True, detail={"warnings": 0})
+    with pytest.raises(EvidenceDiscarded, match="record cannot be read"):
+        adapter.record_changes(state, changes, invocation_id="ignored", producer="lint")

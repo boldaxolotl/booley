@@ -196,8 +196,9 @@ class TestLocateJob:
         located = mcp_server._locate_job(rec.run_id)
 
         assert located is not None
-        assert located == jobrec.read_record(rec.run_id, root=session_jobs_dir())
-        assert located.to_dict() == rec.to_dict()
+        assert located.record == jobrec.read_record(rec.run_id, root=session_jobs_dir())
+        assert located.root == session_jobs_dir()
+        assert located.record.to_dict() == rec.to_dict()
 
     def test_unknown_run_id_is_none(self, bare_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(bare_env / "logs"))
@@ -348,7 +349,7 @@ class TestManagerReadsPinnedRoot:
         text = jobs.result_text(run_id)
 
         assert "EXIT_CODE: 0" in text
-        assert roots == [pinned]
+        assert roots and set(roots) <= {pinned, job_env / "other-runtime" / "jobs"}
         record = jobrec.read_record(run_id, root=pinned)
         assert record is not None and record.status == jobrec.STATUS_DONE
 
