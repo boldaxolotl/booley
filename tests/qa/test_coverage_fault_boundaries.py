@@ -128,7 +128,11 @@ for complete in [False,True]:
     def mutate_original_after_event(*args, **kwargs):
         nonlocal mutated
         control = args[0]
-        if not mutated and next(control.glob("event-*"), None) is not None:
+        published = any(
+            "." not in event.name and event.read_text().endswith("\n")
+            for event in control.glob("event-*")
+        )
+        if not mutated and published:
             (tmp_path / "temp").write_text(json.dumps({"complete": True}))
             mutated = True
         return original_service(*args, **kwargs)
@@ -148,6 +152,39 @@ for complete in [False,True]:
             20,
         )
         == 0
+    )
+
+
+def test_source_mutation_waits_for_published_event_after_snapshot_creation(tmp_path, monkeypatch):
+    """Snapshot sidecars and partial records must not trigger the event-time mutation."""
+
+    def run_with_snapshot_before_event(command, owned, control, *args):
+        control.mkdir()
+        source = owned / "temp"
+        original = json.dumps({"complete": False})
+        source.write_text(original)
+        event = control / "event-123-0"
+        snapshot = event.with_suffix(".snapshot")
+        snapshot.touch()  # The shim creates this before copying source bytes.
+        seen = set()
+        controller.service(control, "complete", set(), seen, os.getpid())
+        assert source.read_text() == original
+        assert not event.with_suffix(".reply").exists()
+        snapshot.write_text(original)
+        event.touch()  # Event publication can itself be observed before the newline.
+        controller.service(control, "complete", set(), seen, os.getpid())
+        assert source.read_text() == original
+        assert not event.with_suffix(".reply").exists()
+        event.write_text(f"rename\t{snapshot}\t{owned / 'progress.json'}\n")
+        controller.service(control, "complete", set(), seen, os.getpid())
+        assert json.loads(source.read_text()) == {"complete": True}
+        assert snapshot.read_text() == original
+        assert event.with_suffix(".reply").read_text() == "P"
+        return 0
+
+    monkeypatch.setattr(controller, "run", run_with_snapshot_before_event)
+    test_progress_gate_uses_source_bytes_from_event_time(
+        tmp_path, tmp_path / "unused.so", monkeypatch
     )
 
 

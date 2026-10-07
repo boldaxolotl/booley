@@ -26,7 +26,10 @@ def goal_mode_rules() -> str:
         "from its entry state is discarded. A change made and reverted while a run is "
         "in flight is not detected, so do not edit them at all.",
         "Every Goal is mandatory. Adding or relaxing a Goal needs the human's "
-        "approval in chat, through `goal_propose_change`.",
+        "approval through `goal_propose_change`. Never record approvals yourself when the "
+        "client form is available. Decline/cancel/invalid form content leaves the proposal "
+        "pending; then obtain the human's instruction in chat and record approve/reject "
+        "for the exact saved proposal ID with their quoted words and nonblank reason.",
         "Never weaken tests or Targets to meet a Goal: `.core` and `tests.toml` "
         "edits, and `.sdc`/`.xdc` edits, are flagged in the review package.",
         "Finish needs every Goal met at a clean, committed HEAD plus a Session "

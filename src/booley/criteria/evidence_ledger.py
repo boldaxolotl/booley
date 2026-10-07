@@ -38,7 +38,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -1328,3 +1328,59 @@ def record_changes(
         write_once(directory / "record.json", encoded + b"\n")
         refs.append(EvidenceRef(sequence, digest, change.key, role))
     return tuple(refs)
+
+
+@dataclass(frozen=True)
+class PreparedObservation:
+    """Neutral immutable publication bytes for an owning lifecycle transaction.
+
+    The owner must serialize preparation and publication with all writers of
+    this ledger. No sequence is reserved and no observation is published here.
+    A record-wide apply barrier keeps the captured destinations exclusive from
+    the owner's intent until recovery finishes.
+    """
+
+    relative_path: str
+    content: bytes
+
+
+def prepare_observations(
+    log_dir: Path,
+    state: DevelopmentState,
+    *,
+    scope: EvidenceScope,
+    observations: Sequence[tuple[CriterionChange, str, Mapping[str, Any]]],
+    transaction_id: str,
+    invocation_id: str,
+    producer: str,
+) -> tuple[PreparedObservation, ...]:
+    """Build selected V1 observation bytes without Simulation-specific V2 facts."""
+    if re.fullmatch(r"[0-9a-f]{64}", transaction_id) is None:
+        raise AcceptanceLedgerError("invalid acceptance transaction identity")
+    root = log_dir / "acceptance" / "evidence"
+    sequences = _free_sequences(root) if root.exists() else iter(range(1, 1_000_001))
+    prepared: list[PreparedObservation] = []
+    for change, timestamp, identity in observations:
+        sequence = next(sequences, None)
+        if sequence is None:
+            raise _sequence_exhausted(root)
+        payload = {
+            "schema": SCHEMA_VERSION,
+            "sequence": sequence,
+            **scope.codec.append_subject(state, identity),
+            "execution_id": "",
+            "purpose": scope.purpose,
+            "producer": producer,
+            "invocation_id": invocation_id,
+            "role": _change_role(change),
+            "criterion": change.key,
+            "met": change.met,
+            "reason": change.reason,
+            "mandatory": change.mandatory,
+            "params": change.params,
+            "detail": change.detail,
+            "recorded_at": timestamp,
+        }
+        relative = f"acceptance/evidence/{sequence:09d}.tx.{transaction_id}/record.json"
+        prepared.append(PreparedObservation(relative, canonical_json(payload) + b"\n"))
+    return tuple(prepared)

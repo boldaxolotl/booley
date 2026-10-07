@@ -265,7 +265,8 @@ jobs:
     if: fromJSON(needs.changes.outputs.jobs)['test']
     name: test / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Complete suites use the same bound as full-python-matrix.yml; shards retain 15m.
+    timeout-minutes: ${{ matrix.mode == 'full' && 20 || 15 }}
     env:
       PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: >-

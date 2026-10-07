@@ -32,6 +32,7 @@ from booley.flows.sim.coverage_campaign import (
     _freeze_mapping,
 )
 from booley.flows.sim.coverage_policy import (
+    CoverageCriterion,
     EvaluatedCoverageCampaign,
     _derive_rollup,
     evaluate_coverage_campaign,
@@ -319,11 +320,14 @@ def _unwaived(campaign: CoverageCampaign) -> CoverageCampaign:
 
 
 def strict_reevaluation(
-    campaign: CoverageCampaign, waivers: ApprovedWaiverSet
+    campaign: CoverageCampaign,
+    waivers: ApprovedWaiverSet,
+    *,
+    criterion: CoverageCriterion | None = None,
 ) -> EvaluatedCoverageCampaign:
     """Evaluate a persisted Campaign strictly against a new Approved Waiver Set."""
     return evaluate_coverage_campaign(
-        _unwaived(campaign), criterion_from_evaluation(campaign), waivers
+        _unwaived(campaign), criterion or criterion_from_evaluation(campaign), waivers
     )
 
 

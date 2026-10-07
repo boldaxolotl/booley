@@ -42,6 +42,7 @@ from booley.goals.target_surface import (
     TargetSurfaceError,
     target_surface_fingerprint,
 )
+from booley.goals.waiver_policy import WAIVER_POLICY_DETAIL_KEY, waiver_policy_fingerprint
 from booley.targets.domain import FuseSocError
 
 #: Errors a resolver may raise; each makes the evidence stale rather than fresh.
@@ -61,6 +62,8 @@ class GoalFreshnessResolvers:
     source: Callable[..., dict[str, Any]] = compute_source_fingerprint
     target_surface: Callable[[Path, str | None], dict[str, Any]] = target_surface_fingerprint
     simulation_suite: Callable[[Path, str], tuple[str, ...]] = resolved_simulation_suite
+    waiver_policy: Callable[[Path], dict[str, Any]] = waiver_policy_fingerprint
+    waiver_semantics: Callable[[Path], str] | None = None
 
     def fingerprint(self, work_dir: Path, *, target: str | None) -> dict[str, Any]:
         """The current source fingerprint plus the ``target_surface`` entry."""
@@ -115,6 +118,13 @@ def stamp_goal_detail(
     concurrent edit could have changed in between.
     """
     stamped = copy.deepcopy(dict(detail))
+    if key.startswith("coverage_"):
+        try:
+            stamped[WAIVER_POLICY_DETAIL_KEY] = _producer_waiver_policy(
+                detail, work_dir, resolvers
+            )
+        except RESOLVER_ERRORS as exc:
+            stamped[WAIVER_POLICY_DETAIL_KEY] = {"error": str(exc)}
     raw = stamped.get(SOURCE_FINGERPRINT_DETAIL_KEY)
     stamp: dict[str, Any] = cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
     target = _stamp_target(stamp, goal)
@@ -134,6 +144,25 @@ def stamp_goal_detail(
         fingerprint[TARGET_SURFACE_CATEGORY] = resolve_target_surface(resolvers, work_dir, target)
     stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = stamp
     return stamped
+
+
+def _producer_waiver_policy(
+    detail: Mapping[str, Any], work_dir: Path, resolvers: GoalFreshnessResolvers
+) -> dict[str, Any]:
+    """Bind the producer's semantic digest to one checked file snapshot."""
+    if resolvers.waiver_semantics is None:
+        raise ValueError("coverage publication has no semantic waiver policy reader")
+    before = resolvers.waiver_policy(work_dir)
+    current = resolvers.waiver_semantics(work_dir)
+    evaluation = detail.get("evaluation")
+    if (
+        not isinstance(evaluation, Mapping)
+        or cast("Mapping[str, Any]", evaluation).get("approved_waiver_set_digest") != current
+    ):
+        raise ValueError("approved waiver policy differs from the producer evaluation")
+    if before != resolvers.waiver_policy(work_dir):
+        raise ValueError("approved waiver policy changed during publication validation")
+    return before
 
 
 def resolve_target_surface(
@@ -211,6 +240,9 @@ def _compare_met_evidence(
 ) -> VerificationFreshness:
     """Compare a well-formed stamp, the receipt, and the suite with the current inputs."""
     target = _stamp_target(stamp_map, goal)
+    policy_reason = _waiver_policy_reason(key, entry, work_dir, resolvers)
+    if policy_reason:
+        return _stale(required, policy_reason)
     try:
         current = resolvers.fingerprint(work_dir, target=target)
     except RESOLVER_ERRORS as exc:
@@ -234,6 +266,20 @@ def _compare_met_evidence(
         if suite:
             return _stale(required, suite, current)
     return source
+
+
+def _waiver_policy_reason(
+    key: str, entry: Any, work_dir: Path, resolvers: GoalFreshnessResolvers
+) -> str:
+    if not key.startswith("coverage_"):
+        return ""
+    try:
+        current = resolvers.waiver_policy(work_dir)
+    except RESOLVER_ERRORS as exc:
+        return f"approved waiver policy cannot be read: {exc}"
+    if _entry_detail(entry).get(WAIVER_POLICY_DETAIL_KEY) != current:
+        return "approved waiver policy changed or has no recorded identity"
+    return ""
 
 
 def _stamp_defect(stamp: object, required: frozenset[str]) -> str:

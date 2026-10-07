@@ -27,9 +27,11 @@ from booley.core.boundary import (
     require_positive_int,
     require_str_value,
 )
+from booley.goals.apply_barrier import require_no_apply
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
 from booley.goals.model import GoalRecord, GoalRecordFormatError, GoalState, WorktreeIdentity
-from booley.goals.paths import GoalIdError, validate_goal_id
+from booley.goals.paths import GoalIdError, record_paths, validate_goal_id
+from booley.goals.proposals import ProposalError
 from booley.goals.protected_inputs import (
     ProtectedInputError,
     ProtectedInputRoots,
@@ -240,29 +242,37 @@ def bind_run(
     if not invocation_id:
         raise GoalBindingError("a Goal run binding needs an invocation id")
     root = _worktree_root(work_dir)
-    record = _active_record(store, root)
-    _require_goal_branch(root, record)
-    try:
-        snapshot = snapshot_protected_inputs(ProtectedInputRoots(root, store.project_dir))
-    except ProtectedInputError as exc:
-        raise GoalBindingError(f"cannot read the protected inputs of {root}: {exc}") from exc
-    reason = protected_drift(record, snapshot)
-    return GoalRunBinding(
-        project_dir=store.project_dir,
-        record_id=record.id,
-        record_revision=record.revision,
-        worktree=record.worktree,
-        worktree_root=root,
-        goal_branch=record.branch,
-        invocation_id=invocation_id,
-        spec_revisions=tuple(sorted((goal.spec.key, goal.spec_revision) for goal in record.goals)),
-        protected_paths=snapshot.encoded_paths,
-        start_digest=snapshot.working_digest,
-        start_head_digest=snapshot.head_digest,
-        eligible=not reason,
-        ineligible_reason=reason,
-        start_surfaces=_start_surfaces(root, record, surface),
-    )
+    initial = _active_record(store, root)
+    with store.record_lock(initial.id):
+        record = _active_record(store, root)
+        try:
+            require_no_apply(record_paths(store.project_dir, record.id).root)
+        except ProposalError as exc:
+            raise GoalBindingError(str(exc)) from exc
+        _require_goal_branch(root, record)
+        try:
+            snapshot = snapshot_protected_inputs(ProtectedInputRoots(root, store.project_dir))
+        except ProtectedInputError as exc:
+            raise GoalBindingError(f"cannot read the protected inputs of {root}: {exc}") from exc
+        reason = protected_drift(record, snapshot)
+        return GoalRunBinding(
+            project_dir=store.project_dir,
+            record_id=record.id,
+            record_revision=record.revision,
+            worktree=record.worktree,
+            worktree_root=root,
+            goal_branch=record.branch,
+            invocation_id=invocation_id,
+            spec_revisions=tuple(
+                sorted((goal.spec.key, goal.spec_revision) for goal in record.goals)
+            ),
+            protected_paths=snapshot.encoded_paths,
+            start_digest=snapshot.working_digest,
+            start_head_digest=snapshot.head_digest,
+            eligible=not reason,
+            ineligible_reason=reason,
+            start_surfaces=_start_surfaces(root, record, surface),
+        )
 
 
 def _start_surfaces(

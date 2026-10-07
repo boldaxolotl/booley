@@ -43,8 +43,11 @@ from collections.abc import Collection, Generator
 from contextlib import ExitStack, contextmanager
 
 from booley.flows.execution_persistence import AcceptanceRecordingError, EvidenceDiscarded
+from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding, checkout_drift, protected_drift
 from booley.goals.model import GoalRecord, GoalState
+from booley.goals.paths import record_paths
+from booley.goals.proposals import ProposalError
 from booley.goals.protected_inputs import ProtectedInputError, snapshot_protected_inputs
 from booley.goals.store import GoalRecordNotFoundError, GoalStore, GoalStoreError
 
@@ -130,6 +133,10 @@ class PublicationGate:
 
     def _check_record(self, record: GoalRecord, affected: Collection[str]) -> None:
         binding = self.binding
+        try:
+            require_no_apply(record_paths(binding.project_dir, record.id).root)
+        except ProposalError as exc:
+            raise EvidenceDiscarded(str(exc)) from exc
         if record.state is not GoalState.ACTIVE:
             raise EvidenceDiscarded(f"Goal Mode {record.state.value}")
         if record.revision != binding.record_revision and protected_drift(

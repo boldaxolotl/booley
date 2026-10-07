@@ -352,6 +352,9 @@ include = [
     # Goal Mode records and the Goal argument trust boundary.
     "src/booley/goals",
     "src/booley/runtime/session_paths.py",
+    "src/booley/mcp/goal_changes.py",
+    "src/booley/mcp/goal_waivers.py",
+    "src/booley/mcp/goal_freshness.py",
 ]
 strict = [
     # External-input coercion and the project-directory trust boundary.
@@ -362,4 +365,7 @@ strict = [
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
     "src/booley/goals",
+    "src/booley/mcp/goal_changes.py",
+    "src/booley/mcp/goal_waivers.py",
+    "src/booley/mcp/goal_freshness.py",
 ]

@@ -63,6 +63,7 @@ from booley.criteria.evidence_ledger import (
 )
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.flows.execution_persistence import AcceptanceRecordingError
+from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding
 from booley.goals.freshness import (
     DEFAULT_RESOLVERS,
@@ -72,6 +73,7 @@ from booley.goals.freshness import (
 )
 from booley.goals.model import GoalFamily, GoalRecord, GoalSpec
 from booley.goals.paths import GOAL_ID_PATTERN, record_paths
+from booley.goals.proposals import ProposalError
 from booley.goals.publication import EvidenceDiscarded, PublicationGate
 from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY, simulation_contract_violation
 from booley.goals.state_store import GoalStateError, GoalStatePersistence, read_goal_state_file
@@ -292,8 +294,10 @@ class GoalProjection:
 
     def _current_revisions(self) -> dict[str, int]:
         try:
-            record = self.store.load(self.record_id)
-        except GoalStoreError as exc:
+            with self.store.record_lock(self.record_id):
+                require_no_apply(record_paths(self.store.project_dir, self.record_id).root)
+                record = self.store.load(self.record_id)
+        except (GoalStoreError, ProposalError) as exc:
             raise AcceptanceLedgerError(f"Goal Record cannot be read: {exc}") from exc
         return {goal.spec.key: goal.spec_revision for goal in record.goals}
 

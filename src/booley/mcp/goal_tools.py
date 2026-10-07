@@ -8,8 +8,8 @@ release exposes exactly one development surface.
 
 ``goal_enter`` runs the entry transaction from :mod:`booley.goals.entry` in
 one worker thread, which takes and releases every Goal lock itself; no lock
-crosses the hand-off. Status reads the record without changing it. Proposal and finish tools answer
-"not available yet" until their phases land.
+crosses the hand-off. Status reads the record without changing it. Proposals use durable decisions and
+recoverable application; finish remains unavailable until Phase 5.
 """
 
 from __future__ import annotations
@@ -34,12 +34,14 @@ from booley.goals.format import render_status
 from booley.goals.model import goal_arg_json_schema
 from booley.goals.paths import SLUG_MAX_LENGTH, SLUG_PATTERN
 from booley.goals.preview import goal_mode_preview_enabled
+from booley.goals.proposals import ProposalError
 from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import session_key
 from booley.goals.state_store import GoalStateError
 from booley.goals.status import status_views
 from booley.goals.store import GoalStore, GoalStoreError
-from booley.mcp.application import McpDispatchResult
+from booley.mcp.application import McpDispatchResult, McpInputRequired, McpRequestContext
+from booley.mcp.goal_changes import proposal_schema, propose_change
 
 GOAL_ENTER = "goal_enter"
 GOAL_STATUS = "goal_status"
@@ -83,6 +85,11 @@ def goal_tool_defs() -> list[dict[str, Any]]:
                 "properties": {"work_dir": _WORK_DIR, "rules": {"type": "boolean"}},
             },
         },
+        {
+            "name": GOAL_PROPOSE_CHANGE,
+            "description": "Propose add/relax/retarget/waiver; resume saved IDs; approve/reject only with the human's exact instruction and reason.",
+            "schema": proposal_schema(_WORK_DIR),
+        },
         *(
             {
                 "name": name,
@@ -93,7 +100,7 @@ def goal_tool_defs() -> list[dict[str, Any]]:
                     "required": ["work_dir"],
                 },
             }
-            for name in (GOAL_PROPOSE_CHANGE, GOAL_FINISH)
+            for name in (GOAL_FINISH,)
         ),
     ]
 
@@ -132,14 +139,21 @@ def goal_enter_schema() -> dict[str, Any]:
 
 
 async def dispatch_goal_tool(
-    name: str, arguments: Mapping[str, Any], *, project_dir: Path
-) -> McpDispatchResult:
+    name: str,
+    arguments: Mapping[str, Any],
+    *,
+    project_dir: Path,
+    request_context: McpRequestContext | None = None,
+) -> McpDispatchResult | McpInputRequired:
     """Serve one visible Goal tool call; the caller checked visibility."""
     from booley.mcp.call_context import require_goal_work_dir
 
     store = GoalStore(project_dir)
     try:
         require_goal_work_dir(arguments, store)
+        if name == GOAL_PROPOSE_CHANGE:
+            env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
+            return await asyncio.to_thread(propose_change, arguments, env, request_context)
         if name == GOAL_STATUS:
             root = Path(str(arguments.get("work_dir") or Path.cwd()))
             views = await asyncio.to_thread(status_views, store, root)
@@ -147,7 +161,15 @@ async def dispatch_goal_tool(
             if arguments.get("rules") is True:
                 text += "\n\n" + goal_mode_rules()
             return _text(text, is_error=False)
-    except (GoalBindingError, GoalStoreError, GoalStateError, AcceptanceLedgerError) as exc:
+    except (
+        GoalBindingError,
+        GoalStoreError,
+        GoalStateError,
+        AcceptanceLedgerError,
+        ProposalError,
+        OSError,
+        ValueError,
+    ) as exc:
         return _text(f"ERROR: {exc}", is_error=True)
     if name != GOAL_ENTER:
         return _text(f"{name} is not available yet in this Booley version.", is_error=True)

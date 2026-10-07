@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -484,7 +484,7 @@ def load(tickets_dir: Path, slug: str, *, directory: Path | None = None) -> Cand
 
 
 @contextmanager
-def _record_lock(tickets_dir: Path, slug: str, directory: Path | None = None) -> Iterator[None]:
+def _record_lock(tickets_dir: Path, slug: str, directory: Path | None = None) -> Generator[None]:
     """Hold the cross-process lock of *slug*'s record, waiting a bounded time."""
     path = (
         waiver_candidates_lock_path(tickets_dir, slug)
@@ -588,7 +588,9 @@ def record_proposals(
     return _mutate(tickets_dir, slug, change, directory)
 
 
-def record_rejections(tickets_dir: Path, slug: str, rejections: Iterable[Rejection]) -> int:
+def record_rejections(
+    tickets_dir: Path, slug: str, rejections: Iterable[Rejection], *, directory: Path | None = None
+) -> int:
     """Remember *rejections* for *slug* and drop the candidates they match.
 
     Idempotent: a rejection already recorded for the same Target, point, and
@@ -597,20 +599,10 @@ def record_rejections(tickets_dir: Path, slug: str, rejections: Iterable[Rejecti
     wanted = tuple(rejections)
 
     def change(record: CandidateRecord) -> tuple[CandidateRecord, int]:
-        known = {rejection.key: rejection for rejection in record.rejections}
-        added = 0
-        for rejection in wanted:
-            if rejection.key not in known:
-                known[rejection.key] = rejection
-                added += 1
-        kept = {
-            key: candidate
-            for key, candidate in record.candidates.items()
-            if not _rejects(known.values(), candidate)
-        }
-        return CandidateRecord(record.slug, kept, tuple(known.values())), added
+        updated = rejected_record(record, wanted)
+        return updated, len(updated.rejections) - len(record.rejections)
 
-    return _mutate(tickets_dir, slug, change)
+    return _mutate(tickets_dir, slug, change, directory)
 
 
 def clear_candidates(tickets_dir: Path, slug: str) -> None:
@@ -631,3 +623,21 @@ def discard(tickets_dir: Path, slug: str) -> bool:
     """
     with _record_lock(tickets_dir, slug):
         return durable_unlink(waiver_candidates_path(tickets_dir, slug))
+
+
+@contextmanager
+def candidate_lock(directory: Path, record_id: str) -> Generator[None]:
+    """Directory-owned neutral storage lock; callers acquire their record/storage lock first."""
+    with _record_lock(directory, record_id, directory):
+        yield
+
+
+def rejected_record(record: CandidateRecord, rejections: Iterable[Rejection]) -> CandidateRecord:
+    """Pure captured rejection effect, shared by recoverable lifecycle owners."""
+    known = {item.key: item for item in record.rejections}
+    for rejection in rejections:
+        known.setdefault(rejection.key, rejection)
+    kept = {
+        key: item for key, item in record.candidates.items() if not _rejects(known.values(), item)
+    }
+    return CandidateRecord(record.slug, kept, tuple(known.values()))

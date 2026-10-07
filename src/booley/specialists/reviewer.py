@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -1186,8 +1187,17 @@ class ReviewerSpecialist(Specialist):
             return
         if not entry.detail:
             return
-        previous = (entry.detail or {}).get("contract")
+        previous = as_dict(entry.detail.get("contract")) or {}
         current = self._review_contract_detail()
+        if (
+            previous.get("mode") == "clean"
+            and current["mode"] == "done"
+            and entry.detail.get("goal_derivation")
+        ):
+            from booley.flows.execution_persistence import criterion_is_current_for
+
+            if criterion_is_current_for(self._acceptance_recorder, self.state, crit_key) is True:
+                previous = {**previous, "mode": "done"}
         previous_version = (entry.detail or {}).get("review_detail_version")
         if previous_version == REVIEW_DETAIL_VERSION and not review_invocation_changed(
             previous, current
@@ -1673,6 +1683,8 @@ object, even after calling the capability.
             }
         elif not result.detail:
             result.detail = dict(prior)
+        if self._acceptance_current is not None:
+            result.detail = deepcopy(result.detail)
         path = self._attach_review_evidence(result.detail, result.exit_code, "result")
         if result.exit_code == EXIT_ERROR and self.state:
             self.set_criterion(crit_key, False, detail=result.detail)
@@ -1680,6 +1692,7 @@ object, even after calling the capability.
             self.state
             and not getattr(self.args, "diagnostic", False)
             and not self._goal_receipt_replayed
+            and self._acceptance_current is None
         ):
             entry = self.state.criteria.get(crit_key)
             if entry is not None:

@@ -12,6 +12,7 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.goals.binding import GoalBindingError
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.mcp.call_context import binding_from_environment
+from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.ticket_board.flow_runner import TicketFlowLoadError, load_project_flow
 
 _FLOW_TYPES = {
@@ -36,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args or (custom_path is None and args[0] not in _FLOW_TYPES):
             raise GoalBindingError("Goal Flow runner requires a supported Flow name")
         name = args.pop(0)
-        adapter = GoalFlowExecution(binding)
+        adapter = GoalFlowExecution(binding, resolvers=GOAL_FRESHNESS_RESOLVERS)
         if custom_path is None:
             return _FLOW_TYPES[name]().main(args, adapter=adapter)
         flow = load_project_flow(custom_path, name)
