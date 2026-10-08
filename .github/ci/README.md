@@ -3,7 +3,7 @@
 Pull requests use pairwise compatibility coverage so the required gate can run
 horizontally:
 
-- Python 3.14 runs the complete suite on Windows in six duration-balanced
+- Python 3.14 runs the complete suite on Windows in eight duration-balanced
   shards.
 - Python 3.13 runs complete branch coverage on Ubuntu in three shards.
 - Python 3.11 and 3.14 run the complete suite on Ubuntu.
@@ -20,7 +20,7 @@ combination before merge.
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
 runner. Historical timings influence balance only: a new or unknown test is
 always assigned to a shard. The `test` job owns compatibility execution, with
-`test-verify` checking the exact node-ID sets from its six Windows shards. The
+`test-verify` checking the exact node-ID sets from its eight Windows shards. The
 independent `coverage-shards` job owns coverage execution; `coverage` verifies
 its three exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
@@ -43,7 +43,7 @@ setup and package-install time around those pytest phases.
 Manual `Tests` workflow runs accept four, six, or eight Windows shards. The
 `windows_shard_benchmark` option selects the same required jobs as an ordinary
 Python source change, avoiding unrelated image work in required-gate timing. Pull
-requests, pushes, and reusable-workflow calls use the selected six-shard
+requests, pushes, and reusable-workflow calls use the selected eight-shard
 production policy. The generated matrix keeps the same Linux and Windows
 compatibility legs, marker selection, four-worker
 work-stealing scheduler, timing model, and exact-union verification for every
@@ -55,8 +55,9 @@ from runs `35614218828` through `35850009708`, with run `35850009708` as the
 execution, job queueing, required-gate elapsed time, and total runner minutes.
 
 The September 23, 2026 experiment selected six shards as the production
-default. See [the experiment record](windows-shard-experiment.md) for the raw
-comparison and the post-change validation requirement.
+default; on October 8, 2026 the grown suite moved the default to eight. See
+[the experiment record](windows-shard-experiment.md) for the raw comparison,
+the change, and the post-change validation requirement.
 
 ## Exhaustive recovery policy
 

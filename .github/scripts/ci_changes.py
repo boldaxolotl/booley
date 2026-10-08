@@ -53,7 +53,7 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8)
 # RISC-V tooling stage instead of reusing the published image, so it must build
 # the RISC-V image even when the dispatched commit does not touch its inputs.
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
-DEFAULT_WINDOWS_SHARD_COUNT = 6
+DEFAULT_WINDOWS_SHARD_COUNT = 8
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
