@@ -2732,7 +2732,12 @@ def _running_progress(run_id: str) -> dict[str, Any] | None:
 def _running_poll_content(run_id: str) -> McpToolContent:
     """Running poll card enriched with the latest durable matrix checkpoint."""
     content = [TextContent(type="text", text=_format_job_running_poll(run_id))]
-    return _with_structured_report(content, _running_progress(run_id))
+    rec = _job_record(run_id)
+    return _goal_warning_result(
+        _with_structured_report(content, _running_progress(run_id)),
+        None if rec is None else _job_binding(rec),
+        None if rec is None else rec.session_key,
+    )
 
 
 def _report_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
@@ -3291,7 +3296,7 @@ async def _poll_from_disk(
             return jobs.result_content(run_id)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return [TextContent(type="text", text=_format_job_running_poll(run_id))]
+            return _running_poll_content(run_id)
         await asyncio.sleep(min(_DISK_POLL_TICK_SECONDS, remaining))
 
 
@@ -4217,6 +4222,8 @@ async def _call_application_tool(
             )
             await observer.record(request.attribution, params.name, outcome)
         warning = request.presentation_warning if payload.goal_aware else ""
+        if observer is not None and payload.goal_aware:
+            _, warning = await observer.shared(request.attribution)
         if warning and isinstance(payload, McpInputRequired):
             payload = replace(payload, message=payload.message + "\n" + warning)
         elif warning:

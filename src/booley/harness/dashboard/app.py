@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
@@ -17,6 +18,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
+from booley.harness.dashboard.resources import Resources
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.runtime.job_snapshot import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.runtime.pid import ProcessState
@@ -53,6 +55,20 @@ def _measure(value: int | float | None) -> str:
     return "—" if value is None else f"{value / 1024**3:.1f} GiB"
 
 
+def resource_summary(resources: Resources) -> str:
+    """Label Sandbox CPU by its measured capacity; Job CPU uses separate core units."""
+    cpu = "—" if resources.cpu_percent is None else f"{resources.cpu_percent:.1f}%"
+    capacity = (
+        "capacity unavailable"
+        if resources.cpu_capacity is None
+        else f"of {resources.cpu_capacity:g} CPUs"
+    )
+    return (
+        f"Sandbox CPU {cpu} {capacity} · Memory {_measure(resources.memory)} / "
+        f"{_measure(resources.memory_limit)} · Free disk {_measure(resources.disk_free)}"
+    )
+
+
 def _goal_text(goal: GoalDetail) -> Text:
     text = Text()
     if goal.checking:
@@ -68,9 +84,11 @@ def _elapsed(job: JobView, now: float | None = None) -> str:
         return f"{reported:g}s" if reported is not None and reported >= 0 else "unavailable"
     try:
         start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
-        end = parse_timestamp(job.record.ended_at).timestamp() if job.record.ended_at else now
-        if end is None:
-            return "unavailable"
+        end = (
+            parse_timestamp(job.record.ended_at).timestamp()
+            if job.record.ended_at
+            else (time.time() if now is None else now)
+        )
         return f"{max(0, end - start):.0f}s"
     except ValueError:
         return "unavailable"
@@ -93,7 +111,7 @@ def _owner_label(job: JobView, sessions: tuple[SessionRow, ...], now: float) -> 
 
 def _job_row(job: JobView, now: float, owner: str) -> str:
     if job.state == "running":
-        cpu = "—" if job.cpu_percent is None else f"{job.cpu_percent:.1f}%"
+        cpu = "—" if job.cpu_percent is None else f"{job.cpu_percent:.1f}% of one core"
         outcome = f"CPU {cpu} / memory {_measure(job.memory)}"
     elif job.state in TERMINAL_JOB_STATES:
         outcome = f"exit {job.record.exit_code} · design verdict {(job.report or {}).get('passed', 'unavailable')}"
@@ -115,11 +133,11 @@ def job_detail(job: JobView, *, now: float | None = None) -> str:
             f"Execution: {job.state} · exit {rec.exit_code}",
             f"Design verdict: {report.get('passed', 'unavailable')}",
             f"Flow configuration: {' '.join(rec.argv) or '—'}",
-            f"EDA tool: {report.get('eda_tool', report.get('tool', '—'))}",
+            f"EDA tool: {report.get('eda_tool') or report.get('tool') or job.eda_tool or '—'}",
             f"Start: {rec.run_started_at or rec.started_at} · End: {rec.ended_at or '—'}",
             f"Elapsed: {_elapsed(job, now)}",
             f"Stage: {job.stage or '—'}",
-            f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '%'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
+            f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
             f"Result: {report.get('summary', report.get('detail', 'unavailable'))}",
             "Metrics / failure details: " + _reported_metrics(report),
             "Artifacts: " + ("\n".join(paths) or "—"),
@@ -537,11 +555,7 @@ class DashboardApp(App[None]):
                 "No Jobs match this filter" if not rows and self.navigation.view == "jobs" else ""
             )
         )
-        res = self.snapshot.resources
-        cpu = "—" if res.cpu_percent is None else f"{res.cpu_percent:.1f}%"
-        self.query_one("#resources", Static).update(
-            f"Sandbox CPU {cpu} · Memory {_measure(res.memory)} / {_measure(res.memory_limit)} · Free disk {_measure(res.disk_free)}"
-        )
+        self.query_one("#resources", Static).update(resource_summary(self.snapshot.resources))
         self.query_one("#health", Static).update(
             "\n".join(
                 (

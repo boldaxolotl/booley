@@ -245,3 +245,128 @@ async def test_goal_aware_shared_warning_keeps_structured_content(monkeypatch):
     assert result.content[0].text == "Goal result"
     assert result.content[1].text.startswith("WARNING:")
     assert result.structured_content == {"facts": "retained"}
+
+
+@pytest.mark.asyncio
+async def test_async_goal_reply_refreshes_shared_warning_after_deferred_peer(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    from mcp.types import TextContent
+    from starlette.requests import Request
+
+    from booley.mcp import session_observer, session_registry
+    from booley.mcp.session_observer import SessionObserver
+    from booley.mcp.session_registry import SessionRegistry, resolve_attribution
+    from booley.runtime.pid import ProcessIdentity
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    monkeypatch.setattr(session_registry, "namespace", lambda *_: "fixture")
+    monkeypatch.setattr(session_observer, "namespace", lambda *_: "fixture")
+    registry = SessionRegistry(tmp_path / "data")
+    other = resolve_attribution(tmp_path, metadata={"threadId": "other"}, client_name="codex")
+    registry.upsert(other, "lint", "completed", now=100)
+    release = threading.Event()
+
+    def peer(_request):
+        assert release.wait(2)
+        return ProcessIdentity(98765, "fixture", 101)
+
+    monkeypatch.setattr(session_observer, "observed_peer", peer)
+    observer = SessionObserver(now=lambda: 100, budget=0.05)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+
+    async def dispatch(*_):
+        release.set()
+        await asyncio.wait_for(observer._pending, 2)
+        return McpDispatchResult(
+            [TextContent(type="text", text="RUNNING: sim")], False, goal_aware=True
+        )
+
+    app = McpApplication(
+        [{"name": "sim", "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    request_context = context()
+    request_context.session.client_params.client_info.name = "claude-code"
+    request_context.request = Request(
+        {
+            "type": "http",
+            "server": ("127.0.0.1", 8080),
+            "headers": [(b"x-booley-peer-host", b"127.0.0.1"), (b"x-booley-peer-port", b"50000")],
+        }
+    )
+    try:
+        result = await server._call_application_tool(
+            app,
+            CallToolRequestParams(name="sim", arguments={"work_dir": str(tmp_path)}),
+            request_context,
+            observer,
+        )
+    finally:
+        release.set()
+    assert any(
+        "another session shares this Goal worktree" in block.text for block in result.content
+    )
+    assert not any("unavailable" in block.text for block in result.content)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adopted", [False, True])
+async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
+    tmp_path, monkeypatch, adopted
+):
+    from booley.goals.binding import GoalRunBinding
+    from booley.goals.model import WorktreeIdentity
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    binding = GoalRunBinding(
+        tmp_path,
+        "fixture-20261008T100000Z",
+        1,
+        WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main"),
+        tmp_path,
+        "goal/fixture",
+        "run",
+        (),
+        (),
+        "sha256:" + "a" * 64,
+        "sha256:" + "a" * 64,
+        True,
+    )
+    record = job_records.JobRecord(
+        "run", "sim", "2026-10-08T10:00:00Z", 60, binding=binding.to_json(), pid=99
+    )
+    monkeypatch.setattr(server, "_job_record", lambda _: record)
+    monkeypatch.setattr(server, "is_pid_alive", lambda _: True)
+    monkeypatch.setattr(server.jobrec.time, "time", lambda: 1791453601)
+    monkeypatch.setattr(server, "_format_job_running_poll", lambda _: "RUNNING: sim")
+    monkeypatch.setattr(server, "_running_progress", lambda _: {"run_id": "run"})
+
+    async def wait(*_):
+        return None if adopted else False
+
+    async def dispatch(_name, args, *_):
+        return await server._dispatch_poll(args, SimpleNamespace(wait=wait))
+
+    app = McpApplication(
+        [{"name": "booley_poll", "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    result = await server._call_application_tool(
+        app,
+        CallToolRequestParams(name="booley_poll", arguments={"run_id": "run", "wait_seconds": 0}),
+        None,
+        Observer(),
+    )
+    assert any(
+        "another session shares this Goal worktree" in block.text for block in result.content
+    )
+    assert result.structured_content == {"reports": [{"run_id": "run"}]}

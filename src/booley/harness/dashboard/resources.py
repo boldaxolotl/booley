@@ -20,6 +20,7 @@ class Resources:
     memory: int | None = None
     memory_limit: int | None = None
     disk_free: int | None = None
+    cpu_capacity: float | None = None
 
 
 class ResourceSampler:
@@ -61,7 +62,7 @@ class ResourceSampler:
             self._previous = now, consumed
         except (OSError, ValueError, KeyError, ZeroDivisionError):
             pass
-        return Resources(cpu, memory, limit, disk)
+        return Resources(cpu, memory, limit, disk, self.capacity)
 
 
 def _cpu_capacity(cgroup: Path) -> float:
@@ -80,7 +81,7 @@ def _cpu_capacity(cgroup: Path) -> float:
 
 @dataclass(frozen=True)
 class ProcessResources:
-    """Measurements belong to a revalidated process, never just a reused PID."""
+    """Revalidated tree measurements; CPU percent uses one core as 100%."""
 
     cpu_percent: float | None = None
     memory: int | None = None
@@ -134,9 +135,10 @@ class ProcessSampler:
         ] = {}
 
     def sample(
-        self, identity: ProcessIdentity, *, now: float, capacity: float | None
+        self, identity: ProcessIdentity, *, now: float, capacity: float | None = None
     ) -> ProcessResources:
-        """Include EDA descendants; revalidate every identity and the tree on both sides."""
+        """Include descendants; legacy capacity argument does not change per-core units."""
+        del capacity
         try:
             tree = _process_tree(identity, self.proc_root)
             samples = [_process_sample(member, self.proc_root) for member in tree]
@@ -147,13 +149,12 @@ class ProcessSampler:
             cpu, peak = None, memory
             if previous:
                 peak = max(memory, previous[3])
-                if now > previous[0] and capacity and previous[1] == tree:
+                if now > previous[0] and previous[1] == tree:
                     cpu = max(
                         0,
                         (ticks - previous[2])
                         / os.sysconf("SC_CLK_TCK")
                         / (now - previous[0])
-                        / capacity
                         * 100,
                     )
             if len(self._previous) >= 4096:

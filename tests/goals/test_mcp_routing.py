@@ -190,6 +190,9 @@ def test_two_goal_worktrees_and_interactive_restart_poll_cancel(goal_mode, monke
         result = asyncio.run(
             server._dispatch_poll({"run_id": rec.run_id, "wait_seconds": 0}, jobs)
         )
+        if rec.binding is not None:
+            assert isinstance(result, server.McpDispatchResult) and result.goal_aware
+            result = result.value
         assert "RUNNING" in result[0].text
         result = asyncio.run(server._dispatch_cancel({"run_id": rec.run_id}, jobs))
         assert "CANCELLED" in result[0].text

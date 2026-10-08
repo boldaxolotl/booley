@@ -17,6 +17,8 @@ from booley.runtime import job_records, job_slots
 from booley.runtime.artifact_paths import available_paths
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.timefmt import parse_timestamp
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 MAX_JOBS = 4096
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
@@ -37,6 +39,7 @@ class JobView:
     memory: int | None = None
     peak_memory: int | None = None
     artifacts: tuple[str, ...] = ()
+    eda_tool: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -127,6 +130,7 @@ def snapshot_jobs(
 ) -> JobSnapshot:
     """Read files only. Never poll, derive/reconcile status, adopt or invoke a reaper."""
     tokens, rows, diagnostics = [], [], []
+    catalogs: dict[str, TargetCatalog | None] = {}
     if slots_root is not None:
         store = job_slots.SlotStore(slots_root)
         for kind in ("heavy", "light", "ticket"):
@@ -142,7 +146,7 @@ def snapshot_jobs(
             if rec is None:
                 diagnostics.append(f"Job record unavailable: {path}")
                 continue
-            rows.append(_project_job(root, rec, tokens, proc_root))
+            rows.append(_project_job(root, rec, tokens, proc_root, catalogs))
     diagnostics.extend(_ambiguous_ids(rows))
     return JobSnapshot(tuple(rows), tuple(diagnostics))
 
@@ -180,19 +184,55 @@ def _read_job(path: Path) -> job_records.JobRecord | None:
 
 
 def _project_job(
-    root: Path, rec: job_records.JobRecord, tokens: list[job_slots.SlotToken], proc_root: Path
+    root: Path,
+    rec: job_records.JobRecord,
+    tokens: list[job_slots.SlotToken],
+    proc_root: Path,
+    catalogs: dict[str, TargetCatalog | None],
 ) -> JobView:
     report, report_path = _report(root, rec)
     progress = read_progress_for_run(
         (root.parent / "flow-reports", root.parent / "mcp-tool-reports"), rec.endpoint, rec.run_id
     )
-    stage = "" if progress is None else str(progress[1].get("phase", ""))
+    stage = _reported_stage(None if progress is None else progress[1])
     artifacts = available_paths(
         report or {}, (root.parent, Path(rec.work_dir) if rec.work_dir else root)
     )
     return JobView(
-        root, rec, _state(rec, tokens, proc_root), report, report_path, stage, artifacts=artifacts
+        root,
+        rec,
+        _state(rec, tokens, proc_root),
+        report,
+        report_path,
+        stage,
+        artifacts=artifacts,
+        eda_tool=_configured_tool(rec, catalogs),
     )
+
+
+def _reported_stage(progress: dict[str, Any] | None) -> str:
+    if progress is None:
+        return ""
+    stage = progress.get("stage")
+    if isinstance(stage, str) and stage:
+        return stage
+    phase = progress.get("phase")
+    # Starting is an initial checkpoint, not proof of the current EDA stage.
+    return phase if isinstance(phase, str) and phase != "starting" else ""
+
+
+def _configured_tool(rec: job_records.JobRecord, catalogs: dict[str, TargetCatalog | None]) -> str:
+    target = target_arg(rec.argv)
+    if rec.status != job_records.STATUS_RUNNING or not rec.work_dir or target is None:
+        return ""
+    try:
+        if rec.work_dir not in catalogs:
+            catalogs[rec.work_dir] = None
+            catalogs[rec.work_dir] = TargetCatalog.build(rec.work_dir)
+        catalog = catalogs[rec.work_dir]
+        return "" if catalog is None else (catalog.select(target).eda_tool or "")
+    except (OSError, ValueError, FuseSocError):
+        return ""
 
 
 def _ambiguous_ids(rows: list[JobView]) -> list[str]:

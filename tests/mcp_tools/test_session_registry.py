@@ -500,7 +500,7 @@ def test_fallback_row_migration_preserves_started_time_and_one_visible_row(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_busy_call_cannot_overwrite_another_calls_deferred_metadata(
+async def test_busy_calls_on_same_process_keep_latest_call_outcome(
     registry, tmp_path, monkeypatch
 ):
     import threading
@@ -528,4 +528,120 @@ async def test_busy_call_cannot_overwrite_another_calls_deferred_metadata(
     await observer.record(second, "second", "completed")
     release.set()
     await asyncio.wait_for(observer._pending, 2)
-    assert registry.snapshot().rows[0].calls[-1].tool == "first"
+    assert registry.snapshot().rows[0].calls[-1].tool == "second"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_process_calls_keep_each_presence_and_own_outcome(
+    registry, tmp_path, monkeypatch
+):
+    import threading
+
+    from starlette.requests import Request
+
+    from booley.mcp import session_observer
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    monkeypatch.setattr(session_registry, "namespace", lambda *_: SCOPE)
+    release = threading.Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def peer(request):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(2)
+        return ProcessIdentity(int(request.headers["x-booley-peer-port"]), SCOPE, 101)
+
+    monkeypatch.setattr(session_observer, "observed_peer", peer)
+    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+
+    async def call(pid):
+        request = Request(
+            {
+                "type": "http",
+                "server": ("127.0.0.1", 8080),
+                "headers": [
+                    (b"x-booley-peer-host", b"127.0.0.1"),
+                    (b"x-booley-peer-port", str(pid).encode()),
+                ],
+            }
+        )
+        facts = await observer.attribution(
+            {"work_dir": str(tmp_path)}, {}, "claude-code", request=request, tool=f"call{pid}"
+        )
+        await observer.record(facts, f"call{pid}", "completed")
+
+    try:
+        await asyncio.gather(*(call(pid) for pid in range(98765, 98771)))
+        await asyncio.wait_for(entered.wait(), 2)
+    finally:
+        release.set()
+    await asyncio.wait_for(observer._pending, 2)
+    rows = registry.snapshot().rows
+    assert len(rows) == 6
+    assert all(row.attribution.kind == "process" for row in rows)
+    assert {
+        (row.attribution.process.pid, row.calls[-1].tool, row.calls[-1].outcome) for row in rows
+    } == {(pid, f"call{pid}", "completed") for pid in range(98765, 98771)}
+
+
+@pytest.mark.asyncio
+async def test_presence_queue_coalesces_latest_call_and_diagnoses_overflow(
+    registry, monkeypatch, caplog
+):
+    import threading
+
+    from booley.mcp import session_observer
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    monkeypatch.setattr(session_observer, "MAX_PENDING", 2)
+    release = threading.Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def peer(_):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(2)
+        return IDENTITY
+
+    monkeypatch.setattr(session_observer, "observed_peer", peer)
+    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    try:
+        await observer.attribution({}, {"threadId": "active"}, "codex")
+        await asyncio.wait_for(entered.wait(), 2)
+        for index in range(10):
+            attribution = await observer.attribution({}, {"threadId": "latest"}, "codex")
+            await observer.record(attribution, f"call{index}", "completed")
+        await observer.attribution({}, {"threadId": "second"}, "codex")
+        await observer.attribution({}, {"threadId": "overflow"}, "codex")
+    finally:
+        release.set()
+    await asyncio.wait_for(observer._pending, 2)
+    rows = {row.attribution.key: row for row in registry.snapshot().rows}
+    assert set(rows) == {"codex:active", "codex:latest", "codex:second"}
+    assert rows["codex:latest"].calls[-1].tool == "call9"
+    assert rows["codex:latest"].calls[-1].outcome == "completed"
+    assert "queue capacity exceeded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shared_warning_reads_presence_while_attribution_writer_is_busy(
+    registry, monkeypatch
+):
+    from booley.mcp import session_observer
+
+    monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
+    registry.upsert(facts("codex:one"), "sim", "completed", now=100)
+    registry.upsert(facts("codex:two"), "lint", "completed", now=100)
+    observer = SessionObserver(now=lambda: 100, budget=1)
+    blocked = asyncio.get_running_loop().create_future()
+    observer._pending = blocked
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    try:
+        keys, warning = await observer.shared(facts("codex:one"))
+    finally:
+        blocked.set_result(None)
+    assert set(keys) == {"codex:one", "codex:two"}
+    assert warning == "WARNING: another session shares this Goal worktree"

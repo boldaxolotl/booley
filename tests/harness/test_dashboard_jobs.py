@@ -165,7 +165,7 @@ def test_process_resource_delta_and_reused_identity_are_honest(tmp_path, monkeyp
     assert (first.memory, first.peak_memory) == (102400, 102400)
     fields[11] = "200"
     (directory / "stat").write_text("99 (flow) " + " ".join(fields))
-    assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 50
+    assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 100
     observations = iter([identity, ProcessIdentity(99, "fixture", 102)])
     monkeypatch.setattr(
         resources, "capture_process_identity", lambda *_a, **_k: next(observations)
@@ -248,7 +248,7 @@ def test_job_resources_include_eda_descendants_and_reject_child_reuse(tmp_path, 
     monkeypatch.setattr(
         "booley.harness.dashboard.resources.os.sysconf", lambda _: 100, raising=False
     )
-    assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 50
+    assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 100
     from booley.harness.dashboard import resources
 
     real_capture = resources.capture_process_identity
@@ -278,3 +278,95 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     monkeypatch.setattr(server, "resolve_project_dir", lambda: tmp_path)
     assert set(retained_job_roots(tmp_path, interactive_root=current)) == {current, historic}
     assert server.job_roots() == (current,)
+
+
+def test_job_cpu_is_percent_of_one_core_independent_of_sandbox_capacity(tmp_path, monkeypatch):
+    from booley.harness.dashboard import resources
+    from tests.mcp_tools.test_session_registry import _fake_process
+
+    _fake_process(tmp_path, 98765, "101")
+    directory = tmp_path / "98765"
+    (directory / "task/98765").mkdir(parents=True)
+    (directory / "task/98765/children").write_text("")
+    (directory / "status").write_text("VmRSS: 100 kB\n")
+    identity = resources.capture_process_identity(98765, proc_root=tmp_path)
+    sampler = resources.ProcessSampler(tmp_path)
+    assert sampler.sample(identity, now=10, capacity=24).cpu_percent is None
+    fields = (directory / "stat").read_text().rsplit(")", 1)[1].split()
+    fields[11] = "100"
+    (directory / "stat").write_text("98765 (flow) " + " ".join(fields))
+    monkeypatch.setattr(resources.os, "sysconf", lambda _: 100, raising=False)
+    assert sampler.sample(identity, now=11, capacity=24).cpu_percent == 100
+
+
+def test_sandbox_capacity_is_explicit_in_resource_projection(tmp_path, monkeypatch):
+    from booley.harness.dashboard import app
+
+    for name, value in {
+        "cpu.max": "max 100000",
+        "cpu.stat": "usage_usec 0",
+        "cpuset.cpus.effective": "0-23",
+    }.items():
+        (tmp_path / name).write_text(value)
+    monkeypatch.setattr("booley.harness.dashboard.resources.os.cpu_count", lambda: 24)
+    sampler = ResourceSampler(tmp_path)
+    sampler.sample(tmp_path, now=10)
+    (tmp_path / "cpu.stat").write_text("usage_usec 1000000")
+    sample = sampler.sample(tmp_path, now=11)
+    assert sample.cpu_percent == pytest.approx(100 / 24)
+    assert "Sandbox CPU 4.2% of 24 CPUs" in app.resource_summary(sample)
+
+
+@pytest.mark.parametrize("stage", [None, "simulation"])
+def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
+    tmp_path, monkeypatch, stage
+):
+    import time
+
+    from booley.flows.progress_lifecycle import progress_document
+    from booley.runtime.pid import capture_process_identity
+    from tests.mcp_tools.test_session_registry import _fake_process
+
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "fixture.core").write_text(
+        "CAPI=2:\nname: acme:test:fixture:1.0\ntargets:\n  sim_top:\n"
+        "    flow: sim\n    toplevel: top\n    flow_options:\n      tool: icarus\n"
+    )
+    proc = tmp_path / "proc"
+    _fake_process(proc, 98765, "101")
+    identity = capture_process_identity(98765, proc_root=proc)
+    root = tmp_path / "logs/.runtime/jobs"
+    job_records.write_record(
+        rec(
+            pid=98765,
+            process_identity=identity.to_payload(),
+            work_dir=str(work),
+            argv=["--target", "sim_top"],
+            run_started_at="2026-10-08T10:00:00Z",
+        ),
+        root,
+    )
+    progress = root.parent / "flow-reports/sim/1/progress.json"
+    progress.parent.mkdir(parents=True)
+    document = progress_document(
+        flow="sim",
+        run_id="one",
+        phase="starting",
+        targets=["sim_top"],
+        completed_targets=[],
+        detail={},
+        extra={} if stage is None else {"stage": stage},
+    )
+    progress.write_text(json.dumps(document))
+    before = files(tmp_path)
+    monkeypatch.setattr(time, "time", lambda: 1791453605)
+    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
+    text = job_detail(view)
+    assert "Elapsed: 5s" in text
+    assert f"Stage: {stage or '—'}" in text
+    assert "EDA tool: icarus" in text
+    assert files(tmp_path) == before
+    (work / "fixture.core").unlink()
+    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
+    assert "EDA tool: —" in job_detail(missing)

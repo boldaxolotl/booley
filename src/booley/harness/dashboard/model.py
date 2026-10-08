@@ -111,6 +111,8 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
         if current.state not in OCCUPYING_STATES:
             return _terminal(store, current)
         status = build_status(store, current, observational=True)
+        if not Path(current.worktree_path).is_dir():
+            return GoalView(current.id, current, status, diagnostic=status.warning)
         if status.interrupted_applies:
             return GoalView(
                 current.id, current, status, diagnostic="Interrupted apply: recovery required"
@@ -249,9 +251,7 @@ class DashboardReader:
             identity = ProcessIdentity.from_payload(job.record.process_identity)
             projected = job
             if identity is not None and job.state == "running":
-                sample = self.processes.sample(
-                    identity, now=time.monotonic(), capacity=self.resources.capacity
-                )
+                sample = self.processes.sample(identity, now=time.monotonic())
                 projected = replace(
                     job,
                     cpu_percent=sample.cpu_percent,

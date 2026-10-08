@@ -332,3 +332,52 @@ def test_unavailable_registry_never_reports_quiet_goal_worktrees(tmp_path, monke
     result = doctor.inspect_presence(tmp_path, tmp_path, inside_sandbox=True, now=100)
     assert result.unavailable
     assert not any(w.check_id == "goals.quiet-session" for w in result.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["healthy", "unoccupied"])
+async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
+    tmp_path, monkeypatch, caller
+):
+    from booley.goals.input_identity import root_bindings
+    from booley.goals.status import build_status
+    from booley.mcp.goal_tools import dispatch_goal_tool
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    work = tmp_path / "removed"
+    healthy = tmp_path / "healthy"
+    unoccupied = tmp_path / "unoccupied"
+    control = tmp_path / "data"
+    for path in (work, healthy, unoccupied, control):
+        path.mkdir()
+    missing_record = replace(
+        record(work), input_paths=root_bindings({"rtl": work, "project": control})
+    )
+    healthy_record = replace(
+        record(healthy),
+        id="healthy-20261008T100000Z",
+        worktree=replace(WT, checkout="worktrees/other"),
+    )
+    _persist_record(control, missing_record)
+    _persist_record(control, healthy_record)
+    before_healthy = build_status(GoalStore(control), healthy_record)
+    work.rmdir()
+    before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    result = await dispatch_goal_tool(
+        "goal_status", {"work_dir": str(tmp_path / caller)}, project_dir=control
+    )
+    assert not result.is_error
+    assert "Goal worktree missing or unavailable" in result.value[0].text
+    assert build_status(GoalStore(control), healthy_record) == before_healthy
+    snapshot = model.DashboardReader(healthy, control).read()
+    missing_view = next(goal for goal in snapshot.goals if goal.id == missing_record.id)
+    assert missing_view.status is not None
+    assert "Goal worktree missing or unavailable" in missing_view.diagnostic
+    assert "Goal worktree missing or unavailable" in missing_view.status.warning
+    assert (
+        next(goal for goal in snapshot.goals if goal.id == healthy_record.id).status
+        == before_healthy
+    )
+    assert before == {
+        str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    }
