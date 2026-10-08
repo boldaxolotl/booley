@@ -3046,7 +3046,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             normalize_completion_error(
                 result,
                 progress_error,
-                "publish coverage progress",
+                "publish Simulation progress",
                 path=invocation / "progress.json",
             )
         return result
@@ -3205,7 +3205,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         validated, invocation, admission, None, manifest_published
                     )
                 outcomes.append(outcome)
-                self.context._simulation_report_outcomes = (outcome,)
                 self._write_campaign_progress(
                     (selector,), outcomes, phase="running", complete=False
                 )

@@ -1782,7 +1782,8 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
     assert outcome is returned
     assert isinstance(error, OSError)
     assert phases == ["starting", "running", "complete", "aborted"]
-    assert flow.context._simulation_report_outcomes == (returned,)
+    assert flow.context._simulation_report_outcomes == ()
+    assert flow.persisted_cycle_counts() == {}
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])

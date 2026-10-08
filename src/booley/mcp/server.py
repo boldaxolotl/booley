@@ -1852,7 +1852,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
             payload = {"reports": [], "truncated": True}
             live = _live_checkpoint_summary(report)
             if live is not None:
-                payload["reports"] = [live]
+                payload.update(live)
             for key in ("flow", "mcp_tool", "target", "exit_code"):
                 if report.get(key) is not None:
                     payload[key] = report[key]

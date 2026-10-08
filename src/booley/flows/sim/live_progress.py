@@ -147,8 +147,9 @@ class LiveProgressSink:
                 )
                 descriptor = os.open(path, flags, 0o600)
                 with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                        raise ValueError("active run log must be regular")
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise ValueError("active run log must be a singly linked regular file")
                     stream.truncate(0)
                     header = format_run_log_header(flow="sim", target=target, run=self.run_token)
                     stream.write(f"{header}{RUN_LOG_PENDING}\n")
@@ -279,7 +280,7 @@ def attempt_scope(
         attempt_id,
         role,
         revision,
-        ephemeral_root,
+        ephemeral_root.resolve() if ephemeral_root is not None else None,
         operation,
     )
     if parent is not None:

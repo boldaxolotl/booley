@@ -2422,7 +2422,8 @@ def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
     }
     payload = server._structured_from_report(report)
     assert payload["truncated"] is True
-    checkpoint = payload["reports"][0]
+    assert payload["reports"] == []
+    checkpoint = payload
     assert checkpoint["active"] == [active]
     assert checkpoint["run_id"] == "current"
     assert checkpoint["complete"] is False and checkpoint["partial"] is True

@@ -574,3 +574,72 @@ def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypa
         document = json.loads(path.read_text())
         assert document["active"][0]["log"]["path"] == "build/run.log"
         assert sink.error is None
+
+
+def test_preplanted_hardlinked_log_is_never_truncated(tmp_path, monkeypatch):
+    from booley.flows.sim.live_progress import (
+        LiveProgressSink,
+        attempt_scope,
+        install_progress,
+        observe_stage,
+    )
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    protected = tmp_path / "protected"
+    protected.write_text("retained evidence")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "run.log").hardlink_to(protected)
+    path = tmp_path / "progress.json"
+    sink = LiveProgressSink(path, tmp_path, "current-run")
+    with install_progress(sink), attempt_scope("sim"):
+        _checkpoint(path)
+        observe_stage(
+            "sim",
+            "executing",
+            evidence_root=evidence,
+            attempt_token="owned",
+            initialize_log=True,
+        )
+        document = json.loads(path.read_text())
+        assert document["active"][0]["stage"] == "executing"
+        assert "log" not in document["active"][0]
+        assert sink.error is not None
+    assert protected.read_text() == "retained evidence"
+
+
+def test_baseline_under_symlinked_temporary_root_uses_exact_canonical_pointer(
+    tmp_path,
+    monkeypatch,
+):
+    from booley.flows.sim.live_progress import (
+        LiveProgressSink,
+        attempt_scope,
+        install_progress,
+        observe_stage,
+    )
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    project = tmp_path / "project"
+    project.mkdir()
+    baseline = tmp_path / "temporary" / "baseline"
+    baseline.mkdir(parents=True)
+    alias = tmp_path / "temp-alias"
+    alias.symlink_to(baseline.parent, target_is_directory=True)
+    path = project / "progress.json"
+    sink = LiveProgressSink(path, project, "current-run")
+    with (
+        install_progress(sink),
+        attempt_scope("sim", role="baseline", ephemeral_root=alias / "baseline"),
+    ):
+        _checkpoint(path)
+        observe_stage(
+            "sim",
+            "executing",
+            evidence_root=baseline,
+            attempt_token="owned",
+            initialize_log=True,
+        )
+        document = json.loads(path.read_text())
+        assert document["active"][0]["log"]["path"] == str(baseline / "run.log")
+        assert document["phase"] == "baseline" and sink.error is None
