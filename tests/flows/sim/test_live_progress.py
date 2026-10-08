@@ -9,6 +9,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.progress_lifecycle import progress_document
 from booley.flows.sim.adapter_transport import AdapterResult, write_adapter_result
 from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_execution_engine import (
     _compile_surface_patch,
     _handle,
@@ -259,7 +260,7 @@ def test_active_pointer_requires_exact_owned_root_token_and_header(tmp_path, mon
         assert "log" not in json.loads(path.read_text())["active"][0]
         protected = tmp_path / "protected"
         protected.write_text("unchanged")
-        (root / "run.log").symlink_to(protected)
+        symlink_or_skip(root / "run.log", protected)
         observe_stage(
             "sim", "executing", evidence_root=root, attempt_token="owned", initialize_log=True
         )
@@ -559,7 +560,7 @@ def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypa
     evidence = project / "build"
     evidence.mkdir(parents=True)
     alias = tmp_path / "alias"
-    alias.symlink_to(project, target_is_directory=True)
+    symlink_or_skip(alias, project, target_is_directory=True)
     path = project / "progress.json"
     sink = LiveProgressSink(path, alias, "current-run")
     with install_progress(sink), attempt_scope("sim"):
@@ -625,7 +626,7 @@ def test_baseline_under_symlinked_temporary_root_uses_exact_canonical_pointer(
     baseline = tmp_path / "temporary" / "baseline"
     baseline.mkdir(parents=True)
     alias = tmp_path / "temp-alias"
-    alias.symlink_to(baseline.parent, target_is_directory=True)
+    symlink_or_skip(alias, baseline.parent, target_is_directory=True)
     path = project / "progress.json"
     sink = LiveProgressSink(path, project, "current-run")
     with (
