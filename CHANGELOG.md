@@ -9,6 +9,19 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## 0.3.1 - 05 OCT 2026
 
+### Preview Goal workflow
+
+- Fresh met Goals in the preview workflow can finish with a frozen
+  evidence package and Session Summary; open done-review findings remain visible.
+  Finish and abandonment use explicit record and operation IDs for retries.
+### Upgrade notes
+
+- New non-Stealth Interactive Mode initialization keeps Goal history eligible
+  for commits. Existing explicit Git exclusions remain in place; excluded or
+  Stealth summaries stay local and completion reports that publication was skipped.
+  Project configuration remains untracked until you commit it; initialization
+  makes these paths eligible without staging or committing them.
+
 ### Installation
 
 - Persistent pipx, uv tool, and ordinary wheel venv installs can become the

@@ -48,3 +48,32 @@ def test_goal_status_cli_from_subdirectory_is_identical(
     monkeypatch.chdir(nested)
     assert _cmd_goal(args, goal_mode.main) == 0
     assert capsys.readouterr().out == root
+
+
+def test_goal_abandon_cli_selects_once_and_retries_with_explicit_ids(
+    goal_mode,  # noqa: F811 — shared pytest fixture
+    monkeypatch,
+    capsys,
+):
+    from booley.goals.store import GoalStore
+
+    monkeypatch.chdir(goal_mode.worktree)
+    args = Namespace(
+        goal_command="abandon",
+        record_id=None,
+        operation_id=None,
+        instruction_quote="Stop this Goal",
+    )
+    assert _cmd_goal(args, goal_mode.main) == 0
+    text = capsys.readouterr().out
+    assert "Branch and files retained" in text and "Retry IDs:" in text
+    assert text.splitlines()[0].startswith("Retry IDs:")
+    operation = text.split("--operation-id ", 1)[1].splitlines()[0].strip()
+    args.record_id = goal_mode.record.id
+    args.operation_id = operation
+    assert _cmd_goal(args, goal_mode.main) == 0
+    assert capsys.readouterr().out == text
+    assert (
+        GoalStore(goal_mode.control).load(goal_mode.record.id).end_instruction_quote
+        == "Stop this Goal"
+    )

@@ -63,7 +63,7 @@ def is_git_worktree_root(path: Path) -> bool:
     if result.returncode != 0 or not result.stdout.strip():
         return False
     try:
-        return Path(result.stdout.strip()).resolve() == path.resolve()
+        return Path(result.stdout.strip()).samefile(path)
     except OSError:
         return False
 
@@ -122,11 +122,12 @@ def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckou
     try:
         top = Path(result.stdout.strip()).resolve()
         expected = nested.resolve()
+        same_root = top.samefile(expected)
     except OSError as exc:
         raise RepositoryCheckoutError(
             f"paired project repository cannot be resolved at {nested}: {exc}"
         ) from exc
-    if top != expected:
+    if not same_root:
         raise RepositoryCheckoutError(
             f"paired project repository has unexpected root {top}; expected {expected}"
         )

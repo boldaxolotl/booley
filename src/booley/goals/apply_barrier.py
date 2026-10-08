@@ -9,7 +9,11 @@ from booley.goals.proposals import ProposalError, list_proposals
 def pending_applies(root: Path) -> tuple[str, ...]:
     """Observational barrier: include approved-before-intent and finalization gaps."""
     log = read_change_log(root / "changes.jsonl")
-    approved = {view.proposal.id for view in list_proposals(root) if view.state == "approved"}
+    approved = {
+        view.proposal.id
+        for view in list_proposals(root)
+        if view.state == "approved" and not view.closed_by_abandonment
+    }
     return tuple(sorted(approved | {entry.id for entry in log.interrupted}))
 
 

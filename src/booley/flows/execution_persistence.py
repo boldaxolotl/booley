@@ -44,6 +44,22 @@ class AcceptanceRecorder(Protocol):
 
 
 @runtime_checkable
+class DoneApprovalPolicy(Protocol):
+    """Optional caller policy for approval of current done-review findings."""
+
+    def done_findings_require_approval(self) -> bool: ...
+
+
+def done_findings_require_approval_for(recorder: AcceptanceRecorder) -> bool:
+    """Keep shared Ticket policy unless the caller supplies its own approval policy."""
+    return (
+        recorder.done_findings_require_approval()
+        if isinstance(recorder, DoneApprovalPolicy)
+        else True
+    )
+
+
+@runtime_checkable
 class CriterionSourceTarget(Protocol):
     """Optional recorder policy for the Target a Criterion's source stamp describes."""
 

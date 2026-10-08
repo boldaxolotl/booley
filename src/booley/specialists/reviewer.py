@@ -42,6 +42,7 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_OUT_OF_SCOPE,
     DISPOSITION_SUPERSEDED,
 )
+from booley.flows.execution_persistence import done_findings_require_approval_for
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -2004,21 +2005,8 @@ object, even after calling the capability.
         so a caller that re-invokes after further edits still gets the answer
         it was looking for, plus an explicit note that no new review ran.
         """
-        prior = self._get_prior_detail(crit_key) or {}
-        issues = [ReviewIssue.from_dict(d) for d in prior.get("issue_list", [])]
-        from booley.evidence.review_dispositions import outstanding_done_findings
-
-        current = outstanding_done_findings({crit_key: {"detail": prior}})
-        counts = count_by_severity([ReviewIssue.from_dict(row) for row in current])
+        prior, issues, current, counts = self._replayed_facts(crit_key)
         gate_passed = True
-        prior = {
-            **prior,
-            "gate_passed": True,
-            "issues": len(current),
-            "observation_count": len(issues),
-            **counts,
-            "review_outcome": "corrective" if current else "advisory" if issues else "no_findings",
-        }
         _status, count_str = _format_status_and_counts(counts, gate_passed)
         outcome = "REVIEWED WITH FINDINGS" if issues else "REVIEWED — NO FINDINGS"
 
@@ -2029,10 +2017,7 @@ object, even after calling the capability.
             f"\nRESULT: {outcome} ({count_str})",
         ]
         lines += [f"  {_format_issue_line(iss)}" for iss in issues]
-        if current:
-            lines.append(
-                "INFO: current done findings require explicit human approval before acceptance."
-            )
+        lines.extend(self._done_approval_notice(bool(current)))
         lines.append(
             "\nThis review is already completed for the current source. Calling "
             "`reviewer` again only replays this verdict while the reviewed source remains "
@@ -2053,6 +2038,34 @@ object, even after calling the capability.
             ],
             report_text=report_text,
         )
+
+    def _done_approval_notice(self, has_findings: bool) -> list[str]:
+        """Fresh and replayed done verdicts share the same presentation policy."""
+        if has_findings and done_findings_require_approval_for(self._acceptance_recorder):
+            return [
+                "INFO: current done findings require explicit human approval before acceptance."
+            ]
+        return []
+
+    def _replayed_facts(
+        self, crit_key: str
+    ) -> tuple[dict[str, Any], list[ReviewIssue], list[dict[str, Any]], dict[str, int]]:
+        """Compute the prior producer facts shared by replay rendering and its result."""
+        from booley.evidence.review_dispositions import outstanding_done_findings
+
+        prior = self._get_prior_detail(crit_key) or {}
+        issues = [ReviewIssue.from_dict(d) for d in prior.get("issue_list", [])]
+        current = outstanding_done_findings({crit_key: {"detail": prior}})
+        counts = count_by_severity([ReviewIssue.from_dict(row) for row in current])
+        detail = {
+            **prior,
+            "gate_passed": True,
+            "issues": len(current),
+            "observation_count": len(issues),
+            **counts,
+            "review_outcome": "corrective" if current else "advisory" if issues else "no_findings",
+        }
+        return detail, issues, current, counts
 
     def _get_prior_detail(self, crit_key: str) -> dict[str, Any] | None:
         """Retrieve the detail dict for a criterion from state."""
@@ -2845,10 +2858,7 @@ Schema enforcement (applied upstream by the harness):
             f"  {_format_issue_line(ReviewIssue.from_dict(row))} [{row.get('status', 'reported')}]"
             for row in done_outcome.records
         )
-        if done_outcome.corrective_records:
-            lines.append(
-                "INFO: current done findings require explicit human approval before acceptance."
-            )
+        lines.extend(self._done_approval_notice(bool(done_outcome.corrective_records)))
         historical = len(done_outcome.records) - len(done_outcome.corrective_records)
         if historical:
             lines.append(f"INFO: preserved {historical} advisory/historical observation(s).")

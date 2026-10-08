@@ -64,7 +64,9 @@ def test_released_cheatsheet_never_mentions_goal() -> None:
         ["goal", "abandon"],
     ],
 )
-def test_goal_subcommands_parse_and_report_not_available(argv: list[str], capsys) -> None:
+def test_goal_abandon_parses_and_refuses_without_an_occupying_record(
+    argv: list[str], capsys
+) -> None:
     parser = tlr._build_parser()
     args = parser.parse_args(argv)
 
@@ -72,7 +74,7 @@ def test_goal_subcommands_parse_and_report_not_available(argv: list[str], capsys
     assert tlr._EARLY_COMMANDS["goal"](args, Path.cwd()) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert f"booley goal {argv[1]}: not available yet" in captured.err
+    assert "ERROR:" in captured.err and "Goal" in captured.err
 
 
 @pytest.mark.usefixtures("preview_on")

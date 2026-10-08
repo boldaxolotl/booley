@@ -88,6 +88,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_ticket_preflight_parity_checks": frozenset(
         {
+            "_check_goal_history_ignored",
             "_check_agent_backend_health",
             "_check_custom_endpoints_and_criteria",
             "_check_git_state",

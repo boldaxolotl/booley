@@ -168,8 +168,10 @@ Recorded after the Phase 0 spikes
   worktree at `.booley_project/goals/history/<goal-id>.md` and committed
   there with the branch bound to the Goal Branch (a different checkout
   refuses); the repository is the worktree's, never the Project
-  directory's. Under Stealth the record stays local, as above. `init` keeps its `/.booley_project` exclude line; the
-  Project `.gitignore` ignores `goals/*/` and keeps `goals/history/`.
+  directory's. Under Stealth the record stays local, as above. `init` adds the `/.booley_project` exclude only under Stealth. Fresh
+  non-Stealth Projects use the Project `.gitignore`, which ignores `goals/*/`
+  and keeps `goals/history/`. Existing exclude lines are retained; Finish
+  reports an ignored history path as local-only publication.
 - **Goal conflicts.** Goals that differ in a setting with no defined order
   (different baseline Target, coverage test selection, review spec file,
   mutation scope/total/auto) are refused at translation; nothing is merged

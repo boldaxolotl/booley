@@ -84,3 +84,36 @@ def test_apply_persists_the_exact_prepared_plan_without_rebuilding(
     builder.assert_not_called()
     assert changes.issuance is issuance
     assert changes.issued is True
+
+
+@pytest.mark.parametrize("stealth", [False, True])
+def test_inspect_and_apply_use_the_same_history_visibility_policy(tmp_path, monkeypatch, stealth):
+    prepared = _prepared(tmp_path)
+    issuance = SimpleNamespace(license_profile=None)
+    monkeypatch.setattr(interactive, "stealth_enabled", lambda _root: stealth)
+    monkeypatch.setattr(interactive.session_issuance, "preview", lambda *_a, **_kw: prepared)
+    monkeypatch.setattr(interactive, "_inspect_issuance", lambda *_a: (issuance, ""))
+    monkeypatch.setattr(interactive.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        interactive.session_runtime,
+        "plan_stopped_headless_runtime_reconciliation",
+        lambda *_a: SimpleNamespace(pending=False),
+    )
+    monkeypatch.setattr(
+        interactive.session_runtime,
+        "reconcile_stopped_headless_runtime",
+        lambda *_a: False,
+    )
+    inspect_exclusions = Mock(return_value=False)
+    apply_exclusions = Mock(return_value=False)
+    monkeypatch.setattr(interactive, "git_excludes_pending", inspect_exclusions)
+    monkeypatch.setattr(interactive, "add_git_excludes", apply_exclusions)
+    plan = interactive.inspect(_request(tmp_path, Mock()))
+    interactive.apply(plan)
+    expected = (
+        (".devcontainer", ".claude", ".booley_project")
+        if stealth
+        else (".devcontainer", ".claude")
+    )
+    inspect_exclusions.assert_called_once_with(tmp_path, expected)
+    apply_exclusions.assert_called_once_with(tmp_path, expected)

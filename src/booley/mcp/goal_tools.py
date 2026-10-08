@@ -9,7 +9,7 @@ release exposes exactly one development surface.
 ``goal_enter`` runs the entry transaction from :mod:`booley.goals.entry` in
 one worker thread, which takes and releases every Goal lock itself; no lock
 crosses the hand-off. Status reads the record without changing it. Proposals use durable decisions and
-recoverable application; finish remains unavailable until Phase 5.
+recoverable application; finish freezes evidence and publishes pinned history.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from booley.goals.entry import (
     parse_entry_request,
 )
 from booley.goals.format import render_status
+from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import goal_arg_json_schema
 from booley.goals.paths import SLUG_MAX_LENGTH, SLUG_PATTERN
 from booley.goals.preview import goal_mode_preview_enabled
@@ -42,6 +43,7 @@ from booley.goals.status import status_views
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.mcp.application import McpDispatchResult, McpInputRequired, McpRequestContext
 from booley.mcp.goal_changes import proposal_schema, propose_change
+from booley.mcp.goal_completion import complete_goal, finish_schema
 
 GOAL_ENTER = "goal_enter"
 GOAL_STATUS = "goal_status"
@@ -90,18 +92,11 @@ def goal_tool_defs() -> list[dict[str, Any]]:
             "description": "Propose add/relax/retarget/waiver; resume saved IDs; approve/reject only with the human's exact instruction and reason.",
             "schema": proposal_schema(_WORK_DIR),
         },
-        *(
-            {
-                "name": name,
-                "description": _NOT_YET_DESCRIPTION,
-                "schema": {
-                    "type": "object",
-                    "properties": {"work_dir": _WORK_DIR},
-                    "required": ["work_dir"],
-                },
-            }
-            for name in (GOAL_FINISH,)
-        ),
+        {
+            "name": GOAL_FINISH,
+            "description": "Finish every met/fresh Goal with a Session Summary; open done findings remain visible. Pass the exact record_id and caller-stable operation_id on every retry. Abandon only on explicit human instruction (abandon=true, instruction_quote).",
+            "schema": finish_schema(_WORK_DIR),
+        },
     ]
 
 
@@ -138,7 +133,7 @@ def goal_enter_schema() -> dict[str, Any]:
     }
 
 
-async def dispatch_goal_tool(
+async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal tools have distinct responses
     name: str,
     arguments: Mapping[str, Any],
     *,
@@ -151,6 +146,8 @@ async def dispatch_goal_tool(
     store = GoalStore(project_dir)
     try:
         require_goal_work_dir(arguments, store)
+        if name == GOAL_FINISH:
+            return await _finish(arguments, project_dir)
         if name == GOAL_PROPOSE_CHANGE:
             env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
             return await asyncio.to_thread(propose_change, arguments, env, request_context)
@@ -162,6 +159,7 @@ async def dispatch_goal_tool(
                 text += "\n\n" + goal_mode_rules()
             return _text(text, is_error=False)
     except (
+        LifecycleError,
         GoalBindingError,
         GoalStoreError,
         GoalStateError,
@@ -180,6 +178,19 @@ async def dispatch_goal_tool(
     except (GoalEntryError, GoalStoreError) as exc:
         return _text(f"ERROR: Goal Mode was not entered: {exc}", is_error=True)
     return _text(result.render(), is_error=False)
+
+
+async def _finish(arguments: Mapping[str, Any], project_dir: Path) -> McpDispatchResult:
+    env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
+    result = await asyncio.to_thread(complete_goal, arguments, env)
+    message = result.get("message", result.get("reason", ""))
+    if result.get("reason") and result["reason"] not in message:
+        message += "\nReason: " + result["reason"]
+    if result.get("publication_note"):
+        message += "\n" + result["publication_note"]
+    if result.get("running_jobs"):
+        message += "\nRunning Jobs (not cancelled): " + str(result["running_jobs"])
+    return _text(message, is_error=result["status"] == "revalidation_required")
 
 
 def _session_key(arguments: Mapping[str, Any], store: GoalStore) -> str | None:

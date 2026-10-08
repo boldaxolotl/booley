@@ -1318,7 +1318,9 @@ def _report_interactive_changes(
     if changes.runtime_reconciled:
         ok("reconciled stopped Sandbox resources from their prior issuance")
     if changes.exclusions_changed:
-        ok("excluded .devcontainer/, .booley_project/, .claude/ from git (info/exclude)")
+        ok(
+            "reconciled Interactive Mode git exclusions (info/exclude); existing exclusions retained"
+        )
     notes = [f"app={sources.app}"]
     if changes.issuance.license_profile is not None:
         notes.append("license-relay-image:present")

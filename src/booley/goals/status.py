@@ -121,14 +121,22 @@ def _build_status(
         record,
         goals,
         goal_warnings(record, store.project_dir, work_dir=root),
-        sum(view.state == "pending" for view in proposals),
+        sum(view.state == "pending" and not view.closed_by_abandonment for view in proposals),
         proposals,
-        tuple(
-            (view.proposal.id, conflict(view.proposal, record))
-            for view in proposals
-            if view.state == "pending" and conflict(view.proposal, record)
-        ),
+        _proposal_conflicts(proposals, record),
         interrupted,
+    )
+
+
+def _proposal_conflicts(
+    proposals: tuple[ProposalView, ...], record: GoalRecord
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (view.proposal.id, conflict(view.proposal, record))
+        for view in proposals
+        if view.state == "pending"
+        and not view.closed_by_abandonment
+        and conflict(view.proposal, record)
     )
 
 

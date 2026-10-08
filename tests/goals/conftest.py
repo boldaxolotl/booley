@@ -70,6 +70,7 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     main = tmp_path / "main"
     main.mkdir()
     git(main, "init", "-q", "-b", "main")
+    git(main, "config", "core.autocrlf", "false")
     (main / "booley.toml").write_text("# root config\n", encoding="utf-8")
     (main / "rtl.v").write_text("module top; endmodule\n", encoding="utf-8")
     (main / "docs").mkdir()
@@ -106,6 +107,7 @@ def install_paired_project(layout: SimpleNamespace, tmp_path: Path) -> Path:
     project_repo = tmp_path / "project-repo"
     project_repo.mkdir()
     git(project_repo, "init", "-q", "-b", "main")
+    git(project_repo, "config", "core.autocrlf", "false")
     (project_repo / "booley.toml").write_text("[project]\n", encoding="utf-8")
     git(project_repo, "add", "-A")
     git(project_repo, "commit", "-q", "-m", "project")

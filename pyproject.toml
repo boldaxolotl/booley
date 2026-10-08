@@ -355,6 +355,12 @@ include = [
     "src/booley/mcp/goal_changes.py",
     "src/booley/mcp/goal_waivers.py",
     "src/booley/mcp/goal_freshness.py",
+    "src/booley/mcp/goal_completion.py",
+    "src/booley/mcp/goal_generated_inputs.py",
+    "src/booley/review/goal_package.py",
+    "src/booley/review/goal_presentation_v1.py",
+    "src/booley/runtime/publication_ownership.py",
+    "src/booley/runtime/pinned_history.py",
 ]
 strict = [
     # External-input coercion and the project-directory trust boundary.
@@ -368,4 +374,10 @@ strict = [
     "src/booley/mcp/goal_changes.py",
     "src/booley/mcp/goal_waivers.py",
     "src/booley/mcp/goal_freshness.py",
+    "src/booley/mcp/goal_completion.py",
+    "src/booley/mcp/goal_generated_inputs.py",
+    "src/booley/review/goal_package.py",
+    "src/booley/review/goal_presentation_v1.py",
+    "src/booley/runtime/publication_ownership.py",
+    "src/booley/runtime/pinned_history.py",
 ]

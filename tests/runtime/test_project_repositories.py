@@ -145,3 +145,27 @@ def test_paired_projection_never_resolves_ambient_project(
     (outer / ".booley_project/.git").write_text("gitdir: /missing\n", encoding="utf-8")
     with pytest.raises(project_repositories.RepositoryCheckoutError, match="unavailable"):
         project_repositories.paired_project_repository(outer)
+
+
+def test_paired_identity_filesystem_error_has_typed_repository_context(tmp_path, monkeypatch):
+    from booley.runtime.project_repositories import (
+        RepositoryCheckoutError,
+        paired_project_repository,
+    )
+
+    outer = _repository(tmp_path)
+    source_parent = tmp_path / "source"
+    source_parent.mkdir()
+    source = _repository(source_parent)
+    paired = outer / ".booley_project"
+    _git(source, "worktree", "add", "--detach", str(paired))
+    samefile = Path.samefile
+
+    def unavailable(path, other):
+        if path == paired:
+            raise PermissionError("filesystem identity unavailable")
+        return samefile(path, other)
+
+    monkeypatch.setattr(Path, "samefile", unavailable)
+    with pytest.raises(RepositoryCheckoutError, match=r"cannot be resolved.*identity unavailable"):
+        paired_project_repository(outer)
