@@ -2454,11 +2454,7 @@ def test_docker_image_inventory_rejects_conflicting_reference_ids(
         + (dangling if interleave_dangling_rows else "")
         + _inventory_row("booley-sandbox", "latest", second_id)
     )
-    monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
-    )
+    _patch_inventory(monkeypatch, output)
 
     # The exact message proves the tagged conflict, not a dangling row, raised.
     with pytest.raises(
@@ -2469,7 +2465,10 @@ def test_docker_image_inventory_rejects_conflicting_reference_ids(
 
 def _inventory_row(repository: str, tag: str, image_id: str) -> str:
     """One raw `docker image ls --format '{{json .}}'` row, Docker-escaped."""
-    escape = lambda text: text.replace("<", "\\u003c").replace(">", "\\u003e")  # noqa: E731
+
+    def escape(text: str) -> str:
+        return text.replace("<", "\\u003c").replace(">", "\\u003e")
+
     return f'{{"ID":"{image_id}","Repository":"{escape(repository)}","Tag":"{escape(tag)}"}}\n'
 
 
@@ -2527,19 +2526,19 @@ class _ParserBackedDocker(FakeDocker):
     Like the real daemon, it rejects any `<none>` reference as an invalid name.
     """
 
-    def __init__(self, images, untagged_rows: str) -> None:
+    def __init__(self, images: dict[str, tuple[str, dict[str, str]]], untagged_rows: str) -> None:
         super().__init__(images)
         self.untagged_rows = untagged_rows
         self.inspected: list[str] = []
 
     def _reject_untagged(self, image: str) -> None:
         self.inspected.append(image)
-        if "<none>" in image:
+        if lifecycle._DOCKER_MISSING_NAME in image:
             raise lifecycle.ImageLifecycleError(
                 f"could not inspect Docker image '{image}': invalid reference format"
             )
 
-    def image_references(self):
+    def image_references(self) -> tuple[lifecycle.ImageReference, ...]:
         rows = "".join(
             _inventory_row(*_split_reference(reference), image_id)
             for reference, (image_id, _labels) in sorted(self.images.items())
