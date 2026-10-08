@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from booley.flows.base import SubprocessResult
 from booley.flows.progress_lifecycle import progress_document
 from booley.flows.sim.adapter_transport import AdapterResult, write_adapter_result
@@ -345,7 +347,8 @@ def test_active_writer_uses_short_lock_timeout_and_mandatory_keeps_default(tmp_p
     assert json.loads(path.read_text())["phase"] == "aborted"
 
 
-def test_reap_and_coverage_supersede_remove_active_pointers(tmp_path):
+@pytest.mark.parametrize("origin_phase", ["running", "starting"])
+def test_reap_and_coverage_supersede_remove_active_pointers(tmp_path, origin_phase):
     from booley.flows.progress_lifecycle import (
         repair_progress_after_reap,
         supersede_progress,
@@ -357,7 +360,7 @@ def test_reap_and_coverage_supersede_remove_active_pointers(tmp_path):
     document = progress_document(
         flow="sim",
         run_id="killed",
-        phase="running",
+        phase=origin_phase,
         targets=["sim"],
         completed_targets=[],
         detail={},
@@ -510,3 +513,64 @@ def test_hdl_backend_exceptions_are_visible_before_child_completion(tmp_path, mo
                 children[0].stdin.flush()
                 children[0].stdin.close()
             future.result(timeout=6)
+
+
+def test_nested_same_attempt_retains_active_log_until_owning_scope_exits(tmp_path, monkeypatch):
+    from booley.flows.sim.live_progress import (
+        LiveProgressSink,
+        attempt_scope,
+        install_progress,
+        observe_stage,
+    )
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    path = tmp_path / "progress.json"
+    root = tmp_path / "evidence"
+    root.mkdir()
+    with install_progress(LiveProgressSink(path, tmp_path, "current-run")):
+        _checkpoint(path)
+        with attempt_scope("sim", attempt_id="durable-attempt"):
+            with attempt_scope("sim"):
+                observe_stage(
+                    "sim",
+                    "executing",
+                    evidence_root=root,
+                    attempt_token="owned",
+                    initialize_log=True,
+                )
+            observe_stage("sim", "postprocessing", evidence_root=root, attempt_token="owned")
+            document = json.loads(path.read_text())
+            assert len(document["active"]) == 1
+            assert document["active"][0]["log"]["live"] is True
+            assert document["active"][0]["attempt_id"] == "durable-attempt"
+        assert "active" not in json.loads(path.read_text())
+
+
+def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypatch):
+    from booley.flows.sim.live_progress import (
+        LiveProgressSink,
+        attempt_scope,
+        install_progress,
+        observe_stage,
+    )
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    project = tmp_path / "project"
+    evidence = project / "build"
+    evidence.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    path = project / "progress.json"
+    sink = LiveProgressSink(path, alias, "current-run")
+    with install_progress(sink), attempt_scope("sim"):
+        _checkpoint(path)
+        observe_stage(
+            "sim",
+            "executing",
+            evidence_root=evidence,
+            attempt_token="owned",
+            initialize_log=True,
+        )
+        document = json.loads(path.read_text())
+        assert document["active"][0]["log"]["path"] == "build/run.log"
+        assert sink.error is None

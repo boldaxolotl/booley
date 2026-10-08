@@ -427,21 +427,23 @@ class VerilatorCoverageExecution:
             initialize_log=True,
             tests=(request.test.name,),
         )
-        executed = execute_adapter_attempt(
-            self._invoke,
-            AdapterAttemptRequest(
-                ("sh", "-c", script),
-                work.timeout_s + _ADAPTER_CLEANUP_MARGIN_S,
-                transport,
-                prepared.build_root,
-            ),
-        )
-        observe_stage(
-            self._handle.selector,
-            "postprocessing",
-            evidence_root=prepared.build_root,
-            attempt_token=transport.attempt_token,
-        )
+        try:
+            executed = execute_adapter_attempt(
+                self._invoke,
+                AdapterAttemptRequest(
+                    ("sh", "-c", script),
+                    work.timeout_s + _ADAPTER_CLEANUP_MARGIN_S,
+                    transport,
+                    prepared.build_root,
+                ),
+            )
+        finally:
+            observe_stage(
+                self._handle.selector,
+                "postprocessing",
+                evidence_root=prepared.build_root,
+                attempt_token=transport.attempt_token,
+            )
         return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
 
     def _commands(self) -> tuple[str, ...]:

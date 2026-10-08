@@ -14,7 +14,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
-from booley.flows.run_log import RUN_LOG_HEADER_PREFIX, RUN_LOG_PENDING, current_run_token
+from booley.flows.run_log import (
+    RUN_LOG_PENDING,
+    current_run_token,
+    format_run_log_header,
+    parse_run_log_header,
+)
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -63,10 +68,10 @@ class LiveProgressSink:
     """Own the full checkpoint and serialize active attempts with terminal writes."""
 
     def __init__(self, path: Path, project_root: Path, run_id: str) -> None:
-        self.path = path
-        self.project_root = _absolute_nofollow(project_root)
-        self.run_id = run_id
-        self.run_token = current_run_token()
+        self.path: Path = path
+        self.project_root: Path = project_root.resolve()
+        self.run_id: str = run_id
+        self.run_token: str = current_run_token()
         self._lock = threading.RLock()
         self._base: dict[str, object] | None = None
         self._active: dict[str, dict[str, object]] = {}
@@ -145,9 +150,8 @@ class LiveProgressSink:
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                         raise ValueError("active run log must be regular")
                     stream.truncate(0)
-                    stream.write(
-                        f"{RUN_LOG_HEADER_PREFIX} run={self.run_token} flow=sim target={target} started={utc_now_rfc3339()}\n{RUN_LOG_PENDING}\n"
-                    )
+                    header = format_run_log_header(flow="sim", target=target, run=self.run_token)
+                    stream.write(f"{header}{RUN_LOG_PENDING}\n")
                 self._initialized[root.absolute()] = (target, scope.key, token)
             except (OSError, ValueError) as error:
                 self._record_error(error)
@@ -190,9 +194,9 @@ class LiveProgressSink:
             self._validate_path(path, scope)
             with os.fdopen(open_regular_nofollow(path), "r", encoding="utf-8") as stream:
                 header = stream.readline(4096)
-            fields = dict(part.split("=", 1) for part in header.split()[2:] if "=" in part)
+            fields = parse_run_log_header(header)
             if (
-                not header.startswith(RUN_LOG_HEADER_PREFIX)
+                fields is None
                 or fields.get("run") != self.run_token
                 or fields.get("flow") != "sim"
                 or fields.get("target") != target
@@ -295,7 +299,7 @@ def attempt_scope(
         yield
     finally:
         sink = _sink.get()
-        if sink is not None:
+        if sink is not None and (parent is None or scope.key != parent.key):
             sink.retire(scope.key)
         _scope.reset(token)
 

@@ -201,7 +201,7 @@ def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> b
     phase = document.get("phase")
     if phase in {"superseded", "complete"}:
         return False
-    if phase not in {"running", "aborted"}:
+    if phase not in {"starting", "running", "aborted"}:
         return False
     updated = dict(document)
     updated.pop("active", None)

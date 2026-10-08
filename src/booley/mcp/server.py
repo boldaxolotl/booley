@@ -1809,6 +1809,30 @@ def _simulation_transport_report(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def _live_checkpoint_summary(report: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep current owned log pointers when completed Target detail exceeds the cap."""
+    active = report.get("active")
+    if report.get("complete") is not False or not isinstance(active, list):
+        return None
+    summary = {
+        key: report[key]
+        for key in ("flow", "run_id", "timestamp", "phase", "complete", "partial")
+        if key in report
+    }
+    summary["active"] = [
+        {key: item[key] for key in ("target", "stage", "role", "operation", "log") if key in item}
+        for item in active
+        if isinstance(item, dict)
+    ]
+    omitted = 0
+    while summary["active"] and _payload_size(summary) > _MAX_STRUCTURED_REPORT_BYTES // 2:
+        summary["active"].pop()
+        omitted += 1
+    if omitted:
+        summary["omitted_active_entries"] = omitted
+    return summary
+
+
 def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
     """Bounded ``structuredContent`` payload for a run report, or None.
 
@@ -1826,6 +1850,9 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if len(json.dumps(payload).encode("utf-8")) > _MAX_STRUCTURED_REPORT_BYTES:
             # Oversized: keep the cheap scalar verdict, drop the heavy body.
             payload = {"reports": [], "truncated": True}
+            live = _live_checkpoint_summary(report)
+            if live is not None:
+                payload["reports"] = [live]
             for key in ("flow", "mcp_tool", "target", "exit_code"):
                 if report.get(key) is not None:
                     payload[key] = report[key]

@@ -2184,7 +2184,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
                         "target": "dut",
                         "stage": "executing",
                         "role": "candidate",
-                        "run_log": "build/dut/run.log",
+                        "log": {"path": "build/dut/run.log", "live": True, "complete": False},
                     }
                 ]
             },
@@ -2391,7 +2391,8 @@ def _poll_blocked_legacy_flow(
             assert report["partial"] is True and report["complete"] is False
             assert report["completed_targets"] == []
             assert report["pending_targets"] == ["sim"]
-            active = next(item for item in report["active"] if item["stage"] == "executing")
+            assert len(report["active"]) == 1
+            active = report["active"][0]
             assert active["stage"] == "executing"
             assert active["log"]["live"] is True
             assert "synthetic exception" in (root / active["log"]["path"]).read_text()
@@ -2399,3 +2400,31 @@ def _poll_blocked_legacy_flow(
         finally:
             release.set()
             future.result(timeout=5)
+
+
+def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
+    from booley.mcp import server
+
+    active = {
+        "target": "sim",
+        "stage": "executing",
+        "role": "candidate",
+        "log": {"path": "build/current/run.log", "live": True, "complete": False},
+    }
+    report = {
+        "flow": "sim",
+        "run_id": "current",
+        "phase": "running",
+        "complete": False,
+        "partial": True,
+        "active": [active],
+        "detail": {"completed": "large diagnostic" * server._MAX_STRUCTURED_REPORT_BYTES},
+    }
+    payload = server._structured_from_report(report)
+    assert payload["truncated"] is True
+    checkpoint = payload["reports"][0]
+    assert checkpoint["active"] == [active]
+    assert checkpoint["run_id"] == "current"
+    assert checkpoint["complete"] is False and checkpoint["partial"] is True
+    assert "passed" not in payload and "exit_code" not in checkpoint
+    assert server._payload_size(payload) <= server._MAX_STRUCTURED_REPORT_BYTES
