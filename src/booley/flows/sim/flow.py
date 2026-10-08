@@ -4283,7 +4283,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         for request in (*baselines, *candidates):
             campaign.publish_new(request)
         for request in baselines:
-            target = request.plan.manifest.document["target"]
+            target = cast(Mapping[str, object], request.plan.manifest.document["target"])
             with attempt_scope(
                 str(target["selector"]),
                 identity=f"{target['vlnv']}#{target['name']}",

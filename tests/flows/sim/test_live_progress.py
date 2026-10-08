@@ -573,7 +573,9 @@ def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypa
             initialize_log=True,
         )
         document = json.loads(path.read_text())
-        assert document["active"][0]["log"]["path"] == "build/run.log"
+        assert document["active"][0]["log"]["path"] == str(
+            (evidence / "run.log").relative_to(project)
+        )
         assert sink.error is None
 
 
