@@ -74,6 +74,7 @@ class RegistrySnapshot:
 
     rows: tuple[SessionRow, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    unavailable: bool = False
 
 
 def _parse_row(raw: bytes) -> SessionRow:
@@ -219,7 +220,9 @@ class SessionRegistry:
         try:
             refuse_symlinks(self.root)
             if not self.root.exists():
-                return RegistrySnapshot(diagnostics=("session registry unavailable: absent",))
+                return RegistrySnapshot(
+                    diagnostics=("session registry unavailable: absent",), unavailable=True
+                )
             paths = list(islice(self.root.glob("*.json"), MAX_ROWS + 1))
             if len(paths) > MAX_ROWS:
                 diagnostics.append("session registry exceeds scan bound")
@@ -234,14 +237,17 @@ class SessionRegistry:
         unique: dict[str, SessionRow] = {}
         for row in sorted(rows, key=lambda row: row.last_call_at):
             unique[row.attribution.key] = row
-        return RegistrySnapshot(tuple(unique.values()), tuple(diagnostics))
+        return RegistrySnapshot(
+            tuple(unique.values()), tuple(diagnostics), bool(diagnostics) and not rows
+        )
 
     def visible_snapshot(self, *, now: float, scope: str) -> RegistrySnapshot:
         """Observational quiet filtering; maintenance owns every durable deletion."""
         snapshot = self.snapshot()
         if not scope:
             return RegistrySnapshot(
-                diagnostics=(*snapshot.diagnostics, "session namespace unavailable")
+                diagnostics=(*snapshot.diagnostics, "session namespace unavailable"),
+                unavailable=True,
             )
         rows = []
         for row in snapshot.rows:
@@ -252,7 +258,7 @@ class SessionRegistry:
             )
             if presence.retained:
                 rows.append(replace(row, process_state=presence.process_state))
-        return RegistrySnapshot(tuple(rows), snapshot.diagnostics)
+        return RegistrySnapshot(tuple(rows), snapshot.diagnostics, snapshot.unavailable)
 
     def preserve_worktree(self, attribution: Attribution) -> Attribution:
         """Calls without a work directory refresh the caller's previous association."""
@@ -321,7 +327,9 @@ class SessionRegistry:
                 facts = canonical_attribution(row.attribution)
                 if not namespace or facts.namespace != namespace:
                     continue
-                missing = worktree_exists(facts) is False if worktree_exists else False
+                missing = bool(
+                    facts.worktree_key and worktree_exists and worktree_exists(facts) is False
+                )
                 presence = session_presence(
                     row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
                 )
@@ -491,6 +499,8 @@ def registered_worktree_presence(root: Path) -> Callable[[Attribution], bool | N
         return lambda _facts: None
 
     def present(facts: Attribution) -> bool | None:
+        if not facts.worktree_key:
+            return None
         if facts.worktree_key.startswith("path:"):
             return str(Path(facts.work_dir).resolve()) in paths
         return facts.worktree_key in identities

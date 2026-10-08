@@ -72,7 +72,7 @@ def inspect_presence(
         threshold,
         now if now is not None else time.time(),
         proc_root,
-        bool(sessions.diagnostics),
+        sessions.unavailable,
     )
     warnings = tuple(
         finding

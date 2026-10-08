@@ -23,6 +23,7 @@ from mcp.types import TextContent
 
 from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.goals.binding import GoalBindingError
+from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.entry import (
     EntryEnvironment,
     GoalEntryError,
@@ -39,7 +40,7 @@ from booley.goals.proposals import ProposalError
 from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import session_key
 from booley.goals.state_store import GoalStateError
-from booley.goals.status import status_views
+from booley.goals.status import GoalStatusView, status_views
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.mcp.application import McpDispatchResult, McpInputRequired, McpRequestContext
 from booley.mcp.goal_changes import proposal_schema, propose_change
@@ -154,10 +155,11 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
         if name == GOAL_STATUS:
             root = Path(str(arguments.get("work_dir") or Path.cwd()))
             views = await asyncio.to_thread(status_views, store, root)
+            aware = await asyncio.to_thread(_status_has_caller, views, root, request_context)
             text = render_status(views) if views else "No active Goal Mode."
             if arguments.get("rules") is True:
                 text += "\n\n" + goal_mode_rules()
-            return _text(text, is_error=False, goal_aware=bool(views))
+            return _text(text, is_error=False, goal_aware=aware)
     except (
         LifecycleError,
         GoalBindingError,
@@ -181,6 +183,27 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
     except (GoalEntryError, GoalStoreError) as exc:
         return _text(f"ERROR: Goal Mode was not entered: {exc}", is_error=True)
     return _text(result.render(), is_error=False, goal_aware=True)
+
+
+def _status_has_caller(
+    views: tuple[GoalStatusView, ...],
+    root: Path,
+    context: McpRequestContext | None,
+) -> bool:
+    """Shared warnings describe an occupying Goal at the caller's checkout only."""
+    if not views:
+        return False
+    facts = None if context is None else context.attribution
+    try:
+        repository = GoalCheckout(root).containing_repository()
+    except CheckoutError:
+        return False
+    caller_root = root.resolve() if repository is None else repository[0].resolve()
+    return any(
+        Path(view.record.worktree_path).resolve() == caller_root
+        or (facts is not None and facts.worktree_key == view.record.worktree.key)
+        for view in views
+    )
 
 
 def _entry_key(

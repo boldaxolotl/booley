@@ -202,10 +202,21 @@ def _inserted_span(before: str, after: str) -> str:
     return after[start : len(after) - suffix if suffix else len(after)]
 
 
+def _disabled_ownership(owner: dict[str, Any]) -> dict[str, Any]:
+    """A removed folder/exclude entry cannot supply provenance after re-enable."""
+    return {
+        **owner,
+        "enabled": False,
+        "created_vscode": False,
+        "exclude_created": False,
+        "exclude_suffix": "",
+    }
+
+
 def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -> TaskPlan:
     root, owner, before = files.root, files.owner, files.before
     folder = root / ".vscode"
-    created = owner.get("created_vscode", not folder.exists())
+    created = owner.get("created_vscode", False) if owner.get("enabled") else not folder.exists()
     rendered: bytes | None = after.encode()
     if not desired and (before is None or before == owner.get("created_document", "").encode()):
         rendered = None
@@ -238,7 +249,11 @@ def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -
         change.path.name == "exclude" and change.before is None for change in changes
     )
     owner_after = (
-        json.dumps(new_owner if desired else {**owner, "enabled": False}, sort_keys=True) + "\n"
+        json.dumps(
+            new_owner if desired else _disabled_ownership(owner),
+            sort_keys=True,
+        )
+        + "\n"
     ).encode()
     if owner_after != files.ownership:
         changes.append(FileChange(files.owner_path, files.ownership, owner_after))

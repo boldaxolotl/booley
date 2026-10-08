@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import require_dict
-from booley.flows.progress_lifecycle import read_progress_for_run
+from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore
 from booley.runtime import job_records, job_slots
 from booley.runtime.artifact_paths import available_paths
+from booley.runtime.job_artifacts import JobArtifactCache
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.timefmt import parse_timestamp
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 MAX_JOBS = 4096
+MAX_INTERACTIVE_ROOTS = 64
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -69,7 +69,18 @@ def retained_job_roots(
 ) -> tuple[Path, ...]:
     """Interactive roots and every retained Goal, including finished/abandoned records."""
     roots = [] if interactive_root is None else [interactive_root]
-    roots.extend(islice(project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_JOBS))
+    history = []
+    for path in islice(project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_JOBS):
+        try:
+            history.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    roots.extend(
+        path
+        for _, path in sorted(history, key=lambda item: item[0], reverse=True)[
+            :MAX_INTERACTIVE_ROOTS
+        ]
+    )
     roots.extend(
         record_paths(project_dir, rec.id).jobs_dir
         for rec in GoalStore(project_dir).list_records().records
@@ -102,33 +113,17 @@ def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_ro
     return "running" if rec.run_started_at else "spawning"
 
 
-def _report(root: Path, rec: job_records.JobRecord) -> tuple[dict[str, Any] | None, Path | None]:
-    reports = root.parent / "flow-reports"
-    paths = [reports / (rec.endpoint + ".json")]
-    paths.extend(
-        islice((root.parent / "mcp-tool-reports").glob(f"{rec.endpoint}/*/report.json"), MAX_JOBS)
-    )
-    paths.extend(islice(reports.glob(f"{rec.endpoint}/*/report.json"), MAX_JOBS))
-    for path in paths:
-        try:
-            if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
-                continue
-            data = require_dict(json.loads(path.read_bytes()), field="Job report")
-            if data.get("run_id") == rec.run_id:
-                return data, path
-        except (OSError, ValueError, UnicodeError):
-            continue
-    return None, None
-
-
 def snapshot_jobs(
     project_dir: Path,
     *,
     interactive_root: Path | None = None,
     slots_root: Path | None = None,
     proc_root: Path = Path("/proc"),
+    artifact_cache: JobArtifactCache | None = None,
 ) -> JobSnapshot:
     """Read files only. Never poll, derive/reconcile status, adopt or invoke a reaper."""
+    cache = artifact_cache if artifact_cache is not None else JobArtifactCache()
+    cache.begin()
     tokens, rows, diagnostics = [], [], []
     catalogs: dict[str, TargetCatalog | None] = {}
     if slots_root is not None:
@@ -146,7 +141,8 @@ def snapshot_jobs(
             if rec is None:
                 diagnostics.append(f"Job record unavailable: {path}")
                 continue
-            rows.append(_project_job(root, rec, tokens, proc_root, catalogs))
+            rows.append(_project_job(root, rec, tokens, proc_root, catalogs, cache))
+    diagnostics.extend(cache.diagnostics)
     diagnostics.extend(_ambiguous_ids(rows))
     return JobSnapshot(tuple(rows), tuple(diagnostics))
 
@@ -178,8 +174,10 @@ def _read_job(path: Path) -> job_records.JobRecord | None:
             parse_timestamp(rec.run_started_at)
         if rec.pid is not None and (type(rec.pid) is not int or rec.pid <= 0):
             return None
+        if rec.binding is not None:
+            GoalRunBinding.from_json(rec.binding)
         return rec
-    except (OSError, ValueError):
+    except (OSError, ValueError, job_records.JobRecordError, GoalBindingError):
         return None
 
 
@@ -189,12 +187,12 @@ def _project_job(
     tokens: list[job_slots.SlotToken],
     proc_root: Path,
     catalogs: dict[str, TargetCatalog | None],
+    cache: JobArtifactCache,
 ) -> JobView:
-    report, report_path = _report(root, rec)
-    progress = read_progress_for_run(
-        (root.parent / "flow-reports", root.parent / "mcp-tool-reports"), rec.endpoint, rec.run_id
-    )
-    stage = _reported_stage(None if progress is None else progress[1])
+    artifact = cache.find(root, rec.endpoint, rec.run_id, "report")
+    report, report_path = (None, None) if artifact is None else artifact
+    progress = cache.find(root, rec.endpoint, rec.run_id, "progress")
+    stage = _reported_stage(None if progress is None else progress[0])
     artifacts = available_paths(
         report or {}, (root.parent, Path(rec.work_dir) if rec.work_dir else root)
     )

@@ -161,6 +161,11 @@ def read_progress_for_run(
     return None
 
 
+def read_progress_document(path: Path, report_roots: Sequence[Path]) -> dict[str, Any] | None:
+    """Read one validated checkpoint without publication or recovery."""
+    return _read_trusted_progress(path, report_roots)
+
+
 def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_id: str) -> bool:
     """Best-effort terminalization after the supervisor proved a child dead."""
     try:

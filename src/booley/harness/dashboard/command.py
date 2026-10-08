@@ -12,6 +12,9 @@ from booley.runtime.project_dir import resolve_project_dir
 
 def run_dashboard(root: Path) -> int:
     """Repeat attach keeps the existing view; an abstract socket leaves no filesystem state."""
+    if not hasattr(socket, "AF_UNIX"):
+        print("Dashboard unavailable: AF_UNIX sockets are unsupported")
+        return 2
     scope = namespace()
     if not scope:
         print("Dashboard unavailable: Sandbox PID namespace cannot be observed")

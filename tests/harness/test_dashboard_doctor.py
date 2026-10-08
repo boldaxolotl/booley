@@ -335,7 +335,7 @@ def test_unavailable_registry_never_reports_quiet_goal_worktrees(tmp_path, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("caller", ["healthy", "unoccupied"])
+@pytest.mark.parametrize("caller", ["healthy", "unoccupied", "removed"])
 async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     tmp_path, monkeypatch, caller
 ):
@@ -366,7 +366,8 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     result = await dispatch_goal_tool(
         "goal_status", {"work_dir": str(tmp_path / caller)}, project_dir=control
     )
-    assert not result.is_error
+    assert result.is_error is (caller == "removed")
+    assert result.goal_aware is (caller == "healthy")
     assert "Goal worktree missing or unavailable" in result.value[0].text
     assert build_status(GoalStore(control), healthy_record) == before_healthy
     snapshot = model.DashboardReader(healthy, control).read()
@@ -381,3 +382,42 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     assert before == {
         str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", ["{broken", '{"schema":99}'])
+async def test_one_bad_presence_row_does_not_hide_shared_or_quiet_findings(
+    tmp_path, monkeypatch, raw
+):
+    from booley.mcp import session_observer, session_registry
+    from booley.mcp.session_observer import SessionObserver
+    from booley.runtime.pid import ProcessObservation, ProcessState
+
+    rec = record(tmp_path)
+    monkeypatch.setattr(
+        doctor,
+        "GoalStore",
+        lambda _: SimpleNamespace(
+            list_active=lambda: SimpleNamespace(records=(rec,)), identify_worktree=lambda _: WT
+        ),
+    )
+    monkeypatch.setattr(doctor, "namespace", lambda *_: SCOPE)
+    monkeypatch.setattr(doctor, "list_worktrees", lambda _: (WorktreeEntry(tmp_path),))
+    monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
+    monkeypatch.setattr(
+        session_registry,
+        "observe_process",
+        lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING),
+    )
+    registry = SessionRegistry(tmp_path)
+    valid = Attribution("codex:other", "thread", str(tmp_path), "other-worktree", namespace=SCOPE)
+    registry.upsert(valid, "sim", "completed", now=100)
+    registry.path("future").write_text(raw)
+    observer = SessionObserver(now=lambda: 100, budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    keys, warning = await observer.shared(replace(valid, key="codex:self"))
+    assert keys == ("codex:other",)
+    assert "another session" in warning
+    checks = doctor.inspect_presence(tmp_path, tmp_path, inside_sandbox=True, now=100)
+    assert any(w.check_id == "goals.quiet-session" for w in checks.warnings)
+    assert checks.unavailable  # The bad row is still diagnosed individually.

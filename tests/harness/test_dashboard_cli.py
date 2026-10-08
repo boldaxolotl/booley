@@ -36,6 +36,7 @@ def test_command_catalog_help_location_and_binding(monkeypatch, capsys, preview)
 
 
 def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
     monkeypatch.setattr(command, "resolve_project_dir", lambda _: tmp_path)
     launched = []
@@ -87,3 +88,10 @@ def test_preview_config_validation_preserves_disabled_surface(monkeypatch, previ
     else:
         assert not known
         assert sandbox and goals
+
+
+def test_dashboard_without_unix_sockets_is_unavailable(tmp_path, monkeypatch, capsys):
+    monkeypatch.delattr(command.socket, "AF_UNIX", raising=False)
+    monkeypatch.setattr(command, "namespace", lambda: "fixture")
+    assert command.run_dashboard(tmp_path) == 2
+    assert "AF_UNIX" in capsys.readouterr().out

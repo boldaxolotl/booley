@@ -87,6 +87,7 @@ from booley.mcp.application import (
     McpRequestContext,
     McpTextBlock,
     McpToolDefinition,
+    McpToolPayload,
     UnknownMcpToolError,
 )
 from booley.mcp.call_context import (
@@ -104,6 +105,7 @@ from booley.mcp.goal_tools import (
 )
 from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
+from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
@@ -2917,7 +2919,8 @@ class _JobManager:
         rec.pid = pid
         from booley.runtime.pid import capture_process_identity
 
-        identity = capture_process_identity(pid)
+        # The Dashboard observes Linux /proc; optional identity must not block on host ps.
+        identity = capture_process_identity(pid) if sys.platform == "linux" else None
         rec.process_identity = None if identity is None else identity.to_payload()
         jobrec.write_record(rec, root=self._write_root(rec))
 
@@ -3296,7 +3299,9 @@ async def _poll_from_disk(
             return jobs.result_content(run_id)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return _running_poll_content(run_id)
+            if goal_mode_preview_enabled():
+                return _running_poll_content(run_id)
+            return [TextContent(type="text", text=_format_job_running_poll(run_id))]
         await asyncio.sleep(min(_DISK_POLL_TICK_SECONDS, remaining))
 
 
@@ -4214,24 +4219,11 @@ async def _call_application_tool(
             payload = await application.call_tool(
                 params.name, params.arguments or {}, request_context=request
             )
-        if observer is not None:
-            outcome = (
-                "input-required"
-                if isinstance(payload, McpInputRequired)
-                else ("error" if payload.is_error else "completed")
-            )
-            await observer.record(request.attribution, params.name, outcome)
-        warning = request.presentation_warning if payload.goal_aware else ""
-        if observer is not None and payload.goal_aware:
-            _, warning = await observer.shared(request.attribution)
-        if warning and isinstance(payload, McpInputRequired):
-            payload = replace(payload, message=payload.message + "\n" + warning)
-        elif warning:
-            payload = replace(payload, content=(*payload.content, McpTextBlock(warning)))
+        payload = await _observe_tool_completion(payload, request, params.name, observer)
         return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
         if observer is not None:
-            await observer.record(request.attribution, params.name, "unknown-tool")
+            await _record_presence(observer, request.attribution, params.name, "unknown-tool")
         hidden = _interactive_hidden_note(exc.name)
         message = hidden or f"Unknown MCP tool: {exc.name}"
         raise MCPError(
@@ -4242,13 +4234,79 @@ async def _call_application_tool(
         raise
     except Exception as exc:
         if observer is not None:
-            await observer.record(request.attribution, params.name, "error")
+            await _record_presence(observer, request.attribution, params.name, "error")
         logger.exception("Unexpected MCP tool failure for %s", params.name)
         message = "Internal server error"
         raise MCPError(INTERNAL_ERROR, message) from exc
 
 
+async def _record_presence(
+    observer: SessionObserver,
+    facts: Attribution | None,
+    tool: str,
+    outcome: str,
+) -> None:
+    """Presence is advisory: storage defects never replace an application result."""
+    try:
+        await observer.record(facts, tool, outcome)
+    except Exception:
+        logger.debug("Session completion observation unavailable", exc_info=True)
+
+
+async def _observe_tool_completion(
+    payload: McpToolPayload | McpInputRequired,
+    request: McpRequestContext,
+    tool: str,
+    observer: SessionObserver | None,
+) -> McpToolPayload | McpInputRequired:
+    """Add at most one shared warning without changing successful tool payloads."""
+    if not goal_mode_preview_enabled():
+        return payload
+    if observer is not None:
+        outcome = (
+            "input-required"
+            if isinstance(payload, McpInputRequired)
+            else ("error" if payload.is_error else "completed")
+        )
+        await _record_presence(observer, request.attribution, tool, outcome)
+    if not payload.goal_aware:
+        return payload
+    warning = request.presentation_warning
+    if observer is not None:
+        try:
+            _, warning = await observer.shared(request.attribution)
+        except Exception:
+            logger.debug("Session completion presentation unavailable", exc_info=True)
+    text = (
+        payload.message
+        if isinstance(payload, McpInputRequired)
+        else "\n".join(block.text for block in payload.content)
+    )
+    if not warning or warning in text.splitlines():
+        return payload
+    if isinstance(payload, McpInputRequired):
+        return replace(payload, message=payload.message + "\n" + warning)
+    return replace(payload, content=(*payload.content, McpTextBlock(warning)))
+
+
 async def _observed_request_context(
+    context: ServerRequestContext | None,
+    params: CallToolRequestParams,
+    observer: SessionObserver | None,
+) -> McpRequestContext:
+    """Unexpected advisory failures cannot prevent application dispatch."""
+    try:
+        return await _resolve_observed_request_context(context, params, observer)
+    except Exception:
+        logger.debug("Session request observation unavailable", exc_info=True)
+        return (
+            McpRequestContext()
+            if context is None
+            else _application_request_context(context, params)
+        )
+
+
+async def _resolve_observed_request_context(
     context: ServerRequestContext | None,
     params: CallToolRequestParams,
     observer: SessionObserver | None,
@@ -4268,6 +4326,8 @@ async def _observed_request_context(
         request=context.request if context is not None else None,
         tool=params.name,
     )
+    if params.name != "tools/list":
+        facts = await observer.resolved(facts)
     keys, warning = await observer.shared(facts)
     return replace(
         request, attribution=facts, other_session_keys=keys, presentation_warning=warning
@@ -4556,7 +4616,7 @@ def main() -> None:
 def _goal_warning_result(
     result: McpToolContent, binding: GoalRunBinding | None, session_key: str | None
 ) -> McpToolContent:
-    if binding is None:
+    if binding is None or not goal_mode_preview_enabled():
         return result
     try:
         prefix = goal_warnings(

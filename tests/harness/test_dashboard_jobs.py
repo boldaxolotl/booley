@@ -370,3 +370,85 @@ def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
     (work / "fixture.core").unlink()
     missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
     assert "EDA tool: —" in job_detail(missing)
+
+
+def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
+    tmp_path, monkeypatch
+):
+    from booley.flows.progress_lifecycle import progress_document
+    from booley.harness.dashboard.model import DashboardReader
+
+    root = tmp_path / ".interactive_logs/current/.runtime/jobs"
+    paths = []
+    for run in ("one", "two"):
+        job_records.write_record(rec(run, status="done"), root)
+        directory = root.parent / "flow-reports/sim" / str(len(paths) + 1)
+        directory.mkdir(parents=True)
+        report = directory / "report.json"
+        report.write_text(json.dumps({"run_id": run, "passed": True}))
+        progress = directory / "progress.json"
+        progress.write_text(
+            json.dumps(
+                progress_document(
+                    flow="sim",
+                    run_id=run,
+                    phase="complete",
+                    targets=[],
+                    completed_targets=[],
+                    detail={},
+                )
+            )
+        )
+        paths.append(report)
+    reads = []
+    loads = json.loads
+
+    def read(raw, *args, **kwargs):
+        data = loads(raw, *args, **kwargs)
+        if isinstance(data, dict) and "run_id" in data and ("phase" in data or "passed" in data):
+            reads.append(data["run_id"])
+        return data
+
+    monkeypatch.setattr(json, "loads", read)
+    reader = DashboardReader(tmp_path, tmp_path)
+    assert len(reader.read().jobs.jobs) == 2
+    assert len(reads) == 4
+    reader.read()
+    assert len(reads) == 4
+    paths[0].write_text(json.dumps({"run_id": "one", "passed": False, "summary": "changed"}))
+    updated = reader.read()
+    assert len(reads) == 5
+    assert (
+        next(job for job in updated.jobs.jobs if job.record.run_id == "one").report["passed"]
+        is False
+    )
+
+
+def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, monkeypatch):
+    import os
+
+    from booley.runtime import job_snapshot
+
+    monkeypatch.setattr(job_snapshot, "MAX_INTERACTIVE_ROOTS", 3, raising=False)
+    expected = []
+    for index in range(5):
+        root = tmp_path / f".interactive_logs/{index}/.runtime/jobs"
+        root.mkdir(parents=True)
+        os.utime(root, (100 + index, 100 + index))
+        if index >= 2:
+            expected.append(root)
+    assert set(job_snapshot.retained_job_roots(tmp_path)) == set(expected)
+
+
+@pytest.mark.parametrize(
+    "malformed", [{"session_key": 5}, {"binding": []}, {"binding": {"schema": "future"}}]
+)
+def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
+    root = tmp_path / "jobs"
+    job_records.write_record(rec("good", status="done"), root)
+    payload = rec("bad").to_dict()
+    payload.update(malformed)
+    (root / "bad.json").write_text(json.dumps(payload))
+    observed = snapshot_jobs(tmp_path, interactive_root=root)
+    assert [job.record.run_id for job in observed.jobs] == ["good"]
+    assert "bad.json" in str(observed.diagnostics)

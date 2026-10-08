@@ -939,7 +939,9 @@ All693 frozen runtime/config hashes and all773 runtime files are unchanged from 
 ## Phase 6 sessions, Dashboard and Doctor
 
 On 8 October 2026, the owner ran the Phase 6 exit checks against source
-`20b067198`. The checks used the actual HTTP MCP server inside a throwaway
+`20b067198` (published as `70a9d69b6`). Both commits have Git tree
+`13347bc0e4aa284f1e629c6adb3333fabdefed67`, verified with
+`git rev-parse <commit>^{tree}`; the owner changed authorship only. The checks used the actual HTTP MCP server inside a throwaway
 container built from the local `booley-sandbox:latest` image, which provides a
 real PID namespace, Verilator 5.052 and Icarus. Source was mounted read-only.
 The fixture was a new isolated non-Stealth Git repository derived from the
@@ -991,3 +993,29 @@ enable/disable cycles, and removed its own `.vscode/` and exclude entry.
 Real Claude Code or Codex clients, VS Code automatic task execution, the full
 init and issuance path, and native Windows were not exercised. Evidence is
 retained in `/tmp/cr-p6/live/r2/`.
+
+
+### Phase 6 review-round-1 observation bounds
+
+The Dashboard retains a slow in-flight read across refresh intervals and shows
+its completed result on a later interval. Until then, health explains that the
+read is still in progress; unexpected reader exceptions leave a stale view.
+The active Interactive root and every retained Goal root remain eligible.
+Historical Interactive roots are limited to the newest 64 by jobs-directory
+mtime among at most 4,096 enumerated roots. This observer policy does not change
+server Job adoption or delete history.
+
+Each snapshot indexes an endpoint's reports and progress once by exact run ID.
+It parses at most 4,096 files / 16 MiB per endpoint, with a 2 MiB
+per-file limit. Parsed files are reused across refreshes while path, mtime_ns
+and size match; the persistent cache is also limited to 4,096 entries / 16 MiB.
+Excess artifact history is diagnosed. Progress retains the trusted-document
+validation and numbered invocation-directory requirement of the released reader.
+
+Review-round regressions use fixtures for deferred attribution before Job
+admission, Interactive calls without a worktree, slow reads, corrupt Jobs and
+registry rows, Windows without AF_UNIX, and frozen finished-Goal packages. They
+do not extend the live coverage above to real agent clients, native Windows,
+VS Code task execution or full init/issuance. Goal record-lock acquisition
+remains nonblocking in the Dashboard; expensive Git/evidence work during a
+successful lock hold remains an observational latency risk (review finding L6).

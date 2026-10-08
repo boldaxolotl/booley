@@ -346,3 +346,21 @@ def test_disable_keeps_user_created_empty_vscode(project):
     (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert project.file.parent.is_dir()
+
+
+def test_reenable_does_not_claim_user_recreated_vscode(project, monkeypatch):
+    tasks.reconcile(project.root, project.data)
+    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    tasks.reconcile(project.root, project.data)
+    assert not project.file.parent.exists()
+    project.file.parent.mkdir()
+    user_file = project.file.parent / "user.txt"
+    user_file.write_text("keep")
+    baseline = project.exclude.read_bytes()
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    tasks.reconcile(project.root, project.data)
+    assert project.exclude.read_bytes() == baseline
+    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    tasks.reconcile(project.root, project.data)
+    assert user_file.read_text() == "keep"
+    assert project.file.parent.exists()

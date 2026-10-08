@@ -34,7 +34,10 @@ class Observer:
         )
 
     async def record(self, facts, tool, outcome):
-        self.calls.append((facts.key, tool, outcome))
+        self.calls.append((None if facts is None else facts.key, tool, outcome))
+
+    async def resolved(self, facts):
+        return facts
 
     async def shared(self, _facts):
         return ("codex:one", "codex:two"), "WARNING: another session shares this Goal worktree"
@@ -370,3 +373,170 @@ async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
         "another session shares this Goal worktree" in block.text for block in result.content
     )
     assert result.structured_content == {"reports": [{"run_id": "run"}]}
+
+
+@pytest.mark.asyncio
+async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, monkeypatch):
+    import threading
+
+    from mcp.types import TextContent
+
+    from booley.mcp import session_observer
+    from booley.mcp.session_observer import SessionObserver
+    from booley.mcp.session_registry import SessionRegistry
+    from booley.runtime.pid import ProcessIdentity
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    release = threading.Event()
+    peer = ProcessIdentity(98765, "fixture", 101)
+
+    def resolve(_):
+        assert release.wait(2)
+        return peer
+
+    monkeypatch.setattr(session_observer, "observed_peer", resolve)
+
+    class Deferred(SessionObserver):
+        async def attribution(self, *args, **kwargs):
+            fallback = await super().attribution(*args, **kwargs)
+            release.set()
+            await asyncio.wait_for(self._pending, 2)
+            return fallback
+
+    observer = Deferred(budget=0.001)
+    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
+    admitted = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
+
+    async def submit(_name, _cmd, _timeout, _jobs, *, context):
+        server._JobManager._stamp_context(admitted, context)
+        return [TextContent(type="text", text="RUNNING")]
+
+    monkeypatch.setattr(server, "_dispatch_async_job", submit)
+    monkeypatch.setattr(server, "_endpoint_command", lambda *_: ["fake"])
+    monkeypatch.setattr(server, "_mcp_tool_timeout_seconds", lambda *_a, **_k: 60)
+
+    async def dispatch(name, args, source, request):
+        assert request.attribution.process == peer
+        return await server._dispatch_booley_mcp_tool(name, args, source, {}, None, request)
+
+    app = McpApplication(
+        [{"name": "sim", "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    ctx = context()
+    ctx.session.client_params.client_info.name = "claude-code"
+    try:
+        result = await server._call_application_tool(
+            app, CallToolRequestParams(name="sim", arguments={}), ctx, observer
+        )
+        assert result.content[0].text == "RUNNING"
+    finally:
+        release.set()
+    assert admitted.session_key == "pid:fixture:98765:101"
+
+
+@pytest.mark.asyncio
+async def test_preview_off_goal_payload_has_no_presentation_warning(monkeypatch):
+    from mcp.types import TextContent
+
+    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW", raising=False)
+
+    async def dispatch(*_):
+        return McpDispatchResult(
+            [TextContent(type="text", text="retained Goal Job")], False, goal_aware=True
+        )
+
+    app = McpApplication(
+        [{"name": "probe", "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    result = await server._call_application_tool(
+        app, CallToolRequestParams(name="probe"), None, Observer()
+    )
+    assert [block.text for block in result.content] == ["retained Goal Job"]
+
+
+@pytest.mark.asyncio
+async def test_adopted_running_poll_without_preview_keeps_released_plain_card(monkeypatch):
+    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW", raising=False)
+    record = job_records.JobRecord("run", "sim", "2026-10-08T10:00:00Z", 60, pid=99)
+    monkeypatch.setattr(job_records.time, "time", lambda: 1791453601)
+    monkeypatch.setattr(server, "_job_record", lambda _: record)
+    monkeypatch.setattr(server, "is_pid_alive", lambda _: True)
+    monkeypatch.setattr(server, "_format_job_running_poll", lambda _: "RUNNING: sim")
+    monkeypatch.setattr(
+        server, "_running_progress", lambda _: pytest.fail("preview-off progress scan")
+    )
+    result = await server._poll_from_disk("run", None, 0)
+    assert [block.text for block in result] == ["RUNNING: sim"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["record", "shared", "duplicate"])
+async def test_advisory_completion_preserves_success_and_deduplicates_warning(
+    monkeypatch, failure
+):
+    from mcp.types import TextContent
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    dispatched = False
+    warning = "WARNING: another session shares this Goal worktree"
+
+    class Unreliable(Observer):
+        async def record(self, *_):
+            if failure == "record":
+                raise KeyError("presence failure")
+
+        async def shared(self, facts):
+            if failure == "shared" and dispatched:
+                raise TypeError("presence failure")
+            return await super().shared(facts)
+
+    async def dispatch(*_):
+        nonlocal dispatched
+        dispatched = True
+        text = "retained result" + ("\n" + warning if failure == "duplicate" else "")
+        return McpDispatchResult(
+            ([TextContent(type="text", text=text)], {"retained": True}), False, goal_aware=True
+        )
+
+    app = McpApplication(
+        [{"name": "probe", "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    result = await server._call_application_tool(
+        app, CallToolRequestParams(name="probe"), None, Unreliable()
+    )
+    assert result.structured_content == {"retained": True}
+    assert not result.is_error
+    assert sum(block.text.count(warning) for block in result.content) <= 1
+
+
+def test_non_linux_pid_stamping_does_not_run_blocking_ps(tmp_path, monkeypatch):
+    from booley.runtime import pid
+
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(pid, "capture_process_identity", lambda *_: pytest.fail("blocking ps"))
+    manager = SimpleNamespace(_write_root=lambda _: tmp_path)
+    record = job_records.JobRecord("run", "sim", "2026-10-08T10:00:00Z", 60)
+    server._JobManager._stamp_pid(manager, record, 99)
+    assert record.pid == 99 and record.process_identity is None
+
+
+def test_preview_off_retained_binding_never_reads_goal_warnings(monkeypatch):
+    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW", raising=False)
+    monkeypatch.setattr(server, "GoalStore", lambda *_: pytest.fail("preview-off Goal warnings"))
+    binding = SimpleNamespace(project_dir=Path("/fixture"), record_id="retained")
+    result = McpDispatchResult([], False)
+    assert server._goal_warning_result(result, binding, None) is result

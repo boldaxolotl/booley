@@ -71,6 +71,8 @@ class McpRequestContext:
     def session_key(self, fallback: Callable[[], str | None] | None = None) -> str | None:
         """Advisory caller key; invoke a legacy worktree fallback only when needed."""
         if self.attribution is not None:
+            if self.attribution.kind == "worktree" and not self.attribution.worktree_key:
+                return None
             return self.attribution.key
         return fallback() if fallback is not None else None
 

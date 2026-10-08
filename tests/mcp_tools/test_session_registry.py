@@ -645,3 +645,34 @@ async def test_shared_warning_reads_presence_while_attribution_writer_is_busy(
         blocked.set_result(None)
     assert set(keys) == {"codex:one", "codex:two"}
     assert warning == "WARNING: another session shares this Goal worktree"
+
+
+def test_live_process_without_worktree_association_survives_maintenance(registry, monkeypatch):
+    from booley.runtime import worktrees
+
+    monkeypatch.setattr(worktrees, "list_worktrees", lambda _: ())
+    monkeypatch.setattr(
+        session_registry,
+        "observe_process",
+        lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING),
+    )
+    row = session_registry.resolve_attribution(
+        None, metadata={}, client_name="claude-code", peer=IDENTITY
+    )
+    registry.upsert(row, "tools/list", "completed", now=100)
+    assert (
+        registry.prune(
+            now=101,
+            namespace=row.namespace,
+            worktree_exists=session_registry.registered_worktree_presence(Path("/fixture")),
+        )
+        == 0
+    )
+    assert registry.snapshot().rows[0].started_at == "1970-01-01T00:01:40Z"
+
+
+def test_no_worktree_fallback_never_becomes_a_job_owner():
+    from booley.mcp.application import McpRequestContext
+
+    row = session_registry.resolve_attribution(None, metadata={}, client_name="")
+    assert McpRequestContext(attribution=row).session_key() is None

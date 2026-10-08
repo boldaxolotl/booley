@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -23,6 +24,9 @@ from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.runtime.job_snapshot import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.runtime.pid import ProcessState
 from booley.runtime.timefmt import parse_timestamp
+
+logger = logging.getLogger(__name__)
+READ_BUDGET = 1.0
 
 _STATUS_STYLE = {
     "passing": "green",
@@ -230,17 +234,24 @@ class DashboardApp(App[None]):
         table.focus()
 
     async def refresh_snapshot(self) -> None:
-        """One worker at a time; filesystem stalls leave a responsive stale view."""
-        if self._read_task is not None and not self._read_task.done():
-            return
-        self._read_task = asyncio.create_task(asyncio.to_thread(self.reader))
+        """Retain slow reads until consumed; all failures leave a responsive stale view."""
+        if self._read_task is None:
+            self._read_task = asyncio.create_task(asyncio.to_thread(self.reader))
         try:
-            self.snapshot = await asyncio.wait_for(asyncio.shield(self._read_task), timeout=1)
-        except (TimeoutError, OSError, ValueError, RuntimeError) as exc:
-            self.query_one("#health", Static).update(f"Dashboard data unavailable/stale: {exc}")
-            return
-        self._assign_shortcuts()
-        self.render_snapshot()
+            self.snapshot = await asyncio.wait_for(asyncio.shield(self._read_task), READ_BUDGET)
+            self._read_task = None
+            self._assign_shortcuts()
+            self.render_snapshot()
+        except TimeoutError:
+            self.query_one("#health", Static).update(
+                "Dashboard data unavailable/stale: read still in progress"
+            )
+        except Exception as exc:
+            self._read_task = None
+            logger.exception("Dashboard refresh failed")
+            self.query_one("#health", Static).update(
+                f"Dashboard data unavailable/stale: {str(exc) or type(exc).__name__}"
+            )
 
     def _assign_shortcuts(self) -> None:
         connected = {row.attribution.key for row in self.snapshot.sessions}
@@ -579,7 +590,9 @@ class DashboardApp(App[None]):
         if rows != self._rows:
             table.clear()
             for row in rows:
-                table.add_row(*row)
+                table.add_row(
+                    *(cell if isinstance(cell, Text) else Text(str(cell)) for cell in row)
+                )
             if selected in keys:
                 index = keys.index(selected)
                 table.move_cursor(row=index // columns, column=index % columns, animate=False)

@@ -11,7 +11,7 @@ from typing import Any
 from booley.config.goals import quiet_after
 from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.presentation import CriterionPresentation, criterion_presentation
-from booley.goals.binding import GoalRunBinding
+from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import OCCUPYING_STATES, GoalRecord
 from booley.goals.paths import REVIEW_PACKAGE_FILE, record_paths
 from booley.goals.proposals import digest
@@ -26,6 +26,7 @@ from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
 from booley.runtime import job_slots
 from booley.runtime.artifact_paths import available_paths
+from booley.runtime.job_artifacts import JobArtifactCache
 from booley.runtime.job_snapshot import JobSnapshot, snapshot_jobs, target_arg
 from booley.runtime.pid import ProcessIdentity
 
@@ -177,7 +178,7 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
             continue
         try:
             binding = GoalRunBinding.from_json(job.record.binding)
-        except ValueError:
+        except (ValueError, GoalBindingError):
             continue
         if binding.record_id != view.id or binding.record_revision != view.record.revision:
             continue
@@ -226,6 +227,7 @@ class DashboardReader:
         self.project_dir = project_dir
         self.resources = ResourceSampler()
         self.processes = ProcessSampler()
+        self.artifacts = JobArtifactCache()
 
     def read(self) -> DashboardSnapshot:
         """Read one snapshot without retaining locks or touching persistent state."""
@@ -245,7 +247,11 @@ class DashboardReader:
             GoalView(str(item), diagnostic="corrupt Goal Record") for item in scan.corrupt
         )
         resources = self.resources.sample(self.root, now=time.monotonic())
-        jobs = snapshot_jobs(self.project_dir, slots_root=job_slots.slots_dir(self.project_dir))
+        jobs = snapshot_jobs(
+            self.project_dir,
+            slots_root=job_slots.slots_dir(self.project_dir),
+            artifact_cache=self.artifacts,
+        )
         measured = []
         for job in jobs.jobs:
             identity = ProcessIdentity.from_payload(job.record.process_identity)

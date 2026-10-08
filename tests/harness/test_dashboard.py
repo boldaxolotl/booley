@@ -44,7 +44,10 @@ def snapshot(count=12):
 async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect():
     current = snapshot()
     proposal = SimpleNamespace(
-        proposal=SimpleNamespace(id="change", to_json=lambda: {"kind": "relax", "threshold": 10}),
+        proposal=SimpleNamespace(
+            id="change",
+            to_json=lambda: {"kind": "relax", "threshold": 10, "reason": "[/untrusted]"},
+        ),
         state="pending",
         closed_by_abandonment=False,
     )
@@ -70,9 +73,20 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect():
             for index, state in enumerate(("failing", "needs recheck", "not yet run", "passing"))
         ),
     )
-    current = replace(current, goals=(goal,))
+    current = replace(
+        current,
+        goals=(goal,),
+        sessions=(
+            replace(current.sessions[0], calls=(RecentCall(STAMP, "[/untrusted]", "completed"),)),
+            *current.sessions[1:],
+        ),
+    )
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 30)) as pilot:
+        from rich.text import Text
+        from textual.coordinate import Coordinate
+
+        assert isinstance(app.query_one(DataTable).get_cell_at(Coordinate(0, 0)), Text)
         await pilot.press("1")
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
         await _inspect_goals_and_proposal(app, pilot)
@@ -288,3 +302,56 @@ def test_thread_without_process_proof_is_last_seen_and_own_fallback_is_not_other
     overview = app._overview_row(row)
     assert "goal/fixture" in overview
     assert "WARNING" not in overview
+
+
+@pytest.mark.asyncio
+async def test_slow_refresh_eventually_renders_completed_read_without_restarting(monkeypatch):
+    import asyncio
+    import threading
+
+    from booley.harness.dashboard import app as app_module
+
+    release = threading.Event()
+    calls, messages, rendered = [], [], []
+    expected = snapshot(1)
+
+    def reader():
+        calls.append(1)
+        assert release.wait(2)
+        return expected
+
+    monkeypatch.setattr(app_module, "READ_BUDGET", 0.001, raising=False)
+    app = DashboardApp(reader)
+    monkeypatch.setattr(app, "query_one", lambda *_: SimpleNamespace(update=messages.append))
+    monkeypatch.setattr(app, "render_snapshot", lambda: rendered.append(app.snapshot))
+    try:
+        await app.refresh_snapshot()
+        assert "read still in progress" in str(messages[-1])
+        release.set()
+        await asyncio.wait_for(app._read_task, 2)
+        await app.refresh_snapshot()
+    finally:
+        release.set()
+    assert calls == [1]
+    assert rendered == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [KeyError("bad row"), TypeError("bad row"), AttributeError("bad row")]
+)
+async def test_refresh_failure_is_stale_and_next_read_recovers(monkeypatch, failure):
+    messages, rendered = [], []
+
+    def broken():
+        raise failure
+
+    app = DashboardApp(broken)
+    monkeypatch.setattr(app, "query_one", lambda *_: SimpleNamespace(update=messages.append))
+    monkeypatch.setattr(app, "render_snapshot", lambda: rendered.append(app.snapshot))
+    await app.refresh_snapshot()
+    assert "unavailable/stale" in str(messages[-1]) and "bad row" in str(messages[-1])
+    expected = snapshot(1)
+    app.reader = lambda: expected
+    await app.refresh_snapshot()
+    assert rendered == [expected]

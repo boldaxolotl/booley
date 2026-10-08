@@ -239,6 +239,20 @@ class SessionObserver:
         tool, outcome, now = call
         self._registry().upsert(facts, tool, outcome, now=now)
 
+    async def resolved(
+        self, facts: Attribution | None, *, budget: float = 0.5
+    ) -> Attribution | None:
+        """Separate bounded admission wait for completed advisory identity, never authority."""
+        observation = None if facts is None else self._handles.get(id(facts))
+        if observation is None:
+            return facts
+        if observation.resolved is not None:
+            return observation.resolved
+        try:
+            return await asyncio.wait_for(asyncio.shield(observation.done), budget) or facts
+        except (TimeoutError, OSError, ValueError, RuntimeError):
+            return facts
+
     async def shared(self, facts: Attribution | None) -> tuple[tuple[str, ...], str]:
         """Bounded shared-worktree warning; fallback explicitly cannot distinguish sessions."""
         observation = None if facts is None else self._handles.get(id(facts))
@@ -250,7 +264,7 @@ class SessionObserver:
             lambda: self._registry().visible_snapshot(now=self.now(), scope=namespace()),
             reading=True,
         )
-        if snapshot is None or snapshot.diagnostics:
+        if snapshot is None or snapshot.unavailable:
             return (), "WARNING: shared-worktree session registry is unavailable"
         keys = tuple(
             row.attribution.key

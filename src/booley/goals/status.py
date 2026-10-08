@@ -213,6 +213,8 @@ def status_views(store: GoalStore, work_dir: Path) -> tuple[GoalStatusView, ...]
     """Show this worktree's occupant, otherwise all occupying records; report corruption."""
     from booley.goals.store import GoalRecordCorruptError
 
+    if not work_dir.is_dir():
+        raise GoalStoreError(f"Goal worktree missing or unavailable: {work_dir}")
     scan = store.list_active()
     if scan.corrupt:
         raise GoalRecordCorruptError(scan.corrupt)
