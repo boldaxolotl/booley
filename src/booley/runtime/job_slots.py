@@ -915,6 +915,24 @@ class SlotStore:
             names.append(own)  # raced a reap; rank as if still present
         return sorted(names).index(own)
 
+    def observe(self, job_class: str) -> tuple[list[SlotToken], list[SlotToken]]:
+        """Read slot entries without reaping, cancellation, recovery or lease renewal."""
+        holders: list[SlotToken] = []
+        waiters: list[SlotToken] = []
+        directory = self.root / job_class
+        if directory.is_symlink() or not directory.is_dir():
+            return holders, waiters
+        for path in sorted(directory.iterdir())[:4096]:
+            if path.is_symlink():
+                continue
+            try:
+                token = self._load_token(path)
+            except (AttributeError, TypeError, ValueError, OSError):
+                continue
+            if token is not None:
+                (holders if token.is_holder else waiters).append(token)
+        return holders, waiters
+
     def snapshot(self, job_class: str) -> tuple[list[SlotToken], list[SlotToken]]:
         """(holders, waiters) in scheduling order — for narration and doctor.
 

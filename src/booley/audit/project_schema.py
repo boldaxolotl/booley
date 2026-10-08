@@ -20,6 +20,7 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "flows",
         "specialists",
         "sandbox",
+        "goals",
         "agent",
         "models",
         "jobs",
@@ -254,6 +255,10 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "booley.toml [sandbox].mode is retired; the Sandbox is always Docker",
             "delete [sandbox].mode",
         )
+    try:
+        require_bool(sandbox, "dashboard", default=True)
+    except BoundaryError as exc:
+        return failure(str(exc), "set [sandbox].dashboard to true or false")
     from booley.config.host_config import retired_project_policy_message
 
     migration = retired_project_policy_message({"sandbox": sandbox})
@@ -320,4 +325,15 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
             f"booley.toml {exc}",
             "fix [eda] provisioning configuration",
         )
+    return ConfigTableAudit()
+
+
+def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate Goal presentation knobs without inferring client lifecycle."""
+    from booley.config.goals import parse_quiet_after
+
+    try:
+        parse_quiet_after(data)
+    except ValueError as exc:
+        return failure(str(exc), "set [goals].quiet_after to 60..604800 seconds")
     return ConfigTableAudit()

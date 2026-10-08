@@ -396,7 +396,7 @@ class GoalStore:
                 lock.held = False
 
     @contextmanager
-    def record_lock(self, goal_id: str) -> Generator[RecordLock]:
+    def record_lock(self, goal_id: str, *, existing_only: bool = False) -> Generator[RecordLock]:
         """Hold the record lock of an existing Goal Record; re-entrant for its owner.
 
         A nested ``record_lock`` by the same process, thread, and asyncio task
@@ -410,7 +410,12 @@ class GoalStore:
         if not paths.root.is_dir():
             raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.project_dir}")
         try:
-            handle = paths.lock_file.open("a+", encoding="utf-8")
+            if existing_only:
+                if paths.lock_file.is_symlink():
+                    raise GoalStoreError("observational Goal lock is a symlink")
+                if os.name == "nt" and paths.lock_file.stat().st_size == 0:
+                    raise GoalStoreError("empty observational Goal lock is unavailable on Windows")
+            handle = paths.lock_file.open("r+" if existing_only else "a+", encoding="utf-8")
         except FileNotFoundError as exc:
             raise GoalRecordNotFoundError(f"Goal Record {goal_id} disappeared") from exc
         with handle:

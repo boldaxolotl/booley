@@ -81,7 +81,11 @@ def propose_change(
     record = resolve_record(preliminary, work_dir)
     service = GoalWaiverService(env.project_dir, record)
     change_env = ChangeEnvironment(env, service)
-    acting = session_key(GoalStore(env.project_dir), work_dir)
+    acting = (
+        context.attribution.key
+        if context.attribution
+        else session_key(GoalStore(env.project_dir), work_dir)
+    )
     if context.resume_state is not None:
         return _resume_decision(change_env, record.id, context, acting)
     operation = arguments.get("operation")
@@ -127,6 +131,11 @@ def _resume_decision(
             source=Approval.ELICITED,
             quote=None,
             session_key=acting,
+            peer_process=(
+                None
+                if context.attribution is None or context.attribution.process is None
+                else json.dumps(context.attribution.process.to_payload(), sort_keys=True)
+            ),
         )
     )
 

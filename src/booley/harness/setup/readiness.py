@@ -441,6 +441,7 @@ def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findi
     valid &= _add_config_audit(project_schema.audit_stealth_table(data), report)
     valid &= _add_config_audit(flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), report)
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
+    valid &= _add_config_audit(project_schema.audit_goals_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
     valid &= _add_config_audit(project_schema.audit_developer_table(data), report)
     valid &= _add_config_audit(project_schema.audit_known_tables(data), report)

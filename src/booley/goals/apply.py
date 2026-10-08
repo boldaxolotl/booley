@@ -348,6 +348,7 @@ def _change_entry(proposal: Proposal, decision: Decision) -> ChangeEntry:
         decision.source,
         decision.quote,
         decision.session_key,
+        peer_process=decision.peer_process,
         transaction_ref=decision.transaction_id,
     )
 

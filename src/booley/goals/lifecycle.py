@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ class LifecycleRequest:
     abandon: bool = False
     instruction_quote: str = ""
     explain_html: bool = False
+    session_key: str | None = None
 
     def payload(self, record: GoalRecord) -> dict[str, Any]:
         """Canonical worktree identity admits mount aliases without session ownership."""
@@ -203,7 +205,21 @@ def bind_locked(
         if occupant is None or occupant.id != request.record_id:
             raise LifecycleError("expected record is no longer this worktree's occupant")
         atomic_write_once(path, encode(content))
+    _audit_attribution(operation)
     return operation
+
+
+def _audit_attribution(operation: LifecycleOperation) -> None:
+    key = operation.request.session_key
+    if key is None:
+        return
+    # Advisory audit is separate from immutable retry authority and never gates work.
+    with suppress(OSError, UnicodeError, ValueError):
+        name = sha256(key.encode()).hexdigest() + ".json"
+        directory = operation.directory / "attribution"
+        if not directory.is_symlink() and not (directory / name).is_symlink():
+            with suppress(WriteOnceConflictError):
+                atomic_write_once(directory / name, encode({"session_key": key}))
 
 
 def _validate_result(value: dict[str, Any], operation: LifecycleOperation) -> None:

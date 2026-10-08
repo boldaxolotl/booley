@@ -147,9 +147,9 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
     try:
         require_goal_work_dir(arguments, store)
         if name == GOAL_FINISH:
-            return await _finish(arguments, project_dir)
+            return await _finish(arguments, project_dir, request_context)
         if name == GOAL_PROPOSE_CHANGE:
-            env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
+            env = _entry_environment(project_dir, request_context)
             return await asyncio.to_thread(propose_change, arguments, env, request_context)
         if name == GOAL_STATUS:
             root = Path(str(arguments.get("work_dir") or Path.cwd()))
@@ -172,17 +172,43 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
     if name != GOAL_ENTER:
         return _text(f"{name} is not available yet in this Booley version.", is_error=True)
     try:
-        request = parse_entry_request(arguments, session_key=_session_key(arguments, store))
-        env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
+        request = parse_entry_request(
+            arguments,
+            session_key=_entry_key(arguments, store, request_context),
+        )
+        env = _entry_environment(project_dir, request_context)
         result = await asyncio.to_thread(enter_goal_mode, request, env)
     except (GoalEntryError, GoalStoreError) as exc:
         return _text(f"ERROR: Goal Mode was not entered: {exc}", is_error=True)
     return _text(result.render(), is_error=False)
 
 
-async def _finish(arguments: Mapping[str, Any], project_dir: Path) -> McpDispatchResult:
-    env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
-    result = await asyncio.to_thread(complete_goal, arguments, env)
+def _entry_key(
+    arguments: Mapping[str, Any], store: GoalStore, context: McpRequestContext | None
+) -> str:
+    return (
+        context.attribution.key
+        if context and context.attribution
+        else _session_key(arguments, store)
+    )
+
+
+async def _finish(
+    arguments: Mapping[str, Any],
+    project_dir: Path,
+    request_context: McpRequestContext | None = None,
+) -> McpDispatchResult:
+    env = _entry_environment(project_dir, request_context)
+    result = await asyncio.to_thread(
+        complete_goal,
+        arguments,
+        env,
+        session_key=(
+            request_context.attribution.key
+            if request_context and request_context.attribution
+            else None
+        ),
+    )
     message = result.get("message", result.get("reason", ""))
     if result.get("reason") and result["reason"] not in message:
         message += "\nReason: " + result["reason"]
@@ -223,3 +249,13 @@ def _fpga_snapshot(resolved: Any, target: str) -> dict[str, Any]:
 
 def _text(message: str, *, is_error: bool) -> McpDispatchResult:
     return McpDispatchResult(value=[TextContent(type="text", text=message)], is_error=is_error)
+
+
+def _entry_environment(project_dir: Path, context: McpRequestContext | None) -> EntryEnvironment:
+    own = context.attribution.key if context and context.attribution else None
+    keys = tuple(key for key in context.other_session_keys if key != own) if context else ()
+    return EntryEnvironment(
+        project_dir=project_dir,
+        recipe_families=_recipe_families(),
+        other_sessions=lambda _identity: keys,
+    )

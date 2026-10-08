@@ -135,6 +135,7 @@ class SandboxConfig:
     # skills are usable inside the container alongside Booley's built-ins.
     # Off by default — enabling it exposes host skill content to the agent.
     mount_host_skills: bool = False
+    dashboard: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,7 +400,12 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
 
     mount_host_skills = bool(section.get("mount_host_skills", False))
 
-    return SandboxConfig(image=image, memory=memory, mount_host_skills=mount_host_skills)
+    return SandboxConfig(
+        image=image,
+        memory=memory,
+        mount_host_skills=mount_host_skills,
+        dashboard=section.get("dashboard", True) is True,
+    )
 
 
 def _parse_jobs_config(data: dict) -> SlotCaps:

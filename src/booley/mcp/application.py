@@ -17,6 +17,7 @@ from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.mcp.session_registry import Attribution
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,9 @@ class McpRequestContext:
     form_capability: bool = False
     resume_state: str | None = None
     input_responses: Mapping[str, Any] | None = None
+    attribution: Attribution | None = None
+    other_session_keys: tuple[str, ...] = ()
+    presentation_warning: str = ""
 
 
 @dataclass(frozen=True, slots=True)

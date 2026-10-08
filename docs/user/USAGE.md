@@ -868,3 +868,21 @@ cancelled attempts, and image identity handling.
 
 Each Ticket run ends with one `BOOLEY_RUN_RESULT` line of JSON for scripts;
 `booley cheat --board` describes it.
+
+With `BOOLEY_GOAL_MODE_PREVIEW=1`, `booley dashboard` opens the read-only
+Dashboard inside an existing Sandbox. It shows registered sessions across
+worktrees, Goals, retained Jobs/results, resources, and health requiring
+attention. `1`–`9` select sessions without renumbering connected rows; arrows and
+Enter reach every row. `j` opens Running Jobs, `r` Recent results, and `a` All;
+these keys carry the current session's scope. `s` includes all sessions and
+standalone Jobs. Esc returns and `?` shows help. Wide terminals show Job details
+beside the list; narrow terminals open details with Enter. Refresh preserves
+selection. Activity is unknown because supported clients currently provide no
+verified fresh activity signal. Missing measurements show `—`.
+
+An owned VS Code folder-open task launches with the preview environment explicitly
+set. Repeat attachment keeps the existing Dashboard. Close that view before opening
+another in the same Sandbox. Session expiry leaves Job ownership
+and results intact. Navigation never starts, retries, cancels, approves, abandons,
+recovers, or prunes work. Run Doctor inside the existing Sandbox for Goal session
+checks; host-side observations are unavailable and never start a Sandbox.

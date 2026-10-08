@@ -2290,3 +2290,32 @@ loading. Analyst Waiver Candidates have no approval authority of their own and
 cannot be copied here by hand; they become approval files only through
 `booley board approve --accept-waivers`, which writes them here in the Ticket's
 merge (see [Coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review)).
+
+### Dashboard and quiet Goal sessions (preview)
+
+With `BOOLEY_GOAL_MODE_PREVIEW=1`, the Sandbox Dashboard opens on VS Code
+folder attachment by default. Configure these values in the Project directory's
+`booley.toml`:
+
+```toml
+[sandbox]
+dashboard = true
+
+[goals]
+quiet_after = 7200
+```
+
+`dashboard = false` removes an unchanged Booley-owned attach task. Turning the
+preview off does the same on the next `booley init` or Sandbox refresh. Existing
+user tasks, comments, unknown fields, and user-edited Dashboard tasks are
+preserved. A same-label user task is preserved with a diagnostic. Set
+`task.allowAutomaticTasks` to `"off"` in `.vscode/settings.json` to opt out.
+Booley adds a local `.vscode` Git exclusion only when it creates that directory;
+its ownership record persists across reconciliation.
+
+`quiet_after` is a finite number of seconds from 60 through 604800, default
+7200 (two hours). Quiet thread and worktree-fallback presence expires at this
+threshold; process presence is removed only when its captured identity is
+observably gone, reused, or a zombie. Unknown liveness is retained. Quiet-session
+Doctor warnings describe the absence of recent attributable Booley calls;
+they do not establish client inactivity or abandonment and never end Goal Mode.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 from functools import cache
@@ -30,7 +31,14 @@ HISTORICAL_COMMANDS = {
 
 @cache
 def _public_parser() -> argparse.ArgumentParser:
-    return _build_parser()
+    with patch.dict(os.environ, {"BOOLEY_GOAL_MODE_PREVIEW": "0"}):
+        return _build_parser()
+
+
+@cache
+def _preview_parser() -> argparse.ArgumentParser:
+    with patch.dict(os.environ, {"BOOLEY_GOAL_MODE_PREVIEW": "1"}):
+        return _build_parser()
 
 
 @cache
@@ -119,14 +127,14 @@ def _subcommand_error(parser: argparse.ArgumentParser, args: list[str]) -> str |
     return None
 
 
-def _command_error(tokens: list[str]) -> str | None:
+def _command_error(tokens: list[str], *, preview: bool = False) -> str | None:
     if tokens[0] == "booley":
         if len(tokens) > 2 and tokens[1] == "flow":
             name = tokens[2]
             flows = _flow_names()
             if not name.startswith(("<", "$", "-")) and name not in flows:
                 return f"unknown Flow {name}"
-        return _subcommand_error(_public_parser(), tokens[1:])
+        return _subcommand_error(_preview_parser() if preview else _public_parser(), tokens[1:])
     module = tokens[2]
     if module in _specialist_modules():
         return None
@@ -163,7 +171,8 @@ def test_documented_command_paths_are_registered_and_public() -> None:
                 count += 1
                 if (doc.relative_to(ROOT).as_posix(), " ".join(tokens)) in HISTORICAL_COMMANDS:
                     continue
-                error = _command_error(tokens)
+                # Preview examples must declare their deployment gate in the document.
+                error = _command_error(tokens, preview="BOOLEY_GOAL_MODE_PREVIEW=1" in text)
                 if error:
                     failures.append(f"{doc.relative_to(ROOT)}:{line}: {error}")
     assert count > 100, "Command extraction must exercise the documentation corpus"
@@ -193,6 +202,11 @@ def test_amendment_example_is_accepted_by_real_parser() -> None:
         ["amend", "slug", "--changes-file", "changes.json", "--preview"]
     )
     assert args.command == "amend"
+
+
+def test_dashboard_documentation_requires_explicit_preview_gate() -> None:
+    assert _command_error(["booley", "dashboard"]) == "unknown subcommand dashboard"
+    assert _command_error(["booley", "dashboard"], preview=True) is None
 
 
 def test_extracts_inline_fenced_and_substitution_commands() -> None:

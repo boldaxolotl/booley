@@ -60,6 +60,8 @@ from mcp.types import Tool as McpSdkTool
 if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
+from dataclasses import replace
+
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
@@ -83,6 +85,7 @@ from booley.mcp.application import (
     McpDispatchResult,
     McpInputRequired,
     McpRequestContext,
+    McpTextBlock,
     McpToolDefinition,
     UnknownMcpToolError,
 )
@@ -99,6 +102,8 @@ from booley.mcp.goal_tools import (
     goal_tool_defs,
     goal_tools_visible,
 )
+from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
+from booley.mcp.session_peer import PeerBoundary
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
@@ -341,6 +346,7 @@ class _McpLifetime:
         now: Callable[[], float] = time.monotonic,
         heartbeat_path: str | None = None,
     ) -> None:
+        self.sessions = SessionObserver()
         self.idle_timeout_seconds = idle_timeout_seconds
         self.max_age_seconds = max_age_seconds
         self._now = now
@@ -2596,14 +2602,12 @@ class LocatedJob:
 
 def job_roots() -> tuple[Path, ...]:
     """Container jobs and every retained Goal Record, including terminal ones."""
-    roots = [container_jobs_root()]
-    if goal_mode_preview_enabled():
-        store = GoalStore(resolve_project_dir())
-        roots.extend(
-            record_paths(store.project_dir, rec.id).jobs_dir
-            for rec in store.list_records().records
-        )
-    return tuple(dict.fromkeys(root for root in roots if root is not None))
+    from booley.runtime.job_snapshot import retained_job_roots
+
+    if not goal_mode_preview_enabled():
+        root = container_jobs_root()
+        return () if root is None else (root,)
+    return retained_job_roots(resolve_project_dir(), interactive_root=container_jobs_root())
 
 
 def _locate_job(run_id: str) -> LocatedJob | None:
@@ -2903,6 +2907,10 @@ class _JobManager:
 
     def _stamp_pid(self, rec: jobrec.JobRecord, pid: int) -> None:
         rec.pid = pid
+        from booley.runtime.pid import capture_process_identity
+
+        identity = capture_process_identity(pid)
+        rec.process_identity = None if identity is None else identity.to_payload()
         jobrec.write_record(rec, root=self._write_root(rec))
 
     def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
@@ -2933,6 +2941,7 @@ class _JobManager:
         )
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
+        rec.ended_at = utc_now_rfc3339()
         jobrec.write_record(rec, root=self._write_root(rec))
 
     @staticmethod
@@ -3088,6 +3097,7 @@ class _JobManager:
         )
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
+        rec.ended_at = utc_now_rfc3339()
         self._results[rec.run_id] = (
             130,
             "",
@@ -3666,6 +3676,7 @@ async def _dispatch_booley_mcp_tool(
     mcp_tool_def: dict[str, Any],
     mcp_tool_call_counts: dict[str, int],
     jobs: _JobManager,
+    request_context: McpRequestContext | None = None,
 ) -> McpToolContent:
     """Run a Booley Flow subprocess and return an MCP result.
 
@@ -3679,6 +3690,8 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(work_dir_error)
     try:
         context = resolve_call_context(arguments)
+        if request_context is not None and request_context.attribution is not None:
+            context = replace(context, session_key=request_context.attribution.key)
     except (GoalBindingError, GoalStoreError) as exc:
         return _error_result(f"ERROR: {exc}")
 
@@ -4064,12 +4077,11 @@ async def _dispatch_application_tool(
     bwave_result = await _dispatch_bwave(name, arguments)
     if bwave_result is not None:
         return _prepend_changed_health_alert(bwave_result)
-    result = await _dispatch_booley_mcp_tool(
-        name,
-        arguments,
-        dict(mcp_tool_def),
-        mcp_tool_call_counts,
-        jobs,
+    args = (name, arguments, dict(mcp_tool_def), mcp_tool_call_counts, jobs)
+    result = (
+        await _dispatch_booley_mcp_tool(*args)
+        if request_context is None
+        else await _dispatch_booley_mcp_tool(*args, request_context=request_context)
     )
     return _prepend_changed_health_alert(result)
 
@@ -4154,51 +4166,101 @@ def build_mcp_probe_payload() -> dict[str, Any]:
     }
 
 
+def _sdk_tool_result(
+    payload: McpToolContent | McpInputRequired,
+) -> CallToolResult | InputRequiredResult:
+    """Project transport-neutral results at the SDK boundary."""
+    if isinstance(payload, McpInputRequired):
+        return InputRequiredResult(
+            request_state=payload.request_state,
+            input_requests={
+                payload.response_key: ElicitRequest(
+                    method="elicitation/create",
+                    params=ElicitRequestFormParams(
+                        mode="form",
+                        message=payload.message,
+                        requested_schema=payload.form_schema,
+                    ),
+                )
+            },
+        )
+    return CallToolResult(
+        content=[TextContent(type="text", text=block.text) for block in payload.content],
+        structuredContent=payload.structured_content,
+        isError=payload.is_error,
+    )
+
+
 async def _call_application_tool(
     application: McpApplication,
     params: CallToolRequestParams,
     context: ServerRequestContext | None = None,
+    observer: SessionObserver | None = None,
 ) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
+    request = await _observed_request_context(context, params, observer)
     try:
-        if context is None:
+        if context is None and observer is None:
             payload = await application.call_tool(params.name, params.arguments or {})
         else:
             payload = await application.call_tool(
-                params.name,
-                params.arguments or {},
-                request_context=_application_request_context(context, params),
+                params.name, params.arguments or {}, request_context=request
             )
-        if isinstance(payload, McpInputRequired):
-            return InputRequiredResult(
-                request_state=payload.request_state,
-                input_requests={
-                    payload.response_key: ElicitRequest(
-                        method="elicitation/create",
-                        params=ElicitRequestFormParams(
-                            mode="form",
-                            message=payload.message,
-                            requested_schema=payload.form_schema,
-                        ),
-                    )
-                },
+        if observer is not None:
+            outcome = (
+                "input-required"
+                if isinstance(payload, McpInputRequired)
+                else ("error" if payload.is_error else "completed")
             )
-        return CallToolResult(
-            content=[TextContent(type="text", text=block.text) for block in payload.content],
-            structuredContent=payload.structured_content,
-            isError=payload.is_error,
-        )
+            await observer.record(request.attribution, params.name, outcome)
+        warning = request.presentation_warning
+        if warning and isinstance(payload, McpInputRequired):
+            payload = replace(payload, message=payload.message + "\n" + warning)
+        elif warning:
+            payload = replace(payload, content=(*payload.content, McpTextBlock(warning)))
+        return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
+        if observer is not None:
+            await observer.record(request.attribution, params.name, "unknown-tool")
         hidden = _interactive_hidden_note(exc.name)
+        message = hidden or f"Unknown MCP tool: {exc.name}"
+        if request.presentation_warning:
+            message += "\n" + request.presentation_warning
         raise MCPError(
             INVALID_PARAMS,
-            hidden or f"Unknown MCP tool: {exc.name}",
+            message,
         ) from None
     except MCPError:
         raise
     except Exception as exc:
+        if observer is not None:
+            await observer.record(request.attribution, params.name, "error")
         logger.exception("Unexpected MCP tool failure for %s", params.name)
-        raise MCPError(INTERNAL_ERROR, "Internal server error") from exc
+        message = "Internal server error"
+        if request.presentation_warning:
+            message += "\n" + request.presentation_warning
+        raise MCPError(INTERNAL_ERROR, message) from exc
+
+
+async def _observed_request_context(
+    context: ServerRequestContext | None,
+    params: CallToolRequestParams,
+    observer: SessionObserver | None,
+) -> McpRequestContext:
+    request = (
+        McpRequestContext() if context is None else _application_request_context(context, params)
+    )
+    if observer is None or not goal_mode_preview_enabled():
+        return request
+    client = context.session.client_params if context is not None else None
+    name = client.client_info.name if client is not None else ""
+    meta = dict(params.meta) if params.meta is not None else {}
+    facts = await observer.attribution(params.arguments or {}, meta, name)
+    await observer.record(facts, params.name, "started")
+    keys, warning = await observer.shared(facts)
+    return replace(
+        request, attribution=facts, other_session_keys=keys, presentation_warning=warning
+    )
 
 
 def _application_request_context(
@@ -4230,6 +4292,10 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
         _params: PaginatedRequestParams | None,
     ) -> ListToolsResult:
         lifetime.mark_activity()
+        request = await _observed_request_context(
+            _ctx, CallToolRequestParams(name="tools/list", meta=_ctx.meta), lifetime.sessions
+        )
+        await lifetime.sessions.record(request.attribution, "tools/list", "completed")
         return ListToolsResult(tools=[_sdk_tool(tool) for tool in application.list_tools()])
 
     async def handle_call_tool(
@@ -4238,7 +4304,7 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
     ) -> CallToolResult | InputRequiredResult:
         lifetime.mark_mcp_endpoint_start()
         try:
-            return await _call_application_tool(application, params, _ctx)
+            return await _call_application_tool(application, params, _ctx, lifetime.sessions)
         finally:
             lifetime.mark_mcp_endpoint_end()
 
@@ -4367,11 +4433,15 @@ async def _main() -> None:
                 server.create_initialization_options(),
             ),
         )
+        maintenance = asyncio.create_task(lifetime.sessions.maintenance_loop())
         watchdog_task = asyncio.create_task(lifetime.wait_until_stale())
         done, pending = await asyncio.wait(
             {run_task, watchdog_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
+        maintenance.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await maintenance
         if run_task in done:
             watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -4403,6 +4473,7 @@ def _run_http(port: int) -> None:
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
     app = _streamable_http_app(server)
+    app = SessionMaintenanceApp(app, lifetime.sessions)
     logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
     uvicorn.run(app, host=_HTTP_HOST, port=port, log_level="warning")
 
@@ -4415,12 +4486,14 @@ def _streamable_http_app(server: Server):
         allowed_hosts=["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*"],
         allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
     )
-    return server.streamable_http_app(
-        streamable_http_path=HTTP_ENDPOINT_PATH,
-        json_response=True,
-        max_request_body_size=4 * 1024 * 1024,
-        transport_security=security,
-        host=_HTTP_HOST,
+    return PeerBoundary(
+        server.streamable_http_app(
+            streamable_http_path=HTTP_ENDPOINT_PATH,
+            json_response=True,
+            max_request_body_size=4 * 1024 * 1024,
+            transport_security=security,
+            host=_HTTP_HOST,
+        )
     )
 
 

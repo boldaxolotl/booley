@@ -46,7 +46,9 @@ def completion_environment(entry: EntryEnvironment) -> FinishEnvironment:
     )
 
 
-def complete_goal(arguments: Mapping[str, Any], entry: EntryEnvironment) -> dict[str, Any]:
+def complete_goal(
+    arguments: Mapping[str, Any], entry: EntryEnvironment, *, session_key: str | None = None
+) -> dict[str, Any]:
     """Boundary coercion never reads SDK request envelopes as lifecycle authority."""
     request = LifecycleRequest(
         Path(require_str_value(arguments.get("work_dir"), field="work_dir")),
@@ -58,5 +60,6 @@ def complete_goal(arguments: Mapping[str, Any], entry: EntryEnvironment) -> dict
             arguments.get("instruction_quote", ""), field="instruction_quote", allow_empty=True
         ),
         require_bool_value(arguments.get("explain_html", False), field="explain_html"),
+        session_key=session_key,
     )
     return finish_goal(request, completion_environment(entry))

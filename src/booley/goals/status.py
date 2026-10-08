@@ -74,9 +74,10 @@ def build_status(
     *,
     work_dir: Path | None = None,
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
+    observational: bool = False,
 ) -> GoalStatusView:
     """Read one coherent record/state/lifecycle projection without recovering it."""
-    with store.record_lock(record.id):
+    with store.record_lock(record.id, existing_only=observational):
         return _build_status(store, store.load(record.id), work_dir=work_dir, resolvers=resolvers)
 
 

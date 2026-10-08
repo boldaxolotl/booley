@@ -1003,6 +1003,12 @@ def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = F
         raise RuntimeError("Sandbox spec reissuance failed: " + "; ".join(failures))
 
 
+def _dashboard_enabled(project_dir: Path) -> bool:
+    from booley.runtime.dashboard_tasks import enabled
+
+    return enabled(project_dir)
+
+
 def _project_sandbox_memory(project_root: Path) -> str:
     """Return the project's single container memory limit (ADR 0028), or ''.
 
@@ -1248,6 +1254,8 @@ class _InteractiveSpecSources:
             config_seed_source=(docker_mount_path(self.config_seed) if self.config_seed else None),
             mcp_start_command=dc.mcp_post_start_command(),
             memory=_project_sandbox_memory(self.project_root),
+            dashboard=_dashboard_enabled(inputs.project_data_source),
+            goal_preview=goal_mode_preview_enabled(),
             forward_oauth_token=bool(auth_token.resolve_token(self.app)),
             token_seed_source=(docker_mount_path(self.token_seed) if self.token_seed else None),
             host_skills=list(self.host_skills),
