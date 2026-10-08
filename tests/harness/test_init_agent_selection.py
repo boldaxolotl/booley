@@ -12,6 +12,7 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
 
 
@@ -645,6 +646,9 @@ def test_image_lifecycle_step_reports_cleanup_when_image_was_rebuilt(tmp_path, m
         "reconcile_planned",
         lambda *_args, **_kwargs: result,
     )
+    # A changed image probes live Sandboxes through the real Docker CLI; stub it
+    # so the step stays a unit test (the live probe took up to 36 s on Windows CI).
+    monkeypatch.setattr(sr, "sessions_on_stale_image", lambda _root, _image: [])
     ctx = InitContext(project_root=tmp_path)
 
     assert init_cmd._step_image_lifecycle(ctx) is result

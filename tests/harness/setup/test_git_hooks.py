@@ -2002,6 +2002,9 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / name).read_bytes() == b"alpha\nbeta\n"
         assert ctx.results[-1].status == "ok"
 
+    # Usually ~3 s on Windows CI, but runner contention has stretched it to 48.6 s;
+    # the budget keeps the timeout-headroom guard's 3x margin over that peak.
+    @pytest.mark.timeout(150)
     def test_failed_smudge_filter_leaves_original_file_present(self, tmp_path: Path):
         from booley.harness.setup.git_hooks import _step_line_endings
 

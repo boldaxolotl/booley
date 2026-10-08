@@ -29,3 +29,22 @@ The workflow therefore defaults to six shards. This is one successful run per
 candidate, not evidence of sustained savings. Compare at least 20 ordinary,
 code-changing runs using the same gate and runner-minute measurements before
 claiming a durable improvement or removing the four/eight experiment options.
+
+## October 8, 2026: default raised to eight
+
+The suite grew from 13,083 to 21,287 eligible Windows tests, and six shards no
+longer fit the 15-minute job limit. On `main`, push runs
+[37645077103](https://github.com/boldaxolotl/booley/actions/runs/37645077103),
+[37750380037](https://github.com/boldaxolotl/booley/actions/runs/37750380037),
+and [37752689044](https://github.com/boldaxolotl/booley/actions/runs/37752689044)
+ran Windows shards for 9 to 15 minutes, and run 37750380037 lost two shards
+to the job deadline. Run setup and package installation take about 1 to 1.5
+minutes per job, so the overrun is test execution. Pull request run
+[37772516564](https://github.com/boldaxolotl/booley/actions/runs/37772516564)
+added roughly 400 test-seconds per shard and lost four of six shards to the
+deadline. Rebalancing the timing model could not help: the work exceeded the
+combined six-shard capacity.
+
+Eight shards spread the same work about 25% thinner per job without changing
+the timing model, the four-worker scheduler, or the job limit. Revisit the
+count with the 20-run comparison above once the suite size settles.
