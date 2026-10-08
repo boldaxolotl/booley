@@ -53,6 +53,27 @@ def test_new_directory_task_preview_env_and_idempotent_disable(project, monkeypa
     assert b"/.vscode\n" in project.exclude.read_bytes()
 
 
+def test_disable_retains_exclude_ownership_until_user_tail_allows_removal(project, monkeypatch):
+    import json
+
+    baseline = project.exclude.read_bytes()
+    tasks.reconcile(project.root, project.data)
+    owned = project.exclude.read_bytes()
+    project.exclude.write_bytes(owned + b"# user appended\n/extra\n")
+    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    tasks.reconcile(project.root, project.data)
+    owner_path = project.data / "runtime/dashboard-task.json"
+    owner = json.loads(owner_path.read_bytes())
+    assert not owner["enabled"]
+    assert owner["exclude_suffix"]
+    assert project.exclude.read_bytes() == owned + b"# user appended\n/extra\n"
+    project.exclude.write_bytes(owned)
+    tasks.reconcile(project.root, project.data)
+    assert project.exclude.read_bytes() == baseline
+    assert json.loads(owner_path.read_bytes())["exclude_suffix"] == ""
+    assert not tasks.inspect(project.root, project.data).pending
+
+
 @pytest.mark.parametrize(
     "source",
     [

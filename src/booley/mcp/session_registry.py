@@ -240,9 +240,8 @@ class SessionRegistry:
         unique: dict[str, SessionRow] = {}
         for row in sorted(rows, key=lambda row: row.last_call_at):
             unique[row.attribution.key] = row
-        return RegistrySnapshot(
-            tuple(unique.values()), tuple(diagnostics), bool(diagnostics) and not rows
-        )
+        diagnostics = [f"session registry partially unavailable: {item}" for item in diagnostics]
+        return RegistrySnapshot(tuple(unique.values()), tuple(diagnostics), bool(diagnostics))
 
     def visible_snapshot(self, *, now: float, scope: str) -> RegistrySnapshot:
         """Observational quiet filtering; maintenance owns every durable deletion."""

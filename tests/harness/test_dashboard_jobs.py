@@ -76,6 +76,45 @@ def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
     assert "Peak memory: —" in job_detail(view)
 
 
+def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path, monkeypatch):
+    import os
+
+    from booley.flows.progress_lifecycle import progress_document
+    from booley.runtime import job_artifacts
+
+    root = tmp_path / "jobs"
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 2)
+    for index in range(4):
+        directory = root.parent / "flow-reports/sim" / str(index)
+        directory.mkdir(parents=True)
+        for name, data in (
+            ("report.json", {"run_id": str(index), "passed": True}),
+            (
+                "progress.json",
+                progress_document(
+                    flow="sim",
+                    run_id=str(index),
+                    phase="complete",
+                    targets=[],
+                    completed_targets=[],
+                    detail={},
+                ),
+            ),
+            ("unrelated.json", {}),
+        ):
+            path = directory / name
+            path.write_bytes(json.dumps(data).encode())
+            os.utime(path, (100 + index, 100 + index))
+    before = files(tmp_path)
+    cache = job_artifacts.JobArtifactCache()
+    for run, kind in (("3", "report"), ("3", "progress"), ("0", "progress")):
+        found = cache.find(root, "sim", run, kind)
+        assert found is not None
+        assert found[0]["run_id"] == run
+    assert cache.diagnostics
+    assert files(tmp_path) == before
+
+
 @pytest.mark.parametrize(
     "status,pid,identity,state",
     [

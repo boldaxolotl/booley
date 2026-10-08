@@ -202,14 +202,14 @@ def _inserted_span(before: str, after: str) -> str:
     return after[start : len(after) - suffix if suffix else len(after)]
 
 
-def _disabled_ownership(owner: dict[str, Any]) -> dict[str, Any]:
-    """A removed folder/exclude entry cannot supply provenance after re-enable."""
+def _disabled_ownership(owner: dict[str, Any], exclude_suffix: str) -> dict[str, Any]:
+    """Clear removed folder provenance; retain exclude ownership until removal."""
     return {
         **owner,
         "enabled": False,
         "created_vscode": False,
-        "exclude_created": False,
-        "exclude_suffix": "",
+        "exclude_created": owner.get("exclude_created", False) if exclude_suffix else False,
+        "exclude_suffix": exclude_suffix,
     }
 
 
@@ -250,7 +250,7 @@ def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -
     )
     owner_after = (
         json.dumps(
-            new_owner if desired else _disabled_ownership(owner),
+            new_owner if desired else _disabled_ownership(owner, new_owner["exclude_suffix"]),
             sort_keys=True,
         )
         + "\n"
@@ -268,8 +268,8 @@ def _exclude_change(
     root: Path, created: bool, desired: bool, owner: dict[str, Any], changes: list[FileChange]
 ) -> str:
     suffix = owner.get("exclude_suffix", "")
-    if not created:
-        return ""
+    if not created and (desired or not suffix):
+        return suffix
     path = git_directories(root).common_dir / "info/exclude"
     before = _bytes(path)
     content = before or b""
@@ -280,6 +280,7 @@ def _exclude_change(
         after = content[: -len(suffix.encode())]
         if not after and owner.get("exclude_created", False):
             after = None
+        suffix = ""
     else:
         return suffix
     changes.append(FileChange(path, before, after))

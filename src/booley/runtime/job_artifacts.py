@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
-from itertools import islice
 from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import require_dict
-from booley.flows.progress_lifecycle import read_progress_document
+from booley.flows.progress_lifecycle import read_progress_document, read_progress_for_run
 from booley.runtime.safe_storage import refuse_symlinks
 
 MAX_ARTIFACTS = 4096
@@ -20,9 +19,10 @@ Artifact = tuple[dict[str, Any], Path]
 class JobArtifactCache:
     """Index each endpoint once per snapshot; cache parsed files by path/mtime/size.
 
-    At most 4096 files and 16 MiB per endpoint are inspected. The persistent
-    parse cache also has a 16 MiB bound. Excess history is diagnosed, never
-    adopted, repaired or deleted.
+    File metadata is sorted before indexing at most 4096 files / 16 MiB per
+    endpoint. Exact progress beyond that index uses the released complete
+    lookup. The persistent parse cache has the same bounds. Excess history
+    is diagnosed, never adopted, repaired or deleted.
     """
 
     def __init__(self) -> None:
@@ -41,13 +41,20 @@ class JobArtifactCache:
         key = root, endpoint
         if key not in self._indexes:
             self._indexes[key] = self._index(root, endpoint)
-        return self._indexes[key].get((kind, run_id))
+        found = self._indexes[key].get((kind, run_id))
+        if found is None and kind == "progress":
+            roots = (root.parent / "flow-reports", root.parent / "mcp-tool-reports")
+            progress = read_progress_for_run(roots, endpoint, run_id)
+            if progress is not None:
+                path, data = progress
+                return data, path
+        return found
 
     def _candidates(self, root: Path, endpoint: str) -> list[tuple[int, int, Path]]:
         roots = (root.parent / "flow-reports", root.parent / "mcp-tool-reports")
         paths = [roots[0] / (endpoint + ".json")]
         for reports in roots:
-            paths.extend(islice((reports / endpoint).glob("*/*.json"), MAX_ARTIFACTS))
+            paths.extend((reports / endpoint).glob("*/*.json"))
         candidates = []
         for path in paths:
             if path.name not in {endpoint + ".json", "report.json", "progress.json"}:

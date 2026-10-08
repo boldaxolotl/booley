@@ -385,8 +385,8 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("raw", ["{broken", '{"schema":99}'])
-async def test_one_bad_presence_row_does_not_hide_shared_or_quiet_findings(
+@pytest.mark.parametrize("raw", ["{broken", '{"schema":99}', "truncated"])
+async def test_partial_registry_reports_unavailable_instead_of_confident_presence(
     tmp_path, monkeypatch, raw
 ):
     from booley.mcp import session_observer, session_registry
@@ -412,12 +412,20 @@ async def test_one_bad_presence_row_does_not_hide_shared_or_quiet_findings(
     registry = SessionRegistry(tmp_path)
     valid = Attribution("codex:other", "thread", str(tmp_path), "other-worktree", namespace=SCOPE)
     registry.upsert(valid, "sim", "completed", now=100)
-    registry.path("future").write_text(raw)
+    if raw == "truncated":
+        registry.upsert(replace(valid, key="codex:extra"), "sim", "completed", now=100)
+        monkeypatch.setattr(session_registry, "MAX_ROWS", 1)
+    else:
+        registry.path("future").write_text(raw)
+    before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     observer = SessionObserver(now=lambda: 100, budget=1)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     keys, warning = await observer.shared(replace(valid, key="codex:self"))
-    assert keys == ("codex:other",)
-    assert "another session" in warning
+    assert keys == ()
+    assert "registry partially unavailable" in warning
     checks = doctor.inspect_presence(tmp_path, tmp_path, inside_sandbox=True, now=100)
-    assert any(w.check_id == "goals.quiet-session" for w in checks.warnings)
-    assert checks.unavailable  # The bad row is still diagnosed individually.
+    assert not any(w.check_id == "goals.quiet-session" for w in checks.warnings)
+    assert "registry partially unavailable" in checks.unavailable
+    assert before == {
+        str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    }

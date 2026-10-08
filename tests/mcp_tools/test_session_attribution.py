@@ -441,6 +441,48 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("delayed", [False, True])
+async def test_resolved_identity_survives_registry_publication_failure(
+    tmp_path, monkeypatch, delayed
+):
+    import threading
+
+    from booley.mcp import session_observer
+    from booley.mcp.session_observer import SessionObserver
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    fallback = Attribution("worktree:fixture", "worktree", str(tmp_path), "fixture")
+    peer = Attribution("pid:fixture:7:1", "process", str(tmp_path), "fixture")
+    monkeypatch.setattr(session_observer, "resolve_attribution", lambda *_a, **_k: fallback)
+    release = threading.Event()
+    if not delayed:
+        release.set()
+
+    def resolve(_observation):
+        assert release.wait(2)
+        return peer
+
+    def publish(*_):
+        raise OSError("registry unavailable")
+
+    observer = SessionObserver(budget=0.001 if delayed else 1)
+    monkeypatch.setattr(observer, "_resolve", resolve)
+    monkeypatch.setattr(observer, "_publish", publish)
+    try:
+        facts = await observer.attribution({}, {}, "claude-code")
+        if delayed:
+            assert facts is fallback
+            assert not release.is_set()
+            # Release only after resolved() has entered its normal 0.5 s wait.
+            asyncio.get_running_loop().call_soon(release.set)
+            facts = await observer.resolved(facts)
+        assert facts is peer
+    finally:
+        release.set()
+        await asyncio.wait_for(observer._pending, 2)
+
+
+@pytest.mark.asyncio
 async def test_preview_off_goal_payload_has_no_presentation_warning(monkeypatch):
     from mcp.types import TextContent
 

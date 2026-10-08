@@ -1005,12 +1005,20 @@ Historical Interactive roots are limited to the newest 64 by jobs-directory
 mtime among at most 4,096 enumerated roots. This observer policy does not change
 server Job adoption or delete history.
 
-Each snapshot indexes an endpoint's reports and progress once by exact run ID.
-It parses at most 4,096 files / 16 MiB per endpoint, with a 2 MiB
+Each snapshot indexes an endpoint's reports and progress once by exact run ID,
+sorting file metadata newest-first before applying the index bounds.
+The index parses at most 4,096 files / 16 MiB per endpoint, with a 2 MiB
 per-file limit. Parsed files are reused across refreshes while path, mtime_ns
 and size match; the persistent cache is also limited to 4,096 entries / 16 MiB.
-Excess artifact history is diagnosed. Progress retains the trusted-document
-validation and numbered invocation-directory requirement of the released reader.
+Excess artifact history is diagnosed. An exact progress lookup missing from
+the index uses the released complete history lookup, retaining its trusted-document
+validation and numbered invocation-directory requirement.
+
+Partial registry reads (including scan truncation) report the registry as partially
+unavailable, suppress Doctor's quiet-session inference and return an unavailable
+shared-worktree warning. Resolved request identity survives registry publication
+failure during the admission wait. Disabling the task retains exclude ownership
+when user-appended lines prevent exact suffix removal, allowing a later safe retry.
 
 Review-round regressions use fixtures for deferred attribution before Job
 admission, Interactive calls without a worktree, slow reads, corrupt Jobs and

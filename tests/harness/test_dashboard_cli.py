@@ -35,14 +35,7 @@ def test_command_catalog_help_location_and_binding(monkeypatch, capsys, preview)
             parser.parse_args(["dashboard"])
 
 
-@pytest.mark.parametrize("native_unix_present", [False, True])
-def test_repeat_attach_one_view_and_no_filesystem_lock(
-    tmp_path, monkeypatch, capsys, native_unix_present
-):
-    if native_unix_present:
-        monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
-    else:
-        monkeypatch.delattr(command.socket, "AF_UNIX", raising=False)
+def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
     monkeypatch.setattr(command, "resolve_project_dir", lambda _: tmp_path)

@@ -218,7 +218,7 @@ class SessionObserver:
         )
         self._remember(fallback, observation)
         self._enqueue(observation)
-        return await self._wait(observation.done) or fallback
+        return await self._wait(observation.done) or observation.resolved or fallback
 
     def _resolve(self, observation: _Observation) -> Attribution:
         if observation.resolved is not None:
@@ -249,9 +249,13 @@ class SessionObserver:
         if observation.resolved is not None:
             return observation.resolved
         try:
-            return await asyncio.wait_for(asyncio.shield(observation.done), budget) or facts
+            return (
+                await asyncio.wait_for(asyncio.shield(observation.done), budget)
+                or observation.resolved
+                or facts
+            )
         except (TimeoutError, OSError, ValueError, RuntimeError):
-            return facts
+            return observation.resolved or facts
 
     async def shared(self, facts: Attribution | None) -> tuple[tuple[str, ...], str]:
         """Bounded shared-worktree warning; fallback explicitly cannot distinguish sessions."""
@@ -265,6 +269,10 @@ class SessionObserver:
             reading=True,
         )
         if snapshot is None or snapshot.unavailable:
+            if snapshot is not None and any(
+                "registry partially unavailable" in item for item in snapshot.diagnostics
+            ):
+                return (), "WARNING: shared-worktree session registry partially unavailable"
             return (), "WARNING: shared-worktree session registry is unavailable"
         keys = tuple(
             row.attribution.key
