@@ -2418,6 +2418,9 @@ def test_docker_image_inventory_accepts_windows_newlines_and_full_ids(
         "not-json\n",
         "{}\n",
         '{"Repository":"booley-sandbox","Tag":"latest","ID":"short"}\n',
+        # Untagged rows are validated before they are omitted.
+        '{"Repository":"<none>","Tag":"<none>","ID":"short"}\n',
+        '{"Repository":"<none>","Tag":"<none>"}\n',
     ],
 )
 def test_docker_image_inventory_rejects_malformed_rows(
@@ -2437,14 +2440,19 @@ def test_docker_image_inventory_rejects_malformed_rows(
         lifecycle._DockerCli().image_references()
 
 
+@pytest.mark.parametrize("interleave_dangling_rows", [False, True])
 def test_docker_image_inventory_rejects_conflicting_reference_ids(
     monkeypatch: pytest.MonkeyPatch,
+    interleave_dangling_rows: bool,
 ) -> None:
     first_id = "sha256:" + "a" * 64
     second_id = "sha256:" + "b" * 64
+    dangling = _inventory_row("<none>", "<none>", "sha256:" + "c" * 64)
     output = (
-        f'{{"Repository":"booley-sandbox","Tag":"latest","ID":"{first_id}"}}\n'
-        f'{{"Repository":"booley-sandbox","Tag":"latest","ID":"{second_id}"}}\n'
+        (dangling * 2 if interleave_dangling_rows else "")
+        + _inventory_row("booley-sandbox", "latest", first_id)
+        + (dangling if interleave_dangling_rows else "")
+        + _inventory_row("booley-sandbox", "latest", second_id)
     )
     monkeypatch.setattr(
         lifecycle.subprocess,
@@ -2452,8 +2460,147 @@ def test_docker_image_inventory_rejects_conflicting_reference_ids(
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
     )
 
-    with pytest.raises(lifecycle.ImageLifecycleError, match="conflicting IDs"):
+    # The exact message proves the tagged conflict, not a dangling row, raised.
+    with pytest.raises(
+        lifecycle.ImageLifecycleError, match=r"conflicting IDs for booley-sandbox:latest$"
+    ):
         lifecycle._DockerCli().image_references()
+
+
+def _inventory_row(repository: str, tag: str, image_id: str) -> str:
+    """One raw `docker image ls --format '{{json .}}'` row, Docker-escaped."""
+    escape = lambda text: text.replace("<", "\\u003c").replace(">", "\\u003e")  # noqa: E731
+    return f'{{"ID":"{image_id}","Repository":"{escape(repository)}","Tag":"{escape(tag)}"}}\n'
+
+
+def _patch_inventory(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+    )
+
+
+_TAGGED_ID = "sha256:" + "a" * 64
+_TAGGED_ROW = _inventory_row("booley-sandbox", "latest", _TAGGED_ID)
+_TAGGED_REFERENCE = lifecycle.ImageReference("booley-sandbox:latest", _TAGGED_ID)
+
+
+def test_docker_image_inventory_skips_digest_only_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    digest_only = _inventory_row(
+        "ghcr.io/boldaxolotl/booley-sandbox-base", "<none>", "sha256:" + "b" * 64
+    )
+    _patch_inventory(monkeypatch, _TAGGED_ROW + digest_only)
+
+    assert lifecycle._DockerCli().image_references() == (_TAGGED_REFERENCE,)
+
+
+def test_docker_image_inventory_skips_rows_without_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    no_repository = _inventory_row("<none>", "latest", "sha256:" + "b" * 64)
+    _patch_inventory(monkeypatch, _TAGGED_ROW + no_repository)
+
+    assert lifecycle._DockerCli().image_references() == (_TAGGED_REFERENCE,)
+
+
+def test_docker_image_inventory_skips_dangling_rows_with_distinct_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dangling = [_inventory_row("<none>", "<none>", "sha256:" + char * 64) for char in "bc"]
+    _patch_inventory(monkeypatch, dangling[0] + _TAGGED_ROW + dangling[1])
+
+    assert lifecycle._DockerCli().image_references() == (_TAGGED_REFERENCE,)
+
+
+def _split_reference(reference: str) -> tuple[str, str]:
+    """Split `repo[:tag]` into Docker's Repository and Tag columns."""
+    repository, separator, tag = reference.rpartition(":")
+    if not separator or "/" in tag:
+        return reference, "latest"
+    return repository, tag
+
+
+class _ParserBackedDocker(FakeDocker):
+    """FakeDocker whose inventory goes through the production Docker row parser.
+
+    Like the real daemon, it rejects any `<none>` reference as an invalid name.
+    """
+
+    def __init__(self, images, untagged_rows: str) -> None:
+        super().__init__(images)
+        self.untagged_rows = untagged_rows
+        self.inspected: list[str] = []
+
+    def _reject_untagged(self, image: str) -> None:
+        self.inspected.append(image)
+        if "<none>" in image:
+            raise lifecycle.ImageLifecycleError(
+                f"could not inspect Docker image '{image}': invalid reference format"
+            )
+
+    def image_references(self):
+        rows = "".join(
+            _inventory_row(*_split_reference(reference), image_id)
+            for reference, (image_id, _labels) in sorted(self.images.items())
+            if not reference.startswith("sha256:")
+        )
+        return lifecycle._parse_image_references(rows + self.untagged_rows)
+
+    def image_id(self, image: str) -> str | None:
+        self._reject_untagged(image)
+        return super().image_id(image)
+
+    def label(self, image: str, name: str) -> str | None:
+        self._reject_untagged(image)
+        return super().label(image, name)
+
+    def image_layers(self, image: str) -> tuple[str, ...]:
+        self._reject_untagged(image)
+        return super().image_layers(image)
+
+    def repo_digests(self, image: str) -> tuple[str, ...]:
+        self._reject_untagged(image)
+        return super().repo_digests(image)
+
+
+_UNTAGGED_CASES = {
+    "digest-only": _inventory_row("ghcr.io/x/base", "<none>", "sha256:" + "d" * 64),
+    "dangling-distinct-ids": (
+        _inventory_row("<none>", "<none>", "sha256:" + "d" * 64)
+        + _inventory_row("<none>", "<none>", "sha256:" + "e" * 64)
+    ),
+}
+
+
+@pytest.mark.parametrize("untagged_rows", _UNTAGGED_CASES.values(), ids=_UNTAGGED_CASES.keys())
+def test_plan_never_inspects_untagged_inventory_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, untagged_rows: str
+) -> None:
+    root = _project(tmp_path)
+    docker = _ParserBackedDocker({}, untagged_rows)
+    _wire(monkeypatch, docker)
+
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    assert planned.steps
+    assert not [image for image in docker.inspected if "<none>" in image]
+
+
+def test_host_ensure_retains_in_use_release_tag_whose_only_alias_is_digest_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prior_id = "sha256:" + "b" * 64
+    prior_release = "ghcr.io/boldaxolotl/booley-sandbox:0.2.5"
+    digest_only = _inventory_row("example.com/mirror", "<none>", prior_id)
+    docker = _ParserBackedDocker({prior_release: (prior_id, {})}, digest_only)
+    docker.used_image_ids = frozenset({prior_id})
+    _wire(monkeypatch, docker)
+
+    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+
+    assert result.cleanup.retained_required == (prior_release,)
+    assert docker.image_id(prior_release) == prior_id
 
 
 @pytest.mark.parametrize(

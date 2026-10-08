@@ -70,6 +70,9 @@ STANDARD_SUBSTRATE_IMAGE = "booley-sandbox-standard-substrate:local"
 RISCV_SUBSTRATE_IMAGE = "booley-sandbox-riscv-substrate:local"
 FLAVOR_RECIPES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 PUBLISHED_REGISTRY = "ghcr.io/boldaxolotl"
+# Docker prints this for an absent repository or tag (digest-only and dangling
+# images). Reference grammar forbids "<" and ">", so it is never a real name.
+_DOCKER_MISSING_NAME = "<none>"
 _STABLE_RELEASE_TAG = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 
 
@@ -2303,6 +2306,12 @@ class _DockerCli:
 
 
 def _parse_image_references(output: str) -> tuple[ImageReference, ...]:
+    """Parse `docker image ls` JSON rows into inspectable `repository:tag` references.
+
+    Every row is validated first; untagged and dangling rows (a `<none>`
+    repository or tag) are then omitted because no consumer can inspect them.
+    Conflicting IDs for one tagged reference still raise.
+    """
     references: dict[str, str] = {}
     for row_number, line in enumerate(output.splitlines(), start=1):
         try:
@@ -2318,6 +2327,8 @@ def _parse_image_references(output: str) -> tuple[ImageReference, ...]:
             raise ImageLifecycleError(
                 f"Docker returned malformed image inventory row {row_number}: invalid image ID"
             )
+        if _DOCKER_MISSING_NAME in (repository, tag):
+            continue
         reference = f"{repository}:{tag}"
         previous = references.setdefault(reference, image_id)
         if previous != image_id:
