@@ -30,6 +30,7 @@ class Document:
         if len(source.encode()) > 1024 * 1024:
             raise ValueError("JSONC document exceeds 1 MiB")
         self.source = source
+        self.newline: str = "\r\n" if "\r\n" in source else "\n"
         self.tokens = self._tokens(source)
         self.index = 0
         self.root = self._value(0)
@@ -96,7 +97,7 @@ class Document:
         raise ValueError("incomplete JSONC collection")
 
     def task_text(self, task: dict[str, Any], array: Node | None) -> str:
-        """Indent the new task using the document's existing indentation unit."""
+        """Use the document's indentation and line endings for the inserted task."""
         indents = re.findall(r'(?m)^([ \t]+)"', self.source)
         unit = min(indents, key=len) if indents else "  "
         indent = unit * 2
@@ -105,7 +106,7 @@ class Document:
             prefix = self.source[self.source.rfind("\n", 0, first.start) + 1 : first.start]
             if prefix and prefix.isspace():
                 indent = prefix
-        return indent + json.dumps(task, indent=unit).replace("\n", "\n" + indent)
+        return indent + json.dumps(task, indent=unit).replace("\n", self.newline + indent)
 
     def append(self, array: Node, raw: str) -> str:
         """Insert one reversible span, preserving delimiters and closing indentation."""
@@ -115,7 +116,7 @@ class Document:
         line = self.source.rfind("\n", array.start, at) + 1
         if line > array.start and self.source[line:at].isspace():
             at = line
-        return self.source[:at] + comma + "\n" + raw + "\n" + self.source[at:]
+        return self.source[:at] + comma + self.newline + raw + self.newline + self.source[at:]
 
     def remove(self, array: Node, node: Node) -> str:
         """Compatibility removal for an unchanged task owned by an older revision."""
@@ -147,4 +148,15 @@ class Document:
         at = self.root.end - 1
         last = self.tokens[-2][0]
         comma = "," if self.root.members and last != "," else ""
-        return self.source[:at] + comma + '\n"tasks": [\n' + raw + "\n]\n" + self.source[at:]
+        return (
+            self.source[:at]
+            + comma
+            + self.newline
+            + '"tasks": ['
+            + self.newline
+            + raw
+            + self.newline
+            + "]"
+            + self.newline
+            + self.source[at:]
+        )

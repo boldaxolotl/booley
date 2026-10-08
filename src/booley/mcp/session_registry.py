@@ -202,7 +202,10 @@ class SessionRegistry:
         self.root.mkdir(parents=True, exist_ok=True)
         lock = self.root / ".lock"
         refuse_symlinks(lock)
-        with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+        with (
+            lock.open("a+", encoding="utf-8", newline="") as handle,
+            nonblocking_file_lock(handle),
+        ):
             yield
 
     def _read(self, path: Path) -> SessionRow:
@@ -358,7 +361,7 @@ def namespace(proc_root: Path = Path("/proc")) -> str:
 
 
 def _git_fact(path: Path) -> str:
-    with path.open(encoding="utf-8") as handle:
+    with path.open(encoding="utf-8", newline="") as handle:
         value = handle.read(16385)
     if len(value) > 16384:
         raise ValueError("Git metadata exceeds observation bound")

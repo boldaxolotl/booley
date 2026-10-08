@@ -63,7 +63,7 @@ def enabled(project_dir: Path) -> bool:
     if not goal_mode_preview_enabled():
         return False
     path = project_dir / "booley.toml"
-    data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    data = tomllib.loads(path.read_bytes().decode("utf-8")) if path.exists() else {}
     return parse_dashboard(data)
 
 
@@ -353,7 +353,10 @@ def reconcile(root: Path, project_dir: Path) -> TaskTransaction:
         refuse_symlinks(lock)
         lock.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+            with (
+                lock.open("a+", encoding="utf-8", newline="") as handle,
+                nonblocking_file_lock(handle),
+            ):
                 transaction.apply()
         except BlockingIOError:
             transaction = TaskTransaction(

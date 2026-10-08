@@ -38,7 +38,7 @@ def test_new_directory_task_preview_env_and_idempotent_disable(project, monkeypa
     assert not project.file.exists()
     transaction = tasks.reconcile(project.root, project.data)
     assert transaction.applied
-    task = Document(project.file.read_text()).root.value["tasks"][0]
+    task = Document(project.file.read_bytes().decode()).root.value["tasks"][0]
     assert task["command"] == "booley dashboard"
     assert task["options"]["env"] == {"BOOLEY_GOAL_MODE_PREVIEW": "1"}
     assert task["runOptions"] == {"runOn": "folderOpen", "instanceLimit": 1}
@@ -64,10 +64,10 @@ def test_new_directory_task_preview_env_and_idempotent_disable(project, monkeypa
 )
 def test_jsonc_preserves_unrelated_bytes_and_existing_directory_excludes(project, source):
     project.file.parent.mkdir()
-    project.file.write_text(source)
+    project.file.write_bytes(source.encode())
     before_exclude = project.exclude.read_bytes()
     tasks.reconcile(project.root, project.data)
-    rendered = project.file.read_text()
+    rendered = project.file.read_bytes().decode()
     assert "Booley Dashboard" in rendered
     assert Document(rendered).root.value["tasks"][-1] == tasks.TASK
     assert project.exclude.read_bytes() == before_exclude
@@ -75,16 +75,16 @@ def test_jsonc_preserves_unrelated_bytes_and_existing_directory_excludes(project
         if token in source:
             assert token in rendered
     tasks.reconcile(project.root, project.data)
-    assert project.file.read_text() == rendered
-    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    assert project.file.read_bytes().decode() == rendered
+    (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert all(
         task.get("label") != tasks.LABEL
-        for task in Document(project.file.read_text()).root.value.get("tasks", [])
+        for task in Document(project.file.read_bytes().decode()).root.value.get("tasks", [])
     )
     for token in ("// top", "/*keep*/", "// tail", "// end", "/*c*/", "// last", '"unknown":42'):
         if token in source:
-            assert token in project.file.read_text()
+            assert token in project.file.read_bytes().decode()
 
 
 @pytest.mark.parametrize(
@@ -99,23 +99,24 @@ def test_jsonc_preserves_unrelated_bytes_and_existing_directory_excludes(project
 )
 def test_conflicts_preserved_with_diagnostic(project, source, diagnostic):
     project.file.parent.mkdir()
-    project.file.write_text(source)
+    project.file.write_bytes(source.encode())
     before = project.exclude.read_bytes()
     plan = tasks.inspect(project.root, project.data)
     assert not plan.pending
     assert diagnostic in plan.diagnostics[0]
     tasks.reconcile(project.root, project.data)
-    assert project.file.read_text() == source
+    assert project.file.read_bytes().decode() == source
     assert project.exclude.read_bytes() == before
 
 
-def test_user_edited_owned_task_never_overwritten_or_removed(project, monkeypatch):
+@pytest.mark.parametrize(
+    "edit",
+    [(b'"command": "booley dashboard"', b'"command": "my-command"'), (b"\n", b"\r\n")],
+    ids=["command", "line-endings"],
+)
+def test_user_edited_owned_task_never_overwritten_or_removed(project, monkeypatch, edit):
     tasks.reconcile(project.root, project.data)
-    project.file.write_text(
-        project.file.read_text().replace(
-            '"command": "booley dashboard"', '"command": "my-command"'
-        )
-    )
+    project.file.write_bytes(project.file.read_bytes().replace(*edit))
     edited = project.file.read_bytes()
     assert "user-edited" in tasks.inspect(project.root, project.data).diagnostics[0]
     monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
@@ -163,13 +164,13 @@ def test_rollback_restores_exact_bytes_and_keeps_concurrent_edits(project):
 
 def test_explicit_automatic_task_opt_out_and_knob(project):
     project.file.parent.mkdir()
-    (project.file.parent / "settings.json").write_text(
-        '{//user\n"task.allowAutomaticTasks":"off"}'
+    (project.file.parent / "settings.json").write_bytes(
+        b'{//user\n"task.allowAutomaticTasks":"off"}'
     )
     assert not tasks.inspect(project.root, project.data).pending
     assert not project.file.exists()
     (project.file.parent / "settings.json").unlink()
-    (project.data / "booley.toml").write_text('[sandbox]\ndashboard = "false"')
+    (project.data / "booley.toml").write_bytes(b'[sandbox]\ndashboard = "false"')
     assert tasks.inspect(project.root, project.data).diagnostics
 
 
@@ -269,11 +270,13 @@ def test_owned_previous_task_revision_is_updated_without_user_content_loss(proje
 
     owner = json.loads(owner_path.read_bytes())
     previous = owner["task"].replace('"clear": false', '"clear": true')
-    project.file.write_text(project.file.read_text().replace(owner["task"], previous))
+    project.file.write_bytes(
+        project.file.read_bytes().replace(owner["task"].encode(), previous.encode())
+    )
     owner["task"] = previous
-    owner_path.write_text(json.dumps(owner))
+    owner_path.write_bytes(json.dumps(owner).encode())
     tasks.reconcile(project.root, project.data)
-    assert Document(project.file.read_text()).root.value["tasks"][0] == tasks.TASK
+    assert Document(project.file.read_bytes().decode()).root.value["tasks"][0] == tasks.TASK
 
 
 def test_disable_restores_absent_exclude_file(project, monkeypatch):
@@ -299,20 +302,20 @@ def test_enable_disable_cycles_restore_exact_jsonc_bytes(project, source):
     original = source.encode()
     for _ in range(3):
         project.file.write_bytes(original)
-        (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
+        (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = true\n")
         tasks.reconcile(project.root, project.data)
-        rendered = project.file.read_text()
+        rendered = project.file.read_bytes().decode()
         assert Document(rendered).root.value["tasks"][-1] == tasks.TASK
         if '    "tasks"' in source:
             assert '\n        {\n            "label": "Booley Dashboard"' in rendered
-        (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+        (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = false\n")
         tasks.reconcile(project.root, project.data)
         assert project.file.read_bytes() == original
 
 
 def test_disable_removes_only_booley_created_empty_vscode(project):
     tasks.reconcile(project.root, project.data)
-    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.file.parent.exists()
 
@@ -323,7 +326,7 @@ def test_disable_preserves_user_edits_outside_owned_insertion(project):
     project.file.write_bytes(source)
     tasks.reconcile(project.root, project.data)
     project.file.write_bytes(project.file.read_bytes().replace(b'"value": 1', b'"value": 2'))
-    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert project.file.read_bytes() == source.replace(b'"value": 1', b'"value": 2')
 
@@ -343,7 +346,7 @@ def test_busy_task_lock_skips_with_diagnostic_and_preserves_files(project):
 def test_disable_keeps_user_created_empty_vscode(project):
     project.file.parent.mkdir()
     tasks.reconcile(project.root, project.data)
-    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert project.file.parent.is_dir()
 
@@ -355,12 +358,42 @@ def test_reenable_does_not_claim_user_recreated_vscode(project, monkeypatch):
     assert not project.file.parent.exists()
     project.file.parent.mkdir()
     user_file = project.file.parent / "user.txt"
-    user_file.write_text("keep")
+    user_file.write_bytes(b"keep")
     baseline = project.exclude.read_bytes()
     monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     tasks.reconcile(project.root, project.data)
     assert project.exclude.read_bytes() == baseline
     monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
     tasks.reconcile(project.root, project.data)
-    assert user_file.read_text() == "keep"
+    assert user_file.read_bytes() == b"keep"
     assert project.file.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '{ // keep café\r\n  "tasks": [/*user*/ {"label":"user"},],\r\n  "other": 42,\r\n}\r\n',
+        '{\r\n  "version": "2.0.0", // keep\r\n  "other": 42,\r\n}\r\n',
+    ],
+)
+def test_crlf_task_enable_update_disable_restores_exact_bytes(project, monkeypatch, source):
+    original = source.encode()
+    project.file.parent.mkdir()
+    project.file.write_bytes(original)
+    exclude = project.exclude.read_bytes()
+    assert tasks.reconcile(project.root, project.data).applied
+    enabled = project.file.read_bytes()
+    assert b"\n" not in enabled.replace(b"\r\n", b"")
+    assert not tasks.inspect(project.root, project.data).pending
+    upgraded = {**tasks.TASK, "presentation": {**tasks.TASK["presentation"], "clear": True}}
+    monkeypatch.setattr(tasks, "TASK", upgraded)
+    assert tasks.reconcile(project.root, project.data).applied
+    updated = project.file.read_bytes()
+    assert b"\n" not in updated.replace(b"\r\n", b"")
+    assert updated != enabled and updated.count(tasks.LABEL.encode()) == 1
+    assert Document(updated.decode()).root.value["tasks"][-1] == upgraded
+    assert not tasks.inspect(project.root, project.data).pending
+    (project.data / "booley.toml").write_bytes(b"[sandbox]\r\ndashboard = false\r\n")
+    tasks.reconcile(project.root, project.data)
+    assert project.file.read_bytes() == original
+    assert project.exclude.read_bytes() == exclude
