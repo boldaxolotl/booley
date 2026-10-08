@@ -61,6 +61,7 @@ from booley.flows.sim.execution.engine import (
 )
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+from booley.flows.sim.live_progress import observe_stage
 from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
@@ -136,6 +137,7 @@ class VerilatorCoverageExecution:
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         """Prepare and compile the collector-selected isolated build variant."""
+        observe_stage(self._handle.selector, "preparing")
         self._prepared = None
         self._artifact_paths = ()
         self._build_variant = None
@@ -272,6 +274,13 @@ class VerilatorCoverageExecution:
         script = _in_directory_script(self._handle.project_root, script)
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         timeout_s = max(1, timeout_ms // 1000)
+        observe_stage(
+            self._handle.selector,
+            "building",
+            evidence_root=prepared.build_root,
+            attempt_token=token,
+            initialize_log=True,
+        )
         announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
         outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
@@ -410,15 +419,31 @@ class VerilatorCoverageExecution:
         environment = {**simulation_target_environment(self._handle), **request.environment}
         script = _environment_script(environment, invocation)
         script = _in_directory_script(self._handle.project_root, script)
-        executed = execute_adapter_attempt(
-            self._invoke,
-            AdapterAttemptRequest(
-                ("sh", "-c", script),
-                work.timeout_s + _ADAPTER_CLEANUP_MARGIN_S,
-                transport,
-                prepared.build_root,
-            ),
+        observe_stage(
+            self._handle.selector,
+            "executing",
+            evidence_root=prepared.build_root,
+            attempt_token=transport.attempt_token,
+            initialize_log=True,
+            tests=(request.test.name,),
         )
+        try:
+            executed = execute_adapter_attempt(
+                self._invoke,
+                AdapterAttemptRequest(
+                    ("sh", "-c", script),
+                    work.timeout_s + _ADAPTER_CLEANUP_MARGIN_S,
+                    transport,
+                    prepared.build_root,
+                ),
+            )
+        finally:
+            observe_stage(
+                self._handle.selector,
+                "postprocessing",
+                evidence_root=prepared.build_root,
+                attempt_token=transport.attempt_token,
+            )
         return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
 
     def _commands(self) -> tuple[str, ...]:
@@ -433,6 +458,7 @@ class VerilatorCoverageExecution:
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         """Run one collector utility in its requested artifact directory."""
+        observe_stage(self._handle.selector, "postprocessing")
         announce_unit(f"coverage: {request.argv[0]}", target=self._handle.selector)
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"

@@ -30,12 +30,29 @@ def begin_run_log(
 ) -> Path:
     """Open a fresh run log with ownership and in-progress markers."""
     path = Path(work_dir, RUN_LOG_NAME)
-    header = (
+    header = format_run_log_header(flow=flow, target=target, run=run)
+    path.write_text(f"{header}{RUN_LOG_PENDING}\n", encoding="utf-8")
+    return path
+
+
+def format_run_log_header(*, flow: str, target: str, run: str | None = None) -> str:
+    """Render the ownership protocol independently of filesystem opening policy."""
+    return (
         f"{RUN_LOG_HEADER_PREFIX} run={run or current_run_token()} "
         f"flow={flow} target={target} started={utc_now_rfc3339()}\n"
     )
-    path.write_text(f"{header}{RUN_LOG_PENDING}\n", encoding="utf-8")
-    return path
+
+
+def parse_run_log_header(line: str) -> dict[str, str] | None:
+    """Parse one complete ownership line, rejecting partial headers."""
+    if not line.startswith(RUN_LOG_HEADER_PREFIX) or not line.endswith("\n"):
+        return None
+    fields: dict[str, str] = {}
+    for token in line[len(RUN_LOG_HEADER_PREFIX) :].split():
+        key, separator, value = token.partition("=")
+        if separator and value:
+            fields[key] = value
+    return fields
 
 
 def _read_run_log_head(path: Path) -> tuple[bytes, bytes]:
@@ -50,15 +67,7 @@ def _read_run_log_head(path: Path) -> tuple[bytes, bytes]:
 def read_run_log_header(work_dir: str | Path) -> dict[str, str] | None:
     """Parse a run log's ownership header into its ``key=value`` fields."""
     first, _ = _read_run_log_head(Path(work_dir, RUN_LOG_NAME))
-    line = first.decode("utf-8", errors="replace")
-    if not line.startswith(RUN_LOG_HEADER_PREFIX) or not line.endswith("\n"):
-        return None
-    fields: dict[str, str] = {}
-    for token in line[len(RUN_LOG_HEADER_PREFIX) :].split():
-        key, separator, value = token.partition("=")
-        if separator and value:
-            fields[key] = value
-    return fields
+    return parse_run_log_header(first.decode("utf-8", errors="replace"))
 
 
 def run_log_is_current(work_dir: str | Path, run: str | None = None) -> bool:
@@ -152,6 +161,8 @@ __all__ = [
     "begin_run_log",
     "cap_log_bytes",
     "current_run_token",
+    "format_run_log_header",
+    "parse_run_log_header",
     "read_run_log_header",
     "run_log_is_current",
     "write_run_log",

@@ -52,6 +52,7 @@ from booley.flows.sim.execution.engine import (
     simulation_target_environment,
 )
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+from booley.flows.sim.live_progress import attempt_scope
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     materialize_campaign_runtime_inputs,
@@ -172,6 +173,16 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             self._prepared_attempts[request.attempt_directory] = run_directory
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
+        """Bind lifecycle observations to this durable work item's attempt."""
+        target = cast(Mapping[str, str], request.manifest.document["target"])
+        with attempt_scope(
+            target["selector"],
+            identity=f"{target['vlnv']}#{target['name']}",
+            attempt_id=request.attempt_id,
+        ):
+            return self._execute_observed(request)
+
+    def _execute_observed(self, request: WorkExecutionRequest) -> SimulationResult:
         scope = current_supervised_execution()
         if _frozen_hook_commands(request) and scope is not None and scope.cancelled():
             raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")

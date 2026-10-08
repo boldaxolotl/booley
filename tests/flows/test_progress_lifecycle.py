@@ -288,7 +288,7 @@ def test_supersede_ignores_nonresumable_phase_and_write_failure(
 ) -> None:
     path = tmp_path / "sim" / "1" / "progress.json"
     document = _write_progress(path)
-    document["phase"] = "starting"
+    document["phase"] = "current"
     path.write_text(json.dumps(document), encoding="utf-8")
     assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
     document["phase"] = "running"

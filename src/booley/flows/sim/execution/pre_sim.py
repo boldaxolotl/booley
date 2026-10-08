@@ -12,6 +12,7 @@ from pathlib import Path
 from booley.core.file_lock import active_child_lease_fd
 from booley.flows.eda_failures import find_missing_executable
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
+from booley.flows.sim.live_progress import observe_stage
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
 from booley.runtime.platform_paths import (
     bash_bin,
@@ -54,6 +55,7 @@ def run_pre_sim_commands(
         return None
     from booley.flows.terminal_progress import announce_unit
 
+    observe_stage(handle.selector, "pre_sim", evidence_root=build_root, tests=test_names)
     announce_unit("Pre-Sim Commands: " + ",".join(test_names), target=handle.selector)
     environment = _pre_sim_environment(
         handle,

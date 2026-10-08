@@ -26,6 +26,7 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
+from booley.flows.sim.live_progress import attempt_scope
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     materialize_campaign_runtime_inputs,
@@ -253,6 +254,16 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         self._prepared[request.attempt_directory] = _run_directory
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
+        """Bind lifecycle observations to this durable work item's attempt."""
+        target = cast(Mapping[str, str], request.manifest.document["target"])
+        with attempt_scope(
+            target["selector"],
+            identity=f"{target['vlnv']}#{target['name']}",
+            attempt_id=request.attempt_id,
+        ):
+            return self._execute_observed(request)
+
+    def _execute_observed(self, request: WorkExecutionRequest) -> SimulationResult:
         """Collect, merge and commit one nested Coverage Campaign atomically."""
         _raise_if_pre_sim_scope_stopped(request)
         if request.work_item["kind"] != "coverage_aggregate":
