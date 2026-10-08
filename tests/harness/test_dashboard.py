@@ -51,7 +51,9 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect():
     goal = model.GoalView(
         "fixture",
         record=SimpleNamespace(
-            worktree=SimpleNamespace(key="wt0"), state=SimpleNamespace(value="active")
+            worktree=SimpleNamespace(key="wt0"),
+            state=SimpleNamespace(value="active"),
+            branch="goal/fixture",
         ),
         status=SimpleNamespace(
             met=1, goals=(1, 2, 3, 4), pending_proposals=1, proposals=(proposal,)
@@ -226,8 +228,63 @@ def test_readonly_upgrade_pending_and_corrupt_states(tmp_path):
         '{"schema":1,"reviewed_through":"1.0.0","pending_target":"1.1.0","first_seen_at":"2026-10-08T10:00:00Z"}'
     )
     before = path.read_bytes()
-    assert upgrade_review.read_status(tmp_path).condition == upgrade_review.ReviewCondition.PENDING
+    assert (
+        upgrade_review.read_status(tmp_path, running_version="1.1.0").condition
+        == upgrade_review.ReviewCondition.PENDING
+    )
     assert path.read_bytes() == before
     assert list(path.parent.iterdir()) == [path]
     path.write_bytes(b"broken")
     assert upgrade_review.read_status(tmp_path).condition == upgrade_review.ReviewCondition.CORRUPT
+
+
+@pytest.mark.parametrize(
+    "running,condition,target",
+    [
+        ("1.2.0", "pending", "1.2.0"),
+        ("0.9.0", "stale-runtime", None),
+        ("development", "unsupported-version", None),
+    ],
+)
+def test_read_status_projects_unobserved_running_version_without_writing(
+    tmp_path, running, condition, target
+):
+    import json
+
+    from booley.harness import upgrade_review
+
+    path = upgrade_review.state_path(tmp_path)
+    path.parent.mkdir()
+    original = b'{"schema":1,"reviewed_through":"1.0.0"}\n'
+    path.write_bytes(original)
+    status = upgrade_review.read_status(tmp_path, running_version=running)
+    assert status.condition.value == condition
+    assert status.pending_target == target
+    assert path.read_bytes() == original
+    assert sorted(p.name for p in path.parent.iterdir()) == ["upgrade_review.json"]
+    assert json.loads(original)["reviewed_through"] == "1.0.0"
+
+
+def test_thread_without_process_proof_is_last_seen_and_own_fallback_is_not_other():
+    row = SessionRow(Attribution("codex:one", "thread", "/work", "wt"), STAMP, STAMP)
+    fallback = SessionRow(Attribution("worktree:wt", "worktree", "/work", "wt"), STAMP, STAMP)
+    goal = model.GoalView(
+        "fixture",
+        record=SimpleNamespace(
+            worktree=SimpleNamespace(key="wt"),
+            state=SimpleNamespace(value="active"),
+            branch="goal/fixture",
+        ),
+    )
+    app = DashboardApp(lambda: None)
+    app.snapshot = model.DashboardSnapshot(
+        sessions=(row, fallback), goals=(goal,), observed_at=1791453900
+    )
+    app.navigation = Navigation("session", "codex:one")
+    orientation, _ = app._session()
+    assert "connected" not in orientation
+    assert "last seen" in orientation
+    assert "WARNING" not in orientation
+    overview = app._overview_row(row)
+    assert "goal/fixture" in overview
+    assert "WARNING" not in overview

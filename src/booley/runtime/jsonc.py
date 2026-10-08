@@ -95,15 +95,30 @@ class Document:
                 self._take(",")
         raise ValueError("incomplete JSONC collection")
 
+    def task_text(self, task: dict[str, Any], array: Node | None) -> str:
+        """Indent the new task using the document's existing indentation unit."""
+        indents = re.findall(r'(?m)^([ \t]+)"', self.source)
+        unit = min(indents, key=len) if indents else "  "
+        indent = unit * 2
+        if array and array.children:
+            first = array.children[0]
+            prefix = self.source[self.source.rfind("\n", 0, first.start) + 1 : first.start]
+            if prefix and prefix.isspace():
+                indent = prefix
+        return indent + json.dumps(task, indent=unit).replace("\n", "\n" + indent)
+
     def append(self, array: Node, raw: str) -> str:
-        """Insert without changing existing elements, comments or unknown fields."""
+        """Insert one reversible span, preserving delimiters and closing indentation."""
         prior = [token for token in self.tokens if array.start < token[1] < array.end - 1]
         comma = "," if array.children and prior[-1][0] != "," else ""
         at = array.end - 1
+        line = self.source.rfind("\n", array.start, at) + 1
+        if line > array.start and self.source[line:at].isspace():
+            at = line
         return self.source[:at] + comma + "\n" + raw + "\n" + self.source[at:]
 
     def remove(self, array: Node, node: Node) -> str:
-        """Remove the unchanged owned value and one delimiter; retain every comment."""
+        """Compatibility removal for an unchanged task owned by an older revision."""
         before = next(
             (
                 token
@@ -128,7 +143,7 @@ class Document:
         return source
 
     def add_tasks(self, raw: str) -> str:
-        """Append the missing tasks member while preserving top-level content."""
+        """Append the missing tasks member in one reversible span."""
         at = self.root.end - 1
         last = self.tokens[-2][0]
         comma = "," if self.root.members and last != "," else ""

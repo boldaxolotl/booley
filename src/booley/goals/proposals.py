@@ -22,6 +22,7 @@ from booley.core.boundary import (
     require_str_value,
     require_uuid4,
 )
+from booley.core.process_identity import ProcessIdentity
 from booley.goals.changes import Approval, ChangeKind
 from booley.goals.model import (
     GoalRecord,
@@ -34,7 +35,6 @@ from booley.goals.model import (
 from booley.goals.store import RecordLock
 from booley.goals.translate import translate_goals
 from booley.runtime.atomic_files import atomic_replace_bytes, atomic_write_once, fsync_directory
-from booley.runtime.pid import ProcessIdentity
 from booley.runtime.timefmt import utc_now_rfc3339
 
 ProposalState = Literal["pending", "approved", "rejected", "applied"]
@@ -177,7 +177,7 @@ class Decision:
     payload_digest: str
     session_key: str | None
     transaction_id: str | None = None
-    peer_process: str | None = None
+    peer_process: ProcessIdentity | None = None
 
     def to_json(self) -> dict[str, Any]:
         """Advisory audit facts; neither attribution nor peer proves human approval."""
@@ -190,7 +190,11 @@ class Decision:
             "payload_digest": self.payload_digest,
             "session_key": self.session_key,
             "transaction_id": self.transaction_id,
-            "peer_process": self.peer_process,
+            "peer_process": (
+                None
+                if self.peer_process is None
+                else json.dumps(self.peer_process.to_payload(), sort_keys=True)
+            ),
         }
 
     @classmethod
@@ -233,7 +237,7 @@ _DECISION_FIELDS = frozenset(
 )
 
 
-def _peer_process(raw: object) -> str | None:
+def _peer_process(raw: object) -> ProcessIdentity | None:
     if raw is None:
         return None
     value = text(raw, "peer_process")
@@ -243,7 +247,7 @@ def _peer_process(raw: object) -> str | None:
         raise ProposalError("malformed advisory peer process") from exc
     if identity is None or identity.pid <= 0 or identity.start_token < 0:
         raise ProposalError("malformed advisory peer process")
-    return json.dumps(identity.to_payload(), sort_keys=True)
+    return identity
 
 
 @dataclass(frozen=True)

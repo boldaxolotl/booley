@@ -19,6 +19,7 @@ from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.timefmt import parse_timestamp
 
 MAX_JOBS = 4096
+TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,15 @@ class JobSnapshot:
 
     jobs: tuple[JobView, ...]
     diagnostics: tuple[str, ...] = ()
+
+
+def target_arg(argv: list[str]) -> str | None:
+    """Read the producer's Target once, without inventing one for legacy records."""
+    try:
+        index = argv.index("--target")
+    except ValueError:
+        return None
+    return argv[index + 1] if index + 1 < len(argv) else None
 
 
 def retained_job_roots(
@@ -152,6 +162,11 @@ def _read_job(path: Path) -> job_records.JobRecord | None:
             or rec.status not in {"running", "done", "failed", "cancelled"}
         ):
             return None
+        if not all(
+            isinstance(stamp, str)
+            for stamp in (rec.started_at, rec.ended_at or "", rec.run_started_at or "")
+        ):
+            return None
         parse_timestamp(rec.started_at)
         if rec.ended_at is not None:
             parse_timestamp(rec.ended_at)
@@ -160,7 +175,7 @@ def _read_job(path: Path) -> job_records.JobRecord | None:
         if rec.pid is not None and (type(rec.pid) is not int or rec.pid <= 0):
             return None
         return rec
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError):
         return None
 
 

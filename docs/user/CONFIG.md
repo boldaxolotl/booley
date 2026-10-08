@@ -2291,9 +2291,9 @@ cannot be copied here by hand; they become approval files only through
 `booley board approve --accept-waivers`, which writes them here in the Ticket's
 merge (see [Coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review)).
 
-### Dashboard and quiet Goal sessions (preview)
+### Dashboard and quiet Goal presence (preview)
 
-With `BOOLEY_GOAL_MODE_PREVIEW=1`, the Sandbox Dashboard opens on VS Code
+In the developer preview, the Sandbox Dashboard opens on VS Code
 folder attachment by default. Configure these values in the Project directory's
 `booley.toml`:
 

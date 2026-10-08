@@ -11,9 +11,7 @@ from booley.config.goals import quiet_after
 from booley.goals.model import GoalRecord
 from booley.goals.store import GoalStore
 from booley.harness.doctor_waivers import DoctorWarning, warning
-from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
-from booley.runtime.pid import ProcessState, observe_process
-from booley.runtime.timefmt import parse_timestamp
+from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace, session_presence
 from booley.runtime.worktrees import WorktreeEntry, list_worktrees
 
 
@@ -52,42 +50,53 @@ def inspect_presence(
     """Never start a Sandbox or inspect its PIDs/paths from the host namespace."""
     if not inside_sandbox:
         return PresenceDiagnostics(
-            unavailable="Goal session checks unavailable on the host; run Doctor inside the existing Sandbox"
+            unavailable="Goal presence checks unavailable on the host; run Doctor inside the existing Sandbox"
         )
     scope = namespace(proc_root)
     if not scope:
         return PresenceDiagnostics(
-            unavailable="Goal session checks unavailable: PID namespace unreadable"
+            unavailable="Goal presence checks unavailable: PID namespace unreadable"
         )
     try:
         threshold = quiet_after(project_dir)
         entries = list_worktrees(root)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        return PresenceDiagnostics(unavailable=f"Goal worktree/session checks unavailable: {exc}")
+        return PresenceDiagnostics(unavailable=f"Goal worktree/presence checks unavailable: {exc}")
     store = GoalStore(project_dir)
     sessions = SessionRegistry(project_dir, proc_root=proc_root).snapshot()
+    context = _PresenceContext(
+        store,
+        entries,
+        sessions.rows,
+        scope,
+        threshold,
+        now if now is not None else time.time(),
+        proc_root,
+        bool(sessions.diagnostics),
+    )
     warnings = tuple(
         finding
         for record in store.list_active().records
-        for finding in _record_warnings(
-            store, record, entries, sessions.rows, scope, threshold, now, proc_root
-        )
+        for finding in _record_warnings(context, record)
     )
     return PresenceDiagnostics(warnings, "; ".join(sessions.diagnostics))
 
 
-def _record_warnings(
-    store: GoalStore,
-    record: GoalRecord,
-    entries: tuple[WorktreeEntry, ...],
-    rows: tuple[SessionRow, ...],
-    scope: str,
-    threshold: float,
-    now: float | None,
-    proc_root: Path,
-) -> list[DoctorWarning]:
+@dataclass(frozen=True)
+class _PresenceContext:
+    store: GoalStore
+    entries: tuple[WorktreeEntry, ...]
+    rows: tuple[SessionRow, ...]
+    scope: str
+    threshold: float
+    now: float
+    proc_root: Path
+    registry_unavailable: bool
+
+
+def _record_warnings(context: _PresenceContext, record: GoalRecord) -> list[DoctorWarning]:
     warnings = []
-    presence = worktree_presence(store, record, entries)
+    presence = worktree_presence(context.store, record, context.entries)
     if presence != "present":
         warnings.append(
             warning(
@@ -96,22 +105,15 @@ def _record_warnings(
                 subject=record.id,
             )
         )
-    matching = [
-        row
-        for row in rows
-        if row.attribution.worktree_key == record.worktree.key
-        and row.attribution.namespace == scope
-    ]
+    if context.registry_unavailable:
+        return warnings
     fresh = any(
-        (now if now is not None else time.time()) - parse_timestamp(row.last_call_at).timestamp()
-        < threshold
-        and (
-            row.attribution.kind != "process"
-            or row.attribution.process is None
-            or observe_process(row.attribution.process, proc_root=proc_root).state
-            in {ProcessState.RUNNING, ProcessState.UNKNOWN}
-        )
-        for row in matching
+        row.attribution.worktree_key == record.worktree.key
+        and row.attribution.namespace == context.scope
+        and session_presence(
+            row, now=context.now, quiet_after=context.threshold, proc_root=context.proc_root
+        ).recent
+        for row in context.rows
     )
     if not fresh:
         warnings.append(

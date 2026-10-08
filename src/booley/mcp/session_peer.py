@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import contextvars
 import ipaddress
 import socket
 from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from starlette.requests import Request
+
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 
-RESERVED_HEADERS = frozenset({b"x-booley-peer-host", b"x-booley-peer-port", b"x-booley-peer-pid"})
-_PEER: contextvars.ContextVar[tuple[tuple[str, int], tuple[str, int]] | None] = (
-    contextvars.ContextVar("booley_observed_peer", default=None)
-)
+RESERVED_HEADERS = frozenset({b"x-booley-peer-host", b"x-booley-peer-port"})
 
 
 def _endpoint(host: str, port: int) -> str:
@@ -60,8 +58,10 @@ def peer_identity(
                 ]
             except OSError:
                 continue
+            if not matching:
+                continue
             identity = capture_process_identity(int(directory.name), proc_root=proc_root)
-            if matching and identity is not None:
+            if identity is not None:
                 owners.append((identity, matching[0]))
         if len(owners) != 1:
             return None
@@ -74,10 +74,21 @@ def peer_identity(
         return None
 
 
-def observed_peer(*, proc_root: Path = Path("/proc")) -> ProcessIdentity | None:
-    """Use only the current ASGI request's observed endpoint tuple."""
-    endpoints = _PEER.get()
-    return None if endpoints is None else peer_identity(*endpoints, proc_root=proc_root)
+def observed_peer(
+    request: Request | None, *, proc_root: Path = Path("/proc")
+) -> ProcessIdentity | None:
+    """Read only this SDK message's transport-stamped request, never session context."""
+    if request is None:
+        return None
+    host = request.headers.get("x-booley-peer-host")
+    port = request.headers.get("x-booley-peer-port")
+    server = request.scope.get("server")
+    if not host or not port or not server:
+        return None
+    try:
+        return peer_identity((host, int(port)), tuple(server), proc_root=proc_root)
+    except ValueError:
+        return None
 
 
 class PeerBoundary:
@@ -97,10 +108,8 @@ class PeerBoundary:
             if key.lower() not in RESERVED_HEADERS
         ]
         client, server = scope.get("client"), scope.get("server")
-        endpoints = None
         try:
             if client and server and ipaddress.ip_address(client[0]).is_loopback:
-                endpoints = (tuple(client), tuple(server))
                 headers.extend(
                     [
                         (b"x-booley-peer-host", client[0].encode()),
@@ -110,8 +119,4 @@ class PeerBoundary:
         except ValueError:
             pass  # Unsupported addresses degrade attribution only.
         scope["headers"] = headers
-        token = _PEER.set(endpoints)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            _PEER.reset(token)
+        await self.app(scope, receive, send)

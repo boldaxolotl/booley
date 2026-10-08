@@ -212,8 +212,9 @@ def test_warning_and_discard_prefix_preserve_structured_result(goal_mode):
     assert rendered.startswith("evidence discarded: protected input changed\n")
     structured = ([server.TextContent(type="text", text=rendered)], {"facts": "retained"})
     result = server._goal_warning_result(structured, context.binding, context.session_key)
-    assert result[0][0].text.startswith("WARNING:")
-    assert result[1] == {"facts": "retained"}
+    assert result.goal_aware
+    assert result.value[0][0].text.startswith("WARNING:")
+    assert result.value[1] == {"facts": "retained"}
 
 
 def test_shared_worktree_and_missing_path_warning(goal_mode):

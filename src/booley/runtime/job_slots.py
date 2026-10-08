@@ -232,7 +232,7 @@ class _WaiterRequest:
     execution_id: ExecutionId | None
 
 
-def slots_dir() -> Path | None:
+def slots_dir(project_dir: Path | None = None) -> Path | None:
     """Root of the shared slot store, or None when no project is resolvable.
 
     PROJECT-scoped (``.booley_project/runtime/jobs/slots/``), deliberately
@@ -247,8 +247,8 @@ def slots_dir() -> Path | None:
     try:
         from booley.runtime.project_dir import resolve_project_dir
 
-        project = resolve_project_dir()
-    except Exception:  # noqa: BLE001 — no project ⇒ no admission (bare runs)
+        project = project_dir if project_dir is not None else resolve_project_dir()
+    except (OSError, ValueError, RuntimeError):
         return None
     return project / "runtime" / "jobs" / "slots"
 
@@ -927,7 +927,7 @@ class SlotStore:
                 continue
             try:
                 token = self._load_token(path)
-            except (AttributeError, TypeError, ValueError, OSError):
+            except (ValueError, OSError):
                 continue
             if token is not None:
                 (holders if token.is_holder else waiters).append(token)
@@ -971,6 +971,8 @@ class SlotStore:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get("argv", []), list):
             return None
         owner_identity = ProcessIdentity.from_payload(payload.get("owner_identity"))
         try:

@@ -6,21 +6,20 @@ import json
 import os
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
-from booley.core.boundary import require_dict, require_str, require_str_value
+from booley.core.boundary import require_dict, require_str, require_str_value, require_uuid4
 from booley.core.file_lock import nonblocking_file_lock
-from booley.goals.checkout import CheckoutError, GoalCheckout
-from booley.goals.store import resolve_worktree_identity
+from booley.goals.model import WorktreeIdentity
+from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
-from booley.runtime.timefmt import parse_timestamp
+from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 MAX_ROWS = 4096
 MAX_ROW_BYTES = 65536
@@ -58,10 +57,15 @@ class SessionRow:
     last_call_at: str
     calls: tuple[RecentCall, ...] = ()
     schema: int = 1
+    process_state: ProcessState | None = None
 
     def payload(self) -> bytes:
         """Serialize complete presence atomically."""
-        return (json.dumps(asdict(self), sort_keys=True) + "\n").encode()
+        data = asdict(self)
+        data.pop(
+            "process_state"
+        )  # A live observation is detached presentation, not durable presence.
+        return (json.dumps(data, sort_keys=True) + "\n").encode()
 
 
 @dataclass(frozen=True)
@@ -70,10 +74,6 @@ class RegistrySnapshot:
 
     rows: tuple[SessionRow, ...] = ()
     diagnostics: tuple[str, ...] = ()
-
-
-def _stamp(now: float) -> str:
-    return datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _parse_row(raw: bytes) -> SessionRow:
@@ -94,16 +94,16 @@ def _parse_row(raw: bytes) -> SessionRow:
     attribution = Attribution(
         require_str(facts, "key"),
         kind,
-        require_str(facts, "work_dir"),
-        require_str(facts, "worktree_key"),
+        require_str_value(facts.get("work_dir"), field="work_dir", allow_empty=True),
+        require_str_value(facts.get("worktree_key"), field="worktree_key", allow_empty=True),
         require_str_value(facts.get("branch", ""), field="branch", allow_empty=True),
         process,
         require_str_value(facts.get("namespace", ""), field="namespace", allow_empty=True),
     )
     started, latest = require_str(data, "started_at"), require_str(data, "last_call_at")
     if (
-        _stamp(parse_timestamp(started).timestamp()) != started
-        or _stamp(parse_timestamp(latest).timestamp()) != latest
+        rfc3339_from_epoch(parse_timestamp(started).timestamp()) != started
+        or rfc3339_from_epoch(parse_timestamp(latest).timestamp()) != latest
     ):
         raise ValueError("session timestamps must be canonical UTC seconds")
     if parse_timestamp(started) > parse_timestamp(latest):
@@ -121,9 +121,59 @@ def _parse_row(raw: bytes) -> SessionRow:
 def _parse_call(value: object) -> RecentCall:
     data = require_dict(value, field="recent call")
     at = require_str(data, "at")
-    if _stamp(parse_timestamp(at).timestamp()) != at:
+    if rfc3339_from_epoch(parse_timestamp(at).timestamp()) != at:
         raise ValueError("call timestamps must be canonical UTC seconds")
     return RecentCall(at, require_str(data, "tool"), require_str(data, "outcome"))
+
+
+def _updated_row(
+    facts: Attribution, prior: list[SessionRow], tool: str, outcome: str, now: float
+) -> SessionRow:
+    stamp = max([rfc3339_from_epoch(now), *(row.last_call_at for row in prior)])
+    started = min([stamp, *(row.started_at for row in prior)])
+    calls = sorted((call for row in prior for call in row.calls), key=lambda call: call.at)
+    calls.append(RecentCall(stamp, tool[:128], outcome[:64]))
+    return SessionRow(facts, started, stamp, tuple(calls[-CALL_HISTORY:]))
+
+
+DEAD_PROCESS_STATES = frozenset({ProcessState.DEAD, ProcessState.REUSED, ProcessState.ZOMBIE})
+
+
+@dataclass(frozen=True)
+class SessionPresence:
+    """One quiet/liveness policy for presentation, pruning and Doctor."""
+
+    kind: str
+    quiet: bool
+    process_state: ProcessState | None
+
+    @property
+    def retained(self) -> bool:
+        return (
+            self.process_state not in DEAD_PROCESS_STATES
+            if self.kind == "process"
+            else not self.quiet
+        )
+
+    @property
+    def recent(self) -> bool:
+        return not self.quiet and self.retained
+
+
+def session_presence(
+    row: SessionRow, *, now: float, quiet_after: float, proc_root: Path = Path("/proc")
+) -> SessionPresence:
+    """Unknown process observations never prove expiry or a connection."""
+    state = (
+        observe_process(row.attribution.process, proc_root=proc_root).state
+        if row.attribution.process is not None
+        else None
+    )
+    return SessionPresence(
+        row.attribution.kind,
+        now - parse_timestamp(row.last_call_at).timestamp() >= quiet_after,
+        state,
+    )
 
 
 class SessionRegistry:
@@ -175,12 +225,16 @@ class SessionRegistry:
                 diagnostics.append("session registry exceeds scan bound")
             for path in paths[:MAX_ROWS]:
                 try:
-                    rows.append(self._read(path))
+                    row = self._read(path)
+                    rows.append(replace(row, attribution=canonical_attribution(row.attribution)))
                 except (OSError, ValueError, UnicodeError) as exc:
                     diagnostics.append(f"{path.name}: {exc}")
         except OSError as exc:
             diagnostics.append(f"session registry unavailable: {exc}")
-        return RegistrySnapshot(tuple(rows), tuple(diagnostics))
+        unique: dict[str, SessionRow] = {}
+        for row in sorted(rows, key=lambda row: row.last_call_at):
+            unique[row.attribution.key] = row
+        return RegistrySnapshot(tuple(unique.values()), tuple(diagnostics))
 
     def visible_snapshot(self, *, now: float, scope: str) -> RegistrySnapshot:
         """Observational quiet filtering; maintenance owns every durable deletion."""
@@ -189,39 +243,65 @@ class SessionRegistry:
             return RegistrySnapshot(
                 diagnostics=(*snapshot.diagnostics, "session namespace unavailable")
             )
-        rows = tuple(
-            row
-            for row in snapshot.rows
-            if row.attribution.namespace == scope
-            and not (
-                row.attribution.kind != "process"
-                and now - parse_timestamp(row.last_call_at).timestamp() >= self.quiet_after
+        rows = []
+        for row in snapshot.rows:
+            if row.attribution.namespace != scope:
+                continue
+            presence = session_presence(
+                row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
             )
+            if presence.retained:
+                rows.append(replace(row, process_state=presence.process_state))
+        return RegistrySnapshot(tuple(rows), snapshot.diagnostics)
+
+    def preserve_worktree(self, attribution: Attribution) -> Attribution:
+        """Calls without a work directory refresh the caller's previous association."""
+        if attribution.worktree_key:
+            return attribution
+        path = self.path(attribution.key)
+        old = self._read(path) if path.exists() else None
+        prior = canonical_attribution(old.attribution) if old else None
+        return (
+            replace(
+                attribution,
+                work_dir=prior.work_dir,
+                worktree_key=prior.worktree_key,
+                branch=prior.branch,
+            )
+            if prior
+            else attribution
         )
-        return RegistrySnapshot(rows, snapshot.diagnostics)
+
+    def _predecessors(self, facts: Attribution) -> list[tuple[Path, SessionRow]]:
+        candidates = [self.path(facts.key)]
+        if (
+            facts.kind == "worktree"
+            and facts.work_dir
+            and not facts.worktree_key.startswith("path:")
+        ):
+            candidates.append(self.path("worktree:path:" + facts.work_dir))
+        return [(path, self._read(path)) for path in candidates if path.exists()]
 
     def upsert(self, attribution: Attribution, tool: str, outcome: str, *, now: float) -> None:
-        """Preserve first presence and monotonic last-call ordering under one lock."""
+        """Preserve first presence and migrate path fallbacks under the same writer lock."""
         with self._writer():
             path = self.path(attribution.key)
             refuse_symlinks(path)
-            old = self._read(path) if path.exists() else None
-            stamp = _stamp(now)
-            if old is not None and parse_timestamp(old.last_call_at).timestamp() > now:
-                stamp = old.last_call_at
-            calls = (
-                *(() if old is None else old.calls),
-                RecentCall(stamp, tool[:128], outcome[:64]),
-            )
-            row = SessionRow(
-                attribution, old.started_at if old else stamp, stamp, tuple(calls[-CALL_HISTORY:])
-            )
-            if old is None and len(list(islice(self.root.glob("*.json"), MAX_ROWS))) >= MAX_ROWS:
+            predecessors = self._predecessors(attribution)
+            attribution = self.preserve_worktree(attribution)
+            row = _updated_row(attribution, [row for _, row in predecessors], tool, outcome, now)
+            if (
+                not predecessors
+                and len(list(islice(self.root.glob("*.json"), MAX_ROWS))) >= MAX_ROWS
+            ):
                 raise OSError("session registry is full")
             payload = row.payload()
             if len(payload) > MAX_ROW_BYTES:
                 raise ValueError("oversized session row")
             atomic_replace_bytes(path, payload)
+            for prior_path, _ in predecessors:
+                if prior_path != path:
+                    prior_path.unlink(missing_ok=True)
 
     def prune(
         self,
@@ -233,31 +313,32 @@ class SessionRegistry:
         """Remove only proven expired registry rows; refresh cannot race deletion."""
         removed = 0
         with self._writer():
-            for row in self.snapshot().rows:
-                facts = row.attribution
+            for path in islice(self.root.glob("*.json"), MAX_ROWS):
+                try:
+                    row = self._read(path)
+                except (OSError, ValueError, UnicodeError):
+                    continue
+                facts = canonical_attribution(row.attribution)
                 if not namespace or facts.namespace != namespace:
                     continue
                 missing = worktree_exists(facts) is False if worktree_exists else False
-                quiet = now - parse_timestamp(row.last_call_at).timestamp() >= self.quiet_after
-                dead = False
-                if facts.kind == "process" and facts.process is not None:
-                    dead = observe_process(facts.process, proc_root=self.proc_root).state in {
-                        ProcessState.DEAD,
-                        ProcessState.REUSED,
-                        ProcessState.ZOMBIE,
-                    }
-                if missing or dead or (facts.kind != "process" and quiet):
-                    self.path(facts.key).unlink(missing_ok=True)
+                presence = session_presence(
+                    row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
+                )
+                if missing or not presence.retained:
+                    path.unlink(missing_ok=True)
                     removed += 1
         return removed
 
-    def other_sessions(self, worktree_key: str) -> tuple[str, ...]:
-        """Advisory keys sharing a Worktree Identity."""
-        return tuple(
-            row.attribution.key
-            for row in self.snapshot().rows
-            if row.attribution.worktree_key == worktree_key
-        )
+
+def shares_worktree(facts: Attribution, other: Attribution) -> bool:
+    """Only distinct attributed callers count; a fallback cannot prove another session."""
+    return bool(
+        facts.worktree_key
+        and facts.worktree_key == other.worktree_key
+        and facts.key != other.key
+        and other.kind != "worktree"
+    )
 
 
 def namespace(proc_root: Path = Path("/proc")) -> str:
@@ -268,18 +349,70 @@ def namespace(proc_root: Path = Path("/proc")) -> str:
         return ""
 
 
+def _git_fact(path: Path) -> str:
+    with path.open(encoding="utf-8") as handle:
+        value = handle.read(16385)
+    if len(value) > 16384:
+        raise ValueError("Git metadata exceeds observation bound")
+    return value.strip()
+
+
+def _git_metadata(root: Path) -> tuple[Path, Path, Path] | None:
+    # Observational filesystem facts avoid invoking Git on the MCP response path.
+    for candidate in islice((root, *root.parents), 128):
+        marker = candidate / ".git"
+        if marker.is_dir():
+            return candidate, marker.resolve(), marker.resolve()
+        if marker.is_file():
+            raw = _git_fact(marker)
+            if not raw.startswith("gitdir: "):
+                raise ValueError("invalid Git worktree marker")
+            git = (candidate / raw.removeprefix("gitdir: ")).resolve()
+            common_file = git / "commondir"
+            common = (git / _git_fact(common_file)).resolve() if common_file.exists() else git
+            return candidate, git, common
+    return None
+
+
 def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
+    """Canonical observational key/branch from bounded Git metadata reads, without creation."""
     root = work_dir.resolve()
+    key, branch = "path:" + str(root), ""
     try:
-        identity = resolve_worktree_identity(root)
-    except (OSError, ValueError, RuntimeError):
-        identity = None
-    worktree_key = identity.key if identity else "path:" + str(root)
-    try:
-        branch = (GoalCheckout(root).head_ref() or "").removeprefix("refs/heads/")
-    except (CheckoutError, OSError):
-        branch = ""
-    return root, worktree_key, branch
+        metadata = _git_metadata(root)
+        if metadata is None:
+            return root, key, branch
+        root, git, common = metadata
+        key = "path:" + str(root)
+        identity_file = common / REPOSITORY_ID_FILE
+        if identity_file.exists():
+            repository = require_uuid4(_git_fact(identity_file), field="repository id")
+            checkout = "main" if git == common else git.relative_to(common).as_posix()
+            key = WorktreeIdentity.from_json(
+                {"repository": repository, "checkout": checkout}, where="observed worktree"
+            ).key
+        head = _git_fact(git / "HEAD")
+        if head.startswith("ref: refs/heads/"):
+            branch = head.removeprefix("ref: refs/heads/")
+    except (OSError, ValueError, UnicodeError):
+        pass  # Missing/unreadable metadata cannot confer a repository identity.
+    return root, key, branch
+
+
+def canonical_attribution(facts: Attribution) -> Attribution:
+    """Match pre-Goal path rows to the same repository/admin identity used by Goal Records."""
+    if not facts.work_dir:
+        return facts
+    root, key, branch = _worktree_facts(Path(facts.work_dir))
+    if facts.worktree_key.startswith("path:"):
+        return replace(
+            facts,
+            work_dir=str(root),
+            worktree_key=key,
+            branch=branch,
+            key="worktree:" + key if facts.kind == "worktree" else facts.key,
+        )
+    return replace(facts, branch=branch or facts.branch)
 
 
 def valid_thread_id(value: object) -> bool:
@@ -288,7 +421,7 @@ def valid_thread_id(value: object) -> bool:
 
 
 def resolve_attribution(
-    work_dir: Path,
+    work_dir: Path | None,
     *,
     metadata: Mapping[str, Any],
     client_name: str,
@@ -296,7 +429,9 @@ def resolve_attribution(
     proc_root: Path = Path("/proc"),
 ) -> Attribution:
     """Resolve once: Codex thread, distinct peer, then observational worktree identity."""
-    root, worktree_key, branch = _worktree_facts(work_dir)
+    root, worktree_key, branch = (
+        _worktree_facts(work_dir) if work_dir is not None else (None, "", "")
+    )
     thread = metadata.get("threadId")
     codex = "codex" in client_name.lower() or thread is not None
     scope = namespace(proc_root)
@@ -304,7 +439,7 @@ def resolve_attribution(
         return Attribution(
             "codex:" + str(thread),
             "thread",
-            str(root),
+            str(root) if root is not None else "",
             worktree_key,
             branch=branch,
             process=peer,
@@ -321,7 +456,7 @@ def resolve_attribution(
         return Attribution(
             f"pid:{peer.identity_scope}:{peer.pid}:{peer.start_token}",
             "process",
-            str(root),
+            str(root) if root is not None else "",
             worktree_key,
             branch=branch,
             process=peer,
@@ -330,7 +465,7 @@ def resolve_attribution(
     return Attribution(
         "worktree:" + worktree_key,
         "worktree",
-        str(root),
+        str(root) if root is not None else "",
         worktree_key,
         branch=branch,
         namespace=scope,

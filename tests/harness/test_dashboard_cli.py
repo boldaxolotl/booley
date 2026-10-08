@@ -62,3 +62,28 @@ def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, ca
     assert launched == ["run"]
     assert "already open" in capsys.readouterr().out
     assert list(tmp_path.iterdir()) == []
+
+
+def test_developer_preview_switch_stays_out_of_user_documentation():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for name in ("CONFIG.md", "USAGE.md"):
+        assert "BOOLEY_GOAL_MODE_PREVIEW" not in (root / "docs/user" / name).read_text()
+
+
+@pytest.mark.parametrize("preview", ["0", "1"])
+def test_preview_config_validation_preserves_disabled_surface(monkeypatch, preview):
+    from booley.audit import project_schema
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", preview)
+    data = {"goals": {"quiet_after": "invalid"}, "sandbox": {"dashboard": "invalid"}}
+    known = project_schema.audit_known_tables(data).findings
+    sandbox = project_schema.audit_sandbox_table(data).findings
+    goals = project_schema.audit_goals_table(data).findings
+    if preview == "0":
+        assert not sandbox and not goals
+        assert len(known) == 1 and known[0].subject == "goals"
+    else:
+        assert not known
+        assert sandbox and goals

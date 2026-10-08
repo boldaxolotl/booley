@@ -12,8 +12,8 @@ from booley.config.goals import quiet_after
 from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.presentation import CriterionPresentation, criterion_presentation
 from booley.goals.binding import GoalRunBinding
-from booley.goals.model import GoalRecord
-from booley.goals.paths import record_paths
+from booley.goals.model import OCCUPYING_STATES, GoalRecord
+from booley.goals.paths import REVIEW_PACKAGE_FILE, record_paths
 from booley.goals.proposals import digest
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.review_package import original_observations
@@ -24,8 +24,9 @@ from booley.harness import auto_doctor, upgrade_review
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
+from booley.runtime import job_slots
 from booley.runtime.artifact_paths import available_paths
-from booley.runtime.job_snapshot import JobSnapshot, snapshot_jobs
+from booley.runtime.job_snapshot import JobSnapshot, snapshot_jobs, target_arg
 from booley.runtime.pid import ProcessIdentity
 
 
@@ -72,7 +73,7 @@ def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
     packages = (
         []
         if record.finish_operation is None
-        else [root / "operations" / record.finish_operation / "review-package.json"]
+        else [root / "operations" / record.finish_operation / REVIEW_PACKAGE_FILE]
     )
     if not packages or not packages[0].is_file():
         return GoalView(record.id, record, terminal_summary=record.state.value)
@@ -107,7 +108,7 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
     """Read under an existing lock only; no creation, repair or mixed apply projection."""
     with store.record_lock(record.id, existing_only=True):
         current = store.load(record.id)
-        if current.state.value in {"finished", "abandoned", "failed"}:
+        if current.state not in OCCUPYING_STATES:
             return _terminal(store, current)
         status = build_status(store, current, observational=True)
         if status.interrupted_applies:
@@ -178,12 +179,7 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
             continue
         if binding.record_id != view.id or binding.record_revision != view.record.revision:
             continue
-        argv = job.record.argv
-        target = (
-            argv[argv.index("--target") + 1]
-            if "--target" in argv and argv.index("--target") + 1 < len(argv)
-            else None
-        )
+        target = target_arg(job.record.argv)
         for goal in view.record.goals:
             if (
                 goal.spec.family.value == job.record.endpoint
@@ -247,7 +243,7 @@ class DashboardReader:
             GoalView(str(item), diagnostic="corrupt Goal Record") for item in scan.corrupt
         )
         resources = self.resources.sample(self.root, now=time.monotonic())
-        jobs = snapshot_jobs(self.project_dir, slots_root=self.project_dir / "runtime/jobs/slots")
+        jobs = snapshot_jobs(self.project_dir, slots_root=job_slots.slots_dir(self.project_dir))
         measured = []
         for job in jobs.jobs:
             identity = ProcessIdentity.from_payload(job.record.process_identity)

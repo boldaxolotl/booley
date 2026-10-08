@@ -157,7 +157,7 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             text = render_status(views) if views else "No active Goal Mode."
             if arguments.get("rules") is True:
                 text += "\n\n" + goal_mode_rules()
-            return _text(text, is_error=False)
+            return _text(text, is_error=False, goal_aware=bool(views))
     except (
         LifecycleError,
         GoalBindingError,
@@ -180,17 +180,13 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
         result = await asyncio.to_thread(enter_goal_mode, request, env)
     except (GoalEntryError, GoalStoreError) as exc:
         return _text(f"ERROR: Goal Mode was not entered: {exc}", is_error=True)
-    return _text(result.render(), is_error=False)
+    return _text(result.render(), is_error=False, goal_aware=True)
 
 
 def _entry_key(
     arguments: Mapping[str, Any], store: GoalStore, context: McpRequestContext | None
-) -> str:
-    return (
-        context.attribution.key
-        if context and context.attribution
-        else _session_key(arguments, store)
-    )
+) -> str | None:
+    return (context or McpRequestContext()).session_key(lambda: _session_key(arguments, store))
 
 
 async def _finish(
@@ -203,11 +199,7 @@ async def _finish(
         complete_goal,
         arguments,
         env,
-        session_key=(
-            request_context.attribution.key
-            if request_context and request_context.attribution
-            else None
-        ),
+        session_key=(request_context or McpRequestContext()).session_key(),
     )
     message = result.get("message", result.get("reason", ""))
     if result.get("reason") and result["reason"] not in message:
@@ -216,7 +208,7 @@ async def _finish(
         message += "\n" + result["publication_note"]
     if result.get("running_jobs"):
         message += "\nRunning Jobs (not cancelled): " + str(result["running_jobs"])
-    return _text(message, is_error=result["status"] == "revalidation_required")
+    return _text(message, is_error=result["status"] == "revalidation_required", goal_aware=True)
 
 
 def _session_key(arguments: Mapping[str, Any], store: GoalStore) -> str | None:
@@ -247,12 +239,14 @@ def _fpga_snapshot(resolved: Any, target: str) -> dict[str, Any]:
     return fpga_recipe_snapshot(resolved, target=target)
 
 
-def _text(message: str, *, is_error: bool) -> McpDispatchResult:
-    return McpDispatchResult(value=[TextContent(type="text", text=message)], is_error=is_error)
+def _text(message: str, *, is_error: bool, goal_aware: bool = False) -> McpDispatchResult:
+    return McpDispatchResult(
+        value=[TextContent(type="text", text=message)], is_error=is_error, goal_aware=goal_aware
+    )
 
 
 def _entry_environment(project_dir: Path, context: McpRequestContext | None) -> EntryEnvironment:
-    own = context.attribution.key if context and context.attribution else None
+    own = (context or McpRequestContext()).session_key()
     keys = tuple(key for key in context.other_session_keys if key != own) if context else ()
     return EntryEnvironment(
         project_dir=project_dir,

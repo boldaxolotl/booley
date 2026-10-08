@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import require_bool, require_dict
+from booley.config.goals import parse_dashboard
+from booley.core.boundary import require_dict
 from booley.core.file_lock import nonblocking_file_lock
 from booley.goals.preview import goal_mode_preview_enabled
 from booley.runtime.atomic_files import atomic_replace_bytes
@@ -49,6 +50,7 @@ class TaskPlan:
     changes: tuple[FileChange, ...] = ()
     diagnostics: tuple[str, ...] = ()
     created_vscode: bool = False
+    remove_vscode: Path | None = None
 
     @property
     def pending(self) -> bool:
@@ -62,9 +64,7 @@ def enabled(project_dir: Path) -> bool:
         return False
     path = project_dir / "booley.toml"
     data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    return require_bool(
-        require_dict(data.get("sandbox", {}), field="[sandbox]"), "dashboard", default=True
-    )
+    return parse_dashboard(data)
 
 
 def _bytes(path: Path) -> bytes | None:
@@ -93,15 +93,29 @@ def inspect(root: Path, project_dir: Path) -> TaskPlan:
         return TaskPlan(diagnostics=(f"Dashboard task unavailable: {exc}",))
 
 
+@dataclass(frozen=True)
+class _TaskFiles:
+    root: Path
+    project_dir: Path
+    before: bytes | None
+    ownership: bytes | None
+    owner: dict[str, Any]
+
+    @property
+    def task_path(self) -> Path:
+        return self.root / ".vscode/tasks.json"
+
+    @property
+    def owner_path(self) -> Path:
+        return self.project_dir / "runtime/dashboard-task.json"
+
+
 def _inspect(root: Path, project_dir: Path) -> TaskPlan:
     folder = root / ".vscode"
-    task_path = folder / "tasks.json"
-    owner_path = project_dir / "runtime" / "dashboard-task.json"
-    ownership = _bytes(owner_path)
+    ownership = _bytes(project_dir / "runtime/dashboard-task.json")
     active = enabled(project_dir)
     if not active and ownership is None:
         return TaskPlan()
-    before = _bytes(task_path)
     owner = (
         {}
         if ownership is None
@@ -109,39 +123,55 @@ def _inspect(root: Path, project_dir: Path) -> TaskPlan:
     )
     if owner and (owner.get("schema") != 1 or owner.get("root") != str(root.resolve())):
         raise ValueError("unsupported or foreign Dashboard task ownership")
+    files = _TaskFiles(root, project_dir, _bytes(folder / "tasks.json"), ownership, owner)
     desired = active and not _opt_out(folder)
-    if before is None and not desired:
-        return (
-            _plan_changes(root, task_path, owner_path, before, ownership, owner, "", False)
-            if owner
-            else TaskPlan()
-        )
-    if before is None and owner.get("enabled", False) and desired:
+    if files.before is None and not desired:
+        return _plan_changes(files, "", False, RAW_TASK) if owner else TaskPlan()
+    if files.before is None and owner.get("enabled", False) and desired:
         raise ValueError("user-removed Dashboard task preserved; disable then enable to restore")
     document = Document(
-        before.decode() if before is not None else '{"version": "2.0.0", "tasks": []}\n'
+        files.before.decode()
+        if files.before is not None
+        else '{"version": "2.0.0", "tasks": []}\n'
     )
+    return _edit_task(files, document, desired)
+
+
+def _edit_task(files: _TaskFiles, document: Document, desired: bool) -> TaskPlan:
     tasks, matching = _matching_tasks(document)
     if len(matching) > 1:
         raise ValueError("duplicate Dashboard task labels preserved")
+    formatted = document.task_text(TASK, tasks)
+    raw_task = formatted.lstrip(" \t")
     if matching:
         raw = document.source[matching[0].start : matching[0].end]
-        if not owner or raw != owner.get("task"):
+        if not files.owner or raw != files.owner.get("task"):
             raise ValueError("unowned or user-edited Dashboard task preserved")
-        after = (
-            document.source[: matching[0].start] + RAW_TASK + document.source[matching[0].end :]
-            if desired
-            else document.remove(tasks, matching[0])
-        )
+        if desired:
+            if matching[0].value == TASK:
+                raw_task = raw
+            after = (
+                document.source[: matching[0].start]
+                + raw_task
+                + document.source[matching[0].end :]
+            )
+        else:
+            insertion = files.owner.get("insertion", "")
+            if insertion and document.source.count(insertion) == 1:
+                after = document.source.replace(insertion, "", 1)
+            elif insertion:
+                raise ValueError("user-edited Dashboard task insertion preserved")
+            else:
+                after = document.remove(tasks, matching[0])
     elif desired:
-        if owner.get("enabled", False):
+        if files.owner.get("enabled", False):
             raise ValueError(
                 "user-removed Dashboard task preserved; disable then enable to restore"
             )
-        after = document.append(tasks, RAW_TASK) if tasks else document.add_tasks(RAW_TASK)
+        after = document.append(tasks, formatted) if tasks else document.add_tasks(formatted)
     else:
         return TaskPlan()
-    return _plan_changes(root, task_path, owner_path, before, ownership, owner, after, desired)
+    return _plan_changes(files, after, desired, raw_task)
 
 
 def _matching_tasks(document: Document) -> tuple[Node | None, list[Node]]:
@@ -159,30 +189,44 @@ def _matching_tasks(document: Document) -> tuple[Node | None, list[Node]]:
     )
 
 
-def _plan_changes(
-    root: Path,
-    task_path: Path,
-    owner_path: Path,
-    before: bytes | None,
-    ownership: bytes | None,
-    owner: dict[str, Any],
-    after: str,
-    desired: bool,
-) -> TaskPlan:
+def _inserted_span(before: str, after: str) -> str:
+    start = next(
+        (i for i, (a, b) in enumerate(zip(before, after, strict=False)) if a != b),
+        min(len(before), len(after)),
+    )
+    suffix = 0
+    for a, b in zip(reversed(before[start:]), reversed(after[start:]), strict=False):
+        if a != b:
+            break
+        suffix += 1
+    return after[start : len(after) - suffix if suffix else len(after)]
+
+
+def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -> TaskPlan:
+    root, owner, before = files.root, files.owner, files.before
     folder = root / ".vscode"
     created = owner.get("created_vscode", not folder.exists())
-    changes = []
-    rendered = after.encode()
+    rendered: bytes | None = after.encode()
     if not desired and (before is None or before == owner.get("created_document", "").encode()):
         rendered = None
-    if rendered != before:
-        changes.append(FileChange(task_path, before, rendered))
+    changes = [] if rendered == before else [FileChange(files.task_path, before, rendered)]
+    insertion = owner.get("insertion", "")
+    if desired:
+        insertion = (
+            insertion.replace(owner.get("task", raw_task), raw_task)
+            if insertion and owner.get("enabled")
+            else _inserted_span(
+                before.decode() if before is not None else '{"version": "2.0.0", "tasks": []}\n',
+                after,
+            )
+        )
     new_owner: dict[str, Any] = {
         "schema": 1,
         "enabled": desired,
         "root": str(root.resolve()),
-        "task": RAW_TASK,
+        "task": raw_task,
         "created_vscode": created,
+        "insertion": insertion,
         "created_document": (
             after
             if before is None or before == owner.get("created_document", "").encode()
@@ -196,9 +240,13 @@ def _plan_changes(
     owner_after = (
         json.dumps(new_owner if desired else {**owner, "enabled": False}, sort_keys=True) + "\n"
     ).encode()
-    if owner_after != ownership:
-        changes.append(FileChange(owner_path, ownership, owner_after))
-    return TaskPlan(tuple(changes), created_vscode=bool(created and not folder.exists()))
+    if owner_after != files.ownership:
+        changes.append(FileChange(files.owner_path, files.ownership, owner_after))
+    return TaskPlan(
+        tuple(changes),
+        created_vscode=bool(created and not folder.exists()),
+        remove_vscode=folder if created and not desired else None,
+    )
 
 
 def _exclude_change(
@@ -243,7 +291,10 @@ class TaskTransaction:
                     raise OSError(f"Dashboard task changed since inspection: {change.path}")
             for change in self.plan.changes:
                 self._publish(change)
-        except Exception:
+            if self.plan.remove_vscode is not None:
+                with contextlib.suppress(OSError):
+                    self.plan.remove_vscode.rmdir()
+        except (OSError, ValueError):
             self.rollback()
             raise
         return True
@@ -286,7 +337,13 @@ def reconcile(root: Path, project_dir: Path) -> TaskTransaction:
         lock = project_dir / "runtime" / "dashboard-task.lock"
         refuse_symlinks(lock)
         lock.parent.mkdir(parents=True, exist_ok=True)
-        with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+        try:
+            with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+                transaction.apply()
+        except BlockingIOError:
+            transaction = TaskTransaction(
+                TaskPlan(diagnostics=("Dashboard task writer busy; reconciliation skipped",))
+            )
             transaction.apply()
     else:
         transaction.apply()  # Report conflicts even when no safe mutation is possible.

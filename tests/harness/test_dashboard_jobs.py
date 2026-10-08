@@ -158,9 +158,11 @@ def test_process_resource_delta_and_reused_identity_are_honest(tmp_path, monkeyp
     monkeypatch.setattr(resources, "capture_process_identity", lambda *_a, **_k: identity)
     monkeypatch.setattr(resources.os, "sysconf", lambda _: 100, raising=False)
     sampler = resources.ProcessSampler(tmp_path)
+    (directory / "task/99").mkdir(parents=True)
+    (directory / "task/99/children").write_text("")
     first = sampler.sample(identity, now=10, capacity=2)
     assert first.cpu_percent is None
-    assert (first.memory, first.peak_memory) == (102400, 204800)
+    assert (first.memory, first.peak_memory) == (102400, 102400)
     fields[11] = "200"
     (directory / "stat").write_text("99 (flow) " + " ".join(fields))
     assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 50
@@ -222,3 +224,57 @@ def test_reported_metrics_and_legacy_elapsed_are_not_invented():
     assert _elapsed(view, now=1792000000) == "5s"
     assert _elapsed(view, now=1892000000) == "5s"
     assert _elapsed(replace(view, report=None), now=1892000000) == "unavailable"
+
+
+def test_job_resources_include_eda_descendants_and_reject_child_reuse(tmp_path, monkeypatch):
+    from booley.harness.dashboard.resources import ProcessResources, ProcessSampler
+    from booley.runtime.pid import capture_process_identity
+    from tests.mcp_tools.test_session_registry import _fake_process
+
+    for pid in (98765, 98766):
+        _fake_process(tmp_path, pid, str(pid))
+        directory = tmp_path / str(pid)
+        (directory / f"task/{pid}").mkdir(parents=True)
+        (directory / f"task/{pid}/children").write_text("98766" if pid == 98765 else "")
+        (directory / "status").write_text("VmRSS:\t100 kB\nVmHWM:\t200 kB\n")
+    identity = capture_process_identity(98765, proc_root=tmp_path)
+    sampler = ProcessSampler(tmp_path)
+    first = sampler.sample(identity, now=10, capacity=2)
+    assert first.memory == 204800  # wrapper + EDA child
+    child = tmp_path / "98766/stat"
+    fields = child.read_text().rsplit(")", 1)[1].split()
+    fields[11] = "100"
+    child.write_text("98766 (eda) " + " ".join(fields))
+    monkeypatch.setattr(
+        "booley.harness.dashboard.resources.os.sysconf", lambda _: 100, raising=False
+    )
+    assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 50
+    from booley.harness.dashboard import resources
+
+    real_capture = resources.capture_process_identity
+    calls = 0
+
+    def capture(pid, **kw):
+        nonlocal calls
+        if pid == 98766:
+            calls += 1
+            if calls == 2:
+                return None
+        return real_capture(pid, **kw)
+
+    monkeypatch.setattr(resources, "capture_process_identity", capture)
+    assert sampler.sample(identity, now=12, capacity=2) == ProcessResources()
+
+
+def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path, monkeypatch):
+    from booley.mcp import server
+    from booley.runtime.job_snapshot import retained_job_roots
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    current = tmp_path / ".interactive_logs/current/.runtime/jobs"
+    historic = tmp_path / ".interactive_logs/historic/.runtime/jobs"
+    historic.mkdir(parents=True)
+    monkeypatch.setattr(server, "container_jobs_root", lambda: current)
+    monkeypatch.setattr(server, "resolve_project_dir", lambda: tmp_path)
+    assert set(retained_job_roots(tmp_path, interactive_root=current)) == {current, historic}
+    assert server.job_roots() == (current,)

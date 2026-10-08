@@ -314,3 +314,21 @@ def test_terminal_public_package_projection_is_frozen_and_read_only(tmp_path):
     package.write_text(json.dumps(facts))
     with pytest.raises(ValueError, match="frozen"):
         model.project_goal(GoalStore(tmp_path), rec)
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_unavailable_registry_never_reports_quiet_goal_worktrees(tmp_path, monkeypatch, corrupt):
+    rec = record(tmp_path)
+    fake_store = SimpleNamespace(
+        list_active=lambda: SimpleNamespace(records=(rec,)), identify_worktree=lambda _: WT
+    )
+    monkeypatch.setattr(doctor, "GoalStore", lambda _: fake_store)
+    monkeypatch.setattr(doctor, "namespace", lambda *_: SCOPE)
+    monkeypatch.setattr(doctor, "list_worktrees", lambda _: (WorktreeEntry(tmp_path),))
+    if corrupt:
+        registry = SessionRegistry(tmp_path)
+        registry.root.mkdir(parents=True)
+        (registry.root / "bad.json").write_text("{broken")
+    result = doctor.inspect_presence(tmp_path, tmp_path, inside_sandbox=True, now=100)
+    assert result.unavailable
+    assert not any(w.check_id == "goals.quiet-session" for w in result.warnings)

@@ -383,12 +383,17 @@ def read_status(project_dir: Path, *, running_version: str | None = None) -> Rev
         return ReviewStatus(
             ReviewCondition.UNAVAILABLE, running, str(path), diagnostic="no saved upgrade review"
         )
-    condition = ReviewCondition.PENDING if state.pending_target else ReviewCondition.CURRENT
-    return ReviewStatus(
-        condition,
-        running,
-        str(path),
-        state.reviewed_through,
-        state.pending_target,
-        state.first_seen_at,
-    )
+    try:
+        version = _parse_version(running, "running version")
+        reviewed = _parse_version(state.reviewed_through, "reviewed_through")
+        highest = max(
+            reviewed,
+            _parse_version(state.pending_target, "pending_target")
+            if state.pending_target
+            else reviewed,
+        )
+        if version > highest:
+            state = ReviewState(state.reviewed_through, str(version), state.first_seen_at)
+        return _status(project_dir, version, state)
+    except CorruptReviewStateError as exc:
+        return _diagnostic_status(project_dir, running, ReviewCondition.UNSUPPORTED, str(exc))

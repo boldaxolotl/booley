@@ -244,7 +244,7 @@ def test_preview_off_leaves_existing_unowned_malformed_tasks_unobserved(project,
 def test_preview_env_is_sealed_into_container_for_mcp_and_task():
     spec = devcontainer.build_devcontainer_spec(goal_preview=True, dashboard=False)
     assert spec["containerEnv"]["BOOLEY_GOAL_MODE_PREVIEW"] == "1"
-    assert spec["remoteEnv"]["BOOLEY_GOAL_MODE_PREVIEW"] == "1"
+    assert "BOOLEY_GOAL_MODE_PREVIEW" not in spec["remoteEnv"]
     assert "BOOLEY_GOAL_MODE_PREVIEW" not in devcontainer.build_devcontainer_spec()["containerEnv"]
 
 
@@ -283,3 +283,66 @@ def test_disable_restores_absent_exclude_file(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "0")
     tasks.reconcile(project.root, project.data)
     assert not project.exclude.exists()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '{\n    "version": "2.0.0",\n    "tasks": [\n        {"label":"user"},\n\n    ],\n}\n',
+        '{"tasks":[{"label":"user"}]}',
+        '{"tasks": []}\n\n',
+        '{"unrelated": true,}\n',
+    ],
+)
+def test_enable_disable_cycles_restore_exact_jsonc_bytes(project, source):
+    project.file.parent.mkdir()
+    original = source.encode()
+    for _ in range(3):
+        project.file.write_bytes(original)
+        (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
+        tasks.reconcile(project.root, project.data)
+        rendered = project.file.read_text()
+        assert Document(rendered).root.value["tasks"][-1] == tasks.TASK
+        if '    "tasks"' in source:
+            assert '\n        {\n            "label": "Booley Dashboard"' in rendered
+        (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+        tasks.reconcile(project.root, project.data)
+        assert project.file.read_bytes() == original
+
+
+def test_disable_removes_only_booley_created_empty_vscode(project):
+    tasks.reconcile(project.root, project.data)
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    tasks.reconcile(project.root, project.data)
+    assert not project.file.parent.exists()
+
+
+def test_disable_preserves_user_edits_outside_owned_insertion(project):
+    project.file.parent.mkdir()
+    source = b'{"tasks": [{"label":"user"},], "value": 1}\n'
+    project.file.write_bytes(source)
+    tasks.reconcile(project.root, project.data)
+    project.file.write_bytes(project.file.read_bytes().replace(b'"value": 1', b'"value": 2'))
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    tasks.reconcile(project.root, project.data)
+    assert project.file.read_bytes() == source.replace(b'"value": 1', b'"value": 2')
+
+
+def test_busy_task_lock_skips_with_diagnostic_and_preserves_files(project):
+    from booley.core.file_lock import nonblocking_file_lock
+
+    lock = project.data / "runtime/dashboard-task.lock"
+    lock.parent.mkdir()
+    with lock.open("a+") as handle, nonblocking_file_lock(handle):
+        transaction = tasks.reconcile(project.root, project.data)
+    assert not transaction.applied
+    assert "busy" in transaction.plan.diagnostics[0]
+    assert not project.file.exists()
+
+
+def test_disable_keeps_user_created_empty_vscode(project):
+    project.file.parent.mkdir()
+    tasks.reconcile(project.root, project.data)
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    tasks.reconcile(project.root, project.data)
+    assert project.file.parent.is_dir()

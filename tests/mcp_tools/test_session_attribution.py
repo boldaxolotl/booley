@@ -25,7 +25,7 @@ class Observer:
     def __init__(self):
         self.calls = []
 
-    async def attribution(self, arguments, metadata, client_name):
+    async def attribution(self, arguments, metadata, client_name, *, request=None, tool="request"):
         return Attribution(
             "codex:" + metadata.get("threadId", "unknown"),
             "thread",
@@ -47,6 +47,7 @@ def context():
             client_params=SimpleNamespace(client_info=SimpleNamespace(name="codex-mcp-client")),
         ),
         protocol_version="2026-07-28",
+        request=None,
     )
 
 
@@ -96,7 +97,9 @@ async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch)
     monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
 
     async def dispatch(*_args):
-        return McpInputRequired("opaque-state", "answer", "human form", {"type": "object"})
+        return McpInputRequired(
+            "opaque-state", "answer", "human form", {"type": "object"}, goal_aware=True
+        )
 
     app = McpApplication(
         [{"name": "goal_propose_change", "schema": {"type": "object", "required": ["work_dir"]}}],
@@ -144,13 +147,11 @@ def test_job_submitter_is_immutable_when_current_caller_changes():
 
 
 def test_observed_process_audit_roundtrip_is_advisory_and_validated():
-    import json
-
     from booley.goals.changes import Approval
     from booley.goals.proposals import Decision, ProposalError
     from booley.runtime.pid import ProcessIdentity
 
-    peer = json.dumps(ProcessIdentity(99, "fixture", 101).to_payload(), sort_keys=True)
+    peer = ProcessIdentity(99, "fixture", 101)
     decision = Decision(
         decision="approve",
         reason="human approved",
@@ -189,3 +190,58 @@ def test_entry_warning_excludes_its_own_observation(tmp_path):
     assert _entry_environment(tmp_path, context).other_sessions(identity) == ("codex:two",)
     alone = McpRequestContext(attribution=context.attribution, other_session_keys=("codex:one",))
     assert _entry_environment(tmp_path, alone).other_sessions(identity) == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,text", [("sim", "Interactive result"), ("goal_status", "No active Goal Mode.")]
+)
+async def test_interactive_and_inactive_goal_replies_do_not_append_shared_warnings(
+    monkeypatch, name, text
+):
+    from mcp.types import TextContent
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+
+    async def dispatch(*_):
+        return McpDispatchResult([TextContent(type="text", text=text)], False)
+
+    app = McpApplication(
+        [{"name": name, "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    result = await server._call_application_tool(
+        app, CallToolRequestParams(name=name), None, Observer()
+    )
+    assert [block.text for block in result.content] == [text]
+
+
+@pytest.mark.asyncio
+async def test_goal_aware_shared_warning_keeps_structured_content(monkeypatch):
+    from mcp.types import TextContent
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+
+    async def dispatch(*_):
+        return McpDispatchResult(
+            ([TextContent(type="text", text="Goal result")], {"facts": "retained"}),
+            False,
+            goal_aware=True,
+        )
+
+    app = McpApplication(
+        [{"name": "probe", "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    result = await server._call_application_tool(
+        app, CallToolRequestParams(name="probe"), None, Observer()
+    )
+    assert result.content[0].text == "Goal result"
+    assert result.content[1].text.startswith("WARNING:")
+    assert result.structured_content == {"facts": "retained"}

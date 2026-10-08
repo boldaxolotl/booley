@@ -130,8 +130,9 @@ def test_concurrent_upsert_prune_serialization(registry):
 )
 def test_request_priority_and_worktree_aliases(tmp_path, monkeypatch, client, meta, peer, kind):
     identity = WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main")
-    monkeypatch.setattr(session_registry, "resolve_worktree_identity", lambda _: identity)
-    monkeypatch.setattr(session_registry.GoalCheckout, "head_ref", lambda _: "refs/heads/main")
+    monkeypatch.setattr(
+        session_registry, "_worktree_facts", lambda root: (root, identity.key, "main")
+    )
     monkeypatch.setattr(session_registry, "namespace", lambda _: SCOPE)
     result = session_registry.resolve_attribution(
         tmp_path, metadata=meta, client_name=client, peer=peer
@@ -148,7 +149,7 @@ async def test_reserved_headers_are_stripped_and_interleaved_requests_isolated()
     async def downstream(scope, _receive, _send):
         observed.append(scope["headers"])
         await asyncio.sleep(0)
-        assert session_peer._PEER.get()[0] == tuple(scope["client"])
+        assert dict(scope["headers"])[b"x-booley-peer-port"] == str(scope["client"][1]).encode()
 
     app = session_peer.PeerBoundary(downstream)
     await asyncio.gather(
@@ -161,7 +162,6 @@ async def test_reserved_headers_are_stripped_and_interleaved_requests_isolated()
                     "headers": [
                         (b"X-Booley-Peer-Port", b"spoof"),
                         (b"x-booley-peer-port", b"spoof2"),
-                        (b"x-booley-peer-pid", b"spoof"),
                         (b"safe", b"keep"),
                     ],
                 },
@@ -172,8 +172,7 @@ async def test_reserved_headers_are_stripped_and_interleaved_requests_isolated()
         )
     )
     assert [dict(headers)[b"x-booley-peer-port"] for headers in observed] == [b"50001", b"50002"]
-    assert all(b"x-booley-peer-pid" not in dict(headers) for headers in observed)
-    assert session_peer._PEER.get() is None
+    assert session_peer.observed_peer(None) is None
 
 
 def _fake_process(root: Path, pid: int, inode: str):
@@ -355,4 +354,178 @@ async def test_invalid_workdir_does_not_discard_a_valid_thread_error_attribution
     monkeypatch.setattr(session_registry, "_worktree_facts", lambda root: (root, "cwd", ""))
     result = await SessionObserver().attribution({"work_dir": 42}, {"threadId": "one"}, "codex")
     assert result.key == "codex:one"
-    assert result.work_dir == str(Path.cwd())
+    assert result.work_dir == ""
+
+
+@pytest.mark.asyncio
+async def test_calls_without_workdir_refresh_previous_association_not_server_cwd(
+    registry, monkeypatch
+):
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    registry.upsert(facts(), "sim", "completed", now=100)
+    observer = SessionObserver(now=lambda: 101, budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    observed = await observer.attribution({}, {"threadId": "one"}, "codex")
+    await observer.record(observed, "tools/list", "completed")
+    row = registry.snapshot().rows[0]
+    assert (observed.work_dir, observed.worktree_key) == ("/fixture/work", "repo:work")
+    assert row.attribution.work_dir == "/fixture/work"
+    assert row.calls[-1].tool == "tools/list"
+    assert row.last_call_at == "1970-01-01T00:01:41Z"
+
+
+@pytest.mark.asyncio
+async def test_first_call_without_workdir_never_associates_server_cwd(registry, monkeypatch):
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    observer = SessionObserver(budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    observed = await observer.attribution({}, {"threadId": "one"}, "codex")
+    await observer.record(observed, "tools/list", "completed")
+    assert registry.snapshot().rows[0].attribution.work_dir == ""
+    assert registry.snapshot().rows[0].attribution.worktree_key == ""
+
+
+def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
+    from booley.goals.store import REPOSITORY_ID_FILE
+
+    work = tmp_path / "work"
+    git = work / ".git"
+    git.mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/goal/fixture\n")
+    registry = SessionRegistry(tmp_path / "data")
+    before = session_registry.resolve_attribution(work, metadata={}, client_name="")
+    registry.upsert(before, "sim", "completed", now=100)
+    identity_file = git / REPOSITORY_ID_FILE
+    identity_file.parent.mkdir()
+    identity_file.write_text("00000000-0000-4000-8000-000000000001\n")
+    after = session_registry.resolve_attribution(work, metadata={}, client_name="")
+    row = registry.snapshot().rows[0]
+    assert after.worktree_key == "00000000-0000-4000-8000-000000000001/main"
+    assert row.attribution.worktree_key == after.worktree_key
+    assert row.attribution.key == after.key
+    assert after.branch == "goal/fixture"
+
+
+@pytest.mark.asyncio
+async def test_busy_fallback_uses_same_worktree_key_and_namespace(tmp_path, monkeypatch):
+    from booley.goals.store import REPOSITORY_ID_FILE
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    git = tmp_path / ".git"
+    (git / REPOSITORY_ID_FILE).parent.mkdir(parents=True)
+    (git / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
+    (git / "HEAD").write_text("ref: refs/heads/goal/fixture\n")
+    observer = SessionObserver()
+    blocked = asyncio.get_running_loop().create_future()
+    observer._pending = blocked
+    fallback = await observer.attribution({"work_dir": str(tmp_path)}, {}, "")
+    normal = session_registry.resolve_attribution(tmp_path, metadata={}, client_name="")
+    blocked.set_result(None)
+    assert (fallback.key, fallback.worktree_key, fallback.namespace) == (
+        normal.key,
+        normal.worktree_key,
+        normal.namespace,
+    )
+
+
+@pytest.mark.asyncio
+async def test_slow_peer_finishes_presence_after_response_budget(registry, monkeypatch, tmp_path):
+    import threading
+
+    from booley.mcp import session_observer
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    monkeypatch.setattr(session_registry, "namespace", lambda *_: SCOPE)
+    release = threading.Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow_peer(*_a):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(2)
+        return IDENTITY
+
+    monkeypatch.setattr(session_observer, "observed_peer", slow_peer)
+    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    fallback = await observer.attribution({"work_dir": str(tmp_path)}, {}, "claude-code")
+    await entered.wait()
+    await observer.record(fallback, "sim", "completed")
+    release.set()
+    await asyncio.wait_for(observer._pending, 2)
+    rows = registry.snapshot().rows
+    assert len(rows) == 1
+    assert rows[0].attribution.kind == "process"
+    assert rows[0].calls[-1].outcome == "completed"
+
+
+@pytest.mark.asyncio
+async def test_pruning_does_not_block_request_attribution(registry, monkeypatch):
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    observer = SessionObserver(budget=1)
+    blocked = asyncio.get_running_loop().create_future()
+    observer._pending = blocked  # An existing request may continue while maintenance runs.
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    registry.upsert(facts(), "sim", "completed", now=100)
+    from booley.mcp import session_observer
+
+    monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
+    monkeypatch.setattr(
+        session_observer, "registered_worktree_presence", lambda _: lambda _f: True
+    )
+    await observer.maintain()
+    blocked.set_result(None)
+    assert registry.snapshot().rows == ()
+
+
+def test_fallback_row_migration_preserves_started_time_and_one_visible_row(tmp_path):
+    from booley.goals.store import REPOSITORY_ID_FILE
+
+    work = tmp_path / "work"
+    git = work / ".git"
+    git.mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n")
+    registry = SessionRegistry(tmp_path / "data")
+    before = session_registry.resolve_attribution(work, metadata={}, client_name="")
+    registry.upsert(before, "sim", "completed", now=100)
+    (git / REPOSITORY_ID_FILE).parent.mkdir()
+    (git / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
+    after = session_registry.resolve_attribution(work, metadata={}, client_name="")
+    registry.upsert(after, "sim", "completed", now=101)
+    rows = registry.snapshot().rows
+    assert len(rows) == 1
+    assert rows[0].started_at == "1970-01-01T00:01:40Z"
+    assert len(rows[0].calls) == 2
+    assert not registry.path(before.key).exists()
+
+
+@pytest.mark.asyncio
+async def test_busy_call_cannot_overwrite_another_calls_deferred_metadata(
+    registry, tmp_path, monkeypatch
+):
+    import threading
+
+    from booley.mcp import session_observer
+
+    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    release = threading.Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow_peer(*_):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(2)
+        return IDENTITY
+
+    monkeypatch.setattr(session_observer, "observed_peer", slow_peer)
+    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    arguments = {"work_dir": str(tmp_path)}
+    first = await observer.attribution(arguments, {}, "claude-code")
+    await entered.wait()
+    await observer.record(first, "first", "completed")
+    second = await observer.attribution(arguments, {}, "claude-code")
+    await observer.record(second, "second", "completed")
+    release.set()
+    await asyncio.wait_for(observer._pending, 2)
+    assert registry.snapshot().rows[0].calls[-1].tool == "first"

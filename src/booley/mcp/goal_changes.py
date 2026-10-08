@@ -81,11 +81,7 @@ def propose_change(
     record = resolve_record(preliminary, work_dir)
     service = GoalWaiverService(env.project_dir, record)
     change_env = ChangeEnvironment(env, service)
-    acting = (
-        context.attribution.key
-        if context.attribution
-        else session_key(GoalStore(env.project_dir), work_dir)
-    )
+    acting = context.session_key(lambda: session_key(GoalStore(env.project_dir), work_dir))
     if context.resume_state is not None:
         return _resume_decision(change_env, record.id, context, acting)
     operation = arguments.get("operation")
@@ -134,7 +130,7 @@ def _resume_decision(
             peer_process=(
                 None
                 if context.attribution is None or context.attribution.process is None
-                else json.dumps(context.attribution.process.to_payload(), sort_keys=True)
+                else context.attribution.process
             ),
         )
     )
@@ -165,6 +161,7 @@ def _pending_response(
                 "required": ["decision", "reason"],
                 "additionalProperties": False,
             },
+            goal_aware=True,
         )
     return _approval_required(view)
 
@@ -239,9 +236,11 @@ def _approval_required(view: ProposalView) -> McpDispatchResult:
         "instructions": "Obtain the human's instruction. Make a fresh goal_propose_change call without a sealed token: operation=approve or reject, this exact proposal_id, reason and approval_quote. Resume by proposal_id to reissue an expired/restarted form.",
     }
     return McpDispatchResult(
-        [TextContent(type="text", text=json.dumps(result, sort_keys=True))], False
+        [TextContent(type="text", text=json.dumps(result, sort_keys=True))], False, goal_aware=True
     )
 
 
 def _result(view: ProposalView) -> McpDispatchResult:
-    return McpDispatchResult([TextContent(type="text", text=_summary(view))], False)
+    return McpDispatchResult(
+        [TextContent(type="text", text=_summary(view))], False, goal_aware=True
+    )

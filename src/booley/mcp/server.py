@@ -2390,6 +2390,7 @@ def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
         return McpDispatchResult(
             value=_prepend_health_block(content.value, block),
             is_error=content.is_error,
+            goal_aware=content.goal_aware,
         )
     return _prepend_health_block(content, block)
 
@@ -2602,12 +2603,14 @@ class LocatedJob:
 
 def job_roots() -> tuple[Path, ...]:
     """Container jobs and every retained Goal Record, including terminal ones."""
-    from booley.runtime.job_snapshot import retained_job_roots
-
-    if not goal_mode_preview_enabled():
-        root = container_jobs_root()
-        return () if root is None else (root,)
-    return retained_job_roots(resolve_project_dir(), interactive_root=container_jobs_root())
+    roots = [container_jobs_root()]
+    if goal_mode_preview_enabled():
+        store = GoalStore(resolve_project_dir())
+        roots.extend(
+            record_paths(store.project_dir, rec.id).jobs_dir
+            for rec in store.list_records().records
+        )
+    return tuple(dict.fromkeys(root for root in roots if root is not None))
 
 
 def _locate_job(run_id: str) -> LocatedJob | None:
@@ -3690,8 +3693,8 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(work_dir_error)
     try:
         context = resolve_call_context(arguments)
-        if request_context is not None and request_context.attribution is not None:
-            context = replace(context, session_key=request_context.attribution.key)
+        if request_context is not None and request_context.session_key() is not None:
+            context = replace(context, session_key=request_context.session_key())
     except (GoalBindingError, GoalStoreError) as exc:
         return _error_result(f"ERROR: {exc}")
 
@@ -4213,7 +4216,7 @@ async def _call_application_tool(
                 else ("error" if payload.is_error else "completed")
             )
             await observer.record(request.attribution, params.name, outcome)
-        warning = request.presentation_warning
+        warning = request.presentation_warning if payload.goal_aware else ""
         if warning and isinstance(payload, McpInputRequired):
             payload = replace(payload, message=payload.message + "\n" + warning)
         elif warning:
@@ -4224,8 +4227,6 @@ async def _call_application_tool(
             await observer.record(request.attribution, params.name, "unknown-tool")
         hidden = _interactive_hidden_note(exc.name)
         message = hidden or f"Unknown MCP tool: {exc.name}"
-        if request.presentation_warning:
-            message += "\n" + request.presentation_warning
         raise MCPError(
             INVALID_PARAMS,
             message,
@@ -4237,8 +4238,6 @@ async def _call_application_tool(
             await observer.record(request.attribution, params.name, "error")
         logger.exception("Unexpected MCP tool failure for %s", params.name)
         message = "Internal server error"
-        if request.presentation_warning:
-            message += "\n" + request.presentation_warning
         raise MCPError(INTERNAL_ERROR, message) from exc
 
 
@@ -4255,8 +4254,13 @@ async def _observed_request_context(
     client = context.session.client_params if context is not None else None
     name = client.client_info.name if client is not None else ""
     meta = dict(params.meta) if params.meta is not None else {}
-    facts = await observer.attribution(params.arguments or {}, meta, name)
-    await observer.record(facts, params.name, "started")
+    facts = await observer.attribution(
+        params.arguments or {},
+        meta,
+        name,
+        request=context.request if context is not None else None,
+        tool=params.name,
+    )
     keys, warning = await observer.shared(facts)
     return replace(
         request, attribution=facts, other_session_keys=keys, presentation_warning=warning
@@ -4439,6 +4443,7 @@ async def _main() -> None:
             {run_task, watchdog_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
+        lifetime.sessions.close()
         maintenance.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await maintenance
@@ -4555,14 +4560,14 @@ def _goal_warning_result(
         )
     except GoalStoreError as exc:
         prefix = f"WARNING: Goal Record cannot be read: {exc}"
-    if not prefix:
-        return result
-    block = TextContent(type="text", text=prefix)
-    if isinstance(result, McpDispatchResult):
-        return McpDispatchResult(
-            value=_prepend_health_block(result.value, block), is_error=result.is_error
-        )
-    return _prepend_health_block(result, block)
+    payload = result.value if isinstance(result, McpDispatchResult) else result
+    if prefix:
+        payload = _prepend_health_block(payload, TextContent(type="text", text=prefix))
+    return McpDispatchResult(
+        value=payload,
+        is_error=result.is_error if isinstance(result, McpDispatchResult) else False,
+        goal_aware=True,
+    )
 
 
 async def _dispatch_poll(arguments: dict[str, Any], jobs: _JobManager) -> McpToolContent:
