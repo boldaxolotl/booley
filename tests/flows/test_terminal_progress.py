@@ -26,6 +26,14 @@ from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 
 BUILTINS = (AsicSynthesizeFlow, FpgaImplFlow, SimulateFlow, LintFlow)
 
+# Hang guard for trivial Python children run through ``_execute_boundary``.
+# The boundary relocates PYTHONPYCACHEPREFIX under each test's fresh work dir,
+# so every child recompiles its startup bytecode; under CI coverage
+# (``patch = ["subprocess"]``) that includes coverage.py itself (~0.4 s cold vs
+# ~0.01 s plain). On a loaded xdist runner this overran a 3 s budget. The bound
+# exists only to fail a hung child, so keep it well below pytest's 60 s limit.
+BOUNDARY_HANG_GUARD_S = 30
+
 
 class Screen(io.StringIO):
     def __init__(self, *, tty=False):
@@ -421,7 +429,7 @@ def test_all_builtin_boundary_commands_are_actually_observed(tmp_path, flow_type
     sink = observer(tmp_path, flow=flow.name, tool_output=True)
     with sink.installed():
         result = flow._execute_boundary(
-            [sys.executable, "-c", "print('observed boundary')"], timeout=3
+            [sys.executable, "-c", "print('observed boundary')"], timeout=BOUNDARY_HANG_GUARD_S
         )
     assert result.returncode == 0
     assert result.stdout == "observed boundary\n"
@@ -597,7 +605,7 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
     def execute(attempt, *_args):
         assert current_progress() is sink
         result = flow._execute_boundary(
-            [sys.executable, "-c", "print('campaign worker line')"], timeout=3
+            [sys.executable, "-c", "print('campaign worker line')"], timeout=BOUNDARY_HANG_GUARD_S
         )
         assert result.stdout == "campaign worker line\n"
 
