@@ -730,7 +730,7 @@ def _persist_prepared(
     requirements: eda_requirements.SessionEdaRequirements | None = None,
 ) -> Issuance:
     """Persist and issue one prepared spec, restoring its predecessor on failure."""
-    from booley.runtime import devcontainer
+    from booley.runtime import dashboard_tasks, devcontainer
 
     project = project_root.resolve(strict=True)
     path = devcontainer.devcontainer_path(project)
@@ -751,8 +751,10 @@ def _persist_prepared(
         if previous_issuance is not None
         else _current_keeper_id(project)
     )
+    task_transaction = None
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
+        task_transaction = dashboard_tasks.reconcile(project, prepared.inputs.project_data_source)
         if requirements is None:
             return _issue_document(project, prepared.spec, written)
         return _issue_document_with_requirements(
@@ -763,6 +765,8 @@ def _persist_prepared(
             str(authorized_project_data_source(project)),
         )
     except Exception:
+        if task_transaction is not None:
+            task_transaction.rollback()
         _restore_file(path, previous, previous_mode)
         for stamp_file, (content, mode) in zip(stamp_paths, stamp_snapshots, strict=True):
             _restore_file(stamp_file, content, mode)

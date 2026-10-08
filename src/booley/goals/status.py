@@ -74,9 +74,10 @@ def build_status(
     *,
     work_dir: Path | None = None,
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
+    observational: bool = False,
 ) -> GoalStatusView:
     """Read one coherent record/state/lifecycle projection without recovering it."""
-    with store.record_lock(record.id):
+    with store.record_lock(record.id, existing_only=observational):
         return _build_status(store, store.load(record.id), work_dir=work_dir, resolvers=resolvers)
 
 
@@ -212,6 +213,8 @@ def status_views(store: GoalStore, work_dir: Path) -> tuple[GoalStatusView, ...]
     """Show this worktree's occupant, otherwise all occupying records; report corruption."""
     from booley.goals.store import GoalRecordCorruptError
 
+    if not work_dir.is_dir():
+        raise GoalStoreError(f"Goal worktree missing or unavailable: {work_dir}")
     scan = store.list_active()
     if scan.corrupt:
         raise GoalRecordCorruptError(scan.corrupt)

@@ -184,8 +184,14 @@ COMMAND_PROJECT_BINDINGS = {
 # Goal Mode preview commands (ADR 0067 D13). They join the effective catalogs
 # below only while BOOLEY_GOAL_MODE_PREVIEW=1, so the released catalogs above,
 # help, and the cheatsheet never mention them.
-GOAL_PREVIEW_COMMAND_LOCATIONS = {"goal": CommandLocation.SESSION_RUNTIME}
-GOAL_PREVIEW_COMMAND_PROJECT_BINDINGS = {"goal": ProjectBinding.REQUIRED}
+GOAL_PREVIEW_COMMAND_LOCATIONS = {
+    "goal": CommandLocation.SESSION_RUNTIME,
+    "dashboard": CommandLocation.SESSION_RUNTIME,
+}
+GOAL_PREVIEW_COMMAND_PROJECT_BINDINGS = {
+    "goal": ProjectBinding.REQUIRED,
+    "dashboard": ProjectBinding.REQUIRED,
+}
 
 
 def command_locations() -> dict[str, CommandLocation]:
@@ -620,6 +626,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_utility_subparsers(sub)
     if goal_mode_preview_enabled():
         _add_goal_subparser(sub)
+        sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
 
     # Hidden shortcut for a named one-shot run.
     parser.add_argument("--slug", "-s", type=str, default="", help=argparse.SUPPRESS)
@@ -1205,6 +1212,12 @@ def _add_goal_subparser(sub) -> None:
         default="Human invoked booley goal abandon",
         help="Human instruction retained in the record",
     )
+
+
+def _cmd_dashboard(_args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness.dashboard.command import run_dashboard
+
+    return run_dashboard(project_root)
 
 
 def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
@@ -2378,6 +2391,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "targets": _cmd_targets,
     "worktree": run_worktree,
     "goal": _cmd_goal,
+    "dashboard": _cmd_dashboard,
     "flow": _cmd_flow,
     "specialist": _cmd_specialist,
     "feedback": _cmd_feedback,

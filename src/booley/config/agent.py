@@ -399,7 +399,11 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
 
     mount_host_skills = bool(section.get("mount_host_skills", False))
 
-    return SandboxConfig(image=image, memory=memory, mount_host_skills=mount_host_skills)
+    return SandboxConfig(
+        image=image,
+        memory=memory,
+        mount_host_skills=mount_host_skills,
+    )
 
 
 def _parse_jobs_config(data: dict) -> SlotCaps:

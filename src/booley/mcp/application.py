@@ -17,6 +17,7 @@ from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.mcp.session_registry import Attribution
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,7 @@ class McpToolPayload:
     content: tuple[McpTextBlock, ...]
     structured_content: dict[str, Any] | None = None
     is_error: bool = False
+    goal_aware: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ class McpDispatchResult:
 
     value: object
     is_error: bool
+    goal_aware: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +64,17 @@ class McpRequestContext:
     form_capability: bool = False
     resume_state: str | None = None
     input_responses: Mapping[str, Any] | None = None
+    attribution: Attribution | None = None
+    other_session_keys: tuple[str, ...] = ()
+    presentation_warning: str = ""
+
+    def session_key(self, fallback: Callable[[], str | None] | None = None) -> str | None:
+        """Advisory caller key; invoke a legacy worktree fallback only when needed."""
+        if self.attribution is not None:
+            if self.attribution.kind == "worktree" and not self.attribution.worktree_key:
+                return None
+            return self.attribution.key
+        return fallback() if fallback is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +85,7 @@ class McpInputRequired:
     response_key: str
     message: str
     form_schema: dict[str, Any]
+    goal_aware: bool = False
 
 
 class UnknownMcpToolError(ValueError):
@@ -195,9 +210,9 @@ def _format_validation_error(error: ValidationError) -> str:
 
 def _normalize_payload(result: object) -> McpToolPayload:
     """Normalize the server's historical list/tuple results at the application seam."""
-    is_error = False
+    is_error, goal_aware = False, False
     if isinstance(result, McpDispatchResult):
-        is_error = result.is_error
+        is_error, goal_aware = result.is_error, result.goal_aware
         result = result.value
     structured: dict[str, Any] | None = None
     blocks = result
@@ -217,4 +232,5 @@ def _normalize_payload(result: object) -> McpToolPayload:
         content=tuple(normalized),
         structured_content=structured,
         is_error=is_error,
+        goal_aware=goal_aware,
     )

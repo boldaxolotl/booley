@@ -22,6 +22,7 @@ from booley.core.boundary import (
     require_str_value,
     require_uuid4,
 )
+from booley.core.process_identity import ProcessIdentity
 from booley.goals.changes import Approval, ChangeKind
 from booley.goals.model import (
     GoalRecord,
@@ -176,9 +177,10 @@ class Decision:
     payload_digest: str
     session_key: str | None
     transaction_id: str | None = None
+    peer_process: ProcessIdentity | None = None
 
     def to_json(self) -> dict[str, Any]:
-        """Audited provenance; peer identity remains unknown until Phase 6."""
+        """Advisory audit facts; neither attribution nor peer proves human approval."""
         return {
             "decision": self.decision,
             "reason": self.reason,
@@ -188,18 +190,18 @@ class Decision:
             "payload_digest": self.payload_digest,
             "session_key": self.session_key,
             "transaction_id": self.transaction_id,
-            "peer_process": None,
+            "peer_process": (
+                None
+                if self.peer_process is None
+                else json.dumps(self.peer_process.to_payload(), sort_keys=True)
+            ),
         }
 
     @classmethod
     def from_json(cls, value: object) -> Decision:
-        """Fail closed on malformed decisions or fabricated peer identities."""
+        """Fail closed on malformed decisions and advisory peer facts."""
         raw = require_dict(value, field="decision")
-        if (
-            frozenset(raw) != _DECISION_FIELDS
-            or raw["decision"] not in {"approve", "reject"}
-            or raw["peer_process"] is not None
-        ):
+        if frozenset(raw) != _DECISION_FIELDS or raw["decision"] not in {"approve", "reject"}:
             raise ProposalError("invalid Goal proposal decision")
         source = Approval(raw["source"])
         quote = None if raw["quote"] is None else text(raw["quote"], "approval_quote")
@@ -216,6 +218,7 @@ class Decision:
             None
             if raw["transaction_id"] is None
             else require_uuid4(raw["transaction_id"], field="transaction_id"),
+            _peer_process(raw["peer_process"]),
         )
 
 
@@ -232,6 +235,19 @@ _DECISION_FIELDS = frozenset(
         "peer_process",
     }
 )
+
+
+def _peer_process(raw: object) -> ProcessIdentity | None:
+    if raw is None:
+        return None
+    value = text(raw, "peer_process")
+    try:
+        identity = ProcessIdentity.from_payload(json.loads(value))
+    except ValueError as exc:
+        raise ProposalError("malformed advisory peer process") from exc
+    if identity is None or identity.pid <= 0 or identity.start_token < 0:
+        raise ProposalError("malformed advisory peer process")
+    return identity
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,7 @@ from mcp.types import TextContent
 
 from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.goals.binding import GoalBindingError
+from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.entry import (
     EntryEnvironment,
     GoalEntryError,
@@ -39,7 +40,7 @@ from booley.goals.proposals import ProposalError
 from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import session_key
 from booley.goals.state_store import GoalStateError
-from booley.goals.status import status_views
+from booley.goals.status import GoalStatusView, status_views
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.mcp.application import McpDispatchResult, McpInputRequired, McpRequestContext
 from booley.mcp.goal_changes import proposal_schema, propose_change
@@ -147,17 +148,18 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
     try:
         require_goal_work_dir(arguments, store)
         if name == GOAL_FINISH:
-            return await _finish(arguments, project_dir)
+            return await _finish(arguments, project_dir, request_context)
         if name == GOAL_PROPOSE_CHANGE:
-            env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
+            env = _entry_environment(project_dir, request_context)
             return await asyncio.to_thread(propose_change, arguments, env, request_context)
         if name == GOAL_STATUS:
             root = Path(str(arguments.get("work_dir") or Path.cwd()))
             views = await asyncio.to_thread(status_views, store, root)
+            aware = await asyncio.to_thread(_status_has_caller, views, root, request_context)
             text = render_status(views) if views else "No active Goal Mode."
             if arguments.get("rules") is True:
                 text += "\n\n" + goal_mode_rules()
-            return _text(text, is_error=False)
+            return _text(text, is_error=False, goal_aware=aware)
     except (
         LifecycleError,
         GoalBindingError,
@@ -172,17 +174,56 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
     if name != GOAL_ENTER:
         return _text(f"{name} is not available yet in this Booley version.", is_error=True)
     try:
-        request = parse_entry_request(arguments, session_key=_session_key(arguments, store))
-        env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
+        request = parse_entry_request(
+            arguments,
+            session_key=_entry_key(arguments, store, request_context),
+        )
+        env = _entry_environment(project_dir, request_context)
         result = await asyncio.to_thread(enter_goal_mode, request, env)
     except (GoalEntryError, GoalStoreError) as exc:
         return _text(f"ERROR: Goal Mode was not entered: {exc}", is_error=True)
-    return _text(result.render(), is_error=False)
+    return _text(result.render(), is_error=False, goal_aware=True)
 
 
-async def _finish(arguments: Mapping[str, Any], project_dir: Path) -> McpDispatchResult:
-    env = EntryEnvironment(project_dir=project_dir, recipe_families=_recipe_families())
-    result = await asyncio.to_thread(complete_goal, arguments, env)
+def _status_has_caller(
+    views: tuple[GoalStatusView, ...],
+    root: Path,
+    context: McpRequestContext | None,
+) -> bool:
+    """Shared warnings describe an occupying Goal at the caller's checkout only."""
+    if not views:
+        return False
+    facts = None if context is None else context.attribution
+    try:
+        repository = GoalCheckout(root).containing_repository()
+    except CheckoutError:
+        return False
+    caller_root = root.resolve() if repository is None else repository[0].resolve()
+    return any(
+        Path(view.record.worktree_path).resolve() == caller_root
+        or (facts is not None and facts.worktree_key == view.record.worktree.key)
+        for view in views
+    )
+
+
+def _entry_key(
+    arguments: Mapping[str, Any], store: GoalStore, context: McpRequestContext | None
+) -> str | None:
+    return (context or McpRequestContext()).session_key(lambda: _session_key(arguments, store))
+
+
+async def _finish(
+    arguments: Mapping[str, Any],
+    project_dir: Path,
+    request_context: McpRequestContext | None = None,
+) -> McpDispatchResult:
+    env = _entry_environment(project_dir, request_context)
+    result = await asyncio.to_thread(
+        complete_goal,
+        arguments,
+        env,
+        session_key=(request_context or McpRequestContext()).session_key(),
+    )
     message = result.get("message", result.get("reason", ""))
     if result.get("reason") and result["reason"] not in message:
         message += "\nReason: " + result["reason"]
@@ -190,7 +231,7 @@ async def _finish(arguments: Mapping[str, Any], project_dir: Path) -> McpDispatc
         message += "\n" + result["publication_note"]
     if result.get("running_jobs"):
         message += "\nRunning Jobs (not cancelled): " + str(result["running_jobs"])
-    return _text(message, is_error=result["status"] == "revalidation_required")
+    return _text(message, is_error=result["status"] == "revalidation_required", goal_aware=True)
 
 
 def _session_key(arguments: Mapping[str, Any], store: GoalStore) -> str | None:
@@ -221,5 +262,17 @@ def _fpga_snapshot(resolved: Any, target: str) -> dict[str, Any]:
     return fpga_recipe_snapshot(resolved, target=target)
 
 
-def _text(message: str, *, is_error: bool) -> McpDispatchResult:
-    return McpDispatchResult(value=[TextContent(type="text", text=message)], is_error=is_error)
+def _text(message: str, *, is_error: bool, goal_aware: bool = False) -> McpDispatchResult:
+    return McpDispatchResult(
+        value=[TextContent(type="text", text=message)], is_error=is_error, goal_aware=goal_aware
+    )
+
+
+def _entry_environment(project_dir: Path, context: McpRequestContext | None) -> EntryEnvironment:
+    own = (context or McpRequestContext()).session_key()
+    keys = tuple(key for key in context.other_session_keys if key != own) if context else ()
+    return EntryEnvironment(
+        project_dir=project_dir,
+        recipe_families=_recipe_families(),
+        other_sessions=lambda _identity: keys,
+    )

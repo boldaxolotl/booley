@@ -348,6 +348,11 @@ def _change_entry(proposal: Proposal, decision: Decision) -> ChangeEntry:
         decision.source,
         decision.quote,
         decision.session_key,
+        peer_process=(
+            None
+            if decision.peer_process is None
+            else json.dumps(decision.peer_process.to_payload(), sort_keys=True)
+        ),
         transaction_ref=decision.transaction_id,
     )
 

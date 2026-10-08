@@ -232,7 +232,7 @@ class _WaiterRequest:
     execution_id: ExecutionId | None
 
 
-def slots_dir() -> Path | None:
+def slots_dir(project_dir: Path | None = None) -> Path | None:
     """Root of the shared slot store, or None when no project is resolvable.
 
     PROJECT-scoped (``.booley_project/runtime/jobs/slots/``), deliberately
@@ -247,8 +247,8 @@ def slots_dir() -> Path | None:
     try:
         from booley.runtime.project_dir import resolve_project_dir
 
-        project = resolve_project_dir()
-    except Exception:  # noqa: BLE001 — no project ⇒ no admission (bare runs)
+        project = project_dir if project_dir is not None else resolve_project_dir()
+    except (OSError, ValueError, RuntimeError):
         return None
     return project / "runtime" / "jobs" / "slots"
 
@@ -915,6 +915,24 @@ class SlotStore:
             names.append(own)  # raced a reap; rank as if still present
         return sorted(names).index(own)
 
+    def observe(self, job_class: str) -> tuple[list[SlotToken], list[SlotToken]]:
+        """Read slot entries without reaping, cancellation, recovery or lease renewal."""
+        holders: list[SlotToken] = []
+        waiters: list[SlotToken] = []
+        directory = self.root / job_class
+        if directory.is_symlink() or not directory.is_dir():
+            return holders, waiters
+        for path in sorted(directory.iterdir())[:4096]:
+            if path.is_symlink():
+                continue
+            try:
+                token = self._load_token(path)
+            except (ValueError, OSError):
+                continue
+            if token is not None:
+                (holders if token.is_holder else waiters).append(token)
+        return holders, waiters
+
     def snapshot(self, job_class: str) -> tuple[list[SlotToken], list[SlotToken]]:
         """(holders, waiters) in scheduling order — for narration and doctor.
 
@@ -953,6 +971,8 @@ class SlotStore:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get("argv", []), list):
             return None
         owner_identity = ProcessIdentity.from_payload(payload.get("owner_identity"))
         try:

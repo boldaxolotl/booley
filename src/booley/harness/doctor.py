@@ -759,6 +759,7 @@ def _run_project_phase(
     project_dir, project = loaded.project_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
     _check_upgrade_review(project_dir, reporter)
+    _check_goal_presence(project_root, project_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -900,6 +901,23 @@ def _outer_branch_for_project_data(
     else:
         reporter.skip_("Project-data branch alignment skipped - outer checkout has detached HEAD")
     return None
+
+
+def _check_goal_presence(root: Path, project_dir: Path | None, reporter: _Reporter) -> None:
+    from booley.goals.preview import goal_mode_preview_enabled
+    from booley.harness.dashboard.doctor import inspect_presence
+
+    if not goal_mode_preview_enabled() or project_dir is None:
+        return
+    result = inspect_presence(
+        root, project_dir, inside_sandbox=runtime_context.inside_session_runtime()
+    )
+    if result.unavailable:
+        reporter.skip_(result.unavailable)
+    for finding in result.warnings:
+        reporter.warn_(
+            finding, "inspect the Goal worktree and resume its work, or explicitly abandon it"
+        )
 
 
 def _check_upgrade_review(project_dir: Path | None, reporter: _Reporter) -> None:

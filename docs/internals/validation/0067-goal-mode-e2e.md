@@ -935,3 +935,95 @@ The user approved the prepared data-only patch and normal CI. It adds142 previou
 Fresh Linux collection remains21,295 eligible cases. Before/after assignments preserve exact once-only coverage of all21,287 previously observed native eligible IDs across six shards. Partial historical call-sum replay reduces the maximum known sum by12.58%;4,236 eligible durations remain unknown or untrusted, including the entire missing3,551-case shard. Allocation arithmetic is not a job-walltime prediction or proof of a deadline cure. New exact-head normal CI remains the merge gate.
 
 All693 frozen runtime/config hashes and all773 runtime files are unchanged from v12. The definitive v12 full-suite, Python3.11, static/type, whole-PR coverage, actual live finish and released Ticket evidence is therefore explicitly reused for unchanged code. This recovery changes only the timing model and this validation record. Source/test scripts, model defaults and test budgets are unchanged; no extra external review cycle or new runtime execution is claimed.
+
+## Phase 6 sessions, Dashboard and Doctor
+
+On 8 October 2026, the owner ran the Phase 6 exit checks against source
+`20b067198` (published as `70a9d69b6`). Both commits have Git tree
+`13347bc0e4aa284f1e629c6adb3333fabdefed67`, verified with
+`git rev-parse <commit>^{tree}`; the owner changed authorship only. The checks used the actual HTTP MCP server inside a throwaway
+container built from the local `booley-sandbox:latest` image, which provides a
+real PID namespace, Verilator 5.052 and Icarus. Source was mounted read-only.
+The fixture was a new isolated non-Stealth Git repository derived from the
+Ticket Mode smoke fixture, with committed Project configuration, a Verilator
+lint Target and a long-running Icarus Target. Production Git-ignore and scanner
+helpers initialized it; this check does not claim a complete `booley init` run.
+Installed Booley, user Projects and earlier fixtures were unchanged.
+
+Separate SDK client processes over loopback HTTP stood in for agent tabs. In
+five runs, two processes started at the same moment always produced two
+complete `pid:` registry rows. After one was killed, server maintenance removed
+its row **34 s** later and kept the survivor. On the host, with about 617
+processes, two processes making back-to-back calls also produced complete rows,
+even though peer lookups exceeded the 50 ms response budget. Two raw HTTP
+processes shared one MCP session id and opened a new TCP connection for every
+call; each call was attributed to its own process. One Codex-style process with
+two `_meta.threadId` values produced two thread rows, and a call without a
+thread id used the worktree key. Fallback calls shared one row, and Goal entry
+under fallback reported that attribution is unavailable. Rows recorded before
+the repository's first Goal entry matched later identity keys. A call without
+`work_dir` did not move a process row.
+
+Goal entry, Goal status and Goal-bound lint and asynchronous simulation replies
+carried the shared-worktree warning when another live process had called the
+same worktree. Interactive Flow, catalog and validation replies carried none.
+
+Real Verilator lint passed in **0.8–3.0 s**, and real Icarus simulations ran in
+about **2 s**. The Dashboard model reported Jobs from three Goal roots and the
+Interactive root, each identified by root and run ID. One model read took
+**0.42 s**. While a long simulation ran, its Job detail showed CPU as **about
+110% of one core**, elapsed time, the EDA tool and RSS; the Sandbox line showed
+CPU as a share of **24 CPUs**. After five reads and a Textual pilot, all
+**5,259** fixture paths, including `.git` and every worktree, were
+byte-identical; no MCP server ran during that window.
+
+Doctor inside the container reported `goals.worktree-missing` and
+`goals.quiet-session` for a Goal whose checkout was deleted, and
+`goals.quiet-session` once a Goal's last live session was pruned. With the
+preview switch unset, neither check appeared. Host Doctor reported the checks
+unavailable. With a Goal worktree deleted, `goal_status` from other worktrees
+returned a missing-worktree warning instead of an error.
+
+`booley dashboard` was listed only with the preview switch, and a second
+instance reported the open view. Task reconciliation created the folder-open
+task with the explicit preview environment, kept comments, unknown fields and
+user edits, restored user `tasks.json` bytes exactly through four
+enable/disable cycles, and removed its own `.vscode/` and exclude entry.
+
+Real Claude Code or Codex clients, VS Code automatic task execution, the full
+init and issuance path, and native Windows were not exercised. Evidence is
+retained in `/tmp/cr-p6/live/r2/`.
+
+
+### Phase 6 review-round-1 observation bounds
+
+The Dashboard retains a slow in-flight read across refresh intervals and shows
+its completed result on a later interval. Until then, health explains that the
+read is still in progress; unexpected reader exceptions leave a stale view.
+The active Interactive root and every retained Goal root remain eligible.
+Historical Interactive roots are limited to the newest 64 by jobs-directory
+mtime among at most 4,096 enumerated roots. This observer policy does not change
+server Job adoption or delete history.
+
+Each snapshot indexes an endpoint's reports and progress once by exact run ID,
+sorting file metadata newest-first before applying the index bounds.
+The index parses at most 4,096 files / 16 MiB per endpoint, with a 2 MiB
+per-file limit. Parsed files are reused across refreshes while path, mtime_ns
+and size match; the persistent cache is also limited to 4,096 entries / 16 MiB.
+Excess artifact history is diagnosed. An exact progress lookup missing from
+the index uses the released complete history lookup, retaining its trusted-document
+validation and numbered invocation-directory requirement.
+
+Partial registry reads (including scan truncation) report the registry as partially
+unavailable, suppress Doctor's quiet-session inference and return an unavailable
+shared-worktree warning. Resolved request identity survives registry publication
+failure during the admission wait. Disabling the task retains exclude ownership
+when user-appended lines prevent exact suffix removal, allowing a later safe retry.
+
+Review-round regressions use fixtures for deferred attribution before Job
+admission, Interactive calls without a worktree, slow reads, corrupt Jobs and
+registry rows, Windows without AF_UNIX, and frozen finished-Goal packages. They
+do not extend the live coverage above to real agent clients, native Windows,
+VS Code task execution or full init/issuance. Goal record-lock acquisition
+remains nonblocking in the Dashboard; expensive Git/evidence work during a
+successful lock hold remains an observational latency risk (review finding L6).

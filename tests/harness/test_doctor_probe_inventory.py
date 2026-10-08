@@ -123,6 +123,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_line_endings",
             "_check_project_data_destination_branch",
             "_check_upgrade_review",
+            "_check_goal_presence",
             "_check_worktree_core_shadow_guard",
             "_check_worktree_prune_guard",
         }

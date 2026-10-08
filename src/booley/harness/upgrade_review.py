@@ -367,3 +367,33 @@ def acknowledge(
         raise AcknowledgmentError(f"upgrade review state is corrupt: {exc}") from exc
     except ReviewStorageError as exc:
         raise AcknowledgmentError(str(exc)) from exc
+
+
+def read_status(project_dir: Path, *, running_version: str | None = None) -> ReviewStatus:
+    """Validated observational projection: no lock creation, baseline or observation write."""
+    running = _running_version(running_version)
+    path = state_path(project_dir)
+    try:
+        state = _read_state(path)
+    except CorruptReviewStateError as exc:
+        return ReviewStatus(ReviewCondition.CORRUPT, running, str(path), diagnostic=str(exc))
+    except ReviewStorageError as exc:
+        return ReviewStatus(ReviewCondition.UNAVAILABLE, running, str(path), diagnostic=str(exc))
+    if state is None:
+        return ReviewStatus(
+            ReviewCondition.UNAVAILABLE, running, str(path), diagnostic="no saved upgrade review"
+        )
+    try:
+        version = _parse_version(running, "running version")
+        reviewed = _parse_version(state.reviewed_through, "reviewed_through")
+        highest = max(
+            reviewed,
+            _parse_version(state.pending_target, "pending_target")
+            if state.pending_target
+            else reviewed,
+        )
+        if version > highest:
+            state = ReviewState(state.reviewed_through, str(version), state.first_seen_at)
+        return _status(project_dir, version, state)
+    except CorruptReviewStateError as exc:
+        return _diagnostic_status(project_dir, running, ReviewCondition.UNSUPPORTED, str(exc))

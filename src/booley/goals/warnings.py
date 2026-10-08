@@ -13,6 +13,8 @@ from booley.goals.protected_inputs import (
 
 def protected_warnings(record: GoalRecord, project_dir: Path, work_dir: Path) -> tuple[str, ...]:
     """Compare resolver paths, working contents, then tracked HEAD contents."""
+    if not work_dir.is_dir():
+        return (f"Goal worktree missing or unavailable: {work_dir}",)
     try:
         return tuple(
             protected_input_violations(

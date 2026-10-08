@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from booley.core.process_identity import ProcessIdentity
 from booley.goals.apply import ChangeEnvironment, decide, recover
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import protected_drift
@@ -130,6 +131,7 @@ def record_decision(
     source: Approval,
     quote: str | None,
     session_key: str | None,
+    peer_process: ProcessIdentity | None = None,
 ) -> ProposalView:
     """Exact-ID agent-recorded and elicited decisions share the same locked policy."""
     store = env.store
@@ -149,6 +151,7 @@ def record_decision(
             utc_now_rfc3339(),
             view.proposal.payload_digest,
             session_key,
+            peer_process=peer_process,
         )
         return decide(lock, view, decision, env)
 

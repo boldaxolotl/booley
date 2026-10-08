@@ -12,6 +12,7 @@ from booley.audit.config_common import (
     fail_finding,
     failure,
 )
+from booley.config.goals import goal_mode_preview_enabled, parse_dashboard
 from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
@@ -52,7 +53,7 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Audit recognized tables, rejecting retired MCP visibility configuration."""
     findings: list[ConfigFinding] = []
     for key in data:
-        if key in KNOWN_BOOLEY_TOML_TABLES:
+        if key in KNOWN_BOOLEY_TOML_TABLES or (key == "goals" and goal_mode_preview_enabled()):
             continue
         if key == "mcp_tools":
             findings.append(
@@ -254,6 +255,11 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "booley.toml [sandbox].mode is retired; the Sandbox is always Docker",
             "delete [sandbox].mode",
         )
+    if goal_mode_preview_enabled():
+        try:
+            parse_dashboard(data)
+        except BoundaryError as exc:
+            return failure(str(exc), "set [sandbox].dashboard to true or false")
     from booley.config.host_config import retired_project_policy_message
 
     migration = retired_project_policy_message({"sandbox": sandbox})
@@ -320,4 +326,17 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
             f"booley.toml {exc}",
             "fix [eda] provisioning configuration",
         )
+    return ConfigTableAudit()
+
+
+def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate Goal presentation knobs without inferring client lifecycle."""
+    from booley.config.goals import parse_quiet_after
+
+    if not goal_mode_preview_enabled():
+        return ConfigTableAudit()
+    try:
+        parse_quiet_after(data)
+    except ValueError as exc:
+        return failure(str(exc), "set [goals].quiet_after to 60..604800 seconds")
     return ConfigTableAudit()

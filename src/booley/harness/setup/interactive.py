@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.commit_policy import stealth_enabled
@@ -11,7 +11,7 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     remove_relay,
     resources_for_session,
 )
-from booley.runtime import interactive_docker, session_issuance, session_runtime
+from booley.runtime import dashboard_tasks, interactive_docker, session_issuance, session_runtime
 from booley.runtime.git import add_git_excludes, git_excludes_pending
 
 
@@ -42,6 +42,7 @@ class InteractiveInitPlan:
     exclusions_pending: bool = False
     relay_cleanup_pending: bool = False
     runtime_cleanup_pending: bool = False
+    dashboard_tasks: dashboard_tasks.TaskPlan = field(default_factory=dashboard_tasks.TaskPlan)
 
     @property
     def pending_details(self) -> tuple[str, ...]:
@@ -55,6 +56,9 @@ class InteractiveInitPlan:
             details.append("orphaned license relay")
         if self.runtime_cleanup_pending:
             details.append("stopped Sandbox resources")
+        if self.dashboard_tasks.pending:
+            details.append("Dashboard attach task")
+        details.extend(self.dashboard_tasks.diagnostics)
         return tuple(details)
 
 
@@ -67,6 +71,7 @@ class InteractiveInitChanges:
     relay_removed: bool
     runtime_reconciled: bool
     exclusions_changed: bool
+    dashboard_changed: bool = False
 
     @property
     def changed(self) -> bool:
@@ -76,6 +81,7 @@ class InteractiveInitChanges:
                 self.relay_removed,
                 self.runtime_reconciled,
                 self.exclusions_changed,
+                self.dashboard_changed,
             )
         )
 
@@ -110,6 +116,9 @@ def inspect(request: InteractiveInitRequest) -> InteractiveInitPlan:
         ),
         relay_cleanup_pending=relay_pending,
         runtime_cleanup_pending=runtime_pending,
+        dashboard_tasks=dashboard_tasks.inspect(
+            request.project_root, prepared.inputs.project_data_source
+        ),
     )
 
 
@@ -124,6 +133,13 @@ def apply(plan: InteractiveInitPlan, *, force: bool = False) -> InteractiveInitC
             plan.request.project_root,
             plan.prepared,
             force_dependencies=force,
+        )
+    dashboard_changed = bool(issued and plan.dashboard_tasks.pending)
+    if not issued:
+        dashboard_changed = bool(
+            dashboard_tasks.reconcile(
+                plan.request.project_root, plan.prepared.inputs.project_data_source
+            ).applied
         )
     assert issuance is not None
     relay_removed = bool(
@@ -143,6 +159,7 @@ def apply(plan: InteractiveInitPlan, *, force: bool = False) -> InteractiveInitC
         relay_removed=relay_removed,
         runtime_reconciled=runtime_reconciled,
         exclusions_changed=exclusions_changed,
+        dashboard_changed=dashboard_changed,
     )
 
 

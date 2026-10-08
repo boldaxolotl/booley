@@ -60,6 +60,8 @@ from mcp.types import Tool as McpSdkTool
 if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
+from dataclasses import replace
+
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
@@ -83,7 +85,9 @@ from booley.mcp.application import (
     McpDispatchResult,
     McpInputRequired,
     McpRequestContext,
+    McpTextBlock,
     McpToolDefinition,
+    McpToolPayload,
     UnknownMcpToolError,
 )
 from booley.mcp.call_context import (
@@ -99,6 +103,9 @@ from booley.mcp.goal_tools import (
     goal_tool_defs,
     goal_tools_visible,
 )
+from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
+from booley.mcp.session_peer import PeerBoundary
+from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
@@ -341,6 +348,7 @@ class _McpLifetime:
         now: Callable[[], float] = time.monotonic,
         heartbeat_path: str | None = None,
     ) -> None:
+        self.sessions = SessionObserver()
         self.idle_timeout_seconds = idle_timeout_seconds
         self.max_age_seconds = max_age_seconds
         self._now = now
@@ -2411,6 +2419,7 @@ def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
         return McpDispatchResult(
             value=_prepend_health_block(content.value, block),
             is_error=content.is_error,
+            goal_aware=content.goal_aware,
         )
     return _prepend_health_block(content, block)
 
@@ -2752,7 +2761,12 @@ def _running_progress(run_id: str) -> dict[str, Any] | None:
 def _running_poll_content(run_id: str) -> McpToolContent:
     """Running poll card enriched with the latest durable matrix checkpoint."""
     content = [TextContent(type="text", text=_format_job_running_poll(run_id))]
-    return _with_structured_report(content, _running_progress(run_id))
+    rec = _job_record(run_id)
+    return _goal_warning_result(
+        _with_structured_report(content, _running_progress(run_id)),
+        None if rec is None else _job_binding(rec),
+        None if rec is None else rec.session_key,
+    )
 
 
 def _report_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
@@ -2930,6 +2944,11 @@ class _JobManager:
 
     def _stamp_pid(self, rec: jobrec.JobRecord, pid: int) -> None:
         rec.pid = pid
+        from booley.runtime.pid import capture_process_identity
+
+        # The Dashboard observes Linux /proc; optional identity must not block on host ps.
+        identity = capture_process_identity(pid) if sys.platform == "linux" else None
+        rec.process_identity = None if identity is None else identity.to_payload()
         jobrec.write_record(rec, root=self._write_root(rec))
 
     def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
@@ -2960,6 +2979,7 @@ class _JobManager:
         )
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
+        rec.ended_at = utc_now_rfc3339()
         jobrec.write_record(rec, root=self._write_root(rec))
 
     @staticmethod
@@ -3115,6 +3135,7 @@ class _JobManager:
         )
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
+        rec.ended_at = utc_now_rfc3339()
         self._results[rec.run_id] = (
             130,
             "",
@@ -3699,6 +3720,7 @@ async def _dispatch_booley_mcp_tool(
     mcp_tool_def: dict[str, Any],
     mcp_tool_call_counts: dict[str, int],
     jobs: _JobManager,
+    request_context: McpRequestContext | None = None,
 ) -> McpToolContent:
     """Run a Booley Flow subprocess and return an MCP result.
 
@@ -3712,6 +3734,8 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(work_dir_error)
     try:
         context = resolve_call_context(arguments)
+        if request_context is not None and request_context.session_key() is not None:
+            context = replace(context, session_key=request_context.session_key())
     except (GoalBindingError, GoalStoreError) as exc:
         return _error_result(f"ERROR: {exc}")
 
@@ -4097,12 +4121,11 @@ async def _dispatch_application_tool(
     bwave_result = await _dispatch_bwave(name, arguments)
     if bwave_result is not None:
         return _prepend_changed_health_alert(bwave_result)
-    result = await _dispatch_booley_mcp_tool(
-        name,
-        arguments,
-        dict(mcp_tool_def),
-        mcp_tool_call_counts,
-        jobs,
+    args = (name, arguments, dict(mcp_tool_def), mcp_tool_call_counts, jobs)
+    result = (
+        await _dispatch_booley_mcp_tool(*args)
+        if request_context is None
+        else await _dispatch_booley_mcp_tool(*args, request_context=request_context)
     )
     return _prepend_changed_health_alert(result)
 
@@ -4187,51 +4210,159 @@ def build_mcp_probe_payload() -> dict[str, Any]:
     }
 
 
+def _sdk_tool_result(
+    payload: McpToolContent | McpInputRequired,
+) -> CallToolResult | InputRequiredResult:
+    """Project transport-neutral results at the SDK boundary."""
+    if isinstance(payload, McpInputRequired):
+        return InputRequiredResult(
+            request_state=payload.request_state,
+            input_requests={
+                payload.response_key: ElicitRequest(
+                    method="elicitation/create",
+                    params=ElicitRequestFormParams(
+                        mode="form",
+                        message=payload.message,
+                        requested_schema=payload.form_schema,
+                    ),
+                )
+            },
+        )
+    return CallToolResult(
+        content=[TextContent(type="text", text=block.text) for block in payload.content],
+        structuredContent=payload.structured_content,
+        isError=payload.is_error,
+    )
+
+
 async def _call_application_tool(
     application: McpApplication,
     params: CallToolRequestParams,
     context: ServerRequestContext | None = None,
+    observer: SessionObserver | None = None,
 ) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
+    request = await _observed_request_context(context, params, observer)
     try:
-        if context is None:
+        if context is None and observer is None:
             payload = await application.call_tool(params.name, params.arguments or {})
         else:
             payload = await application.call_tool(
-                params.name,
-                params.arguments or {},
-                request_context=_application_request_context(context, params),
+                params.name, params.arguments or {}, request_context=request
             )
-        if isinstance(payload, McpInputRequired):
-            return InputRequiredResult(
-                request_state=payload.request_state,
-                input_requests={
-                    payload.response_key: ElicitRequest(
-                        method="elicitation/create",
-                        params=ElicitRequestFormParams(
-                            mode="form",
-                            message=payload.message,
-                            requested_schema=payload.form_schema,
-                        ),
-                    )
-                },
-            )
-        return CallToolResult(
-            content=[TextContent(type="text", text=block.text) for block in payload.content],
-            structuredContent=payload.structured_content,
-            isError=payload.is_error,
-        )
+        payload = await _observe_tool_completion(payload, request, params.name, observer)
+        return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
+        if observer is not None:
+            await _record_presence(observer, request.attribution, params.name, "unknown-tool")
         hidden = _interactive_hidden_note(exc.name)
+        message = hidden or f"Unknown MCP tool: {exc.name}"
         raise MCPError(
             INVALID_PARAMS,
-            hidden or f"Unknown MCP tool: {exc.name}",
+            message,
         ) from None
     except MCPError:
         raise
     except Exception as exc:
+        if observer is not None:
+            await _record_presence(observer, request.attribution, params.name, "error")
         logger.exception("Unexpected MCP tool failure for %s", params.name)
-        raise MCPError(INTERNAL_ERROR, "Internal server error") from exc
+        message = "Internal server error"
+        raise MCPError(INTERNAL_ERROR, message) from exc
+
+
+async def _record_presence(
+    observer: SessionObserver,
+    facts: Attribution | None,
+    tool: str,
+    outcome: str,
+) -> None:
+    """Presence is advisory: storage defects never replace an application result."""
+    try:
+        await observer.record(facts, tool, outcome)
+    except Exception:
+        logger.debug("Session completion observation unavailable", exc_info=True)
+
+
+async def _observe_tool_completion(
+    payload: McpToolPayload | McpInputRequired,
+    request: McpRequestContext,
+    tool: str,
+    observer: SessionObserver | None,
+) -> McpToolPayload | McpInputRequired:
+    """Add at most one shared warning without changing successful tool payloads."""
+    if not goal_mode_preview_enabled():
+        return payload
+    if observer is not None:
+        outcome = (
+            "input-required"
+            if isinstance(payload, McpInputRequired)
+            else ("error" if payload.is_error else "completed")
+        )
+        await _record_presence(observer, request.attribution, tool, outcome)
+    if not payload.goal_aware:
+        return payload
+    warning = request.presentation_warning
+    if observer is not None:
+        try:
+            _, warning = await observer.shared(request.attribution)
+        except Exception:
+            logger.debug("Session completion presentation unavailable", exc_info=True)
+    text = (
+        payload.message
+        if isinstance(payload, McpInputRequired)
+        else "\n".join(block.text for block in payload.content)
+    )
+    if not warning or warning in text.splitlines():
+        return payload
+    if isinstance(payload, McpInputRequired):
+        return replace(payload, message=payload.message + "\n" + warning)
+    return replace(payload, content=(*payload.content, McpTextBlock(warning)))
+
+
+async def _observed_request_context(
+    context: ServerRequestContext | None,
+    params: CallToolRequestParams,
+    observer: SessionObserver | None,
+) -> McpRequestContext:
+    """Unexpected advisory failures cannot prevent application dispatch."""
+    try:
+        return await _resolve_observed_request_context(context, params, observer)
+    except Exception:
+        logger.debug("Session request observation unavailable", exc_info=True)
+        return (
+            McpRequestContext()
+            if context is None
+            else _application_request_context(context, params)
+        )
+
+
+async def _resolve_observed_request_context(
+    context: ServerRequestContext | None,
+    params: CallToolRequestParams,
+    observer: SessionObserver | None,
+) -> McpRequestContext:
+    request = (
+        McpRequestContext() if context is None else _application_request_context(context, params)
+    )
+    if observer is None or not goal_mode_preview_enabled():
+        return request
+    client = context.session.client_params if context is not None else None
+    name = client.client_info.name if client is not None else ""
+    meta = dict(params.meta) if params.meta is not None else {}
+    facts = await observer.attribution(
+        params.arguments or {},
+        meta,
+        name,
+        request=context.request if context is not None else None,
+        tool=params.name,
+    )
+    if params.name != "tools/list":
+        facts = await observer.resolved(facts)
+    keys, warning = await observer.shared(facts)
+    return replace(
+        request, attribution=facts, other_session_keys=keys, presentation_warning=warning
+    )
 
 
 def _application_request_context(
@@ -4263,6 +4394,10 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
         _params: PaginatedRequestParams | None,
     ) -> ListToolsResult:
         lifetime.mark_activity()
+        request = await _observed_request_context(
+            _ctx, CallToolRequestParams(name="tools/list", meta=_ctx.meta), lifetime.sessions
+        )
+        await lifetime.sessions.record(request.attribution, "tools/list", "completed")
         return ListToolsResult(tools=[_sdk_tool(tool) for tool in application.list_tools()])
 
     async def handle_call_tool(
@@ -4271,7 +4406,7 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
     ) -> CallToolResult | InputRequiredResult:
         lifetime.mark_mcp_endpoint_start()
         try:
-            return await _call_application_tool(application, params, _ctx)
+            return await _call_application_tool(application, params, _ctx, lifetime.sessions)
         finally:
             lifetime.mark_mcp_endpoint_end()
 
@@ -4400,11 +4535,16 @@ async def _main() -> None:
                 server.create_initialization_options(),
             ),
         )
+        maintenance = asyncio.create_task(lifetime.sessions.maintenance_loop())
         watchdog_task = asyncio.create_task(lifetime.wait_until_stale())
         done, pending = await asyncio.wait(
             {run_task, watchdog_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
+        lifetime.sessions.close()
+        maintenance.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await maintenance
         if run_task in done:
             watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -4436,6 +4576,7 @@ def _run_http(port: int) -> None:
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
     app = _streamable_http_app(server)
+    app = SessionMaintenanceApp(app, lifetime.sessions)
     logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
     uvicorn.run(app, host=_HTTP_HOST, port=port, log_level="warning")
 
@@ -4448,12 +4589,14 @@ def _streamable_http_app(server: Server):
         allowed_hosts=["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*"],
         allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
     )
-    return server.streamable_http_app(
-        streamable_http_path=HTTP_ENDPOINT_PATH,
-        json_response=True,
-        max_request_body_size=4 * 1024 * 1024,
-        transport_security=security,
-        host=_HTTP_HOST,
+    return PeerBoundary(
+        server.streamable_http_app(
+            streamable_http_path=HTTP_ENDPOINT_PATH,
+            json_response=True,
+            max_request_body_size=4 * 1024 * 1024,
+            transport_security=security,
+            host=_HTTP_HOST,
+        )
     )
 
 
@@ -4504,7 +4647,7 @@ def main() -> None:
 def _goal_warning_result(
     result: McpToolContent, binding: GoalRunBinding | None, session_key: str | None
 ) -> McpToolContent:
-    if binding is None:
+    if binding is None or not goal_mode_preview_enabled():
         return result
     try:
         prefix = goal_warnings(
@@ -4515,14 +4658,14 @@ def _goal_warning_result(
         )
     except GoalStoreError as exc:
         prefix = f"WARNING: Goal Record cannot be read: {exc}"
-    if not prefix:
-        return result
-    block = TextContent(type="text", text=prefix)
-    if isinstance(result, McpDispatchResult):
-        return McpDispatchResult(
-            value=_prepend_health_block(result.value, block), is_error=result.is_error
-        )
-    return _prepend_health_block(result, block)
+    payload = result.value if isinstance(result, McpDispatchResult) else result
+    if prefix:
+        payload = _prepend_health_block(payload, TextContent(type="text", text=prefix))
+    return McpDispatchResult(
+        value=payload,
+        is_error=result.is_error if isinstance(result, McpDispatchResult) else False,
+        goal_aware=True,
+    )
 
 
 async def _dispatch_poll(arguments: dict[str, Any], jobs: _JobManager) -> McpToolContent:

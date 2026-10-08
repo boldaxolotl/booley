@@ -108,7 +108,9 @@ def wait_for_file_lock(
         raise ValueError("file-lock timeout must be finite and non-negative")
     deadline = time.monotonic() + timeout_s
     next_report = 0.0
-    while time.monotonic() <= deadline:
+    first_attempt = True
+    while first_attempt or time.monotonic() <= deadline:
+        first_attempt = False
         try:
             acquire_file_lock(handle)
             return

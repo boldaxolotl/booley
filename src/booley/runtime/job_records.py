@@ -110,6 +110,8 @@ class JobRecord:
     work_dir: str | None = None
     session_key: str | None = None
     binding: dict[str, Any] | None = None
+    process_identity: dict[str, Any] | None = None
+    ended_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
