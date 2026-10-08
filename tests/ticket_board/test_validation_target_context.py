@@ -32,11 +32,11 @@ def _git(root: Path, *args: str) -> None:
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
     root = tmp_path / "project"
-    fixture = Path(__file__).parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).parents[1] / "fixtures" / "goal_mode_smoke"
     shutil.copytree(fixture, root)
     # Provider materialization compares authored bytes; keep the fixture's
     # baseline surfaces identical across Git for Windows and Linux checkouts.
-    for surface in (root / "ticket_mode_smoke.core", root / ".booley_project/tests.toml"):
+    for surface in (root / "goal_mode_smoke.core", root / ".booley_project/tests.toml"):
         surface.write_bytes(surface.read_bytes().replace(b"\r\n", b"\n"))
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
     monkeypatch.setenv("PROJECT_ROOT", str(root))
@@ -128,7 +128,7 @@ def _firmware_provider(root: Path, board: TicketIO) -> Path:
     hook.parent.mkdir(parents=True)
     hook.write_text(_FIRMWARE_HOOK, encoding="utf-8")
     (root / ".gitignore").write_text("/firmware/firmware.hex\n", encoding="utf-8")
-    core = root / "ticket_mode_smoke.core"
+    core = root / "goal_mode_smoke.core"
     content = core.read_text(encoding="utf-8")
     content = content.replace(
         "\ntargets:\n",
@@ -238,7 +238,7 @@ def test_coverage_rejects_icarus_target(project, capsys) -> None:
 
 def test_coverage_accepts_verilator_target(project, capsys) -> None:
     root, board = project
-    core = root / "ticket_mode_smoke.core"
+    core = root / "goal_mode_smoke.core"
     core.write_text(
         core.read_text(encoding="utf-8").replace(
             "tool: icarus\n      iverilog_options: [-g2012]",
@@ -246,7 +246,7 @@ def test_coverage_accepts_verilator_target(project, capsys) -> None:
         ),
         encoding="utf-8",
     )
-    _git(root, "add", "ticket_mode_smoke.core")
+    _git(root, "add", "goal_mode_smoke.core")
     _git(root, "commit", "-qm", "use Verilator")
     path = board.create_ticket_document(
         "coverage",
@@ -289,11 +289,11 @@ def test_draft_provider_target_is_not_consumer_authored(project, capsys) -> None
 
 
 def _deferred_provider(root: Path, board: TicketIO) -> None:
-    baseline_core = root / "ticket_mode_smoke.core"
+    baseline_core = root / "goal_mode_smoke.core"
     baseline_core.write_bytes(
         baseline_core.read_bytes().replace(b"\ntargets:\n", b"targets:\n", 1)
     )
-    _git(root, "add", "ticket_mode_smoke.core")
+    _git(root, "add", "goal_mode_smoke.core")
     _git(root, "commit", "-qm", "use compact core sections")
     provider = (
         "---\nsummary: Add deferred simulation Target\ntype: feature\nbranch: main\n"

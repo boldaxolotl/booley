@@ -63,10 +63,14 @@ the change, and the post-change validation requirement.
 
 Every code pull request retains representative before/after, repository-role,
 and first/last checkpoint recovery cases. The full interruption permutation
-set runs when Goal or Ticket Board code or tests, shared Git infrastructure, test
+set runs when Ticket Board code or tests, shared Git infrastructure, test
 configuration, dependency configuration, or CI orchestration changes. Unknown
 paths fail safe to the exhaustive set. Main pushes and the full scheduled
 matrix also run every recovery permutation.
+
+Goal code and tests and review code are release-sensitive inputs for the
+standard image validation. They do not independently select exhaustive
+Ticket Board recovery permutations.
 
 ## Performance telemetry
 

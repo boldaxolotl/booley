@@ -862,7 +862,7 @@ def test_implicit_yaml_date_cannot_enter_semantic_record() -> None:
 
 
 def test_project_view_freezes_canonical_target_identity(tmp_path: Path) -> None:
-    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goal_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
     view = ticket_authoring_view(project)
@@ -901,7 +901,7 @@ def test_each_synth_metric_has_its_own_target_binding() -> None:
 
 
 def test_v2_validation_uses_converted_sim_criterion(tmp_path: Path) -> None:
-    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goal_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
     view = ticket_authoring_view(project)
@@ -916,7 +916,7 @@ def test_v2_validation_uses_converted_sim_criterion(tmp_path: Path) -> None:
 
 
 def test_create_document_preserves_human_ticket_as_source(tmp_path: Path) -> None:
-    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goal_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
     ticket = _ticket("  LINT: {lint_smoke: clean}\n")
@@ -976,7 +976,7 @@ def test_execution_start_rejects_unbound_ticket_without_moving_it(tmp_path: Path
 
 
 def test_create_file_cli_accepts_complete_document(tmp_path: Path, monkeypatch) -> None:
-    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goal_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
     ticket = _ticket("  LINT: {lint_smoke: clean}\n")
@@ -991,7 +991,7 @@ def test_create_file_cli_accepts_complete_document(tmp_path: Path, monkeypatch) 
 
 
 def test_create_document_opens_git_authoring_workspace(tmp_path: Path) -> None:
-    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goal_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
     for command in (
@@ -1013,7 +1013,7 @@ def test_create_document_opens_git_authoring_workspace(tmp_path: Path) -> None:
 
 
 def test_v2_basis_publication_uses_converted_spec(tmp_path: Path, monkeypatch) -> None:
-    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goal_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project / ".booley_project"))
