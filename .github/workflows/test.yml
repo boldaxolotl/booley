@@ -1402,6 +1402,13 @@ jobs:
           if test -e ibex-demo; then
             sudo chown -R "$(id -u):$(id -g)" ibex-demo
           fi
+          readiness="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
+          if test -e "${readiness}"; then
+            sudo chown -R "$(id -u):$(id -g)" "${readiness}"
+          fi
+          if test -f "${readiness}/goal-readiness.json"; then
+            sudo chmod a+r "${readiness}/goal-readiness.json"
+          fi
 
       - name: Finalize RISC-V phase evidence
         if: always() && needs.changes.outputs.riscv_image == 'true'

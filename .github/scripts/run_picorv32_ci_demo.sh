@@ -5,7 +5,7 @@ set -euo pipefail
 
 readonly WORKSPACE="$1"
 readonly CONTAINER_NAME="$2"
-readonly EVIDENCE_DIR="${RUNNER_TEMP}/riscv-image-evidence"
+readonly EVIDENCE_DIR="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
 
 mkdir -p "${EVIDENCE_DIR}"
 sudo chown -R 1000:1000 demo "${EVIDENCE_DIR}"

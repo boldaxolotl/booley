@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.goals.model import parse_goal_arg
+
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 import goal_mode_driver as driver
 from tests.smoke import test_goal_mode_image_smoke as smoke
@@ -242,10 +244,93 @@ def test_client_uses_modern_wire_preview_and_verifies_saved_state(
 def test_entry_warnings_are_recorded_without_refusing_readiness() -> None:
     warning = "Target needs a generated input"
     result, calls = _exercise(
-        [_reply(_ENTER + "\nWarnings:\n" + warning), _reply(_STATUS)], readiness=True
+        [
+            _reply(
+                _ENTER + f"\nWarnings:\n- {warning}\n\nRules:\n- Keep working\nWARNING: footer"
+            ),
+            _reply(_STATUS),
+        ],
+        readiness=True,
     )
     assert result["steps"]["goal_enter"]["warnings"] == [warning]
     assert [name for name, _ in calls] == ["goal_enter", "goal_status"]
+
+
+@pytest.fixture(scope="module")
+def readiness_workspace(tmp_path_factory):
+    root = tmp_path_factory.mktemp("readiness")
+    worktree = root / "worktree"
+    (worktree / ".booley_project").mkdir(parents=True)
+    (worktree / ".booley_project/booley.toml").write_text("[stealth]\nenabled=false\n")
+    (worktree / "fixture.core").write_text(
+        "CAPI=2:\nname: ci:demo:fixture:0\ntargets:\n"
+        + "".join(
+            f"  {name}: {{default_tool: verilator}}\n"
+            for name in driver.load_contract(
+                Path(".github/contracts/picorv32-demo.toml")
+            ).required_targets
+        )
+    )
+    return driver.Workspace(root, worktree)
+
+
+def _readiness_client(workspace, goals, record, monkeypatch, warning=""):
+    specs = driver.translate_goals(goals).goals
+    session = FakeSession(
+        [
+            _reply(f"Goal Mode {_ID} entered in {workspace.worktree}.\n{warning}"),
+            _reply(
+                f"{_ID} (active) · 0/{len(specs)} met\n"
+                + "\n".join(f"{spec.key} unmet no evidence" for spec in specs)
+            ),
+        ]
+    )
+
+    @asynccontextmanager
+    async def client(_workspace, _python):
+        yield session
+
+    monkeypatch.setattr(driver, "client_session", client)
+    monkeypatch.setattr(
+        driver, "GoalStore", lambda _path: SimpleNamespace(load=lambda _id: record)
+    )
+    return asyncio.run(driver._client_run(workspace, goals, Path(sys.executable), True))
+
+
+@pytest.mark.parametrize("target", [None, "ghost"])
+def test_readiness_rejects_unresolved_record_targets_without_warning_prose(
+    readiness_workspace, monkeypatch, target
+) -> None:
+    goals = [parse_goal_arg({"family": "lint", "target": target or "lint_core"})]
+    key = driver.translate_goals(goals).goals[0].key
+    record = SimpleNamespace(
+        state=driver.GoalState.ACTIVE,
+        goals=(SimpleNamespace(spec=SimpleNamespace(key=key, target=target)),),
+    )
+    with pytest.raises(driver.GoalDriverError, match="Target"):
+        _readiness_client(readiness_workspace, goals, record, monkeypatch)
+
+
+def test_full_contract_readiness_records_resolved_targets_and_preserves_harmless_warnings(
+    readiness_workspace, monkeypatch
+) -> None:
+    goals = driver.load_contract(Path(".github/contracts/picorv32-demo.toml")).required_goals
+    specs = driver.translate_goals(goals).goals
+    record = SimpleNamespace(
+        state=driver.GoalState.ACTIVE, goals=tuple(SimpleNamespace(spec=spec) for spec in specs)
+    )
+    result = _readiness_client(
+        readiness_workspace,
+        goals,
+        record,
+        monkeypatch,
+        "Warnings:\n- Harmless advisory\n\nRules:\n- Rule\nWARNING: footer",
+    )
+    assert result["resolved_targets"] == {
+        spec.key: f"ci:demo:fixture:0#{spec.target}" for spec in specs
+    }
+    assert set(result["goals"].values()) == {"unmet"}
+    assert result["steps"]["goal_enter"]["warnings"] == ["Harmless advisory"]
 
 
 @pytest.mark.parametrize("flag", [None, False, True])

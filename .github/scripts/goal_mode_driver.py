@@ -27,7 +27,7 @@ from uuid import uuid4
 from mcp import Client, StdioServerParameters
 
 from booley.dev_support.demo_contract_codec import load_contract
-from booley.goals.model import GoalArg, GoalFamily, GoalState, goal_arg_to_json
+from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
 from booley.runtime.atomic_files import atomic_replace_bytes
@@ -35,6 +35,8 @@ from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.project_repositories import is_git_worktree_root
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
 TOOL_TIMEOUT_SECONDS = 600
@@ -147,8 +149,18 @@ async def enter(session: ToolSession, worktree: Path, goals: Sequence[GoalArg]) 
     match = _ENTRY.search(text)
     if match is None or match.group(2) != str(worktree):
         raise GoalDriverError(f"goal_enter did not prove entry: {text}")
-    warnings = text.partition("Warnings:")[2].strip().splitlines()
+    warnings = _entry_warnings(text)
     return {"record_id": match.group(1), "status": "pass", "response": text, "warnings": warnings}
+
+
+def _entry_warnings(text: str) -> list[str]:
+    """Entry renders warning bullets before a blank line and the Rules block."""
+    warnings = []
+    for line in text.partition("Warnings:\n")[2].splitlines():
+        if not line.startswith("- "):
+            break
+        warnings.append(line.removeprefix("- "))
+    return warnings
 
 
 async def _status(
@@ -323,7 +335,29 @@ async def _client_run(
     expected = GoalState.ACTIVE if check_readiness else GoalState.FINISHED
     if record.state is not expected:
         raise GoalDriverError(f"persisted Goal state {record.state} differs from {expected}")
+    if check_readiness:
+        result["resolved_targets"] = _resolved_targets(record, workspace.worktree, goals)
     return {"schema": 1, "protocol": MCP_PROTOCOL_VERSION, "disposable": True, **result}
+
+
+def _resolved_targets(
+    record: GoalRecord, worktree: Path, goals: Sequence[GoalArg]
+) -> dict[str, str]:
+    """Prove recorded Goal bindings through the same Target catalog used at entry."""
+    expected = {spec.key: spec.target for spec in translate_goals(goals).goals}
+    actual = {goal.spec.key: goal.spec.target for goal in record.goals}
+    if actual != expected:
+        raise GoalDriverError("saved Goal Target bindings differ from the declared Goals")
+    resolved: dict[str, str] = {}
+    try:
+        catalog = TargetCatalog.build(worktree)
+        for key, target in actual.items():
+            if target is None:
+                raise GoalDriverError(f"Goal {key} has no Target")
+            resolved[key] = catalog.select(target).identity
+    except FuseSocError as exc:
+        raise GoalDriverError(f"readiness Target resolution failed: {exc}") from exc
+    return resolved
 
 
 def validate(

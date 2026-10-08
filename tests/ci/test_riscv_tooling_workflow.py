@@ -66,6 +66,11 @@ shift
 exec "$@"
 """
 
+_FAKE_SUDO = r"""#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >> "${FAKE_LOG}"
+if [[ "$1" == chmod ]]; then shift; exec chmod "$@"; fi
+"""
+
 
 def _steps() -> list[dict]:
     workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
@@ -92,6 +97,7 @@ def _run(
         ("python", _FAKE_PYTHON),
         ("docker", _FAKE_DOCKER),
         ("timeout", _FAKE_TIMEOUT),
+        ("sudo", _FAKE_SUDO),
     ):
         fake = bin_dir / name
         fake.write_text(body, encoding="utf-8")
@@ -118,6 +124,38 @@ def _run(
         timeout=60,
     )
     return result, log.read_text(encoding="utf-8").splitlines()
+
+
+def test_demo_chowns_and_mounts_only_its_readiness_subdirectory(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        {"run": 'bash .github/scripts/run_picorv32_ci_demo.sh "${TEST_WORKSPACE}" booley-r2'},
+        {"TEST_WORKSPACE": str(tmp_path)},
+    )
+    directory = tmp_path / "runner/riscv-image-evidence/goal-readiness"
+    assert result.returncode == 0, result.stderr
+    assert [call for call in calls if call.startswith("sudo chown")] == [
+        f"sudo chown -R 1000:1000 demo {directory}"
+    ]
+    assert any(f"src={directory},dst=/evidence" in call for call in calls)
+
+
+def test_readiness_ownership_and_upload_access_are_restored_before_finalize(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "runner/riscv-image-evidence/goal-readiness"
+    directory.mkdir(parents=True)
+    evidence = directory / "goal-readiness.json"
+    evidence.write_text("{}")
+    evidence.chmod(0o600)
+    step = _step("Restore RISC-V demo checkout ownership")
+    assert "always()" in step["if"]
+    steps = _steps()
+    assert steps.index(step) < steps.index(_step("Finalize RISC-V phase evidence"))
+    result, calls = _run(tmp_path, step, {})
+    assert result.returncode == 0, result.stderr
+    assert f"sudo chown -R {os.getuid()}:{os.getgid()} {directory}" in calls
+    assert evidence.stat().st_mode & 0o004
 
 
 # --- Resolve step ---------------------------------------------------------
