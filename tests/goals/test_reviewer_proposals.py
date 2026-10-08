@@ -65,6 +65,8 @@ def review_issues(has_finding):
     )
 
 
+# Windows runners take 30-40 s here; keep headroom under the 50% budget check.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("has_finding", [False, True])
 def test_modern_review_relaxation_preserves_actual_specialist_receipt(
     layout, monkeypatch, has_finding
