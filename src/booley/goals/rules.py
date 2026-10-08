@@ -33,7 +33,8 @@ def goal_mode_rules() -> str:
         "Never weaken tests or Targets to meet a Goal: `.core` and `tests.toml` "
         "edits, and `.sdc`/`.xdc` edits, are flagged in the review package.",
         "When fixing a bug, reproduce it first: before changing code, run the Booley "
-        "Flow test that should catch it and confirm the test fails. If it already "
+        "Flow test that should catch it and confirm the test fails for the reported bug, not for an unrelated "
+        "build or setup error. If it already "
         "passes, the test does not detect the bug and a later pass proves nothing; "
         "tell the human in chat, and propose a Goal change through "
         "`goal_propose_change` if a Goal depends on it.",
