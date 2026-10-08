@@ -2707,7 +2707,7 @@ def _format_job_running_poll(run_id: str) -> str:
     return (
         f"{message} Nonterminal checkpoint ({phase}): completed targets "
         f"{completed}; pending targets {pending}. This partial checkpoint is "
-        "not a final synthesis verdict."
+        "not a final Flow verdict."
     )
 
 
@@ -3278,7 +3278,7 @@ async def _poll_from_disk(
             return jobs.result_content(run_id)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return [TextContent(type="text", text=_format_job_running_poll(run_id))]
+            return _running_poll_content(run_id)
         await asyncio.sleep(min(_DISK_POLL_TICK_SECONDS, remaining))
 
 
@@ -3461,7 +3461,10 @@ async def _dispatch_async_job(
     finished = await jobs.wait(run_id, _job_inline_wait_seconds())
     if finished:
         return jobs.result_content(run_id)
-    return [TextContent(type="text", text=_format_job_running(name, run_id))]
+    return _with_structured_report(
+        [TextContent(type="text", text=_format_job_running(name, run_id))],
+        _running_progress(run_id),
+    )
 
 
 def _strip_transcript_dir(argv: list[str]) -> list[str]:
@@ -3546,7 +3549,10 @@ async def _attach_to_job(
         return await _poll_from_disk(run_id, jobs, inline_wait)
     if finished:
         return jobs.result_content(run_id)
-    return [TextContent(type="text", text=_format_job_attached(name, run_id))]
+    return _with_structured_report(
+        [TextContent(type="text", text=_format_job_attached(name, run_id))],
+        _running_progress(run_id),
+    )
 
 
 def _validate_work_dir(value: Any) -> str | None:

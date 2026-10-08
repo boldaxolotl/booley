@@ -53,6 +53,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -92,6 +93,7 @@ from booley.flows.sim.backends.cocotb_results import (
 )
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
+    RunLogProgress,
     RunTermination,
     append_child_cpu_marker,
     child_cpu_snapshot,
@@ -556,6 +558,7 @@ def _stream_output(
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = 0.0,
     on_line: Callable[[str], None] | None = None,
+    work_dir: Path | None = None,
     runtime_inputs: tuple[str, ...] = (),
 ) -> tuple[deque[str], subprocess.Popen, RunTermination]:
     """Run the sim, stream stdout live, enforce *timeout* (seconds).
@@ -598,6 +601,7 @@ def _stream_output(
     guard.start()
     stall_guard = SimTimeStallGuard(proc, sim_time_grace_s)
     stall_guard.start()
+    progress = RunLogProgress(work_dir, time.monotonic())
     fatal_termination: RunTermination | None = None
     stdout = proc.stdout
     try:
@@ -605,6 +609,7 @@ def _stream_output(
         for line in stdout:
             print(line, end="", flush=True)
             lines.append(line)
+            progress.observe(lines)
             if on_line is not None:
                 on_line(line)
             # F-25: track the simulator's own clock, so a cocotb/simulator
@@ -621,6 +626,7 @@ def _stream_output(
         proc.wait()
     finally:
         _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started)
+        progress.final_flush(lines)
 
     if fatal_termination is None and not timed_out["hit"] and not stall_guard.tripped:
         guard.finish()
@@ -1091,6 +1097,7 @@ def _execute_cocotb_run(
             max_rundir_bytes=max_rundir_bytes,
             sim_time_grace_s=sim_time_grace_s,
             on_line=publish,
+            work_dir=run.work_dir,
             runtime_inputs=runtime_inputs,
         )
     finally:

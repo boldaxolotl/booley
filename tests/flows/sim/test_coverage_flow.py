@@ -3090,3 +3090,30 @@ def test_owned_coverage_sink_crash_preserves_actual_hook_before_adapter_launch(
     assert all(f.document["stdout_tail"] == "owned-hook\n" for f in firings)
     assert all(f.document["returncode"] == 0 for f in firings)
     assert not list(request.store.root.glob("work-items/*/result.json"))
+
+
+def test_coverage_next_stage_keeps_returned_target_and_coverage_flag(tmp_path: Path) -> None:
+    from booley.flows.sim.coverage_progress import CoverageProgress
+    from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
+    from booley.flows.sim.live_progress import LiveProgressSink, attempt_scope, install_progress
+
+    path = tmp_path / "progress.json"
+    progress = CoverageProgress(tmp_path, ("first", "active"))
+    first = CoverageTargetOutcome(
+        "first", 0, tmp_path / "coverage.json", tmp_path / "sim.json", {"grade": "pass"}
+    )
+    sink = LiveProgressSink(path, tmp_path, os.environ.get("BOOLEY_RUN_ID", ""))
+    with install_progress(sink):
+        progress.checkpoint()
+        progress.completed(first)
+        with attempt_scope("active"):
+            payload = json.loads(path.read_text())
+            assert payload["coverage"] is True
+            assert payload["completed_targets"] == ["first"]
+            assert payload["detail"]["first"] == {"grade": "pass", "exit_code": 0}
+            assert payload["active"][0]["target"] == "active"
+            assert payload["active"][0]["stage"] == "preparing"
+        progress.checkpoint(complete=True, phase="aborted")
+    final = json.loads(path.read_text())
+    assert "active" not in final
+    assert final["detail"]["first"]["grade"] == "pass"

@@ -883,6 +883,13 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
     monkeypatch.setattr(flow, "_resume_campaign_plan", lambda *_args, **_kwargs: plan)
 
     def resume_executor(_coverage):
+        checkpoints = list(destination.glob("sim/[0-9]*/progress.json"))
+        assert len(checkpoints) == 1
+        preparing = json.loads(checkpoints[0].read_text())
+        assert preparing["complete"] is False
+        assert preparing["completed_targets"] == []
+        assert preparing["active"][0]["stage"] == "preparing"
+        assert preparing["active"][0]["operation"] == "publication"
         assert capsys.readouterr().err == _WORK_DIR_NOTICE + f"campaign manifest: {seen[0]}\n"
         return OrdinaryHdlSerialExecutor(
             invoke=lambda *_args, **_kwargs: None, execution_factory=factory
@@ -895,6 +902,10 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
         )
     )
     assert resumed.exit_code == result.exit_code
+    checkpoint = json.loads(next(destination.glob("sim/[0-9]*/progress.json")).read_text())
+    assert checkpoint["complete"] is True
+    assert checkpoint["completed_targets"] == ["sim"]
+    assert "active" not in checkpoint
     assert f"  manifest: {seen[0]}" in resumed.outcome.report_text
     assert f"  report: {(destination / 'sim.json').resolve()}" in resumed.outcome.report_text
 
@@ -1743,3 +1754,131 @@ def test_public_ticket_integrity_downgrade_never_commits_or_publishes_true(
         assert "Simulation Campaign integrity failure" in report["report_text"]
         assert report["detail"]["pre_sim_current"] == 2
         assert len(report["detail"]["pre_sim_lines"]) == 2
+
+
+def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = SimulateFlow()
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
+    returned = SimpleNamespace(target=plan.manifest.document["target"])
+    phases = []
+    monkeypatch.setattr(flow, "_run_validated_resume_campaign", lambda *_args: returned)
+
+    def checkpoint(_targets, outcomes, *, phase, complete):
+        phases.append(phase)
+        if complete:
+            assert outcomes == [returned]
+            raise OSError("required terminal write unavailable")
+
+    monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
+    outcome, error = flow._execute_ordinary_resume_progress(
+        SimpleNamespace(manifest=plan.manifest),
+        tmp_path,
+        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        lambda _path: None,
+    )
+    assert outcome is returned
+    assert isinstance(error, OSError)
+    assert phases == ["starting", "running", "complete", "aborted"]
+    assert flow.context._simulation_report_outcomes == (returned,)
+
+
+@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
+def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    access: str,
+) -> None:
+    from booley.flows.sim.request import SimRequest
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    with (project / ".booley_project/booley.toml").open("a") as config:
+        config.write(f'pre_sim_build_access = "{access}"\n')
+    original = flow._execute_boundary
+    observations = []
+    reports = tmp_path / "reports"
+
+    def invoke(command, *, timeout=None):
+        invocation = flow.context._reserved_invocation_dir
+        if invocation is not None and (invocation / "progress.json").exists():
+            progress = json.loads((invocation / "progress.json").read_text())
+            for active in progress.get("active", []):
+                if active["stage"] == "executing":
+                    assert progress["complete"] is False
+                    assert progress["completed_targets"] == []
+                    pointer = active["log"]
+                    assert pointer["live"] is True and pointer["complete"] is False
+                    log = project / pointer["path"]
+                    assert log.is_file()
+                    assert "flow=sim" in log.read_text().splitlines()[0]
+                    assert str(log.parent) in command[-1]
+                observations.append(active["stage"])
+        return original(command, timeout=timeout)
+
+    monkeypatch.setattr(flow, "_execute_boundary", invoke)
+    result = flow.execute(SimRequest(target="sim_a", work_dir=project, report_dir=reports))
+    assert result.exit_code == 0, result.outcome.report_text
+    assert "building" in observations
+    assert observations.count("executing") == 2
+    terminal = json.loads((reports / "sim/1/progress.json").read_text())
+    assert terminal["completed_targets"] == ["sim_a"]
+    assert "active" not in terminal
+
+
+def test_prepared_campaign_active_write_failure_preserves_durable_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.flows.sim import live_progress
+    from booley.flows.sim.request import SimRequest
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    control_reports = tmp_path / "control-reports"
+    control = SimulateFlow().execute(
+        SimRequest(target="sim_a", work_dir=project, report_dir=control_reports)
+    )
+    assert control.exit_code == 0, control.outcome.report_text
+    control_campaign = control_reports / "sim/1/targets/sim_a/campaign"
+    control_records = sorted(
+        (
+            json.loads(path.read_text())
+            for path in control_campaign.glob("work-items/*/result.json")
+        ),
+        key=lambda record: record["observations"][0]["test"],
+    )
+    publish = live_progress.write_progress_json
+    failures = []
+
+    def fail_active(path, payload, **kwargs):
+        if "lock_timeout_s" in kwargs:
+            failures.append(payload["phase"])
+            raise OSError("advisory checkpoint unavailable")
+        return publish(path, payload, **kwargs)
+
+    monkeypatch.setattr(live_progress, "write_progress_json", fail_active)
+    reports = tmp_path / "reports"
+    result = flow.execute(SimRequest(target="sim_a", work_dir=project, report_dir=reports))
+    assert result.exit_code == 0, result.outcome.report_text
+    assert failures
+    assert "observation_error" in result.outcome.detail
+    assert "campaign_error" not in result.outcome.detail
+    campaign = reports / "sim/1/targets/sim_a/campaign"
+    results = [json.loads(path.read_text()) for path in campaign.glob("work-items/*/result.json")]
+    assert len(results) == 2
+    assert all(record["grade"] == "pass" for record in results)
+    results.sort(key=lambda record: record["observations"][0]["test"])
+    for record, expected in zip(results, control_records, strict=True):
+        assert {key: record[key] for key in ("grade", "state", "observations", "diagnostics")} == {
+            key: expected[key] for key in ("grade", "state", "observations", "diagnostics")
+        }
+    builds = [
+        json.loads(path.read_text())
+        for path in campaign.glob("build-variants/*/attempts/*/build-result.json")
+    ]
+    assert len(builds) == 1
+    assert builds[0]["state"] == "ready"
+    final = json.loads((reports / "sim/1/progress.json").read_text())
+    assert final["completed_targets"] == ["sim_a"]
+    assert final["observation_health"]["error"] == "OSError: advisory checkpoint unavailable"

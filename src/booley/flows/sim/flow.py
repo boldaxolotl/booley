@@ -52,7 +52,6 @@ from booley.flows.progress_lifecycle import (
     ProgressPublicationError,
     progress_document,
     supersede_progress,
-    write_progress_json,
 )
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign_reports import target_report_directory
@@ -70,6 +69,14 @@ from booley.flows.sim.coverage_campaign import (
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
+from booley.flows.sim.live_progress import (
+    LiveProgressSink,
+    attempt_scope,
+    current_progress,
+    install_progress,
+    observe_stage,
+    publish_checkpoint,
+)
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
@@ -2991,7 +2998,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             report_text="\n".join(lines),
         )
 
-    def _execute_campaign_resume(
+    def _execute_campaign_resume(self, validated, admission, observed) -> EndpointOutcome:
+        return self._with_live_progress(
+            lambda: self._execute_observed_campaign_resume(validated, admission, observed)
+        )
+
+    def _execute_observed_campaign_resume(
         self,
         validated: ValidatedResumeManifest,
         admission: object | None,
@@ -3134,11 +3146,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else None
         )
         if progress is None:
-            return (
-                self._run_validated_resume_campaign(
-                    validated, invocation, admission, coverage_plan, manifest_published
-                ),
-                None,
+            return self._execute_ordinary_resume_progress(
+                validated, invocation, admission, manifest_published
             )
         lifecycle = ProgressLifecycle(
             lambda phase: progress.checkpoint(complete=True, phase=phase)
@@ -3156,6 +3165,49 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     validated.path.parents[3] / "progress.json",
                     new_invocation=int(invocation.name),
                     new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+                )
+                lifecycle.complete()
+                return outcome, None
+        except ProgressPublicationError as exc:
+            if outcome is None:
+                raise
+            failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+            return outcome, failure
+
+    def _execute_ordinary_resume_progress(
+        self,
+        validated: ValidatedResumeManifest,
+        invocation: Path,
+        admission: AdmissionContext,
+        manifest_published: Callable[[Path], None],
+    ) -> tuple[CampaignOutcome, Exception | None]:
+        """Retain resume outcomes even when required terminal publication fails."""
+        target = cast(Mapping[str, object], validated.manifest.document["target"])
+        selector = str(target["selector"])
+        outcomes: list[CampaignOutcome] = []
+        lifecycle = ProgressLifecycle(
+            lambda phase: self._write_campaign_progress(
+                (selector,), outcomes, phase=phase, complete=True
+            )
+        )
+        outcome: CampaignOutcome | None = None
+        try:
+            with lifecycle:
+                self._write_campaign_progress(
+                    (selector,), outcomes, phase="starting", complete=False
+                )
+                with attempt_scope(
+                    selector,
+                    identity=f"{target['vlnv']}#{target['name']}",
+                    operation="publication",
+                ):
+                    outcome = self._run_validated_resume_campaign(
+                        validated, invocation, admission, None, manifest_published
+                    )
+                outcomes.append(outcome)
+                self.context._simulation_report_outcomes = (outcome,)
+                self._write_campaign_progress(
+                    (selector,), outcomes, phase="running", complete=False
                 )
                 lifecycle.complete()
                 return outcome, None
@@ -3471,6 +3523,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return self._run_coverage_invocation(invocation, prepared)
 
     def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
+        return self._with_live_progress(lambda: self._execute_coverage_campaigns(admission))
+
+    def _execute_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
         """Run each native coverage selection as one durable aggregate item."""
         if not isinstance(admission, AdmissionContext):
             return EndpointOutcome(
@@ -3713,6 +3768,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
 
     def _run_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
+        return self._with_live_progress(
+            lambda: self._execute_coverage_invocation(invocation, prepared)
+        )
+
+    def _execute_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
         progress = CoverageProgress(
             invocation, tuple(item.handle.selector for item in prepared.targets)
         )
@@ -3725,7 +3785,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             with lifecycle:
                 progress.checkpoint()
                 for target in prepared.targets:
-                    outcome = self._execute_coverage_target(target, progress, started_at)
+                    with attempt_scope(target.handle.selector, identity=target.handle.identity):
+                        outcome = self._execute_coverage_target(target, progress, started_at)
                     outcomes.append(outcome)
                     if outcome.abort_remaining:
                         break
@@ -3857,7 +3918,35 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return self._run_ordinary_campaigns(targets, test_names_map, admission)
         return self._run_legacy_selected_mode(targets, test_names_map, total_start, resolution_s)
 
-    def _run_legacy_selected_mode(
+    def _with_live_progress(self, run: Callable[[], EndpointOutcome]) -> EndpointOutcome:
+        """Bind execution observations to the original destination invocation."""
+        args = self._args
+        if args is None or getattr(args, "dry_run", False) or current_progress() is not None:
+            return run()
+        if not hasattr(args, "work_dir"):
+            return run()
+        invocation = self.reserve_invocation_dir()
+        if invocation is None:
+            return run()
+        sink = LiveProgressSink(
+            invocation / "progress.json",
+            Path(self.args.work_dir),
+            os.environ.get("BOOLEY_RUN_ID", ""),
+        )
+        with install_progress(sink):
+            result = run()
+        if sink.error is not None:
+            result.detail["observation_error"] = sink.error
+        return result
+
+    def _run_legacy_selected_mode(self, targets, test_names_map, total_start, resolution_s):
+        return self._with_live_progress(
+            lambda: self._execute_legacy_selected_mode(
+                targets, test_names_map, total_start, resolution_s
+            )
+        )
+
+    def _execute_legacy_selected_mode(
         self, targets, test_names_map, total_start, resolution_s
     ) -> EndpointOutcome:
         self._legacy_pre_sim_runs = []
@@ -3914,7 +4003,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._baseline_results = baseline
         for target in targets:
             try:
-                result = self._run_resolved_target(target, test_names_map, lines)
+                with attempt_scope(target, tests=tuple(test_names_map.get(target, ()))):
+                    result = self._run_resolved_target(target, test_names_map, lines)
             except MissingExecutableError as exc:
                 return self._missing_executable_result(exc, target)
             except SimulationBuildInfrastructureError as exc:
@@ -4045,7 +4135,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         result.report_text = "\n".join(lines)
         return result
 
-    def _run_ordinary_campaigns(
+    def _run_ordinary_campaigns(self, targets, test_names_map, admission):
+        return self._with_live_progress(
+            lambda: self._execute_ordinary_campaigns(targets, test_names_map, admission)
+        )
+
+    def _execute_ordinary_campaigns(
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
@@ -4189,7 +4284,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         for request in (*baselines, *candidates):
             campaign.publish_new(request)
         for request in baselines:
-            campaign.run(request)
+            target = request.plan.manifest.document["target"]
+            with attempt_scope(
+                str(target["selector"]),
+                identity=f"{target['vlnv']}#{target['name']}",
+                role="baseline",
+                revision=str(target["revision"]),
+                ephemeral_root=request.project_root,
+            ):
+                campaign.run(request)
         for request in candidates:
             completed.append(campaign.run(request))
             if checkpoint is not None:
@@ -4219,7 +4322,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if complete != bool(payload["complete"]):
             raise ValueError("Simulation Campaign progress complete and phase disagree")
-        write_progress_json(invocation / "progress.json", payload)
+        publish_checkpoint(invocation / "progress.json", payload)
 
     def _plan_campaign_baselines(
         self,
@@ -4700,7 +4803,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return None
 
     def _run_elab_only(self) -> EndpointOutcome:
-        """Compile, elaborate, and link selected Simulation Targets without tests."""
+        """Validate the build-only selection before reserving execution resources."""
         preflight = self._elab_only_preflight()
         if isinstance(preflight, EndpointOutcome):
             return (
@@ -4708,7 +4811,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 if preflight.exit_code != EXIT_SUCCESS
                 else preflight
             )
-        targets = preflight
+        return self._with_live_progress(lambda: self._execute_elab_only(preflight))
+
+    def _execute_elab_only(self, targets: list[str]) -> EndpointOutcome:
+        """Compile, elaborate, and link selected Simulation Targets without tests."""
         results: list[ElabOnlyTargetResult] = []
         result: EndpointOutcome | None = None
         self._elab_progress_results = results
@@ -4944,7 +5050,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         results = self._elab_progress_results
         self._write_elab_only_progress(targets, results, phase="starting")
         for target in targets:
-            result = self._run_one_elab_only(target)
+            with attempt_scope(target, operation="elaboration"):
+                result = self._run_one_elab_only(target)
             self._record_elab_only_criterion(result)
             self._write_elab_only_target_report(result)
             if self.state._file_path is not None:
@@ -4962,10 +5069,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         exit_code = self._elab_only_exit_code(results)
         if not self._standalone_requested():
             return exit_code, None
-        standalone = self._run_standalone_check(
-            targets,
-            primary_ok=all(result.outcome.passed for result in results),
-        )
+        with attempt_scope(targets[0], operation="standalone"):
+            standalone = self._run_standalone_check(
+                targets,
+                primary_ok=all(result.outcome.passed for result in results),
+            )
         if standalone.eda_tool_failed:
             exit_code = EXIT_ERROR
         elif not standalone.passed and exit_code == EXIT_SUCCESS:
@@ -5021,6 +5129,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Run one canonical untraced Simulation build and archive its output."""
         from booley.flows.terminal_progress import announce_unit
 
+        observe_stage(target, "preparing")
         announce_unit("configure elaboration-only", target=target)
         started = time.monotonic()
         handle = self._target_handle(target)
@@ -5103,6 +5212,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ]
         from booley.flows.terminal_progress import announce_unit
 
+        observe_stage(target, "building", evidence_root=prepared.build_root, attempt_token=token)
         announce_unit("elaboration-only build", target=target)
         timeout_s = max(1, self._effective_build_timeout_ms() // 1000)
         proc = self._execute_boundary(command, timeout=timeout_s)
@@ -5236,7 +5346,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if complete != bool(payload["complete"]):
             raise ValueError("elaboration progress complete and phase disagree")
-        write_progress_json(invocation_dir / "progress.json", payload)
+        publish_checkpoint(invocation_dir / "progress.json", payload)
 
     def _handle_elab_only_dry_run(self, targets: list[str]) -> EndpointOutcome:
         del targets
@@ -5368,13 +5478,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                                 f"Cycle Count baseline selector {target!r} resolves to "
                                 f"{baseline_handle.identity!r}, expected {expected_identity!r}"
                             )
-                        result = self._run_target(
+                        with attempt_scope(
                             target,
-                            self._tb_top_for_target(target),
-                            baseline_tests,
-                            [],
-                            plan_role="baseline",
-                        )
+                            identity=baseline_handle.identity,
+                            role="baseline",
+                            revision=baseline_ref,
+                            ephemeral_root=worktree,
+                            tests=tuple(baseline_tests.get(target, ())),
+                        ):
+                            result = self._run_target(
+                                target,
+                                self._tb_top_for_target(target),
+                                baseline_tests,
+                                [],
+                                plan_role="baseline",
+                            )
                         result.target_identity = baseline_handle.identity
                         results[result.target_identity] = result
                         self._attach_workload_snapshots(result)
@@ -6377,7 +6495,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         if complete != bool(payload["complete"]):
             raise ValueError("simulation progress complete and phase disagree")
-        write_progress_json(invocation_dir / "progress.json", payload)
+        publish_checkpoint(invocation_dir / "progress.json", payload)
 
     def _persist_target_outcome(self, result: TargetResult) -> None:
         """Durably record one terminal Target before starting the next."""

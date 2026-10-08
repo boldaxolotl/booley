@@ -861,3 +861,78 @@ def test_documented_mode_aliases_name_replacement(tmp_path, caplog, flags, mode)
         "--build-only" in message and "--standalone" in message and "use --mode" in message
         for message in caplog.messages
     )
+
+
+def test_build_only_live_checkpoint_is_building_before_invoker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.live_progress import LiveProgressSink, attempt_scope, install_progress
+
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    invocation = flow.reserve_invocation_dir()
+    assert invocation is not None
+    prepared = PreparedSimulationBuild(
+        target="sim_dut",
+        target_identity="::dut:0#sim_dut",
+        resolved=MagicMock(),
+        work_root=tmp_path / "build",
+        build_root=tmp_path / "build",
+        eda_tool="verilator",
+        toplevel="tb_dut",
+        make_argv=("make",),
+        environment={},
+        fileset={},
+    )
+    observed = []
+
+    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
+        payload = json.loads((invocation / "progress.json").read_text())
+        observed.append(payload)
+        assert payload["phase"] == "starting"
+        assert payload["complete"] is False
+        assert {entry["stage"] for entry in payload["active"]} == {"building"}
+        token = re.search(r"token=([0-9a-f]+)", command[2])
+        assert token is not None
+        return _result(f"BOOLEY_BUILD_STAGE token={token.group(1)} rc=0\n")
+
+    monkeypatch.setattr(flow, "_execute_boundary", execute)
+    sink = LiveProgressSink(
+        invocation / "progress.json", tmp_path, os.environ.get("BOOLEY_RUN_ID", "")
+    )
+    with flow.context.publication_resources, install_progress(sink):
+        flow._write_elab_only_progress(["sim_dut"], [], phase="starting")
+        with attempt_scope("sim_dut", operation="elaboration"):
+            result = flow._execute_elab_only_build("sim_dut", prepared)
+    assert result.outcome.passed
+    assert len(observed) == 1
+
+
+def test_standalone_live_probe_has_module_and_build_only_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.live_progress import LiveProgressSink, install_progress
+
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    invocation = flow.reserve_invocation_dir()
+    assert invocation is not None
+
+    def execute(command, *, timeout):
+        payload = json.loads((invocation / "progress.json").read_text())
+        assert payload["phase"] == "starting"
+        assert [
+            (entry["target"], entry["stage"], entry["operation"]) for entry in payload["active"]
+        ] == [("dut", "building", "standalone")]
+        return _result("standalone compiled")
+
+    monkeypatch.setattr(flow, "_execute", execute)
+    monkeypatch.setattr(flow, "_standalone_compile_command", lambda *_args: ["compiler"])
+    sink = LiveProgressSink(
+        invocation / "progress.json", tmp_path, os.environ.get("BOOLEY_RUN_ID", "")
+    )
+    with flow.context.publication_resources, install_progress(sink):
+        flow._write_elab_only_progress(["sim_dut"], [], phase="starting")
+        finding, _log, error = flow._run_standalone_probe(
+            "dut", "dut.sv", [], "verilator", timeout_s=5
+        )
+    assert finding is None
+    assert error == ""
