@@ -147,6 +147,7 @@ def test_status_rules(goal_mode: SimpleNamespace) -> None:
     assert result.is_error is False
     assert "lint_clean_top" in result.value[0].text
     assert "Only Booley Flows" in result.value[0].text
+    assert "confirm the test fails" in result.value[0].text
 
 
 def test_two_goal_worktrees_and_interactive_restart_poll_cancel(goal_mode, monkeypatch, tmp_path):
