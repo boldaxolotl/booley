@@ -1,7 +1,7 @@
+"""Candidate image identity and Goal round-trip evidence without subprocesses."""
+
 from __future__ import annotations
 
-import json
-import os
 import sys
 from pathlib import Path
 
@@ -12,142 +12,68 @@ sys.path.insert(0, str(ROOT / ".github/scripts"))
 
 from release_validation import demo_surface
 
-from booley.ticket_board.board_layout import (
-    StateRecord,
-    state_record_path,
-    ticket_document_path,
-    write_state_record,
-)
-from booley.ticket_board.lifecycle import TicketState
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="release container validation requires POSIX executables"
-)
-
-
-def _executable(path: Path, body: str) -> Path:
-    path.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
-    path.chmod(0o755)
-    return path
-
-
-def _queued_ticket(tmp_path: Path) -> tuple[Path, Path]:
-    """Return (project, project state) holding the queued Ticket ``release-smoke``."""
-    project = tmp_path / "project"
-    state = tmp_path / "state"
-    tickets_dir = state / "tickets"
-    project.mkdir()
-    ticket = ticket_document_path(tickets_dir, "release-smoke")
-    ticket.parent.mkdir(parents=True)
-    state_record_path(tickets_dir, "release-smoke").parent.mkdir(parents=True)
-    ticket.write_text("release ticket\n", encoding="utf-8")
-    write_state_record(tickets_dir, "release-smoke", StateRecord.fresh(TicketState.QUEUED))
-    return project, state
-
-
-def test_demo_surface_uses_public_commands_without_mutating_ticket(
-    tmp_path: Path, monkeypatch
-) -> None:
-    project, state = _queued_ticket(tmp_path)
-    ticket = ticket_document_path(state / "tickets", "release-smoke")
-    record = state_record_path(state / "tickets", "release-smoke")
-    record_before = record.read_bytes()
-    command_log = tmp_path / "commands.jsonl"
-    monkeypatch.setenv("COMMAND_LOG", str(command_log))
-    monkeypatch.setenv("EXPECTED_VERSION", "1.2.3")
-    logger = (
-        "import json, os, sys\n"
-        "with open(os.environ['COMMAND_LOG'], 'a', encoding='utf-8') as stream:\n"
-        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-    )
-    python = _executable(
-        tmp_path / "python",
-        logger + "if '-c' in sys.argv and 'booley.__version__' in sys.argv[-1]:\n"
-        "    print(os.environ['EXPECTED_VERSION'])\n",
-    )
-    booley = _executable(tmp_path / "booley", logger)
-
-    evidence = demo_surface.validate(
-        project=project,
-        project_state=state,
-        ticket_slug="release-smoke",
-        expected_version="1.2.3",
-        python=python,
-        booley=booley,
-        candidate_sha="candidate-sha",
-        image_digest="sha256:image",
-    )
-
-    commands = [json.loads(line) for line in command_log.read_text(encoding="utf-8").splitlines()]
-    assert ["-I", "-m", "booley.ticket_board", "validate-ticket", str(ticket)] in commands
-    assert ["-I", "-m", "booley.ticket_board", "show", "release-smoke"] in commands
-    assert ["board", "show"] in commands
-    assert ticket.read_text(encoding="utf-8") == "release ticket\n"
-    assert record.read_bytes() == record_before
-    assert evidence["candidate"] == {
-        "sha": "candidate-sha",
-        "image_digest": "sha256:image",
-    }
-    assert evidence["checks"][-1] == {"id": "demo.ticket-immutable", "status": "pass"}
-    assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
-
-
-def _queued_demo(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    """Return (project, state, fake python, fake booley) for a queued demo Ticket."""
-    project, state = _queued_ticket(tmp_path)
-    python = _executable(tmp_path / "python", "import sys\nprint('1.2.3')\n")
-    booley = _executable(tmp_path / "booley", "")
-    return project, state, python, booley
-
-
-def _validate(project: Path, state: Path, python: Path, booley: Path) -> dict[str, object]:
+def _validate(root: Path) -> dict[str, object]:
     return demo_surface.validate(
-        project=project,
-        project_state=state,
-        ticket_slug="release-smoke",
+        project=root,
+        project_state=root / "state",
         expected_version="1.2.3",
-        python=python,
-        booley=booley,
-        candidate_sha="candidate-sha",
+        python=Path(sys.executable),
+        candidate_sha="candidate",
         image_digest="sha256:image",
     )
 
 
-def test_demo_surface_requires_a_queued_state_record(tmp_path: Path) -> None:
-    project, state, python, booley = _queued_demo(tmp_path)
-    state_record_path(state / "tickets", "release-smoke").unlink()
+def test_demo_surface_records_candidate_and_requires_finished_goal(tmp_path, monkeypatch) -> None:
+    commands = []
+    captured = {}
 
-    with pytest.raises(ValueError, match="is draft, not queued"):
-        _validate(project, state, python, booley)
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        return "1.2.3"
+
+    def driver(**kwargs):
+        captured.update(kwargs)
+        return {"state": "finished", "goals": {"lint_clean_lint_core": "met"}}
+
+    monkeypatch.setattr(demo_surface, "_run", run)
+    monkeypatch.setattr(demo_surface.goal_mode_driver, "validate", driver)
+    result = _validate(tmp_path)
+    assert captured["goals"] == ({"family": "lint", "target": "lint_core"},)
+    assert captured["python"] == Path(sys.executable)
+    assert commands[-1][0][-1] == "booley.runtime.incontainer_register"
+    assert result["candidate"] == {"sha": "candidate", "image_digest": "sha256:image"}
+    assert result["checks"][-1] == {"id": "demo.goal-finish", "status": "pass"}
 
 
-def test_demo_surface_rejects_a_state_transition(tmp_path: Path) -> None:
-    project, state, python, _ = _queued_demo(tmp_path)
-    tickets_dir = state / "tickets"
-    record = state_record_path(tickets_dir, "release-smoke")
-    # A stdlib-only stand-in for a command that starts the Ticket running.
-    starts_ticket = (
-        "import json, pathlib\n"
-        f"record = pathlib.Path({str(record)!r})\n"
-        "value = json.loads(record.read_text())\n"
-        "value['state'] = 'running'\n"
-        "record.write_text(json.dumps(value))\n"
+@pytest.mark.parametrize("state", ["active", None])
+def test_demo_surface_refuses_unfinished_driver_result(tmp_path, monkeypatch, state) -> None:
+    monkeypatch.setattr(demo_surface, "_run", lambda *_args, **_kwargs: "1.2.3")
+    monkeypatch.setattr(
+        demo_surface.goal_mode_driver, "validate", lambda **_kwargs: {"state": state}
     )
-    booley = _executable(tmp_path / "booley", starts_ticket)
-
-    with pytest.raises(RuntimeError, match="mutated the queued ticket"):
-        _validate(project, state, python, booley)
+    with pytest.raises(RuntimeError, match="did not finish"):
+        _validate(tmp_path)
 
 
-def test_demo_surface_main_defaults_to_running_python(tmp_path: Path, monkeypatch) -> None:
-    captured: dict[str, object] = {}
+def test_demo_surface_rejects_wrong_installed_version_before_driver(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(demo_surface, "_run", lambda *_args, **_kwargs: "wrong")
+    monkeypatch.setattr(
+        demo_surface.goal_mode_driver, "validate", lambda **_kwargs: pytest.fail("driver ran")
+    )
+    with pytest.raises(RuntimeError, match="image version differs"):
+        _validate(tmp_path)
 
-    def fake_validate(**kwargs):
+
+def test_demo_surface_main_defaults_to_running_python(tmp_path, monkeypatch) -> None:
+    captured = {}
+
+    def validate(**kwargs):
         captured.update(kwargs)
         return {"schema": 1}
 
-    evidence = tmp_path / "evidence.json"
-    monkeypatch.setattr(demo_surface, "validate", fake_validate)
+    monkeypatch.setattr(demo_surface, "validate", validate)
+    evidence = tmp_path / "result.json"
     monkeypatch.setattr(
         sys,
         "argv",
@@ -157,8 +83,6 @@ def test_demo_surface_main_defaults_to_running_python(tmp_path: Path, monkeypatc
             str(tmp_path),
             "--project-state",
             str(tmp_path),
-            "--ticket-slug",
-            "release-smoke",
             "--expected-version",
             "1.2.3",
             "--image-digest",
@@ -167,6 +91,6 @@ def test_demo_surface_main_defaults_to_running_python(tmp_path: Path, monkeypatc
             str(evidence),
         ],
     )
-
     assert demo_surface.main() == 0
     assert captured["python"] == Path(sys.executable)
+    assert evidence.is_file()

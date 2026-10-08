@@ -641,8 +641,8 @@ jobs:
           path: ${{ runner.temp }}/riscv-image-evidence/
           if-no-files-found: error
 
-  demo-ticket-surface:
-    name: Demo ticket surface
+  demo-goal-surface:
+    name: Demo Goal surface
     needs: [build-and-push, build-and-push-riscv]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -662,10 +662,9 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Validate immutable ticket surface
+      - name: Validate Goal surface round trip
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
-          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: |
           mkdir -p "${RUNNER_TEMP}/demo-surface-evidence"
@@ -679,9 +678,10 @@ jobs:
             --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/demo-surface-evidence",dst=/evidence \
             -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.demo_surface \
-            --project /work --project-state /booley-project --ticket-slug "${TICKET_SLUG}" \
+            --project /work --project-state /booley-project \
             --expected-version "${EXPECTED_VERSION}" \
             --candidate-sha "${GITHUB_SHA}" \
             --image-digest "${{ needs.build-and-push-riscv.outputs.image-digest }}" \
@@ -692,11 +692,11 @@ jobs:
           for path in demo "${RUNNER_TEMP}/demo-surface-evidence"; do
             if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
           done
-      - name: Retain demo ticket evidence
+      - name: Retain demo Goal evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-demo-ticket-${{ github.run_id }}-${{ github.run_attempt }}
+          name: release-demo-goal-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/demo-surface-evidence/
           if-no-files-found: error
 
@@ -729,7 +729,6 @@ jobs:
       - name: Run exact reviewed demo flows
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
-          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
           BOOLEY_RUN_PICORV32_FLOWS: "1"
         run: |
           mkdir -p "${RUNNER_TEMP}/picorv32-evidence"
@@ -744,7 +743,7 @@ jobs:
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
             --mount type=bind,src="${RUNNER_TEMP}/picorv32-evidence",dst=/evidence \
             -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
-            -e TICKET_SLUG -e BOOLEY_RUN_PICORV32_FLOWS "${IMAGE}" bash -euo pipefail -c \
+            -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive -e BOOLEY_RUN_PICORV32_FLOWS "${IMAGE}" bash -euo pipefail -c \
             'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'
       - name: Restore demo ownership
         if: always()
@@ -758,7 +757,7 @@ jobs:
         run: |
           python .github/scripts/release_validation/evidence.py \
             --candidate-sha "${GITHUB_SHA}" --image "riscv=${IMAGE_DIGEST}" \
-            --check picorv32.ticket-ready --check picorv32.contract \
+            --check picorv32.goal-ready --check picorv32.contract \
             --check picorv32.lint --check picorv32.simulation \
             --uid 1000 --gid 1000 --cleanup container-removed \
             --cleanup workspace-ownership-restored \
@@ -846,7 +845,7 @@ jobs:
       - simulation-selftest-overlay
       - helper-image-metadata
       - riscv-image-contract
-      - demo-ticket-surface
+      - demo-goal-surface
       - picorv32-demo-flows
       - ibex-lint-demo
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

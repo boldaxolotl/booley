@@ -11,11 +11,6 @@ inputs:
     required: false
     default: "false"
 
-outputs:
-  ticket_slug:
-    description: Slug of the installed CI-owned Ticket fixture
-    value: ${{ steps.contract.outputs.ticket_slug }}
-
 runs:
   using: composite
   steps:
@@ -29,7 +24,7 @@ runs:
         --contract "${CONTRACT_PATH}" >> "${GITHUB_OUTPUT}"
 
     # Both reviewed pins must belong to the public main branches that users
-    # clone. The synthetic Ticket is installed only in this ephemeral checkout.
+    # clone. Goal readiness runs only in a disposable clone of this checkout.
     - name: Check out reviewed PicoRV32 revision
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -68,15 +63,14 @@ runs:
         git -C demo branch --force main HEAD
         git -C demo/.booley_project branch --force main HEAD
 
-    # Publishing the Ticket Baseline performs real Target discovery, so the
-    # host-side installer needs Booley's production Python dependencies.
+    # Host preparation resolves the reviewed Targets using Booley dependencies.
     - name: Install Booley runtime dependencies
       shell: bash
       run: >-
         python -m pip install --disable-pip-version-check --quiet
         "${GITHUB_WORKSPACE}"
 
-    # Ticket Baseline publication runs the project's deterministic preparation
+    # Readiness runs the project's deterministic preparation
     # hook. Use the same reviewed multilib Newlib toolchain family as Booley's
     # RISC-V image so PicoRV32 can compile both rv32im firmware programs.
     - name: Install host RISC-V preparation toolchain
@@ -96,22 +90,6 @@ runs:
           ln -sf "${executable}" "${tool_root}/bin/riscv32-unknown-elf-${helper}"
         done
         echo "${tool_root}/bin" >> "${GITHUB_PATH}"
-
-    - name: Install CI-owned Ticket fixture into ticket-free checkout
-      shell: bash
-      env:
-        PYTHONPATH: ${{ github.workspace }}/src
-        TICKET_FIXTURE: ${{ steps.contract.outputs.ticket_fixture }}
-        TICKET_SLUG: ${{ steps.contract.outputs.ticket_slug }}
-      run: >-
-        git -C demo config user.name booley-ci &&
-        git -C demo config user.email booley-ci@users.noreply.github.com &&
-        git -C demo/.booley_project config user.name booley-ci &&
-        git -C demo/.booley_project config user.email booley-ci@users.noreply.github.com &&
-        python "${GITHUB_WORKSPACE}/.github/scripts/install_demo_ticket.py"
-        --project-dir demo/.booley_project
-        --fixture "${TICKET_FIXTURE}"
-        --slug "${TICKET_SLUG}"
 
     - name: Materialize and validate reviewed demo inputs
       if: inputs.materialize == 'true'

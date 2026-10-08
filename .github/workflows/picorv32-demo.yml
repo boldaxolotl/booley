@@ -8,13 +8,13 @@ on:
     paths:
       - ".github/actions/prepare-picorv32-demo/**"
       - ".github/contracts/picorv32-demo.toml"
-      - ".github/contracts/picorv32-demo-ticket.md"
       - ".github/scripts/export_demo_contract.py"
-      - ".github/scripts/install_demo_ticket.py"
+      - ".github/scripts/goal_mode_driver.py"
       - ".github/scripts/picorv32_ci_inputs.py"
       - ".github/scripts/picorv32_demo_contract.py"
       - ".github/scripts/pull_image_identity.py"
       - ".github/scripts/verify_picorv32_demo.sh"
+      - ".github/scripts/run_picorv32_ci_demo.sh"
       - ".github/workflows/picorv32-demo.yml"
       - "pyproject.toml"
       - "src/booley/__init__.py"
@@ -34,6 +34,8 @@ on:
       - "src/booley/dev_support/validate_commit_msg.py"
       - "src/booley/eda/**"
       - "src/booley/evidence/**"
+      - "src/booley/goals/**"
+      - "src/booley/review/**"
       - "src/booley/feedback/**"
       - "src/booley/flows/**"
       - "src/booley/fusesoc/**"
@@ -107,8 +109,6 @@ jobs:
         run: sudo chown -R 1000:1000 demo
 
       - name: Verify public demo contract with current Booley source
-        env:
-          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
         run: |
           docker run --init --rm --network none \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
@@ -118,7 +118,7 @@ jobs:
             -e BOOLEY_PROJECT_DIR=/booley-project \
             -e BOOLEY_IN_SANDBOX=1 \
             -e PYTHONPATH=/booley-source/src \
-            -e TICKET_SLUG \
+            -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive \
             "${{ steps.runtime-image.outputs.image }}" bash -euo pipefail -c '
               bash /booley-source/.github/scripts/verify_picorv32_demo.sh
             '

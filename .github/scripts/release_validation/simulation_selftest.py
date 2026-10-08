@@ -51,6 +51,7 @@ def _prepare_clone_state(project: Path) -> None:
             )
     tickets = resolve_checkout_project_dir(project) / "tickets"
     board = required_board_directories(tickets)
+    # Doctor still requires the Ticket tree until Phase 7b.
     for directory in (*board, tickets / "logs", tickets / "locks"):
         directory.mkdir(parents=True, exist_ok=True)
 

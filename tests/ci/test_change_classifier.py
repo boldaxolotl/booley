@@ -875,3 +875,18 @@ def test_aggregate_accepts_intentional_skips_and_rejects_required_failure() -> N
     assert "test=skipped" in skipped_required.stderr
     assert rejected.returncode == 1
     assert "test=failure" in rejected.stderr
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/booley/goals/finish.py",
+        "tests/goals/test_finish.py",
+        "src/booley/review/goal_package.py",
+    ],
+)
+def test_goal_changes_are_release_sensitive_without_git(path: str) -> None:
+    from ci_changes import classify
+
+    categories = classify([path])
+    assert {"release_sensitive", "standard_image"} <= categories

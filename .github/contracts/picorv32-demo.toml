@@ -1,10 +1,8 @@
-schema = 1
+schema = 2
 upstream_repository = "YosysHQ/picorv32"
 upstream_ref = "a473fc8fca393771d83b0ffcf0b14db3393339d8"
 project_repository = "boldaxolotl/booley-prj-picorv32"
 project_ref = "da79489482a7bed69e275ba2c46358ea6636af4d"
-ticket_fixture = ".github/contracts/picorv32-demo-ticket.md"
-ticket_slug = "add-opt-in-rv32-zbb-pcpi-co-processor"
 toolchain_url = "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v15.2.0-1/xpack-riscv-none-elf-gcc-15.2.0-1-linux-x64.tar.gz"
 toolchain_sha256 = "aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758"
 
@@ -16,25 +14,28 @@ required_targets = [
   "synth_core",
 ]
 
-[[required_binding]]
-criterion = "CRITERIA_MANDATORY.LINT"
+[[required_goal]]
+family = "lint"
 target = "lint_core"
 
-[[required_binding]]
-criterion = "CRITERIA_MANDATORY.SIM"
+[[required_goal]]
+family = "sim"
 target = "sim_core"
 
-[[required_binding]]
-criterion = "CRITERIA_MANDATORY.SIM"
+[[required_goal]]
+family = "sim"
 target = "sim_wb"
 
-[[required_binding]]
-criterion = "CRITERIA_MANDATORY.SYNTH"
+[[required_goal]]
+family = "synth"
 target = "synth_core"
+thresholds = { cell_count_increase_at_most = "11%", critical_path_ps_increase_at_most = "3%" }
 
-[[required_binding]]
-criterion = "CRITERIA_OPTIONAL.MUTATION"
+[[required_goal]]
+family = "mutation"
 target = "sim_core"
+min_detected = 14
+total = 15
 
 [[generated_input]]
 path = "firmware/firmware.hex"

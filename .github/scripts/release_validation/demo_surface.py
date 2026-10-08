@@ -1,17 +1,15 @@
-"""Exercise the immutable public demo ticket-authoring surface."""
+"""Exercise Goal entry, lint, status and Finish on the candidate image."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from booley.ticket_board.board_layout import state_record_path, ticket_document_path, ticket_state
-from booley.ticket_board.lifecycle import TicketState
+import goal_mode_driver
 
 
 def _run(command: list[str], *, project: Path, env: dict[str, str]) -> str:
@@ -30,89 +28,47 @@ def _run(command: list[str], *, project: Path, env: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _exercise_commands(
-    *, project: Path, state: Path, ticket: Path, slug: str, python: Path, booley: Path
-) -> None:
-    env = os.environ | {
-        "BOOLEY_AGENT_APP": "codex",
-        "BOOLEY_IN_SANDBOX": "1",
-        "BOOLEY_PROJECT_DIR": str(state),
-    }
-    _run(
-        [str(python), "-I", "-m", "booley.runtime.incontainer_register"], project=project, env=env
-    )
-    _run(
-        [str(python), "-I", "-m", "booley.ticket_board", "validate-ticket", str(ticket)],
-        project=project,
-        env=env,
-    )
-    _run([str(python), "-I", "-m", "booley.ticket_board", "show", slug], project=project, env=env)
-    preflight = (
-        "from pathlib import Path; "
-        "from booley.harness.ticket_preflight import run_ticket_preflight; "
-        "run_ticket_preflight(Path.cwd())"
-    )
-    _run([str(python), "-I", "-c", preflight], project=project, env=env)
-    _run([str(booley), "board", "show"], project=project, env=env)
-
-
 def validate(
     *,
     project: Path,
     project_state: Path,
-    ticket_slug: str,
     expected_version: str,
     python: Path,
-    booley: Path,
     candidate_sha: str,
     image_digest: str,
 ) -> dict[str, object]:
     project = project.resolve()
     state = project_state.resolve()
-    tickets_dir = state / "tickets"
-    ticket, record = _require_queued_demo_ticket(tickets_dir, ticket_slug)
-    # The document and its state record together are the queued Ticket (ADR 0065).
-    before = (_digest(ticket), _digest(record))
     _require_image_version(python, project=project, state=state, expected=expected_version)
-    _exercise_commands(
-        project=project,
-        state=state,
-        ticket=ticket,
-        slug=ticket_slug,
-        python=python,
-        booley=booley,
+    env = os.environ | {"BOOLEY_PROJECT_DIR": str(state), "BOOLEY_IN_SANDBOX": "1"}
+    _run(
+        [str(python), "-I", "-m", "booley.runtime.incontainer_register"], project=project, env=env
     )
-    if (_digest(ticket), _digest(record)) != before or ticket_state(
-        tickets_dir, ticket_slug
-    ) is not TicketState.QUEUED:
-        raise RuntimeError("demo ticket surface mutated the queued ticket")
+    result = goal_mode_driver.validate(
+        project=project,
+        project_state=state,
+        python=python,
+        goals=({"family": "lint", "target": "lint_core"},),
+    )
+    if result.get("state") != "finished":
+        raise RuntimeError("demo Goal surface did not finish")
     return {
         "schema": 1,
         "candidate": {"sha": candidate_sha, "image_digest": image_digest},
         "identity": {"uid": os.getuid(), "gid": os.getgid()},
+        "goal_roundtrip": result,
         "checks": [
-            {"id": "demo.version", "status": "pass"},
-            {"id": "demo.registration", "status": "pass"},
-            {"id": "demo.preflight", "status": "pass"},
-            {"id": "demo.ticket-immutable", "status": "pass"},
+            {"id": name, "status": "pass"}
+            for name in (
+                "demo.version",
+                "demo.registration",
+                "demo.goal-enter",
+                "demo.goal-lint",
+                "demo.goal-status",
+                "demo.goal-finish",
+            )
         ],
     }
-
-
-def _require_queued_demo_ticket(tickets_dir: Path, slug: str) -> tuple[Path, Path]:
-    """Return the demo Ticket's document and state record paths; it must be queued."""
-    ticket = ticket_document_path(tickets_dir, slug)
-    record = state_record_path(tickets_dir, slug)
-    if not ticket.is_file():
-        raise ValueError(f"queued demo ticket is missing: {ticket}")
-    initial_state = ticket_state(tickets_dir, slug)
-    if initial_state is not TicketState.QUEUED:
-        raise ValueError(f"demo ticket {slug!r} is {initial_state.status}, not queued: {record}")
-    return ticket, record
 
 
 def _require_image_version(python: Path, *, project: Path, state: Path, expected: str) -> None:
@@ -128,10 +84,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--project-state", type=Path, required=True)
-    parser.add_argument("--ticket-slug", required=True)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
-    parser.add_argument("--booley", type=Path, default=Path("/usr/local/bin/booley"))
     parser.add_argument("--candidate-sha", default=os.environ.get("GITHUB_SHA", "unknown"))
     parser.add_argument("--image-digest", required=True)
     parser.add_argument("--evidence", type=Path, required=True)
@@ -139,10 +93,8 @@ def main() -> int:
     evidence = validate(
         project=args.project,
         project_state=args.project_state,
-        ticket_slug=args.ticket_slug,
         expected_version=args.expected_version,
         python=args.python,
-        booley=args.booley,
         candidate_sha=args.candidate_sha,
         image_digest=args.image_digest,
     )

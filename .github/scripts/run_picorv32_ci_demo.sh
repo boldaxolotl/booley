@@ -4,8 +4,7 @@
 set -euo pipefail
 
 readonly WORKSPACE="$1"
-readonly TICKET_SLUG="$2"
-readonly CONTAINER_NAME="$3"
+readonly CONTAINER_NAME="$2"
 
 sudo chown -R 1000:1000 demo
 .github/scripts/run_with_container_cleanup.sh \
@@ -20,6 +19,7 @@ sudo chown -R 1000:1000 demo
   -e BOOLEY_IN_SANDBOX=1 \
   -e BOOLEY_RUN_PICORV32_FLOWS=1 \
   -e PYTHONPATH=/booley-source/src \
-  -e "TICKET_SLUG=${TICKET_SLUG}" \
+  -e BOOLEY_GOAL_MODE_PREVIEW=1 \
+  -e BOOLEY_MCP_MODE=interactive \
   booley-riscv-test bash -euo pipefail -c \
   'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'

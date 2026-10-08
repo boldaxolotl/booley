@@ -3,11 +3,6 @@ tmp/
 flow-reports/
 /logs/
 /.baseline-wt-*/
-tickets/board/
-tickets/state/
-tickets/waiver-candidates/
-tickets/logs/
-tickets/locks/
 goals/*/
 !goals/history/
 .interactive_logs/

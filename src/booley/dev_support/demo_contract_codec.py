@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,24 +21,12 @@ __all__ = [
     "DemoContract",
     "DemoContractError",
     "GeneratedInput",
-    "RequiredBinding",
     "load_contract",
 ]
 
 
 class DemoContractError(ValueError):
     """The demo contract is malformed or a checkout does not satisfy it."""
-
-
-_SAFE_TICKET_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
-
-
-@dataclass(frozen=True)
-class RequiredBinding:
-    """One criterion-to-Target binding required by the public demo."""
-
-    criterion: str
-    target: str
 
 
 @dataclass(frozen=True)
@@ -60,12 +47,10 @@ class DemoContract:
     upstream_ref: str
     project_repository: str
     project_ref: str
-    ticket_fixture: str
-    ticket_slug: str
     toolchain_url: str
     toolchain_sha256: str
     required_targets: tuple[str, ...]
-    required_bindings: tuple[RequiredBinding, ...]
+    required_goals: tuple[dict[str, Any], ...]
     generated_inputs: tuple[GeneratedInput, ...]
 
 
@@ -89,13 +74,6 @@ def _safe_relative_path(document: Mapping[str, Any], key: str, *, field: str) ->
     candidate = PurePosixPath(value)
     if candidate.is_absolute() or ".." in candidate.parts or not candidate.parts:
         raise BoundaryError(f"{field} must be a safe relative path")
-    return value
-
-
-def _require_ticket_slug(document: Mapping[str, Any]) -> str:
-    value = _require_trimmed_str(document, "ticket_slug")
-    if not _SAFE_TICKET_SLUG_RE.fullmatch(value):
-        raise BoundaryError("ticket_slug must be a safe Ticket slug")
     return value
 
 
@@ -126,39 +104,56 @@ def _require_unique_strings(value: Any, *, field: str) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _parse_bindings(
+def _validate_goal_fields(goal: Mapping[str, Any], family: str, label: str) -> None:
+    allowed = {"family", "target", "origin"}
+    if family == "synth":
+        allowed |= {"thresholds", "baseline"}
+        thresholds = require_dict(goal.get("thresholds"), field=f"{label}.thresholds")
+        if not thresholds:
+            raise BoundaryError(f"{label}.thresholds must be non-empty")
+        if "baseline" in goal:
+            _require_trimmed_str(goal, "baseline", field=f"{label}.baseline")
+    if family == "mutation":
+        allowed |= {"scope", "min_detected", "total", "auto"}
+        if "scope" in goal:
+            _require_unique_strings(goal["scope"], field=f"{label}.scope")
+        for key in ("min_detected", "total"):
+            if key in goal and require_int(goal[key], field=f"{label}.{key}") < 1:
+                raise BoundaryError(f"{label}.{key} must be positive")
+        if "auto" in goal and goal["auto"] is not True:
+            raise BoundaryError(f"{label}.auto must be true")
+    if "origin" in goal:
+        _require_trimmed_str(goal, "origin", field=f"{label}.origin")
+    extra = set(goal) - allowed
+    if extra:
+        raise BoundaryError(f"{label} has unknown fields: {', '.join(sorted(extra))}")
+
+
+def _parse_goals(
     document: Mapping[str, Any], required_targets: tuple[str, ...]
-) -> tuple[RequiredBinding, ...]:
-    raw_bindings = document.get("required_binding")
-    if not isinstance(raw_bindings, list) or not raw_bindings:
-        raise BoundaryError("required_binding must be a non-empty array of tables")
-    allowed_targets = set(required_targets)
-    bindings: list[RequiredBinding] = []
+) -> tuple[dict[str, Any], ...]:
+    raw = document.get("required_goal")
+    if not isinstance(raw, list) or not raw:
+        raise BoundaryError("required_goal must be a non-empty array of tables")
+    goals: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for index, raw_binding in enumerate(raw_bindings):
-        binding = require_dict(raw_binding, field=f"required_binding[{index}]")
-        criterion = _require_trimmed_str(
-            binding,
-            "criterion",
-            field=f"required_binding[{index}].criterion",
-        )
-        target = _require_trimmed_str(
-            binding,
-            "target",
-            field=f"required_binding[{index}].target",
-        )
-        if target not in allowed_targets:
+    for index, value in enumerate(raw):
+        goal = require_dict(value, field=f"required_goal[{index}]")
+        family = _require_trimmed_str(goal, "family", field=f"required_goal[{index}].family")
+        target = _require_trimmed_str(goal, "target", field=f"required_goal[{index}].target")
+        if family not in {"lint", "sim", "elab", "synth", "mutation"}:
+            raise BoundaryError(f"required_goal[{index}].family is unsupported: {family!r}")
+        if target not in required_targets:
             raise BoundaryError(
-                f"required_binding[{index}].target {target!r} is not in required_targets"
+                f"required_goal[{index}].target {target!r} is not in required_targets"
             )
-        pair = (criterion, target)
+        _validate_goal_fields(goal, family, f"required_goal[{index}]")
+        pair = (family, target)
         if pair in seen:
-            raise BoundaryError(
-                f"required_binding contains duplicate pair {criterion!r} -> {target!r}"
-            )
+            raise BoundaryError(f"required_goal contains duplicate pair {family!r} -> {target!r}")
         seen.add(pair)
-        bindings.append(RequiredBinding(criterion=criterion, target=target))
-    return tuple(bindings)
+        goals.append(dict(goal))
+    return tuple(goals)
 
 
 def _parse_generated_inputs(
@@ -197,8 +192,8 @@ def load_contract(path: Path | str) -> DemoContract:
         raise DemoContractError(f"cannot read demo contract: {exc}") from exc
     try:
         schema = require_int(document.get("schema"), field="schema")
-        if schema != 1:
-            raise BoundaryError("schema must be 1")
+        if schema != 2:
+            raise BoundaryError("schema must be 2")
         upstream_repository = _require_trimmed_str(document, "upstream_repository")
         upstream_ref = _require_trimmed_str(document, "upstream_ref")
         project_repository = _require_trimmed_str(document, "project_repository")
@@ -210,10 +205,8 @@ def load_contract(path: Path | str) -> DemoContract:
         required_targets = _require_unique_strings(
             document.get("required_targets"), field="required_targets"
         )
-        ticket_fixture = _safe_relative_path(document, "ticket_fixture", field="ticket_fixture")
-        ticket_slug = _require_ticket_slug(document)
         toolchain_url, toolchain_sha256 = _parse_toolchain_provenance(document)
-        bindings = _parse_bindings(document, required_targets)
+        goals = _parse_goals(document, required_targets)
         generated_inputs = _parse_generated_inputs(document, required_targets)
     except BoundaryError as exc:
         raise DemoContractError(str(exc)) from exc
@@ -224,11 +217,9 @@ def load_contract(path: Path | str) -> DemoContract:
         upstream_ref=upstream_ref,
         project_repository=project_repository,
         project_ref=project_ref,
-        ticket_fixture=ticket_fixture,
-        ticket_slug=ticket_slug,
         toolchain_url=toolchain_url,
         toolchain_sha256=toolchain_sha256,
         required_targets=required_targets,
-        required_bindings=bindings,
+        required_goals=goals,
         generated_inputs=generated_inputs,
     )

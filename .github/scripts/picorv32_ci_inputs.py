@@ -4,14 +4,14 @@ from __future__ import annotations
 
 PICORV32_INPUT_FILES = frozenset(
     {
-        ".github/contracts/picorv32-demo-ticket.md",
         ".github/contracts/picorv32-demo.toml",
         ".github/scripts/export_demo_contract.py",
-        ".github/scripts/install_demo_ticket.py",
+        ".github/scripts/goal_mode_driver.py",
         ".github/scripts/picorv32_ci_inputs.py",
         ".github/scripts/picorv32_demo_contract.py",
         ".github/scripts/pull_image_identity.py",
         ".github/scripts/verify_picorv32_demo.sh",
+        ".github/scripts/run_picorv32_ci_demo.sh",
         ".github/workflows/picorv32-demo.yml",
         "pyproject.toml",
     }

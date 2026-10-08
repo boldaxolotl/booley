@@ -769,7 +769,7 @@ def test_release_host_doctor_uses_only_an_isolated_installation_root() -> None:
 
 def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> None:
     jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
-    surface = jobs["demo-ticket-surface"]
+    surface = jobs["demo-goal-surface"]
     flows = jobs["picorv32-demo-flows"]
     simulation = jobs["simulation-selftest-overlay"]
 
@@ -781,7 +781,7 @@ def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> N
     assert simulation_prepare["with"] == {"materialize": True}
     assert (
         "-m release_validation.demo_surface"
-        in _named_step(surface, "Validate immutable ticket surface")["run"]
+        in _named_step(surface, "Validate Goal surface round trip")["run"]
     )
 
     simulation_run = _named_step(simulation, "Run Simulation Doctor self-tests")["run"]
@@ -819,7 +819,7 @@ def test_release_promotes_stable_tags_only_after_independent_gates() -> None:
         "simulation-selftest-overlay",
         "helper-image-metadata",
         "riscv-image-contract",
-        "demo-ticket-surface",
+        "demo-goal-surface",
         "picorv32-demo-flows",
         "ibex-lint-demo",
     }

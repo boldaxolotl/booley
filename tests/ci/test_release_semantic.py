@@ -198,7 +198,7 @@ def test_release_topology_splits_validation_by_image_dependency() -> None:
         "simulation-selftest-overlay",
         "helper-image-metadata",
         "riscv-image-contract",
-        "demo-ticket-surface",
+        "demo-goal-surface",
         "picorv32-demo-flows",
         "ibex-lint-demo",
     }

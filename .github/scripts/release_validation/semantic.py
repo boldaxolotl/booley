@@ -37,7 +37,7 @@ _STANDARD_RELEASE_JOBS = {
 }
 _RISCV_RELEASE_JOBS = {
     "riscv-image-contract",
-    "demo-ticket-surface",
+    "demo-goal-surface",
     "picorv32-demo-flows",
     "ibex-lint-demo",
 }

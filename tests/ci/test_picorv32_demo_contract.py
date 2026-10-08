@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import sys
@@ -23,23 +22,8 @@ from booley.dev_support.demo_contract import (
     DemoContract,
     DemoContractError,
     GeneratedInput,
-    RequiredBinding,
-    _validate_bindings,
     _validate_generated_input,
     load_contract,
-)
-from booley.ticket_board.board_layout import (
-    StateRecord,
-    read_state_record,
-    ticket_document_path,
-    write_state_record,
-)
-from booley.ticket_board.frontmatter import parse_frontmatter
-from booley.ticket_board.lifecycle import TicketState
-from booley.ticket_board.ticket_document import (
-    TicketAuthoringView,
-    TicketConversionContext,
-    convert_ticket_document,
 )
 
 CONTRACT = Path(".github/contracts/picorv32-demo.toml")
@@ -48,29 +32,15 @@ WORKFLOW = Path(".github/workflows/picorv32-demo.yml")
 PUBLISH_WORKFLOW = Path(".github/workflows/docker-publish.yml")
 TEST_WORKFLOW = Path(".github/workflows/test.yml")
 EXPORT_SCRIPT = Path(".github/scripts/export_demo_contract.py")
-INSTALL_SCRIPT = Path(".github/scripts/install_demo_ticket.py")
 VERIFY_SCRIPT = Path(".github/scripts/verify_picorv32_demo.sh")
 OUTPUT_KEYS = (
     "upstream_repository",
     "upstream_ref",
     "project_repository",
     "project_ref",
-    "ticket_fixture",
-    "ticket_slug",
     "toolchain_url",
     "toolchain_sha256",
 )
-
-
-_SIMPLE_TICKET = (
-    "---\nsummary: Demo\ntype: feature\nbranch: main\nscope: [README.md]\n"
-    "on_success: []\nCRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
-    "---\n\n## Description\n\nDo the work.\n"
-)
-
-
-def _simple_view():
-    return TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
 
 
 def _yaml_strings(value: Any) -> tuple[str, ...]:
@@ -82,11 +52,11 @@ def _yaml_strings(value: Any) -> tuple[str, ...]:
 
 
 def _contract_table_strings(contract: dict[str, Any]) -> set[str]:
-    bindings = contract["required_binding"]
+    bindings = contract["required_goal"]
     generated_inputs = contract["generated_input"]
     return {
         *contract["required_targets"],
-        *(binding[key] for binding in bindings for key in ("criterion", "target")),
+        *(binding["target"] for binding in bindings),
         *(generated[key] for generated in generated_inputs for key in ("path", "producer")),
         *(target for generated in generated_inputs for target in generated["targets"]),
     }
@@ -135,12 +105,14 @@ def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
         "src/booley/runtime/**",
         "src/booley/targets/**",
         "src/booley/ticket_board/**",
+        "src/booley/goals/**",
+        "src/booley/review/**",
+        "src/booley/evidence/**",
     } <= paths
     assert paths.isdisjoint(
         {
             "src/booley/bwave/**",
             "src/booley/docker/**",
-            "src/booley/review/**",
         }
     )
     assert events["push"] == {"branches": ["main"]}
@@ -186,8 +158,8 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
     assert contract.project_ref == "da79489482a7bed69e275ba2c46358ea6636af4d"
-    assert contract.ticket_fixture == ".github/contracts/picorv32-demo-ticket.md"
-    assert contract.ticket_slug == "add-opt-in-rv32-zbb-pcpi-co-processor"
+    assert contract.schema == 2
+    assert all(goal["target"] in contract.required_targets for goal in contract.required_goals)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
     assert contract.toolchain_sha256 == (
         "aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758"
@@ -204,51 +176,15 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
         "dhrystone/dhry.hex",
     }
 
-    fixture = Path(contract.ticket_fixture)
-    fields, _body = parse_frontmatter(fixture.read_text(encoding="utf-8"))
-    assert "acceptance_basis" not in fields
-    assert "target_contract" not in fields
-    assert "base_sha" not in fields
-    assert "created" not in fields
-
-    serialized = fixture.read_text(encoding="utf-8")
-    assert "ci/agent-ticket-contract" not in serialized
-    assert "synth_core_zbb" not in serialized
-    assert "sim_zbb_disabled" not in serialized
-
-
-def test_repository_demo_ticket_uses_current_criteria_grammar() -> None:
-    contract = load_contract(CONTRACT)
-    fixture = Path(contract.ticket_fixture)
-    view = TicketAuthoringView(
-        lambda selector, _flow: selector,
-        lambda _target: ("main", "axi", "wb"),
-    )
-    converted = convert_ticket_document(
-        fixture.read_text(encoding="utf-8"),
-        TicketConversionContext("draft", lambda _generated: view),
-    )
-    assert converted.document is not None, converted.diagnostics
-    synthesis = {
-        row.parameter: row.value["threshold"]
-        for row in converted.document.spec.criteria
-        if row.capability == "SYNTH"
-    }
-    assert synthesis == {
-        "cell_count_increase_at_most": 11,
-        "critical_path_ps_increase_at_most": 3,
-    }
-
 
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
     path = tmp_path / "contract.toml"
     path.write_text(
-        """schema = 1
+        """schema = 2
 upstream_repository = "owner/upstream"
 upstream_ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 project_repository = "owner/project"
 project_ref = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-ticket_slug = "demo"
 toolchain_url = "https://example.invalid/toolchain.tar.gz"
 toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 required_targets = "sim"
@@ -268,7 +204,6 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     checkouts = [
         step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")
     ]
-    installer = next(step for step in steps if "install_demo_ticket.py" in step.get("run", ""))
     materializer = next(
         step
         for step in steps
@@ -284,12 +219,6 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert checkouts[0]["with"]["ref"] == "${{ steps.contract.outputs.upstream_ref }}"
     assert checkouts[1]["with"]["repository"] == "${{ steps.contract.outputs.project_repository }}"
     assert checkouts[1]["with"]["ref"] == "${{ steps.contract.outputs.project_ref }}"
-    assert installer["env"] == {
-        "PYTHONPATH": "${{ github.workspace }}/src",
-        "TICKET_FIXTURE": "${{ steps.contract.outputs.ticket_fixture }}",
-        "TICKET_SLUG": "${{ steps.contract.outputs.ticket_slug }}",
-    }
-    assert steps.index(installer) < steps.index(materializer)
     assert materializer["env"] == {
         "CONTRACT_PATH": "${{ inputs.contract }}",
         "PYTHONPATH": "${{ github.workspace }}/src",
@@ -338,7 +267,7 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert "sha256sum -c -" in toolchain["run"]
 
 
-def test_every_workflow_consumer_uses_shared_preparation_outputs() -> None:
+def test_workflow_consumers_share_goal_preparation() -> None:
     contract = tomllib.loads(CONTRACT.read_text(encoding="utf-8"))
     consumers = _workflow_consumers()
     assert {path for path, _job, _steps, _index in consumers} == {
@@ -353,9 +282,9 @@ def test_every_workflow_consumer_uses_shared_preparation_outputs() -> None:
         consumer_id = consumer.get("id")
         later_strings = _yaml_strings(steps[index + 1 :])
         if consumer_id is not None:
-            assert f"steps.{consumer_id}.outputs.ticket_slug" in "\n".join(later_strings)
+            assert "outputs.ticket_slug" not in "\n".join(later_strings)
         workflow_strings = _yaml_strings(yaml.safe_load(path.read_text(encoding="utf-8")))
-        for key in (*OUTPUT_KEYS[:4], "ticket_slug"):
+        for key in OUTPUT_KEYS[:4]:
             assert all(contract[key] not in value for value in workflow_strings)
         assert all(
             authority_value not in value
@@ -393,70 +322,6 @@ def test_release_validation_skips_credentials_and_cannot_promote() -> None:
     )
 
 
-def _demo_project(tmp_path: Path) -> Path:
-    project = tmp_path / "project"
-    (project / ".git" / "info").mkdir(parents=True)
-    (project / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
-    return project
-
-
-def _git(repository: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-
-
-def _demo_git_project(tmp_path: Path) -> Path:
-    outer = tmp_path / "outer"
-    project = outer / ".booley_project"
-    project.mkdir(parents=True)
-    _git(project, "init", "-b", "main")
-    _git(project, "config", "user.name", "Test")
-    _git(project, "config", "user.email", "test@example.invalid")
-    (project / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
-    (project / "booley.toml").write_text("[flows]\n", encoding="utf-8")
-    (project / "tickets" / "board").mkdir(parents=True)
-    _git(project, "add", "-A")
-    _git(project, "commit", "-m", "initial project")
-
-    _git(outer, "init", "-b", "main")
-    _git(outer, "config", "user.name", "Test")
-    _git(outer, "config", "user.email", "test@example.invalid")
-    (outer / "README.md").write_text("demo\n", encoding="utf-8")
-    (outer / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
-    _git(outer, "add", "README.md")
-    _git(outer, "commit", "-m", "initial outer")
-    return project
-
-
-def _run_installer(project: Path, fixture: Path, slug: str) -> subprocess.CompletedProcess[str]:
-    source_root = Path(__file__).resolve().parents[2] / "src"
-    python_path = os.pathsep.join(
-        part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
-    )
-    return subprocess.run(
-        [
-            sys.executable,
-            str(INSTALL_SCRIPT),
-            "--project-dir",
-            str(project),
-            "--fixture",
-            str(fixture),
-            "--slug",
-            slug,
-        ],
-        capture_output=True,
-        text=True,
-        env=os.environ | {"PYTHONPATH": python_path},
-        check=False,
-    )
-
-
 def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -474,62 +339,7 @@ def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_ticket_installer_requires_ticket_free_checkout(tmp_path: Path) -> None:
-    project = _demo_project(tmp_path)
-    tickets = project / "tickets"
-    existing = ticket_document_path(tickets, "existing")
-    existing.parent.mkdir(parents=True)
-    existing.write_text("existing\n", encoding="utf-8")
-    write_state_record(tickets, "existing", StateRecord.fresh(TicketState.QUEUED))
-    fixture = tmp_path / "fixture.md"
-    fixture.write_text("fixture\n", encoding="utf-8")
-
-    result = _run_installer(project, fixture, "demo")
-
-    assert result.returncode == 2
-    assert "already contains queued Tickets: existing.md" in result.stderr
-    assert existing.read_text(encoding="utf-8") == "existing\n"
-    assert not ticket_document_path(tickets, "demo").exists()
-
-
 # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
-@pytest.mark.timeout(90)
-def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -> None:
-    project = _demo_git_project(tmp_path)
-    fixture = tmp_path / "fixture.md"
-    fixture.write_text(
-        "---\n"
-        "summary: Demo\n"
-        "type: feature\n"
-        "branch: main\n"
-        "project_destination_ref: refs/heads/main\n"
-        "scope: [README.md]\n"
-        "on_success: [review, merge, cleanup]\n"
-        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
-        "---\n\n"
-        "## Description\n\nDo the work.\n",
-        encoding="utf-8",
-    )
-
-    result = _run_installer(project, fixture, "demo")
-
-    destination = ticket_document_path(project / "tickets", "demo")
-    assert result.returncode == 0
-    record = read_state_record(project / "tickets", "demo")
-    assert record is not None and record.state is TicketState.QUEUED
-    fields, body = parse_frontmatter(destination.read_text(encoding="utf-8"))
-    assert fields["summary"] == "Demo"
-    assert fields["machine"]["schema"] == 1
-    assert fields["machine"]["baseline"]["outer"]["commit"]
-    assert "target_contract" not in fields
-    assert "bugs: clean" in destination.read_text(encoding="utf-8")
-    assert body.endswith("## Description\n\nDo the work.")
-    if os.name == "posix":
-        assert destination.stat().st_mode & 0o777 == 0o644
-    exclude = project / ".git" / "info" / "exclude"
-    assert exclude.read_text(encoding="utf-8") == (
-        "/tickets/board/demo.md\n/tickets/state/demo.json\n"
-    )
 
 
 def test_contract_exporter_emits_all_workflow_fields() -> None:
@@ -542,85 +352,18 @@ def test_contract_exporter_emits_all_workflow_fields() -> None:
     assert outputs == {key: contract[key] for key in OUTPUT_KEYS}
 
 
-def _mutation_ticket(value: str):
-    view = TicketAuthoringView(
-        lambda selector, _flow: f"acme:lib:toy:1#{selector}",
-        lambda _target: ("smoke",),
-    )
-    return convert_ticket_document(
-        "---\nsummary: Demo\ntype: feature\nbranch: main\nscope: [picorv32.v]\n"
-        "on_success: []\nCRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}\n"
-        f"CRITERIA_OPTIONAL: {{MUTATION: {{sim_core: {value}}}}}\n"
-        "---\n\n## Description\n\nDo the work.\n",
-        TicketConversionContext("draft", lambda _generated: view),
-    )
-
-
-def test_scalar_mutation_criterion_is_rejected_at_document_boundary() -> None:
-    converted = _mutation_ticket("14/15")
-    assert converted.document is None
-    assert "MUTATION requires a nonempty mapping" in converted.diagnostics[0].message
-
-
-def test_required_binding_accepts_converted_mutation_campaign() -> None:
-    converted = _mutation_ticket("{min_detected: 14, total: 15}")
-    assert converted.document is not None, converted.diagnostics
-    bindings = (RequiredBinding("CRITERIA_OPTIONAL.MUTATION", "sim_core"),)
-    assert _validate_bindings(converted.document.spec, bindings) == []
-
-
-@pytest.mark.parametrize("scope", [["firmware/ [new]"], ["firmware/**"]])
-def test_generated_input_rejects_scope_patterns(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    scope: list[str],
-) -> None:
-    artifact = tmp_path / "firmware" / "firmware.hex"
-    artifact.parent.mkdir()
-    artifact.write_text("firmware\n", encoding="utf-8")
-    producer = tmp_path / "hooks" / "post-setup.sh"
-    producer.parent.mkdir()
-    producer.write_text("#!/bin/sh\n", encoding="utf-8")
-    generated = GeneratedInput(
-        path="firmware/firmware.hex",
-        producer="hooks/post-setup.sh",
-        targets=("sim_core",),
-    )
-
-    def git_result(
-        _repository: Path,
-        *args: str,
-        check: bool = True,
-    ) -> subprocess.CompletedProcess[str]:
-        del check
-        return subprocess.CompletedProcess(args, 0 if args[0] == "check-ignore" else 1, "", "")
-
-    monkeypatch.setattr(demo_contract_module, "_git", git_result)
-    monkeypatch.setattr(
-        demo_contract_module,
-        "_target_inputs",
-        lambda _catalog, _target: (SimpleNamespace(path=generated.path),),
-    )
-
-    errors, _path, _digest = _validate_generated_input(tmp_path, scope, generated)
-
-    assert errors == ["generated input must not be ticket Scope: firmware/firmware.hex"]
-
-
 def _write_contract(tmp_path: Path, replacement: tuple[str, str] | None = None) -> Path:
-    text = """schema = 1
+    text = """schema = 2
 upstream_repository = "owner/upstream"
 upstream_ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 project_repository = "owner/project"
 project_ref = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-ticket_fixture = ".github/contracts/ticket.md"
-ticket_slug = "demo"
 toolchain_url = "https://example.invalid/toolchain.tar.gz"
 toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 required_targets = ["sim"]
 
-[[required_binding]]
-criterion = "criteria.mandatory.sim_pass"
+[[required_goal]]
+family = "sim"
 target = "sim"
 
 [[generated_input]]
@@ -637,14 +380,14 @@ targets = ["sim"]
 
 _DUPLICATE_BINDING = """target = "sim"
 
-[[required_binding]]
-criterion = "criteria.mandatory.sim_pass"
+[[required_goal]]
+family = "sim"
 target = "sim"
 
 [[generated_input]]"""
 
 _INVALID_CONTRACT_CASES = [
-    pytest.param(("schema = 1", "schema = 2"), "schema must be 1", id="schema"),
+    pytest.param(("schema = 2", "schema = 1"), "schema must be 2", id="schema"),
     pytest.param(
         ("owner/upstream", "   "),
         "upstream_repository must be a non-empty string",
@@ -675,12 +418,6 @@ _INVALID_CONTRACT_CASES = [
     ),
     pytest.param(("c" * 64, "ABC"), "toolchain_sha256", id="toolchain-digest"),
     pytest.param(
-        ('ticket_slug = "demo"', 'ticket_slug = "../evil"'),
-        "ticket_slug must be a safe Ticket slug",
-        id="unsafe-ticket-slug",
-    ),
-    pytest.param((".github/contracts/ticket.md", "../ticket.md"), "ticket_fixture", id="path"),
-    pytest.param(
         ('path = "firmware/image.hex"', 'path = "../image.hex"'),
         "generated_input[0].path",
         id="generated-path",
@@ -710,40 +447,40 @@ _INVALID_CONTRACT_CASES = [
         "required_targets contains duplicate",
         id="duplicate-target",
     ),
-    pytest.param(("[[required_binding]]", "[[other_binding]]"), "required_binding", id="bindings"),
+    pytest.param(("[[required_goal]]", "[[other_binding]]"), "required_goal", id="bindings"),
     pytest.param(
-        ('criterion = "criteria.mandatory.sim_pass"', "criterion = 7"),
-        "required_binding[0].criterion",
+        ('family = "sim"', "family = 7"),
+        "required_goal[0].family",
         id="malformed-binding",
     ),
     pytest.param(
-        ('criterion = "criteria.mandatory.sim_pass"', 'criterion = " criterion"'),
-        "required_binding[0].criterion must be trimmed",
+        ('family = "sim"', 'family = " sim"'),
+        "required_goal[0].family must be trimmed",
         id="untrimmed-binding",
     ),
     pytest.param(
-        ('criterion = "criteria.mandatory.sim_pass"', 'criterion = " "'),
-        "required_binding[0].criterion must be a non-empty string",
+        ('family = "sim"', 'family = " "'),
+        "required_goal[0].family must be a non-empty string",
         id="empty-binding",
     ),
     pytest.param(
         ('target = "sim"', 'target = " sim"'),
-        "required_binding[0].target must be trimmed",
+        "required_goal[0].target must be trimmed",
         id="untrimmed-binding-target",
     ),
     pytest.param(
         ('target = "sim"', 'target = " "'),
-        "required_binding[0].target must be a non-empty string",
+        "required_goal[0].target must be a non-empty string",
         id="empty-binding-target",
     ),
     pytest.param(
         ('target = "sim"', 'target = "other"'),
-        "required_binding[0].target 'other' is not in required_targets",
+        "required_goal[0].target 'other' is not in required_targets",
         id="out-of-set-binding",
     ),
     pytest.param(
         ('target = "sim"\n\n[[generated_input]]', _DUPLICATE_BINDING),
-        "required_binding contains duplicate pair",
+        "required_goal contains duplicate pair",
         id="duplicate-binding",
     ),
     pytest.param(("[[generated_input]]", "[[other_input]]"), "generated_input", id="inputs"),
@@ -821,21 +558,6 @@ def test_exporter_rejects_invalid_typed_contract_without_outputs(
     assert message in result.stderr
 
 
-@pytest.mark.parametrize("escape", [r"\n", r"\r"])
-def test_exporter_rejects_unsafe_last_field_without_partial_outputs(
-    tmp_path: Path, escape: str
-) -> None:
-    contract = _write_contract(
-        tmp_path, ('ticket_slug = "demo"', f'ticket_slug = "demo{escape}x"')
-    )
-
-    result = _run_exporter(contract)
-
-    assert result.returncode == 2
-    assert result.stdout == ""
-    assert "ticket_slug must be a safe Ticket slug" in result.stderr
-
-
 @pytest.mark.parametrize("contents", ["not = [toml", None])
 def test_contract_reports_unreadable_or_malformed_input(
     tmp_path: Path, contents: str | None
@@ -848,96 +570,7 @@ def test_contract_reports_unreadable_or_malformed_input(
         load_contract(path)
 
 
-def test_checkout_ticket_and_fixture_helpers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    git_result = subprocess.CompletedProcess(["git"], 0, "abc\n", "")
-    monkeypatch.setattr(demo_contract_module, "_git", lambda *_args, **_kwargs: git_result)
-
-    demo_contract_module._require_checkout_ref(tmp_path, "abc", "upstream")
-    with pytest.raises(DemoContractError, match="expected def"):
-        demo_contract_module._require_checkout_ref(tmp_path, "def", "upstream")
-    assert demo_contract_module._status(tmp_path) == "abc"
-
-    project = tmp_path / "project"
-    (project / "tickets" / "board").mkdir(parents=True)
-    with pytest.raises(DemoContractError, match="ticket 'demo' is missing"):
-        demo_contract_module._ticket_fields(tmp_path, project, "demo")
-    write_state_record(project / "tickets", "demo", StateRecord.fresh(TicketState.QUEUED))
-    ticket = ticket_document_path(project / "tickets", "demo")
-    ticket.write_text(
-        _SIMPLE_TICKET.replace("on_success: []\n", "on_success: []\nmachine: {schema: 1}\n"),
-        encoding="utf-8",
-    )
-    converted = convert_ticket_document(
-        ticket.read_text(encoding="utf-8"),
-        TicketConversionContext("executable", lambda _generated: _simple_view()),
-    )
-    assert converted.document is not None
-    monkeypatch.setattr(
-        demo_contract_module.TicketIO,
-        "load_document",
-        lambda *_args, **_kwargs: converted.document,
-    )
-    monkeypatch.setattr(
-        demo_contract_module, "ticket_authoring_view", lambda _root: _simple_view()
-    )
-    spec, found = demo_contract_module._ticket_fields(tmp_path, project, "demo")
-    assert spec.fields["summary"] == "Demo"
-    assert found == ticket
-
-    acceptance_path = tmp_path / "repo" / ".github" / "contracts" / "contract.toml"
-    acceptance_path.parent.mkdir(parents=True)
-    fixture_name = ".github/contracts/ticket.md"
-    assert demo_contract_module._validate_ticket_fixture(
-        acceptance_path, fixture_name, ticket, tmp_path
-    ) == [f"CI-owned ticket fixture is missing: {fixture_name}"]
-    fixture = tmp_path / "repo" / fixture_name
-    fixture.write_text("different\n", encoding="utf-8")
-    assert (
-        "cannot compare"
-        in demo_contract_module._validate_ticket_fixture(
-            acceptance_path, fixture_name, ticket, tmp_path
-        )[0]
-    )
-    fixture.write_text(_SIMPLE_TICKET, encoding="utf-8")
-    assert (
-        demo_contract_module._validate_ticket_fixture(
-            acceptance_path, fixture_name, ticket, tmp_path
-        )
-        == []
-    )
-
-
-def test_ticket_fixture_comparison_ignores_generated_publication_fields(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    contract_path = tmp_path / ".github/contracts/contract.toml"
-    fixture_name = ".github/contracts/ticket.md"
-    fixture = tmp_path / fixture_name
-    ticket = tmp_path / "published.md"
-    fixture.parent.mkdir(parents=True)
-    fixture.write_text(_SIMPLE_TICKET, encoding="utf-8")
-    ticket.write_text(
-        _SIMPLE_TICKET.replace(
-            "on_success: []\n",
-            "on_success: []\ncreated: '2026-09-05T00:00:00Z'\n"
-            "machine: {schema: 1, participants: []}\n",
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        demo_contract_module, "ticket_authoring_view", lambda _root: _simple_view()
-    )
-    assert (
-        demo_contract_module._validate_ticket_fixture(
-            contract_path, fixture_name, ticket, tmp_path
-        )
-        == []
-    )
-
-
-def test_target_validation_handles_future_missing_invalid_and_broken_targets(
+def test_target_validation_handles_invalid_and_broken_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def missing(_root: Path, target: str) -> tuple[str, ...]:
@@ -963,7 +596,6 @@ def test_target_validation_handles_future_missing_invalid_and_broken_targets(
 
     errors = demo_contract_module._validate_targets(
         tmp_path,
-        {"scope": ["future.sv [new]"]},
         ("future", "valid", "empty", "broken"),
     )
 
@@ -998,13 +630,12 @@ def test_generated_input_reports_every_policy_failure(
         ),
     )
 
-    errors, path, digest = _validate_generated_input(tmp_path, ["build/**"], generated)
+    errors, path, digest = _validate_generated_input(tmp_path, generated)
 
     assert path == generated.path
     assert digest == ""
     assert errors == [
         "generated input was not prepared: build/image.hex",
-        "generated input must not be ticket Scope: build/image.hex",
         "generated input must not be committed: build/image.hex",
         "generated input must be ignored: build/image.hex",
         "generated input producer is missing for build/image.hex: Makefile",
@@ -1027,9 +658,7 @@ def test_generated_input_collection_keeps_only_available_digests(
         lambda *_args: next(outcomes),
     )
 
-    errors, digests = demo_contract_module._validate_generated_inputs(
-        tmp_path, {"scope": ["future.sv [new]"]}, items
-    )
+    errors, digests = demo_contract_module._validate_generated_inputs(tmp_path, items)
 
     assert errors == ["bad one"]
     assert digests == {"one.hex": "abc"}
@@ -1037,17 +666,15 @@ def test_generated_input_collection_keeps_only_available_digests(
 
 def _demo_contract() -> DemoContract:
     return DemoContract(
-        schema=1,
+        schema=2,
         upstream_repository="owner/upstream",
         upstream_ref="a" * 40,
         project_repository="owner/project",
         project_ref="b" * 40,
-        ticket_fixture=".github/contracts/ticket.md",
-        ticket_slug="demo",
         toolchain_url="https://example.invalid/toolchain.tar.gz",
         toolchain_sha256="c" * 64,
         required_targets=("sim",),
-        required_bindings=(RequiredBinding("criteria.mandatory.sim_pass", "sim"),),
+        required_goals=({"family": "sim", "target": "sim"},),
         generated_inputs=(GeneratedInput("image.hex", "Makefile", ("sim",)),),
     )
 
@@ -1057,21 +684,10 @@ def test_validate_demo_aggregates_readiness_and_idempotence_failures(
 ) -> None:
     monkeypatch.setattr(demo_contract_module, "load_contract", lambda _path: _demo_contract())
     monkeypatch.setattr(demo_contract_module, "_require_checkout_ref", lambda *_args: None)
-    monkeypatch.setattr(
-        demo_contract_module,
-        "_ticket_fields",
-        lambda *_args: (SimpleNamespace(fields={}), tmp_path / "t"),
-    )
     statuses = iter(["", "", "dirty", ""])
     monkeypatch.setattr(demo_contract_module, "_status", lambda _root: next(statuses))
-    monkeypatch.setattr(
-        demo_contract_module, "_validate_ticket_fixture", lambda *_args: ["fixture"]
-    )
-    readiness = iter([SimpleNamespace(errors=["first"]), SimpleNamespace(errors=["second"])])
-    monkeypatch.setattr(demo_contract_module, "check_ticket_ready", lambda *_args: next(readiness))
     monkeypatch.setattr(demo_contract_module, "_prepare_demo_project", lambda *_args: [])
     monkeypatch.setattr(demo_contract_module, "_validate_targets", lambda *_args: ["target"])
-    monkeypatch.setattr(demo_contract_module, "_validate_bindings", lambda *_args: ["binding"])
     generated = iter([(["generated"], {"image.hex": "one"}), (["again"], {"image.hex": "two"})])
     monkeypatch.setattr(
         demo_contract_module,
@@ -1082,12 +698,8 @@ def test_validate_demo_aggregates_readiness_and_idempotence_failures(
     errors = demo_contract_module.validate_demo(tmp_path / "c.toml", tmp_path, tmp_path)
 
     assert errors == [
-        "fixture",
-        "first",
         "target",
-        "binding",
         "generated",
-        "second preparation: second",
         "second preparation: again",
         "project preparation is not idempotent: generated input digests changed",
         "project preparation changed Git-visible checkout state",
@@ -1143,3 +755,29 @@ def test_demo_contract_cli_reports_success_and_errors(
     )
     assert demo_contract_module.main(args) == 2
     assert "ERROR: bad contract" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "field", ["optional = true", "criterion = 'LINT'", "min_detected = 0", "auto = false"]
+)
+def test_goal_contract_rejects_legacy_and_invalid_mutation_fields(tmp_path, field) -> None:
+    path = _write_contract(tmp_path, ('family = "sim"', f'family = "mutation"\n{field}'))
+    with pytest.raises(DemoContractError, match=r"unknown fields|positive|true"):
+        load_contract(path)
+
+
+def test_contract_goals_use_real_entry_grammar_and_keep_mutation() -> None:
+    from booley.goals.model import parse_goal_arg
+    from booley.goals.translate import translate_goals
+
+    contract = load_contract(CONTRACT)
+    goals = translate_goals(tuple(parse_goal_arg(goal) for goal in contract.required_goals)).goals
+    assert {goal.key for goal in goals} == {
+        "lint_clean_lint_core",
+        "sim_pass_sim_core",
+        "sim_pass_sim_wb",
+        "synthesis_ok_synth_core",
+        "mutation_score_sim_core",
+    }
+    mutation = next(goal for goal in goals if goal.family.value == "mutation")
+    assert mutation.params["min_detected"] == 14 and mutation.params["total"] == 15

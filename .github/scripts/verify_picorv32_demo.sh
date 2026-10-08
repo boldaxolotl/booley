@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${TICKET_SLUG:?TICKET_SLUG is required}"
+export BOOLEY_MCP_MODE=interactive
+export BOOLEY_GOAL_MODE_PREVIEW=1
 
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python -m booley.harness.booley run --ticket "${TICKET_SLUG}" --check-ready
 python "${source_root}/.github/scripts/picorv32_demo_contract.py" \
   --contract "${source_root}/.github/contracts/picorv32-demo.toml" \
   --demo-root /work \
   --project-dir /booley-project
+
+python "${source_root}/.github/scripts/goal_mode_driver.py" \
+  --project /work --project-state /booley-project \
+  --contract "${source_root}/.github/contracts/picorv32-demo.toml" \
+  --readiness --evidence "${BOOLEY_GOAL_READINESS_EVIDENCE:-/tmp/goal-readiness.json}"
 
 if [[ "${BOOLEY_RUN_PICORV32_FLOWS:-0}" == "1" ]]; then
   python -m booley.flows.lint --project /work --target lint_core
