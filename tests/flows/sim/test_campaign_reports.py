@@ -470,6 +470,7 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
         work_dir=tmp_path / "project",
         report_dir=invocation.parent,
         dry_run=False,
+        mode=None,
     )
     monkeypatch.setattr(flow, "_campaign_policy", CampaignPolicy)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)

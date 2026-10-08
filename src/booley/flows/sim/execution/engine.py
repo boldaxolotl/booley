@@ -65,6 +65,7 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
+from booley.flows.sim.live_progress import attempt_scope, observe_stage
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
@@ -370,6 +371,12 @@ class PreparedOrdinaryGroup:
         script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
         timeout_s = self._execution._build_timeout_s()
         announce_unit("build/elaboration", target=self._handle.selector)
+        observe_stage(
+            self._handle.selector,
+            "building",
+            evidence_root=attempt.prepared.build_root,
+            attempt_token=attempt.identity.attempt_token,
+        )
         process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
         build = _fresh_build_outcome(attempt, process, timeout_s)
         self._build_process = process
@@ -461,6 +468,21 @@ class PreparedOrdinaryGroup:
         self._build = recovered_build
 
     def launch_snapshot(
+        self, snapshot_root: Path, run_cwd: Path, *, materialize_runtime_inputs: bool = False
+    ) -> SimulationTargetOutcome:
+        """Observe one isolated launch until all evidence processing returns."""
+        with attempt_scope(
+            self._handle.selector,
+            identity=self._handle.identity,
+            tests=self._attempt.test_names,
+        ):
+            return self._launch_snapshot(
+                snapshot_root,
+                run_cwd,
+                materialize_runtime_inputs=materialize_runtime_inputs,
+            )
+
+    def _launch_snapshot(
         self,
         snapshot_root: Path,
         run_cwd: Path,
@@ -532,6 +554,13 @@ class PreparedOrdinaryGroup:
             work_dir=str(evidence_root),
             adapter_result_path=str(identity.result_path),
         )
+        observe_stage(
+            self._handle.selector,
+            "preparing",
+            evidence_root=evidence_root,
+            attempt_token=identity.attempt_token,
+            initialize_log=True,
+        )
         prepared = replace(self._attempt.prepared, build_root=evidence_root)
         return replace(
             self._attempt,
@@ -550,11 +579,11 @@ class PreparedOrdinaryGroup:
             attempt.identity.result_path.parent,
         )
         if not should_materialize_runtime_inputs:
-            return execute_adapter_attempt(self._execution._invoke, request)
+            return self._execution._observed_adapter(self._handle, attempt, request)
         with materialize_runtime_inputs(
             Path(attempt.work.build_dir), Path(attempt.work.run_cwd), attempt.work.runtime_inputs
         ):
-            return execute_adapter_attempt(self._execution._invoke, request)
+            return self._execution._observed_adapter(self._handle, attempt, request)
 
     def _release_lease(self) -> None:
         self._lease_active = False
@@ -628,6 +657,17 @@ class SimulationExecution:
     def ordinary_group(
         self, handle: TargetHandle, test_names: tuple[str, ...]
     ) -> Iterator[PreparedOrdinaryGroup]:
+        """Observe preparation and compilation within one owned group."""
+        with (
+            attempt_scope(handle.selector, identity=handle.identity, tests=test_names),
+            self._ordinary_group(handle, test_names) as group,
+        ):
+            yield group
+
+    @contextmanager
+    def _ordinary_group(
+        self, handle: TargetHandle, test_names: tuple[str, ...]
+    ) -> Iterator[PreparedOrdinaryGroup]:
         """Prepare one ordinary-HDL group for separately controlled build and launch.
 
         The yielded group owns a freshly allocated private generation.  Its
@@ -669,6 +709,17 @@ class SimulationExecution:
                 self._fresh_generation = None
 
     def run(
+        self,
+        handle: TargetHandle,
+        selection: SimulationSelection,
+        *,
+        planned_groups: tuple[tuple[str, ...], ...] | None = None,
+    ) -> SimulationTargetOutcome:
+        """Observe one compatibility Target without changing returned authority."""
+        with attempt_scope(handle.selector, identity=handle.identity):
+            return self._run_observed(handle, selection, planned_groups=planned_groups)
+
+    def _run_observed(
         self,
         handle: TargetHandle,
         selection: SimulationSelection,
@@ -889,6 +940,13 @@ class SimulationExecution:
         session.discard_candidate(candidate)
         try:
             begin_run_log(selected.build_root, flow="sim", target=handle.selector)
+            observe_stage(
+                handle.selector,
+                "preparing",
+                evidence_root=selected.build_root,
+                attempt_token=reused.identity.attempt_token,
+                initialize_log=True,
+            )
         except OSError as exc:
             raise SimulationBuildSlotError(f"cannot open retained generation log: {exc}") from exc
         return replace(
@@ -941,6 +999,27 @@ class SimulationExecution:
         except SimulationArtifactPersistenceError as exc:
             return _artifact_failure(handle, attempt, build, pre_sim, str(exc), started)
 
+    def _observed_adapter(
+        self, handle: TargetHandle, attempt: _Attempt, request: AdapterAttemptRequest
+    ) -> AdapterAttemptOutcome:
+        observe_stage(
+            handle.selector,
+            "executing",
+            evidence_root=attempt.prepared.build_root,
+            attempt_token=attempt.identity.attempt_token,
+            tests=attempt.test_names,
+        )
+        try:
+            return execute_adapter_attempt(self._invoke, request)
+        finally:
+            observe_stage(
+                handle.selector,
+                "postprocessing",
+                evidence_root=attempt.prepared.build_root,
+                attempt_token=attempt.identity.attempt_token,
+                tests=attempt.test_names,
+            )
+
     def _execute_adapter(self, handle: TargetHandle, attempt: _Attempt) -> AdapterAttemptOutcome:
         announce_unit(
             "verified build reuse" if attempt.reused else "build/simulation",
@@ -971,7 +1050,7 @@ class SimulationExecution:
             run_cwd,
             attempt.work.runtime_inputs,
         ):
-            return execute_adapter_attempt(self._invoke, request)
+            return self._observed_adapter(handle, attempt, request)
 
     def _execute_reused_adapter(
         self, handle: TargetHandle, attempt: _Attempt
@@ -993,7 +1072,7 @@ class SimulationExecution:
         ):
             if session.try_reuse(attempt.prepared, attempt.cache_key) is None:
                 raise SimulationBuildSlotError("cached Simulation image changed before launch")
-            return execute_adapter_attempt(self._invoke, request)
+            return self._observed_adapter(handle, attempt, request)
 
     def _execute_fresh_adapter(
         self, handle: TargetHandle, attempt: _Attempt
@@ -1012,6 +1091,12 @@ class SimulationExecution:
             script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
             timeout_s = self._build_timeout_s()
             announce_unit("build/elaboration", target=handle.selector)
+            observe_stage(
+                handle.selector,
+                "building",
+                evidence_root=attempt.prepared.build_root,
+                attempt_token=attempt.identity.attempt_token,
+            )
             build_process = self._invoke(["sh", "-c", script], timeout=timeout_s)
             build = classify_build_outcome(
                 build_process,
@@ -1027,7 +1112,7 @@ class SimulationExecution:
                 attempt.identity,
                 attempt.prepared.build_root,
             )
-            executed = execute_adapter_attempt(self._invoke, request)
+            executed = self._observed_adapter(handle, attempt, request)
             process = replace(
                 executed.process,
                 stdout=build_process.stdout + "\n" + executed.process.stdout,
@@ -1049,6 +1134,7 @@ class SimulationExecution:
         image was built from the same trace recipe, so it must launch with it.
         """
         started = time.monotonic()
+        observe_stage(handle.selector, "preparing", tests=test_names)
         prepared, trace_mode = (
             prepared_override if prepared_override is not None else self._prepare_build(handle)
         )
@@ -1073,6 +1159,14 @@ class SimulationExecution:
         _adapter_invocation(work)  # fail unsupported adapters before any build starts
         pre_sim_commands = tuple(resolve_pre_sim_commands(handle.project_root))
         simulator_environment = tuple(simulation_target_environment(handle).items())
+        observe_stage(
+            handle.selector,
+            "preparing",
+            evidence_root=prepared.build_root,
+            attempt_token=identity.attempt_token,
+            initialize_log=True,
+            tests=test_names,
+        )
         return _Attempt(
             prepared=prepared,
             identity=identity,

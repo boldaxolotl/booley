@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ class TestParamsToArgv:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -62,6 +64,7 @@ class TestMcpLifetime:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -227,6 +230,7 @@ class TestFormatMcpToolResult:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -325,6 +329,7 @@ class TestRunSubprocess:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -436,6 +441,7 @@ class TestMcpToolTimeoutSeconds:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -790,6 +796,7 @@ class TestTryReadReport:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -882,6 +889,7 @@ class TestJobManagerResultText:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -927,6 +935,7 @@ class TestResolveTranscriptDir:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -974,6 +983,7 @@ class TestMcpExposureFiltering:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1069,6 +1079,7 @@ class TestCoverageEvidenceTool:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1109,6 +1120,7 @@ class TestBooleyStatus:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1244,7 +1256,6 @@ class TestBooleyStatus:
 
     def test_health_warning_preserves_error_disposition(self, monkeypatch):
         from booley.harness import auto_doctor
-        from booley.mcp.application import McpDispatchResult
 
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
@@ -1256,7 +1267,7 @@ class TestBooleyStatus:
             "consume_changed_summary",
             lambda *_a, **_kw: "Automatic Doctor found 1 FAIL",
         )
-        content = McpDispatchResult(
+        content = self.mcp_server.McpDispatchResult(
             value=[fake_text_content(type="text", text="EXIT_CODE: 2")],
             is_error=True,
         )
@@ -1281,6 +1292,7 @@ class TestBooleySleep:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1371,6 +1383,7 @@ class TestBooleyTargets:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1486,6 +1499,7 @@ class TestBwaveDispatch:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1732,6 +1746,7 @@ class TestLoadAgentSettingsFromToml:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1802,6 +1817,7 @@ class TestBuiltinDiscoveryGate:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1870,6 +1886,7 @@ class TestMainProxySelfHeal:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -1929,6 +1946,7 @@ class TestInteractiveHiddenNote:
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
             "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
             "mcp.server.stdio": MagicMock(),
             "mcp.types": MagicMock(),
         }
@@ -2124,3 +2142,290 @@ def test_fetched_simulation_card_never_expands_top_level_counts():
         "cycle_counts": {"sim": [{"test": "hidden-full-row", "cycle_count": 7}]},
     }
     assert "hidden-full-row" not in _format_report_card(report, "sim")
+
+
+@pytest.mark.parametrize("response_kind", ["handoff", "attach", "poll", "adopted_poll"])
+def test_live_sim_checkpoint_survives_mcp_background_responses(
+    tmp_path, monkeypatch, response_kind
+):
+    """A gated real Job keeps its current checkpoint through every MCP handoff."""
+    from booley.mcp import server
+    from booley.mcp.call_context import CallContext
+
+    monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
+    monkeypatch.setattr(server, "_bwave_mcp_tools_for_mode", lambda: [])
+    monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
+    context = CallContext(tmp_path, tmp_path / "jobs", None, None, tmp_path, {}, None)
+    monkeypatch.setattr(server, "job_roots", lambda: [context.jobs_root])
+
+    asyncio.run(_live_checkpoint_scenario(server, context, tmp_path, monkeypatch, response_kind))
+
+
+async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, response_kind):
+    from booley.flows.progress_lifecycle import progress_document, write_progress_json
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    checkpoints = {}
+
+    async def gated_child(_cmd, *, env, on_spawn, **_kwargs):
+        on_spawn(os.getpid())
+        run_id = env["BOOLEY_RUN_ID"]
+        checkpoint = progress_document(
+            flow="sim",
+            run_id=run_id,
+            phase="running",
+            targets=["dut"],
+            completed_targets=[],
+            detail={},
+            extra={
+                "active": [
+                    {
+                        "target": "dut",
+                        "stage": "executing",
+                        "role": "candidate",
+                        "log": {"path": "build/dut/run.log", "live": True, "complete": False},
+                    }
+                ]
+            },
+        )
+        write_progress_json(tmp_path / "flow-reports/sim/1/progress.json", checkpoint)
+        # A newer sibling invocation cannot substitute its active checkpoint.
+        foreign = {**checkpoint, "run_id": "other-invocation", "active": []}
+        write_progress_json(tmp_path / "flow-reports/sim/2/progress.json", foreign)
+        checkpoints[run_id] = checkpoint
+        entered.set()
+        await asyncio.wait_for(release.wait(), timeout=5)
+        return 0, "", "", False
+
+    monkeypatch.setattr(server, "_run_subprocess", gated_child)
+    jobs = server._JobManager(server._McpLifetime(None, None))
+    # Yield inside the real inline-wait boundary until the child published.
+    original_wait = jobs.wait
+
+    async def inline_wait(run_id, seconds):
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        return await original_wait(run_id, seconds)
+
+    monkeypatch.setattr(jobs, "wait", inline_wait)
+    try:
+        handoff = await server._dispatch_async_job("sim", [], 60, jobs, context=context)
+        run_id = next(iter(checkpoints))
+        assert server._job_record(run_id).status == "running"
+        structured = await _live_checkpoint_response(
+            server, jobs, context, response_kind, handoff, run_id, monkeypatch
+        )
+        _assert_live_checkpoint(structured, checkpoints[run_id])
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=5)
+
+
+async def _live_checkpoint_response(
+    server, jobs, context, response_kind, handoff, run_id, monkeypatch
+):
+    if response_kind == "handoff":
+        assert isinstance(handoff, tuple), "handoff lost structured checkpoint"
+        structured = handoff[1]
+    elif response_kind == "attach":
+        attached = await server._dispatch_async_job("sim", [], 60, jobs, context=context)
+        assert len(jobs._tasks) == 1
+        assert isinstance(attached, tuple), "idempotent attach lost checkpoint"
+        structured = attached[1]
+    else:
+        selected_jobs = jobs
+        if response_kind == "adopted_poll":
+            selected_jobs = server._JobManager(server._McpLifetime(None, None))
+        monkeypatch.setattr(server, "_JobManager", lambda _lifetime: selected_jobs)
+        application = server._build_mcp_application([], [], server._McpLifetime(None, None))
+        assert "booley_poll" in [tool.name for tool in application.list_tools()]
+        payload = await application.call_tool(
+            "booley_poll",
+            {
+                "run_id": run_id,
+                "wait_seconds": 0,
+            },
+        )
+        assert not payload.is_error
+        structured = payload.structured_content
+        assert "synthesis verdict" not in payload.content[0].text
+    return structured
+
+
+def _assert_live_checkpoint(structured, checkpoint):
+    assert structured is not None
+    report = structured["reports"][0]
+    assert report == {**checkpoint, "partial": True}
+    assert report["complete"] is False
+    assert report["pending_targets"] == ["dut"]
+    assert "passed" not in structured
+    assert "exit_code" not in report
+
+
+def test_registered_poll_observes_blocked_legacy_simulation_execution(tmp_path, monkeypatch):
+    """The real Flow and execution publish an owned log before the invoker returns."""
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import ExitStack
+    from threading import Event
+
+    from booley.flows.base import SubprocessResult
+    from booley.flows.run_log import write_run_log_progress
+    from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+    from booley.mcp import server
+    from booley.runtime.timefmt import utc_now_rfc3339
+    from tests.flows.sim.test_execution_engine import (
+        _compile_surface_patch,
+        _handle,
+        _inspection,
+        _prepared,
+    )
+    from tests.flows.sim.test_flow import _make_flow
+
+    run_id = "gated-legacy-sim"
+    monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
+    flow = _make_flow(tmp_path, config="sim")
+    monkeypatch.setattr(
+        flow,
+        "_flow_plan",
+        SimpleNamespace(
+            work_units=(SimpleNamespace(selector="sim", role="ordinary", test_or_module_scope=()),)
+        ),
+        raising=False,
+    )
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    entered, release = Event(), Event()
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.new_generation.return_value = prepared.work_root
+    session.try_reuse.return_value = None
+    session.capture_inputs.return_value = {}
+
+    def invoke(command, *, timeout):
+        del timeout
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            return SubprocessResult(returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
+        write_run_log_progress(
+            prepared.work_root, "synthetic exception\n" * 4, elapsed_s=1, line_count=4
+        )
+        entered.set()
+        assert release.wait(5), "test failed to release simulator invoker"
+        return SubprocessResult(returncode=0)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
+    monkeypatch.setattr(flow, "_simulation_execution", lambda **_kwargs: execution)
+    monkeypatch.setattr(flow, "_target_handle", lambda _target: handle)
+    with ExitStack() as stack:
+        stack.callback(flow.context.publication_resources.close)
+        stack.enter_context(_compile_surface_patch(handle))
+        stack.enter_context(
+            patch(
+                "booley.flows.sim.execution.engine.TargetCatalog.build",
+                return_value=_inspection(cocotb=False),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared
+            )
+        )
+        stack.enter_context(
+            patch("booley.flows.sim.execution.engine.SimulationBuildSession", return_value=session)
+        )
+        stack.enter_context(
+            patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123")
+        )
+        _poll_blocked_legacy_flow(
+            server,
+            flow,
+            tmp_path,
+            run_id,
+            entered,
+            release,
+            monkeypatch,
+            utc_now_rfc3339,
+            ThreadPoolExecutor,
+        )
+
+
+def _poll_blocked_legacy_flow(
+    server, flow, root, run_id, entered, release, monkeypatch, now, pool_type
+):
+    import time
+
+    jobs_root = root / "runtime/jobs"
+    server.jobrec.write_record(
+        server.jobrec.JobRecord(
+            run_id=run_id,
+            endpoint="sim",
+            started_at=now(),
+            timeout_s=60,
+            pid=os.getpid(),
+            argv=[],
+        ),
+        root=jobs_root,
+    )
+    monkeypatch.setattr(server, "job_roots", lambda: [jobs_root])
+    monkeypatch.setattr(
+        server, "_endpoint_report_dirs", lambda *_args, **_kwargs: (root / "reports",)
+    )
+    monkeypatch.setattr(server, "_bwave_mcp_tools_for_mode", lambda: [])
+    monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
+    with pool_type(max_workers=1) as pool:
+        future = pool.submit(flow._run_legacy_selected_mode, ["sim"], {}, time.monotonic(), 0)
+        try:
+            assert entered.wait(5), "simulator launch was not reached"
+            application = server._build_mcp_application([], [], server._McpLifetime(None, None))
+            payload = asyncio.run(
+                application.call_tool(
+                    "booley_poll",
+                    {
+                        "run_id": run_id,
+                        "wait_seconds": 0,
+                    },
+                )
+            )
+            report = payload.structured_content["reports"][0]
+            assert report["run_id"] == run_id
+            assert report["phase"] == "running"
+            assert report["partial"] is True and report["complete"] is False
+            assert report["completed_targets"] == []
+            assert report["pending_targets"] == ["sim"]
+            assert len(report["active"]) == 1
+            active = report["active"][0]
+            assert active["stage"] == "executing"
+            assert active["log"]["live"] is True
+            assert "synthetic exception" in (root / active["log"]["path"]).read_text()
+            assert "passed" not in payload.structured_content
+        finally:
+            release.set()
+            future.result(timeout=5)
+
+
+def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
+    from booley.mcp import server
+
+    active = {
+        "target": "sim",
+        "stage": "executing",
+        "role": "candidate",
+        "log": {"path": "build/current/run.log", "live": True, "complete": False},
+    }
+    report = {
+        "flow": "sim",
+        "run_id": "current",
+        "phase": "running",
+        "complete": False,
+        "partial": True,
+        "active": [active],
+        "detail": {"completed": "large diagnostic" * server._MAX_STRUCTURED_REPORT_BYTES},
+    }
+    payload = server._structured_from_report(report)
+    assert payload["truncated"] is True
+    assert payload["reports"] == []
+    checkpoint = payload
+    assert checkpoint["active"] == [active]
+    assert checkpoint["run_id"] == "current"
+    assert checkpoint["complete"] is False and checkpoint["partial"] is True
+    assert "passed" not in payload and "exit_code" not in checkpoint
+    assert server._payload_size(payload) <= server._MAX_STRUCTURED_REPORT_BYTES

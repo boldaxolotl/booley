@@ -122,10 +122,12 @@ def progress_document(
     return document
 
 
-def write_progress_json(path: Path, document: Mapping[str, object]) -> None:
+def write_progress_json(
+    path: Path, document: Mapping[str, object], *, lock_timeout_s: float = 5
+) -> None:
     """Atomically publish one progress document under its shared writer lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _progress_file_lock(path):
+    with _progress_file_lock(path, timeout_s=lock_timeout_s):
         _write_progress_json_unlocked(path, document)
 
 
@@ -178,6 +180,7 @@ def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_
     if document.get("complete") is True:
         return False
     repaired = dict(document)
+    repaired.pop("active", None)
     repaired.update(
         {
             "complete": True,
@@ -203,9 +206,10 @@ def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> b
     phase = document.get("phase")
     if phase in {"superseded", "complete"}:
         return False
-    if phase not in {"running", "aborted"}:
+    if phase not in {"starting", "running", "aborted"}:
         return False
     updated = dict(document)
+    updated.pop("active", None)
     updated.update(
         {
             "complete": True,
@@ -283,7 +287,7 @@ def _replace_if_unchanged(
 
 
 @contextmanager
-def _progress_file_lock(path: Path) -> Iterator[None]:
+def _progress_file_lock(path: Path, *, timeout_s: float = 5) -> Iterator[None]:
     lock_path = path.with_name(".progress.lock")
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(lock_path, flags, 0o600)
@@ -292,7 +296,7 @@ def _progress_file_lock(path: Path) -> Iterator[None]:
             raise ValueError("progress lock must be a regular file")
         with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
             descriptor = -1
-            wait_for_file_lock(handle, timeout_s=5)
+            wait_for_file_lock(handle, timeout_s=timeout_s)
             try:
                 yield
             finally:

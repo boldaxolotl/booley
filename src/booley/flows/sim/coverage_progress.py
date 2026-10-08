@@ -4,10 +4,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from booley.flows.progress_lifecycle import progress_document, write_progress_json
+from booley.flows.progress_lifecycle import progress_document
 
 from .coverage_campaign import coverage_mapping_document
 from .coverage_transaction import CoverageTargetOutcome
+from .live_progress import publish_checkpoint
 
 
 @dataclass
@@ -36,7 +37,7 @@ class CoverageProgress:
         )
         if complete != (resolved_phase in {"complete", "aborted", "superseded"}):
             raise ValueError("coverage progress complete and phase disagree")
-        write_progress_json(
+        publish_checkpoint(
             self.invocation_dir / "progress.json",
             progress_document(
                 flow="sim",

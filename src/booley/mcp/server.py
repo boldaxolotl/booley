@@ -1817,6 +1817,30 @@ def _simulation_transport_report(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def _live_checkpoint_summary(report: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep current owned log pointers when completed Target detail exceeds the cap."""
+    active = report.get("active")
+    if report.get("complete") is not False or not isinstance(active, list):
+        return None
+    summary = {
+        key: report[key]
+        for key in ("flow", "run_id", "timestamp", "phase", "complete", "partial")
+        if key in report
+    }
+    summary["active"] = [
+        {key: item[key] for key in ("target", "stage", "role", "operation", "log") if key in item}
+        for item in active
+        if isinstance(item, dict)
+    ]
+    omitted = 0
+    while summary["active"] and _payload_size(summary) > _MAX_STRUCTURED_REPORT_BYTES // 2:
+        summary["active"].pop()
+        omitted += 1
+    if omitted:
+        summary["omitted_active_entries"] = omitted
+    return summary
+
+
 def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
     """Bounded ``structuredContent`` payload for a run report, or None.
 
@@ -1834,6 +1858,9 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if len(json.dumps(payload).encode("utf-8")) > _MAX_STRUCTURED_REPORT_BYTES:
             # Oversized: keep the cheap scalar verdict, drop the heavy body.
             payload = {"reports": [], "truncated": True}
+            live = _live_checkpoint_summary(report)
+            if live is not None:
+                payload.update(live)
             for key in ("flow", "mcp_tool", "target", "exit_code"):
                 if report.get(key) is not None:
                     payload[key] = report[key]
@@ -2716,7 +2743,7 @@ def _format_job_running_poll(run_id: str) -> str:
     return (
         f"{message} Nonterminal checkpoint ({phase}): completed targets "
         f"{completed}; pending targets {pending}. This partial checkpoint is "
-        "not a final synthesis verdict."
+        "not a final Flow verdict."
     )
 
 
@@ -3299,9 +3326,7 @@ async def _poll_from_disk(
             return jobs.result_content(run_id)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            if goal_mode_preview_enabled():
-                return _running_poll_content(run_id)
-            return [TextContent(type="text", text=_format_job_running_poll(run_id))]
+            return _running_poll_content(run_id)
         await asyncio.sleep(min(_DISK_POLL_TICK_SECONDS, remaining))
 
 
@@ -3484,7 +3509,10 @@ async def _dispatch_async_job(
     finished = await jobs.wait(run_id, _job_inline_wait_seconds())
     if finished:
         return jobs.result_content(run_id)
-    return [TextContent(type="text", text=_format_job_running(name, run_id))]
+    return _with_structured_report(
+        [TextContent(type="text", text=_format_job_running(name, run_id))],
+        _running_progress(run_id),
+    )
 
 
 def _strip_transcript_dir(argv: list[str]) -> list[str]:
@@ -3569,7 +3597,10 @@ async def _attach_to_job(
         return await _poll_from_disk(run_id, jobs, inline_wait)
     if finished:
         return jobs.result_content(run_id)
-    return [TextContent(type="text", text=_format_job_attached(name, run_id))]
+    return _with_structured_report(
+        [TextContent(type="text", text=_format_job_attached(name, run_id))],
+        _running_progress(run_id),
+    )
 
 
 def _validate_work_dir(value: Any) -> str | None:

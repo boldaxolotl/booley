@@ -754,3 +754,64 @@ def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
     )
     _, _, termination = crun._stream_output(["fake"], tmp_path, {}, 30, max_rundir_bytes=8)
     assert termination.kind == prior
+
+
+def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch):
+    """Real streaming writes diagnostics to the evidence root while the child waits."""
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from booley.flows.run_log import begin_run_log
+    from booley.flows.sim.backends import shared
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    cwd = tmp_path / "child"
+    cwd.mkdir()
+    log = begin_run_log(evidence, flow="sim", target="cocotb", run="live-test")
+    observed = Event()
+    children = []
+    real_popen = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        child = real_popen(*args, **kwargs, stdin=subprocess.PIPE)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(shared, "RUN_LOG_PROGRESS_INTERVAL_S", 0)
+    monkeypatch.setattr(crun, "_partial_result_publisher", lambda *_: lambda _: observed.set())
+    run = crun._CocotbRun(
+        evidence,
+        cwd,
+        evidence,
+        evidence / "results.xml",
+        ["selected"],
+        os.environ.copy(),
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "import sys; print('RuntimeError: live failure'); sys.stdin.readline(); print('final diagnostic')",
+        ],
+        None,
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(crun._execute_cocotb_run, run, 5, 0, 0, None, ())
+        try:
+            assert observed.wait(5), "child output never reached the streaming callback"
+            assert not future.done()
+            contents = log.read_text()
+            assert "RuntimeError: live failure" in contents
+            assert "run=live-test" in contents and "run in progress" in contents
+            assert not (cwd / "run.log").exists()
+        finally:
+            if children:
+                children[0].stdin.write("release\n")
+                children[0].stdin.flush()
+                children[0].stdin.close()
+            _lines, proc, termination = future.result(timeout=6)
+    assert proc.returncode == 0
+    assert not termination.aborted
+    assert "final diagnostic" in log.read_text()

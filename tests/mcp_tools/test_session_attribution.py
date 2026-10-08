@@ -465,21 +465,6 @@ async def test_preview_off_goal_payload_has_no_presentation_warning(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_adopted_running_poll_without_preview_keeps_released_plain_card(monkeypatch):
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW", raising=False)
-    record = job_records.JobRecord("run", "sim", "2026-10-08T10:00:00Z", 60, pid=99)
-    monkeypatch.setattr(job_records.time, "time", lambda: 1791453601)
-    monkeypatch.setattr(server, "_job_record", lambda _: record)
-    monkeypatch.setattr(server, "is_pid_alive", lambda _: True)
-    monkeypatch.setattr(server, "_format_job_running_poll", lambda _: "RUNNING: sim")
-    monkeypatch.setattr(
-        server, "_running_progress", lambda _: pytest.fail("preview-off progress scan")
-    )
-    result = await server._poll_from_disk("run", None, 0)
-    assert [block.text for block in result] == ["RUNNING: sim"]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["record", "shared", "duplicate"])
 async def test_advisory_completion_preserves_success_and_deduplicates_warning(
     monkeypatch, failure

@@ -15,6 +15,7 @@ from typing import Any
 
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_parsers import extract_error_gist
+from booley.flows.sim.live_progress import attempt_scope, observe_stage
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
 
@@ -347,8 +348,10 @@ class StandaloneMixin:
         timeout_s: int,
     ) -> tuple[dict[str, str] | None, str, str]:
         """Run one bounded probe and return its finding, log, and tool error."""
-        command = self._standalone_compile_command(module, rel, shared, frontend)
-        proc = self._execute(command, timeout=timeout_s)
+        with attempt_scope(module, identity=module, operation="standalone"):
+            command = self._standalone_compile_command(module, rel, shared, frontend)
+            observe_stage(module, "building")
+            proc = self._execute(command, timeout=timeout_s)
         combined = (proc.stdout + proc.stderr).strip()
         log_chunk = f"$ {shlex.join(command)}\n{combined}\n"
         if proc.returncode == 0:

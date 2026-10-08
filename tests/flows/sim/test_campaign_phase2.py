@@ -791,7 +791,21 @@ def test_all_candidate_manifests_publish_before_first_baseline_work() -> None:
             calls.append(("run", request))
             raise ProcessDeath
 
-    baseline = object()
+    baseline = SimpleNamespace(
+        project_root=Path("baseline-project"),
+        plan=SimpleNamespace(
+            manifest=SimpleNamespace(
+                document={
+                    "target": {
+                        "selector": "sim",
+                        "vlnv": "acme:lib:dut:1",
+                        "name": "sim",
+                        "revision": "abc123",
+                    }
+                }
+            )
+        ),
+    )
     candidate = object()
     with pytest.raises(ProcessDeath):
         SimulateFlow._publish_and_run_campaign_requests(  # type: ignore[arg-type]
