@@ -186,7 +186,7 @@ def _lane(tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess[str],
     return _run(
         tmp_path,
         _step("Run RISC-V candidate image contract"),
-        {"TICKET_SLUG": "demo", "TOOLING_CONTEXT": _CONTEXT, **env},
+        {"TOOLING_CONTEXT": _CONTEXT, **env},
     )
 
 

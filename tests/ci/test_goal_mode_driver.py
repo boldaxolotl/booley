@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,9 +12,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 import goal_mode_driver as driver
+from tests.smoke import test_goal_mode_image_smoke as smoke
 
 _ID = "ci-demo-20261009T120000Z"
-_LINT = {"family": "lint", "target": "lint_core"}
+_LINT = driver.load_contract(Path(".github/contracts/picorv32-demo.toml")).required_goals[0]
 _ENTER = f"Goal Mode {_ID} entered in /fixture.\nGoals (all unmet):\n- lint_clean_lint_core"
 _STATUS = f"{_ID} (active) · 1/1 met\nlint_clean_lint_core met clean"
 
@@ -34,7 +36,8 @@ class FakeSession:
 
 def _exercise(replies, *, goals=(_LINT,), readiness=False):
     session = FakeSession(replies)
-    result = asyncio.run(driver.exercise(session, Path("/fixture"), goals, readiness=readiness))
+    operation = driver.readiness if readiness else driver.roundtrip
+    result = asyncio.run(operation(session, Path("/fixture"), goals))
     return result, session.calls
 
 
@@ -48,6 +51,8 @@ def test_roundtrip_requires_enter_lint_fresh_status_and_finish() -> None:
         ]
     )
     assert result["state"] == "finished"
+    assert set(result["steps"]) == {"goal_enter", "lint", "goal_status", "goal_finish"}
+    assert all(step["status"] == "pass" and step["response"] for step in result["steps"].values())
     assert [name for name, _ in calls] == ["goal_enter", "lint", "goal_status", "goal_finish"]
     assert all(arguments["work_dir"] == "/fixture" for _, arguments in calls)
     finish = calls[-1][1]
@@ -57,18 +62,13 @@ def test_roundtrip_requires_enter_lint_fresh_status_and_finish() -> None:
 
 def test_readiness_lists_full_contract_and_leaves_unmet_goals_active() -> None:
     goals = driver.load_contract(Path(".github/contracts/picorv32-demo.toml")).required_goals
-    keys = [
-        goal.key
-        for goal in driver.translate_goals(
-            tuple(driver.parse_goal_arg(goal) for goal in goals)
-        ).goals
-    ]
+    keys = [goal.key for goal in driver.translate_goals(goals).goals]
     status = f"{_ID} (active) · 0/{len(keys)} met\n" + "\n".join(f"{key} unmet" for key in keys)
     result, calls = _exercise([_reply(_ENTER), _reply(status)], goals=goals, readiness=True)
     assert result["state"] == "active" and set(result["goals"]) == set(keys)
     assert [name for name, _ in calls] == ["goal_enter", "goal_status"]
-    assert calls[0][1]["goals"] == list(goals)
-    assert any(goal["family"] == "mutation" for goal in goals)
+    assert calls[0][1]["goals"] == [driver.goal_arg_to_json(goal) for goal in goals]
+    assert any(goal.family.value == "mutation" for goal in goals)
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_readiness_lists_full_contract_and_leaves_unmet_goals_active() -> None:
         _reply("ERROR: refused", error=True),
         _reply("No record"),
         _reply(_ENTER.replace("/fixture", "/foreign")),
-        _reply(_ENTER + "\nWarnings:\nTarget does not exist"),
+        _reply("ERROR: refusal without flag", error=None),
     ],
 )
 def test_entry_missing_or_unresolved_proof_fails_closed(reply) -> None:
@@ -148,21 +148,30 @@ def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> Non
     owned.mkdir()
     commands = []
 
-    def run(command, cwd, env):
+    def run(command, cwd, env, *, stdin_payload=None):
         commands.append((command, cwd))
-        if command[1] == "clone":
-            (Path(command[-1]) / ".git/info").mkdir(parents=True)
-        if command[1] == "worktree":
-            Path(command[-2]).mkdir()
+        if command[0] == "git" and command[1] == "clone":
+            destination = Path(command[-1])
+            (destination / ".git/info").mkdir(parents=True)
+            if destination.name == ".booley_project":
+                (destination / "booley.toml").write_text("[project]\n")
+        elif stdin_payload is not None:
+            (cwd / ".booley_project/worktrees/ci-demo/.booley_project").mkdir(parents=True)
+        elif command[1] == "worktree":
+            destination = Path(command[-2])
+            destination.mkdir()
+            (destination / ".git").write_text("paired pointer")
         return ""
 
     monkeypatch.setattr(driver, "_run", run)
-    worktree = driver._workspace(source, state, owned)
+    monkeypatch.setattr(driver, "is_git_worktree_root", lambda _path: True)
+    workspace = driver.create_workspace(source, state, owned)
     assert all(cwd == owned or owned in cwd.parents for _, cwd in commands)
-    assert (worktree / ".booley_project/booley.toml").is_file()
-    assert not (worktree / ".booley_project/goals").exists()
+    assert (workspace.worktree / ".booley_project/.git").is_file()
+    assert workspace.project_dir == owned / "primary/.booley_project"
     assert (state / "goals/saved").read_text() == "retained"
     assert "--no-hardlinks" in commands[0][0]
+    assert any(Path(command[-1]).name == "worktree_create.sh" for command, _ in commands)
 
 
 def test_final_allowed_poll_can_complete() -> None:
@@ -192,19 +201,128 @@ def test_client_uses_modern_wire_preview_and_verifies_saved_state(
         return {"record_id": _ID, "state": "finished"}
 
     monkeypatch.setattr(driver, "Client", Client)
-    monkeypatch.setattr(driver, "exercise", exercise)
+    monkeypatch.setattr(driver, "roundtrip", exercise)
     monkeypatch.setattr(
         driver,
         "GoalStore",
-        lambda _path: SimpleNamespace(load=lambda _id: SimpleNamespace(state=state)),
+        lambda path: (
+            captured.update(store=path)
+            or SimpleNamespace(load=lambda _id: SimpleNamespace(state=state))
+        ),
     )
     if state is driver.GoalState.FINISHED:
-        result = asyncio.run(driver._client_run(tmp_path, [_LINT], Path(sys.executable), False))
+        result = asyncio.run(
+            driver._client_run(
+                driver.Workspace(tmp_path / "primary", tmp_path / "worktree"),
+                [_LINT],
+                Path(sys.executable),
+                False,
+            )
+        )
         assert result["disposable"] is True
     else:
         with pytest.raises(driver.GoalDriverError, match="persisted Goal state"):
-            asyncio.run(driver._client_run(tmp_path, [_LINT], Path(sys.executable), False))
+            asyncio.run(
+                driver._client_run(
+                    driver.Workspace(tmp_path / "primary", tmp_path / "worktree"),
+                    [_LINT],
+                    Path(sys.executable),
+                    False,
+                )
+            )
+    assert captured["store"] == tmp_path / "primary/.booley_project"
     assert captured["mode"] == "2026-07-28"
     assert captured["server"].env["BOOLEY_GOAL_MODE_PREVIEW"] == "1"
     assert captured["server"].env["BOOLEY_MCP_MODE"] == "interactive"
-    assert captured["server"].env["BOOLEY_PROJECT_DIR"] == str(tmp_path / ".booley_project")
+    assert captured["server"].env["BOOLEY_PROJECT_DIR"] == str(
+        tmp_path / "primary/.booley_project"
+    )
+
+
+def test_entry_warnings_are_recorded_without_refusing_readiness() -> None:
+    warning = "Target needs a generated input"
+    result, calls = _exercise(
+        [_reply(_ENTER + "\nWarnings:\n" + warning), _reply(_STATUS)], readiness=True
+    )
+    assert result["steps"]["goal_enter"]["warnings"] == [warning]
+    assert [name for name, _ in calls] == ["goal_enter", "goal_status"]
+
+
+@pytest.mark.parametrize("flag", [None, False, True])
+def test_unflagged_error_refusal_is_classified_once(flag) -> None:
+    session = FakeSession(
+        [_reply("ERROR: Goals must be met and fresh before finish: sim_fail", error=flag)]
+    )
+    with pytest.raises(driver.GoalToolRefusalError):
+        asyncio.run(driver.finish(session, Path("/fixture"), _ID))
+
+
+def test_flow_polling_uses_one_deadline(monkeypatch) -> None:
+    deadlines = []
+    replies = iter(["run_id=lint/1", "running", "EXIT_CODE: 0"])
+
+    async def text(_session, _name, _arguments, *, deadline):
+        deadlines.append(deadline)
+        return next(replies)
+
+    monkeypatch.setattr(driver, "tool_text", text)
+    assert asyncio.run(driver.run_flow(FakeSession([]), "lint", {})) == "EXIT_CODE: 0"
+    assert len(deadlines) == 3 and len(set(deadlines)) == 1
+
+
+def test_expired_deadline_refuses_without_waiting() -> None:
+    session = FakeSession([_reply("not reached")])
+    with pytest.raises(driver.GoalDriverError, match="timed out"):
+        asyncio.run(driver.tool_text(session, "lint", {}, deadline=-1))
+    assert not session.calls
+
+
+def test_expected_failed_flow_still_requires_terminal_proof() -> None:
+    session = FakeSession([_reply("run_id=sim/1"), _reply("EXIT_CODE: 1")])
+    assert asyncio.run(driver.run_flow(session, "sim", {}, expected_exit_code=1)) == "EXIT_CODE: 1"
+
+
+def test_atomic_evidence_failure_preserves_previous_complete_record(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "proof.json"
+    driver.write_evidence(path, {"previous": "complete"})
+
+    def fail(*_args, **_kwargs):
+        raise OSError("interrupted replacement")
+
+    monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(OSError, match="interrupted"):
+        driver.write_evidence(path, {"new": "proof"})
+    assert path.read_text().strip() == '{\n  "previous": "complete"\n}'
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_image_failure_uses_shared_unflagged_refusal_classification(tmp_path, monkeypatch) -> None:
+    session = FakeSession(
+        [
+            _reply("EXIT_CODE: 1\nintentional Goal Mode smoke failure"),
+            _reply(f"{_ID} (active) · 0/1 met\nsim_pass_sim_fail unmet failure"),
+            _reply(
+                "ERROR: Goals must be met and fresh before finish: sim_pass_sim_fail", error=None
+            ),
+        ]
+    )
+
+    @asynccontextmanager
+    async def client(_workspace):
+        yield session
+
+    async def entered(_client, _workspace, _goals):
+        return _ID
+
+    monkeypatch.setattr(smoke, "client_session", client)
+    monkeypatch.setattr(smoke, "_enter", entered)
+    monkeypatch.setattr(smoke, "_run_git", lambda *_args: SimpleNamespace(stdout="unchanged"))
+    monkeypatch.setattr(
+        smoke,
+        "GoalStore",
+        lambda _path: SimpleNamespace(
+            load=lambda _id: SimpleNamespace(state=driver.GoalState.ACTIVE)
+        ),
+    )
+    asyncio.run(smoke._failure(driver.Workspace(tmp_path, tmp_path / "worktree")))
+    assert [name for name, _ in session.calls] == ["sim", "goal_status", "goal_finish"]

@@ -16,6 +16,8 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.dev_support.toolchain_provenance import validate_toolchain_provenance
+from booley.goals.model import GoalArg, GoalArgError, parse_goal_arg
+from booley.goals.translate import GoalTranslationError, translate_goals
 
 __all__ = [
     "DemoContract",
@@ -50,7 +52,7 @@ class DemoContract:
     toolchain_url: str
     toolchain_sha256: str
     required_targets: tuple[str, ...]
-    required_goals: tuple[dict[str, Any], ...]
+    required_goals: tuple[GoalArg, ...]
     generated_inputs: tuple[GeneratedInput, ...]
 
 
@@ -104,55 +106,29 @@ def _require_unique_strings(value: Any, *, field: str) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _validate_goal_fields(goal: Mapping[str, Any], family: str, label: str) -> None:
-    allowed = {"family", "target", "origin"}
-    if family == "synth":
-        allowed |= {"thresholds", "baseline"}
-        thresholds = require_dict(goal.get("thresholds"), field=f"{label}.thresholds")
-        if not thresholds:
-            raise BoundaryError(f"{label}.thresholds must be non-empty")
-        if "baseline" in goal:
-            _require_trimmed_str(goal, "baseline", field=f"{label}.baseline")
-    if family == "mutation":
-        allowed |= {"scope", "min_detected", "total", "auto"}
-        if "scope" in goal:
-            _require_unique_strings(goal["scope"], field=f"{label}.scope")
-        for key in ("min_detected", "total"):
-            if key in goal and require_int(goal[key], field=f"{label}.{key}") < 1:
-                raise BoundaryError(f"{label}.{key} must be positive")
-        if "auto" in goal and goal["auto"] is not True:
-            raise BoundaryError(f"{label}.auto must be true")
-    if "origin" in goal:
-        _require_trimmed_str(goal, "origin", field=f"{label}.origin")
-    extra = set(goal) - allowed
-    if extra:
-        raise BoundaryError(f"{label} has unknown fields: {', '.join(sorted(extra))}")
-
-
 def _parse_goals(
     document: Mapping[str, Any], required_targets: tuple[str, ...]
-) -> tuple[dict[str, Any], ...]:
+) -> tuple[GoalArg, ...]:
     raw = document.get("required_goal")
     if not isinstance(raw, list) or not raw:
         raise BoundaryError("required_goal must be a non-empty array of tables")
-    goals: list[dict[str, Any]] = []
+    goals: list[GoalArg] = []
     seen: set[tuple[str, str]] = set()
     for index, value in enumerate(raw):
-        goal = require_dict(value, field=f"required_goal[{index}]")
-        family = _require_trimmed_str(goal, "family", field=f"required_goal[{index}].family")
-        target = _require_trimmed_str(goal, "target", field=f"required_goal[{index}].target")
-        if family not in {"lint", "sim", "elab", "synth", "mutation"}:
-            raise BoundaryError(f"required_goal[{index}].family is unsupported: {family!r}")
+        goal = parse_goal_arg(value, where=f"required_goal[{index}]")
+        target = getattr(goal, "target", None)
         if target not in required_targets:
             raise BoundaryError(
                 f"required_goal[{index}].target {target!r} is not in required_targets"
             )
-        _validate_goal_fields(goal, family, f"required_goal[{index}]")
-        pair = (family, target)
+        pair = (goal.family, target)
         if pair in seen:
-            raise BoundaryError(f"required_goal contains duplicate pair {family!r} -> {target!r}")
+            raise BoundaryError(
+                f"required_goal contains duplicate pair {goal.family!r} -> {target!r}"
+            )
         seen.add(pair)
-        goals.append(dict(goal))
+        goals.append(goal)
+    translate_goals(goals)
     return tuple(goals)
 
 
@@ -208,7 +184,7 @@ def load_contract(path: Path | str) -> DemoContract:
         toolchain_url, toolchain_sha256 = _parse_toolchain_provenance(document)
         goals = _parse_goals(document, required_targets)
         generated_inputs = _parse_generated_inputs(document, required_targets)
-    except BoundaryError as exc:
+    except (BoundaryError, GoalArgError, GoalTranslationError) as exc:
         raise DemoContractError(str(exc)) from exc
 
     return DemoContract(

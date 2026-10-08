@@ -890,3 +890,15 @@ def test_goal_changes_are_release_sensitive_without_git(path: str) -> None:
 
     categories = classify([path])
     assert {"release_sensitive", "standard_image"} <= categories
+    if path.startswith("src/booley/"):
+        assert "riscv_image" in categories
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/booley/evidence/acceptance.py", "tests/fixtures/goal_mode_smoke/goal_mode_smoke.core"],
+)
+def test_demo_evidence_and_fixture_inputs_select_riscv_validation_without_git(path):
+    from ci_changes import classify
+
+    assert "riscv_image" in classify([path])

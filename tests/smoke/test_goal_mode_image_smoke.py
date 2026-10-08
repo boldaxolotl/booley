@@ -10,19 +10,28 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import pytest
-from mcp import Client, StdioServerParameters
+from mcp import Client
 
 from booley.criteria.state import DevelopmentState
-from booley.goals.model import GoalState
+from booley.goals.model import GoalState, parse_goal_args
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
-from goal_mode_driver import run_flow, status_rows, tool_text
+from goal_mode_driver import (
+    GoalToolRefusalError,
+    Workspace,
+    client_session,
+    create_workspace,
+    enter,
+    finish,
+    run_flow,
+    status_rows,
+    tool_text,
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_GOAL_MODE_SMOKE") != "1",
@@ -90,64 +99,35 @@ def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
     assert "STA-0441" not in log.resolve().read_text(encoding="utf-8")
 
 
-def _worktree(tmp_path: Path) -> Path:
-    primary = tmp_path / "primary"
-    shutil.copytree(_FIXTURE, primary)
-    _run_git(primary, "init", "-b", "main")
-    _run_git(primary, "config", "user.name", "Booley Smoke")
-    _run_git(primary, "config", "user.email", "smoke@example.invalid")
-    with (primary / ".git/info/exclude").open("a", encoding="utf-8") as stream:
-        stream.write("\n/.booley_project/\n")
-    _run_git(primary, "add", ".")
-    _run_git(primary, "commit", "-m", "Initialize Goal Mode smoke fixture")
-    worktree = tmp_path / "goal-worktree"
-    _run_git(primary, "worktree", "add", "--detach", str(worktree))
-    shutil.copytree(primary / ".booley_project", worktree / ".booley_project")
-    return worktree
+def _workspace(tmp_path: Path) -> Workspace:
+    source = tmp_path / "source"
+    shutil.copytree(_FIXTURE, source)
+    _run_git(source, "init", "-b", "main")
+    _run_git(source, "config", "user.name", "Booley Smoke")
+    _run_git(source, "config", "user.email", "smoke@example.invalid")
+    (source / ".git/info/exclude").write_text("/.booley_project\n")
+    _run_git(source, "add", ".")
+    _run_git(source, "commit", "-m", "Initialize smoke RTL")
+    project = source / ".booley_project"
+    _run_git(project, "init", "-b", "main")
+    _run_git(project, "config", "user.name", "Booley Smoke")
+    _run_git(project, "config", "user.email", "smoke@example.invalid")
+    no_global_ignore = tmp_path / "no-global-ignore"
+    no_global_ignore.write_text("")
+    _run_git(project, "config", "core.excludesfile", str(no_global_ignore))
+    _run_git(project, "add", ".")
+    _run_git(project, "commit", "-m", "Initialize smoke Project")
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    return create_workspace(source, project, owned)
 
 
-def _server(worktree: Path) -> StdioServerParameters:
-    return StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "booley.mcp.server"],
-        cwd=str(worktree),
-        env=os.environ
-        | {
-            "BOOLEY_PROJECT_DIR": str(worktree / ".booley_project"),
-            "BOOLEY_MCP_MODE": "interactive",
-            "BOOLEY_GOAL_MODE_PREVIEW": "1",
-            "BOOLEY_IN_SANDBOX": "1",
-        },
-    )
-
-
-async def _enter(client: Client, worktree: Path, goals: list[dict[str, Any]]) -> str:
-    text = await tool_text(
-        client,
-        "goal_enter",
-        {
-            "work_dir": str(worktree),
-            "slug": "smoke",
-            "goals": goals,
-        },
-    )
-    record = GoalStore(worktree / ".booley_project").active_for_worktree(worktree)
-    assert record is not None, text
+async def _enter(client: Client, workspace: Workspace, goals: list[dict[str, Any]]) -> str:
+    entry = await enter(client, workspace.worktree, parse_goal_args(goals))
+    record = GoalStore(workspace.project_dir).active_for_worktree(workspace.worktree)
+    assert record is not None and record.id == entry["record_id"]
     assert record.state is GoalState.ACTIVE
     return record.id
-
-
-async def _finish(client: Client, worktree: Path, record_id: str) -> str:
-    return await tool_text(
-        client,
-        "goal_finish",
-        {
-            "work_dir": str(worktree),
-            "record_id": record_id,
-            "operation_id": str(uuid4()),
-            "summary": "Production-image smoke exercised real lint, simulation, staleness and OpenROAD synthesis.",
-        },
-    )
 
 
 def _assert_openroad(state: DevelopmentState) -> None:
@@ -168,7 +148,8 @@ def _assert_openroad(state: DevelopmentState) -> None:
     assert not detail.get("infra_error")
 
 
-async def _success(worktree: Path) -> None:
+async def _success(workspace: Workspace) -> None:
+    worktree = workspace.worktree
     goals = [
         {"family": "lint", "target": "lint_smoke"},
         {"family": "sim", "target": "sim_smoke"},
@@ -182,9 +163,8 @@ async def _success(worktree: Path) -> None:
         },
     ]
     keys = ["lint_clean_lint_smoke", "sim_pass_sim_smoke", "synthesis_ok_synth_smoke"]
-    async with Client(_server(worktree), mode="2026-07-28") as client:
-        assert client.protocol_version == "2026-07-28"
-        record_id = await _enter(client, worktree, goals)
+    async with client_session(workspace) as client:
+        record_id = await _enter(client, workspace, goals)
         for goal in goals:
             await run_flow(
                 client, goal["family"], {"target": goal["target"], "work_dir": str(worktree)}
@@ -209,35 +189,35 @@ async def _success(worktree: Path) -> None:
                 keys,
             ).values()
         ) == {"met"}
-        await _finish(client, worktree, record_id)
-    store = GoalStore(worktree / ".booley_project")
+        await finish(client, worktree, record_id)
+    store = GoalStore(workspace.project_dir)
     assert store.load(record_id).state is GoalState.FINISHED
     _assert_openroad(DevelopmentState.load(record_paths(store.project_dir, record_id).state_file))
 
 
 def test_goal_mode_success_staleness_and_openroad(tmp_path: Path) -> None:
-    asyncio.run(_success(_worktree(tmp_path)))
+    asyncio.run(_success(_workspace(tmp_path)))
 
 
-async def _failure(worktree: Path) -> None:
-    async with Client(_server(worktree), mode="2026-07-28") as client:
-        record_id = await _enter(client, worktree, [{"family": "sim", "target": "sim_fail"}])
-        # Failed Flow evidence is expected; the MCP call itself must still return proof.
-        response = await client.call_tool("sim", {"target": "sim_fail", "work_dir": str(worktree)})
-        text = "\n".join(block.text for block in response.content if hasattr(block, "text"))
+async def _failure(workspace: Workspace) -> None:
+    worktree = workspace.worktree
+    async with client_session(workspace) as client:
+        record_id = await _enter(client, workspace, [{"family": "sim", "target": "sim_fail"}])
+        text = await run_flow(
+            client, "sim", {"target": "sim_fail", "work_dir": str(worktree)}, expected_exit_code=1
+        )
         assert "EXIT_CODE: 1" in text and "intentional Goal Mode smoke failure" in text
         status = await tool_text(client, "goal_status", {"work_dir": str(worktree)})
         assert status_rows(status, record_id, ["sim_pass_sim_fail"]) == {
             "sim_pass_sim_fail": "unmet"
         }
         before = _run_git(worktree, "rev-parse", "HEAD").stdout
-        from goal_mode_driver import GoalDriverError
-
-        with pytest.raises(GoalDriverError, match="met and fresh"):
-            await _finish(client, worktree, record_id)
+        with pytest.raises(GoalToolRefusalError) as refusal:
+            await finish(client, worktree, record_id)
+        assert "sim_pass_sim_fail" in str(refusal.value)
         assert _run_git(worktree, "rev-parse", "HEAD").stdout == before
-        assert GoalStore(worktree / ".booley_project").load(record_id).state is GoalState.ACTIVE
+        assert GoalStore(workspace.project_dir).load(record_id).state is GoalState.ACTIVE
 
 
 def test_goal_mode_failing_sim_refuses_finish(tmp_path: Path) -> None:
-    asyncio.run(_failure(_worktree(tmp_path)))
+    asyncio.run(_failure(_workspace(tmp_path)))

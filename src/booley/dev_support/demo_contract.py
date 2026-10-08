@@ -19,8 +19,6 @@ from booley.dev_support.demo_contract_codec import (
 )
 from booley.flows.execution import flow_enabled
 from booley.fusesoc import fusesoc_registry
-from booley.goals.model import parse_goal_arg
-from booley.goals.translate import translate_goals
 from booley.runtime.project_prepare import prepare_project
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -157,10 +155,6 @@ def validate_demo(
 ) -> list[str]:
     """Run the complete, idempotent public-demo readiness contract."""
     contract = load_contract(contract_path)
-    try:
-        translate_goals(tuple(parse_goal_arg(goal) for goal in contract.required_goals))
-    except ValueError as exc:
-        raise DemoContractError(f"invalid required Goal: {exc}") from exc
     root = Path(demo_root).resolve()
     project = Path(project_dir).resolve()
     errors: list[str] = []

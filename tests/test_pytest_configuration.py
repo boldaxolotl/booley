@@ -6,6 +6,7 @@ import configparser
 import ntpath
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -861,6 +862,10 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "cd /validation-tmp/project" in rendered
     cleanup_wrapper = ".github/scripts/run_with_container_cleanup.sh"
     assert all(cleanup_wrapper in step["run"] for step in validations)
+    for step in validations:
+        tokens = shlex.split(step["run"])
+        assert tokens.index(cleanup_wrapper) > tokens.index("--")
+        assert "&&" not in tokens
 
 
 def test_image_validation_cleanup_wrapper_terminates_containers() -> None:

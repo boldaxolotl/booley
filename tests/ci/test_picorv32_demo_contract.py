@@ -13,6 +13,8 @@ from typing import Any
 import pytest
 import yaml
 
+from booley.goals.model import parse_goal_arg
+
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
 from picorv32_ci_inputs import PICORV32_INPUT_FILES
@@ -159,7 +161,7 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
     assert len(contract.upstream_ref) == 40
     assert contract.project_ref == "da79489482a7bed69e275ba2c46358ea6636af4d"
     assert contract.schema == 2
-    assert all(goal["target"] in contract.required_targets for goal in contract.required_goals)
+    assert all(goal.target in contract.required_targets for goal in contract.required_goals)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
     assert contract.toolchain_sha256 == (
         "aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758"
@@ -175,6 +177,35 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
         "firmware/firmware.hex",
         "dhrystone/dhry.hex",
     }
+
+
+@pytest.mark.parametrize(
+    "path,directory",
+    [
+        (WORKFLOW, "picorv32-demo"),
+        (PUBLISH_WORKFLOW, "picorv32-evidence"),
+        (TEST_WORKFLOW, "riscv-image-evidence"),
+    ],
+)
+def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> None:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    commands = "\n".join(_yaml_strings(workflow))
+    if path == TEST_WORKFLOW:
+        assert "run_picorv32_ci_demo.sh" in commands
+        commands += Path(".github/scripts/run_picorv32_ci_demo.sh").read_text()
+    assert "dst=/evidence" in commands
+    assert "BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json" in commands
+    assert directory in commands
+    uploads = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert any(
+        step.get("if") == "always()" and f"/{directory}/" in step["with"]["path"]
+        for step in uploads
+    )
 
 
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
@@ -454,19 +485,9 @@ _INVALID_CONTRACT_CASES = [
         id="malformed-binding",
     ),
     pytest.param(
-        ('family = "sim"', 'family = " sim"'),
-        "required_goal[0].family must be trimmed",
-        id="untrimmed-binding",
-    ),
-    pytest.param(
         ('family = "sim"', 'family = " "'),
         "required_goal[0].family must be a non-empty string",
         id="empty-binding",
-    ),
-    pytest.param(
-        ('target = "sim"', 'target = " sim"'),
-        "required_goal[0].target must be trimmed",
-        id="untrimmed-binding-target",
     ),
     pytest.param(
         ('target = "sim"', 'target = " "'),
@@ -674,7 +695,7 @@ def _demo_contract() -> DemoContract:
         toolchain_url="https://example.invalid/toolchain.tar.gz",
         toolchain_sha256="c" * 64,
         required_targets=("sim",),
-        required_goals=({"family": "sim", "target": "sim"},),
+        required_goals=(parse_goal_arg({"family": "sim", "target": "sim"}),),
         generated_inputs=(GeneratedInput("image.hex", "Makefile", ("sim",)),),
     )
 
@@ -767,11 +788,10 @@ def test_goal_contract_rejects_legacy_and_invalid_mutation_fields(tmp_path, fiel
 
 
 def test_contract_goals_use_real_entry_grammar_and_keep_mutation() -> None:
-    from booley.goals.model import parse_goal_arg
     from booley.goals.translate import translate_goals
 
     contract = load_contract(CONTRACT)
-    goals = translate_goals(tuple(parse_goal_arg(goal) for goal in contract.required_goals)).goals
+    goals = translate_goals(contract.required_goals).goals
     assert {goal.key for goal in goals} == {
         "lint_clean_lint_core",
         "sim_pass_sim_core",
@@ -781,3 +801,22 @@ def test_contract_goals_use_real_entry_grammar_and_keep_mutation() -> None:
     }
     mutation = next(goal for goal in goals if goal.family.value == "mutation")
     assert mutation.params["min_detected"] == 14 and mutation.params["total"] == 15
+
+
+@pytest.mark.parametrize("field", ["family", "target"])
+def test_goal_contract_uses_entry_boundary_normalization(tmp_path, field):
+    original = 'family = "sim"' if field == "family" else 'target = "sim"'
+    path = _write_contract(tmp_path, (original, original.replace('"sim"', '" sim "')))
+    goals = load_contract(path).required_goals
+    assert goals == (parse_goal_arg({"family": "sim", "target": "sim"}),)
+
+
+def test_typed_goals_encode_for_mcp_without_sharing_nested_maps():
+    from booley.goals.model import goal_arg_to_json
+
+    for goal in load_contract(CONTRACT).required_goals:
+        encoded = goal_arg_to_json(goal)
+        assert parse_goal_arg(encoded) == goal
+        if "thresholds" in encoded:
+            encoded["thresholds"]["cell_count_max"] = 999
+            assert "cell_count_max" not in goal.thresholds

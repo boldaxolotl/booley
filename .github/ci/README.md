@@ -69,7 +69,7 @@ paths fail safe to the exhaustive set. Main pushes and the full scheduled
 matrix also run every recovery permutation.
 
 Goal code and tests and review code are release-sensitive inputs for the
-standard image validation. They do not independently select exhaustive
+standard and RISC-V image validation. They do not independently select exhaustive
 Ticket Board recovery permutations.
 
 ## Performance telemetry

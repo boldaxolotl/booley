@@ -6,4 +6,4 @@ elaboration and simulation, and Yosys/OpenROAD synthesis against the
 setup-managed Nangate45 PDK mounted at `/opt/pdk`.
 
 The fixture is not run by the ordinary host test suite. CI opts in with
-`BOOLEY_TICKET_MODE_SMOKE=1` after building the production image.
+`BOOLEY_GOAL_MODE_SMOKE=1` after building the production image.

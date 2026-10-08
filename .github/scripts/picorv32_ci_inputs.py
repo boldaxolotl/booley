@@ -17,7 +17,14 @@ PICORV32_INPUT_FILES = frozenset(
     }
 )
 
-RISCV_IMAGE_PREFIXES = (".github/actions/prepare-picorv32-demo/", "demo/")
+RISCV_IMAGE_PREFIXES = (
+    ".github/actions/prepare-picorv32-demo/",
+    "demo/",
+    "src/booley/goals/",
+    "src/booley/review/",
+    "src/booley/evidence/",
+    "tests/fixtures/goal_mode_smoke/",
+)
 RISCV_IMAGE_FILES = frozenset(
     {
         ".github/contracts/image-size-limits.toml",
