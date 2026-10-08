@@ -41,7 +41,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from booley.core.boundary import as_dict
-from booley.fusesoc.fusesoc_registry import discover_cores, read_core
+from booley.fusesoc.fusesoc_registry import core_relative_to_project, discover_cores, read_core
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import core_program_paths
@@ -144,7 +144,7 @@ def _auxiliary_fileset_files(
             for text, file_type in _file_items(item, default_type):
                 if _is_hdl(text, file_type):
                     continue
-                path = (core.parent / text).resolve()
+                path = (root / core_relative_to_project(core, root, text)).resolve()
                 if path.is_relative_to(root) and not path.is_dir():
                     yield path
 

@@ -34,7 +34,7 @@ from typing import Any
 from booley.core.boundary import as_dict, as_str
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
-from booley.fusesoc.fusesoc_registry import state_cores_dir
+from booley.fusesoc.fusesoc_registry import prepare_core_library_plan, state_cores_dir
 from booley.runtime.project_repositories import paired_project_repository
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
@@ -137,10 +137,21 @@ def baseline_worktree(
         _materialize_baseline_submodules(project_root, wt_dir, ref)
         if paired_baseline is None:
             _copy_stealth_cores(project_root, wt_dir, ref)
+            _copy_baseline_configuration(project_root, wt_dir)
         _copy_root_quarantine_marker(project_root, wt_dir)
+        prepare_core_library_plan(wt_dir)
         yield wt_dir
     finally:
         _cleanup_baseline_worktree(project_root, wt_dir, paired_baseline)
+
+
+def _copy_baseline_configuration(project_root: Path, worktree: Path) -> None:
+    """Shared Project cores retain their authored projection configuration."""
+    source = worktree_state_dir(project_root) / "booley.toml"
+    destination = worktree / ".booley_project" / "booley.toml"
+    if source.is_file() and not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
 
 
 def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
