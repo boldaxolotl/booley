@@ -32,6 +32,11 @@ def goal_mode_rules() -> str:
         "for the exact saved proposal ID with their quoted words and nonblank reason.",
         "Never weaken tests or Targets to meet a Goal: `.core` and `tests.toml` "
         "edits, and `.sdc`/`.xdc` edits, are flagged in the review package.",
+        "When fixing a bug, reproduce it first: before changing code, run the Booley "
+        "Flow test that should catch it and confirm the test fails. If it already "
+        "passes, the test does not detect the bug and a later pass proves nothing; "
+        "tell the human in chat, and propose a Goal change through "
+        "`goal_propose_change` if a Goal depends on it.",
         "Finish needs every Goal met at a clean, committed HEAD plus a Session "
         "Summary. Commit your work on the Goal Branch.",
         "Check `goal_status` when unsure; `goal_status(rules=true)` repeats these rules.",
