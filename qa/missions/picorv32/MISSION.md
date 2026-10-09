@@ -1,9 +1,9 @@
 # PicoRV32 published demo
 
 Drive the published PicoRV32 demo Project through Booley end to end. The run covers setup, an
-Interactive B-Wave repair, two dependent Tickets with Basis Refresh, a blocked-Ticket amendment, a
+Interactive B-Wave repair, Dhrystone and Zbb Goals, proposals, Finish, crash resume, a
 Simulation Campaign, Vivado, and negative cases. The IP is small and well known, so failures point
-at Booley, usually at handoffs: paired repos, Ticket dependencies, Grants, Sessions, cleanup.
+at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessions, cleanup.
 
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
@@ -15,20 +15,46 @@ at Booley, usually at handoffs: paired repos, Ticket dependencies, Grants, Sessi
   backend.
 - Optional: Vivado 2025.2 on x86-64 Linux (areas 6 and 11), a paid license and relay (11), a Git
   server you control (13), and VS Code with the Codex extension (2).
-- Budget: 8 h, areas in priority order. Log any area not reached as skipped. Work areas 7 and 9–14
-  while Tickets run. Rerun on Windows (WSL2, no Vivado) or another client only when asked.
+- Budget: 8 h, areas in priority order. Log any area not reached as skipped. Goal children run in the background while the operator works independent areas
+  9–14. The area budgets total 440 minutes, including 120 minutes of Zbb child
+  time, with 40 minutes contingency. Rerun on Windows (WSL2, no Vivado) or another client only when asked.
 
 ## Mission-specific rules
-- Upstream RTL and the Project pin are immutable. Change sources only through the prompts, the
-  Tickets, or disposable fault branches that you restore afterwards.
-- Submit the fenced blocks in `tickets/*.md` verbatim, rendering only the `{{ ... }}` placeholders
-  as each file's preamble describes. Send `prompts/*.md` verbatim, and never reveal the fault.
-- Apply an amendment only after a live human maintainer approves the exact preview. Without
-  approval, leave the Ticket blocked and log it.
+- Upstream RTL and the Project pin are immutable inputs. Hidden faults stay
+  with the operator. Send `prompts/*.md` verbatim; never reveal the seed recipe.
+- The Project pin is assumed to contain seeded `goalsets/` and the managed
+  `.gitignore`; repeat initialization must not drift. The owner refreshes the
+  Project pin separately.
+- The host operator starts a long-lived Codex Goal child in the Sandbox with
+  `booley session enter -- codex ...`, then sends `/booley-goal` and the area's
+  mission prompt. The operator never implements the child's design work. Read
+  `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
+  `docs/user/USAGE.md` "Goal Mode" from the candidate build for the workflow.
+- The operator is the deciding human for disposable QA proposals: answer entry
+  choices and approve or reject the exact proposal with a reason, through the
+  client form or a message the child quotes as `approval_quote`. A proposal
+  affecting a merged deliverable needs the live maintainer; without one, keep
+  it pending and log it. Silence never supplies approval.
+- While any Goal is active, every MCP Booley call passes absolute `work_dir`;
+  independent non-Goal areas use the primary checkout root. Finish or explicitly
+  abandon every Goal before closing its area. Background children may overlap
+  independent operator areas; keep their owning area open until resolved.
+- Host-issued container commands use `booley session enter -- booley ...`;
+  bare Sandbox commands below are for the child/container terminal.
+- Before entry, copy the selected `goals/*.md` into the resolved Project's
+  `goalsets/`, and commit setup, seeded Goalsets and the managed `.gitignore`.
+  `goals/*.json` are ad-hoc `goal_enter` argument lists. Use unique slugs per run.
+  Design implementations occur only in clean linked Goal worktrees.
+- Operator integration of finished work merges the outer `goal/<slug>-<date>`
+  Goal Branch and the paired `booley-worktree/<name>` Project-data branch into
+  their respective run-owned destinations. Record both in `resources.md`.
+  Preserve the package, remove the paired checkout first using the printed
+  USAGE cleanup steps, and leave both destinations clean in the primary
+  checkout before `booley session enter -- booley worktree new <name>` again.
 
 ## Areas
 
-### 1. setup — Install, split repos, init, Stealth, Doctor, baseline (~70 min)
+### 1. setup — Install, split repos, init, Stealth, Doctor, baseline (~40 min)
 Intent: a first setup succeeds from the public docs alone, and the unchanged demo passes every Flow.
 Try:
 - Clone both pins and confirm they are clean. Make `.booley_project` a standalone Git repo, then run
@@ -51,7 +77,7 @@ Try:
 Look for: undocumented steps, a stale image, over- or under-matching waivers, stale reports, wrong
 tool resolution.
 
-### 2. interactive-bwave — Interactive readiness and B-Wave semantics (~35 min)
+### 2. interactive-bwave — Interactive readiness and B-Wave semantics (~20 min)
 Intent: the Interactive child has the right context, and B-Wave returns correct values, not just
 exit 0.
 Try:
@@ -63,133 +89,140 @@ Try:
   `list`/`signal`/`diff`/`stats`/`stuck` should reject `--virtual` with parser exit 2.
 - A traced sim should give a fresh, non-empty, queryable FST, and VCD-to-FST conversion from a file
   or FIFO should give the same values. In VS Code, the extension should attach and run status,
-  Targets, a Flow, and a Specialist, and must not create a Ticket.
+  Targets, a Flow, and a Specialist, and must keep the read-only tree unchanged.
 Look for: off-by-one sampling, silent empty results, `--virtual` accepted where the docs reject it.
 Known B-Wave defects still count as findings.
 
-### 3. interactive-repair — Seeded Wishbone fault, diagnosis, repair (~30 min)
+### 3. interactive-repair — Seeded Wishbone fault, diagnosis, repair (~20 min)
 Intent: an Interactive child can find and fix a real bug from traces.
 Try:
 - Save a checkpoint. On a run-owned disposable branch, inject `fixtures/wishbone-fault.md`
-  yourself and commit it: in `picorv32_wb`, change `we` from the OR to the AND of
-  `mem_wstrb[3:0]`. Send `prompts/repair-interactive.md` to the same child.
+  yourself in a disposable copy and commit it: in `picorv32_wb`, change `we` from the OR to the AND of
+  `mem_wstrb[3:0]`. Start a Goal child with `/booley-goal` and `prompts/repair-interactive.md`,
+  selecting the seeded bugfix Goalset for the affected Targets.
 - Expected: byte stores hit `ERROR`. The trace is non-empty and shows `mem_wstrb`, `we`, `wbm_*`,
   `mem_valid`, `mem_ready`, and `ram_we`. B-Wave explains the fault, the fix restores an OR
   reduction of `mem_wstrb[3:0]` (the upstream bytes or `|mem_wstrb`), sim and lint pass, the local
   repair commit on top of the fault commit is non-empty, and the push is blocked.
 - Before calling a diagnosis wrong, replay the child's exact B-Wave argv, sampling, and clock/reset
-  defaults. Restore the checkpoint. Optional: file the fault as a `bug-fix` Ticket on a disposable
-  branch.
+  defaults. Restore the checkpoint and abandon the disposable Goal on the operator
+  instruction before closing the area.
 Look for: an empty repair commit, a repair that weakens a test, a push that gets through, lost MCP
 tools.
 
-### 4. ticket-create — Create both Tickets before running either (~20 min)
-Intent: agent-mode Ticket Create accepts complete packets and routes them to the paired refs.
+### 4. goal-enter — Goalsets, ad-hoc entry and refusals (~20 min)
+Intent: entry creates a bound Goal Branch with concrete mandatory Goals and clear refusals.
+Depends on: area 1's clean outer and Project-data destination branches.
 Try:
-- Render `tickets/continuity.md`: set `outer_destination_branch` to the outer branch without
-  `refs/heads/`, and `project_destination_ref` to the full nested ref. Stage it under ignored
-  `tmp/qa-inputs/`.
-- Run `$booley-ticket-create --agent --no-confirm --input-file <path>` (Claude:
-  `/booley-ticket-create …`). Inside the Sandbox, pass the path under `/booley-project/` (e.g.
-  `/booley-project/tmp/qa-inputs/<file>`), not `/work/.booley_project/…`. Expect ordered milestones, no clarification request, a board path, and
-  `queued`.
-- Read Ticket 1's actual slug and check `dependencies:` in `tickets/evolution.md` against it. If
-  they differ, patch your copy and log a `qa-bug`. With Vivado, render `configured_fpga_criterion`
-  as the block below; without it, leave it empty. Ticket 2 should come up as `waiting`.
-  ```yaml
-    FPGA:
-      fpga_core_zbb (temp): pass
-  ```
-- On both Tickets, `branch` should map to the outer ref and `project_destination_ref` to the nested
-  ref. The Baseline publishes on enqueue with no manual seal. Ticket Create should author only
-  Target definitions, owned `tests.toml` tables, and empty `[new]` files.
-Look for: swapped or collapsed refs, clarification requests on a complete packet, a slug mismatch.
-Depends on: area 1. If its branches are missing or dirty, recreate them by hand and log it.
+- Install `goals/continuity.md` and `goals/evolution.md` in Project `goalsets/`
+  and commit. Create a linked workspace from the primary checkout with
+  `booley session enter -- booley worktree new <unique-name>`.
+- Start the Codex Goal child, send `/booley-goal` plus `goals/continuity.md`.
+  Confirm translated Goals, origin, record ID, base commit, branch and worktree
+  identity, then explicitly abandon this entry probe. Use `goals/entry-probe.json` for a separate disposable ad-hoc entry;
+  abandon it on the operator's explicit instruction before removing its workspace.
+- In isolated probes require refusal for the main checkout, dirty outer tree,
+  dirty paired Project checkout, a worktree copy of the Project directory,
+  active/finishing occupant, existing same-day Goal Branch, missing relative
+  baseline Target, or missing spec. A missing candidate Target only warns and
+  remains unmet. Preserve the diagnostic and restore each probe's owned inputs.
+- Add and commit a disposable `default.md`. Entry without an include-or-skip
+  decision refuses; explicit skip needs the operator's instruction and reason.
+  Include it on a control entry. Abandon probes, then remove `default.md` and
+  commit that removal so later entries do not inherit the probe.
+Look for: branch collisions on rerun, collapsed Project/worktree identity,
+missing origins, or entry mutating a refused workspace.
 
-### 5. ticket1 — Dhrystone self-check Ticket and negative guard (~50 min)
-Intent: a verification Ticket delivers exactly its contract and exports a persistent Target.
+### 5. goal-evidence — Dhrystone contract and fresh evidence (~45 min)
+Intent: a verification Goal delivers self-checking firmware with evidence bound to its Target.
+Depends on: area 4's working entry route; if entry failed, fix only the reported setup cause.
 Try:
-- `booley run --ticket <ticket-1-slug>`. Retry once, only on an exact `API Error: Response stalled
-  mid-stream`. Only `dhrystone/dhry_1.c` and `dhrystone/testbench.v` change; 100 iterations stay.
-- A mismatch prints an error and traps. `123456789` is written to `0x20000000` only after
-  validation. The `[SIM_CYCLES] dhry <n>` line has n ≤ 110000 (calibration: 109734).
-- The elab, sim, cycle, and TB-review Criteria bind to `sim_dhry_checked`, and it stays selectable.
-  The Ticket reaches `done`, merges, cleans its worktree, and writes a triage report.
-- Guard (`fixtures/dhrystone-guard.md`, disposable branch): flip one bit of the first expected
-  operand. Expect a trap, no magic, and no cycles. Then restore, rerun to a pass, and discard the
-  branch.
-Look for: a pass without validation, the cap applied to the wrong test, temp and persistent Targets
-mixed up, leftover worktrees.
-Depends on: area 4. If Create failed, create Ticket 1 with the interactive skill and log it.
+- Enter a fresh continuity Goal in a new clean paired worktree. The child follows
+  `goals/continuity.md`: 100 iterations, deterministic final
+  validation, mismatch error/trap, success magic `123456789` at `0x20000000`
+  only after validation, and `[SIM_CYCLES] dhry <n>` with n ≤ 110000.
+- Verify elab, full sim, cycle_count and TB-quality evidence through
+  `goal_status(work_dir=...)`. A shell-only diagnostic cannot meet a Goal.
+  Save initial evidence, make a harmless relevant edit within the Goal, check
+  freshness, rerun and require fresh evidence. Restore and commit intended work.
+- In a separate disposable Project copy, change a Protected Input, observe warnings/discarded
+  evidence and blocked Finish, restore exact bytes and rerun the affected producer.
+- Follow `fixtures/dhrystone-guard.md` in a separate disposable Project/Goal: corrupt one expected
+  operand, require trap/no magic/no cycles, restore and rerun to pass. Abandon
+  the probe explicitly; preserve the real continuity Goal's Review Package.
+- Finish the continuity Goal, inspect the package as in area 7 and integrate
+  both repository branches before cutting the Zbb worktree.
+Look for: a pass before validation, the cap bound to the wrong test, stale
+Goal evidence or a missing `sim_dhry_checked` in the paired merge.
 
-### 6. ticket2 — Basis Refresh and the Zbb feature Ticket (~120 min)
-Intent: a dependent Ticket refreshes its Basis from the accepted provider and delivers a real
-feature.
+### 6. goal-change — Zbb feature and human decisions (~120 min child time)
+Intent: a second Goal starts from integrated Dhrystone work and tests add, relax and retarget.
+Depends on: area 5 finished and both branches integrated; never hand-implement a substitute.
 Try:
-- Save Ticket 2's Basis before Ticket 1 is accepted. After the merge, the automatic refresh should
-  pick up the Dhrystone source and `sim_dhry_checked` and move waiting → queued without approval.
-- Refresh negatives (`fixtures/basis-refresh.md`, in disposable copies with Ticket 1 replayed):
-  raising the cell threshold from 11% to 12% blocks the Ticket with the drift reason
-  (`acceptance-input-change-required: authored Ticket changed`), keeps the old Basis, and starts no
-  agent. A human then returns it to draft; the return is not automatic. Removing the exported `sim_dhry_checked` blocks it without a queue transition.
-- Run `booley run --ticket <ticket-2-slug>`. All 18 Zbb ops match the ISA manual, and `ENABLE_ZBB`
-  defaults to 0 in core, AXI, and WB. The registered PCPI responds in one cycle. The disabled test
-  arms MMIO right before the first Zbb op and needs its illegal-instruction trap.
-- The four temp sims go fail → pass. `sim_core`, `sim_wb`, and `sim_dhry_checked` really run and
-  pass. Standalone elab passes, `lint_core_zbb` is clean, and mutation catches ≥14 of 15.
-- `synth_core_zbb` is within +11% cells and +3% critical path of `synth_core`. `fpga_core_zbb`
-  passes with Vivado. All RTL and TB reviews finish, and `review_rtl_bugs` is clean.
-- Temp Targets live until acceptance, then leave along with their owned test tables. Expect `done`,
-  a merge, cleanup, and a triage report. Then run a combined sim/lint/synth regression. Together the
-  Tickets must cover every Criterion family, including FPGA when Vivado is present.
-Look for: a refresh that rewrites authority, a provider Target selected but never run, temp Targets
-leaking or disappearing too early, review Criteria passed without evidence.
-Depends on: area 5. If Ticket 1 failed, hand-merge an equivalent self-check onto the destination
-branches and log it.
+- With both destination checkouts clean, create a new paired worktree. Give a
+  new Codex child `/booley-goal` plus `goals/evolution.md`. Copy the installed
+  ISA manual into the worktree at `docs/riscv-isa-unprivileged.html` before entry
+  and commit it; bind the spec review to that relative path. With Vivado, include
+  `goals/fpga.json` as ad-hoc Goals; without it, log that family as skipped.
+- All 18 Zbb ops match the manual; `ENABLE_ZBB` defaults to 0 in core, AXI and
+  WB, registered PCPI responds in one cycle, and the disabled test arms MMIO
+  immediately before the encoding and requires its illegal-instruction trap.
+- Full registered suites on four Zbb sims and existing core/WB/Dhrystone sims
+  pass; elab and lint pass, mutation detects ≥14/15, synth is within +11% cells
+  and +3% critical path against base `synth_core`, optional FPGA passes. Reviews
+  provide real evidence, with RTL bugs clean and other reviews done.
+- In separate disposable records using the explicit mutation floor, create an
+  `add`, a `relax` (14/15 to 13/15) and a `retarget` proposal. Inspect exact
+  before/after and saved proposal IDs; the operator approves or rejects each
+  with a reason. Check Change Log, updated spec_revision, invalidated evidence
+  and refreshed status. Approved probes rerun producers before Finish or are
+  explicitly abandoned; never relax the real feature contract to hide failure.
+- Silence probe: withhold a reply to one saved proposal, then resume that exact
+  ID and check it stays pending with no applied Goal Change. Reject it explicitly
+  afterwards, and abandon the disposable record.
+- Before closing this area, use area 7's Finish/review/integration procedure for
+  the real feature Goal; every disposable proposal probe is already resolved.
+Look for: stale evidence surviving a changed specification, decisions invented
+from silence, lost proposals or unreported Target/constraint changes.
 
-### 7. amendment-block-preview — Block Tickets and preview amendments (~35 min)
-Intent: an amendment preview on a blocked Ticket is read-only, fresh, and bounded.
-Needed picorv32 state: area 1 only (initialized Project, Sandbox with Verilator). Use a disposable
-copy of that Project, not the live one from areas 4–6. This area can run during area 6. Fallback:
-cap `sim_dhry_checked` below Ticket 1's measured count (needs area 5).
+### 7. goal-finish — Review Package, history and integration (~25 min)
+Intent: Finish requires fresh evidence and a clean committed HEAD; integration is operator work.
 Try:
-- Copy in `fixtures/blocked-amendment/` and merge its `tests.toml`. `sim_amend`/`amend_smoke` must
-  report exactly 438 cycles.
-- Create three Tickets, each with the mandatory `cycle_count: [{target: sim_amend, test:
-  amend_smoke, cycle_count_max: 400}]`. Threshold and Scope Tickets: `refactor` on
-  `rtl/amend_counter.sv`, mandatory `sim_pass`, `assign`→`always_comb`, TB untouched,
-  `dependencies: []`. Put the Scope Ticket on its own run-owned destination pair (outer and
-  Project-data, branched from this area's pair) so Ticket Create doesn't treat it as overlapping
-  the Threshold Ticket. Record both pairs in `resources.md`.
-- Optional Ticket: Scope only `docs/amend_note.md`, with an explanation task, so the cap is its sole
-  mandatory Criterion. Run each Ticket on the live backend until it genuinely blocks.
-- Take the expanded Criterion name from the sealed Ticket. Preview with `booley-ticket-triage`: cap
-  450, reason `438 cycles meets the revised budget`, feedback `Continue from the preserved
-  implementation`. Expect 400→450 and a digest, and nothing else changes.
-- Apply an old digest after a scoped source edit: refused, no change. Restore, then preview again.
-  These are refused before any change: tightening to 390, removing a Criterion, changing the Target
-  or a build-control input, adding a protected Scope path.
-Look for: previews that mutate state, stale digests that apply, relaxations that smuggle in other
-changes.
+- Attempt Finish while a Goal is unmet, with stale evidence and with dirty
+  owned files in disposable probes: no completed claim. Restore, rerun, commit.
+- The child saves record ID, stable operation ID and Session Summary before
+  `goal_finish`; retry identical arguments and require the same completion.
+  Inspect diff/base, final Goals, evidence pointers, Change Log, open `done`
+  findings, `.core`, `tests.toml`, `.sdc`/`.xdc` changes and Target semantic diff.
+- In this Stealth Project, the Session Summary stays local and no history commit
+  is made. In a non-Stealth disposable control with a trackable history path,
+  Finish commits the summary on the Goal Branch before integration.
+- Finish preserves branch/worktree. The operator reviews and merges both outer
+  and paired Project-data branches; remove the paired checkout first as printed.
+  Regress sim/lint/synth on the integrated destination and save both final HEADs.
+Look for: Finish merging or cleaning without instruction, missing paired commits,
+a changed final HEAD escaping revalidation or advisory findings missing from the package.
+Depends on: area 6; area 5 also uses this review/integration procedure.
 
-### 8. amendment-apply-resume — Human-approved amendments and resume (~40 min)
-Intent: an approved amendment continues the same Ticket under a new Baseline and keeps its history.
+### 8. goal-resume-after-crash — Resume and explicit abandon (~20 min)
+Intent: a restarted client recovers the same Goal Record without losing work or inventing decisions.
 Try:
-- Show the human a fresh 400 → 450 preview, and after approval apply that exact digest. Expect a new
-  machine generation, the old 400 commit intact, one queue event, and a durable reason and feedback.
-  Both repos should hold the same amendment.
-- On resume, the Ticket continues the same implementation and passes on 438-cycle evidence. The 400
-  failure stays in history, and the report and review finish.
-- Optional Ticket: once approved, apply `make_optional: true` to its sole mandatory Criterion.
-  Expect zero mandatory Criteria and no auto-accept. Finalizing needs an explanation.
-- Scope Ticket: once approved, apply one `scope_add: ["tb/amend_tb.sv", "rtl/amend_extra.sv [new]"]`
-  request. Both are added and the old ones kept. It re-queues under a new Baseline with no file
-  edits.
-Look for: a lost implementation checkpoint, repos out of step, auto-accept with zero mandatory
-Criteria, Scope amendments that edit files.
-Depends on: area 7.
+- Enter a disposable Goal via `goals/entry-probe.json`, gather evidence and
+  commit a harmless implementation checkpoint. Save worktree, record, branch,
+  pending proposal ID and any Finish operation arguments, then kill/reap the child.
+- Restart a Codex child in the same worktree. Its first Booley call is
+  `goal_status(work_dir=..., rules=true)`; recover rules, Goals, evidence and
+  pending proposals before editing. Resume the exact saved proposal/operation;
+  no new record, duplicate approval or duplicate evidence may be fabricated.
+- Quiet/stuck presence never abandons automatically. Give explicit operator
+  instruction to abandon this disposable Goal; the child quotes it in
+  `goal_finish(abandon=true, instruction_quote=...)`. Also exercise the human
+  CLI route `booley goal abandon` in another disposable worktree. Preserve
+  branches/checkpoints, then remove only owned resources.
+Look for: a new record substituted for recovery, lost commits, or abandonment
+without an explicit instruction. Resolve every interrupted Goal within this area.
 
-### 9. sim-protocol — Simulation grades, test protocol, guards (~30 min)
+### 9. sim-protocol — Simulation grades, test protocol, guards (~20 min)
 Intent: every sim outcome gets the right verdict, and the guards fire.
 Try (disposable Targets and TBs on a run-owned branch):
 - Pass, design fail, inconclusive, and infra get distinct classes. A pass+fail+pass multi-Target run
@@ -204,7 +237,7 @@ Try (disposable Targets and TBs on a run-owned branch):
   rerun, and expect fresh passes with no leftover producer.
 Look for: inconclusive runs graded as pass, stale artifacts, orphaned simulators.
 
-### 10. lint-synth — Lint and synthesis negatives, metric thresholds (~35 min)
+### 10. lint-synth — Lint and synthesis negatives, metric thresholds (~20 min)
 Intent: lint and synth give distinct, correct outcomes and fail closed.
 Try:
 - Lint gives a distinct report for each of clean, warning, syntax error, and missing tool. A
@@ -223,7 +256,7 @@ Try:
 Look for: missing and incompatible tools confused, duplicate aggregate rows, waivers that hide other
 warnings.
 
-### 11. vivado-fpga — Provisioned Vivado, Grants, FPGA Flow, licenses (~40 min, Linux)
+### 11. vivado-fpga — Provisioned Vivado, Grants, FPGA Flow, licenses (~25 min, Linux)
 Intent: host EDA provisioning is exact, read-only, and revocable.
 Try:
 - Register host Vivado 2025.2 under a run-owned name, then list and show it. Compare canonical paths
@@ -243,7 +276,7 @@ Try:
 Look for: a stale Session spec after regrant, borrowed Grants or installations changed, cached
 results passed off as fresh.
 
-### 12. sim-campaign — Simulation Campaign (~30 min)
+### 12. sim-campaign — Simulation Campaign (~20 min)
 Intent: a campaign keeps request order, resumes exactly, and grants Criteria only for the full
 suite.
 Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned Project copy.
@@ -254,7 +287,7 @@ Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned Project cop
   grants `sim_pass_sim_campaign`. Cross-check with `validate_campaign.py`.
 Look for: catalog order overriding request order, completed items rerun, subset-granted Criteria.
 
-### 13. git-stealth-security — Git safety, Stealth commits, runtime isolation (~35 min)
+### 13. git-stealth-security — Git safety, Stealth commits, runtime isolation (~20 min)
 Intent: the guards block unsafe history and escapes, and the Sandbox stays fenced.
 Try:
 - Stealth (`fixtures/stealth.md`, three cases on disposable empty commits): a `Co-Authored-By`
@@ -273,7 +306,7 @@ Try:
   auth), and the ref is unchanged.
 Look for: truncation instead of refusal, symlinks getting through, host secrets in the Sandbox.
 
-### 14. host-inventory — Install prerequisites, inventory, toolchain, docs (~25 min)
+### 14. host-inventory — Install prerequisites, inventory, toolchain, docs (~10 min)
 Intent: host-level commands and the public docs hold up.
 Try:
 - Remove or age one prerequisite in a disposable host fixture. Readiness names it before any
@@ -289,19 +322,16 @@ Try:
   them, and the documented recovery after a seeded fault is enough to resume.
 Look for: symlinked roots imported, views that disagree, advertised names that don't exist.
 
-### 15. cleanup — Product cleanup (~20 min)
-Exercise Booley's own cleanup first (Ticket worktrees, temp Targets, Session stop). Then release
+### 15. cleanup — Product cleanup (~15 min)
+Exercise Booley's own cleanup first (Goal worktrees, owned Targets, Session stop). Then release
 every `resources.md` row: branches, worktrees, copies, Targets, projections, hooks, Sessions,
 mounts, processes, Grants, registrations, License Profiles, relays. Leave borrowed Grants,
 installations, images, and Sessions untouched. Record the final pin state. Nothing may be pushed.
 
 ## Known traps
-- Ticket 2's `dependencies:` must be Ticket 1's actual slug, which Booley derives from `summary`. A
-  pre-baked mismatch once cost 84 checks. The packets now align
-  (`dhrystone-self-checking-cycle-contract`, `rv32-zbb-pcpi`), but still read the created slug and
-  patch it locally if it differs.
-- Ticket Create needs a standalone `.git` in `.booley_project`. The synth baseline pair needs a
-  linked nested worktree. Switch between the two topologies.
+- Use unique worktree names and Goal slugs: an existing same-day Goal Branch refuses entry.
+- Integrate both repositories before cutting the next worktree; a clean outer tree alone
+  does not prove the Project-data branch is current.
 - A regrant alone leaves the Session spec stale. Reissue it before any Doctor, FPGA, or mount check.
 - Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint
   verdict.

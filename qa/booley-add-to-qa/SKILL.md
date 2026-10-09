@@ -28,7 +28,7 @@ run.
    approval.
 3. **Apply.** Edit the mission and `AREAS.md`. Keep the mission's areas in
    priority order and its total timebox within 8 hours; if the addition pushes
-   it over, say which area should shrink. Add any new fixture, prompt, or Ticket
+   it over, say which area should shrink. Add any new fixture, prompt, or Goalset
    file next to the mission and reference it by relative path.
 4. **Check.** Every path the edited mission references exists
    (`python -m pytest tests/qa/test_missions.py`).

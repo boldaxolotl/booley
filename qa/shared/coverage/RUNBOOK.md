@@ -18,14 +18,14 @@ through the public Booley route, and install `project/project-data/tests.toml`
 in the directory that the product's Project configuration resolves. Keep
 initialization's other configuration. The detached-data waiver case uses a
 separately initialized project-data repository and its resolved root; never
-assume `.booley_project`. Commit the fixture locally before authoring any
-Ticket. Keep mutable report and fault roots separate from saved evidence.
+assume `.booley_project`. Commit the fixture and initialized Project files locally before creating a
+Goal worktree. Keep mutable report and fault roots separate from saved evidence.
 
-The coverage Ticket area replaces only the registry, with `tickets/tests.toml`:
+The coverage Goal area replaces only the registry, with `goals/tests.toml`:
 `sim_generated` then has exactly `[gap]`, so its approved `tests: all` is
 exactly that acceptance workload. All other areas keep the diagnostic registry,
 including the explicitly skipped `full`, `fail`, and native/hook faults. Never
-edit the registry or a threshold to make an already sealed Ticket pass.
+edit the registry or a threshold to make an active Goal pass.
 
 `sim_generated` deliberately has no HDL `tb` tag and uses generated-main
 classification. `sim_hdl` tags the same HDL driver as TB; `sim_custom` uses a
@@ -41,6 +41,15 @@ Never write `/etc/ld.so.preload`, replace installed binaries, or export injectio
 settings to a shell shared with unrelated work. Note all prefixes, suffixes,
 executables and control directories before use. No privileges or ptrace needed.
 
+For every gated policy case, create a clean linked worktree from committed
+fixture setup, start `booley session enter -- codex ...`, and send `/booley-goal`
+with that case's concrete coverage Goal. Convert fixture `min_pct` objects to
+numeric Goal `metrics` floors. Collect through MCP with `work_dir`; ordinary CLI
+runs are diagnostic. Preserve Goal Record `booley_state.json` and
+`logs/acceptance/` intent/transaction/evidence pointers. Finish or explicitly
+abandon before closing the case. Sandbox commands issued from the host go
+through `booley session enter -- booley ...`.
+
 ## Named baselines
 
 Create each baseline fresh in the current run, independently of the others;
@@ -51,7 +60,7 @@ values in machine-readable form. The mission refers to a row as `baseline.<name>
 | Baseline | Concrete stimulus and required starting truth |
 |---|---|
 | `native` | Ungated `booley flow sim --target sim_toggle --test half --coverage`: simulation pass, collection complete, not_requested, 4/8 toggle points. |
-| `policy` | Publicly author/seal the fixed baseline policy in `baselines.json`: sim_properties3, tests [half], cover_property min_pct 66. Explicit collection yields exactly 2/3 and pass. Snapshot its current accepted Criteria/state and transaction IDs. Separate pristine drafts for invalid-policy cases use this same record. |
+| `policy` | Enter a coverage Goal with the fixed baseline policy in `baselines.json`: sim_properties3, tests [half], cover_property min_pct 66. Explicit collection yields exactly 2/3 and pass. Snapshot its Goal evidence/state and transaction IDs, then explicitly abandon. Invalid-policy probes use separate disposable records. |
 | `analysis` | Ungated `sim_hdl --test gap --coverage`: completed Campaign/Simulation, verified RTL and tagged TB source closure, eligible and unscored points. Run the real configured Analyst once on the returned exact path. Also collect sim_properties4 test half for property/source controls; keep both exact pointers distinct. |
 | `waiver` | Ungated sim_waiver test run, then formal proof and approved two-point binding below. Seal toggle min_pct 1, exact [run]; recollect with the approved set and keep a passing Campaign with two waived bit-zero points. Also keep the separate excluded-value example on sim_properties4 half, using its two fixed approvals and cover_property min_pct 100. |
 | `retention` | Two fresh independent invocation numbers: sim_toggle test half, and sim_properties4 test half. Also one multi-Target invocation selecting those two Targets with their complete normal registry suites. Note each Target pointer separately; their differing suites are not one common test list. Copy all bytes aside before pruning. |
@@ -121,10 +130,14 @@ separate Targets cloned from the fixed recipes at setup, with exact identities
 `sim_pass`, `sim_miss`, `sim_collector_error`; registry tests are [gap], [gap],
 [native-missing], respectively. Thresholds are 66, 100, 66 cover_property.
 
-Public authoring negatives change just the one named field. Empty
-targets/tests/metrics are literal empty lists/maps; unknown test is `not_registered`.
-Threshold values are 0, -1, 100.01, true, .nan, .inf and string "90", separately.
-Legacy names are rejected as authored, never translated. Unknown metric tests
+Authoring negatives use `parse_goal_args` plus `translate_goals` (or entry
+refusals) and change just one field. Empty tests/metrics are literal empty
+list/map; there is one Target per Goal. Floors are 0, -1, 100.01, true, NaN,
+inf and string "90", separately. Legacy `coverage_*` families/metrics refuse.
+Unknown test `not_registered` enters but fails collection; preserve that
+diagnostic and explicitly abandon its disposable record. Each collected
+policy has its own Goal Record/worktree; same-key Goals combine only compatible
+suites and merge to the stricter floor. Unknown metric tests
 use `fsm` and zero-eligible tests use a separate no-property toggle Target with
 a requested `cover_property` metric. Save the validator's raw response.
 
@@ -173,7 +186,7 @@ exclusive `consumed` marker permits exactly one EIO across descendants.
 |---|---|
 | Campaign publication | link to exact Target `/coverage.json`; fail before link. Point store publication has already completed. |
 | Simulation publication | rename to exact Target `/simulation.json`; fail before replacement. |
-| Acceptance state | rename to the captured Ticket `/booley_state.json`; fail only when temporary JSON adds an acceptance transaction absent from the baseline state. |
+| Acceptance state | rename to the captured Goal Record `goals/<record-id>/booley_state.json`; fail only when temporary JSON adds an acceptance transaction absent from the baseline state. |
 | Terminal progress | rename to exact invocation `/progress.json`; fail only when temporary JSON has `complete: true`. Earlier observational writes pass through. |
 | Native-prune interruption | unlink of a recorded raw/merged payload beneath that Target's `.native-pruned/`, after native rename and journal. Select a concrete relative suffix from the recorded deletion set. |
 | Full-prune interruption | unlink of a recorded payload beneath exact `.pruned-N/`, excluding `.prune.json`, after invocation rename and journal. |
@@ -362,9 +375,9 @@ error says nothing about response-byte limits. All pagination/exact-reference/
 source sequences must occur within the same fresh Analyst call so the references
 were actually delivered in that session.
 
-The stale-source Ticket case uses a separate publicly authored disposable Ticket
+The stale-source Goal case uses a separate disposable Goal child/worktree
 with the final improved TB and a fresh passing baseline; restoration reruns
-sim_generated gap in that same Ticket. The separate Ticket registry changes only
+sim_generated gap in that same active Goal. The separate Goal registry changes only
 sim_generated to [gap], preserving all other Target registries. Native/full
 retention cases require their exact completed prune operation and never
 substitute a fresh, unpruned Campaign. Report the fault result and the

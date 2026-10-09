@@ -1,0 +1,14 @@
+[
+  {
+    "family": "sim",
+    "target": "sim_uart"
+  },
+  {
+    "family": "lint",
+    "target": "lint_uart"
+  },
+  {
+    "family": "synth",
+    "target": "synth_uart"
+  }
+]

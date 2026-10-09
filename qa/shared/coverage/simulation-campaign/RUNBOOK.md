@@ -30,16 +30,20 @@ timeline, or immutable product artifacts.
 
 ## Acceptance recovery
 
-Create a run-owned Ticket whose mandatory Criterion names the complete
-`sim_toggle` suite. Preserve its Development State and Acceptance Journal before
+Commit fixture registration and initialized Project files before creating a
+linked worktree. Start a Codex child with `/booley-goal` naming a `sim` Goal on
+`sim_toggle`; use its complete registered suite and pass `work_dir` on every
+MCP call. Goal evidence uses purpose `goal_evidence`, subject `goal` and an
+identity with record ID, Goal keys and spec revisions. Preserve the Goal Record
+and its `logs/acceptance/` evidence. Preserve its Development State and evidence ledger before
 execution. Let the selected Simulation Campaign publish all terminal Results,
 then deterministically fail the Development State save by creating an owned
 directory at that state file's exact `.tmp` path. This fault must be installed
 only after the terminal evidence exists and before the compatibility projection
 can become complete. Record its path, owner, permissions, and creation/removal
-times; do not alter the state file or Acceptance Journal.
+times; do not alter the state file or evidence ledger.
 
-Archive the failed publication, Journal intent, transaction, evidence records,
+Archive the failed publication, evidence-ledger intent, transaction, evidence records,
 Development State, attempt inventory, summary, and incomplete compatibility
 projection. Remove only the owned `.tmp` directory and resume the exact printed
 Manifest. Require record-or-verify recovery of the same intent, exactly one
@@ -72,15 +76,15 @@ evidence.
 
 ## Resource recovery and cleanup
 
-List every run-owned report root, nested Coverage Campaign, Ticket state,
-Acceptance Journal directory, temporary-path fault, corrupt copy, process group,
+List every run-owned report root, nested Coverage Campaign, Goal Record state,
+evidence ledger directory, temporary-path fault, corrupt copy, process group,
 and fixture registration in `resources.md` before the first mutation. Recovery
 always saves the observed failure before restoring only owned bytes or paths,
 then runs the valid control in the same run. It never depends on the negative
 case having behaved as expected.
 
-After capture, reap all owned producers and remove only run-owned report/runtime
-state, Ticket state, temporary faults, corrupt working copies, and copied fixture
+After capture, finish or explicitly abandon the Goal and reap all owned producers and remove only run-owned report/runtime
+state, Goal Record state, temporary faults, corrupt working copies, and copied fixture
 registration. Keep the interrupted, failed, corrupt and restored evidence copies
 for findings. Confirm the shared fixture and pinned sources are unchanged and
 mark each `resources.md` row released. These cases reuse the terminal aggregate;

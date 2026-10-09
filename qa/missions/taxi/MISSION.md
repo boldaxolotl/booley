@@ -1,10 +1,10 @@
 # Taxi 10G MAC port and evolution
 
 Port pinned upstream Taxi to Booley from a direct clone, then evolve `taxi_eth_mac_10g` through a
-Verification Ticket (exact PFC/FCS/underrun/statistics tests, mutation campaign) and a Bug Fix
-Ticket for a seeded PFC fault the upstream tests miss. Also covers Setup with a derived Cocotb
+verification Goal (exact PFC/FCS/underrun/statistics tests, mutation campaign) and a bugfix
+Goal for a seeded PFC fault the upstream tests miss. Also covers Setup with a derived Cocotb
 image, Targets, Doctor, lint, logical/physical synthesis, Interactive Mode, B-Wave, a submodule
-companion, Ticket machinery and Simulation Campaigns. Taxi's interfaces, recursive symlink, big
+companion, Goal operations and Simulation Campaigns. Taxi's interfaces, recursive symlink, big
 Python stack and five clocks surface stale caches, skipped tests and dropped clocks.
 
 ## Pins and prerequisites
@@ -15,18 +15,44 @@ Python stack and five clocks surface stale caches, skipped tests and dropped clo
   Cocotb, Verible, Yosys+slang, OpenROAD; VS Code attached for the area-6 viewer.
 - Primary: Ubuntu x86-64 + Codex CLI; rerun on Windows (Docker Desktop, WSL2), VS Code Codex or
   Claude CLI for coverage.
-- Budget: 8 h total. Areas are in priority order; if time runs out, log the rest as skipped. Work
-  areas 5, 7, 8, 11, 12 while a Ticket runs.
+- Budget: 8 h total. Areas are in priority order; if time runs out, log the rest as skipped. The area budgets total 475 minutes, including two 60-minute Goal children,
+  with 5 minutes contingency. Children may overlap independent areas 5, 7, 8
+  and 12. Close
+  each child's area only after Finish or explicit abandon.
 
 ## Mission-specific rules
-- Taxi baseline is immutable: only Setup, the two Tickets and the area-10 seed change it. Never edit
-  existing RTL, TBs, `.f` manifest, the `src/eth/lib/taxi` symlink or Git metadata.
-- Use verbatim, inferring nothing: `prompts/setup.md` (Setup), `prompts/interactive.md` (Interactive
-  child), `tickets/observability.md` and `tickets/repair.md` (`booley-ticket-create --agent
-  --no-confirm`).
-- The repair Developer gets only the failing assertion, expected vs observed classes, the
-  upstream-test contrast, Scope and evidence pointers, never the seed location or fix.
-- Inject faults only on disposable copies, branches or fixtures; save the failure, then restore.
+- Taxi baseline is immutable: only Setup, Goal children and the area-10
+  operator seed change it. Preserve the `.f` manifest and `src/eth/lib/taxi`
+  symlink. Inject faults on disposable copies/branches, save failures and restore.
+- Send `prompts/setup.md` and `prompts/interactive.md` verbatim. The repair
+  child gets the failing assertion, expected/observed classes, upstream-test
+  contrast, affected file and evidence pointers; hide seed location and fix.
+- The host operator starts a long-lived Codex Goal child in the Sandbox with
+  `booley session enter -- codex ...`, then sends `/booley-goal` and the area's
+  mission prompt. The operator never implements the child's design work. Read
+  `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
+  `docs/user/USAGE.md` "Goal Mode" from the candidate build for the workflow.
+- The operator is the deciding human for disposable QA proposals: answer entry
+  choices and approve or reject the exact proposal with a reason, through the
+  client form or a message the child quotes as `approval_quote`. A proposal
+  affecting a merged deliverable needs the live maintainer; without one, keep
+  it pending and log it. Silence never supplies approval.
+- While any Goal is active, every MCP Booley call passes absolute `work_dir`;
+  independent non-Goal areas use the primary checkout root. Finish or explicitly
+  abandon every Goal before closing its area. Background children may overlap
+  independent operator areas; keep their owning area open until resolved.
+- Host-issued container commands use `booley session enter -- booley ...`;
+  bare Sandbox commands below are for the child/container terminal.
+- Before entry, copy the selected `goals/*.md` into the resolved Project's
+  `goalsets/`, and commit setup, seeded Goalsets and the managed `.gitignore`.
+  `goals/*.json` are ad-hoc `goal_enter` argument lists. Use unique slugs per run.
+  Design implementations occur only in clean linked Goal worktrees.
+- Operator integration of finished work merges the outer `goal/<slug>-<date>`
+  Goal Branch and the paired `booley-worktree/<name>` Project-data branch into
+  their respective run-owned destinations. Record both in `resources.md`.
+  Preserve the package, remove the paired checkout first using the printed
+  USAGE cleanup steps, and leave both destinations clean in the primary
+  checkout before `booley session enter -- booley worktree new <name>` again.
 
 ## Areas
 
@@ -38,6 +64,8 @@ Try:
   (`SETUP-PLAN.md` is a record, not a gate). Expect Targets `sim_mac_10g`, `lint_mac_10g`,
   `synth_mac_10g`, `synth_mac_10g_physical`; a derived image from the full pinned `tox.ini` stack;
   explicit `[stealth] enabled = false`; `fixtures/taxi_mac_10g.sdc` as Project-owned config.
+- Copy `prompts/setup.md` into outer `docs/taxi-contract.md` and commit it
+  as the immutable visible spec for later Goal review.
 - Nothing installs at runtime; the TB import works in the Sandbox; pins (pytest 8.3.4 … scapy 2.6.1)
   match `prompts/setup.md`.
 - Compare config/cores/guidance with the plan (every deviation stated). Run the Setup findings
@@ -46,7 +74,7 @@ Try:
   symlink (Windows). Rerun plain `booley init`: no drift. Another run with the other provider:
   issued auth/client policy follows.
 - Image faults: changed dependency pin → stale image rebuilt; bounded post-setup hook in a new
-  Ticket workspace runs once, not on resume; nonzero hook blocks, fix + documented retry; opted-in
+  paired Goal workspace runs once; status/resume does not rerun it; nonzero hook blocks, fix + documented retry; opted-in
   disposable host skill is read-only.
 Look for: re-approval requests, Taxi edits, missing `cocotb_test`/`pytest` (imported at TB module
 scope), implicit stealth, symlink loops, stale Session Runtime after `init` rebuilds the image.
@@ -114,8 +142,8 @@ Try:
 - MCP jobs: cancelling queued and running jobs reports "cancelled", not failure, and a new job still
   runs; a detached job returns `run_id` and polling gives its terminal result; after an inline
   client timeout, report lookup returns the latest durable report.
-- Admission: two read-only Interactive jobs plus Ticket work respect class limits; jobs queued
-  behind an active one are not preempted, Interactive first, peers FIFO; two edits in a disposable
+- Admission: two read-only Interactive jobs plus Goal child work respect admission caps;
+  jobs queued behind an active one are not preempted, peers FIFO; two edits in a disposable
   shared-tree fixture collide visibly.
 - Compare Flow and Specialist names across help, cheat sheet, MCP and skills; log the public route
   per step. Seed one fault and recover using only the docs.
@@ -170,8 +198,8 @@ Try:
   `deps/data` with nested `deps/data/nested/leaf`, `deps/unselected`, and a paired `.booley_project`
   pinning `deps/control`. Init it at B as a separate Project (same build/image), set `.gitmodules`
   URLs to unreachable `example.invalid` SSH, keep default-deny egress.
-- Positive: a tiny Verification Ticket at B (normal create/run) has gitlinks, Baseline and report
-  naming B and the paired repo; `sim_submodule_fixture_b` passes fresh (DATA 16'h2468, LEAF 8'h34);
+- Positive: a child enters a tiny verification Goal in a linked worktree at B,
+  naming the sim Target; its base and evidence name B and the paired repo; `sim_submodule_fixture_b` passes fresh (DATA 16'h2468, LEAF 8'h34);
   baseline-relative `synth_submodule_transport` A→B uses A, leaf A, control A for the baseline,
   never the newer checkout; materialized repos are detached, standalone (own `.git`, no
   remotes/alternates) and offline-built.
@@ -187,75 +215,70 @@ Try:
   a matching destination is accepted. Restore for a fresh pass; the real Taxi Project is unchanged.
 Look for: stale-cache passes, silent fetches, newer checkout as baseline, half-created repos.
 
-### 9. ticket1-observability — Verification Ticket and mutation campaign (~60 min)
-Intent: a real Verification Ticket merges with strict Criteria and a real mutation score.
-Depends on: a clean tree after area 5; if a Setup Target is missing, fix config first and log it.
+### 9. goal-observability — Verification Goal and mutation campaign (~60 min)
+Intent: a verification Goal yields exact observability tests and a real mutation score.
+Depends on: clean Setup state and committed Project configuration/Goalsets.
 Try:
-- Create from `tickets/observability.md`; record the published Ticket Baseline and Board. Scope:
-  only new `qa/taxi_eth_mac_10g/test_observability.{py,sv}` plus persistent
-  `sim_mac_10g_observability`. Then `booley run`.
-- Tests must check bad RX FCS (`tuser`, bad-FCS flag, counter 34); PFC on all 8 classes with quanta
-  10…80 (exact TX/RX bitmap and quanta, counters 25 and 57); four-cycle underrun (XGMII error
-  termination, counter 3); 16-bit completion tags and timestamp vs SFD; `tuser=0` counters vs
-  `tuser=1` strings. Elaboration, simulation and a clean TB-quality review bind to the new Target.
-- Mutation: `mutation_score` on `src/eth/rtl/taxi_eth_mac_10g.sv`, total 8, min 7. New tests hidden
-  from the Mutation Tester; proposals steered to PFC req/ack, RX error, statistics, TX tag/timestamp
-  and locked before running; pristine baseline passes; 8 isolated variants with first killing test
-  each; source restored.
-- `destination: done` gives local merge, cleanup and triage report; the Target stays selectable; no
-  pre-existing file changes.
-- Authoring negatives (disposable drafts): detail mode gives one complete draft; explicit guidance
-  beats conflicting Project guidance; invalid Criterion/Scope/Target never enqueues; an approved
-  draft seals exactly.
-Look for: weakened upstream tests, mutants seeing new tests, missing restore, Target lost at merge.
+- Create a paired worktree, start a Codex child and send `/booley-goal` with
+  `goals/observability.md`. The new files are
+  `qa/taxi_eth_mac_10g/test_observability.{py,sv}` and the ordinary Target
+  `sim_mac_10g_observability`; existing Taxi source/tests must stay unchanged.
+- Tests check bad RX FCS (`tuser`, bad-FCS flag, counter 34); all 8 PFC classes
+  with quanta 10…80 (exact TX/RX bitmap and quanta, counters 25/57); four-cycle
+  underrun (XGMII error termination, counter 3); 16-bit completion tags and
+  timestamp vs SFD; `tuser=0` counters vs `tuser=1` strings. Elab, full sim and
+  clean TB-quality evidence must bind to the intended Goal/Target.
+- Mutation on `src/eth/rtl/taxi_eth_mac_10g.sv` has explicit total 8/min 7.
+  New tests stay hidden from the Mutation Tester; proposals target PFC req/ack,
+  RX error, statistics and TX tag/timestamp, and lock before execution. Preserve
+  pristine baseline, 8 isolated variants, first killing tests and source restoration.
+- Finish with fresh evidence at a clean committed HEAD; inspect package and
+  non-Stealth history commit, then the operator integrates both branches.
+  The new Target stays selectable for the repair Goal.
+Look for: weakened upstream tests, mutants seeing new tests, missing restoration,
+incorrect evidence binding or a Target lost during paired integration.
 
-### 10. seed-ticket2 — Seeded PFC fault and Bug Fix Ticket (~60 min)
-Intent: the new oracle catches what upstream misses; a blind Developer restores byte-identical
-upstream.
-Depends on: area 9 merged; else hand-write an equivalent exact PFC class/quanta test on a run-owned
-branch, log the workaround, continue.
+### 10. goal-repair — Seeded PFC fault and bugfix Goal (~60 min)
+Intent: the new oracle catches what upstream misses; a blind Goal child restores upstream bytes.
+Depends on: area 9 finished and both branches integrated. If it failed, log and skip repair;
+the operator does not author replacement tests.
 Try:
-- Rerun upstream and observability sims on clean merged RTL. Apply `fixtures/pfc-fault.md` (rotates
-  `tx_pfc_req` at `taxi_mac_pause_ctrl_tx`), commit on a run-owned branch: upstream PFC still
-  passes, the new test fails with class 0 seen as class 1, a fresh FST shows the rotation. Without
-  that split, restore and skip the repair Ticket.
-- Create from `tickets/repair.md` with the dependency slug read from the Ticket area 9 actually
-  created; basis = seed commit, Scope = that RTL file; own `booley run`.
-- Expect a fresh repro, evidence-based diagnosis and a byte-identical-to-upstream repair; upstream
-  pass-to-pass, observability fail-to-pass; both elaborations and `lint_clean`; logical cells +0%;
-  physical cells and critical path +0% with the same SDC/library/recipe; clean RTL bugs review,
-  terminal protocol and spec reviews; done, merge, cleanup, triage report. On failure keep worktree,
-  report and diff, then restore the post-Ticket-1 state.
-Look for: Developer touching tests/config, changed unqualified-timing semantics, Criteria met by
-stale evidence.
+- Rerun both sims on integrated RTL. Apply `fixtures/pfc-fault.md` in a disposable
+  copy and commit: upstream PFC still passes, new test fails with class 0 seen
+  as class 1 and fresh FST shows the rotation. Save the failure before repair.
+  Without that split, restore and skip this Goal.
+- Cut a paired worktree from the seed commit; start a new Codex child with
+  `/booley-goal` plus `goals/repair.md` and only bounded visible diagnostics.
+  Require the child's fresh reproduction before editing and evidence-based diagnosis.
+- Repair must be byte-identical to upstream; both full sims and elaborations
+  pass, lint is clean, logical cells +0%, physical cells/critical path +0% with
+  identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews done.
+- Finish, save package/history and integrate both branches. On failure explicitly
+  abandon, keep checkpoint/report/diff in evidence and restore post-observability state.
+Look for: child edits to tests/config, unqualified timing changes or stale Goal evidence.
 
-### 11. ticket-machinery — Ticket lifecycle, policy and resilience (~35 min)
-Intent: Ticket engine edge cases, on cheap disposable Tickets.
+### 11. goal-operations — Concurrent children, Dashboard and warnings (~40 min)
+Intent: separate worktrees isolate Goal evidence and expose operator diagnostics without changing policy.
 Try:
-- Lifecycle: queue → run → review → done; unmet dependency waits then releases; authorized done
-  shortcut; human block/unblock; resume keeps commits across a path change. Triage: skill
-  discoverable; approve a bounded correction; archive/reset spares; plain review→queue rejected.
-- Scope: a bookkeeping edit is blocked; staged, modified, deleted, untracked dirt each reject the
-  report; a safe out-of-Scope file is allowed and logged in `.runtime/scope_deviations.json`; every
-  changed file needs a rationale; after recovery the report is accepted.
-- Baseline: Developer-time control-input edits rejected; baseline-relative Ticket pinned;
-  return-to-draft reseals a new basis; persistent/replacement/ephemeral Target plans land exactly.
-- Criteria: a diagnostic call doesn't satisfy acceptance; rerun → current evidence, relevant edit →
-  stale; fail-fix-pass keeps the failure; unmet mandatory blocks review, unmet optional needs
-  justification; undeclared Flow call rejected; code-style and protocol review Criteria each give a
-  report naming that focus.
-- Integration: briefing HTML renders, JSON is deterministic; a renderer fault leaves work intact and
-  regenerates without rerun; `BOOLEY_RUN_RESULT` parses; review and done destinations work.
-- Resilience via `fixtures/provider-fault/` (see README): subscription limit → requeue; transient
-  stall → bounded retry; crash → no retry; timeout → distinct outcome, no orphans; interrupt after a
-  Flow then resume → no duplicate evidence. Remove the shim before a real call.
-- Concurrency and operator: two runs claim two Tickets atomically with no cross-artifacts; class cap
-  queues excess jobs; waiting jobs cancel; a tiny full queue blocks admission; human and machine
-  Board agree; dry-run and check-ready change nothing; Console works; idle drained run exits
-  cleanly.
-- Policy: tier and role overrides recorded; invalid role or limit rejected before agent work;
-  unattended runs get no fake approval; required vs optional report; active vs wall timeout; restore
-  policy and relaunch.
+- Start two Codex children in two clean paired worktrees with distinct slugs
+  and `goals/operations.json`. Every MCP call includes its `work_dir`, including
+  independent calls against the primary checkout. Evidence and artifacts cannot
+  cross records. Check the Sandbox admission cap and cancellation of waiting jobs.
+- Run `booley session enter -- booley dashboard` and Goal status short/long
+  views; sessions, Goals and Jobs agree with each child's durable record.
+- In disposable copies run `booley session enter -- booley doctor` (host Goal
+  checks are unavailable). Provoke `goals.worktree-missing` with an owned
+  workspace moved aside and restored; provoke quiet-session warnings by waiting
+  the reported threshold or setting it before entry. Quiet never clears a record.
+- Finish or explicitly abandon both concurrent records. Only then enter a third
+  disposable Goal for the Project-wide Protected Input probe: change
+  `booley.toml`, observe warnings, discarded evidence and blocked Finish, restore
+  byte-exactly and rerun. Never contaminate concurrent Goals with this probe.
+- Test wrong worktree identity and occupied-worktree entry refusals, fresh evidence
+  after relevant edits, unmet mandatory Goal blocking Finish, and explicit abandon
+  preserving branch/worktree. Save diagnostics and resolve all records before cleanup.
+Look for: cross-record evidence, missing work_dir accepted during active work,
+auto-abandon or a protected-input edit silently accepted.
 
 ### 12. campaign — Simulation Campaigns (~25 min)
 Intent: one shared build, capped heavy jobs, isolated attempts, resumable batches.
@@ -276,24 +299,21 @@ Look for: per-test rebuilds, cap overshoot, cross-attempt files, fail-fast omiss
 Depends on: area 10 merged; else use the latest trustworthy state and say which.
 Try:
 - Rerun plain/deep Doctor, both sims, Verible, logical and fresh physical synthesis, B-Wave PFC
-  checks. Pre-existing Taxi bytes match the pin; only `qa/taxi_eth_mac_10g/` and the persistent
+  checks. Pre-existing Taxi bytes match the pin; only `qa/taxi_eth_mac_10g/` and the ordinary
   Target changed.
 
 ### 14. cleanup — Product cleanup (~20 min)
 - Save a git bundle of accepted/seed/repair history and the physical reports in `evidence/`.
-- With Booley's own commands, release Sandboxes (`booley session down`), processes, Ticket worktrees
+- With Booley's own commands, release Sandboxes (`booley session down`), processes, Goal worktrees
   and branches, Project inventory entries, derived images, volumes and mounts; no owned process or
   container may remain.
 - Remove the companion Project and clone unless the run skill keeps them for review; release the
   `resources.md` rows. Credentials, base images, caches and remotes are unchanged; nothing pushed.
 
 ## Known traps
-- Ticket 2's dependency slug comes from the Ticket area 9 actually created; a pre-baked slug once
-  cost a whole run.
+- Integrate both Goal Branch and Project-data branch before starting repair.
 - Gearbox off follows the pinned pytest driver, not the Makefile default; RX/TX keep IFG 12 and 0.
 - `src/*/lib/taxi` symlinks point to the repo root (infinite walks); use `FUSESOC_IGNORE` or real
   paths, not `.f` hops.
 - slang is mandatory (sv2v cannot handle the interfaces). `estimated_fmax_mhz` is not physical
   timing.
-- The provider-fault shim only intercepts `codex exec`; remove it before recovery, never overwrite
-  the real binary.

@@ -68,8 +68,9 @@ a saved copy after every restoration.
 
 ## Criteria scope
 
-Use a run-owned Ticket whose mandatory Criterion is
-`sim_pass_sim_campaign`. Capture the Criteria state and Acceptance Journal
+Commit the fixture registration before entry, create a clean linked worktree and
+start a Codex child with `/booley-goal`, naming a `sim` Goal on `sim_campaign`.
+Pass `work_dir` on every MCP call while active. Capture the Criteria state and Acceptance Journal
 before and after each invocation. A passing strict subset (`quick`) must leave
 the Criterion unmet. A new Simulation Campaign containing the complete Required
 Simulation Suite (`quick`, `slow`, `tail`) must publish it only after all three
@@ -80,12 +81,12 @@ restore the catalog and fixture before cleanup.
 ## Cleanup
 
 Before the first mutation, add to `resources.md` the run-owned fixture copy,
-core/catalog entries, report roots, Ticket state, process groups, and every
+core/catalog entries, report roots, Goal Record, process groups, and every
 source/catalog file a negative step changes. When a negative step leaves
 something broken, record the finding, restore only owned bytes, and still run
 the valid control; it does not depend on the negative step passing.
 
-Keep the evidence, reap owned processes, then remove only the run-owned
-core/catalog entries, report roots, and Ticket state. Confirm the pinned upstream
+Keep the evidence, reap owned processes, then finish or explicitly abandon the Goal and remove only the run-owned
+core/catalog entries, report roots, and Goal Record. Confirm the pinned upstream
 checkout is byte-for-byte unchanged, the Project catalog no longer exposes
 `sim_campaign`, and every `resources.md` row for this area is marked released.

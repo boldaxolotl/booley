@@ -1,3 +1,0 @@
-[sim_amend]
-tests = ["amend_smoke"]
-select = "+test={name}"

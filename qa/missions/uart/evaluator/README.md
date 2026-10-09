@@ -1,12 +1,12 @@
 # Independent UART evaluator
 
-Used by the uart mission's `evaluate` and `repair` areas.
+Used by the uart mission's `evaluate` and `goal-repair` areas.
 
-This directory stays in operator-controlled storage outside the Developer Agent's
+This directory stays in operator-controlled storage outside the Goal child's
 Project, Sandbox, mounted folders and network reach. Copy only `../spec/`
-and the approved prompts/Ticket payloads into the Project. Never expose this
+and the approved prompts/Goalsets into the Project. Never expose this
 implementation, generated seed/cases, controls, build logs or raw observations to
-the implementing Developer Agent. Source isolation must be demonstrated from the run's
+the implementing Goal child. Source isolation must be demonstrated from the run's
 actual filesystems, mounts and network routes; path separation alone does not prove it.
 
 The evaluator reads only the frozen public corpus and addenda. Its simulator

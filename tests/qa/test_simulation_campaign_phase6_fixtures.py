@@ -6,9 +6,24 @@ import hashlib
 import importlib.util
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+from booley.criteria.evidence_ledger import record_or_verify_transaction
+from booley.criteria.state import DevelopmentState
+from booley.goals.model import (
+    GoalRecord,
+    GoalState,
+    RecordedGoal,
+    WorktreeIdentity,
+    parse_goal_args,
+)
+from booley.goals.recorder import GOAL_SCOPE, GoalProjection, goal_identity
+from booley.goals.store import GoalStore
+from booley.goals.translate import translate_goals
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "qa/shared/coverage/simulation-campaign"
@@ -53,51 +68,7 @@ def _result(tmp_path: Path, campaign_id: str, manifest_sha256: str) -> Path:
     )
 
 
-def _envelope(campaign_id: str, manifest_sha256: str) -> dict[str, object]:
-    generation = "1" * 32
-    return {
-        "$schema": "booley.acceptance-transaction-envelope/v1",
-        "campaign_id": campaign_id,
-        "manifest_sha256": manifest_sha256,
-        "origin": {"execution_id": "2" * 32, "invocation_id": 1},
-        "producer": "simulation_campaign",
-        "purpose": "ticket_acceptance",
-        "ticket": {
-            "slug": "qa-campaign",
-            "identity": {"slug": "qa-campaign", "generation": generation},
-            "generation": generation,
-        },
-        "recorded_at": "2026-09-22T01:02:03Z",
-        "role_derivation": "booley.acceptance-role/v1",
-        "changes": [
-            {
-                "key": key,
-                "met": True,
-                "reason": "outcome",
-                "mandatory": True,
-                "params": {},
-                "detail": {"campaign_id": campaign_id, "ordinal": ordinal},
-                "role": "candidate",
-            }
-            for ordinal, key in enumerate(("sim_pass_sim_toggle", "coverage_sim_toggle"))
-        ],
-    }
-
-
-def _lookup(envelope: dict[str, object]) -> dict[str, object]:
-    ticket = envelope["ticket"]
-    assert isinstance(ticket, dict)
-    return {
-        "campaign_id": envelope["campaign_id"],
-        "manifest_sha256": envelope["manifest_sha256"],
-        "ticket_identity": ticket["identity"],
-        "ticket_generation": ticket["generation"],
-        "producer": "simulation_campaign",
-        "purpose": "ticket_acceptance",
-    }
-
-
-def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[str, object]:
+def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[str, Any]:
     result = json.loads(result_path.read_text())
     raw = result_path.read_bytes()
     return {
@@ -135,102 +106,114 @@ def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[st
     }
 
 
-def _record(
-    envelope: dict[str, object], transaction_id: str, ordinal: int, sequence: int
-) -> dict[str, object]:
-    changes = envelope["changes"]
-    origin = envelope["origin"]
-    ticket = envelope["ticket"]
-    assert isinstance(changes, list) and isinstance(origin, dict) and isinstance(ticket, dict)
-    change = changes[ordinal]
-    assert isinstance(change, dict)
+def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[str, Any]]:
+    specs = translate_goals(
+        parse_goal_args(
+            [
+                {"family": "sim", "target": "sim_toggle"},
+                {
+                    "family": "coverage",
+                    "target": "sim_toggle",
+                    "tests": ["half"],
+                    "metrics": {"toggle": 50},
+                },
+            ]
+        )
+    ).goals
+    record_id = "qa-campaign-20260922T010000Z"
+    identity = WorktreeIdentity("c3fa3451-3a73-4a43-936c-9a2c40f88d30", "worktrees/qa")
+    record = GoalRecord(
+        id=record_id,
+        state=GoalState.ENTERING,
+        worktree=identity,
+        worktree_path=str(tmp_path / "worktree"),
+        branch="goal/qa-campaign-20260922",
+        original_ref="main",
+        base_sha="3" * 40,
+        entered_at="2026-09-22T01:00:00Z",
+        goals=tuple(RecordedGoal(spec, 1) for spec in specs),
+    )
+    store = GoalStore(tmp_path / "project")
+    with store.worktree_lock(identity) as lock:
+        record = store.create(lock, record)
+    with store.record_lock(record.id) as lock:
+        store.save(lock, replace(record, state=GoalState.ACTIVE))
+    state = DevelopmentState(slug=record_id, strict_criteria=True)
+    state.init_criteria(
+        {spec.key: True for spec in specs},
+        criterion_params={spec.key: spec.params for spec in specs},
+        strict=True,
+    )
+    group = goal_identity(record_id, {spec.key: 1 for spec in specs})
+    return state, GoalProjection(store, record.id), group
+
+
+def _recover_transaction(
+    tmp_path: Path, facts: dict[str, Any], *, coverage_met: bool
+) -> dict[str, Any]:
+    state, projection, identity = _goal_state(tmp_path)
+    archived = _write(tmp_path / "archived-state.json", state.to_dict(), pretty=True)
+    shadow = DevelopmentState.from_json_object(state.to_dict())
+    changes = [
+        change
+        for ordinal, key in enumerate(state.criteria)
+        for change in shadow.set_criterion(
+            key,
+            coverage_met if key == "coverage_sim_toggle" else True,
+            detail={"campaign_id": facts["campaign_id"], "ordinal": ordinal},
+        )
+    ]
+    logs = tmp_path / "logs"
+
+    def fail_save(checkpoint: str) -> None:
+        if checkpoint == "before:acceptance_state":
+            raise OSError("controlled state save failure")
+
+    with pytest.raises(OSError, match="controlled state save failure"):
+        record_or_verify_transaction(
+            logs,
+            state,
+            changes,
+            scope=GOAL_SCOPE,
+            projection=projection,
+            acceptance_facts=facts,
+            identity=identity,
+            publication_checkpoint=fail_save,
+        )
+    failed = _write(tmp_path / "failed-state.json", state.to_dict(), pretty=True)
+    transaction = record_or_verify_transaction(
+        logs,
+        state,
+        changes,
+        scope=GOAL_SCOPE,
+        projection=projection,
+        acceptance_facts=facts,
+        identity=identity,
+    )
+    # A third call proves product recovery does not select the transaction twice.
+    replay = record_or_verify_transaction(
+        logs,
+        state,
+        changes,
+        scope=GOAL_SCOPE,
+        projection=projection,
+        acceptance_facts=facts,
+        identity=identity,
+    )
+    assert replay == transaction
+    recovered = _write(tmp_path / "recovered-state.json", state.to_dict(), pretty=True)
     return {
-        "$schema": "booley.acceptance-record/v2",
-        "sequence": sequence,
-        "transaction_id": transaction_id,
-        "transaction_ordinal": ordinal,
-        "transaction_size": len(changes),
-        "envelope_sha256": _sha256(_canonical(envelope)),
-        "ticket": ticket["slug"],
-        "execution_id": origin["execution_id"],
-        "purpose": envelope["purpose"],
-        "producer": envelope["producer"],
-        "invocation_id": origin["invocation_id"],
-        "role": change["role"],
-        "criterion": change["key"],
-        "met": change["met"],
-        "reason": change["reason"],
-        "mandatory": change["mandatory"],
-        "params": change["params"],
-        "detail": change["detail"],
-        "ticket_identity": ticket["identity"],
-        "recorded_at": envelope["recorded_at"],
+        "intent": next((logs / "acceptance/intents").glob("*.json")),
+        "transaction": logs / "acceptance/transactions" / f"{transaction.transaction_id}.json",
+        "evidence_root": logs / "acceptance/evidence",
+        "archived": archived,
+        "failed": failed,
+        "recovered": recovered,
+        "transaction_id": transaction.transaction_id,
     }
 
 
-def _states(
-    tmp_path: Path, envelope: dict[str, object], transaction_id: str
-) -> tuple[Path, Path, Path]:
-    changes = envelope["changes"]
-    assert isinstance(changes, list)
-    criteria = {
-        change["key"]: {"met": False, "mandatory": True}
-        for change in changes
-        if isinstance(change, dict)
-    }
-    archived_value = {
-        "slug": "qa-campaign",
-        "ticket_type": "bug-fix",
-        "strict_criteria": True,
-        "criteria": criteria,
-        "category_map": {},
-        "all_mandatory_met": False,
-        "timeline": [],
-        "acceptance_transactions": [],
-        "authorized_zero_mandatory_basis_id": "",
-        "last_updated": "2026-09-22T01:00:00Z",
-    }
-    archived = _write(tmp_path / "archived-state.json", archived_value, pretty=True)
-    failed = tmp_path / "failed-state.json"
-    failed.write_bytes(archived.read_bytes())
-    recovered_value = json.loads(json.dumps(archived_value))
-    recovered_value["acceptance_transactions"] = [transaction_id]
-    recovered_value["all_mandatory_met"] = True
-    recovered_value["last_updated"] = "2026-09-22T01:03:00Z"
-    for change in changes:
-        assert isinstance(change, dict)
-        entry = recovered_value["criteria"][change["key"]]
-        entry.update(
-            met=change["met"],
-            mandatory=change["mandatory"],
-            params=change["params"],
-            detail=change["detail"],
-            ever_met=True,
-        )
-    recovered = _write(tmp_path / "recovered-state.json", recovered_value, pretty=True)
-    return archived, failed, recovered
-
-
-def _publish_records(
-    root: Path, envelope: dict[str, object], transaction_id: str
-) -> list[dict[str, object]]:
-    references = []
-    for ordinal, sequence in enumerate((4, 7)):
-        record = _record(envelope, transaction_id, ordinal, sequence)
-        _write(root / f"{sequence:09d}.tx.{transaction_id}" / "record.json", record)
-        references.append(
-            {
-                "transaction_ordinal": ordinal,
-                "sequence": sequence,
-                "sha256": _sha256(_canonical(record) + b"\n"),
-                "criterion": record["criterion"],
-                "role": record["role"],
-            }
-        )
-    return references
-
-
-def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
+def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> dict[str, Any]:
     campaign_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
     manifest_value = {
         "$schema": "booley.simulation-campaign-manifest/v1",
@@ -239,42 +222,12 @@ def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
     manifest = _write(tmp_path / "manifest.json", manifest_value)
     manifest_sha256 = _sha256(_canonical(manifest_value))
     result = _result(tmp_path, campaign_id, manifest_sha256)
-    envelope = _envelope(campaign_id, manifest_sha256)
     facts = _facts(campaign_id, manifest_sha256, result)
-    lookup = _lookup(envelope)
-    intent = _write(
-        tmp_path
-        / "acceptance"
-        / "intents"
-        / f"{hashlib.sha256(_canonical(lookup)).hexdigest()}.json",
-        {
-            "$schema": "booley.simulation-acceptance-intent/v1",
-            "lookup_key": lookup,
-            "acceptance_facts": facts,
-            "acceptance_facts_sha256": _sha256(_canonical(facts)),
-            "envelope": envelope,
-        },
-    )
-    transaction_id = hashlib.sha256(_canonical(envelope)).hexdigest()
-    evidence_root = tmp_path / "acceptance" / "evidence"
-    references = _publish_records(evidence_root, envelope, transaction_id)
-    transaction = _write(
-        tmp_path / "acceptance" / "transactions" / f"{transaction_id}.json",
-        {
-            "$schema": "booley.acceptance-transaction/v1",
-            "transaction_id": transaction_id,
-            "envelope": envelope,
-            "envelope_sha256": _sha256(_canonical(envelope)),
-            "record_count": len(references),
-            "records": references,
-        },
-    )
-    archived, failed, recovered = _states(tmp_path, envelope, transaction_id)
+    recovered = _recover_transaction(tmp_path, facts, coverage_met=coverage_met)
     simulation = _write(
         tmp_path / "simulation.json",
         {
             "complete": True,
-            # Typed artifact reference, as simulation-projection/v2 writes it.
             "campaign_manifest": {
                 "path_base": "origin_target",
                 "path": manifest.name,
@@ -286,21 +239,10 @@ def _acceptance_evidence(tmp_path: Path) -> dict[str, object]:
             "passed": True,
         },
     )
-    return {
-        "manifest": manifest,
-        "results": [result],
-        "intent": intent,
-        "transaction": transaction,
-        "evidence_root": evidence_root,
-        "archived": archived,
-        "failed": failed,
-        "recovered": recovered,
-        "simulation": simulation,
-        "transaction_id": transaction_id,
-    }
+    return {"manifest": manifest, "results": [result], "simulation": simulation, **recovered}
 
 
-def _acceptance_args(evidence: dict[str, object]) -> tuple[object, ...]:
+def _acceptance_args(evidence: dict[str, Any]) -> tuple[object, ...]:
     return tuple(
         evidence[key]
         for key in (
@@ -317,29 +259,34 @@ def _acceptance_args(evidence: dict[str, object]) -> tuple[object, ...]:
     )
 
 
-def test_acceptance_recovery_validator_authenticates_real_v2_evidence(tmp_path: Path) -> None:
-    _module().validate_acceptance_recovery(*_acceptance_args(_acceptance_evidence(tmp_path)))
+@pytest.mark.parametrize("coverage_met", [True, False])
+def test_acceptance_recovery_validator_authenticates_real_v2_evidence(
+    tmp_path: Path, coverage_met: bool
+) -> None:
+    _module().validate_acceptance_recovery(
+        *_acceptance_args(_acceptance_evidence(tmp_path, coverage_met=coverage_met))
+    )
 
 
-def _mutate_json(path: Path, mutation: Callable[[dict[str, object]], None]) -> None:
+def _mutate_json(path: Path, mutation: Callable[[dict[str, Any]], None]) -> None:
     value = json.loads(path.read_text())
     mutation(value)
     _write(path, value)
 
 
-def _add_extra_record(evidence: dict[str, object]) -> None:
+def _add_extra_record(evidence: dict[str, Any]) -> None:
     transaction_id = evidence["transaction_id"]
     extra = evidence["evidence_root"] / f"000000099.tx.{transaction_id}" / "record.json"
     _write(extra, {"unexpected": True})
 
 
-def _add_duplicate_intent(evidence: dict[str, object]) -> None:
+def _add_duplicate_intent(evidence: dict[str, Any]) -> None:
     intent = evidence["intent"]
     duplicate = intent.with_name("f" * 64 + ".json")
     duplicate.write_bytes(intent.read_bytes())
 
 
-def _add_duplicate_commit(evidence: dict[str, object]) -> None:
+def _add_duplicate_commit(evidence: dict[str, Any]) -> None:
     transaction = evidence["transaction"]
     duplicate = transaction.with_name("e" * 64 + ".json")
     duplicate.write_bytes(transaction.read_bytes())
@@ -401,7 +348,7 @@ def _add_duplicate_commit(evidence: dict[str, object]) -> None:
 )
 def test_acceptance_recovery_validator_rejects_hostile_mutations(
     tmp_path: Path,
-    mutation: Callable[[dict[str, object]], None],
+    mutation: Callable[[dict[str, Any]], None],
     message: str,
 ) -> None:
     evidence = _acceptance_evidence(tmp_path)
@@ -426,8 +373,64 @@ def test_acceptance_recovery_rejects_invalid_manifest_reference(
         _module().validate_acceptance_recovery(*_acceptance_args(evidence))
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda d: d["envelope"]["goal"].update(record_id="other-20260922T010000Z"),
+            "record ID differs",
+        ),
+        (lambda d: d["envelope"]["goal"].update(record_id="invalid"), "record ID is invalid"),
+        (
+            lambda d: d["envelope"]["goal"]["identity"].update(purpose="diagnostic"),
+            "identity purpose",
+        ),
+        (lambda d: d["envelope"]["goal"]["identity"].update(goal_keys=[]), "keys are invalid"),
+        (
+            lambda d: d["envelope"]["goal"]["identity"]["goal_keys"].reverse(),
+            "sorted and distinct",
+        ),
+        (
+            lambda d: d["envelope"]["goal"]["identity"]["spec_revisions"].update(
+                coverage_sim_toggle=True
+            ),
+            "revision is invalid",
+        ),
+        (
+            lambda d: d["envelope"]["goal"]["identity"]["spec_revisions"].pop(
+                "coverage_sim_toggle"
+            ),
+            "revisions fields differ",
+        ),
+        (
+            lambda d: d["lookup_key"]["goal_identity"]["spec_revisions"].update(
+                coverage_sim_toggle=2
+            ),
+            "lookup key differs",
+        ),
+    ],
+)
+def test_recovery_rejects_invalid_goal_identity(
+    tmp_path: Path,
+    mutation: Callable[[dict[str, Any]], None],
+    message: str,
+) -> None:
+    evidence = _acceptance_evidence(tmp_path)
+    _mutate_json(evidence["intent"], mutation)
+    with pytest.raises(ValueError, match=message):
+        _module().validate_acceptance_recovery(*_acceptance_args(evidence))
+
+
+def test_recovery_rejects_state_from_another_goal(tmp_path: Path) -> None:
+    evidence = _acceptance_evidence(tmp_path)
+    for key in ("archived", "failed", "recovered"):
+        _mutate_json(evidence[key], lambda d: d.update(slug="other-20260922T010000Z"))
+    with pytest.raises(ValueError, match="state Goal record ID differs"):
+        _module().validate_acceptance_recovery(*_acceptance_args(evidence))
+
+
 def _mutate_first_record(
-    evidence: dict[str, object], mutation: Callable[[dict[str, object]], None]
+    evidence: dict[str, Any], mutation: Callable[[dict[str, Any]], None]
 ) -> None:
     transaction = json.loads(evidence["transaction"].read_text())
     sequence = transaction["records"][0]["sequence"]
