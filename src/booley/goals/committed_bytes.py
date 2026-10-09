@@ -14,7 +14,6 @@ from pathlib import Path
 from booley.goals.lifecycle import LifecycleError
 from booley.runtime.git_attributes_policy import (
     GITATTRIBUTES_RULE,
-    configured_attributes_path,
     fallback_user_attributes,
     has_attribute_policy,
     has_managed_attributes,
@@ -242,22 +241,21 @@ def _info_attributes_policy(repository: Path) -> bytes:
 
 
 def _require_no_external_attributes(repository: Path) -> None:
-    configured, selected = configured_attributes_path(repository, _attribute_path_query)
-    if selected is not None and not is_null_attributes_path(repository, selected):
-        _require_no_attribute_policy(selected)
-    # Ask Git for its platform-specific paths rather than guessing installation prefixes.
-    for variable in ("GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"):
-        if variable == "GIT_ATTR_GLOBAL" and configured:
-            continue  # Explicit selection, including empty/null, overrides the default.
-        if variable == "GIT_ATTR_SYSTEM" and system_attributes_disabled():
-            continue
-        supported, path = native_attribute_path(repository, variable, _attribute_path_query)
-        if not supported:
-            if variable == "GIT_ATTR_SYSTEM":
-                raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
-            path = fallback_user_attributes(repository, _attribute_path_query)
-        if path is not None:
-            _require_no_attribute_policy(path)
+    # Ask Git which files it actually reads rather than re-deriving its selection:
+    # `git config --get` can report a lower-scope `core.attributesFile` than the one
+    # Git applies (e.g. a missing `:(optional)` path falls back to the XDG file).
+    supported, user = native_attribute_path(repository, "GIT_ATTR_GLOBAL", _attribute_path_query)
+    if not supported:
+        user = fallback_user_attributes(repository, _attribute_path_query)
+    if user is not None and not is_null_attributes_path(repository, user):
+        _require_no_attribute_policy(user)
+    if system_attributes_disabled():
+        return
+    supported, system = native_attribute_path(repository, "GIT_ATTR_SYSTEM", _attribute_path_query)
+    if not supported:
+        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+    if system is not None:
+        _require_no_attribute_policy(system)
 
 
 def _require_no_attribute_policy(path: Path) -> None:

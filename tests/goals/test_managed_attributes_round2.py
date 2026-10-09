@@ -51,11 +51,18 @@ def system_attributes(tmp_path, monkeypatch, isolated_git_attributes):
     result = subprocess.run(
         [str(binary), "var", "GIT_ATTR_SYSTEM"], capture_output=True, check=False, timeout=60
     )
+    # CI Git has a fixed system prefix, so these cases skip there. Developers run them
+    # with BOOLEY_TEST_RELOCATABLE_GIT (a RUNTIME_PREFIX build); setting
+    # BOOLEY_TEST_REQUIRE_RELOCATABLE_GIT=1 turns the skip into a failure.
+    unavailable = (
+        pytest.fail if os.environ.get("BOOLEY_TEST_REQUIRE_RELOCATABLE_GIT") else pytest.skip
+    )
     if result.returncode:
-        pytest.skip("a runnable relocatable Git is required for the real system-file oracle")
+        unavailable("a runnable relocatable Git is required for the real system-file oracle")
     path = Path(os.fsdecode(result.stdout).strip())
-    if not path.is_absolute() or not path.resolve().is_relative_to(binary.parent.parent):
-        pytest.skip("Git has a fixed system prefix; use BOOLEY_TEST_RELOCATABLE_GIT")
+    prefix = binary.parent.parent.resolve()
+    if not path.is_absolute() or not path.resolve().is_relative_to(prefix):
+        unavailable("Git has a fixed system prefix; use BOOLEY_TEST_RELOCATABLE_GIT")
     monkeypatch.setenv("PATH", str(binary.parent) + os.pathsep + os.environ["PATH"])
     monkeypatch.delenv("GIT_ATTR_NOSYSTEM", raising=False)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,6 +156,24 @@ def test_managed_policy_accepts_configured_file_without_policy(tmp_path, content
         selected.write_bytes(content)
     git(root, "config", "core.attributesFile", str(selected))
     assert export(root, scratch)[0]["policy"]["managed_rule"] == GITATTRIBUTES_RULE
+
+
+def test_managed_policy_checks_the_user_file_git_actually_reads(tmp_path):
+    """A missing `:(optional)` selection makes Git fall back to XDG, not to global config."""
+    root, scratch = captured(tmp_path)
+    managed_attributes(root)
+    clean = tmp_path / "clean.attributes"
+    clean.write_bytes(b"")
+    git(root, "config", "--global", "core.attributesFile", str(clean))
+    git(root, "config", "core.attributesFile", f":(optional){tmp_path / 'missing.attributes'}")
+    xdg = Path(os.environ["XDG_CONFIG_HOME"]) / "git/attributes"
+    xdg.parent.mkdir(parents=True)
+    xdg.write_bytes(b"* ident\n")
+    reported = git(root, "var", "GIT_ATTR_GLOBAL")
+    if Path(reported) != xdg:
+        pytest.skip(f"this Git does not support :(optional) attribute paths ({reported})")
+    with pytest.raises(LifecycleError):
+        export(root, scratch)
 
 
 def test_init_with_comment_only_xdg_attributes_can_finish(layout, tmp_path, monkeypatch):
