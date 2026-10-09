@@ -2670,3 +2670,37 @@ def test_local_attributes_publication_failure_messages_name_actual_target(tmp_pa
     assert "attributes publication" in output and str(attrs) in output
     assert "tracked files untouched" not in output
     assert "commit it" not in output
+
+
+@pytest.mark.parametrize("branch", [None, "goal/example-20261009", "user-feature"])
+def test_worktree_link_repair_silently_skips_goal_and_user_worktrees(
+    tmp_path, monkeypatch, capsys, branch
+):
+    from booley.runtime import worktree_paths
+
+    _git_init(tmp_path)
+    (tmp_path / ".booley_project").mkdir()
+    _run_git(
+        tmp_path,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "initial",
+    )
+    _run_git(tmp_path, "config", WORKTREE_RELATIVE_KEY, "true")
+    checkout = tmp_path / ".booley_project/worktrees/example"
+    args = ["worktree", "add", "--detach"] if branch is None else ["worktree", "add", "-b", branch]
+    _run_git(tmp_path, *args, str(checkout))
+    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _: True)
+    before = (checkout / ".git").read_bytes()
+    ctx = _ctx(tmp_path)
+    assert git_hooks._repair_live_ticket_worktrees(ctx) == []
+    _step_worktree_link_policy(ctx, host_git_version=(2, 53, 0), sandbox_git_version=(2, 53, 0))
+    assert "ticket" not in capsys.readouterr().out.lower()
+    assert not (tmp_path / ".booley_project/tickets").exists()
+    assert (checkout / ".git").read_bytes() == before
+    assert ctx.results[-1].status == "skip"

@@ -84,11 +84,11 @@ def _opt_out(folder: Path) -> bool:
 def inspect(root: Path, project_dir: Path) -> TaskPlan:
     """Refuse conflicts safely; preserve malformed, linked, unowned or user-edited content."""
     try:
-        git_directories(root)
+        common_dir = git_directories(root).common_dir
     except GitDirectoryInspectionError:
         return TaskPlan()
     try:
-        return _inspect(root, project_dir)
+        return _inspect(root, project_dir, common_dir)
     except (OSError, ValueError, RuntimeError, UnicodeError) as exc:
         return TaskPlan(diagnostics=(f"Dashboard task unavailable: {exc}",))
 
@@ -97,6 +97,7 @@ def inspect(root: Path, project_dir: Path) -> TaskPlan:
 class _TaskFiles:
     root: Path
     project_dir: Path
+    common_dir: Path
     before: bytes | None
     ownership: bytes | None
     owner: dict[str, Any]
@@ -110,7 +111,7 @@ class _TaskFiles:
         return self.project_dir / "runtime/dashboard-task.json"
 
 
-def _inspect(root: Path, project_dir: Path) -> TaskPlan:
+def _inspect(root: Path, project_dir: Path, common_dir: Path) -> TaskPlan:
     folder = root / ".vscode"
     ownership = _bytes(project_dir / "runtime/dashboard-task.json")
     active = enabled(project_dir)
@@ -123,7 +124,9 @@ def _inspect(root: Path, project_dir: Path) -> TaskPlan:
     )
     if owner and (owner.get("schema") != 1 or owner.get("root") != str(root.resolve())):
         raise ValueError("unsupported or foreign Dashboard task ownership")
-    files = _TaskFiles(root, project_dir, _bytes(folder / "tasks.json"), ownership, owner)
+    files = _TaskFiles(
+        root, project_dir, common_dir, _bytes(folder / "tasks.json"), ownership, owner
+    )
     desired = active and not _opt_out(folder)
     if files.before is None and not desired:
         return _plan_changes(files, "", False, RAW_TASK) if owner else TaskPlan()
@@ -244,7 +247,9 @@ def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -
             else owner.get("created_document", "")
         ),
     }
-    new_owner["exclude_suffix"] = _exclude_change(root, bool(created), desired, owner, changes)
+    new_owner["exclude_suffix"] = _exclude_change(
+        files.common_dir, bool(created), desired, owner, changes
+    )
     new_owner["exclude_created"] = owner.get("exclude_created", False) or any(
         change.path.name == "exclude" and change.before is None for change in changes
     )
@@ -265,12 +270,16 @@ def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -
 
 
 def _exclude_change(
-    root: Path, created: bool, desired: bool, owner: dict[str, Any], changes: list[FileChange]
+    common_dir: Path,
+    created: bool,
+    desired: bool,
+    owner: dict[str, Any],
+    changes: list[FileChange],
 ) -> str:
     suffix = owner.get("exclude_suffix", "")
     if not created and (desired or not suffix):
         return suffix
-    path = git_directories(root).common_dir / "info/exclude"
+    path = common_dir / "info/exclude"
     before = _bytes(path)
     content = before or b""
     if desired and b"/.vscode" not in content.splitlines():

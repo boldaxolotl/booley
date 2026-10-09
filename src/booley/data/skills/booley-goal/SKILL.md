@@ -117,7 +117,7 @@ leaves the worktree and branch for the human to preserve or remove.
 
 `booley dashboard` inside the Sandbox shows sessions, Goals, and Jobs. It opens
 on VS Code folder attachment by default; `[sandbox].dashboard=false` opts out
-of the owned task. `booley goal status` inspect local
+of the owned task. `booley goal status` inspects local
 records; MCP `goal_status` is the worktree-specific evidence authority.
 Quiet presence is a presentation hint, not permission to abandon or prune a
 worktree. Inspect its record and preserve work before any human-directed cleanup.

@@ -307,6 +307,13 @@ def test_pending_amendment_reports_one_deferred_reason_not_false_missing_owner(
     def pending(*_args):
         raise ValueError("amendment publication is pending; execution is not ready")
 
+    from booley.runtime.worktrees import WorktreeEntry
+
+    monkeypatch.setattr(
+        git_hooks,
+        "list_worktrees",
+        lambda _: (WorktreeEntry(checkout, branch="refs/heads/booley-generation/demo/1"),),
+    )
     monkeypatch.setattr(git_hooks, "_repair_recorded_ticket", pending)
     result = git_hooks._repair_live_ticket_worktrees(SimpleNamespace(project_root=tmp_path))
     assert result == ["demo: amendment publication is pending; execution is not ready"]

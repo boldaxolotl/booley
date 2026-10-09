@@ -146,7 +146,7 @@ _OBSERVATION_MESSAGES = {
     LineEndingObservationCode.CRLF_MISMATCH: (
         "{count} tracked file(s) are checked out with CRLF — the Sandbox container "
         "will see every one as modified (phantom diffs break the dirty-tree check, scope "
-        "enforcement, and ticket worktrees)"
+        "enforcement, and worktrees)"
     ),
     LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE: (
         "core.autocrlf=true (Git for Windows' installer default) re-creates CRLF checkouts "
@@ -510,7 +510,16 @@ def _repair_live_ticket_worktrees(ctx: InitContext) -> list[str]:
     directory = worktree_state_dir(ctx.project_root) / "worktrees"
     if not directory.is_dir():
         return []
-    linked = [row for row in directory.iterdir() if (row / ".git").is_file()]
+    # Git supplies canonical refs; only the Ticket generation namespace owns
+    # workspaces this compatibility repair can reconcile. The namespace is
+    # defined by ticket_board.ticket_baseline.TICKET_REF_PREFIX.
+    linked = [
+        row.path
+        for row in list_worktrees(ctx.project_root)
+        if row.path.parent == directory
+        and (row.path / ".git").is_file()
+        and (row.branch or "").startswith("refs/heads/booley-generation/")
+    ]
     if not linked:
         return []
     try:

@@ -602,37 +602,6 @@ def _project_root_parent() -> argparse.ArgumentParser:
     return parent
 
 
-def _add_board_subparsers(sub) -> None:
-    """Add 'board' subcommand with its subparsers."""
-    # F-41: `booley run` took --project-root and `booley board` did not, so
-    # driving the board for another checkout meant cd-ing or exporting env.
-    root_opt = _project_root_parent()
-    board_p = sub.add_parser("board", help="Ticket board operations", parents=[root_opt])
-    add_all_tickets_flag(board_p)
-    board_sub = board_p.add_subparsers(
-        dest="board_command",
-        metavar="{show,review,approve,validate,check-ready,create,move,reset,archive}",
-    )
-
-    _add_board_review_subparsers(board_sub, root_opt)
-
-    create_p = board_sub.add_parser("create", help="Create a new ticket draft", parents=[root_opt])
-    create_p.add_argument("slug", help="Ticket slug")
-
-    ready_p = board_sub.add_parser(
-        "check-ready", help="Inspect Ticket readiness without starting work", parents=[root_opt]
-    )
-    ready_p.add_argument("slug", help="Ticket slug")
-
-    move_p = board_sub.add_parser("move", help="Move ticket between states", parents=[root_opt])
-    move_p.add_argument("slug", help="Ticket slug")
-    move_p.add_argument("target", choices=["queue", "done"], help="Target state")
-    move_p.add_argument("--feedback", default="", help="Feedback when moving blocked->queue")
-
-    _add_board_reset_subparser(board_sub, root_opt)
-    _add_board_archive_subparser(board_sub, root_opt)
-
-
 def _add_board_reset_subparser(board_sub, root_opt) -> None:
     """Register ``booley board reset``."""
     reset_p = board_sub.add_parser(
@@ -947,7 +916,7 @@ def _add_init_subparser(sub) -> None:
         "--seed",
         action="store_true",
         help="Seed only the Interactive Mode devcontainer for this folder/worktree "
-        "(no project scaffolding); run once per user/Ticket-Mode worktree",
+        "(no project scaffolding); run once per worktree",
     )
     init_p.add_argument(
         "--provider",
@@ -1327,24 +1296,33 @@ def _apply_dry_run_implications(args: argparse.Namespace) -> None:
         args.count = 1
 
 
-def _argv_command(parser: argparse.ArgumentParser, argv: list[str]) -> str | None:
-    """Find the command word without parsing any of its trailing arguments."""
-    index = 0
-    while index < len(argv):
-        word = argv[index]
-        if word == "--":
-            return argv[index + 1] if index + 1 < len(argv) else None
-        if not word.startswith("-"):
+def _global_options_parser() -> argparse.ArgumentParser:
+    """Read root options without actions that print help or inspect a Project."""
+    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False, allow_abbrev=False)
+    parser.add_argument("--project", "-C", "-p")
+    parser.add_argument("--help", "-h", "--version", action="store_true")
+    return parser
+
+
+def _argv_command(argv: list[str], globals_parser: argparse.ArgumentParser) -> str | None:
+    """Find a command after a valid global prefix, leaving its entire tail opaque.
+
+    Parse each candidate's prefix so variable-arity options cannot consume the
+    command. A required option value must be supplied before that boundary.
+    """
+    commands = set(COMMAND_LOCATIONS) | set(RETIRED_COMMAND_POINTERS)
+    for index, word in enumerate(argv):
+        if word not in commands:
+            continue
+        prefix = argv[:index]
+        if prefix and prefix[-1] == "--":
+            prefix = prefix[:-1]
+        try:
+            _, unknown = globals_parser.parse_known_args(prefix)
+        except argparse.ArgumentError:
+            continue
+        if not unknown:
             return word
-        option, separator, _ = word.partition("=")
-        action = parser._option_string_actions.get(option)
-        if action is None:
-            return None
-        if action.dest in {"help", "version"}:
-            return None
-        index += 1
-        if action.nargs != 0 and not separator:
-            index += action.nargs if isinstance(action.nargs, int) else 1
     return None
 
 
@@ -1352,7 +1330,7 @@ def _parse_cli() -> argparse.Namespace:
     """Parse CLI args with subcommands."""
     _force_utf8()
     parser = _build_parser()
-    command = _argv_command(parser, sys.argv[1:])
+    command = _argv_command(sys.argv[1:], _global_options_parser())
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
     return _normalize_args(parser, parser.parse_args())

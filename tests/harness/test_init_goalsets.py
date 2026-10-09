@@ -186,6 +186,7 @@ def project_dir(tmp_path: Path) -> Path:
 def _backfill(project_dir: Path, *, check_only: bool) -> None:
     ctx = InitContext(project_root=project_dir.parent, check_only=check_only)
     init_cmd._backfill_config_skeletons(project_dir, ctx)
+    init_cmd._step_goalsets(ctx)
 
 
 def test_init_seeds_the_goalsets(
@@ -197,8 +198,11 @@ def test_init_seeds_the_goalsets(
     _backfill(project_dir, check_only=False)
 
     assert {path.name for path in (project_dir / GOALSETS_DIR).iterdir()} == EXPECTED_FILES
-    # booley.toml, tests.toml, and the four Goalsets.
-    assert "added 6 config skeleton file(s)" in capsys.readouterr().out
+    # Config skeletons and Goalsets each have one reconciliation step.
+    output = capsys.readouterr().out
+    assert "added 2 config skeleton file(s)" in output
+    assert output.count("created 4 Goalsets") == 1
+    assert "Goalsets already present" not in output
 
 
 def test_init_check_only_writes_nothing(
@@ -210,4 +214,28 @@ def test_init_check_only_writes_nothing(
     _backfill(project_dir, check_only=True)
 
     assert list(project_dir.iterdir()) == []
-    assert "would add 6 config skeleton file(s)" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "would add 2 config skeleton file(s)" in output
+    assert output.count("4 missing Goalsets") == 1
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+def test_goalset_step_selects_init_destination_not_parent_project(
+    tmp_path, monkeypatch, check_only
+):
+    parent = tmp_path / ".booley_project"
+    parent.mkdir()
+    child = tmp_path / "child"
+    child.mkdir()
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    ctx = InitContext(project_root=child, check_only=check_only)
+    init_cmd._step_goalsets(ctx)
+    assert not list(parent.iterdir())
+    if check_only:
+        assert not (child / ".booley_project").exists()
+        assert ctx.results[-1].status == "warn"
+    else:
+        assert {p.name for p in (child / ".booley_project/goalsets").iterdir()} == EXPECTED_FILES
+        assert ctx.results[-1].status == "ok"
+    init_cmd._step_goalsets(ctx)
+    assert ctx.results[-1].status == ("warn" if check_only else "skip")

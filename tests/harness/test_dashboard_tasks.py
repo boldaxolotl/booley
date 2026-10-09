@@ -439,3 +439,55 @@ def test_new_non_git_directory_silently_has_no_dashboard_plan(tmp_path, caplog):
     assert not tasks.reconcile(root, project_dir).applied
     assert caplog.records == []
     assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("unit,newline", [("  ", "\n"), ("    ", "\r\n"), ("\t", "\n")])
+def test_owned_task_upgrade_preserves_indent_and_unrelated_text(
+    project, monkeypatch, unit, newline
+):
+    import json
+
+    old_task = {**tasks.TASK, "options": {"env": {"old-preview": "1"}}}
+    source = (
+        '{"version": "2.0.0", "tasks": [\n'
+        + unit * 2
+        + json.dumps(old_task, indent=unit).replace("\n", "\n" + unit * 2)
+        + "\n]}\n"
+    )
+    source = source.replace("\n", newline)
+    project.file.parent.mkdir()
+    project.file.write_bytes(source.encode())
+    owner = project.data / "runtime/dashboard-task.json"
+    owner.parent.mkdir()
+    raw = Document(source).root.members["tasks"].children[0]
+    owner.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "root": str(project.root.resolve()),
+                "enabled": True,
+                "task": source[raw.start : raw.end],
+            }
+        )
+    )
+    tasks.reconcile(project.root, project.data)
+    after = project.file.read_bytes().decode()
+    assert newline + unit * 3 + '"label":' in after
+    assert newline + unit * 2 + "}" in after
+    assert "options" not in after
+    assert after.startswith('{"version": "2.0.0", "tasks": [')
+    assert after.endswith(newline + "]}" + newline)
+    assert not tasks.inspect(project.root, project.data).pending
+
+
+def test_task_inspection_resolves_git_directories_once(project, monkeypatch):
+    original = tasks.git_directories
+    calls = []
+
+    def directories(root):
+        calls.append(root)
+        return original(root)
+
+    monkeypatch.setattr(tasks, "git_directories", directories)
+    assert tasks.inspect(project.root, project.data).pending
+    assert calls == [project.root]

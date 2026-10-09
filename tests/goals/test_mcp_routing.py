@@ -74,10 +74,13 @@ def test_nonactive_records_refused(goal_mode: SimpleNamespace, state: GoalState)
         resolve_call_context({"work_dir": str(goal_mode.worktree)})
 
 
-def test_corrupt_record_refused(goal_mode: SimpleNamespace) -> None:
+@pytest.mark.parametrize("explicit", [False, True])
+def test_corrupt_record_refused(
+    goal_mode: SimpleNamespace, tmp_path: Path, explicit: bool
+) -> None:
     record_paths(goal_mode.control, goal_mode.record.id).record_file.write_bytes(b"{bad")
     with pytest.raises(GoalStoreError, match="corrupt Goal Record"):
-        resolve_call_context({})
+        resolve_call_context({"work_dir": str(tmp_path)} if explicit else {})
 
 
 def test_wrong_branch_refuses(goal_mode: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:

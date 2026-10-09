@@ -293,17 +293,17 @@ def audit_interactive_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     )
 
 
-def audit_developer_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+def audit_ignored_settings(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Warn about ignored execution settings without validating their contents."""
     findings = []
-    if "developer" in data:
+    for table in sorted(IGNORED_BOOLEY_TOML_TABLES & data.keys()):
         findings.append(
             ConfigFinding(
                 ConfigFindingSeverity.WARN,
-                "booley.toml [developer] is ignored",
-                "delete [developer] from booley.toml",
+                f"booley.toml [{table}] is ignored",
+                f"delete [{table}] from booley.toml",
                 check_id="config.ignored-table",
-                subject="developer",
+                subject=table,
             )
         )
     jobs = as_dict(data.get("jobs"))

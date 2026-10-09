@@ -264,7 +264,7 @@ def test_probe_cost_accounting_and_completeness_are_independent(
         )
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
-    assert reporter.agent_calls == [doctor._AgentCallRecord("developer probe", usage)]
+    assert reporter.agent_calls == [doctor._AgentCallRecord("agent probe", usage)]
     assert tracker.missing == (("developer-probe",) if storage_fails else ())
 
 

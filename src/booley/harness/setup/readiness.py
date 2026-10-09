@@ -443,7 +443,7 @@ def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findi
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
     valid &= _add_config_audit(project_schema.audit_goals_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
-    valid &= _add_config_audit(project_schema.audit_developer_table(data), report)
+    valid &= _add_config_audit(project_schema.audit_ignored_settings(data), report)
     valid &= _add_config_audit(project_schema.audit_known_tables(data), report)
     from booley.mcp.registry import discover_mcp_tools
 

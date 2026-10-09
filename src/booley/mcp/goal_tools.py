@@ -3,7 +3,6 @@
 ``goal_enter``, ``goal_status``, ``goal_propose_change``, and ``goal_finish``
 are synthetic MCP tools served in-process in an Interactive Mode session.
 
-
 ``goal_enter`` runs the entry transaction from :mod:`booley.goals.entry` in
 one worker thread, which takes and releases every Goal lock itself; no lock
 crosses the hand-off. Status reads the record without changing it. Proposals use durable decisions and
@@ -65,11 +64,6 @@ _ENTER_DESCRIPTION = (
     "its Target. If the Project has a default Goalset, apply it (list 'default' in "
     "goalsets_used) unless the human explicitly skips it, with their reason."
 )
-
-
-def goal_tools_visible(*, interactive: bool) -> bool:
-    """Whether the Goal tools are listed and callable on this server (D13)."""
-    return interactive
 
 
 def goal_tool_defs() -> list[dict[str, Any]]:

@@ -129,10 +129,17 @@ def require_goal_work_dir(arguments: Mapping[str, Any], store: GoalStore) -> Non
         )
 
 
-def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> CallContext | None:
+def project_goal_store() -> GoalStore | None:
+    """Resolve the session's Goal store, preserving ordinary calls without a Project."""
     try:
-        store = GoalStore(resolve_project_dir())
+        return GoalStore(resolve_project_dir())
     except (FileNotFoundError, SourceCheckoutProjectError):
+        return None
+
+
+def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> CallContext | None:
+    store = project_goal_store()
+    if store is None:
         return None
     require_goal_work_dir(arguments, store)
     if explicit is None:

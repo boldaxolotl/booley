@@ -221,7 +221,7 @@ TESTS_TOML_SKELETON = """\
 
 def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
     """Create missing config skeletons without guessing project-specific values."""
-    # Create-only configuration and Goalsets preserve Project-authored content.
+    # Create-only configuration preserves Project-authored content.
     skeletons = {
         "booley.toml": BOOLEY_TOML_SKELETON,
         "tests.toml": TESTS_TOML_SKELETON,
@@ -231,11 +231,6 @@ def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
         for name, body in skeletons.items()
         if guarded_write(project_dir / name, body, dry_run=ctx.check_only, newline="\n")
         is WriteOutcome.WRITTEN
-    ]
-    added += [
-        path.relative_to(project_dir).as_posix()
-        for path, outcome in seed_goalsets(project_dir, dry_run=ctx.check_only)
-        if outcome is WriteOutcome.WRITTEN
     ]
     if not added:
         return
@@ -476,7 +471,7 @@ def _step_core_projections(ctx: InitContext) -> None:
 def _step_goalsets(ctx: InitContext) -> None:
     """Reconcile the four create-only Project Goalsets."""
     ctx.step_banner("Goalsets")
-    outcomes = seed_goalsets(resolve_project_dir(ctx.project_root), dry_run=ctx.check_only)
+    outcomes = seed_goalsets(project_dir_for_init(ctx.project_root), dry_run=ctx.check_only)
     added = sum(outcome is WriteOutcome.WRITTEN for _, outcome in outcomes)
     if not added:
         skip("Goalsets already present")

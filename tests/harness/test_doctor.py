@@ -889,7 +889,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
 
     def probe(project, _pass, _skip, _fail, *, completeness=None):
         probe_calls.append(project.project_root)
-        _pass("developer backend live authorization check completed successfully")
+        _pass("agent backend live authorization check completed successfully")
 
     monkeypatch.setattr(doctor, "_run_developer_probe", probe)
     doctor.run_doctor_result(
@@ -899,7 +899,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     assert ("run `booley doctor --deep`" in output) is not deep
     assert ("worker backend configured locally: Codex" in output) is not deep
     assert ("Deep checks" in output) is deep
-    assert ("developer backend live authorization check completed successfully" in output) is deep
+    assert ("agent backend live authorization check completed successfully" in output) is deep
     assert probe_calls == ([tmp_path] if deep else [])
 
 
@@ -913,7 +913,7 @@ def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "run `booley doctor --deep`" not in output
     assert "worker backend configured locally: Codex" not in output
-    assert "developer memory probe: runs in-container" in output
+    assert "agent memory probe: runs in-container" in output
     assert result.deep_status.current is False
 
 
@@ -5198,22 +5198,22 @@ class TestMemoryInvariant:
 
     def test_warn_shows_arithmetic_with_1g_fallback(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, str(6 * _GIB))  # 6g < 8g required
+        _fake_cgroup(tmp_path, monkeypatch, str(6 * _GIB))  # 6g < 7g required
         rec = _Rec()
         doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
         assert rec.kinds() == {"warn"}
         warn = rec.events[0][1]
         assert (
-            "6g < 1x4g + 2x1g + 2g = 8g — raise the devcontainer memory or lower [jobs] caps"
+            "6g < 1x4g + 1x1g + 2g = 7g — raise the devcontainer memory or lower [jobs] caps"
         ) in warn
 
     def test_pass_when_cgroup_limit_covers_caps(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, str(10 * _GIB))  # 10g >= 8g
+        _fake_cgroup(tmp_path, monkeypatch, str(10 * _GIB))  # 10g >= 7g
         rec = _Rec()
         doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
-        assert "10g ≥ 1x4g + 2x1g + 2g = 8g" in rec.events[0][1]
+        assert "10g ≥ 1x4g + 1x1g + 2g = 7g" in rec.events[0][1]
 
     def test_unlimited_cgroup_passes_with_note(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
@@ -5243,10 +5243,10 @@ class TestMemoryInvariant:
         assert rec.kinds() == {"pass"}
 
     def test_measured_value_overrides_1g_fallback(self, tmp_path, monkeypatch):
-        # 7g limit: fallback needs 1x4 + 2x1 + 2 = 8g (WARN); a measured
-        # 0.5g developer needs 1x4 + 2x0.5 + 2 = 7g (PASS).
+        # 6.5g limit: fallback needs 1x4 + 1x1 + 2 = 7g (WARN); a measured
+        # 0.5g agent needs 1x4 + 1x0.5 + 2 = 6.5g (PASS).
         _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, str(7 * _GIB))
+        _fake_cgroup(tmp_path, monkeypatch, str(13 * _GIB // 2))
         project = _adr28_project(tmp_path)
 
         rec = _Rec()
@@ -5258,7 +5258,7 @@ class TestMemoryInvariant:
         rec = _Rec()
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
-        assert "2x0.5g" in rec.events[0][1]
+        assert "1x0.5g" in rec.events[0][1]
         assert "measured agent RSS" in rec.events[0][1]
 
     def test_caps_come_from_jobs_table(self, tmp_path, monkeypatch):
@@ -5295,7 +5295,7 @@ class TestMemoryInvariant:
             rec.s,
         )
         assert rec.kinds() == {"warn"}
-        assert "[sandbox] memory 6g < 1x4g + 2x1g + 2g = 8g" in rec.events[0][1]
+        assert "[sandbox] memory 6g < 1x4g + 1x1g + 2g = 7g" in rec.events[0][1]
 
     def test_unparseable_sandbox_memory_warns(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, False)
@@ -5812,12 +5812,12 @@ class TestDeveloperProbe:
         assert "recorded to" in rec.events[0][1]
         assert developer_probe.load_measurement(project.project_dir) == 2 * _GIB
 
-        # The invariant now uses the measurement: 1x4 + 2x2 + 2 = 10g.
-        _fake_cgroup(tmp_path, monkeypatch, str(9 * _GIB))
+        # The invariant now uses the measurement: 1x4 + 1x2 + 2 = 8g.
+        _fake_cgroup(tmp_path, monkeypatch, str(7 * _GIB))
         rec = _Rec()
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"warn"}
-        assert "9g < 1x4g + 2x2g + 2g = 10g" in rec.events[0][1]
+        assert "7g < 1x4g + 1x2g + 2g = 8g" in rec.events[0][1]
 
     def test_probe_failure_is_skip_not_crash(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
@@ -5873,8 +5873,7 @@ class TestDeveloperProbe:
         reporter.finish()
 
         assert (
-            "RUN   agent-backed check: developer memory and authorization probe"
-            in seen_before_call[0]
+            "RUN   agent-backed check: agent memory and authorization probe" in seen_before_call[0]
         )
         assert (
             "Agent-backed checks: 1 agent call, 1,234 input tokens (1,000 cached), "
@@ -7392,17 +7391,17 @@ class TestSynthHeavyTargetCalibration:
         project = self._project(
             tmp_path,
             booley_toml={
-                "sandbox": {"memory": "22g"},
+                "sandbox": {"memory": "21g"},
                 "jobs": {"heavy_memory": "16g", "max_tickets": 2},
             },
         )
         synth_probe.record_measurement(project.project_dir, "asic_full", 15.8 * 1024)
         rec = _Rec()
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-        # 15.8 GiB + 15%, rounded up = 19 GiB; + 2x1 GiB agents + 2 GiB
-        # headroom requires 23 GiB, so the nominal 22 GiB container is unsafe.
+        # 15.8 GiB + 15%, rounded up = 19 GiB; + 1 GiB agent + 2 GiB
+        # headroom requires 22 GiB, so the nominal 21 GiB container is unsafe.
         assert rec.kinds() == {"warn"}
-        assert "1x19g + 2x1g + 2g = 23g" in rec.events[0][1]
+        assert "1x19g + 1x1g + 2g = 22g" in rec.events[0][1]
         assert "measured on asic_full" in rec.events[0][1]
 
     def test_calibration_for_previous_heaviest_target_is_stale(self, tmp_path, monkeypatch):
@@ -8144,3 +8143,19 @@ def test_goal_history_exclusion_uses_rtl_checkout_with_external_control(tmp_path
     assert ".git/info/exclude:1:.booley_project/" in findings[0].message
     assert not (root / ".booley_project").exists()
     assert exclude.read_bytes() == before
+
+
+@pytest.mark.parametrize("max_tickets", [0, 2, 100, "ignored"])
+def test_memory_invariant_is_independent_of_ignored_ticket_cap(tmp_path, monkeypatch, max_tickets):
+    _set_venue(monkeypatch, False)
+    project = _adr28_project(
+        tmp_path,
+        booley_toml={
+            "sandbox": {"memory": "7g"},
+            "jobs": {"max_tickets": max_tickets},
+        },
+    )
+    rec = _Rec()
+    doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
+    assert rec.kinds() == {"pass"}
+    assert "1x4g + 1x1g + 2g = 7g" in rec.events[0][1]

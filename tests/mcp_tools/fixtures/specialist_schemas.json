@@ -108,7 +108,7 @@
         "type": "string"
       },
       "spec": {
-        "description": "Path to the specification the review checks. Ticket Mode resolves its sealed ticket and linked spec automatically.",
+        "description": "Path to the specification the review checks. Required for spec-focused reviews; pass the Project specification path.",
         "type": "string"
       },
       "steer": {

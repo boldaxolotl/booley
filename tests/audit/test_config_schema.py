@@ -431,7 +431,7 @@ def test_project_sandbox_accepts_project_fields() -> None:
 
 @pytest.mark.parametrize("developer", [{}, {"auto_retry": {"enabled": False}}, "ignored"])
 def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
-    audit = project_schema.audit_developer_table({"developer": developer})
+    audit = project_schema.audit_ignored_settings({"developer": developer})
     assert audit.is_valid
     assert len(audit.findings) == 1
     warning = audit.findings[0]
@@ -444,7 +444,7 @@ def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
 
 
 def test_jobs_max_tickets_is_ignored_with_warning():
-    audit = project_schema.audit_developer_table({"jobs": {"max_tickets": 0}})
+    audit = project_schema.audit_ignored_settings({"jobs": {"max_tickets": 0}})
     assert audit.is_valid
     assert audit.findings[0].check_id == "config.ignored-key"
     assert audit.findings[0].fix == "delete max_tickets from [jobs] in booley.toml"

@@ -1410,7 +1410,7 @@ _RUNTIME_MARKER_FIX = (
 
 
 def _developer_mem_bytes(project_dir: Path) -> tuple[int, bool]:
-    """(developer memory term, measured?) for the invariant arithmetic.
+    """(agent memory term, measured?) for the invariant arithmetic.
 
     Uses the peak RSS ``doctor --deep`` recorded into runtime state when
     present, else the ADR 0028 1 GiB fallback.
@@ -1497,12 +1497,12 @@ def _check_memory_invariant(
     requirement = resource_policy.memory_requirement(
         max_heavy=caps.max_heavy,
         heavy_job_bytes=reservation.bytes,
-        max_tickets=caps.max_tickets,
+        max_tickets=1,
         developer_bytes=orch,
     )
     fmt = resource_policy.format_memory
     arithmetic = (
-        f"{caps.max_heavy}x{fmt(reservation.bytes)} + {caps.max_tickets}x{fmt(orch)} "
+        f"{caps.max_heavy}x{fmt(reservation.bytes)} + 1x{fmt(orch)} "
         f"+ 2g = {fmt(requirement.required_bytes)}"
     )
     orch_note = (
@@ -1670,12 +1670,11 @@ def _run_developer_probe(
 
     if not runtime_context.inside_session_runtime():
         _skip(
-            "developer memory probe: runs in-container "
-            "(it measures the in-container agent footprint)"
+            "agent memory probe: runs in-container (it measures the in-container agent footprint)"
         )
         return None
     _announce_long_check(
-        "agent-backed check: developer memory and authorization probe",
+        "agent-backed check: agent memory and authorization probe",
         "one light-tier agent turn; usually seconds, times out after "
         f"{_format_minutes(developer_probe.PROBE_TIMEOUT_S)}",
     )
@@ -1683,33 +1682,33 @@ def _run_developer_probe(
         measurement = developer_probe.measure_developer_rss(project.project_root)
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract (Decision 12); SKIP, never crash
         record = (
-            _AgentCallRecord("developer probe", getattr(exc, "usage", None))
+            _AgentCallRecord("agent probe", getattr(exc, "usage", None))
             if getattr(exc, "agent_called", False)
             else None
         )
         if getattr(exc, "agent_failure", False):
             _fail(
-                f"developer probe agent could not complete a trivial call — every "
+                f"agent probe could not complete a trivial call — every "
                 f"agent will fail the same way at launch: {exc}",
                 "check agent auth at THIS Sandbox location (booley auth, or claude login + "
                 "container recreate); see the harness log for the agent's error",
             )
             return record
-        _skip(f"developer memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
+        _skip(f"agent memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
         return record
-    record = _AgentCallRecord("developer probe", measurement.usage)
+    record = _AgentCallRecord("agent probe", measurement.usage)
     try:
         path = developer_probe.record_measurement(project.project_dir, measurement.peak_rss_bytes)
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
-        _skip(f"developer memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
+        _skip(f"agent memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
         return record
     bound = "" if measurement.exact else " (upper bound)"
     _pass(
-        "developer peak RSS measured: "
+        "agent peak RSS measured: "
         f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound} — "
         f"recorded to {path}"
     )
-    _pass("developer backend live authorization check completed successfully")
+    _pass("agent backend live authorization check completed successfully")
     if completeness is not None:
         completeness.completed("developer-probe", measurement.peak_rss_bytes > 0)
     return record
@@ -3012,11 +3011,21 @@ def _run_project_checks(
         )
 
 
+# Shipped guidance bytes are pinned in tests/fixtures/ticket_guidance/provenance.json.
+# Hashes normalize CRLF to LF; provenance below names the source commit and path.
 _SHIPPED_TICKET_GUIDANCE_HASHES = frozenset(
     [
+        # 0a04b01e145009d2ae6c28bfafa969320bf67b56:
+        # src/booley/data/skills/booley-ticket-create/TICKET_CREATION_TEMPLATE.md
         "327f2c465f58d8a02e54d449e8d73a93d54385a4a3768c277c7230aafd8f0deb",
+        # a992f445894323b3a9334f4aa66085b3b6576bb6:
+        # src/booley/data/skills/booley-ticket-create/TICKET_DEFAULTS_TEMPLATE.md
         "6726a385942fc92999b8af11a91f03a49b40473cd71a3c4199af9e2a1d763cb3",
+        # 06da0fd586e8fad894e6eea4e99b290188390162:
+        # src/booley/data/skills/booley-ticket-create/TICKET_CREATION_TEMPLATE.md
         "70b52fc601a60d43b51aadf3c201da8b02213fe8bccd92003393788909af299f",
+        # e34dfdb5f5f460eb3d50e4505368e31a6d09b25d:
+        # src/booley/data/skills/booley-ticket-create/TICKET_CREATION_TEMPLATE.md
         "bedd4e02040c2a1ba2c4594933e729a2a9380e0d8d92a5befa000256fef87137",
     ]
 )

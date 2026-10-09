@@ -64,7 +64,6 @@ from dataclasses import replace
 
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
-from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.flows.endpoint_events import (
     _endpoint_end_event,
     _endpoint_start_event,
@@ -93,6 +92,7 @@ from booley.mcp.application import (
 from booley.mcp.call_context import (
     CallContext,
     container_jobs_root,
+    project_goal_store,
     resolve_call_context,
     resolve_work_dir,
 )
@@ -101,7 +101,6 @@ from booley.mcp.goal_tools import (
     GOAL_TOOL_NAMES,
     dispatch_goal_tool,
     goal_tool_defs,
-    goal_tools_visible,
 )
 from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
@@ -230,7 +229,7 @@ _SLEEP_MCP_TOOL_DESCRIPTION = (
     "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold "
     "this MCP tool call open for 'seconds' server-side, then return timing "
     "details. Exists to measure the MCP client's MCP-tool-call kill ceiling "
-    "(ADR 0027) — it does no RTL work and is never useful for a ticket."
+    "(ADR 0027) — it does no RTL work and is intended for timing diagnostics."
 )
 
 # ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
@@ -667,9 +666,9 @@ def _goal_tools_visible() -> bool:
     """Return whether the Goal Mode MCP tools are listed and callable.
 
     Only a human's Interactive Mode tab (never a nested Specialist server), and
-    only behind the Goal Mode preview switch (ADR 0067 D13).
+    as required by ADR 0067 D13.
     """
-    return goal_tools_visible(interactive=_interactive_mcp_mode() and _nested_allowlist() is None)
+    return _interactive_mcp_mode() and _nested_allowlist() is None
 
 
 def _coverage_evidence_mode() -> bool:
@@ -2506,7 +2505,6 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
     """Handle the synthetic report-fetch MCP tool without spawning a subprocess."""
     raw = arguments.get("endpoint")
     endpoint = raw.strip() if isinstance(raw, str) and raw.strip() else None
-    context = None
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
         return _error_result(work_dir_error)
@@ -2631,9 +2629,8 @@ class LocatedJob:
 def job_roots() -> tuple[Path, ...]:
     """Container jobs and every retained Goal Record, including terminal ones."""
     roots = [container_jobs_root()]
-    try:
-        store = GoalStore(resolve_project_dir())
-    except (FileNotFoundError, SourceCheckoutProjectError):
+    store = project_goal_store()
+    if store is None:
         return tuple(root for root in roots if root is not None)
     roots.extend(
         record_paths(store.project_dir, rec.id).jobs_dir for rec in store.list_records().records
@@ -4621,8 +4618,7 @@ def main() -> None:
         "--transport",
         choices=("stdio", "http"),
         default=os.environ.get("BOOLEY_MCP_TRANSPORT", "stdio"),
-        help="stdio: client-spawned child (Ticket Mode); "
-        "http: standalone loopback server (Interactive Mode)",
+        help="stdio: client-spawned child; http: standalone loopback server (Interactive Mode)",
     )
     parser.add_argument(
         "--port",
