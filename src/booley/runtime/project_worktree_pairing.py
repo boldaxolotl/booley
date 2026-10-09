@@ -66,7 +66,7 @@ def _require_base(source: Path, branch: str) -> str:
         if transient:
             remedies.append(
                 f"transient state: {', '.join(transient)}; Project .gitignore is missing "
-                "current Booley patterns; rerun booley init, then commit the updated .gitignore"
+                "current Booley patterns; run `booley init` from a host terminal, then commit the updated .gitignore"
             )
         if inputs:
             remedies.append(

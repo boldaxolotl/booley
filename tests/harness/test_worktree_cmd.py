@@ -585,7 +585,7 @@ def test_stale_ignore_diagnoses_transient_and_input_groups(
     assert _new("stale", root) == 1
     error = capsys.readouterr().err
     assert "Project .gitignore is missing current Booley patterns" in error
-    assert "rerun booley init" in error
+    assert "run `booley init` from a host terminal" in error
     assert "goals/g1/record.json" in error and "flow-reports/report.json" in error
     if mixed:
         assert "inputs: cores/top.core; commit them in `.booley_project` first" in error
