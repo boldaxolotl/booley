@@ -20,7 +20,7 @@ and copies of every referenced JSON document under `evidence/sim-campaign/`.
 The `validate_campaign.py` helper is a read-only structural cross-check with one
 subcommand per check: `selection` (exact ordered selection), `backlinks`
 (manifest/summary/compatibility backlinks), `resume` (interrupted resume),
-`rejection` (fail-closed rejection), and `journal` (Criteria journal scope).
+`rejection` (fail-closed rejection), and `journal` (Goal evidence scope).
 Run `python3 validate_campaign.py <check> --help` for its arguments. Your own
 reading of the evidence against the steps below is what decides a finding.
 
@@ -66,12 +66,13 @@ owned catalog test to the copied `tests.toml`, repeat the rejection, restore the
 catalog exactly, and finish the resume successfully. Compare the files against
 a saved copy after every restoration.
 
-## Criteria scope
+## Goal evidence scope
 
-Use a run-owned Ticket whose mandatory Criterion is
-`sim_pass_sim_campaign`. Capture the Criteria state and Acceptance Journal
+Commit the fixture registration before entry, create a clean linked worktree and
+start a Codex child with `$booley-goal`, naming a `sim` Goal on `sim_campaign`.
+Pass `work_dir` on every MCP call while active. Capture the Goal Record and Goal evidence
 before and after each invocation. A passing strict subset (`quick`) must leave
-the Criterion unmet. A new Simulation Campaign containing the complete Required
+the Goal unmet. A new Simulation Campaign containing the complete Required
 Simulation Suite (`quick`, `slow`, `tail`) must publish it only after all three
 durable results commit. If an extra registered test is temporarily added and
 explicitly selected, its failure must still make the Simulation Campaign grade strict;
@@ -80,12 +81,12 @@ restore the catalog and fixture before cleanup.
 ## Cleanup
 
 Before the first mutation, add to `resources.md` the run-owned fixture copy,
-core/catalog entries, report roots, Ticket state, process groups, and every
+core/catalog entries, report roots, Goal Record, process groups, and every
 source/catalog file a negative step changes. When a negative step leaves
 something broken, record the finding, restore only owned bytes, and still run
 the valid control; it does not depend on the negative step passing.
 
-Keep the evidence, reap owned processes, then remove only the run-owned
-core/catalog entries, report roots, and Ticket state. Confirm the pinned upstream
+Keep the evidence, reap owned processes, then finish or explicitly abandon the Goal and remove only the run-owned
+core/catalog entries, report roots, and Goal Record. Confirm the pinned upstream
 checkout is byte-for-byte unchanged, the Project catalog no longer exposes
 `sim_campaign`, and every `resources.md` row for this area is marked released.

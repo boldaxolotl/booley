@@ -11,7 +11,7 @@ module coverage_tb;
     repeat (2) @(negedge clk);
     reset = 0;
     for (int i = 0; i < 18; i++) begin
-      choice = 2'(i % 2); // Ticket adds choice 2 while retaining all assertions.
+      choice = 2'(i % 2); // Goal child adds choice 2 while retaining all assertions.
       if (test_name == "full") choice = 2'(i % 3);
       @(negedge clk);
       if (decoded !== (3'b001 << choice)) $fatal(1, "decoder mismatch");

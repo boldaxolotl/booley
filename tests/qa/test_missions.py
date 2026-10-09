@@ -1,12 +1,13 @@
 """Keep QA missions and skills pointing at files that exist."""
 
+import json
 import re
 from pathlib import Path
 
 import pytest
-import yaml
 
-from booley.ticket_board import generate_slug
+from booley.goals.model import GoalArg, parse_goal_args
+from booley.goals.translate import translate_goals
 
 QA_ROOT = Path(__file__).resolve().parents[2] / "qa"
 MISSIONS = sorted(QA_ROOT.glob("missions/*/MISSION.md"))
@@ -16,7 +17,7 @@ MISSIONS = sorted(QA_ROOT.glob("missions/*/MISSION.md"))
 ASSET_PREFIXES = (
     "fixtures/",
     "prompts/",
-    "tickets/",
+    "goals/",
     "spec/",
     "evaluator/",
     "probes/",
@@ -102,15 +103,80 @@ def test_qa_run_uses_the_canonical_host_install():
         assert required in compact
 
 
-def _ticket_frontmatter(document: str) -> dict:
-    """Parse the YAML front matter of the fenced Ticket packet inside a payload file."""
-    packet = document.split("```markdown\n---\n", 1)[1].split("\n---\n", 1)[0]
-    # Placeholder lines are rendered per run; the identity fields never use them.
-    return yaml.safe_load("\n".join(line for line in packet.splitlines() if "{{" not in line))
+JSON_BLOCK = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
+GOAL_FIXTURES = sorted(QA_ROOT.glob("missions/*/goals/*.md")) + sorted(
+    QA_ROOT.glob("shared/*/goals/*.md")
+)
+AD_HOC_FIXTURES = sorted(QA_ROOT.glob("missions/*/goals/*.json")) + sorted(
+    QA_ROOT.glob("shared/*/goals/*.json")
+)
 
 
-def test_picorv32_ticket_dependency_matches_derived_slug():
-    tickets = QA_ROOT / "missions" / "picorv32" / "tickets"
-    provider = _ticket_frontmatter((tickets / "continuity.md").read_text())
-    consumer = _ticket_frontmatter((tickets / "evolution.md").read_text())
-    assert consumer["dependencies"] == [generate_slug(provider["summary"])]
+def _goal_args(text: str) -> tuple[GoalArg, ...]:
+    raw = json.loads(text.replace("<target>", "qa_target").replace("<spec>", "docs/spec.md"))
+    return parse_goal_args(raw)
+
+
+@pytest.mark.parametrize("fixture", GOAL_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
+def test_goalsets_parse_and_translate(fixture: Path) -> None:
+    markdown = fixture.read_text(encoding="utf-8")
+    assert markdown.startswith(f"# Goalset: {fixture.stem}\n")
+    assert "## Goals" in markdown
+    blocks = JSON_BLOCK.findall(markdown)
+    assert len(blocks) == 1
+    args = _goal_args(blocks[0])
+    translated = translate_goals(args)
+    assert translated.goals
+    assert all(arg.origin == fixture.stem for arg in args)
+    assert all(goal.origins == (fixture.stem,) for goal in translated.goals)
+
+
+@pytest.mark.parametrize("fixture", AD_HOC_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
+def test_ad_hoc_goals_parse_and_translate(fixture: Path) -> None:
+    translated = translate_goals(_goal_args(fixture.read_text(encoding="utf-8")))
+    assert translated.goals
+    assert all(goal.origins == ("ad-hoc",) for goal in translated.goals)
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [*GOAL_FIXTURES, *AD_HOC_FIXTURES],
+    ids=lambda p: str(p.relative_to(QA_ROOT)),
+)
+def test_mutation_scopes_name_source_files(fixture: Path) -> None:
+    text = fixture.read_text(encoding="utf-8")
+    payload = JSON_BLOCK.findall(text)[0] if fixture.suffix == ".md" else text
+    for goal in translate_goals(_goal_args(payload)).goals:
+        if goal.family.value == "mutation":
+            for entry in goal.params["scope"]:
+                assert not entry.endswith(("/", "\\")), entry
+                assert Path(entry).suffix in {".v", ".sv", ".vhd", ".vhdl"}, entry
+
+
+def test_uart_review_contract_contains_frozen_spec_text() -> None:
+    spec = QA_ROOT / "missions/uart/spec"
+    contract = (spec / "contract.md").read_text(encoding="utf-8")
+    assert (spec / "corpus/hw/ip/uart/doc/registers.md").read_text(encoding="utf-8") in contract
+    assert (spec / "mmio-addendum.md").read_text(encoding="utf-8") in contract
+    assert len(contract) <= 30_000
+
+
+def test_capability_map_links_resolve_to_mission_areas() -> None:
+    document = QA_ROOT / "AREAS.md"
+    links = re.findall(
+        r"\[([^]]+)\]\(([^)]+)\)( \(optional\))?", document.read_text(encoding="utf-8")
+    )
+    assert links
+    for label, link, marker in links:
+        assert "#" not in link, link
+        mission = document.parent / link
+        assert mission.is_file(), link
+        headings = dict(
+            re.findall(
+                r"^### \d+\. ([\w-]+) —(.*)$", mission.read_text(encoding="utf-8"), re.MULTILINE
+            )
+        )
+        area = label.split("/", 1)[1]
+        assert area in headings, label
+        # The map marks exactly the areas the mission schedules outside its primary timebox.
+        assert bool(marker) == ("optional follow-up" in headings[area]), label

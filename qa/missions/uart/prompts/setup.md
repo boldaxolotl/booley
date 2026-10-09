@@ -1,6 +1,6 @@
 # Approved greenfield setup
 
-### Project, modes and Ticket payloads
+### Project, modes and Goal prompts
 
 Use a SystemVerilog HDL testbench, Verilator Simulation and Lint, and logical Yosys synthesis on the standard image. Explicitly set `[stealth] enabled = false`. Preserve ordinary Project source/core locations and literal benign Project-identifying commit messages as evidence.
 

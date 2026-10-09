@@ -13,10 +13,10 @@ step never hides the bugs behind it.
 
 | Mission | Journey |
 |---|---|
-| [picorv32](missions/picorv32/MISSION.md) | Published demo Project: baseline sim/lint/synth, Vivado, Interactive Mode and waveform diagnosis, two Ticket Mode changes, blocked-Ticket amendment, simulation campaign, cleanup |
-| [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, two Tickets, campaign, cleanup |
+| [picorv32](missions/picorv32/MISSION.md) | Published demo Project: baseline sim/lint/synth, Vivado, Interactive Mode and waveform diagnosis, Dhrystone and Zbb Goals, proposals, Finish and crash resume, simulation campaign, cleanup |
+| [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, two Goals, campaign, cleanup |
 | [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator |
-| [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, policy, waivers, storage, retention, a coverage Ticket, the Coverage Analyst |
+| [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, policy, waivers, storage, retention, a coverage Goal, the Coverage Analyst |
 
 Each mission fits an 8-hour budget with areas in priority order. Host and client
 coverage (Windows, other agent clients) comes from rerunning a mission on that
@@ -55,7 +55,7 @@ same explicit-only instruction as behavioral guidance, not a security boundary.
 | [`SMOKE.md`](SMOKE.md) | Ten must-pass release items, run with `booley-qa-run ... smoke` |
 | [`DISK.md`](DISK.md) | Disk preflight every run performs first |
 | [`AREAS.md`](AREAS.md) | Booley capabilities mapped to the mission areas that exercise them |
-| [`missions/`](missions/) | Mission files plus their prompts, Ticket payloads, fixtures, specs, and evaluators |
+| [`missions/`](missions/) | Mission files plus their prompts, Goalsets and ad-hoc Goal lists, fixtures, specs, and evaluators |
 | [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Native-coverage fixture Project, expected values, fault injectors, and evaluator |
 
 ## Checking changes

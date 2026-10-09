@@ -1,0 +1,16 @@
+[
+  {
+    "family": "sim",
+    "target": "sim_waiver"
+  },
+  {
+    "family": "coverage",
+    "target": "sim_waiver",
+    "tests": [
+      "run"
+    ],
+    "metrics": {
+      "toggle": 100
+    }
+  }
+]

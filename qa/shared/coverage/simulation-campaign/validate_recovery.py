@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
+from typing import cast
 
 # Direct script execution must find repository-owned QA helpers without installation.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
@@ -41,17 +43,48 @@ def _load_canonical(path: Path, label: str) -> dict[str, object]:
 
 def _exact(value: object, fields: set[str], label: str) -> dict[str, object]:
     _need(isinstance(value, dict), f"{label} is not an object")
-    _need(set(value) == fields, f"{label} fields differ")
-    return value
+    mapping = cast("dict[str, object]", value)
+    _need(set(mapping) == fields, f"{label} fields differ")
+    return mapping
+
+
+def _goal_subject(value: object) -> dict[str, object]:
+    goal = _exact(value, {"record_id", "identity"}, "Goal subject")
+    identity = _exact(
+        goal["identity"], {"purpose", "record_id", "goal_keys", "spec_revisions"}, "Goal identity"
+    )
+    _need(identity["purpose"] == "goal_evidence", "Goal identity purpose differs")
+    record_id = goal["record_id"]
+    # Mirror the product record-ID format; this validator is independent of the product.
+    _need(
+        isinstance(record_id, str)
+        and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}T\d{6}Z", record_id) is not None,
+        "Goal record ID is invalid",
+    )
+    _need(identity["record_id"] == record_id, "Goal subject record ID differs")
+    keys = identity["goal_keys"]
+    _need(
+        isinstance(keys, list)
+        and bool(keys)
+        and all(isinstance(key, str) and bool(key) for key in keys),
+        "Goal keys are invalid",
+    )
+    keys = cast("list[str]", keys)
+    _need(keys == sorted(set(keys)), "Goal keys are not sorted and distinct")
+    revisions = _exact(identity["spec_revisions"], set(keys), "Goal spec revisions")
+    _need(
+        all(type(revision) is int and revision > 0 for revision in revisions.values()),
+        "Goal spec revision is invalid",
+    )
+    return goal
 
 
 def _lookup_from_envelope(envelope: dict[str, object]) -> dict[str, object]:
-    ticket = _exact(envelope["ticket"], {"slug", "identity", "generation"}, "ticket")
+    goal = _goal_subject(envelope["goal"])
     return {
         "campaign_id": envelope["campaign_id"],
         "manifest_sha256": envelope["manifest_sha256"],
-        "ticket_identity": ticket["identity"],
-        "ticket_generation": ticket["generation"],
+        "goal_identity": goal["identity"],
         "producer": envelope["producer"],
         "purpose": envelope["purpose"],
     }
@@ -92,7 +125,7 @@ def _envelope(value: object, campaign_id: object, manifest_sha256: str) -> dict[
             "origin",
             "producer",
             "purpose",
-            "ticket",
+            "goal",
             "recorded_at",
             "role_derivation",
             "changes",
@@ -106,9 +139,10 @@ def _envelope(value: object, campaign_id: object, manifest_sha256: str) -> dict[
     _need(envelope["campaign_id"] == campaign_id, "envelope campaign identity differs")
     _need(envelope["manifest_sha256"] == manifest_sha256, "envelope manifest digest differs")
     _need(envelope["producer"] == "simulation_campaign", "envelope producer differs")
-    _need(envelope["purpose"] == "ticket_acceptance", "envelope purpose differs")
+    _need(envelope["purpose"] == "goal_evidence", "envelope purpose differs")
     _need(envelope["role_derivation"] == "booley.acceptance-role/v1", "role derivation differs")
     _need(isinstance(envelope["changes"], list) and bool(envelope["changes"]), "changes missing")
+    _goal_subject(envelope["goal"])
     return envelope
 
 
@@ -139,8 +173,7 @@ def _validate_intent(
         {
             "campaign_id",
             "manifest_sha256",
-            "ticket_identity",
-            "ticket_generation",
+            "goal_identity",
             "producer",
             "purpose",
         },
@@ -155,6 +188,7 @@ def _validate_intent(
 def _validate_consumed_results(facts: dict[str, object], result_paths: list[Path]) -> None:
     consumed = facts["consumed_results"]
     _need(isinstance(consumed, list), "consumed results are missing")
+    consumed = cast("list[object]", consumed)
     _need(len(consumed) == len(result_paths) > 0, "consumed result count differs")
     expected: dict[object, tuple[dict[str, object], bytes]] = {}
     for path in result_paths:
@@ -205,7 +239,7 @@ def _expected_record(
         "transaction change",
     )
     origin = _exact(envelope["origin"], {"execution_id", "invocation_id"}, "origin")
-    ticket = _exact(envelope["ticket"], {"slug", "identity", "generation"}, "ticket")
+    goal = _goal_subject(envelope["goal"])
     return {
         "$schema": "booley.acceptance-record/v2",
         "sequence": sequence,
@@ -213,7 +247,7 @@ def _expected_record(
         "transaction_ordinal": ordinal,
         "transaction_size": len(changes),
         "envelope_sha256": _digest(_canonical(envelope)),
-        "ticket": ticket["slug"],
+        "goal_record": goal["record_id"],
         "execution_id": origin["execution_id"],
         "purpose": envelope["purpose"],
         "producer": envelope["producer"],
@@ -225,7 +259,7 @@ def _expected_record(
         "mandatory": change["mandatory"],
         "params": change["params"],
         "detail": change["detail"],
-        "ticket_identity": ticket["identity"],
+        "goal_identity": goal["identity"],
         "recorded_at": envelope["recorded_at"],
     }
 
@@ -242,6 +276,7 @@ def _validate_records(
         )
         sequence = entry["sequence"]
         _need(type(sequence) is int and sequence > 0, "record sequence is invalid")
+        sequence = cast("int", sequence)
         _need(entry["transaction_ordinal"] == ordinal, "record ordinal differs")
         name = f"{sequence:09d}.tx.{transaction_id}"
         record = _load_canonical(root / name / "record.json", "V2 record")
@@ -274,6 +309,7 @@ def _validate_commit(path: Path, envelope: dict[str, object], evidence_root: Pat
     _need(commit["envelope_sha256"] == _digest(raw_envelope), "envelope digest differs")
     records = commit["records"]
     _need(isinstance(records, list), "commit records are missing")
+    records = cast("list[object]", records)
     changes = envelope["changes"]
     assert isinstance(changes, list)
     _need(commit["record_count"] == len(records) == len(changes), "record count differs")
@@ -303,9 +339,13 @@ def _validate_criteria_projection(
         entry.update(
             met=change["met"],
             mandatory=change["mandatory"],
-            params=change["params"],
-            detail=change["detail"],
         )
+        # DevelopmentState omits empty metadata in its persisted projection.
+        for field in ("params", "detail"):
+            if change[field]:
+                entry[field] = change[field]
+            else:
+                entry.pop(field, None)
         if change["met"] is True:
             entry["ever_met"] = True
         else:
@@ -327,8 +367,11 @@ def _validate_state_transition(
         failed_raw == archived_raw and failed == archived,
         "failed save changed archived state bytes",
     )
+    goal = _goal_subject(envelope["goal"])
+    _need(archived.get("slug") == goal["record_id"], "state Goal record ID differs")
     before = archived.get("acceptance_transactions")
     _need(isinstance(before, list), "archived acceptance transactions are missing")
+    before = cast("list[object]", before)
     _need(
         recovered.get("acceptance_transactions") == [*before, transaction_id],
         "transaction was not selected exactly once",

@@ -1,1 +1,0 @@
-The counter exposes progress.

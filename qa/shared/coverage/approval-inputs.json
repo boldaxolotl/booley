@@ -14,7 +14,7 @@
       ]
     },
     "reason": "excluded",
-    "justification": "The reserved decoder values 2 and 3 are excluded only in this waiver-validation fixture; no exclusion applies to the gap-closure Ticket."
+    "justification": "The reserved decoder values 2 and 3 are excluded only in this waiver-validation fixture; no exclusion applies to the gap-closure Goal."
   },
   "unreachable": {
     "target": "booley:qa:coverage:1#sim_waiver",

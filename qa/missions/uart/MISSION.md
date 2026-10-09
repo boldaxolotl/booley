@@ -1,9 +1,9 @@
 # UART clean-room greenfield
 
 Build a standalone UART from frozen OpenTitan docs only, driving Booley from host bootstrap
-through `init --scaffold`, `/booley-setup new`, an Interactive MMIO baseline, a Feature Ticket
-and up to two repair Tickets. Then grade the accepted RTL with an independent evaluator the
-developer never sees. Booley can accept wrong RTL, and this gap exposes it. The fresh Project
+through `init --scaffold`, `/booley-setup new`, an Interactive MMIO baseline, a feature Goal
+and up to two repair Goals. Then grade the accepted RTL with an independent evaluator the
+Goal child never sees. Booley can accept wrong RTL, and this gap exposes it. The fresh Project
 also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
 
 ## Pins and prerequisites
@@ -14,7 +14,9 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
   `doc/interfaces.md`, `doc/block_diagram.svg`, and the Apache-2.0 `LICENSE`. Before you start,
   check their hashes against `spec/corpus-manifest.json`.
 - Scenario inputs: `spec/qa_uart.sv` (interface-only stub), `spec/mmio-addendum.md`,
-  `spec/timing-addendum.md`. Origin: a new, empty, run-owned Git repository.
+  `spec/timing-addendum.md` and `spec/contract.md`. The contract file inlines
+  registers/MMIO only; it omits timing, serial behavior, theory and programmer
+  guidance, which the child reads from the separate allowed sources. Origin: a new, empty, run-owned Git repository.
 - Host: Docker with at least 6 GB free, plus artifact space; Verilator and Yosys come from the
   standard image. The evaluator needs cocotb 2.1.0 and Icarus outside the Sandbox.
 - Also: a Codex or Claude client; the previous published Booley release (upgrade and legacy
@@ -23,13 +25,17 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
 - Hosts: written for Ubuntu and Windows (Docker Desktop WSL2) with Codex CLI, Codex VS Code
   and Claude CLI; rerun on another host or client for coverage. Area 2's CRLF cases are
   Windows-only.
-- Budget: 8 h total. Areas are in priority order; if time runs out, log the rest as skipped.
-  Work on areas 8–15 while area 4's `booley run` is in progress.
+- Budget: 8 h for the primary run: 460 area minutes, including 90 for feature
+  work and 45 for bounded repair, plus 20 contingency. Areas 12, 16 and 17 are
+  optional follow-up work outside this timebox (55 minutes total); log them as
+  skipped unless requested. Run primary areas sequentially; Interactive children
+  never overlap an active Goal in the same Project.
 
 ## Mission-specific rules
 - **Clean room.** "Developer" means every agent that writes UART code: the Setup client, the
-  Interactive client and the Ticket Developer. It may see only `spec/corpus/`,
-  `spec/qa_uart.sv`, both addenda, `spec/corpus-manifest.json`, the `prompts/` and `tickets/`
+  Interactive client and the Goal child. It may see only `spec/corpus/`,
+  `spec/qa_uart.sv`, both addenda, `spec/contract.md`, `spec/corpus-manifest.json`,
+  the `prompts/` and `goals/`
   payloads, Booley's docs, `--help` and packaged skills, and the ordinary Project. No OpenTitan
   HJSON, regtool output, RTL, tests, UVM, DIFs, models, current docs or upstream browsing; if
   it fetches any, record a finding.
@@ -38,11 +44,11 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
   Project, the Sandbox, every mount and the developer's network reach. Prove isolation from real
   mounts, filesystem and network routes; separate paths alone prove nothing. The evaluator
   compiles only candidate RTL at the accepted commit, never the candidate TB or its pass
-  sentinel. Never paste evaluator content into a prompt or Ticket.
+  sentinel. Never paste evaluator content into a prompt or Goal request.
 - **Acceptance is not conformance**; only the evaluator decides conformance. Never tune
   oracles, cases or seed to the candidate; one seed and frozen manifest per run; keep failures.
-- **Payloads verbatim:** `prompts/*.md`, `tickets/*.md`; no hidden coverage, mutation-score or
-  relative-PPA Criteria.
+- **Payloads verbatim:** `prompts/*.md`, `goals/*.md`; no hidden coverage, mutation-score or
+  relative-PPA Goals.
 - **Spec precedence:** the addenda first, then register definitions and precise behavior text,
   then examples. The 64-byte RX FIFO and the 32-byte TX FIFO are normative.
 - **Stealth is off** (`[stealth] enabled = false`): ordinary paths and literal commit messages.
@@ -53,6 +59,9 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
   leaked token is a `bug`.
 - **Host policy** cases run only under a disposable `XDG_CONFIG_HOME` on a dedicated Docker
   daemon. Never touch the real host policy (`fixtures/host-policy/README.md`).
+
+- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
+  for every Goal area.
 
 ## Areas
 
@@ -89,30 +98,37 @@ Intent: packaged Setup plus an Interactive session give a green, committed basel
 Try:
 - In the Sandbox, run `/booley-setup new` with `prompts/setup.md` supplied up front. Plain,
   deep (verifies the counter) and plain Doctor again are all clean.
-- Copy `spec/` (never `evaluator/`) into the Project and give the Interactive client
-  `prompts/interactive.md`: `qa_uart` interface plus minimal CTRL reset/read/write, an MMIO smoke
-  test, and `sim_uart`, `lint_uart`, `synth_uart`. Through MCP/Flows the smoke sim self-checks
-  and passes, lint is clean, Yosys gives a fresh netlist and reports, then Doctor is clean.
-- A fresh trace read back through B-Wave matches the stimulus. Commit (literal message): baseline.
+- Copy `spec/` (never `evaluator/`) into the Project and give an Interactive
+  child `prompts/interactive.md`: `qa_uart` interface plus minimal CTRL
+  reset/read/write, an MMIO smoke test, and `sim_uart`, `lint_uart`, `synth_uart`.
+  Through MCP/Flows the smoke sim self-checks and passes, lint is clean, Yosys
+  gives a fresh netlist and reports, then Doctor is clean.
+- A fresh trace read back through B-Wave matches the stimulus. Commit the clean
+  baseline before area 4. Run this Interactive area with no active Goal in the Project.
 Look for: supplied choices ignored, stale artifacts called fresh, MCP calls without matching
 artifacts, the full UART implemented too early.
 
-### 4. feature-ticket — Feature Ticket to acceptance (~90 min, mostly waiting)
-Intent: Ticket Mode delivers a full design against frozen Criteria.
+### 4. goal-feature — Full UART Goal and review (~90 min child time)
+Intent: Goal Mode delivers a full design using the frozen public contract.
+Depends on: area 3's committed minimal baseline; if Setup failed, record and skip design work.
 Try:
-- Create it with the packaged Ticket Create skill (`--agent --no-confirm`) from
-  `tickets/feature.md` verbatim plus the spec files. Before enqueue, check Scope (`rtl/`, `tb/`),
-  Criteria, Targets, and spec review bound to the immutable corpus and addendum paths.
-- `booley run` it; record provider, logs and Board transitions. Elaboration never substitutes
-  for full Simulation; sim, lint and synth give fresh artifacts; RTL-bugs, protocol, spec and
-  TB-quality reviews are clean.
-- On `done`, check for the local merge, Workspace cleanup, triage report, a retained
-  `REPORT.md` outside the committed tree, and a clean accepted commit. Use the commit Booley
-  reports. The Ticket Baseline must show that protected acceptance controls weren't edited.
-Look for: the developer using sources outside the clean-room list, corpus conflicts (see Known
-traps) not reported or papered over with invented requirements, stale evidence bound to a
-Criterion, `done` with a dirty tree.
-Depends on: area 3's baseline commit. If area 3 failed, commit a minimal stub by hand.
+- Commit copied `goals/feature.md` and `goals/repair.md` in Project `goalsets/`,
+  alongside initialization's seeded files and managed ignore rules. Create a
+  linked worktree and send a Codex child `$booley-goal` plus `goals/feature.md`
+  and allowed spec files. Review concrete Goals, Targets and the spec-review
+  binding to `spec/contract.md`, which contains the frozen register definitions
+  and MMIO addendum.
+- The child authors owned `rtl/` and `tb/` assets. Elaboration cannot substitute
+  for full sim; sim, lint, synth and clean RTL-bugs/protocol/spec/TB-quality
+  reviews must yield fresh Goal-bound evidence and real artifacts.
+- Finish requires clean committed HEAD and Session Summary; save record ID,
+  package, base, protected-input status and final commit. Operator inspection
+  covers the whole diff. Integrate the outer Goal Branch and preserve the
+  non-Stealth history commit. This scaffold has no separate Project Git repo
+  and therefore no paired branch; clean up the printed outer checkout.
+Look for: sources outside the clean-room list, corpus conflicts papered over,
+stale evidence or Finish claiming completion with dirty files. Conformance is
+judged independently in area 5.
 
 ### 5. evaluate — Independent conformance evaluation (~30 min)
 Intent: grade the accepted RTL against the public contract. Most real design bugs show up here.
@@ -131,35 +147,39 @@ Try:
   (stop, break, timeout), FILTER, LOOP, OVERRIDE, HISTORY and RESET (idle, active TX/RX,
   occupied FIFOs, pending MMIO).
 - Reuse an earlier result only if the commit, evaluator digest and manifest are all identical.
-Look for: RTL mismatches that the Ticket's reviews and self-checking TB missed. Record each as a
+Look for: RTL mismatches that the Goal's reviews and self-checking TB missed. Record each as a
 `bug` in Booley's acceptance quality, citing the case ID. Operational timeouts and simulator
 failures are blocked observations, not RTL defects.
-Depends on: area 4; if it never reached `done`, evaluate the last commit, labeled unaccepted.
+Depends on: area 4; if it never finished, evaluate the last commit, labeled unaccepted.
 
-### 6. repair — Bounded repair Tickets (~45 min)
-Intent: check whether Booley can fix real mismatches from limited feedback.
+### 6. goal-repair — Bounded conformance repair Goals (~45 min)
+Intent: check whether a Goal child repairs real mismatches from limited feedback.
 Try:
-- Only after a real area-5 mismatch: create **Repair standalone UART conformance — attempt
-  1/2** (Bug Fix) from `tickets/repair.md`, depending on the preceding accepted Ticket.
-- Supply at most five failing records (by case ID, distinct families preferred): ID,
-  stimulus, expected/observed, timing, waveform excerpt only. Save the exact excerpts in
-  `evidence/`.
-- Require an agent-authored regression and the full original Criteria; then rerun the
-  **entire** frozen manifest, same seed, on the new commit. Two repairs max; never relabel an
-  unaccepted Feature Ticket as a repair.
-Look for: weakened checks, edited acceptance controls, regressions in cases that used to pass,
-repairs that never converge.
+- Only after a real area-5 mismatch on finished work: cut a fresh linked
+  worktree from the integrated result and send a new Codex child `$booley-goal`
+  plus `goals/repair.md`, for attempt 1/2. Supply at most five failing diagnostic
+  excerpts: case ID, stimulus, expected/observed, timing and waveform excerpt.
+  Save exact excerpts outside the child's reach; never reveal evaluator code,
+  complete cases or seed. The original public spec remains visible.
+- Require a fresh reproduction before fixing, an authored regression and the
+  complete original Goals. Finish and inspect package/history, then integrate
+  the outer Goal Branch. Rerun the entire frozen evaluator manifest with the same seed
+  on the new commit; at most two repairs. Unfinished feature work is not a repair.
+- If a repair cannot finish, explicitly abandon and preserve its checkpoint;
+  grade that commit only as unfinished, keeping prior evaluator failures.
+Look for: weakened checks, edited Protected Inputs, new regressions or a repair
+that succeeds only on the bounded-feedback subset.
 
 ### 7. final-regression — Final tree health (~15 min)
 Try: on the final accepted tree, run the full developer sim, Verilator lint, Yosys synthesis and
 Doctor. In Git, confirm a clean accepted commit, the local merge, ordinary source and core
 paths, and literal commit messages (Stealth is off).
-Look for: stale reports, Doctor drift after Ticket work.
+Look for: stale reports, Doctor drift after Goal work.
 
 ### 8. reviews-mutation — Specialist reviews, isolation, mutation (~35 min)
 Try:
 - Seed a real RTL bug on a disposable branch. The review reports `done` (advisory); an
-  unresolved MINOR-or-worse finding leaves the clean Criterion unmet; an explicit waiver makes
+  unresolved MINOR-or-worse finding leaves the clean Goal unmet; an explicit waiver makes
   it clean; a relevant edit makes both stale; a rerun on fixed source gives fresh evidence.
 - `review-spec`, `review-security`, `review-tb-quality` reports each name their focus. A
   conflicting Project guide beats the bundled one, which stays present. Specialist workspaces
@@ -168,8 +188,12 @@ Try:
 - Mutation: the default dry run gives the documented 10/10 and auto sizing lands in 3–25. A
   locked small N/K campaign with killed and surviving mutants shows a pristine baseline,
   per-mutant outcomes and first killing tests. A rerun reuses the lock; regen writes a new one.
-- Real Tickets with mutation, security-, spec- and TB-quality-review Criteria, plus one
-  Verification Ticket: each Criterion bound and evaluated, each report type-specific.
+- Disposable Goals from `goals/reviews.json` cover security-, spec- and
+  TB-quality reviews; each Goal is bound/evaluated and each report type-specific.
+  Before entry, combine that list with an ad-hoc mutation Goal on `sim_uart`
+  with `min_detected: 2`, `total: 3`
+  and a `scope` listing actual RTL source files resolved by that Target.
+  Finish or explicitly abandon the record before leaving this area.
 Look for: stale reviews still counted as clean, TB content leaking into an RTL-side workspace.
 
 ### 9. auth — Authentication and secret boundary (~20 min)
@@ -203,7 +227,7 @@ Try:
   names both endpoints; after the documented heal and ack, nothing is pending, Doctor clean.
 Look for: waivers that hide failures, a pending review that never clears.
 
-### 12. host-policy — Host policy file (~25 min)
+### 12. host-policy — Host policy file (~25 min, optional follow-up)
 Follow `fixtures/host-policy/README.md`.
 Try:
 - With no config file, the documented defaults apply.
@@ -227,7 +251,7 @@ Try:
 - Push-deny: a control client outside the runtime can push to a run-owned Git server. The same
   push from the Sandbox to a separate probe ref must be blocked by the network boundary, not by
   credentials or the server, and the ref stays unchanged.
-- Local lifecycle: blocked/review/done transitions retain status, logs and review briefings;
+- Local lifecycle: active/finished/abandoned Goals retain status, logs and Review Packages;
   automatic Doctor persists its report.
 Look for: writable mounts that should be read-only, missing local lifecycle reports.
 
@@ -236,11 +260,11 @@ Try:
 - Launch: bare `booley`/chat starts the configured provider in the Project directory. With a
   missing client executable (disposable), you get an actionable error; restore it. Make a safe
   edit and commit it, and check the exact local diff and history.
-- MCP: `submit_run_report` is hidden in Interactive and visible in Ticket mode. Disabling an
+- MCP: the Interactive Sandbox exposes Goal entry/status/proposal/Finish schemas. Disabling an
   endpoint removes it with an explaining diagnostic; re-enabling restores its schema. Flow and
   Specialist names agree across help, cheat sheet, MCP and skills; note the route you used.
-- Custom Flow: install a deterministic Flow with an endpoint and a Criterion. Discovery shows
-  its schema; a dry run validates inputs without artifacts; a real run satisfies the Criterion;
+- Custom Flow: install a deterministic Flow with an endpoint. Discovery shows
+  its schema; a dry run validates inputs without artifacts; a real run reports success;
   Doctor flags a syntax fault; disabling hides it; restoring brings discovery and runs back.
 - Feedback (`booley feedback`): add a defect, friction, impression and win, then list them.
   Concurrent appends keep every entry; test triage and a filed mark (filed entries leave the
@@ -265,7 +289,7 @@ Try:
 - Optionally cross-check with `fixtures/simulation-campaign/validate_campaign.py`.
 Look for: global serialization, a leaked build root, a failed hook reported as a pass.
 
-### 16. external-image — Externally supplied image (~15 min)
+### 16. external-image — Externally supplied image (~15 min, optional follow-up)
 Try: copy the MMIO smoke sources into a disposable Project with separate state and select the
 pinned image through the published config. Start the runtime and confirm the exact Booley
 version and image digest, then run Doctor and the smoke test. Stop and recreate the runtime
@@ -273,15 +297,15 @@ through the documented lifecycle: the digest is unchanged, the Project persists,
 rebuilt. Rerun the smoke test, then remove the owned runtime and Project but keep the image.
 Look for: hidden downloads or rebuilds, a digest that drifts.
 
-### 17. gui-client — VS Code client (~15 min, only if VS Code is available)
+### 17. gui-client — VS Code client (~15 min, only if VS Code is available, optional follow-up)
 Try: attach VS Code to the Sandbox and run the baseline prompt; call status, Targets, a Flow
-and a Specialist through its MCP (no Ticket or Criteria created). Screenshot the fresh MMIO
+and a Specialist through its MCP (read-only; no Goals entered). Screenshot the fresh MMIO
 trace in the Waveform Viewer; headless or B-Wave-only readback doesn't count.
 Look for: attachment or MCP failures that appear only in the GUI.
 
 ### 18. cleanup — Product cleanup (~20 min)
-Exercise Booley's own cleanup: `session down`, Workspace and worktree removal through Booley
-commands, and Project deregistration. Record any owned process or container left behind and any
+Exercise Booley's own cleanup: `session down`, explicit Goal abandon where needed, printed Git
+worktree removal using the printed USAGE steps, and Project deregistration. Record any owned process or container left behind and any
 unrelated state touched. Keep the evaluator seed, manifest and results in the run dir, outside
 every Project. Release every `resources.md` row and nothing else. Compare borrowed resources
 (credentials, caches, host policy, the supplied external image, pre-existing containers) with
@@ -292,7 +316,7 @@ their starting state.
   RX prose says 32 bytes (normative is 64); an example uses an undocumented TX-overflow
   interrupt; the RX watermark example shifts by three, hidden by a zero threshold; the theory
   text names `STATUS.BREAK`, but only `INTR_STATE.rx_break_err` (bit 5) exists.
-- Read the repair Ticket's dependency slug from the Ticket Booley created, never from this file.
+- Cut repairs from the integrated finished outer commit; this scaffold has no paired repository.
 - The timing addendum's finite bounds are scenario choices that the developer also receives:
   RX sync ≤ B/4, TX start ≤ 2B, and the timeout IRQ in 30B–34B at NCO=0x4000, VAL=32. Waiting
   past them is an observation timeout, not an RTL bug.

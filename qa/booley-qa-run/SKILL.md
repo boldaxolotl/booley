@@ -59,7 +59,8 @@ an artifact root, and optionally `smoke` to also run the release smoke list.
   `origin/main` path; that replacement stays installed after the run and is not
   a `resources.md` row.
 - Baseline IP and Project pins stay fixed; change designs only through the
-  mission's prompts and Tickets.
+  mission's prompts and Goal children; keep hidden faults and evaluator inputs
+  with the operator.
 - Before creating anything outside the run dir (container, image, worktree,
   branch, registration, grant, remote, mount, background process), append it to
   `resources.md`. Cleanup releases exactly those rows.
@@ -107,8 +108,9 @@ Write each finding the moment you observe it, before any workaround or retry.
    Record the choice in `log.md` before continuing.
 3. **Smoke** (when requested). Walk `qa/SMOKE.md` from the derived source root and put its table in
    `log.md`.
-4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and work its areas in
-   order under the principles above. Keep `log.md` current after each area:
+4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and apply
+   `qa/shared/GOAL-CHILD.md` for its Goal areas. Work the areas in priority order
+   under the principles above. Keep `log.md` current after each area:
    `done`, `partial`, or `skipped`, with the reason.
 5. **Cleanup.** Run the mission's cleanup area (Booley's own cleanup is under
    test), then release every remaining `resources.md` row and mark it. Keep the
