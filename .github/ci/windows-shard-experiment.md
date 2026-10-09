@@ -62,3 +62,7 @@ Ten shards keep the timing model, the four-worker scheduler, and the job limit
 unchanged. Manual runs can still select four, six, or eight shards. The wide gap
 between the fastest and slowest shard suggests the timing model has drifted
 from real durations; refreshing it is separate work.
+
+The first ten-shard run, pull request run
+[37897720629](https://github.com/boldaxolotl/booley/actions/runs/37897720629),
+ran its slowest Windows shard in 743 seconds and its fastest in 413 seconds.
