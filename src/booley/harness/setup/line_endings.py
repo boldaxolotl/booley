@@ -20,6 +20,12 @@ from pathlib import Path
 from typing import Literal
 
 from booley.commit_policy.policy import stealth_enabled
+from booley.runtime.git_attributes_policy import (
+    GITATTRIBUTES_RULE,
+    default_user_attributes,
+    has_managed_attributes,
+    system_attributes_disabled,
+)
 
 LineEndingRole = Literal["project-checkout", "project-data"]
 
@@ -415,9 +421,6 @@ def read_autocrlf_setting(project_root: Path, *, local: bool = False) -> Autocrl
     if value not in {"true", "false"}:
         return None
     return AutocrlfSetting(value == "true", is_set=True)
-
-
-GITATTRIBUTES_RULE = "* text=auto eol=lf"
 
 
 def _eol_policy_is_user_owned(project_root: Path) -> bool:
@@ -1139,10 +1142,6 @@ def _local_policy_owned(content: bytes) -> bool:
     return False
 
 
-def _local_default(content: bytes) -> bool:
-    return GITATTRIBUTES_RULE.encode() in [line.strip() for line in content.splitlines()]
-
-
 def _upstream_owned(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
     for name, (_, raw_content) in inputs.items():
         if name.startswith(("selection:", "link:")):
@@ -1202,14 +1201,8 @@ def _fallback_user_attributes(root: Path) -> Path | None:
         return _resolved_attribute_path(root, value)
     if result.returncode != 1:
         raise ValueError(f"could not read core.attributesFile: {_error_text(result.stderr)}")
-    xdg, home = os.environ.get("XDG_CONFIG_HOME"), os.environ.get("HOME")
-    if xdg:
-        return _resolved_attribute_path(root, str(Path(xdg) / "git/attributes"))
-    return (
-        _resolved_attribute_path(root, str(Path(home) / ".config/git/attributes"))
-        if home
-        else None
-    )
+    path = default_user_attributes()
+    return _resolved_attribute_path(root, str(path)) if path is not None else None
 
 
 def _user_file_snapshots(path: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
@@ -1238,18 +1231,6 @@ def _user_file_snapshots(path: Path) -> dict[str, tuple[_FileIdentity | None, by
     raise ValueError(f"attributes symlink chain exceeds 40 links: {path}")
 
 
-def _system_attributes_disabled() -> bool:
-    value = os.environ.get("GIT_ATTR_NOSYSTEM", "").lower()
-    if value in ("", "0", "false", "no", "off"):
-        return False
-    if value in ("1", "true", "yes", "on"):
-        return True
-    try:
-        return int(value) != 0
-    except ValueError as exc:
-        raise ValueError("GIT_ATTR_NOSYSTEM is not a Git Boolean") from exc
-
-
 def _worktree_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
     inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
     supported, path = _native_attribute_path(root, "GIT_ATTR_GLOBAL")
@@ -1258,7 +1239,7 @@ def _worktree_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, b
     inputs["selection:user:" + str(root)] = (None, os.fsencode(path) if path else b"")
     if path:
         inputs.update(_user_file_snapshots(path))
-    if _system_attributes_disabled():
+    if system_attributes_disabled():
         inputs["selection:system:" + str(root)] = (None, b"disabled")
         return inputs
     supported, system = _native_attribute_path(root, "GIT_ATTR_SYSTEM")
@@ -1310,7 +1291,7 @@ def _nonlocal_attributes_plan(repository: LineEndingRepository, target: Attribut
         try:
             common = _common_attributes(repository.root)
             _, content = _policy_content(common)
-            if _local_default(content):
+            if has_managed_attributes(content):
                 observations.append(
                     _observation(
                         LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
@@ -1342,7 +1323,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
         inputs = _upstream_attributes(repository.root)
         inputs.update(_effective_user_inputs(repository.root))
         upstream = _upstream_owned(inputs)
-        default = _local_default(common_content)
+        default = has_managed_attributes(common_content)
         if default and upstream:
             observations.append(
                 _observation(
